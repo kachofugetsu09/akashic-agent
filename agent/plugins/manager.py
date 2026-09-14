@@ -12,7 +12,6 @@ import shutil
 import sqlite3
 import sys
 import time
-import tomllib
 from dataclasses import dataclass, replace
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from contextvars import Context as TaskContext
@@ -28,7 +27,7 @@ from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironment
 from agent.plugins.validation import ValidationHost
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, PluginUpdates, UpdateStatus
 from session.artifact_store import ArtifactStore
-from agent.plugins.config import read_config_source
+from agent.plugin_composition.config_input import CONFIG_INPUT, check_config_format, load_config
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
 from agent.plugin_composition.runtime_catalog import (
@@ -59,7 +58,6 @@ from agent.plugin_composition import (
     TIMERS,
     UI_SLOTS,
     CompositionRoot,
-    CredentialRef,
     FiberState,
     PluginChannels,
     PluginUiSlots,
@@ -168,7 +166,7 @@ from bus.event_bus import EventBus
 from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
-PLUGIN_ARCHIVE_BINDING_API = 2
+PLUGIN_ARCHIVE_BINDING_API = 3
 U = TypeVar("U")
 
 
@@ -662,9 +660,8 @@ class PluginManager:
             raise TypeError("channel provider factory resolver 必须返回 mapping")
         return factories
 
-    @staticmethod
     def _default_channel_provider_factories(
-        snapshot: RuntimeSnapshot,
+        self, snapshot: RuntimeSnapshot,
     ) -> Mapping[str, ProviderClientFactory]:
         """Build one formal credential owner for every frozen channel."""
 
@@ -674,6 +671,8 @@ class PluginManager:
         )
         if registry is None:
             return {}
+        if self._validation_only:
+            raise RuntimeError("candidate 验证期禁止读取正式凭据")
         result: dict[str, ProviderClientFactory] = {}
         for descriptor in registry.descriptors:
             if descriptor.owner == "core":
@@ -690,8 +689,8 @@ class PluginManager:
             if generation is None:
                 raise RuntimeError(f"channel owner generation 缺失: {descriptor.owner}")
             result[descriptor.name] = CoreProviderClientFactory(
-                generation.data_dir / "config.local.toml",
-                descriptor.credential_paths,
+                generation.data_dir,
+                generation.config_projection,
                 generation.config_revision,
             )
         return result
@@ -1080,7 +1079,7 @@ class PluginManager:
         generation = self._channel_generation(record.plugin_id, record.generation_id)
         if str(generation.plugin_dir) != record.artifact_pointer:
             raise RuntimeError("channel artifact pointer 已漂移")
-        _, current_revision = read_config_source(generation.data_dir / "config.local.toml")
+        _, current_revision = load_config(generation.data_dir)
         if current_revision != record.raw_config_revision:
             raise RuntimeError("channel credential config revision 已漂移")
 
@@ -1229,7 +1228,7 @@ class PluginManager:
             )
             digest.update(plugin_id.encode())
             digest.update(_source_metadata_revision(plugin_dir))
-            digest.update(_path_metadata(data_dir / "config.local.toml"))
+            digest.update(_path_metadata(data_dir / CONFIG_INPUT))
         return digest.hexdigest()
 
     def _registry_active(self, module_path: str) -> bool:
@@ -4661,19 +4660,10 @@ class PluginManager:
             if mod is None:
                 continue
             plugin_dir = Path(mod["plugin_root"])
-            try:
-                source_revision = _source_revision(plugin_dir)
-                _, config_revision = read_config_source(
-                    _resolve_plugin_data_dir(
-                        mod["name"],
-                        mod,
-                        self._workspace,
-                    )
-                    / "config.local.toml"
-                )
-            except Exception:
-                source_revision = ""
-                config_revision = ""
+            source_revision = _source_revision(plugin_dir)
+            _, config_revision = load_config(
+                _resolve_plugin_data_dir(mod["name"], mod, self._workspace)
+            )
             current_prepared = self._prepared_generations.get(plugin_id)
             if force_reprepare and current_prepared is not None:
                 await self.discard_prepared(plugin_id, preserve_latest=True)
@@ -4803,7 +4793,7 @@ class PluginManager:
             self._workspace,
         )
         validate_workspace_plugin_data_path(data_dir, self._workspace)
-        config_source, config_revision = read_config_source(data_dir / "config.local.toml")
+        config_projection, config_revision = load_config(data_dir)
         generation_id = (
             f"{initial_plugin_id}:{source_revision[:12]}:{generation_sequence}"
         )
@@ -4868,19 +4858,10 @@ class PluginManager:
                 raise RuntimeError(
                     f"插件目录身份与声明不一致: directory={initial_plugin_id} declared={plugin_id}"
                 )
-            credential_paths = (
-                static_manifest.all_credential_paths
-                if static_manifest is not None
-                else ()
-            )
-            config_projection = _read_plugin_config_projection(
-                config_source,
-                credential_paths=credential_paths,
-            )
         except Exception as error:
             self._remove_module_tree(mp)
             error_text = str(error) or type(error).__name__
-            check_id = "config" if isinstance(error, _PluginConfigError) else "identity"
+            check_id = "identity"
             self._record_failed_gate(
                 plugin_id=initial_plugin_id,
                 revision=source_revision,
@@ -5700,11 +5681,10 @@ class PluginManager:
         if CREDENTIALS in requested:
             clients = CredentialClients(None if candidate or self._validation_only else {
                 generation.plugin_id: CoreProviderClientFactory(
-                    generation.data_dir / "config.local.toml",
-                    generation.static_manifest.credential_paths, generation.config_revision,
+                    generation.data_dir,
+                    generation.config_projection, generation.config_revision,
                 )
                 for generation in mount_order
-                if generation.static_manifest is not None and generation.static_manifest.credential_paths
             })
             _ = await root.context.provide(CREDENTIALS, clients)
             root._defer_internal_cleanup("credential_clients", clients.aclose)  # pyright: ignore[reportPrivateUsage]
@@ -6856,16 +6836,10 @@ class PluginManager:
             raise asyncio.CancelledError
 
 
-class _PluginConfigError(Exception):
-    pass
-
-
 class _CandidateRejected(Exception):
     def __init__(self, gate: GateResult) -> None:
         super().__init__(gate.failure_reason)
         self.gate = gate
-
-
 
 
 def _gate_failure_details(gate: GateResult) -> str:
@@ -6878,46 +6852,6 @@ def _gate_failure_details(gate: GateResult) -> str:
         )
         or gate.failure_reason
     )
-
-
-def _read_plugin_config_projection(
-    config_source: bytes | None,
-    *,
-    credential_paths: tuple[str, ...] = (),
-) -> dict[str, object]:
-    """Read plugin config and replace declared secret values with opaque refs."""
-
-    # 1. Core alone reads the formal file before plugin config validation.
-    raw_config: dict[str, Any] = {}
-    if config_source is not None:
-        try:
-            raw_config = tomllib.loads(config_source.decode("utf-8"))
-        except (UnicodeError, tomllib.TOMLDecodeError) as e:
-            raise _PluginConfigError(str(e)) from e
-    projected = cast(dict[str, object], copy.deepcopy(raw_config))
-    for path in credential_paths:
-        _redact_plugin_config_path(projected, path)
-    return projected
-
-def _redact_plugin_config_path(config: dict[str, object], path: str) -> None:
-    """Replace one present non-empty config leaf with an opaque credential ref."""
-
-    parts = tuple(path.split("."))
-    current: dict[str, object] = config
-    for part in parts[:-1]:
-        value = current.get(part)
-        if value is None:
-            return
-        if not isinstance(value, dict):
-            raise _PluginConfigError(f"channel credential path 不是对象路径: {path}")
-        current = cast(dict[str, object], value)
-    leaf = parts[-1]
-    if leaf not in current:
-        return
-    value = current[leaf]
-    if value is None or value == "":
-        return
-    current[leaf] = CredentialRef(parts)
 
 
 def _resolve_plugin_id(mod: dict[str, str]) -> str:
@@ -7138,17 +7072,25 @@ def _copy_validation_tree(
     *, keep_existing: bool = False,
 ) -> tuple[str, ...]:
     """复制已核对的数据树；历史补全可保留已经固定的候选文件。"""
+    if ".plugin-credentials" in source.parts:
+        raise RuntimeError("候选不能复制正式私有凭据目录")
     excluded = tuple(PurePosixPath(item).as_posix() for item in exclude_paths)
 
     # 1. A new plugin has no formal bytes; candidate starts from an empty tree.
     if not source.exists():
         target.mkdir(parents=True, exist_ok=keep_existing)
         return ()
+    if source.parent.name == "plugin-data":
+        check_config_format(source)
     source_root = source.resolve(strict=True)
 
     # 2. Candidate data must never retain an edge back into formal storage.
     for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
         root = Path(directory)
+        if any("config.local.toml" in name for name in (*dirnames, *filenames)):
+            raise RuntimeError("候选数据含旧配置或备份；须显式升级")
+        if ".plugin-credentials" in dirnames:
+            raise RuntimeError("候选数据不能包含正式私有凭据目录")
         relative_dir = root.relative_to(source_root)
         dirnames[:] = [
             name
@@ -7171,6 +7113,10 @@ def _copy_validation_tree(
     target.mkdir(parents=True, exist_ok=keep_existing)
     for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
         root = Path(directory)
+        if any("config.local.toml" in name for name in (*dirnames, *filenames)):
+            raise RuntimeError("候选数据含旧配置或备份；须显式升级")
+        if ".plugin-credentials" in dirnames:
+            raise RuntimeError("候选数据不能包含正式私有凭据目录")
         relative_dir = root.relative_to(source_root)
         dirnames[:] = [
             name

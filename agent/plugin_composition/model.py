@@ -141,6 +141,8 @@ def resolve_declared_workspace_root(workspace: Path, name: str) -> Path:
 
     root = workspace.resolve(strict=False)
     declared = root / name
+    if ".plugin-credentials" in Path(name).parts:
+        raise CompositionError("CREDENTIAL_STORE_PRIVATE", "私有凭据只能通过授权 broker 访问")
     if declared.is_symlink():
         raise CompositionError(
             "WORKSPACE_ROOT_SYMLINK",
@@ -165,6 +167,8 @@ def resolve_declared_workspace_file(workspace: Path, name: str) -> Path:
 
     root = workspace.resolve(strict=False)
     declared = root / name
+    if ".plugin-credentials" in Path(name).parts:
+        raise CompositionError("CREDENTIAL_STORE_PRIVATE", "私有凭据只能通过授权 broker 访问")
     try:
         relative = declared.relative_to(root)
     except ValueError as error:

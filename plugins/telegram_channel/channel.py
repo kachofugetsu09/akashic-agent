@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .config import TelegramChannelConfig
+
 import asyncio
 import hashlib
 import logging
@@ -97,7 +99,7 @@ class TelegramChannelAdapter:
         self._ingress = context.ingress
         self._identity = context.identity
         self._provider_factory = context.provider_client_factory
-        self._credentials = context.credentials
+        self._credentials = {"token": TelegramChannelConfig.model_validate(context.config).token}
         self._attachment_import = context.attachment_import
         self._attachment_read = context.attachment_read
         raw_allow_from = context.config.get("allow_from", ())

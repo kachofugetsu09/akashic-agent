@@ -54,7 +54,6 @@ async def apply(ctx: Context) -> None:
             ),
             factory_export="build_akashic_channel",
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            credential_paths=(),
         ),
     )
 

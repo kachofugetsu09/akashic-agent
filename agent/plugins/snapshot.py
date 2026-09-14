@@ -366,7 +366,7 @@ class RuntimeSnapshotCompiler:
         registry: ChannelRegistrySnapshot | None,
         generations: Mapping[str, PluginGeneration],
     ) -> None:
-        """Validate each active channel against its static credential limit."""
+        """确认每个渠道归属于当前组合中的插件。"""
 
         for descriptor in () if registry is None else registry.descriptors:
             generation = generations.get(descriptor.owner)
@@ -375,25 +375,6 @@ class RuntimeSnapshotCompiler:
                     "RuntimeSnapshot channel owner 不属于 generations: "
                     f"{descriptor.owner}"
                 )
-            manifest = generation.static_manifest
-            if manifest is None:
-                if descriptor.credential_paths:
-                    raise RuntimeError(
-                        "RuntimeSnapshot channel credential 缺少静态 manifest 声明: "
-                        f"{descriptor.owner}:{descriptor.name}"
-                    )
-            else:
-                declared = dict(manifest.channel_credentials).get(
-                    descriptor.name,
-                    (),
-                )
-                if declared != descriptor.credential_paths:
-                    raise RuntimeError(
-                        "RuntimeSnapshot channel credential 声明与静态 manifest 不一致: "
-                        f"{descriptor.owner}:{descriptor.name}"
-                    )
-
-        # 静态声明限定凭据上限；配置可不注册渠道，此时不创建 provider 或读取凭据。
 
 # 插件生命周期边界：一个 turn、job、event 或 proactive tick 必须始终使用同一
 # snapshot；旧 generation 只有在全部 lease 释放后才能 retire 和清理。

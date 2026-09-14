@@ -1,11 +1,11 @@
 """发布制品只能含选定宿主路径与各插件自己的源码。"""
+from agent.plugin_composition.config_input import load_config, save_config
 import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tarfile
-import tomllib
 
 import pytest
 import yaml
@@ -174,8 +174,8 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     assert [item["name"] for item in profile_receipt["installed"]] == ["one", "two"]
     assert (tmp_path / "profile-workspace/migrations.sqlite3").is_file()
     assert config.read_text() == "[runtime]\nworkspace = \"profile-workspace\"\n"
-    context_config = tmp_path / "profile-workspace/plugin-data/one-distribution/config.local.toml"
-    assert tomllib.loads(context_config.read_text()) == {
+    context_config = tmp_path / "profile-workspace/plugin-data/one-distribution"
+    assert load_config(context_config)[0] == {
         "prompt_sources": {"fixture": "one@distribution"},
         "summary_source": ["summary", "one@distribution"],
         "unsafe": "x\"\n[unexpected]\nvalue = \"bad\"",
@@ -183,7 +183,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     assert not (tmp_path / "profile-home" / "cache" / "distribution" / "unused").exists()
     receipt_path = tmp_path / "profile-workspace/runtime/distribution-install.json"
     _write_receipt(receipt_path, profile_receipt)
-    context_config.write_text('custom = "keep"\n', encoding="utf-8")
+    save_config(context_config, {"custom": "keep"})
     set_installed_plugin_enabled(
         "one@distribution", enabled=False, plugins_home=tmp_path / "profile-home"
     )
@@ -197,7 +197,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     )
     assert existing["status"] == "existing"
     assert existing["installed"][0]["source_revision"] == profile_receipt["installed"][0]["source_revision"]
-    assert tomllib.loads(context_config.read_text()) == {"custom": "keep"}
+    assert load_config(context_config)[0] == {"custom": "keep"}
 
     external = tmp_path / "external-one"
     external.mkdir()
@@ -230,7 +230,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
         receipt_path=receipt_path,
     )
     assert replaced["status"] == "existing"
-    assert tomllib.loads(context_config.read_text()) == {"custom": "keep"}
+    assert load_config(context_config)[0] == {"custom": "keep"}
     cli_restart = subprocess.run(
         [
             sys.executable,

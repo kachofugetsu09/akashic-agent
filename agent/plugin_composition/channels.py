@@ -789,7 +789,6 @@ class ChannelFactoryContext:
     boot_id: str
     binding_token: str
     config: Mapping[str, object]
-    credentials: Mapping[str, CredentialRef]
     provider_client_factory: ProviderClientFactory
     ingress: ChannelIngressPort | None
     identity: ChannelIdentityPort | None
@@ -809,7 +808,6 @@ class ChannelFactoryContext:
         config = _freeze_channel_config(self.config)
         if not isinstance(config, Mapping):
             raise TypeError("channel factory config 必须是 mapping")
-        credentials = _credential_refs(self.credentials)
         if self.ingress is not None and not callable(
             getattr(self.ingress, "admit", None)
         ):
@@ -839,7 +837,6 @@ class ChannelFactoryContext:
         ):
             raise TypeError("channel factory turn_stream 必须提供 subscribe(callback)")
         object.__setattr__(self, "config", config)
-        object.__setattr__(self, "credentials", credentials)
 
 
 @dataclass(frozen=True, slots=True)
@@ -984,7 +981,6 @@ class ChannelDefinition:
     capabilities: frozenset[ChannelCapability]
     factory_export: str
     inbound_identity: InboundIdentity | None
-    credential_paths: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or _NAME.fullmatch(self.name) is None:
@@ -1012,7 +1008,6 @@ class ChannelDefinition:
             raise ValueError(
                 "durable inbound channel 必须同时声明 INBOUND/PROVIDER_MESSAGE_ID"
             )
-        object.__setattr__(self, "credential_paths", _credential_paths(self.credential_paths, allow_empty=True))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1026,7 +1021,6 @@ class CoreChannelDefinition:
     source_revision: str
     config_revision: str
     generation_id: str
-    credential_paths: tuple[str, ...] = ()
     factory_export: str = ""
     config: Mapping[str, object] = field(default_factory=dict)
 
@@ -1070,11 +1064,6 @@ class CoreChannelDefinition:
                 raise ValueError(f"core channel {field_name} 必须是非空字符串")
         if not isinstance(self.config, Mapping):
             raise TypeError("core channel config 必须是 mapping")
-        object.__setattr__(
-            self,
-            "credential_paths",
-            _credential_paths(self.credential_paths, allow_empty=True),
-        )
         frozen_config = _freeze_channel_config(self.config)
         if not isinstance(frozen_config, Mapping):
             raise TypeError("core channel config 必须是 mapping")
@@ -1093,7 +1082,6 @@ class CoreChannelDefinition:
             ),
             factory_export=self.factory_export,
             inbound_identity=self.inbound_identity,
-            credential_paths=self.credential_paths,
         )
 
     @property
@@ -1119,7 +1107,6 @@ class ChannelDescriptor:
     capabilities: tuple[ChannelCapability, ...]
     factory_export: str
     inbound_identity: InboundIdentity | None
-    credential_paths: tuple[str, ...]
 
     def __post_init__(self) -> None:
         _text(self.owner, "owner")
@@ -1150,14 +1137,6 @@ class ChannelDescriptor:
             raise ValueError(
                 "durable inbound channel descriptor 必须同时声明 INBOUND/PROVIDER_MESSAGE_ID"
             )
-        object.__setattr__(
-            self,
-            "credential_paths",
-            _credential_paths(
-                self.credential_paths,
-                allow_empty=True,
-            ),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1450,7 +1429,6 @@ class _ChannelDeclarations:
             capabilities=tuple(sorted(definition.capabilities, key=lambda item: item.value)),
             factory_export=definition.factory_export,
             inbound_identity=definition.inbound_identity,
-            credential_paths=definition.credential_paths,
         )
         registration = _ChannelRegistration(
             owner=owner,
@@ -1522,7 +1500,6 @@ def _normalize_definition(definition: ChannelDefinition) -> ChannelDefinition:
         capabilities=frozenset(definition.capabilities),
         factory_export=definition.factory_export,
         inbound_identity=definition.inbound_identity,
-        credential_paths=tuple(definition.credential_paths),
     )
 
 
@@ -1590,7 +1567,6 @@ def _registry_identity(
                     if item.inbound_identity is None
                     else item.inbound_identity.value
                 ),
-                "credential_paths": list(item.credential_paths),
             }
             for item in descriptors
         ],
@@ -1614,39 +1590,6 @@ def _registry_identity(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
-
-
-def _credential_paths(value: object, *, allow_empty: bool = False) -> tuple[str, ...]:
-    if not isinstance(value, tuple) or (not allow_empty and not value):
-        raise ValueError("credential_paths 必须是非空 tuple")
-    if not value:
-        return ()
-    result: list[str] = []
-    for path in value:
-        if not isinstance(path, str) or not path or path.strip() != path:
-            raise ValueError("credential_paths 必须是非空字符串")
-        if any(not part or part in {".", ".."} for part in path.split(".")):
-            raise ValueError(f"credential path 无效: {path}")
-        if path in result:
-            raise ValueError(f"credential_paths 重复: {path}")
-        result.append(path)
-    return tuple(result)
-
-
-def _credential_refs(
-    value: Mapping[str, CredentialRef],
-) -> Mapping[str, CredentialRef]:
-    if not isinstance(value, Mapping):
-        raise TypeError("credentials 必须是 mapping")
-    result: dict[str, CredentialRef] = {}
-    for path in sorted(value):
-        ref = value[path]
-        if not isinstance(path, str) or not isinstance(ref, CredentialRef):
-            raise TypeError("credentials 必须映射到 CredentialRef")
-        if path != ".".join(ref.path):
-            raise ValueError(f"credential path 与 ref 不一致: {path}")
-        result[path] = ref
-    return MappingProxyType(result)
 
 
 def _freeze_channel_config(value: object, *, seen: frozenset[int] = frozenset()) -> object:

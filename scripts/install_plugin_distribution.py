@@ -17,13 +17,13 @@ import tempfile
 from collections.abc import Mapping
 from typing import Any
 
-import toml
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.install import install_git_plugin
+from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
@@ -348,40 +348,13 @@ def _write_plugin_configs(
     for declaration in declarations:
         owner = declaration["owner"]
         config = declaration["config"]
-        config_path = workspace_plugin_data_dir(workspace, owner, marketplace) / "config.local.toml"
-        config_dir = config_path.parent
-        if config_path.exists() or config_path.is_symlink():
-            if config_path.is_symlink() or not config_path.is_file():
-                raise ValueError(f"插件配置不是普通文件: {config_path}")
+        data_dir = workspace_plugin_data_dir(workspace, owner, marketplace)
+        config_path = data_dir / CONFIG_INPUT
+        current, _ = load_config(data_dir)
+        if current:
             results.append({"owner": owner, "path": str(config_path), "status": "existing"})
             continue
-
-        _validate_toml_value(config, location=f"plugin_configs[{owner}].config")
-        content = toml.dumps(config)
-        config_dir.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".config.local.", suffix=".tmp", dir=config_dir
-        )
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-            try:
-                os.link(temporary, config_path)
-            except FileExistsError:
-                if config_path.is_symlink() or not config_path.is_file():
-                    raise ValueError(f"插件配置不是普通文件: {config_path}")
-                results.append({"owner": owner, "path": str(config_path), "status": "existing"})
-                continue
-            directory_fd = os.open(config_dir, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        finally:
-            temporary.unlink(missing_ok=True)
+        save_config(data_dir, config)
         results.append({"owner": owner, "path": str(config_path), "status": "created"})
     return results
 

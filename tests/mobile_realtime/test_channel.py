@@ -631,7 +631,6 @@ def _native_context(
         boot_id="test-boot",
         binding_token="binding-1",
         config={},
-        credentials={},
         provider_client_factory=cast(Any, _ProviderFactory()),
         ingress=None,
         identity=None,

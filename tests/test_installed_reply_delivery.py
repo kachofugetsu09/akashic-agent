@@ -5,6 +5,8 @@ import asyncio
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+
+from agent.plugin_composition.config_input import save_config, save_credential
 import shutil
 import socket
 import subprocess
@@ -105,13 +107,14 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
             installed[name] = install_git_plugin(
                 workspace=workspace, source=str(source), marketplace="acceptance", plugins_home=home,
             )
-        sender_config = installed["telegram_sender"].data_path / "config.local.toml"
-        sender_config.write_text(
-            f'enabled=true\ntoken="fixture-token"\napi_base="{endpoint}"\ntimeout_seconds=3\n',
-        )
-        (installed["context"].data_path / "config.local.toml").write_text(
-            'summary_source=[]\nprompt_sources={skills="standard_tools@acceptance"}\n'
-        )
+        sender_config = installed["telegram_sender"].data_path
+        save_config(sender_config, {
+            "enabled": True, "token": save_credential(sender_config, "fixture-token"),
+            "api_base": endpoint, "timeout_seconds": 3,
+        })
+        save_config(installed["context"].data_path, {
+            "summary_source": [], "prompt_sources": {"skills": "standard_tools@acceptance"},
+        })
         # 保留恢复点；运行不再访问生成这些安装的原始源码位置。
         source_root.rename(source_backup)
         core = build_core_runtime(Config(), workspace, http, plugin_dirs=[])

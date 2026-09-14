@@ -7,6 +7,9 @@ from contextlib import asynccontextmanager
 import json
 import os
 from pathlib import Path
+import tomllib
+
+from agent.plugin_composition.config_input import save_config
 import sys
 
 import httpx
@@ -73,9 +76,8 @@ async def runtime(root: Path, model_endpoint: str, *, settings: dict | None = No
     )
     if first_install:
         for plugin, config in (settings or {}).get("plugins", {}).items():
-            destination = root / "workspace" / "plugin-data" / f"{plugin}-{MARKETPLACE}" / "config.local.toml"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(config, encoding="utf-8")
+            destination = root / "workspace" / "plugin-data" / f"{plugin}-{MARKETPLACE}"
+            save_config(destination, tomllib.loads(config))
     launch = json.loads(os.environ.get("AKASHIC_FIXTURE_COMMAND", "null"))
     command = ([sys.executable, "-m", "tests.fixtures.builtin_process", str(root), model_endpoint]
                if launch is None else [arg.replace("{root}", str(root)).replace("{model_endpoint}", model_endpoint)

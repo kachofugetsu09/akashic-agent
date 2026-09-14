@@ -26,7 +26,6 @@ COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(
     r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?"
 )
-
 EXPECTED_PLUGIN_IDS: tuple[str, ...] = (
     "citation",
     "meme",

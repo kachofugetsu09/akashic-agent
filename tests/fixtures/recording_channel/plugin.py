@@ -123,6 +123,5 @@ async def apply(ctx: Context) -> None:
             capabilities=frozenset({ChannelCapability.OUTBOUND}),
             factory_export="build_channel",
             inbound_identity=None,
-            credential_paths=("token",),
         ),
     )

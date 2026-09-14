@@ -367,8 +367,72 @@ committed snapshot ── stable/latest pointer ── request lease
 
 ### 归档接口版本
 
-组件归档的 `runtime.binding_api` 当前为 2。Core 在打开任何组件源码前核对完整
-闭包的接口版本和 Python tag；ABI 1 明确不兼容，不能混用新接口或从当前插件补齐。
+组件归档的 `runtime.binding_api` 当前为 3。Core 在打开任何组件源码前核对完整
+闭包的接口版本和 Python tag；ABI 1、2 明确不兼容，不能混用新接口或从当前插件补齐。
 原 descriptor、源码树、binding 引用和已开始效果的回执保持原位，旧归档需要原 Core
 版本及其安装环境恢复。该接口版本与 Python environment descriptor 的版本独立。
 新版本创建的归档仍能在原安装移除后，按原配置与 generation 闭包恢复。
+
+### 固定配置输入与凭据（0071）
+
+显式配置程序使用 `agent.plugin_composition.config_input` 的 `save_config(data_dir, mapping)`。
+文件为 `plugin-data/<owner>/config.input.json`，使用既有 tagged JSON codec 保存普通值和
+`CredentialRef`。Core 只加载、固定和传递映射，不解析插件字段；配置程序和 `apply(ctx)` 各自
+校验自己边界的输入。不要把明文放进普通映射，公共 writer 不猜测字段名。
+
+```text
+┌────────────────────────────────────┐
+│ configure：解释字段、接收明文       │
+└────────────────┬───────────────────┘
+                 ▼
+┌────────────────────────────────────┐
+│ save_credential → 不可变引用        │
+│ save_config → 无明文的固定映射      │
+└────────────────┬───────────────────┘
+                 ▼
+┌────────────────────────────────────┐
+│ Core 固定输入 → 插件请求凭据短租约  │
+│ candidate 没有正式凭据解析权        │
+└────────────────────────────────────┘
+```
+
+`save_credential(data_dir, value)` 只增加私有版本，返回现有 `CredentialRef`；调用程序再把引用
+放入自己的配置字段。凭据保存在 `<workspace>/.plugin-credentials/<owner>/`，目录 0700、文件
+0600；引用固定随机 ID 和内容版本。Core factory 只接受当前 owner 的固定输入中出现的引用，
+请求别名不解释为配置路径。普通插件用 `CREDENTIALS.open(ctx, refs)`，Channel adapter 用同一
+factory 合同；Channel host 不再提取配置字段或维护第二份凭据路径表。
+
+每次打开租约先核对配置版本、凭据内容版本和撤销标记；已打开的租约保留其取得的值，关闭时
+清空。`revoke_credential(data_dir, ref)` 只增加撤销标记，不删除历史版本。新配置原子替换前把
+旧输入保存在私有 `config-history/`。凭据、撤销标记、配置历史没有自动 GC；恢复必须一起保留
+私有目录和对应配置输入。Models 的连接凭据与刷新协议保持自己的 owner，不使用这份存储。
+
+旧 `config.local.toml` 及名称包含它的备份会阻止加载与候选复制，不能通过排除列表绕过。
+普通非空 plugin-data 没有固定输入也会拒绝，必须先显式配置或升级。新安装只初始化空固定映射。
+Telegram Channel 和两个 Sender 的 `configure.py --upgrade` 由插件解释旧 TOML；其他明确不含
+秘密的配置可离线运行 `python -m scripts.upgrade_plugin_config --data-dir <path> --no-secrets`。
+执行插件配置程序时沿正式安装环境提供 `AKASHIC_PLUGIN_DATA_DIR`，Channel 程序同时使用
+`AKASHIC_SETUP_CONFIG_PATH=<data-dir>/config.input.json`。日常 setup 不自动选择升级模式。
+配置向导使用安装解释器和依赖，并追加宿主 Python 导入路径、预载共享 writer，再执行制品内
+`configure.py`；不依赖工作目录或 `PYTHONPATH` 提供宿主 SDK。手工调用配置程序也须使用能
+导入宿主 SDK 及插件依赖的环境。
+
+升级先在私有 `upgrades/<id>/original/` 保存旧配置与命名备份，再发布固定输入，最后把原件
+移入同一恢复点的 `retired/`。中断后保留全部材料；若新输入与旧文件同时存在，继续拒绝启动，
+操作者须核对恢复点后完成移动或恢复原配置，不能重复覆盖。旧 artifact、归档和 binding 不改写；
+含已删除 TOML 字段的旧安装必须显式重装。历史 Yoyo 脚本保持原字节，若它产生旧配置，随后仍须
+经过显式配置升级，不能把旧输出直接作为新输入。
+
+候选不复制私有凭据根，workspace root/file 授权也不能授予它。新格式不是任意 plugin-data 的
+“无秘密证明”：旧的任意命名备份、模型自有存储和其他业务私有数据仍需要其 owner 的隔离/排除
+协议。不能把未知旧目录写一个空输入就声称验收通过。同进程 Python 插件仍属于受信任代码；
+这些窄接口和复制限制不是操作系统文件沙箱。本层只完成代码与静态 diff 检查，行为验证另行执行。
+
+本层迁移了日常向导、发布 profile、旧渠道升级命令、Docker 调试辅助写入器及共享测试 fixture。
+以下非秘密测试仍直接写旧 TOML，需机械迁移后再做行为验收（本层没有执行测试）：
+`test_default_reply.py`、`test_message_markdown_memory.py`、`test_plugin_hot_reload.py`、
+`test_akasha_message_plugin.py`、`test_agent_restart_tool.py`、`test_wake_messages.py`、
+`test_prompt_materials.py`、`test_standard_tools.py`、`test_plugin_business_validation.py`、
+`test_message_compaction_records.py`、`test_runtime_inspection_plugin.py`。
+迁移历史与备份合同中的旧 TOML 样本应保留，不应批量替换。源码模式的非空旧 plugin-data 同样
+需要显式配置；仅正式安装的空目录会初始化固定输入，启动不承担格式写入或升级。

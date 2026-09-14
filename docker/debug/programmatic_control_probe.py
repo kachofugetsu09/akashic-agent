@@ -4559,12 +4559,10 @@ bot_uin = ""
 
 """
     (sandbox / "config.toml").write_text(config, encoding="utf-8")
-    reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
-    reply_config.parent.mkdir(parents=True, exist_ok=True)
-    reply_config.write_text(f"max_steps = {max_iterations}\n", encoding="utf-8")
-    compaction_config = sandbox / "workspace/plugin-data/compaction-builtin/config.local.toml"
-    compaction_config.parent.mkdir(parents=True, exist_ok=True)
-    compaction_config.write_text("keep_recent_tokens = 20000\n", encoding="utf-8")
+    from agent.plugin_composition.config_input import save_config
+
+    save_config(sandbox / "workspace/plugin-data/reply-builtin", {"max_steps": max_iterations})
+    save_config(sandbox / "workspace/plugin-data/compaction-builtin", {"keep_recent_tokens": 20000})
 
 
 def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:

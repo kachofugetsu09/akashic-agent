@@ -35,7 +35,6 @@ async def apply(ctx: Context) -> None:
             ),
             factory_export="build_telegram_channel",
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            credential_paths=("token",),
         ),
     )
 

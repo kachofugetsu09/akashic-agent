@@ -487,30 +487,19 @@ def _write_bootstrap_config(
     """Create neutral Core config and installed client plugin config."""
 
     path = workspace / "external-acceptance-config.toml"
-    context_data = workspace / "plugin-data" / f"context-{marketplace}" / "config.local.toml"
-    context_data.parent.mkdir(parents=True, exist_ok=True)
-    context_data.write_text(
-        "prompt_sources = {{default_prompt = \"prompt@{marketplace}\", "
-        "markdown_memory = \"markdown_memory@{marketplace}\", "
-        "skills = \"standard_tools@{marketplace}\"}}\n"
-        "summary_source = [\"compaction\", \"compaction@{marketplace}\"]\n".format(
-            marketplace=marketplace,
-        ),
-        encoding="utf-8",
-    )
-    client_data = workspace / "plugin-data" / f"akashic_clients-{marketplace}" / "config.local.toml"
-    client_data.parent.mkdir(parents=True, exist_ok=True)
-    client_data.write_text(
-        "enabled = true\n"
-        "\n"
-        "[web]\n"
-        "enabled = true\n"
-        "socket_path = \"\"\n"
-        "\n"
-        "[mobile_realtime]\n"
-        "enabled = false\n",
-        encoding="utf-8",
-    )
+    from agent.plugin_composition.config_input import save_config
+
+    context_data = workspace / "plugin-data" / f"context-{marketplace}"
+    save_config(context_data, {
+        "prompt_sources": {"default_prompt": f"prompt@{marketplace}",
+                           "markdown_memory": f"markdown_memory@{marketplace}",
+                           "skills": f"standard_tools@{marketplace}"},
+        "summary_source": ["compaction", f"compaction@{marketplace}"],
+    })
+    save_config(workspace / "plugin-data" / f"akashic_clients-{marketplace}", {
+        "enabled": True, "web": {"enabled": True, "socket_path": ""},
+        "mobile_realtime": {"enabled": False},
+    })
     path.write_text(
         _BOOTSTRAP_CONFIG.format(workspace=repr(str(workspace))),
         encoding="utf-8",

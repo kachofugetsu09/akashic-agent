@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
-import tempfile
+import sys
+import tomllib
+
+from agent.plugin_composition.config_input import save_config, upgrade_config
 from pathlib import Path
 
 import click
@@ -17,6 +18,12 @@ def main() -> None:
     """Collect the current QQ channel schema and publish its config file."""
 
     config_path = _config_path()
+    if sys.argv[1:] == ["--upgrade"]:
+        backup = upgrade_config(config_path.parent, lambda content: _upgrade(content, config_path.parent))
+        click.echo(f"配置已升级；恢复点：{backup}")
+        return
+    if sys.argv[1:]:
+        raise ValueError("只接受 --upgrade 或无参数的交互配置")
     click.echo(click.style("\n[QQ 频道]\n", bold=True))
     _hint("当前 QQ channel 使用 NapCat/NcatBot；配置由该插件保存和校验。")
     if not click.confirm("配置 QQ 频道？", default=False):
@@ -76,34 +83,15 @@ def _write_config(
 ) -> None:
     """Write one complete plugin-owned config with a recoverable backup."""
 
-    content = "\n".join(
-        [
-            f"enabled = {str(enabled).lower()}",
-            f"bot_uin = {json.dumps(bot_uin, ensure_ascii=False)}",
-            f"allow_from = {json.dumps(list(allow_from), ensure_ascii=False)}",
-            f"websocket_open_timeout_seconds = {timeout_seconds!r}",
-            "",
-        ]
-    )
-    _atomic_write(path, content)
+    save_config(path.parent, {
+        "enabled": enabled, "bot_uin": bot_uin, "allow_from": list(allow_from),
+        "websocket_open_timeout_seconds": timeout_seconds,
+    })
     click.echo(click.style(f"  ✓ {path} 已生成", fg="green"))
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        shutil.copy2(path, path.with_name(f"{path.name}.before-setup.bak"))
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temp_name, 0o600)
-        os.replace(temp_name, path)
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
+def _upgrade(content: bytes, data_dir: Path) -> dict[str, object]:
+    return tomllib.loads(content.decode("utf-8"))
 
 
 if __name__ == "__main__":

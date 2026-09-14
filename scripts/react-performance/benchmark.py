@@ -85,14 +85,10 @@ def extras(mode):
                     "LOG_PATH", repr(str(sources.parent / "embedding-calls.txt"))
                 ).replace("EMBEDDING_AVAILABLE", "True")
             )
-            settings = (
-                sources.parent
-                / "workspace/plugin-data/context-builtin/config.local.toml"
-            )
-            settings.parent.mkdir(parents=True, exist_ok=True)
-            settings.write_text(
-                '[prompt_sources]\nmarkdown_memory = "markdown_memory"\n'
-            )
+            from agent.plugin_composition.config_input import save_config
+            save_config(sources.parent / "workspace/plugin-data/context-builtin", {
+                "prompt_sources": {"markdown_memory": "markdown_memory"},
+            })
         p = sources / "test_provider/plugin.py"
         text = p.read_text()
         start = text.index("    class Driver:")

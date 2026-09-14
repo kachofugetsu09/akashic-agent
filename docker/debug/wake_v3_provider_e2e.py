@@ -915,27 +915,20 @@ async def _configure_selected_model(manager: PluginManager) -> None:
 def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
     """Write only isolated plugin-local configuration needed by the fixture chain."""
 
+    from agent.plugin_composition.config_input import save_config, save_credential
+
     wake = workspace / "plugin-data" / "wake-builtin"
     context = workspace / "plugin-data" / "context-builtin"
     recording = workspace / "plugin-data" / "recording_channel-builtin"
     wake.mkdir(parents=True)
     context.mkdir(parents=True)
     recording.mkdir(parents=True)
-    _ = (context / "config.local.toml").write_text(
-        'prompt_sources = {skills = "standard_tools"}\n',
-        encoding="utf-8",
-    )
-    _ = (wake / "config.local.toml").write_text(
-        '[delivery]\nchannel = "recording"\n'
-        'recipient = "fixture-recipient"\n'
-        'session_id = "wake-provider-e2e"\n',
-        encoding="utf-8",
-    )
-    escaped = str(receipt_db).replace("\\", "\\\\").replace('"', '\\"')
-    _ = (recording / "config.local.toml").write_text(
-        f'receipt_db = "{escaped}"\ntoken = "isolated-fixture-token"\n',
-        encoding="utf-8",
-    )
+    save_config(context, {"prompt_sources": {"skills": "standard_tools"}})
+    save_config(wake, {"delivery": {"channel": "recording", "recipient": "fixture-recipient",
+                                    "session_id": "wake-provider-e2e"}})
+    save_config(recording, {"receipt_db": str(receipt_db),
+                            "token": save_credential(recording, "isolated-fixture-token")})
+
 
 
 async def _eventually(

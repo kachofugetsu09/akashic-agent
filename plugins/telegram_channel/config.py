@@ -6,7 +6,7 @@ from agent.plugin_composition import CredentialRef
 
 
 class TelegramChannelConfig(BaseModel):
-    """Validate the redacted Telegram channel configuration."""
+    """校验固定输入中的 Telegram 配置和凭据引用。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

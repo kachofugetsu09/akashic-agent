@@ -159,12 +159,10 @@ bot_uin = ""
     path = sandbox / "config.toml"
     path.write_text(config, encoding="utf-8")
     path.chmod(0o600)
-    reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
-    reply_config.parent.mkdir(parents=True, exist_ok=True)
-    reply_config.write_text("max_steps = 4\n", encoding="utf-8")
-    compaction_config = sandbox / "workspace/plugin-data/compaction-builtin/config.local.toml"
-    compaction_config.parent.mkdir(parents=True, exist_ok=True)
-    compaction_config.write_text("keep_recent_tokens = 20000\n", encoding="utf-8")
+    from agent.plugin_composition.config_input import save_config
+
+    save_config(sandbox / "workspace/plugin-data/reply-builtin", {"max_steps": 4})
+    save_config(sandbox / "workspace/plugin-data/compaction-builtin", {"keep_recent_tokens": 20000})
 
 
 def _embedding_environment() -> tuple[str, str, str]:

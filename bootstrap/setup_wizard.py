@@ -6,9 +6,11 @@ python main.py setup
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -137,7 +139,7 @@ def _run_plugin_setups(workspace: Path) -> None:
                 "AKASHIC_PLUGIN_ROOT": str(code_root),
                 "AKASHIC_PLUGIN_ID": f"{manifest.name}@{marketplace}",
                 "AKASHIC_PLUGIN_DATA_DIR": str(data_dir),
-                "AKASHIC_SETUP_CONFIG_PATH": str(data_dir / "config.local.toml"),
+                "AKASHIC_SETUP_CONFIG_PATH": str(data_dir / "config.input.json"),
                 "AKASHIC_SETUP_WORKSPACE": str(
                     workspace.expanduser().resolve(strict=False)
                 ),
@@ -148,9 +150,17 @@ def _run_plugin_setups(workspace: Path) -> None:
             result = subprocess.run(
                 [
                     str(interpreter),
-                    "-E",
-                    "-s",
+                    "-I",
                     "-B",
+                    "-c",
+                    # 配置程序使用安装依赖，同时共享正在运行的宿主 SDK。
+                    "import json, runpy, sys; "
+                    "sys.path.extend(json.loads(sys.argv[1])); "
+                    "import agent.plugin_composition.config_input; "
+                    "program = sys.argv[2]; "
+                    "sys.path.insert(0, str(__import__('pathlib').Path(program).parent)); "
+                    "sys.argv = [program]; runpy.run_path(program, run_name='__main__')",
+                    json.dumps([str(Path(path).resolve()) for path in sys.path if path]),
                     str(code_root / "configure.py"),
                 ],
                 cwd=code_root,

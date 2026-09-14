@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
-import tempfile
+import sys
+import tomllib
+
+from agent.plugin_composition.config_input import save_config, save_credential, upgrade_config
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,12 @@ def main() -> None:
     """Collect Telegram credentials and publish this plugin's config file."""
 
     config_path = _config_path()
+    if sys.argv[1:] == ["--upgrade"]:
+        backup = upgrade_config(config_path.parent, lambda content: _upgrade(content, config_path.parent))
+        click.echo(f"配置已升级；恢复点：{backup}")
+        return
+    if sys.argv[1:]:
+        raise ValueError("只接受 --upgrade 或无参数的交互配置")
     click.echo(click.style("\n[Telegram 频道]\n", bold=True))
     if not click.confirm("配置 Telegram 频道？", default=True):
         _write_config(config_path, enabled=False, token="", allow_from=())
@@ -76,14 +83,11 @@ def _validate_token(token: str) -> str | None:
             return None
         if response.status_code == 409:
             return "bot 已绑定 webhook，请先调用 deleteWebhook 删除"
-        description = (
-            data.get("description", response.status_code)
-            if isinstance(data, dict)
-            else response.status_code
-        )
-        return f"token 无效（{description}）"
-    except Exception as error:
-        return f"网络错误：{error}"
+        return f"token 校验失败（HTTP {response.status_code}）"
+    except httpx.HTTPError as error:
+        return f"网络错误：{type(error).__name__}"
+    except ValueError:
+        return "服务端返回了无效 JSON"
 
 
 def _write_config(
@@ -95,29 +99,21 @@ def _write_config(
 ) -> None:
     """Write one complete plugin-owned config with a recoverable backup."""
 
-    lines = [f"enabled = {str(enabled).lower()}"]
+    values = {"enabled": enabled, "allow_from": list(allow_from)}
     if token:
-        lines.append(f"token = {json.dumps(token, ensure_ascii=False)}")
-    lines.append(f"allow_from = {json.dumps(list(allow_from), ensure_ascii=False)}")
-    _atomic_write(path, "\n".join(lines) + "\n")
+        values["token"] = save_credential(path.parent, token)
+    save_config(path.parent, values)
     click.echo(click.style(f"  ✓ {path} 已生成", fg="green"))
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        shutil.copy2(path, path.with_name(f"{path.name}.before-setup.bak"))
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temp_name, 0o600)
-        os.replace(temp_name, path)
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
+def _upgrade(content: bytes, data_dir: Path) -> dict[str, object]:
+    values = tomllib.loads(content.decode("utf-8"))
+    token = values.pop("token", None)
+    if token is not None and not isinstance(token, str):
+        raise ValueError("token 必须是字符串")
+    if token:
+        values["token"] = save_credential(data_dir, token)
+    return values
 
 
 if __name__ == "__main__":

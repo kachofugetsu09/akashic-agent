@@ -16,13 +16,10 @@ from typing import cast
 STATIC_MANIFEST_FILENAME = "akashic.plugin.toml"
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-_CONFIG_KEY = re.compile(r"^[a-z][A-Za-z0-9_-]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _TOP_LEVEL_KEYS = frozenset(
     {
         "validation",
-        "channel_credentials",
-        "credential_paths",
     }
 )
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?")
@@ -45,16 +42,7 @@ class StaticPluginManifest:
     api_version: int
     python: tuple[StaticPythonRuntime, ...]
     exclude_data_paths: tuple[str, ...]
-    channel_credentials: tuple[tuple[str, tuple[str, ...]], ...]
     identity_digest: str
-    credential_paths: tuple[str, ...] = ()
-
-    @property
-    def all_credential_paths(self) -> tuple[str, ...]:
-        """完整脱敏范围；渠道仍保留各自更窄的凭据授权。"""
-        return tuple(sorted(set(self.credential_paths) | {
-            path for _channel, paths in self.channel_credentials for path in paths
-        }))
 
     @property
     def requirements(self) -> tuple[str, ...]:
@@ -188,12 +176,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     python = _python_runtimes(root)
     exclude_data_paths = _validation_paths(root, raw.get("validation", {}))
 
-    # 3. Optional declarations are checked statically and kept immutable.
-    channel_credentials = _channel_credentials(raw.get("channel_credentials", {}))
-    credential_paths = _credential_paths(raw.get("credential_paths", []), "credential_paths")
-    _check_credential_overlap(set(credential_paths) | {
-        path for _channel, paths in channel_credentials for path in paths
-    }, "credential_paths/channel_credentials")
     identity: dict[str, object] = {
         "name": name,
         "version": version,
@@ -206,14 +188,7 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
             for item in python
         ],
         "exclude_data_paths": list(exclude_data_paths),
-        "channel_credentials": [
-            {"channel": channel, "paths": list(paths)}
-            for channel, paths in channel_credentials
-        ],
     }
-    # 策略仍参与固定安装输入的身份。
-    if credential_paths:
-        identity["credential_paths"] = list(credential_paths)
     identity_digest = hashlib.sha256(
         json.dumps(
             identity,
@@ -228,45 +203,8 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         api_version=api_version,
         python=python,
         exclude_data_paths=exclude_data_paths,
-        channel_credentials=channel_credentials,
         identity_digest=identity_digest,
-        credential_paths=credential_paths,
     )
-
-
-def _channel_credentials(
-    raw: object,
-) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Validate import-free channel credential paths from the artifact manifest."""
-
-    # 1. Each channel owns one sorted set of dotted config paths.
-    table = _table(raw, "channel_credentials")
-    result: list[tuple[str, tuple[str, ...]]] = []
-    for channel, paths in sorted(table.items()):
-        name = _name(channel, f"channel_credentials.{channel}")
-        result.append((name, _credential_paths(paths, f"channel_credentials.{name}")))
-
-    # 3. Two channels may reuse one exact credential, but not overlapping paths.
-    all_paths = {path for _channel, paths in result for path in paths}
-    _check_credential_overlap(all_paths, "channel_credentials 跨 channel")
-    return tuple(result)
-
-
-def _credential_paths(raw: object, label: str) -> tuple[str, ...]:
-    """在静态文件边界校验凭据路径，防止脱敏依赖处理顺序。"""
-    values = _string_list(raw, label)
-    for value in values:
-        if any(_CONFIG_KEY.fullmatch(part) is None for part in value.split(".")):
-            raise ValueError(f"{label} 包含无效 config path: {value}")
-    _check_credential_overlap(set(values), label)
-    return tuple(sorted(values))
-
-
-def _check_credential_overlap(paths: set[str], label: str) -> None:
-    for value in paths:
-        parts = value.split(".")
-        if any(".".join(parts[:index]) in paths for index in range(1, len(parts))):
-            raise ValueError(f"{label} 路径重叠: {value}")
 
 
 def _python_runtimes(root: Path) -> tuple[StaticPythonRuntime, ...]:

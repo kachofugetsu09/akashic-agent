@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.manifest import load_plugin_manifest
 from agent.plugins.source_resolver import resolve_plugin_sources
@@ -114,13 +116,12 @@ def _write_material_config(workspace: Path, marketplace: str) -> None:
 
     data_path = workspace / "plugin-data" / f"context-{marketplace}"
     data_path.mkdir(parents=True, exist_ok=True)
-    (data_path / "config.local.toml").write_text(
-        f"prompt_sources = {{default_prompt = \"prompt@{marketplace}\", "
-        f"markdown_memory = \"markdown_memory@{marketplace}\", "
-        f"skills = \"standard_tools@{marketplace}\"}}\n"
-        f"summary_source = [\"compaction\", \"compaction@{marketplace}\"]\n",
-        encoding="utf-8",
-    )
+    save_config(data_path, {
+        "prompt_sources": {"default_prompt": f"prompt@{marketplace}",
+                           "markdown_memory": f"markdown_memory@{marketplace}",
+                           "skills": f"standard_tools@{marketplace}"},
+        "summary_source": ["compaction", f"compaction@{marketplace}"],
+    })
 
 
 def _initialize_persona(

@@ -115,8 +115,7 @@ def _context(
         generation_id="generation-1",
         boot_id="test-boot",
         binding_token="binding-1",
-        config=config,
-        credentials=credentials or {},
+        config={**config, **(credentials or {})},
         provider_client_factory=provider,
         ingress=ingress,
         identity=_Identity(),
@@ -677,6 +676,7 @@ def separate_qq_generation():
     """用正式 fresh importer 创建另一份插件模块，不能共享业务模块里的锁。"""
     import importlib.util
     from pathlib import Path
+from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
     from agent.plugins.importer import FreshPluginImporter
 
     name = "fixture_qq_external_generation"
@@ -841,7 +841,7 @@ def test_channel_config_migration_resumes_before_removing_old_input(tmp_path, mo
     )
     config.write_text(source)
     workspace = tmp_path / "workspace"
-    qq = workspace_plugin_data_dir(workspace, "qq_channel", "external") / "config.local.toml"
+    qq = workspace_plugin_data_dir(workspace, "qq_channel", "external") / CONFIG_INPUT
     replace = migration.os.replace
     def fail_second(source_path, destination):
         if destination == qq:
@@ -857,17 +857,17 @@ def test_channel_config_migration_resumes_before_removing_old_input(tmp_path, mo
     assert migration.migrate_legacy_channels(config, workspace, marketplace="external") == (
         "telegram_channel", "qq_channel",
     )
-    assert tomllib.loads(qq.read_text())["bot_uin"] == "9001"
-    telegram = workspace_plugin_data_dir(workspace, "telegram_channel", "external") / "config.local.toml"
-    assert tomllib.loads(telegram.read_text())["token"] == "fixture-token"
-    telegram_sender = workspace_plugin_data_dir(workspace, "telegram_sender", "external") / "config.local.toml"
-    assert tomllib.loads(telegram_sender.read_text()) == {
-        "enabled": True,
-        "channel": "telegram",
-        "token": "fixture-token",
-    }
-    qq_sender = workspace_plugin_data_dir(workspace, "qq_sender", "external") / "config.local.toml"
-    assert tomllib.loads(qq_sender.read_text()) == {
+    assert load_config(qq.parent)[0]["bot_uin"] == "9001"
+    telegram = workspace_plugin_data_dir(workspace, "telegram_channel", "external") / CONFIG_INPUT
+    assert isinstance(load_config(telegram.parent)[0]["token"], CredentialRef)
+    assert "fixture-token" not in telegram.read_text()
+    telegram_sender = workspace_plugin_data_dir(workspace, "telegram_sender", "external") / CONFIG_INPUT
+    sender_values, _ = load_config(telegram_sender.parent)
+    assert sender_values["enabled"] is True
+    assert sender_values["channel"] == "telegram"
+    assert isinstance(sender_values["token"], CredentialRef)
+    qq_sender = workspace_plugin_data_dir(workspace, "qq_sender", "external") / CONFIG_INPUT
+    assert load_config(qq_sender.parent)[0] == {
         "enabled": True,
         "channel": "qq",
         "endpoint": "ws://127.0.0.1:3001/api",

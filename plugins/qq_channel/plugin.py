@@ -33,7 +33,6 @@ async def apply(ctx: Context) -> None:
             capabilities=frozenset({ChannelCapability.INBOUND, ChannelCapability.OUTBOUND}),
             factory_export="build_qq_channel",
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            credential_paths=(),
         ),
     )
 

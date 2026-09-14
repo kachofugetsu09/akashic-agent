@@ -59,7 +59,7 @@ async def apply(ctx):
         declaration_context = child_ctx
         await child_ctx.require(CHANNELS).register(child_ctx, ChannelDefinition(
             name="request-test", capabilities=frozenset({ChannelCapability.INBOUND, ChannelCapability.OUTBOUND}),
-            factory_export="build_channel", inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID, credential_paths=()))
+            factory_export="build_channel", inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID))
     await ctx.mount(child, name="listener", inject=(CHANNELS,))
 '''
 

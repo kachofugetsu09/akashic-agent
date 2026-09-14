@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import tomllib
+import hashlib
+import json
+
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from agent.plugin_composition.channels import CredentialRef, ProviderClient
-from agent.plugins.config import read_config_source
+from agent.plugin_composition.config_input import config_refs, load_config, _credential_path
 
 
 class CoreProviderClient:
@@ -31,16 +33,16 @@ class CoreProviderClient:
 
 
 class CoreProviderClientFactory:
-    """按已冻结配置读取声明的凭据，统一拥有 Channel 与普通插件的租约。"""
+    """只解析固定输入授予的引用，统一拥有 Channel 与普通插件的租约。"""
 
     def __init__(
         self,
-        config_path: Path,
-        credential_paths: tuple[str, ...],
+        data_dir: Path,
+        config: Mapping[str, object],
         raw_config_revision: str,
     ) -> None:
-        self._config_path = config_path
-        self._allowed = frozenset(tuple(path.split(".")) for path in credential_paths)
+        self._data_dir = data_dir
+        self._allowed = config_refs(config)
         self._raw_config_revision = raw_config_revision
         self._clients: set[CoreProviderClient] = set()
         self._closed = False
@@ -53,19 +55,16 @@ class CoreProviderClientFactory:
 
         if self._closed:
             raise RuntimeError("provider client factory 已关闭")
-        content, revision = read_config_source(self._config_path)
+        _, revision = load_config(self._data_dir)
         if revision != self._raw_config_revision:
             raise RuntimeError("plugin credential config revision 已漂移")
-        raw = {} if content is None else tomllib.loads(content.decode("utf-8"))
         values: dict[tuple[str, ...], str] = {}
         for name, ref in credentials.items():
             if not isinstance(name, str) or not isinstance(ref, CredentialRef):
                 raise TypeError("credentials 必须映射到 CredentialRef")
-            if ref.path not in self._allowed or tuple(name.split(".")) != ref.path:
-                raise RuntimeError("CredentialRef 不属于 frozen plugin 声明")
-            value = _resolve_path(raw, ref.path)
-            if not isinstance(value, str) or not value:
-                raise RuntimeError(f"plugin credential 必须是非空字符串: {name}")
+            if ref not in self._allowed:
+                raise RuntimeError("CredentialRef 不属于 frozen plugin 输入")
+            value = _read_credential(self._data_dir, ref)
             values[ref.path] = value
         client = CoreProviderClient(values, self._clients.discard)
         self._clients.add(client)
@@ -80,13 +79,23 @@ class CoreProviderClientFactory:
         self._closed = True
 
 
-def _resolve_path(value: object, path: tuple[str, ...]) -> object:
-    current = value
-    for segment in path:
-        if not isinstance(current, Mapping) or segment not in current:
-            raise RuntimeError(f"plugin credential 不存在: {'.'.join(path)}")
-        current = current[segment]
-    return current
+def _read_credential(data_dir: Path, ref: CredentialRef) -> str:
+    """只供已授权租约读取指定版本，损坏或撤销明确失败。"""
+    path = _credential_path(data_dir, ref)
+    revoked = path.with_suffix(".revoked")
+    if revoked.exists() or revoked.is_symlink():
+        raise PermissionError("凭据版本已撤销")
+    if path.is_symlink() or path.stat().st_mode & 0o077:
+        raise PermissionError("凭据必须是权限 0600 的实际文件")
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != ref.path[1]:
+        raise RuntimeError("凭据固定版本内容已漂移")
+    raw = json.loads(content)
+    if (not isinstance(raw, dict) or set(raw) != {"owner", "id", "value"}
+            or raw["owner"] != data_dir.name or raw["id"] != ref.path[0]
+            or not isinstance(raw["value"], str) or not raw["value"]):
+        raise ValueError("凭据版本 owner 或内容无效")
+    return raw["value"]
 
 
 __all__ = ["CoreProviderClientFactory"]

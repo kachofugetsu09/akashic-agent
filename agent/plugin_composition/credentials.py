@@ -20,7 +20,7 @@ class CredentialClients:
         if self._factories is None:
             raise RuntimeError("candidate 验证期禁止读取正式凭据")
         if owner not in self._factories:
-            raise PermissionError("插件没有声明凭据读取范围")
+            raise PermissionError("插件没有当前固定输入的凭据授权")
         client = await self._factories[owner].create(refs)
         try:
             yield client

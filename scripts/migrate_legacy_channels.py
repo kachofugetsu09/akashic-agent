@@ -9,6 +9,8 @@ recoverable config backup, and removes the old tables from the source config.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import tomllib
 import math
 import os
 import re
@@ -21,6 +23,9 @@ from urllib.parse import urlsplit
 import tomlkit
 
 from agent.plugins.manifest import ensure_workspace_plugin_data_dir, workspace_plugin_data_dir
+from agent.plugin_composition.channels import CredentialRef
+from agent.plugin_composition.config_input import load_config, save_config, save_credential
+from agent.plugins.channel_credentials import CoreProviderClientFactory
 
 
 class MigrationConflict(RuntimeError):
@@ -65,43 +70,55 @@ def migrate_legacy_channels(config_path: Path, workspace: Path, *, marketplace: 
         )
     if not targets:
         raise ValueError("legacy channels.telegram/qq 必须是 TOML table")
+    outputs: list[tuple[Path, dict[str, Any]]] = []
     for plugin_name, content in targets:
-        target = workspace_plugin_data_dir(workspace, plugin_name, marketplace) / "config.local.toml"
-        if target.exists() and target.read_text(encoding="utf-8") != content:
-            raise MigrationConflict(f"插件配置已存在，拒绝覆盖: {target}")
+        directory = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
+        values = tomllib.loads(content)
+        current, revision = load_config(directory)
+        if current:
+            if not asyncio.run(_matches_config(directory, current, revision, values)):
+                raise MigrationConflict(f"插件配置已存在，拒绝覆盖: {directory}")
+            continue
+        outputs.append((directory, values))
     backup = config_path.with_name(config_path.name + ".before-channel-plugin-migration.bak")
     if backup.exists() and backup.read_text(encoding="utf-8") != source:
         raise MigrationConflict(f"配置恢复点与本次输入不同，拒绝覆盖: {backup}")
 
-    # 1. Validate and stage all plugin outputs before changing the source config.
-    staged: list[tuple[Path, Path]] = []
-    try:
-        for plugin_name, content in targets:
-            directory = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
-            ensure_workspace_plugin_data_dir(directory, workspace)
-            fd, temporary = tempfile.mkstemp(prefix=".channel-migration.", dir=directory)
-            temp_path = Path(temporary)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(temp_path, 0o600)
-            staged.append((temp_path, directory / "config.local.toml"))
-
-        # 2. Keep a named source recovery point before removing legacy owner data.
-        if not backup.exists():
-            shutil.copy2(config_path, backup)
-        # 先发布全部目标，最后移除旧入口；中断后同内容目标允许安全续做。
-        for temporary, target in staged:
-            os.replace(temporary, target)
-        channels.pop("telegram", None)
-        channels.pop("qq", None)
-        _atomic_write(config_path, tomlkit.dumps(document), mode=config_path.stat().st_mode & 0o777)
-    except BaseException:
-        for temporary, _target in staged:
-            temporary.unlink(missing_ok=True)
-        raise
+    # 1. 原输入先完整备份；部分目标已发布时保留它们供同输入重试。
+    if not backup.exists():
+        shutil.copy2(config_path, backup)
+        os.chmod(backup, 0o600)
+        with backup.open("rb") as stream:
+            os.fsync(stream.fileno())
+    # 2. 此命令拥有旧渠道字段，Core writer 只接收无明文的固定映射。
+    for directory, values in outputs:
+        ensure_workspace_plugin_data_dir(directory, workspace)
+        token = values.pop("token", None)
+        if token:
+            values["token"] = save_credential(directory, token)
+        save_config(directory, values)
+    # 3. 所有新 owner 可读后才移除旧主配置入口；恢复点始终保留。
+    if config_path.read_text(encoding="utf-8") != source:
+        raise MigrationConflict("迁移期间主配置变化；已发布目标和恢复点保留")
+    channels.pop("telegram", None)
+    channels.pop("qq", None)
+    _atomic_write(config_path, tomlkit.dumps(document), mode=config_path.stat().st_mode & 0o777)
     return tuple(migrated_channels)
+
+
+async def _matches_config(directory: Path, current: dict[str, object], revision: str,
+                          expected: dict[str, Any]) -> bool:
+    """通过同一个授权 factory 核对本命令已发布的目标，允许失败后重试。"""
+    values = dict(current)
+    ref = values.get("token")
+    factory = CoreProviderClientFactory(directory, current, revision)
+    try:
+        if isinstance(ref, CredentialRef):
+            client = await factory.create({"token": ref})
+            values["token"] = client.credential(ref)
+        return values == expected
+    finally:
+        await factory.aclose()
 
 
 def _render_telegram(table: Mapping[str, Any], workspace: Path) -> str:

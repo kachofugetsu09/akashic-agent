@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent.plugin_composition.config_input import load_config
+
 import asyncio
 import json
 import shutil
@@ -233,13 +235,12 @@ def test_external_acceptance_rejects_nonempty_runtime_directory(tmp_path: Path) 
 def test_bootstrap_workspace_seeds_legal_context_material_grants(tmp_path: Path) -> None:
     _write_bootstrap_config(tmp_path, marketplace="acceptance")
 
-    config = (tmp_path / "plugin-data/context-acceptance/config.local.toml").read_text(
-        encoding="utf-8"
-    )
-    assert 'default_prompt = "prompt@acceptance"' in config
-    assert 'markdown_memory = "markdown_memory@acceptance"' in config
-    assert 'skills = "standard_tools@acceptance"' in config
-    assert 'summary_source = ["compaction", "compaction@acceptance"]' in config
+    config = load_config(tmp_path / "plugin-data/context-acceptance")[0]
+    assert config == {"prompt_sources": {"default_prompt": "prompt@acceptance",
+                                        "markdown_memory": "markdown_memory@acceptance",
+                                        "skills": "standard_tools@acceptance"},
+                      "summary_source": ["compaction", "compaction@acceptance"]}
+
 
 
 def test_capability_enumeration_does_not_count_as_call() -> None:

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.control.client import ControlClient
 from agent.plugins.manifest import builtin_plugin_data_dir
-from plugins.akasha.config import load_akasha_config
+from plugins.akasha.config import AkashaConfig
 from plugins.akasha.inspector import AkashaInspectorReader
 
 
@@ -236,9 +236,13 @@ def _akasha_events(workspace: Path, session_key: str) -> list[dict[str, object]]
 
     # 1. Resolve the same plugin-owned configuration and sidecars as runtime.
     data_root = builtin_plugin_data_dir("akasha", workspace)
+    from agent.plugin_composition.config_input import load_config
+
+    config = AkashaConfig(**load_config(data_root)[0])
+    config.validate()
     reader = AkashaInspectorReader(
         memory_root=workspace / "memory",
-        config=load_akasha_config(data_root / "config.local.toml"),
+        config=config,
     )
 
     # 2. Return the complete bounded probe session, failing on invalid sidecars.

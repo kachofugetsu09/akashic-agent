@@ -500,10 +500,9 @@ async def _run_coexistence_probe(
         workspace = root / "workspace"
         data_root = workspace / "plugin-data" / f"{plugin_id}-builtin"
         data_root.mkdir(parents=True)
-        _ = (data_root / "config.local.toml").write_text(
-            config_toml,
-            encoding="utf-8",
-        )
+        from agent.plugin_composition.config_input import save_config
+
+        save_config(data_root, tomllib.loads(config_toml))
         content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         baseline = PluginManager(
             plugin_dirs=[content_dir],

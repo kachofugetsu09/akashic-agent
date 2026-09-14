@@ -1,4 +1,0 @@
-credential_paths = ["token"]
-
-[validation]
-exclude_data_paths = ["config.local.toml"]

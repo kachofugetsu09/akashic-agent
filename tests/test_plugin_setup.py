@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
+from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manifest import set_plugin_enabled
 from agent.plugins.source_resolver import ResolvedPluginSource
@@ -24,11 +25,10 @@ def _write_plugin(root: Path) -> None:
         "from pathlib import Path\n"
         "import os\n"
         "import sys\n"
-        "Path(os.environ['AKASHIC_SETUP_CONFIG_PATH']).write_text(\n"
-        "    os.environ['AKASHIC_PLUGIN_ID'] + '\\n' + sys.prefix + '\\n' +\n"
-        "    os.environ['AKASHIC_SETUP_WORKSPACE'],\n"
-        "    encoding='utf-8',\n"
-        ")\n",
+        "from agent.plugin_composition.config_input import save_config\n"
+        "save_config(Path(os.environ['AKASHIC_PLUGIN_DATA_DIR']), {'lines': [\n"
+        "    os.environ['AKASHIC_PLUGIN_ID'], sys.prefix,\n"
+        "    os.environ['AKASHIC_SETUP_WORKSPACE']]})\n",
         encoding="utf-8",
     )
 
@@ -152,8 +152,8 @@ def test_setup_runner_passes_plugin_data_boundary(tmp_path: Path, monkeypatch) -
 
     setup_wizard._run_plugin_setups(workspace)
 
-    config = workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
-    lines = config.read_text(encoding="utf-8").splitlines()
+    config = workspace / "plugin-data" / "fixture_setup-lab" / CONFIG_INPUT
+    lines = load_config(config.parent)[0]["lines"]
     assert lines[0] == "fixture_setup@lab"
     assert lines[2] == str(workspace.resolve())
     record = python_environments.archive.read_descriptor(environment_ref)
@@ -190,8 +190,8 @@ def test_setup_runner_reads_formal_install_artifact(
 
     setup_wizard._run_plugin_setups(workspace)
 
-    config = workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
-    lines = config.read_text(encoding="utf-8").splitlines()
+    config = workspace / "plugin-data" / "fixture_setup-lab" / CONFIG_INPUT
+    lines = load_config(config.parent)[0]["lines"]
     assert lines[0] == "fixture_setup@lab"
     assert lines[2] == str(workspace.resolve())
 
@@ -224,9 +224,7 @@ def test_setup_runner_skips_disabled_installed_plugin(
     monkeypatch.setattr(setup_wizard.subprocess, "run", unexpected_setup)
     setup_wizard._run_plugin_setups(workspace)
 
-    assert not (
-        workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
-    ).exists()
+    assert load_config(workspace / "plugin-data" / "fixture_setup-lab")[0] == {}
 
 
 def test_setup_runner_rejects_checkout_plugin_source(

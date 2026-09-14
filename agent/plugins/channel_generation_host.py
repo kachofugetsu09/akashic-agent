@@ -42,7 +42,6 @@ from agent.plugin_composition.channels import (
     ChannelRuntimePorts,
     CommittedChannelCatalog,
     CoreChannelDefinition,
-    CredentialRef,
     ControlReceipt,
     ControlResponseBodies,
     DeliveryStatus,
@@ -225,7 +224,6 @@ class _ChannelBindingState:
     provider_client_factory: ProviderClientFactory
     binding_token: str
     config: Mapping[str, object]
-    credential_paths: tuple[str, ...]
     factory_context: ChannelFactoryContext | None
     factory_export: str
     source_revision: str
@@ -2278,7 +2276,6 @@ class ChannelGenerationHost:
             provider_client_factory=provider_client_factory,
             binding_token=binding_token,
             config=config,
-            credential_paths=descriptor.credential_paths,
             factory_context=None,
             factory_export=descriptor.factory_export,
             source_revision=source_revision,
@@ -2324,7 +2321,6 @@ class ChannelGenerationHost:
                 state.factory_export,
             )
             state.factory = factory
-        credentials = _resolve_credentials(state.config, state.credential_paths)
         state.control_port = (
             _ChannelControl(self, key)
             if ChannelCapability.CONTROL in state.capabilities
@@ -2341,7 +2337,6 @@ class ChannelGenerationHost:
             boot_id=self._boot_id,
             binding_token=state.binding_token,
             config=state.config,
-            credentials=credentials,
             provider_client_factory=state.provider_client_factory,
             ingress=(
                 _ChannelIngress(self, key)
@@ -2932,7 +2927,6 @@ def _descriptor_digest(descriptor: Any) -> str:
         "inbound_identity": (
             None if descriptor.inbound_identity is None else descriptor.inbound_identity.value
         ),
-        "credential_paths": list(descriptor.credential_paths),
     }
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
@@ -2954,29 +2948,6 @@ def _resolve_sync_factory(module: ModuleType, export: str) -> Callable[[ChannelF
     except (TypeError, ValueError) as error:
         raise TypeError(f"channel factory ABI 必须是 factory(context): {export}") from error
     return cast(Callable[[ChannelFactoryContext], ChannelAdapter], value)
-
-
-def _resolve_credentials(
-    config: Mapping[str, object],
-    paths: tuple[str, ...],
-) -> Mapping[str, CredentialRef]:
-    result: dict[str, CredentialRef] = {}
-    for path in paths:
-        current: object = config
-        found = True
-        for segment in path.split("."):
-            if not isinstance(current, Mapping) or segment not in current:
-                found = False
-                break
-            current = current[segment]
-        if not found:
-            continue
-        if not isinstance(current, CredentialRef):
-            raise RuntimeError(f"channel credential path 未被 redacted: {path}")
-        result[path] = current
-    if paths and not result:
-        raise RuntimeError("channel credential paths 均未出现在正式配置投影")
-    return result
 
 
 def _validate_adapter(adapter: object, channel_name: str) -> None:

@@ -13,6 +13,7 @@ import pytest
 from websockets.asyncio.server import serve
 
 from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.config_input import save_config, save_credential
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -82,10 +83,11 @@ async def application(tmp_path, channel, endpoint):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     workspace = tmp_path / "workspace"
-    config = workspace / f"plugin-data/{channel}_sender-builtin/config.local.toml"
+    config = workspace / f"plugin-data/{channel}_sender-builtin/config.input.json"
     config.parent.mkdir(parents=True)
     field = "api_base" if channel == "telegram" else "endpoint"
-    config.write_text(f'enabled=true\ntoken="wire-fixture-secret"\n{field}="{endpoint}"\ntimeout_seconds=2\n')
+    save_config(config.parent, {"enabled": True, "token": save_credential(config.parent, "wire-fixture-secret"),
+                                field: endpoint, "timeout_seconds": 2})
     log = MessageLog(workspace / "sessions.db")
     artifacts = ArtifactStore(workspace / "sessions.db")
     physical = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=artifacts)
