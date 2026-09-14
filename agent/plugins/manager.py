@@ -59,7 +59,6 @@ from agent.plugin_composition import (
     MCP_SERVERS,
     TIMERS,
     UI_SLOTS,
-    CompositionOverlay,
     CompositionRoot,
     CompositionSnapshotRoot,
     CredentialRef,
@@ -5252,21 +5251,10 @@ class PluginManager:
             force_fresh=force_fresh_composition,
         )
         try:
-            uses_overlay = isinstance(composition_root, CompositionOverlay)
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 catalog_generation=generation,
                 composition_root=composition_root,
-                base_snapshot=(
-                    self.current_snapshot
-                    if candidate_owner is not None and uses_overlay
-                    else None
-                ),
-                replaced_plugin_ids=(
-                    composition_root.replaced_plugin_ids
-                    if uses_overlay
-                    else frozenset()
-                ),
                 core_channel_definitions=self._core_channel_definitions,
                 require_composition_ready=True,
             )
@@ -5615,7 +5603,7 @@ class PluginManager:
         candidate_owner: PluginGeneration | None = None,
         force_fresh: bool = False,
     ) -> tuple[CompositionSnapshotRoot | None, bool]:
-        """复用 stable Root，或为 candidate 挂载一个增量拓扑。"""
+        """同一组合可复用 Root；换代总是重新装配完整独立 Root。"""
 
         # 1. 只有 stable-to-stable 的纯 payload 变化可以复用 Root。
         ordered = tuple(
@@ -5635,16 +5623,6 @@ class PluginManager:
             if current is not None
             else ()
         )
-        stable_root = None if current is None else current.composition_root
-        candidate_plugin_ids: frozenset[str] = (
-            frozenset()
-            if candidate_owner is None
-            else self._candidate_dependency_closure(
-                ordered,
-                stable_root,
-                candidate_owner.plugin_id,
-            )
-        )
         if (
             candidate_owner is None
             and not force_fresh
@@ -5657,7 +5635,7 @@ class PluginManager:
         ):
             return current.composition_root, False
 
-        # 2. stable 拓扑变化创建完整 Root；candidate Root 挂载闭包。
+        # 2. 正式与候选使用同样的完整组合，候选只改变环境。
         identity = "|".join(
             f"{item.plugin_id}:{item.generation_id}" for item in ordered
         )
@@ -5668,67 +5646,24 @@ class PluginManager:
             )
         root: CompositionRoot | None = None
         try:
-            while True:
-                mount_order = (
-                    ordered
-                    if candidate_owner is None
-                    else tuple(
-                        item
-                        for item in ordered
-                        if item.plugin_id in candidate_plugin_ids
-                    )
+            root = CompositionRoot(
+                "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16],
+                candidate_incident_limit=1024 if candidate_owner is not None else None,
+            )
+            root._bind_runtime_scope_acquirer(
+                lambda root=root: self._snapshot_store.acquire_composition_root(root)
+            )
+            await self._provide_composition_services(
+                root, ordered, candidate=candidate_owner is not None,
+            )
+            if candidate_owner is None:
+                for item in ordered:
+                    await self._mount_generation_composition(root, item)
+            else:
+                await self._mount_candidate_composition(
+                    root, ordered, candidate_owner=candidate_owner,
                 )
-                root = CompositionRoot(
-                    "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16],
-                    candidate_incident_limit=(
-                        1024 if candidate_owner is not None else None
-                    ),
-                )
-                root._bind_runtime_scope_acquirer(
-                    lambda root=root: self._snapshot_store.acquire_composition_root(root)
-                )
-                await self._provide_composition_services(
-                    root, mount_order, candidate=candidate_owner is not None,
-                )
-                if candidate_owner is None:
-                    for item in ordered:
-                        await self._mount_generation_composition(root, item)
-                    resolved_root: CompositionSnapshotRoot = root
-                else:
-                    await self._mount_candidate_composition(
-                        root,
-                        mount_order,
-                        candidate_owner=candidate_owner,
-                    )
-                    if stable_root is None and len(generations) == 1:
-                        resolved_root = root
-                    elif isinstance(stable_root, CompositionRoot):
-                        additional = self._candidate_composition_frontier(
-                            root,
-                            stable_root,
-                            generations,
-                            candidate_plugin_ids,
-                        )
-                        if additional:
-                            await root.dispose()
-                            candidate_plugin_ids = self._candidate_dependency_closure(
-                                ordered,
-                                stable_root,
-                                candidate_owner.plugin_id,
-                                seed_plugin_ids=(
-                                    candidate_plugin_ids | additional
-                                ),
-                            )
-                            continue
-                        resolved_root = CompositionOverlay(
-                            stable_root,
-                            root,
-                            plugin_ids=frozenset(generations),
-                            replaced_plugin_ids=candidate_plugin_ids,
-                        )
-                    else:
-                        raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
-                break
+            resolved_root = root
             receipt = resolved_root.receipt()
             if not receipt.ready:
                 missing_services = tuple(
@@ -6018,108 +5953,6 @@ class PluginManager:
             )
             _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
 
-    def _candidate_dependency_closure(
-        self,
-        ordered: tuple[PluginGeneration, ...],
-        stable_root: CompositionSnapshotRoot | None,
-        candidate_plugin_id: str,
-        *,
-        seed_plugin_ids: frozenset[str] | None = None,
-    ) -> frozenset[str]:
-        """Find the explicit Service component that must rebuild together."""
-
-        if stable_root is None:
-            return frozenset({candidate_plugin_id})
-        if not isinstance(stable_root, CompositionRoot):
-            raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
-        owners_by_name = {
-            key.name: owner
-            for key, owner in stable_root.plugin_service_owners().items()
-        }
-        generations = {item.plugin_id: item for item in ordered}
-        stable_dependencies = stable_root.plugin_dependencies()
-        adjacency: dict[str, set[str]] = {
-            plugin_id: set() for plugin_id in generations
-        }
-        for plugin_id, generation in generations.items():
-            plugin = cast(ComposablePlugin, generation.instance)
-            dependency_names = {
-                key.name
-                for key in (
-                    plugin.inject
-                    if plugin_id == candidate_plugin_id
-                    else stable_dependencies.get(plugin_id, ())
-                )
-            }
-            for dependency_name in dependency_names:
-                owner = owners_by_name.get(dependency_name)
-                if owner is None or owner == plugin_id or owner not in generations:
-                    continue
-                adjacency[plugin_id].add(owner)
-                adjacency[owner].add(plugin_id)
-        selected = set(seed_plugin_ids or {candidate_plugin_id})
-        selected.add(candidate_plugin_id)
-        pending: list[str] = [candidate_plugin_id]
-        pending.extend(item for item in selected if item != candidate_plugin_id)
-        while pending:
-            plugin_id = pending.pop()
-            for neighbor in adjacency[plugin_id]:
-                if neighbor in selected:
-                    continue
-                selected.add(neighbor)
-                pending.append(neighbor)
-        return frozenset(selected)
-
-    def _candidate_composition_frontier(
-        self,
-        candidate: CompositionRoot,
-        stable: CompositionRoot,
-        generations: Mapping[str, PluginGeneration],
-        selected_plugin_ids: frozenset[str],
-    ) -> frozenset[str]:
-        """找出真实候选组合需要的 stable owner。"""
-
-        available = frozenset(generations)
-        additional: set[str] = set()
-
-        # 1. 候选声明可能新增 stable Root 没有的 provider 或依赖，先看实际 Root。
-        stable_services = stable.plugin_service_owners()
-        candidate_services = candidate.plugin_service_owners()
-        stable_dependencies = stable.plugin_dependencies()
-        for owner, dependencies in candidate.plugin_dependencies().items():
-            _ = owner
-            for dependency in dependencies:
-                provider = candidate_services.get(dependency)
-                if provider is None:
-                    provider = stable_services.get(dependency)
-                if provider in available and provider not in selected_plugin_ids:
-                    additional.add(provider)
-        for service in candidate_services:
-            if service in stable_services:
-                continue
-            for owner, dependencies in stable_dependencies.items():
-                if owner in available and owner not in selected_plugin_ids:
-                    if service in dependencies:
-                        additional.add(owner)
-
-        # 2. 有序事件属于一个 Root；候选触及时，把 stable participant 一并纳入重建。
-        candidate_events = candidate._events.registration_event_groups()  # pyright: ignore[reportPrivateUsage]
-        stable_events = stable._events.registration_event_groups()  # pyright: ignore[reportPrivateUsage]
-        candidate_names = {
-            key.name
-            for key, owners in candidate_events
-            if owners
-        }
-        for key, owners in stable_events:
-            if key.name not in candidate_names:
-                continue
-            additional.update(
-                owner
-                for owner in owners
-                if owner in available and owner not in selected_plugin_ids
-            )
-        return frozenset(additional)
-
     def _preflight_durable_delivery_targets(self, snapshot: RuntimeSnapshot) -> None:
         """Fence forward-completable rows whose target vanished from candidate."""
 
@@ -6196,7 +6029,7 @@ class PluginManager:
         *,
         candidate_owner: PluginGeneration,
     ) -> None:
-        """挂载候选插件及其 Service、事件闭包。"""
+        """在隔离环境重新导入并挂载完整候选组合。"""
 
         validation_workspace = candidate_owner.validation_workspace
         if validation_workspace is None:

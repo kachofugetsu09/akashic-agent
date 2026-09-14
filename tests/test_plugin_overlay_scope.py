@@ -1,6 +1,5 @@
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -12,15 +11,12 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.model import PluginRuntime
 from agent.plugin_composition.overlay import CompositionOverlay
-from agent.plugins.generation import PluginGeneration
-from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
     get_current_runtime_snapshot,
     lease_runtime_snapshot,
 )
-from bus.event_bus import EventBus
 
 
 def _runtime(tmp_path: Path, plugin_id: str, generation_id: str) -> PluginRuntime:
@@ -213,55 +209,6 @@ async def test_overlay_rejects_split_event_groups(tmp_path: Path) -> None:
         await stable.dispose()
 
 
-@pytest.mark.asyncio
-async def test_candidate_frontier_includes_stable_optional_service_peer(
-    tmp_path: Path,
-) -> None:
-    shared = ServiceKey[str]("overlay.shared")
-    stable = CompositionRoot("stable")
-    candidate = CompositionRoot("candidate")
-    manager = PluginManager(
-        [],
-        event_bus=EventBus(),
-        workspace=tmp_path / "manager",
-    )
-
-    async def stable_peer(ctx) -> None:
-        async def child(child_ctx) -> None:
-            assert child_ctx.require(shared) == "candidate"
-
-        await ctx.inject((shared,), child, name="optional-peer")
-
-    async def candidate_provider(ctx) -> None:
-        await ctx.provide(shared, "candidate")
-
-    try:
-        await stable.mount(
-            stable_peer,
-            name="peer",
-            runtime=_runtime(tmp_path, "peer", "stable-peer"),
-        )
-        await candidate.mount(
-            candidate_provider,
-            name="provider",
-            runtime=_runtime(tmp_path, "provider", "candidate-provider"),
-        )
-
-        generations = cast(
-            dict[str, PluginGeneration],
-            {"provider": object(), "peer": object()},
-        )
-        additional = manager._candidate_composition_frontier(
-            candidate,
-            stable,
-            generations,
-            frozenset({"provider"}),
-        )
-        assert additional == frozenset({"peer"})
-    finally:
-        await manager.snapshot_store.close()
-        await candidate.dispose()
-        await stable.dispose()
 
 
 @pytest.mark.asyncio

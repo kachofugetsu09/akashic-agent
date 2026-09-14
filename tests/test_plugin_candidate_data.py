@@ -12,6 +12,47 @@ from tests.test_plugin_install import _commit, _write_v3_plugin
 
 
 @pytest.mark.asyncio
+async def test_candidate_rebuilds_even_an_unrelated_plugin_in_its_own_root(tmp_path):
+    """完整候选不借用正式插件实例，候选状态变化不会串到 stable。"""
+    workspace, home = tmp_path / "workspace", tmp_path / "home"
+    module = '''from agent.plugin_composition import ServiceKey
+api_version = 3
+name = "NAME"
+version = "1.0.0"
+inject = ()
+async def apply(ctx):
+    await ctx.provide(ServiceKey("NAME.state"), [])
+'''
+    for name in ("changed", "peer"):
+        source = tmp_path / name
+        _write_v3_plugin(source, name=name, module_source=module.replace("NAME", name))
+        _commit(source)
+        install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    try:
+        await host.load_all()
+        stable = host.current_snapshot
+        old_peer = stable.composition_root.context.require(ServiceKey("peer.state"))
+        old_peer.append("stable")
+        source = tmp_path / "changed"
+        (source / "plugin.py").write_text(module.replace("NAME", "changed") + "\nrevision = 2\n")
+        _commit(source)
+        _, status = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
+        assert status["candidate_state"] == "latest_ready"
+        candidate = host.latest_snapshot
+        new_peer = candidate.composition_root.context.require(ServiceKey("peer.state"))
+        assert new_peer is not old_peer
+        assert new_peer == []
+        new_peer.append("candidate")
+        assert old_peer == ["stable"]
+        await host.drop_candidate("changed@lab")
+        assert host.current_snapshot is stable
+        assert old_peer == ["stable"]
+    finally:
+        await host.terminate_all()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("directory", [False, True])
 async def test_candidate_copies_committed_wal_and_writes_only_its_database(tmp_path, directory):
     source, workspace, home = (tmp_path / name for name in ("source", "workspace", "home"))
