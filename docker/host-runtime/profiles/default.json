@@ -133,8 +133,13 @@
       "reason": "拥有输出投递记录、sender binding 和恢复边界。"
     },
     {
-      "name": "delivery_policy",
+      "name": "akashic_sender",
       "depends_on": ["delivery"],
+      "reason": "确认已提交到 Akashic Session 的消息；Web/Mobile 继续从日志同步。"
+    },
+    {
+      "name": "delivery_policy",
+      "depends_on": ["delivery", "akashic_sender"],
       "reason": "应用来源级投递策略，不包含具体外部通道。"
     },
     {
