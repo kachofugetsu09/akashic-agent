@@ -145,7 +145,7 @@
 
 任务同时命中两行以上、会修改持久数据或会产生外部不可逆效果时，读取 `projectneed.md` 全文。执行阶段可以收窄材料，评审阶段必须展开所有相关 diff、状态变化和证据。
 
-Skill/MCP 任务固定从插件安装链进入：插件 source → 资产与 MCP manifest 声明 → 安装 staging 与 runtime 准备 → generation 资产和运行服务 → 有作用域的消费者。Core 不再自动创建 workspace Skill 软链接。独立 workspace MCP 声明、watcher/admin 和手工 MCP 目录不再是运行时入口；不能从已删除的旧 API 反推新的能力安装设计。
+Skill/MCP 任务固定从插件安装链进入：插件 source → 固定制品与运行环境 → 插件代码向 provider 注册 → 有作用域的消费者。插件 TOML 和静态贡献正按 0071 删除，旧能力手册描述迁移前实现，不覆盖该目标。Core 不自动创建 workspace Skill 软链接；独立 workspace MCP 声明、watcher/admin 和手工 MCP 目录不是运行时入口。
 
 ## 5. 持久化任务的强制前置读取
 
