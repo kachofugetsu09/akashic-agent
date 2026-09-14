@@ -80,6 +80,8 @@
 | [0068](0068-compaction-uses-one-recent-window.md) | accepted | Compaction 每代只摘要一个近期窗口 | CTX-001～CTX-007、MEM-011～MEM-012、SES-003～SES-005 |
 | [0069](0069-bindings-follow-selected-runtime-scope.md) | accepted / implementing | Binding 跟随调用已选的 runtime scope | PLG-003、PLG-004、PLG-009、PLG-013、PLG-018、RUN-008～RUN-009、ERR-001 |
 
+| [0070](0070-plugins-own-persisted-data.md) | accepted | 插件系统负责依赖与切换，插件负责自己的持久化数据 | PLG-018、RUN-008～RUN-009、ERR-001 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

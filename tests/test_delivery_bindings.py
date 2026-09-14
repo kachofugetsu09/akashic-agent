@@ -136,8 +136,7 @@ async def test_sender_survives_restart_without_repeating_a_delivery(
         bindings = Bindings(log, restored._archive, snapshot.composition_root)
         records = DeliveryRecords(log.owner("plugin:delivery"), "test_sender")
         execution = Deliveries(
-            records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
-            binding_matches=lambda identity: bindings.matches_current(identity, SENDERS),
+            records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery"
         )
         result = await execution.send(message.message_id, sink.name)
         assert result.provider_ids == ("original-A",)

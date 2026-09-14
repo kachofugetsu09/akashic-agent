@@ -191,7 +191,7 @@ async def test_actual_plugin_learns_provides_materials_and_runs_recall_tool(tmp_
 
 
 @pytest.mark.asyncio
-async def test_prepared_recall_stops_after_config_change(tmp_path):
+async def test_recall_binding_facts_remain_readable_after_config_change(tmp_path):
     from plugins.tools.plugin import open_tool
 
     async with application(tmp_path) as (log, host):
@@ -218,7 +218,7 @@ async def test_prepared_recall_stops_after_config_change(tmp_path):
                     prepared = await tool.prepare({"query": "original memory"})
                     assert isinstance(prepared, Mapping)
 
-    # 重启前改变可变配置；旧 prepared binding 不再自动打开新实现。
+    # 重启前改变可变配置；旧 binding 的事实仍可由当前服务读取。
     config_path.write_text('db_path = "other.db"\ninject_max_chars = 1\n')
     restored_log = MessageLog(tmp_path / "sessions.db")
     restored_host = PluginManager([tmp_path / "plugins"], event_bus=EventBus(), workspace=tmp_path / "workspace",
@@ -228,7 +228,7 @@ async def test_prepared_recall_stops_after_config_change(tmp_path):
         snapshot = restored_host.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
         restored_bindings = snapshot.composition_root.context.require(BINDINGS)
-        assert not await restored_bindings.matches_current(identity, TOOLS)
+        assert restored_bindings.describe(identity, TOOLS)["tool"]["name"] == "recall_memory"
         assert not (tmp_path / "workspace/memory/other.db").exists()
     finally:
         await restored_host.terminate_all()

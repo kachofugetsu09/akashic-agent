@@ -121,25 +121,8 @@ class Subagents:
         try:
             # 1. 只有未关闭输入才进入原程序；最终消息或控制足以决定恢复方向。
             if self.outcome(reader) is None:
-                bindings = self.ctx.require(BINDINGS)
-                input_message = reader.get(request.input_id)
-                if input_message is None or not isinstance(input_message.body, Input):
-                    raise ValueError("子任务原输入缺失")
-                # 原 Input 是接纳边界；只有其后的持久消息说明程序已经越过启动边界。
-                # ToolExecution 也必须先读到该 Output ToolCall，才可能建立外部 owner。
-                started = any(
-                    message.source == "subagent" and message.seq > input_message.seq
-                    for message in reader.snapshot()
-                )
-                if not started or await bindings.matches_current(request.program_binding, SUBAGENT_PROGRAM):
-                    async with bindings.open(request.program_binding, SUBAGENT_PROGRAM) as (program, _):
-                        _ = await program(task, reader, request)
-                else:
-                    self._control(
-                        request,
-                        "failure",
-                        "子任务程序 binding 与当前 stable 不兼容；不自动重试",
-                    )
+                async with self.ctx.require(BINDINGS).open(request.program_binding, SUBAGENT_PROGRAM) as (program, _):
+                    _ = await program(task, reader, request)
         except asyncio.CancelledError:
             if self.outcome(reader) is None:
                 raise

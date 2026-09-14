@@ -74,8 +74,7 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
                 ServiceKey("fixture.delivery")
             )().activity("test", "room")
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(bindings, key),
-                                  authorize, task_key="effects",
-                                  binding_matches=lambda identity: bindings.matches_current(identity, TOOLS))
+                                  authorize, task_key="effects")
         invalid = await execution.execute("bad-route", binding, {**parameters, "target_channel": "missing"})
         assert invalid.outcome == "error" and permission == []
         assert store.list_attachments() == () and log.reader("test:room").snapshot() == ()
@@ -116,8 +115,7 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
         async def no_new_authorization(*_):
             pytest.fail("query original send must not reauthorize or reprepare")
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(recovered, key),
-                                  no_new_authorization, task_key="effects",
-                                  binding_matches=lambda identity: recovered.matches_current(identity, TOOLS))
+                                  no_new_authorization, task_key="effects")
         answer = await execution.execute("push-once", binding, parameters)
         assert answer.outcome == ("success" if confirmed else "error")
         repeated = await execution.execute("push-once", binding, parameters)

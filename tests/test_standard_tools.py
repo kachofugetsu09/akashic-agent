@@ -35,8 +35,6 @@ from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 from plugins.standard_web.search import WebSearchTool
 
 
-async def _binding_matches(_identity: str) -> bool:
-    return True
 from tests.test_message_push_plugin import storage
 from tests.model_plugin_fakes import build_test_chat_models
 
@@ -136,7 +134,7 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
         shutil.rmtree(source)
         execution = ToolExecution(
             log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
-            task_key="effects", binding_matches=_binding_matches,
+            task_key="effects",
         )
         missing = await execution.execute("missing", read, {"path": str(tmp_path / "missing")})
         assert missing.outcome == "error" and "不存在" in cast(str, missing.parts[0].value)
@@ -208,7 +206,7 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
         shutil.rmtree(source)
         execution = ToolExecution(
             log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
-            task_key="effects", binding_matches=_binding_matches,
+            task_key="effects",
         )
         blocked = await execution.execute("network", command, {"command": "curl https://example.com", "description": "network"})
         assert blocked.outcome == "error" and permissions == []
@@ -279,7 +277,7 @@ async def start_shell_call(log, bindings, tasks, binding, source, identity):
 
     execution = ToolExecution(
         log.owner("plugin:tools"), tasks, partial(open_tool, bindings), allow,
-        task_key="effects", binding_matches=_binding_matches,
+        task_key="effects",
     )
     result = await execution.execute_call(reply)
     assert result.outcome == "success"

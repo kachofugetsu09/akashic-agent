@@ -28,10 +28,6 @@ from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Output
 
 
-async def _binding_matches(_identity: str) -> bool:
-    return True
-
-
 @asynccontextmanager
 async def telegram_server(respond):
     calls = []
@@ -178,7 +174,6 @@ async def test_telegram_unknown_never_replays_a_successful_prefix(tmp_path, fail
             records = DeliveryRecords(log.owner("plugin:delivery"), "test")
             execution = Deliveries(
                 records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
-                binding_matches=_binding_matches,
             )
             execution.prepare(log.reader("chat"), msg, (Sink(name="telegram", binding_id=binding, address="123"),))
             try:
@@ -241,7 +236,6 @@ async def test_qq_uncertain_receipt_does_not_resend(tmp_path, failure):
             records = DeliveryRecords(log.owner("plugin:delivery"), "test")
             execution = Deliveries(
                 records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
-                binding_matches=_binding_matches,
             )
             execution.prepare(log.reader("chat"), msg, (Sink(name="qq", binding_id=binding, address="gqq:42"),))
             try:
@@ -274,7 +268,6 @@ async def test_native_sender_reads_all_artifacts_before_any_provider_effect(tmp_
             records = DeliveryRecords(log.owner("plugin:delivery"), "test")
             execution = Deliveries(
                 records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
-                binding_matches=_binding_matches,
             )
             execution.prepare(log.reader("chat"), msg, (Sink(name=channel, binding_id=binding, address="123"),))
             try:
@@ -303,7 +296,6 @@ async def test_native_address_rejection_and_credential_revocation_have_no_effect
             records = DeliveryRecords(log.owner("plugin:delivery"), "test")
             execution = Deliveries(
                 records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
-                binding_matches=_binding_matches,
             )
             execution.prepare(log.reader("chat"), msg, (Sink(name=channel, binding_id=binding, address="not-a-chat"),))
             try:
