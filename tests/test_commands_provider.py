@@ -16,10 +16,12 @@ from bus.event_bus import EventBus
 from plugins.commands import plugin as commands_plugin
 from plugins.commands.registry import PluginCommands
 from session.log import MessageLog
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
 @pytest.mark.asyncio
 async def test_core_only_manager_does_not_supply_commands(tmp_path):
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home")
     try:
@@ -105,6 +107,7 @@ async def apply(ctx):
 ''')
     log = MessageLog(tmp_path / "sessions.db")
     workspace = tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
     host = PluginManager([source], event_bus=EventBus(), workspace=workspace,
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:

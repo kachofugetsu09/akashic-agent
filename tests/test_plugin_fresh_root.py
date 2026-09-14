@@ -8,6 +8,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from tests.test_plugin_install import _commit, _write_v3_plugin
 
 
@@ -43,6 +44,7 @@ def installed_pair(tmp_path):
         _write_v3_plugin(source, name=name, module_source=module(name))
         _commit(source)
         install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    initialize_plugin_workspace(workspace)
     return PluginManager(
         [], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache",
     )

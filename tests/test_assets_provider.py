@@ -16,6 +16,7 @@ from agent.plugins.snapshot import bind_runtime_snapshot, lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.assets.plugin import apply
 from session.log import MessageLog
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
 @pytest.mark.asyncio
@@ -89,9 +90,11 @@ async def test_fixed_assets_keep_binding_contributors_and_require_exact_scope(tm
     """原安装消失后仍读原字节；泄漏 callable 无法绕过 lease。"""
     sources = _sources(tmp_path)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                             installed_cache_root=tmp_path / "home/cache", message_log=log)
     other_path = tmp_path / "other"
+    initialize_plugin_workspace(other_path / "workspace")
     other = PluginManager([_sources(other_path)], event_bus=EventBus(), workspace=other_path / "workspace",
                           installed_cache_root=other_path / "home/cache")
     try:
@@ -138,6 +141,7 @@ async def test_fixed_assets_keep_binding_contributors_and_require_exact_scope(tm
 @pytest.mark.asyncio
 async def test_assets_provider_is_required_by_explicit_selection(tmp_path):
     sources = _sources(tmp_path, provider=False)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                             installed_cache_root=tmp_path / "home/cache")
     try:

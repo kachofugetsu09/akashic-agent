@@ -10,6 +10,7 @@ from agent.plugin_composition import CHANNELS, CompositionError, TIMERS
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from session.log import MessageLog
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 MODULE = '''import asyncio
 from agent.plugin_composition import (
@@ -73,6 +74,7 @@ async def test_request_scope_keeps_child_grants_and_blocks_shutdown_until_releas
     source.mkdir(parents=True)
     (source / "plugin.py").write_text(MODULE)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager(
         [source.parent], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home/cache", message_log=log,
