@@ -157,7 +157,7 @@ async def test_dashboard_host_rejects_borrowed_provider():
 async def test_dashboard_uses_instance_environment_when_runtime_paths_match(validation, tmp_path):
     """独立候选的实际路径与 generation 一致，不能再靠路径差异推断环境。"""
     from agent.plugins.dashboard_host import PluginDashboardHost
-    from agent.plugins.generation import PluginContributions, PluginGeneration
+    from agent.plugins.generation import PluginGeneration
     from agent.plugins.scope import PluginScope
     from agent.plugins.snapshot import RuntimeSnapshot
 
@@ -179,7 +179,7 @@ async def test_dashboard_uses_instance_environment_when_runtime_paths_match(vali
             plugin_id=runtime.plugin_id, generation_id=runtime.generation_id,
             module_path=module.__name__, source_revision="code", config_revision="config",
             plugin_dir=runtime.plugin_dir, data_dir=runtime.data_dir,
-            instance=module, scope=scope, contributions=PluginContributions({}),
+            instance=module, scope=scope,
             validation_workspace=runtime.workspace if validation else None,
         )
         await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
