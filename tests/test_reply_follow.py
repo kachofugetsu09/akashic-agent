@@ -19,7 +19,7 @@ from session.message import ContentPart, Input, Output
 @asynccontextmanager
 async def running(tmp_path, program, *, lifecycle=False):
     sources = tmp_path / "plugins"
-    for name in ("ui", "conversation", "sources", "content", "models"):
+    for name in ("commands", "ui", "conversation", "sources", "content", "models"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     probe = sources / "probe"

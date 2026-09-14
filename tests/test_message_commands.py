@@ -8,6 +8,7 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT
 from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugin_composition.commands import COMMANDS
 from plugins.conversation.commands import CONVERSATION_COMMANDS
 from plugins.conversation.plugin import CONVERSATION
 from session.log import MessageWriter
@@ -191,7 +192,6 @@ async def test_default_reply_short_circuits_command_before_model_or_tool(tmp_pat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("started", [False, True])
 async def test_abandoned_command_never_starts_or_replays_after_later_input(tmp_path, monkeypatch, started):
-    from agent.plugin_composition.commands import CommandRegistry
     command_plugin(tmp_path, blocked=started, read_only=not started)
     async with runtime(tmp_path) as (log, host, *_):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
@@ -202,7 +202,9 @@ async def test_abandoned_command_never_starts_or_replays_after_later_input(tmp_p
                 entered.set()
                 await gate.wait()
                 raise AssertionError("abandoned handler must not run")
-            monkeypatch.setattr(CommandRegistry, "execute", before_handler)
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                registry = snapshot.composition_root.context.require(COMMANDS).freeze()
+                monkeypatch.setattr(registry, "execute", before_handler)
         first = asyncio.create_task(run(host, input_id="first"))
         try:
             await asyncio.wait_for(entered.wait(), 2)

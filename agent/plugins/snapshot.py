@@ -15,11 +15,9 @@ from agent.plugin_composition.effect import _join_cleanup
 from agent.plugins.generation import PluginGeneration
 from agent.plugin_composition import (
     CHANNELS,
-    COMMANDS,
     MANAGED_PROCESSES,
     WORKLOADS,
     MCP_SERVERS,
-    CommandRegistry,
     CompositionRoot,
     CompositionError,
     TopologyView,
@@ -80,7 +78,6 @@ class RuntimeSnapshot:
     managed_process_registry_identity: str | None = None
     workload_registry: WorkloadRegistry | None = None
     workload_registry_identity: str | None = None
-    command_registry: CommandRegistry | None = None
     composition_root: CompositionRoot | None = None
     composition_topology: TopologyView | None = None
     composition_active_plugin_ids: frozenset[str] | None = None
@@ -142,7 +139,6 @@ class RuntimeSnapshotCompiler:
         identity += f"|snapshot:{snapshot_revision}"
         composition_topology: TopologyView | None = None
         composition_active_plugin_ids: frozenset[str] | None = None
-        command_registry: CommandRegistry | None = None
         channel_registry: ChannelRegistrySnapshot | None = None
         channel_catalog: CommittedChannelCatalog | None = None
         mcp_server_registry: McpServerRegistry | None = None
@@ -163,10 +159,6 @@ class RuntimeSnapshotCompiler:
             composition_topology = composition_root.topology_view()
             composition_active_plugin_ids = composition_root.active_plugin_ids()
             identity += f"|composition:{composition_topology.identity}"
-            commands = catalog_context.get(COMMANDS)
-            if commands is not None:
-                command_registry = commands.freeze()
-                identity += f"|commands:{command_registry.catalog_digest}"
             channel_declarations = catalog_context.get(CHANNELS)
             if channel_declarations is not None:
                 channel_registry = _freeze_plugin_channels(
@@ -288,8 +280,6 @@ class RuntimeSnapshotCompiler:
                     if composition_topology is None
                     else composition_topology.identity
                 ),
-                "commands:"
-                + ("" if command_registry is None else command_registry.catalog_digest),
                 "channels:"
                 + ("" if channel_registry is None else channel_registry.identity),
                 "processes:"
@@ -329,7 +319,6 @@ class RuntimeSnapshotCompiler:
             workload_registry_identity=(
                 None if workload_registry is None else workload_registry.identity
             ),
-            command_registry=command_registry,
             composition_root=composition_root,
             composition_topology=composition_topology,
             composition_active_plugin_ids=composition_active_plugin_ids,

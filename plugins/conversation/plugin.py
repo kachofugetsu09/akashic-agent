@@ -3,6 +3,7 @@ from typing import Protocol, cast
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
+from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
@@ -61,7 +62,7 @@ api_version = 3
 name = "conversation"
 version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
-inject = (CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTART_GATE, MODEL_SELECTION)
+inject = (COMMANDS, CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTART_GATE, MODEL_SELECTION)
 
 CONVERSATION = ServiceKey[Callable[[str], SourceSession]]("conversation.v1")
 

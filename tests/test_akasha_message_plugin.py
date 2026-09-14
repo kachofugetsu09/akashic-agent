@@ -41,7 +41,7 @@ def _reference_rows(material: Mapping[str, object]) -> tuple[Mapping[str, object
 async def application(tmp_path, *, embedding_available: bool = True,
                       before_start: Callable[[MessageLog, PluginManager], None] | None = None):
     root = tmp_path / "plugins"
-    for name in ("ui", "akasha", "turn_projection", "content", "context", "tools"):
+    for name in ("commands", "ui", "akasha", "turn_projection", "content", "context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
                        ignore=shutil.ignore_patterns("__pycache__"))
     provider = root / "fixture_embeddings"

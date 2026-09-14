@@ -33,6 +33,11 @@
   },
   "plugins": [
     {
+      "name": "commands",
+      "depends_on": [],
+      "reason": "拥有命令注册、封存、执行和未知效果恢复。"
+    },
+    {
       "name": "ui",
       "depends_on": [],
       "reason": "拥有 Web 与 Dashboard 的注册、校验和资源生命周期。"
@@ -114,7 +119,7 @@
     },
     {
       "name": "conversation",
-      "depends_on": ["models", "sources", "content", "tools"],
+      "depends_on": ["models", "sources", "content", "tools", "commands"],
       "reason": "提供普通会话来源、输入校验和消息写入。"
     },
     {
@@ -129,7 +134,7 @@
     },
     {
       "name": "akashic_clients",
-      "depends_on": ["models", "reply", "runtime_inspection", "ui"],
+      "depends_on": ["models", "reply", "runtime_inspection", "ui", "commands"],
       "reason": "提供可替换的 Akashic Web/Mobile 普通 channel；客户端配置和生命周期归插件。"
     },
     {

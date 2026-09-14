@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import COMMANDS, CommandExecution, CommandRegistry
+from agent.plugin_composition.commands import COMMANDS, CommandExecution, CommandCatalog
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.messages import MessageReader
@@ -126,7 +126,7 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
             head = reader.head(source=source)
             check_source(task, reader, source, head)
             line, origin = _input(reader, intent.input_id, source)
-            async def execute(commands: CommandRegistry) -> CommandExecution:
+            async def execute(commands: CommandCatalog) -> CommandExecution:
                 value = await commands.execute(
                     line, session_key=reader.session_id, channel=origin["channel"],
                     chat_id=origin["chat_id"], sender=origin["sender"],

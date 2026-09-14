@@ -26,6 +26,7 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
     sources = tmp_path / "plugins"
     workspace = tmp_path / "workspace"
     for name in (
+        "commands",
         "sources",
         "content",
         "context",

@@ -59,7 +59,6 @@ from agent.plugin_composition import (
     CompositionRoot,
     FiberState,
     PluginChannels,
-    PluginCommands,
     InteractionUndoService,
     PluginRuntime,
     PluginTimers,
@@ -84,7 +83,6 @@ from agent.plugin_composition.mcp_slots import PluginMcpServers
 from agent.plugin_composition.process_slots import PluginManagedProcesses
 from agent.plugin_composition.processes import PROCESSES, PluginProcesses
 from agent.plugin_composition.workload_slots import PluginWorkloads
-from agent.plugin_composition.commands import command_discovery_catalog
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
     resolve_declared_workspace_root,
@@ -170,8 +168,13 @@ U = TypeVar("U")
 def _snapshot_command_catalog(
     snapshot: RuntimeSnapshot | None,
 ) -> tuple[tuple[str, str], ...]:
-    registry = None if snapshot is None else snapshot.command_registry
-    return command_discovery_catalog(registry)
+    """宿主只读取目标 Root 实际选择的命令服务。"""
+    if snapshot is None or snapshot.composition_root is None:
+        return ()
+    commands = snapshot.composition_root.context.get(COMMANDS)
+    if commands is None:
+        return ()
+    return tuple((item.name, item.description) for item in commands.freeze().descriptors)
 
 
 class _NoopProviderClient:
@@ -5588,7 +5591,6 @@ class PluginManager:
         *, resource_mode: Literal["candidate", "formal"] = "formal",
     ) -> None:
         """注册表只属于当前 Root，不接入正式执行 owner。"""
-        _ = await root.context.provide(COMMANDS, PluginCommands())
         if any(
             CHANNELS in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
@@ -7137,7 +7139,6 @@ def _replace_snapshot_payload(
         "managed_process_registry_identity",
         "workload_registry",
         "workload_registry_identity",
-        "command_registry",
         "composition_root",
         "composition_topology",
         "composition_active_plugin_ids",
