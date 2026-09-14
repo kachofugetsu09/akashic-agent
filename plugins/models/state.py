@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Any, AsyncGenerator, AsyncIterator, Mapping, Protocol, Sequence, cast
 
 from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.tasks import register_task_bound_context
 
 from agent.plugin_composition import (
     BoundChatModel,
@@ -237,6 +238,8 @@ _CURRENT_EXECUTION: ContextVar[_Execution | None] = ContextVar(
     "models_current_execution",
     default=None,
 )
+# 独立 Task 不得继承父任务已绑定的 execution；由 Task 创建点统一清空。
+register_task_bound_context(_CURRENT_EXECUTION)
 
 
 def _check_vision_binding(snapshot: StoredSnapshot) -> None:

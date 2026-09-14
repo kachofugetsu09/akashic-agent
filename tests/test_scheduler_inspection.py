@@ -11,7 +11,10 @@ from typing import cast
 import pytest
 
 from agent.plugins.snapshot import lease_runtime_snapshot
-from plugins.akashic_clients.runtime_inspection import ScopedRpcRuntimeInspection
+from plugins.akashic_clients.runtime_inspection import (
+    RuntimeInspectionError,
+    ScopedRpcRuntimeInspection,
+)
 from plugins.scheduler.inspection import SchedulerInspectionProvider
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore
@@ -185,8 +188,6 @@ async def test_client_reports_scheduler_unavailable_without_provider(tmp_path: P
     store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
     service = _inspection_service(store)
     try:
-        from plugins.akashic_clients.runtime_inspection import RuntimeInspectionError
-
         with pytest.raises(RuntimeInspectionError) as captured:
             await service.list_jobs()
         assert captured.value.code == "scheduler_unavailable"
@@ -204,7 +205,6 @@ async def test_client_reports_skills_unavailable_without_provider(tmp_path: Path
     from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
     from plugins.runtime_inspection.rpc import rpc_methods
     from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
-    from plugins.akashic_clients.runtime_inspection import RuntimeInspectionError
 
     root = CompositionRoot("skill-inspection")
     provider = RuntimeInspectionProvider(

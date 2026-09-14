@@ -15,6 +15,7 @@ import pytest
 from agent.media import encode_image_data_uri
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.context import CompositionRoot
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.manager import PluginManager
@@ -305,7 +306,7 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
         shutil.rmtree(source)
         # 清理使用稳定 owner key；不因源码目录变化跳过同一进程集合的终止。
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
+            assert isinstance(snapshot.composition_root, CompositionRoot)
             ctx = snapshot.composition_root.context
             assert ctx.get(SHELL_OWNERS) is not None
             async with shell_cleanup(ctx, log.reader("shared"), "conversation", 0):

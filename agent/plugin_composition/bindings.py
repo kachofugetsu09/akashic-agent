@@ -13,6 +13,7 @@ from session.message_codec import json_value
 
 if TYPE_CHECKING:
     from agent.plugin_composition.archive import PluginArchive
+    from agent.plugin_composition.overlay import CompositionSnapshotRoot
 
 _T = TypeVar("_T")
 
@@ -43,7 +44,7 @@ class Bindings:
         self,
         log: MessageLog | None,
         archive: PluginArchive,
-        root: CompositionRoot,
+        root: CompositionSnapshotRoot,
     ):
         self._storage = log
         self._archive = archive
@@ -150,11 +151,12 @@ class Bindings:
         from agent.plugins.snapshot import get_current_runtime_lease
 
         current = get_current_runtime_lease()
-        lease = (
-            await self._root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
-            if current is None
-            else current.fork()
-        )
+        if current is None:
+            if not isinstance(self._root, CompositionRoot):
+                raise RuntimeError("打开 overlay binding 需要调用者已选的 runtime scope")
+            lease = await self._root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
+        else:
+            lease = current.fork()
 
         async with RuntimeScope(lease):
             root = lease.snapshot.composition_root

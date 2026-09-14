@@ -449,9 +449,11 @@ async def test_binding_authorize_presence_and_name_must_match_current_registrati
                 async with catalog.open(metadata):
                     raise AssertionError("不兼容 binding 不应打开工具")
             assert type(error.value) is ValueError
-            execution = catalog.execution(
-                lambda binding, arguments: _allow()
-            )
+
+            async def _allow(binding: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
+                return {"permission": "caller"}
+
+            execution = catalog.execution(_allow)
             with pytest.raises(ValueError, match="归档工具限制与 binding 不一致"):
                 await execution.execute("incompatible", old_binding, {"value": "ok"})
         assert not list((tmp_path / "workspace").rglob("effects.txt"))

@@ -28,6 +28,7 @@ async def test_real_tools_watcher_restarts_and_settles_offline_abandon_once(tmp_
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
             ctx = snapshot.composition_root.context
             binding = ctx.require(TOOLS).bind(
                 ctx.require(ALL_TOOLS)().select("shell"),

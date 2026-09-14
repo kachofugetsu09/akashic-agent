@@ -12,6 +12,7 @@ from starlette.websockets import WebSocketState
 
 from agent.plugin_composition.channels import ProviderClientFactory
 from agent.plugin_composition.context import Context
+from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.channels import (
     ChannelCapability,
     ChannelDefinition,
@@ -181,7 +182,7 @@ async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: P
 
     @asynccontextmanager
     async def open_scope():
-        yield ReplyScope()
+        yield cast(RequestContext, ReplyScope())
 
     generation = "reply-status-generation"
     register_generation(generation, AkashicClientsConfig(), tmp_path)

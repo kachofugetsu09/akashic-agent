@@ -228,7 +228,9 @@ async def test_recall_binding_facts_remain_readable_after_config_change(tmp_path
         snapshot = restored_host.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
         restored_bindings = snapshot.composition_root.context.require(BINDINGS)
-        assert restored_bindings.describe(identity, TOOLS)["tool"]["name"] == "recall_memory"
+        tool = restored_bindings.describe(identity, TOOLS)["tool"]
+        assert isinstance(tool, Mapping)
+        assert tool["name"] == "recall_memory"
         assert not (tmp_path / "workspace/memory/other.db").exists()
     finally:
         await restored_host.terminate_all()
