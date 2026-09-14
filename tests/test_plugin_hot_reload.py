@@ -352,7 +352,7 @@ async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
     )
     manager = _manager(tmp_path)
 
-    with pytest.raises(RuntimeError, match="完整插件组合加载失败"):
+    with pytest.raises(RuntimeError, match="插件组合拓扑未就绪"):
         await manager.load_all()
 
     await manager.terminate_all()
