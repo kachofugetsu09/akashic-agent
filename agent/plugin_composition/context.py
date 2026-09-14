@@ -671,7 +671,7 @@ class Fiber:
         """Permanently unload this Fiber and join all child/effect cleanup."""
 
         self._reject_direct_reentrant_wait("dispose")
-        if self._dispose_task is None:
+        if self._dispose_task is None or self._dispose_task.done():
             self._dispose_task = asyncio.create_task(
                 self._dispose(),
                 name=f"plugin-fiber-dispose:{self.name}",
@@ -683,20 +683,11 @@ class Fiber:
             if self.state == FiberState.DISPOSED:
                 return
             self._dispose_requested = True
-            unload_error: BaseException | None = None
-            try:
-                if self.state != FiberState.UNLOADING:
-                    await self._unload(next_state=FiberState.DISPOSED)
-            except BaseException as error:
-                unload_error = error
-            finally:
-                self.state = FiberState.DISPOSED
-                self.root._remove_fiber(self)
-                if self.parent is not None and self in self.parent.children:
-                    self.parent.children.remove(self)
+            await self._unload(next_state=FiberState.DISPOSED)
+            self.root._remove_fiber(self)
+            if self.parent is not None and self in self.parent.children:
+                self.parent.children.remove(self)
         await self.root._notify_disposed(self)
-        if unload_error is not None:
-            raise unload_error
 
     async def _load(
         self,
@@ -764,30 +755,25 @@ class Fiber:
         self._activation_token = None
         self.state = FiberState.UNLOADING
         await self.root._notify_status(self)
-        errors: list[BaseException] = []
-        try:
-            await self.root._owner_became_inactive(self)
-        except BaseException as error:
-            errors.append(error)
+        await self.root._owner_became_inactive(self)
 
-        # 2. Children and effects are fully drained in reverse ownership order.
+        # 2. 子作用域失败时保留父资源；无关子分支仍尝试关闭。
+        errors: list[BaseException] = []
         for child in reversed(tuple(self.children)):
             try:
                 await child.dispose()
             except BaseException as error:
                 errors.append(error)
+        if errors:
+            raise BaseExceptionGroup(f"Fiber 子作用域关闭失败: {self.name}", errors)
+        # 3. 后取得的资源仍未关闭时，不提前释放它可能依赖的旧资源。
         for effect in reversed(tuple(self.effects)):
-            try:
-                await effect.aclose()
-            except BaseException as error:
-                errors.append(error)
+            await effect.aclose()
         self.dependency_store = {}
         self._task_failures.clear()
         self._epoch = None
         self.state = next_state
         await self.root._notify_status(self)
-        if errors:
-            raise BaseExceptionGroup(f"Fiber 卸载失败: {self.name}", errors)
 
     @asynccontextmanager
     async def _locked_transition(self) -> AsyncGenerator[None]:
@@ -950,7 +936,7 @@ class CompositionRoot:
         )
 
     async def dispose(self) -> None:
-        if self._dispose_task is None:
+        if self._dispose_task is None or self._dispose_task.done():
             self._dispose_task = asyncio.create_task(
                 self._dispose(),
                 name=f"plugin-composition-dispose:{self.generation_id}",
@@ -974,27 +960,17 @@ class CompositionRoot:
                 await child.dispose()
             except BaseException as error:
                 errors.append(error)
-        for effect in reversed(tuple(self.root_fiber.effects)):
-            try:
-                await effect.aclose()
-            except BaseException as error:
-                errors.append(error)
-        for resource, cleanup in reversed(self._internal_cleanups):
-            try:
-                result = cleanup()
-                if inspect.isawaitable(result):
-                    await result
-            except BaseException as error:
-                errors.append(
-                    BaseExceptionGroup(
-                        f"Core cleanup 失败: {resource}",
-                        [error],
-                    )
-                )
-        self._internal_cleanups.clear()
-        self.root_fiber.state = FiberState.DISPOSED
         if errors:
-            raise BaseExceptionGroup("Root Context 清理失败", errors)
+            raise BaseExceptionGroup("Root 子作用域关闭失败", errors)
+        for effect in reversed(tuple(self.root_fiber.effects)):
+            await effect.aclose()
+        while self._internal_cleanups:
+            _, cleanup = self._internal_cleanups[-1]
+            result = cleanup()
+            if inspect.isawaitable(result):
+                await result
+            self._internal_cleanups.pop()
+        self.root_fiber.state = FiberState.DISPOSED
 
     def receipt(self) -> CompositionReceipt:
         fibers = tuple(self._fiber_view(fiber) for fiber in self._fibers.values())
@@ -1433,6 +1409,18 @@ class CompositionRoot:
             key for key, provider in self._providers.items() if provider.owner is owner
         )
         await self._reconcile_dependents(keys, exclude=owner)
+        # 已请求 dispose 的消费者不会再 reconcile，但它仍可能欠着资源关闭。
+        pending = [
+            fiber.name
+            for fiber in self._fibers.values()
+            if fiber is not owner
+            and any(provider.owner is owner for provider in fiber.dependency_store.values())
+        ]
+        if pending:
+            raise CompositionError(
+                "DEPENDENT_CLEANUP_PENDING",
+                f"{owner.name} 仍被未关闭的消费者使用: {', '.join(pending)}",
+            )
 
     async def _reconcile_dependents(
         self,

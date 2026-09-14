@@ -47,7 +47,7 @@ Core 只接受精确的 `apply(ctx, config)`。`api_version != 3`、V2 `Plugin` 
 | 子 Fiber | `await ctx.mount(child, name="worker")` | 分开生命周期、Health、Effect 和依赖 |
 | 提供 Service | `await ctx.provide(KEY, value)` | 当前 Fiber 成为该 key 的活动 provider |
 | 读取 Service | `ctx.require(KEY)` / `ctx.get(KEY)` | 必需读取 fail-loud；可选读取返回 `None` |
-| Effect | `await ctx.effect(setup, label="client")` | `setup` 返回 cleanup；Fiber 逆序调用 |
+| Effect | `await ctx.effect(setup, label="client")` | `setup`（可异步）只返回一个 cleanup 或 `None`；不解释 iterable 或生成器。Fiber 逆序关闭，成功才解除 owner；失败保留句柄与依赖供显式重试 |
 | 后台任务 | `await ctx.spawn(run(), name="poll")` | 失败进入 Fiber 状态，卸载时取消并等待 |
 | Health | `health = await ctx.health("upstream")` | `degrade(reason)` / `recover()`；required 项参与 readiness |
 | Incident | `ctx.report_incident("fetch", "timeout")` | 记录历史失败，不隐式改变 Health |

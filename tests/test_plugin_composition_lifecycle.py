@@ -28,6 +28,75 @@ from core.memory.events import MemoryWritten
 _MEMORY_WRITTEN_EVENT = EmitEventKey[MemoryWritten]("test.memory.written")
 
 
+@pytest.mark.asyncio
+async def test_failed_consumer_cleanup_keeps_provider_until_explicit_retry():
+    """消费者关闭失败后，原资源及依赖仍由同一 Root 持有。"""
+    from agent.plugin_composition import ServiceKey
+
+    root = CompositionRoot("cleanup-retry")
+    service = ServiceKey[list[str]]("test.cleanup-resource")
+    events: list[str] = []
+    attempts = 0
+
+    async def provider(ctx):
+        await ctx.effect(lambda: lambda: events.append("provider-close"))
+        await ctx.provide(service, events)
+
+    async def consumer(ctx):
+        resource = ctx.require(service)
+
+        def close():
+            nonlocal attempts
+            attempts += 1
+            resource.append("consumer-close")
+            if attempts == 1:
+                raise OSError("resource still open")
+
+        await ctx.effect(lambda: close)
+
+    await root.mount(provider, name="provider")
+    await root.mount(consumer, name="consumer", inject=(service,))
+    with pytest.raises(BaseExceptionGroup):
+        await root.dispose()
+    assert events == ["consumer-close"]
+
+    await root.dispose()
+    assert events == ["consumer-close", "consumer-close", "provider-close"]
+    await root.dispose()
+    assert events == ["consumer-close", "consumer-close", "provider-close"]
+
+
+@pytest.mark.asyncio
+async def test_effect_close_joins_concurrent_callers_despite_repeated_cancel():
+    """多个关闭调用和重复取消只执行一次实际关闭。"""
+    from agent.plugin_composition.effect import Effect
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    closed: list[str] = []
+    owners: list[Effect] = []
+
+    async def cleanup():
+        entered.set()
+        await release.wait()
+        closed.append("closed")
+
+    effect = Effect(label="connection", remove_from_owner=owners.remove)
+    owners.append(effect)
+    await effect.start(lambda: cleanup)
+    first = asyncio.create_task(effect.aclose())
+    await entered.wait()
+    second = asyncio.create_task(effect.aclose())
+    first.cancel()
+    # 事件循环回调确定第二次取消在首次取消投递之后发生。
+    asyncio.get_running_loop().call_soon(first.cancel)
+    asyncio.get_running_loop().call_soon(release.set)
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await second
+    assert closed == ["closed"]
+    assert owners == []
+
+
 @asynccontextmanager
 async def _bound_root(root: CompositionRoot) -> AsyncIterator[None]:
     store = RuntimeSnapshotStore()
