@@ -1,4 +1,5 @@
 """正式 Core 构造只取得消息与资源 owner，不重开旧回复执行权。"""
+from agent.plugin_composition.ui import UI
 from contextlib import closing
 import sqlite3
 from collections.abc import Mapping
@@ -520,11 +521,11 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             snapshot = app.core.plugin_manager.current_snapshot
             module = next(
                 item
-                for item in snapshot.web_ui_catalog.modules
+                for item in snapshot.composition_root.context.require(UI).catalog().modules
                 if item.plugin_id == "workbench-ui@fixture"
             )
             headers = {"x-akashic-web-snapshot": snapshot.snapshot_id,
-                "x-akashic-web-catalog": snapshot.web_ui_catalog.identity,
+                "x-akashic-web-catalog": snapshot.composition_root.context.require(UI).catalog().identity,
                 "x-akashic-web-module": module.plugin_id, "x-akashic-web-generation": module.generation_id}
             async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=app.dashboard_server.config.uds), base_url="http://fixture", headers=headers) as dashboard:
                 directory = await dashboard.get("/api/dashboard/sessions")

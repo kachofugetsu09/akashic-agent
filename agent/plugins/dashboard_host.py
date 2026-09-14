@@ -1,85 +1,33 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import inspect
 import logging
-import re
-import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType, ModuleType
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from fastapi import FastAPI
-from fastapi.routing import APIRoute
-from starlette.convertors import (
-    FloatConvertor,
-    IntegerConvertor,
-    PathConvertor,
-    StringConvertor,
-    UUIDConvertor,
-)
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.routing import Match, WebSocketRoute
 
-from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
-from agent.plugin_composition.model import (
-    CompositionError, ServiceKey,
-    resolve_declared_workspace_file,
-    resolve_declared_workspace_root,
-)
-from agent.plugins.composable import ComposablePlugin
-from agent.plugins.generation import PluginGeneration
-from agent.plugins.scope import PluginScope
-from agent.plugins.snapshot import (
-    RuntimeSnapshot,
-    RuntimeSnapshotStore,
-    bind_runtime_snapshot,
-    get_current_runtime_snapshot,
-    reset_runtime_snapshot,
-)
+from agent.plugin_composition.ui import UI, UiRegistry
+from agent.plugins.snapshot import RuntimeSnapshot, RuntimeSnapshotStore, bind_runtime_snapshot, reset_runtime_snapshot
 
 logger = logging.getLogger(__name__)
 
-DashboardRoute = APIRoute | WebSocketRoute
-
-
-class _DashboardImportError(RuntimeError):
-    pass
-
-
-@dataclass
-class DashboardBinding:
-    plugin_id: str
-    app: FastAPI
-    routes: tuple[DashboardRoute, ...]
-    runtime_workspace: Path | None = None
-    runtime_data_root: Path | None = None
-    validation: bool = False
-    module_name: str = ""
-    _scope: PluginScope | None = field(default=None, repr=False)
-
-    def matches(self, scope: dict[str, Any]) -> bool:
-        return any(route.matches(scope)[0] is Match.FULL for route in self.routes)
-
 
 class PluginDashboardHost:
+    """把 HTTP 宿主事实交给实际 Root 的 UI provider。"""
+
     def __init__(
-        self,
-        *,
-        core_routes: tuple[object, ...],
+        self, *, core_routes: tuple[object, ...],
         workload_urls: Callable[[str], Mapping[tuple[str, str], str]] | None = None,
     ) -> None:
-        self._core_routes = _core_routes(core_routes)
+        self._core_routes = core_routes
         self._workload_urls = workload_urls or (lambda _generation_id: {})
-        self._bindings: dict[tuple[str, Path], DashboardBinding] = {}
-        self._unavailable: set[str] = set()
 
     def prepare_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         self._prepare_snapshot(snapshot, tolerate_failures=False)
@@ -87,309 +35,36 @@ class PluginDashboardHost:
     def prepare_initial_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         self._prepare_snapshot(snapshot, tolerate_failures=True)
 
-    def _prepare_snapshot(
-        self,
-        snapshot: RuntimeSnapshot,
-        *,
-        tolerate_failures: bool,
-    ) -> None:
-        bindings: list[DashboardBinding] = []
-        occupied = list(self._core_routes)
-        active_generations = {
+    def _prepare_snapshot(self, snapshot: RuntimeSnapshot, *, tolerate_failures: bool) -> None:
+        registry = _ui_registry(snapshot)
+        if registry is None:
+            return
+        root = snapshot.composition_root
+        assert root is not None
+        validation = frozenset(
             generation.plugin_id for generation in snapshot.active_generations()
-        }
-        for generation in snapshot.generations.values():
-            if not isinstance(generation.instance, ComposablePlugin):
-                raise RuntimeError(
-                    f"Dashboard 只接受 v3 generation: {generation.plugin_id}"
-                )
-            if generation.plugin_id not in active_generations:
-                continue
-            module_path = generation.contributions.dashboard_module
-            generation_id = generation.generation_id
-            if module_path is None or generation_id in self._unavailable:
-                continue
-            root = snapshot.composition_root
-            if root is None:
-                raise RuntimeError(
-                    f"v3 Dashboard 缺少 composition Root: {generation.plugin_id}"
-                )
-            runtime = root.plugin_runtime(generation.plugin_id)
-            runtime_workspace = runtime.workspace.resolve(strict=False)
-            data_root = runtime.data_dir.resolve(strict=False)
-            workspace_roots = runtime.workspace_roots
-            workspace_files = runtime.workspace_files
-            validation = data_root != generation.data_dir.resolve(strict=False)
-            if validation:
-                runtime_workspace.mkdir(parents=True, exist_ok=True)
-            binding_key = (generation_id, runtime_workspace)
-            binding = self._bindings.get(binding_key)
-            if binding is None:
-                binding_scope = generation.scope
-                if validation:
-                    binding_scope = PluginScope(
-                        f"{generation.plugin_id}:dashboard-validation",
-                        generation_id=generation.generation_id,
-                        diagnostic_plugin_id=generation.plugin_id,
-                    )
-                    generation.scope.defer(
-                        "validation_dashboard",
-                        lambda binding_scope=binding_scope: (
-                            _close_dashboard_scope(binding_scope)
-                        ),
-                    )
-                try:
-                    binding = self._build_binding(
-                        generation,
-                        module_path,
-                        occupied=occupied,
-                        workspace=runtime_workspace,
-                        data_root=data_root,
-                        workspace_roots=workspace_roots,
-                        workspace_files=workspace_files,
-                        scope=binding_scope,
-                        validation=validation,
-                    )
-                except Exception as error:
-                    if (
-                        not tolerate_failures
-                        or not isinstance(error, _DashboardImportError)
-                        or generation.contributions.web_module is not None
-                    ):
-                        raise
-                    self._unavailable.add(generation_id)
-
-                    def remove_unavailable(
-                        generation_id: str = generation_id,
-                    ) -> None:
-                        self._unavailable.discard(generation_id)
-
-                    generation.scope.defer(
-                        "dashboard_unavailable",
-                        remove_unavailable,
-                    )
-                    logger.warning(
-                        "初始插件 dashboard 挂载失败 (%s): %s",
-                        generation.plugin_id,
-                        error,
-                    )
-                    continue
-                self._bindings[binding_key] = binding
-
-                def remove_binding(
-                    binding_key: tuple[str, Path] = binding_key,
-                ) -> None:
-                    _ = self._bindings.pop(binding_key, None)
-
-                binding_scope.defer(
-                    "dashboard",
-                    remove_binding,
-                )
-            else:
-                _require_routes_available(binding, occupied)
-            bindings.append(binding)
-            occupied.extend(binding.routes)
-        snapshot.dashboard_bindings = tuple(bindings)
+            if root.plugin_runtime(generation.plugin_id).data_dir.resolve()
+            != generation.data_dir.resolve()
+        )
+        registry.prepare_dashboard(
+            core_routes=self._core_routes, workload_urls=self._workload_urls,
+            validation_owners=validation, tolerate_failures=tolerate_failures,
+        )
 
     async def release_validation(self, snapshot: RuntimeSnapshot) -> None:
-        """Close candidate-only dashboard resources before formal rebuild."""
-
-        # 1. Candidate bindings own a child scope so promotion can retire them early.
-        bindings = tuple(
-            binding
-            for binding in snapshot.dashboard_bindings
-            if isinstance(binding, DashboardBinding) and binding.validation
-        )
-        failures = []
-        for binding in reversed(bindings):
-            scope = binding._scope
-            if scope is None:
-                raise RuntimeError(
-                    f"candidate dashboard 缺少隔离 scope: {binding.plugin_id}"
-                )
-            failures.extend(await scope.aclose())
-
-        # 2. A formal snapshot must never retain a validation-workspace binding.
-        snapshot.dashboard_bindings = tuple(
-            binding
-            for binding in snapshot.dashboard_bindings
-            if not isinstance(binding, DashboardBinding) or not binding.validation
-        )
-        if failures:
-            details = ", ".join(
-                f"{failure.resource}: {failure.error}" for failure in failures
-            )
-            raise RuntimeError(f"candidate dashboard 清理失败: {details}")
-
-    def _build_binding(
-        self,
-        generation: PluginGeneration,
-        module_path: Path,
-        *,
-        occupied: list[DashboardRoute],
-        workspace: Path,
-        data_root: Path,
-        workspace_roots: tuple[str, ...],
-        workspace_files: tuple[str, ...],
-        scope: PluginScope,
-        validation: bool,
-    ) -> DashboardBinding:
-        app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-        suffix = (
-            ""
-            if not validation
-            else "_validation_"
-            + hashlib.sha256(str(workspace).encode()).hexdigest()[:12]
-        )
-        name = f"{generation.module_path}.dashboard{suffix}"
-        module = ModuleType(name)
-        module.__file__ = str(module_path)
-        module.__package__ = generation.module_path
-        sys.modules[name] = module
-        try:
-            source = module_path.read_text(encoding="utf-8")
-            try:
-                with plugin_entrypoint(
-                    plugin_id=generation.plugin_id,
-                    generation_id=generation.generation_id,
-                    fiber=generation.plugin_id,
-                    operation="dashboard.module_load",
-                ):
-                    exec(compile(source, str(module_path), "exec"), module.__dict__)
-            except Exception as error:
-                raise _DashboardImportError(str(error)) from error
-            register = getattr(module, "register", None)
-            if not callable(register):
-                raise RuntimeError(f"dashboard module 缺少 register: {module_path}")
-            enabled = getattr(module, "plugin_enabled", None)
-            if enabled is not None and not callable(enabled):
-                raise RuntimeError("v3 dashboard plugin_enabled 必须是可调用对象")
-            dependencies = getattr(module, "inject", ())
-            if (not isinstance(dependencies, tuple)
-                    or any(not isinstance(key, ServiceKey) for key in dependencies)
-                    or len(set(dependencies)) != len(dependencies)):
-                raise ValueError("Dashboard inject 必须是不重复的 ServiceKey tuple")
-
-            def resolve(key: ServiceKey[object]) -> object:
-                """只在路由实际租约内解析声明能力，旧 Dashboard 不能借新 generation。"""
-                if key not in dependencies:
-                    raise CompositionError("SERVICE_UNDECLARED", f"Dashboard 未声明能力: {key.name}")
-                snapshot = get_current_runtime_snapshot()
-                if snapshot is None or snapshot.composition_root is None:
-                    raise CompositionError("DASHBOARD_SCOPE_MISSING", "Dashboard 能力需要实际请求租约")
-                current = snapshot.generations.get(generation.plugin_id)
-                if current is None or current.generation_id != generation.generation_id:
-                    raise CompositionError("DASHBOARD_GENERATION_MISMATCH", "Dashboard 不属于当前请求 generation")
-                return snapshot.composition_root.context.require(key)
-
-            dashboard_context = DashboardContext(
-                plugin_id=generation.plugin_id,
-                plugin_dir=module_path.parent,
-                data_root=data_root,
-                validation=validation,
-                _resolve=resolve,
-                _workspace_roots=tuple(
-                    (name, resolve_declared_workspace_root(workspace, name))
-                    for name in workspace_roots
-                ),
-                _workspace_files=tuple(
-                    (name, resolve_declared_workspace_file(workspace, name))
-                    for name in workspace_files
-                ),
-                _workload_urls=MappingProxyType(
-                    dict(self._workload_urls(generation.generation_id))
-                ),
-            )
-            enabled_result = True
-            if callable(enabled):
-                with plugin_entrypoint(
-                    plugin_id=generation.plugin_id,
-                    generation_id=generation.generation_id,
-                    fiber=generation.plugin_id,
-                    operation="dashboard.plugin_enabled",
-                ):
-                    enabled_result = enabled(dashboard_context)
-                    _reject_dashboard_awaitable(
-                        enabled_result,
-                        operation="plugin_enabled",
-                    )
-                    if not isinstance(enabled_result, bool):
-                        raise RuntimeError("v3 dashboard plugin_enabled 必须返回 bool")
-            registered = None
-            if enabled_result:
-                with plugin_entrypoint(
-                    plugin_id=generation.plugin_id,
-                    generation_id=generation.generation_id,
-                    fiber=generation.plugin_id,
-                    operation="dashboard.register",
-                ):
-                    registered = register(app, dashboard_context)
-                    _reject_dashboard_awaitable(
-                        registered,
-                        operation="register",
-                    )
-                    closeables = _dashboard_closeables(registered)
-            else:
-                closeables = []
-            for index, closeable in enumerate(closeables):
-                scope.defer(
-                    f"dashboard_closeable:{index}",
-                    getattr(closeable, "close"),
-                )
-            if app.router.on_startup or app.router.on_shutdown:
-                raise RuntimeError("dashboard module 不支持 startup/shutdown hook")
-            routes = _plugin_routes(app.routes)
-            binding = DashboardBinding(
-                plugin_id=generation.plugin_id,
-                app=app,
-                routes=routes,
-                runtime_workspace=workspace,
-                runtime_data_root=data_root,
-                validation=validation,
-                module_name=name,
-                _scope=scope,
-            )
-            _require_routes_available(binding, occupied)
-        except BaseException:
-            _ = sys.modules.pop(name, None)
-            raise
-
-        def remove_module() -> None:
-            _ = sys.modules.pop(name, None)
-
-        scope.defer("dashboard_module", remove_module)
-        return binding
+        registry = _ui_registry(snapshot)
+        if registry is not None:
+            await registry.release_validation()
 
 
-def _reject_dashboard_awaitable(value: object, *, operation: str) -> None:
-    """关闭不受支持的 awaitable，并让 v3 Dashboard ABI 错误显式失败。"""
-
-    if not inspect.isawaitable(value):
-        return
-    close = getattr(value, "close", None)
-    if callable(close):
-        try:
-            close()
-        except Exception as error:
-            raise RuntimeError(
-                f"v3 dashboard {operation} 不支持 async，且 awaitable 关闭失败"
-            ) from error
-    raise RuntimeError(f"v3 dashboard {operation} 不支持 async")
-
-
-def _dashboard_closeables(value: object) -> list[object]:
-    """严格归一化 v3 register 返回的受 scope 管理资源。"""
-
-    if value is None:
-        return []
-    values = value if isinstance(value, (list, tuple)) else (value,)
-    closeables = list(values)
-    for index, item in enumerate(closeables):
-        if not callable(getattr(item, "close", None)):
-            raise RuntimeError(
-                f"v3 dashboard register 返回值不是 closeable: index={index}"
-            )
-    return closeables
+def _ui_registry(snapshot: RuntimeSnapshot) -> UiRegistry | None:
+    root = snapshot.composition_root
+    registry = None if root is None else root.context.get(UI)
+    if registry is not None:
+        assert root is not None
+        if registry.root_instance_token is not root.instance_token:
+            raise RuntimeError("UI provider 不属于所选 snapshot 的实际 Root")
+    return registry
 
 
 class SnapshotDashboardMiddleware:
@@ -487,14 +162,11 @@ class SnapshotDashboardMiddleware:
                     return
                 token = bind_runtime_snapshot(lease)
                 try:
-                    for raw_binding in lease.snapshot.dashboard_bindings:
-                        binding = raw_binding
-                        if isinstance(binding, DashboardBinding) and binding.matches(
-                            scope
-                        ):
-                            generation = lease.snapshot.generations[binding.plugin_id]
+                    registry = _ui_registry(lease.snapshot)
+                    for binding in (() if registry is None else registry.bindings()):
+                        if binding.matches(scope):
                             if (
-                                generation.contributions.web_module is not None
+                                binding.has_web
                                 and web_identity is None
                             ):
                                 await _reject_web_request(
@@ -527,7 +199,7 @@ class SnapshotDashboardMiddleware:
                             )
                             with plugin_entrypoint(
                                 plugin_id=binding.plugin_id,
-                                generation_id=generation.generation_id,
+                                generation_id=binding.generation_id,
                                 fiber=binding.plugin_id,
                                 operation=f"dashboard.{scope_type}",
                                 entrypoint=route.path,
@@ -662,7 +334,8 @@ def _web_request_matches(
     identity: tuple[str, str, str, str],
 ) -> bool:
     snapshot_id, catalog_id, plugin_id, generation_id = identity
-    catalog = snapshot.web_ui_catalog
+    registry = _ui_registry(snapshot)
+    catalog = None if registry is None else registry.catalog()
     return (
         snapshot.snapshot_id == snapshot_id
         and catalog is not None
@@ -706,118 +379,3 @@ async def _reject_web_request(
         )
         return
     await _web_error(status, code, scope, receive, send)
-
-
-async def _close_dashboard_scope(scope: PluginScope) -> None:
-    failures = await scope.aclose()
-    if failures:
-        details = ", ".join(
-            f"{failure.resource}: {failure.error}" for failure in failures
-        )
-        raise RuntimeError(f"candidate dashboard 清理失败: {details}")
-
-
-def _plugin_routes(routes: Sequence[object]) -> tuple[DashboardRoute, ...]:
-    if any(not isinstance(route, (APIRoute, WebSocketRoute)) for route in routes):
-        raise RuntimeError("dashboard module 只支持 HTTP API 或 WebSocket route")
-    typed = tuple(
-        route for route in routes if isinstance(route, (APIRoute, WebSocketRoute))
-    )
-    builtin_convertor_types = {
-        StringConvertor,
-        PathConvertor,
-        IntegerConvertor,
-        FloatConvertor,
-        UUIDConvertor,
-    }
-    if any(
-        type(convertor) not in builtin_convertor_types
-        for route in typed
-        for convertor in route.param_convertors.values()
-    ):
-        raise RuntimeError("dashboard route 只支持内建 path converter")
-    return typed
-
-
-def _core_routes(routes: tuple[object, ...]) -> tuple[DashboardRoute, ...]:
-    return tuple(
-        route for route in routes if isinstance(route, (APIRoute, WebSocketRoute))
-    )
-
-
-def _require_routes_available(
-    binding: DashboardBinding,
-    occupied: list[DashboardRoute],
-) -> None:
-    conflicts: list[str] = []
-    for index, route in enumerate(binding.routes):
-        for other in occupied:
-            methods = _overlapping_methods(route, other)
-            if methods and _route_paths_overlap(route, other):
-                conflicts.append(f"{','.join(methods)} {route.path} <> {other.path}")
-        for other in binding.routes[:index]:
-            methods = _overlapping_methods(route, other)
-            if (
-                methods
-                and _route_paths_overlap(route, other)
-                and not _ordered_specific_route_wins(other, route)
-            ):
-                conflicts.append(f"{','.join(methods)} {route.path} <> {other.path}")
-    if conflicts:
-        raise RuntimeError(f"dashboard route 冲突: {', '.join(conflicts)}")
-
-
-def _route_paths_overlap(first: DashboardRoute, second: DashboardRoute) -> bool:
-    first_sample = _sample_route_path(first)
-    second_sample = _sample_route_path(second)
-    return bool(
-        first.path_regex.fullmatch(second_sample)
-        or second.path_regex.fullmatch(first_sample)
-    )
-
-
-def _overlapping_methods(first: DashboardRoute, second: DashboardRoute) -> list[str]:
-    if isinstance(first, APIRoute) != isinstance(second, APIRoute):
-        return []
-    if isinstance(first, WebSocketRoute):
-        return ["WEBSOCKET"]
-    assert isinstance(second, APIRoute)
-    if not first.methods and not second.methods:
-        return ["*"]
-    if not first.methods:
-        return sorted(second.methods or ())
-    if not second.methods:
-        return sorted(first.methods)
-    return sorted(first.methods.intersection(second.methods))
-
-
-def _ordered_specific_route_wins(
-    first: DashboardRoute,
-    second: DashboardRoute,
-) -> bool:
-    """Allow an earlier narrow route that cannot shadow the later broad route."""
-
-    first_sample = _sample_route_path(first)
-    second_sample = _sample_route_path(second)
-    return bool(
-        second.path_regex.fullmatch(first_sample)
-        and not first.path_regex.fullmatch(second_sample)
-    )
-
-
-def _sample_route_path(route: DashboardRoute) -> str:
-    def replace(match: re.Match[str]) -> str:
-        convertor = route.param_convertors[match.group(1)]
-        regex = re.compile(f"^(?:{convertor.regex})$")
-        for candidate in (
-            "x",
-            "1",
-            "1.0",
-            "00000000-0000-0000-0000-000000000000",
-            "x/y",
-        ):
-            if regex.fullmatch(candidate):
-                return candidate
-        raise RuntimeError(f"dashboard route convertor 不受支持: {route.path}")
-
-    return re.sub(r"\{([^}:]+)(?::[^}]+)?\}", replace, route.path)

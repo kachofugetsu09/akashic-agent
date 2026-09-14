@@ -85,6 +85,7 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
         init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
         monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(home))
         names = (
+            "ui",
             "sources", "content", "context", "tools", "conversation", "react",
             "turn_projection", "reply_program", "reply", "tool_search", "models",
             "openai_compatible", "assets", "standard_tools", "delivery", "delivery_policy", "telegram_sender",

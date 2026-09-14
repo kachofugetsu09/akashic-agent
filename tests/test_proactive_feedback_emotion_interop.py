@@ -31,6 +31,7 @@ from tests.fixtures.formal_plugins import install_formal_plugins
 _PF_HEAD = "b0dd6dd1a14852e0e5df3c2459f60f1bc80c99f4"
 _EMOTION_HEAD = "99e4acc1b656c63c818b741f533dfb4de9299ef6"
 _BUILTIN_PLUGINS = (
+    "ui",
     "content",
     "context",
     "drift",

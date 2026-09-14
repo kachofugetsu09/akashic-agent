@@ -345,6 +345,8 @@ def memory_sources(root):
     """安装 Akasha/Markdown 及其实际摘要依赖，只替换外部 embedding provider。"""
     from pathlib import Path
     import shutil
+    shutil.copytree(Path(__file__).parents[1] / "plugins/ui", root / "ui",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("akasha", "markdown_memory", "compaction"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__"))

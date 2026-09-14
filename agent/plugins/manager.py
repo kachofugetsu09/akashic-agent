@@ -155,7 +155,6 @@ from agent.plugins.reload_journal import (
     ReloadPhase,
     ReloadRecoveryAction,
 )
-from agent.plugins.web_ui import resolve_web_module
 from agent.workloads.client import UnixWorkloadController, WorkloadController
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
@@ -4953,8 +4952,6 @@ class PluginManager:
             instance.bind_static_services(self._composition_service_view())
             contributions = self._collect_candidate_contributions(
                 instance=instance,
-                plugin_id=plugin_id,
-                plugin_dir=archived_dir,
             )
             archive_ref = self._archive.save_descriptor({
                 "version": 4,
@@ -5430,7 +5427,7 @@ class PluginManager:
                     config_projection=cast(dict[str, object], projection), instance=plugin,
                     scope=PluginScope(plugin_id, generation_id=generation_id),
                     contributions=self._collect_candidate_contributions(
-                        instance=plugin, plugin_id=plugin_id, plugin_dir=plugin_dir,
+                        instance=plugin,
                     ),
                     static_manifest=manifest,
                     source_type=cast(Literal["builtin", "installed"], record["source_type"]),
@@ -5784,7 +5781,6 @@ class PluginManager:
             if key.name in {
                 "core.message_display.v1",
                 "core.mobile_ui.v1",
-                "core.web_ui.v1",
             }
         }
         if "core.message_display.v1" in host_ui_requested:
@@ -5816,13 +5812,6 @@ class PluginManager:
             root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
                 "mobile_ui_provider.close",
                 mobile_ui.aclose,
-            )
-        if "core.web_ui.v1" in host_ui_requested:
-            from agent.plugins.web_ui import PluginWebUiProvider
-
-            _ = await root.context.provide(
-                ServiceKey[object]("core.web_ui.v1"),
-                PluginWebUiProvider(self._snapshot_store),
             )
         if any(
             INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
@@ -6657,8 +6646,6 @@ class PluginManager:
         self,
         *,
         instance: ComposablePlugin,
-        plugin_id: str,
-        plugin_dir: Path,
     ) -> PluginContributions:
         return PluginContributions(
             manifest={
@@ -6667,17 +6654,6 @@ class PluginManager:
                 "desc": instance.desc,
                 "author": instance.author,
             },
-            dashboard_module=_resolve_dashboard_module(
-                plugin_dir,
-                instance.dashboard_module,
-            ),
-            web_module=resolve_web_module(
-                plugin_dir,
-                instance.web_module,
-                requires=instance.web_requires,
-                provides=instance.web_provides,
-                contract_digests=instance.web_contract_digests,
-            ),
         )
 
     def _record_failed_gate(
@@ -7118,16 +7094,6 @@ def _mod_source_revision(mod: dict[str, str] | None) -> str | None:
     return _source_revision(Path(mod["plugin_root"]))
 
 
-def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | None:
-    if declared is None:
-        return None
-    path = (plugin_dir / declared).resolve(strict=False)
-    root = plugin_dir.resolve(strict=False)
-    if not path.is_relative_to(root) or path.suffix != ".py" or not path.is_file():
-        raise RuntimeError(f"插件 dashboard module 无效: {declared}")
-    return path
-
-
 def _remove_validation_data_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
@@ -7286,9 +7252,6 @@ def _replace_snapshot_payload(
         raise RuntimeError("只能刷新无 lease 的 candidate snapshot")
     for name in (
         "generations",
-        "dashboard_bindings",
-        "web_ui_catalog",
-        "web_ui_catalog_identity",
         "mobile_ui_registry",
         "mobile_ui_registry_identity",
         "channel_registry",

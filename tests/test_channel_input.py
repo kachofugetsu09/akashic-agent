@@ -78,7 +78,7 @@ class Custody(MessageBus):
 @asynccontextmanager
 async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recover=True, artifacts=None, inbound_store=None, admissions=None, durable_identities=False):
     sources = tmp_path / "plugins"
-    for name in ("content", "models", "conversation", "sources"):
+    for name in ("ui", "content", "models", "conversation", "sources"):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
             sources / name,

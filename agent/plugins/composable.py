@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import inspect
-import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import ModuleType
@@ -26,11 +25,6 @@ class ComposablePlugin:
     inject: tuple[ServiceKey[object], ...]
     workspace_roots: tuple[str, ...]
     workspace_files: tuple[str, ...]
-    dashboard_module: str | None
-    web_module: str | None
-    web_requires: tuple[str, ...]
-    web_provides: tuple[str, ...]
-    web_contract_digests: tuple[tuple[str, str], ...]
     _apply: Callable[[Context], object] = field(repr=False)
     _service_view: ServiceView | None = field(default=None, init=False, repr=False)
     _static_active: bool | None = field(default=None, init=False, repr=False)
@@ -66,31 +60,6 @@ class ComposablePlugin:
             raise ValueError("v3 插件 is_active 必须是可调用对象")
         workspace_roots = _workspace_roots_export(module)
         workspace_files = _workspace_files_export(module)
-        dashboard_module = getattr(module, "dashboard_module", None)
-        if dashboard_module is not None and (
-            not isinstance(dashboard_module, str)
-            or not dashboard_module.strip()
-            or dashboard_module != dashboard_module.strip()
-        ):
-            raise ValueError("v3 插件 dashboard_module 必须是非空字符串或 None")
-        web_module = getattr(module, "web_module", None)
-        if web_module is not None and (
-            not isinstance(web_module, str)
-            or not web_module.strip()
-            or web_module != web_module.strip()
-        ):
-            raise ValueError("v3 插件 web_module 必须是非空字符串或 None")
-        web_requires = _string_tuple_export(module, "web_requires")
-        web_provides = _string_tuple_export(module, "web_provides")
-        web_contract_digests = _contract_digests_export(module)
-        if (web_requires or web_provides) and web_module is None:
-            raise ValueError("v3 插件声明 Web contract 时必须提供 web_module")
-        declared_contracts = set(web_requires) | set(web_provides)
-        unknown_digests = set(dict(web_contract_digests)) - declared_contracts
-        if unknown_digests:
-            raise ValueError(
-                f"v3 插件 Web contract digest 没有对应声明: {sorted(unknown_digests)}"
-            )
         return cls(
             module=module,
             name=name,
@@ -101,11 +70,6 @@ class ComposablePlugin:
             inject=inject,
             workspace_roots=workspace_roots,
             workspace_files=workspace_files,
-            dashboard_module=cast(str | None, dashboard_module),
-            web_module=cast(str | None, web_module),
-            web_requires=web_requires,
-            web_provides=web_provides,
-            web_contract_digests=web_contract_digests,
             _apply=cast(Callable[[Context], object], apply),
         )
 
@@ -173,23 +137,6 @@ def _string_tuple_export(module: ModuleType, name: str) -> tuple[str, ...]:
     if len(set(typed)) != len(typed):
         raise ValueError(f"v3 插件 {name} 不得重复")
     return typed
-
-
-def _contract_digests_export(module: ModuleType) -> tuple[tuple[str, str], ...]:
-    raw = cast(object, getattr(module, "web_contract_digests", {}))
-    if not isinstance(raw, Mapping):
-        raise ValueError("v3 插件 web_contract_digests 必须是 contract 到 SHA-256 的映射")
-    items = cast(Mapping[object, object], raw)
-    if any(
-        not isinstance(contract, str)
-        or not contract.strip()
-        or contract != contract.strip()
-        or not isinstance(digest, str)
-        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-        for contract, digest in items.items()
-    ):
-        raise ValueError("v3 插件 web_contract_digests 必须包含有效 contract 和 SHA-256")
-    return tuple(sorted(cast(tuple[str, str], item) for item in items.items()))
 
 
 def _workspace_roots_export(module: ModuleType) -> tuple[str, ...]:

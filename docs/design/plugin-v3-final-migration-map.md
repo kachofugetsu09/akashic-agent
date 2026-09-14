@@ -119,7 +119,8 @@ version = "1.0.0"
 inject = (SOME_SERVICE,)
 skill_roots = ("skills",)
 workspace_roots = ("assets",)
-dashboard_module = "dashboard.py"
+# 在 apply(ctx) 中向显式选择的 UI provider 注册；不再导出模块常量。
+# await ctx.require(UI).register(ctx, dashboard=lambda: import_module(".dashboard", __package__))
 
 
 async def apply(ctx: Context, config: Config) -> None:

@@ -68,7 +68,7 @@ def environment(tmp_path, *, reply=False, models=True):
         "assets",
         "standard_tools",
         *(("turn_projection", "sources") if reply else ()),
-        *(("models",) if reply and models else ()),
+        *(("ui", "models") if reply and models else ()),
     ):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from importlib import import_module
+from agent.plugin_composition.ui import UI
+
 import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping
@@ -136,7 +139,7 @@ name = "computer"
 version = "2.0.0"
 desc = "Persistent Linux desktop, browser, and visual control"
 author = "Akashic Core"
-inject = (
+inject = (UI,
     INSTALLED_ASSETS,
     MCP_SERVERS,
     WORKLOADS,
@@ -148,13 +151,6 @@ inject = (
 )
 workspace_roots = ()
 workspace_files = ()
-dashboard_module = "dashboard.py"
-web_module = "web_module.js"
-web_requires = ("conversation.tools.v1",)
-web_provides = ()
-web_contract_digests = {
-    "conversation.tools.v1": "ed47d69b84e946e27a2e297634e96bcc6afc72a3d3089caac1a14632703efb54",
-}
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
@@ -253,6 +249,15 @@ async def _open_target(ctx: Context, state: Mapping[str, object]) -> AsyncIterat
 
 async def apply(ctx: Context) -> None:
     """注册唯一 Computer Tool、专属 control binding 与资源声明。"""
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        dashboard=lambda: import_module(".dashboard", __package__),
+        requires=("conversation.tools.v1",),
+        provides=(),
+        contract_digests={
+            "conversation.tools.v1": "ed47d69b84e946e27a2e297634e96bcc6afc72a3d3089caac1a14632703efb54",
+        },
+    )
     await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)
     control = ComputerControl(ctx)

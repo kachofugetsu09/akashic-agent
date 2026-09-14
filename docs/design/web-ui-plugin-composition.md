@@ -109,7 +109,7 @@ Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exac
 没有被改名或并入 2236。
 
 旧 Dashboard source-directory discovery、请求期编译、import map、`AkashicDashboard` global 和
-浏览器 panel adapter 已删除。`dashboard_module` 只保留插件自己的数据 API owner，不再拥有浏览器 UI。
+浏览器 panel adapter 已删除。`UI.register(..., dashboard=loader)` 只保留插件自己的数据 API owner，不再拥有浏览器 UI。
 
 ### 4.2 已确认选择
 
@@ -130,7 +130,7 @@ Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exac
 - Conversation 继续复用 `frontend/chat` 的产品实现，但顶层 entry、readiness 与 adapter 由
   `conversation-ui` 普通插件拥有；Host 不提供 iframe 或 Chat 专用 API。
 - Workbench 面板只通过 `workbench.panels.v2` 登记。v2 固定结构化 entry，并让 Host 为计数、分页与详情读取提供 `AbortSignal`；旧 Dashboard browser ABI 已在最后一个仓库内
-  consumer 迁完后删除；插件自己的 `dashboard_module` HTTP route 保留。
+  consumer 迁完后删除；插件自己的 `UI.register(..., dashboard=loader)` HTTP route 保留。
 - Web module 暂不增加任意 UI DSL、跨插件 DOM 查询、全局 event bus 或第二套 generation。
 - Web module 的资源预算等有第二个真实容量问题再设计，不照抄 Mobile 240 KiB。
 
@@ -158,7 +158,7 @@ Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exac
 
 ### 6.1 Web module 发布
 
-普通插件以无副作用的包级 contribution 声明入口，例如 `web_module = "web_module.js"`。首版每个 module 只能发布一个 ESM 和一个可选 CSS 文件。ESM 只能导入 Host 已经公开的 `react`、`react/jsx-runtime`、`react-dom/client` 和 `@akashic/web-ui-v1`；不能引用 lazy chunk、远程包、外部字体、图片或其他运行时静态文件。`@akashic/web-ui-v1` 只含主题与 Material 控件等全局原子，不含工作台图表、分页、领域布局或产品页面。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
+普通插件在 `apply(ctx)` 中通过 `ctx.require(UI).register(ctx, web="web_module.js")` 注册；组合显式选择 `ui` provider，身份来自实际 Context。首版每个 module 只能发布一个 ESM 和一个可选 CSS 文件。ESM 只能导入 Host 已经公开的 `react`、`react/jsx-runtime`、`react-dom/client` 和 `@akashic/web-ui-v1`；不能引用 lazy chunk、远程包、外部字体、图片或其他运行时静态文件。`@akashic/web-ui-v1` 只含主题与 Material 控件等全局原子，不含工作台图表、分页、领域布局或产品页面。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
 
 Web Host 在导入任何插件前发布唯一 React/ReactDOM 实例。Shell、Workbench 和普通子插件都把这三个包视为外部 Host SDK；父插件的激活顺序、CSS 或 mount 存在与否不负责偷偷初始化 renderer。
 
@@ -329,7 +329,7 @@ Web module 是视图代码，不是新的业务数据面。生产 session 首版
 | settings command → model state | `models` | revision CAS、领域规则、probe、credential commit |
 | Provider wire | Provider driver | 外部协议、auth、model discovery、错误映射 |
 
-Host client 自动携带 `snapshot_id + catalog_id + module_id + generation_id`，并把请求路由到同一插件通过既有 `dashboard_module` 注册的 route。服务端不把旧请求落到 current handler。父子 UI 正常通过 mount props/callback 组合，不借 HTTP 调用兄弟插件。identity header 是 exact generation 的路由事实，不是不可伪造的 capability；这个边界防止 stale 和普通实现误路由，不抵抗同一 JS realm 中主动绕过 Host API 的代码。不可信 UI 需要另立 iframe/worker/process 设计。
+Host client 自动携带 `snapshot_id + catalog_id + module_id + generation_id`，并把请求路由到同一插件通过既有 `UI.register(..., dashboard=loader)` 注册的 route。服务端不把旧请求落到 current handler。父子 UI 正常通过 mount props/callback 组合，不借 HTTP 调用兄弟插件。identity header 是 exact generation 的路由事实，不是不可伪造的 capability；这个边界防止 stale 和普通实现误路由，不抵抗同一 JS realm 中主动绕过 Host API 的代码。不可信 UI 需要另立 iframe/worker/process 设计。
 
 ## 9. Catalog、更新与并发
 
@@ -403,7 +403,7 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 
 ### 阶段 1：只实现通用 Host 和组合原子
 
-- Core 增加静态 `web_module` contribution、artifact 校验和一次性 snapshot-bound `WebUiBootstrap` endpoint。
+- 普通 UI provider 负责 `apply(ctx)` 注册、artifact 校验及目录封存；客户端保留一次性 snapshot-bound `WebUiBootstrap` endpoint。
 - 新 Host 只含空根 mount、loader、token 和错误/更新界面；`shell-ui` 普通插件提供品牌、history 与页面 mount。
 - 用一个外置 fixture 插件证明 root page、nested child、卸载、candidate reject 和冷启动。
 - 不迁移任何产品页面前先删除 fixture 之外没有消费者的 API 字段。
@@ -413,7 +413,7 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 `workbench-ui` 注册顶层 page 和 `workbench.panels.v2`。Shell 与 Workbench 的可编辑源码位于各自
 `plugins/*/web/`，聚合构建器按入口发现插件，只消费插件源码和 `@akashic/web-ui-v1` 的公开 Tailwind preset，
 不再把 `frontend/dashboard/src` 或 Dashboard 私有配置当作隐藏输入。面板迁为只依赖 Host SDK 的 Web module 后，旧 Shell dashboard 分支、浏览器 panel adapter、源码扫描和请求期编译一起删除；插件自己的 Dashboard
-HTTP/data ABI 继续由 `dashboard_module` 拥有。
+HTTP/data ABI 继续由 `UI.register(..., dashboard=loader)` 拥有。
 
 ### 阶段 3：迁移模型页和 Provider 子 UI
 
@@ -498,7 +498,7 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 - 新增第四 Provider 只增加一个普通插件；Core、Host 和 `models` 无源码 diff。
 - `models` 页面仍能设置默认 chat、role 和 embedding；Provider child 无法直接读写其他 Connection 或 credential。
 - 真实 Codex/OpenCode/OpenAI-compatible 登录/连接、模型发现、chat 和 embedding 继续由各自 driver 完成；UI 不复制 transport。
-- 首批 Provider 的同一普通 artifact 同时通过 driver 与 UI entry 验收；删掉 `web_module` 的 fixture 证明 driver 可以独立 headless，删掉 driver 的 fixture 证明 UI 不取得隐含 backend 权限。
+- 首批 Provider 的同一普通 artifact 同时通过 driver 与 UI entry 验收；不注册 Web 的 fixture 证明 driver 可以独立 headless，删掉 driver 的 fixture 证明 UI 不取得隐含 backend 权限。
 
 ### 14.3 发布与生命周期
 

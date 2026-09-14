@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent.plugin_composition.ui import UI, DashboardBinding
+
 import asyncio
 import importlib
 import os
@@ -21,8 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 from agent.plugin_composition import CompositionError
 from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
-from agent.plugins.dashboard_host import (
-    DashboardBinding,
+from plugins.ui.dashboard import (
     _plugin_routes,
     _require_routes_available,
 )
@@ -58,6 +59,20 @@ def _v3_source(
         "async def apply(ctx):\n"
         f"{body}"
     )
+
+
+def _ui_source(name: str, *, dashboard: bool = True, body: str = "") -> str:
+    return _v3_source(
+        name,
+        exports="from importlib import import_module\nfrom agent.plugin_composition import ServiceKey\nfrom agent.plugin_composition.ui import UI\ninject = (UI,)\n",
+        body="    await ctx.require(UI).register(ctx, web='web_module.js'"
+             + (", dashboard=lambda: import_module('.dashboard', __package__)" if dashboard else "") + ")\n" + body,
+    )
+
+
+def _copy_ui_provider(tmp_path: Path) -> None:
+    shutil.copytree(Path(__file__).parents[1] / "plugins/ui", tmp_path / "plugins/ui",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
 def _asset_source(name: str, relative_path: str = "skills", *, version: str = "1.0.0") -> str:
@@ -1391,37 +1406,40 @@ async def test_dashboard_routes_follow_snapshot_generation(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    _copy_ui_provider(tmp_path)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "snapshot_dashboard",
-        _v3_source(
-            "snapshot_dashboard",
-            exports=(
-                "dashboard_module = 'dashboard.py'\n" "web_module = 'web_module.js'\n"
-            ),
-        ),
+        _ui_source("snapshot_dashboard"),
     )
     (plugin_dir / "web_module.js").write_text(
         "export function activate() { return () => {}; }\n",
         encoding="utf-8",
     )
 
+    (plugin_dir / "values.py").write_text(
+        "class Value:\n    def __init__(self, text): self.text = text\n"
+    )
+
     def write_dashboard(version: str) -> None:
-        (plugin_dir / "plugin.py").write_text(_v3_source(
+        (plugin_dir / "plugin.py").write_text(_ui_source(
             "snapshot_dashboard",
-            exports="from agent.plugin_composition import ServiceKey\ndashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
-            body=f"    await ctx.provide(ServiceKey('fixture.dashboard-value'), '{version}')\n",
+            body=f"    from .values import Value\n    await ctx.provide(ServiceKey('fixture.dashboard-value'), Value('{version}'))\n",
         ))
         (plugin_dir / "dashboard.py").write_text(
             "from agent.plugin_composition import ServiceKey\n"
+            "from .values import Value\n"
             "VALUE = ServiceKey('fixture.dashboard-value')\n"
             "inject = (VALUE,)\n"
             "def register(app, context):\n"
             "    @app.get('/api/dashboard/undeclared')\n"
             "    async def undeclared(): return context.require(ServiceKey('core.message-writers'))\n"
             "    @app.get('/api/dashboard/snapshot-version')\n"
-            "    async def version(): return {'version': context.require(VALUE)}\n"
+            "    async def version():\n"
+            "        value = context.require(VALUE)\n"
+            "        assert isinstance(value, Value)\n"
+            "        return {'version': value.text}\n"
             "    class Closeable:\n"
             "        def close(self):\n"
             f"            (context.data_root / 'dashboard-{version}-closed').write_text('closed')\n"
@@ -1435,7 +1453,7 @@ async def test_dashboard_routes_follow_snapshot_generation(
     old_snapshot = manager.current_snapshot
     assert old_snapshot is not None
     old_generation = old_snapshot.generations["snapshot_dashboard"]
-    old_catalog = old_snapshot.web_ui_catalog
+    old_catalog = old_snapshot.composition_root.context.require(UI).catalog()
     assert old_catalog is not None
     old_headers = {
         "X-Akashic-Web-Snapshot": old_snapshot.snapshot_id,
@@ -1449,6 +1467,7 @@ async def test_dashboard_routes_follow_snapshot_generation(
         plugin_manager=manager,
     )
     client = TestClient(app)
+    old_binding = old_snapshot.composition_root.context.require(UI).bindings()[0]
     assert client.get("/api/dashboard/snapshot-version").json() == {
         "code": "forbidden_contract"
     }
@@ -1486,11 +1505,11 @@ async def test_dashboard_routes_follow_snapshot_generation(
     assert old_catalog.identity not in caplog.text
     assert old_generation.generation_id not in caplog.text
     new_snapshot = manager.current_snapshot
-    assert new_snapshot is not None and new_snapshot.web_ui_catalog is not None
+    assert new_snapshot is not None and new_snapshot.composition_root.context.require(UI).catalog() is not None
     new_generation = new_snapshot.generations["snapshot_dashboard"]
     new_headers = {
         "X-Akashic-Web-Snapshot": new_snapshot.snapshot_id,
-        "X-Akashic-Web-Catalog": new_snapshot.web_ui_catalog.identity,
+        "X-Akashic-Web-Catalog": new_snapshot.composition_root.context.require(UI).catalog().identity,
         "X-Akashic-Web-Module": "snapshot_dashboard",
         "X-Akashic-Web-Generation": new_generation.generation_id,
     }
@@ -1500,13 +1519,12 @@ async def test_dashboard_routes_follow_snapshot_generation(
     ).json() == {"version": "release-b"}
     with pytest.raises(CompositionError, match="未声明能力"):
         client.get("/api/dashboard/undeclared", headers=new_headers)
-    old_binding = old_snapshot.dashboard_bindings[0]
-    with pytest.raises(CompositionError, match="实际请求租约"):
+    with pytest.raises(RuntimeError, match="实际 runtime scope"):
         TestClient(old_binding.app).get("/api/dashboard/snapshot-version")
     import httpx
     async with lease_runtime_snapshot(manager.snapshot_store):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=old_binding.app), base_url="http://fixture") as old_client:
-            with pytest.raises(CompositionError, match="当前请求 generation"):
+            with pytest.raises(RuntimeError, match="当前 runtime scope"):
                 await old_client.get("/api/dashboard/snapshot-version")
     await manager.snapshot_store.retry_drains()
     assert (old_generation.data_dir / "dashboard-release-a-closed").exists()
@@ -1520,14 +1538,12 @@ async def test_initial_web_module_is_not_served_without_its_dashboard_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _copy_ui_provider(tmp_path)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "paired_web",
-        _v3_source(
-            "paired_web",
-            exports="dashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
-        ),
+        _ui_source("paired_web"),
     )
     (plugin_dir / "web_module.js").write_text(
         "export function activate() { return () => {}; }\n",
@@ -1637,14 +1653,12 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    _copy_ui_provider(tmp_path)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "snapshot_socket",
-        _v3_source(
-            "snapshot_socket",
-            exports="dashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
-        ),
+        _ui_source("snapshot_socket"),
     )
     (plugin_dir / "web_module.js").write_text(
         "export function activate() { return () => {}; }\n",
@@ -1653,7 +1667,7 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
     sibling_dir = _write_plugin(
         tmp_path / "plugins",
         "socket_sibling",
-        _v3_source("socket_sibling", exports="web_module = 'web_module.js'\n"),
+        _ui_source("socket_sibling", dashboard=False),
     )
     (sibling_dir / "web_module.js").write_text(
         "export function activate() { return () => {}; }\n",
@@ -1680,7 +1694,7 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
         snapshot: RuntimeSnapshot,
         module: str = "snapshot_socket",
     ) -> str:
-        catalog = snapshot.web_ui_catalog
+        catalog = snapshot.composition_root.context.require(UI).catalog()
         assert catalog is not None
         generation = snapshot.generations[module]
         query = urlencode(
@@ -1703,7 +1717,7 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
     def assert_web_identity_not_logged(snapshot: RuntimeSnapshot) -> None:
         """Keep exact Web identity values out of rejection diagnostics."""
 
-        catalog = snapshot.web_ui_catalog
+        catalog = snapshot.composition_root.context.require(UI).catalog()
         assert catalog is not None
         identities = (
             snapshot.snapshot_id,

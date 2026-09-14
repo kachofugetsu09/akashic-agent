@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from importlib import import_module
+from agent.plugin_composition.ui import UI
+
 import asyncio
 
 from collections.abc import AsyncGenerator, Callable, Mapping
@@ -36,14 +39,7 @@ api_version = 3
 name = "wake"
 version = "4.0.0"
 desc = "内部消息完成初筛、调查与告警，真实送达后确认原职责"
-dashboard_module = "dashboard.py"
-web_module = "web_module.js"
-web_requires = ("workbench.panels.v2",)
-web_provides = ()
-web_contract_digests = {
-    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
-}
-inject = (
+inject = (UI,
     REPLY_EXECUTE,
     BINDINGS,
     TASKS,
@@ -71,6 +67,15 @@ WAKE_DASHBOARD = ServiceKey[Callable[[], DashboardView | None]]("wake.dashboard.
 
 async def apply(ctx: Context) -> None:
     """归档注册原程序和私有决定工具；消息与领域状态仅在正式来源执行时打开。"""
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        dashboard=lambda: import_module(".dashboard", __package__),
+        requires=("workbench.panels.v2",),
+        provides=(),
+        contract_digests={
+            "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+        },
+    )
     config = Config.model_validate(ctx.config)
     _ = await ctx.require(CONTENT).register(
         ctx,

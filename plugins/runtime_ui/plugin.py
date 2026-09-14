@@ -1,10 +1,14 @@
+from agent.plugin_composition.ui import UI
 api_version = 3
 name = "runtime-ui"
 version = "1.0.0"
-web_module = "web_module.js"
-web_requires = ("shell.pages.v1",)
-web_provides = ()
+
+inject = (UI,)
 
 
-def apply(ctx):
-    pass
+async def apply(ctx):
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        requires=("shell.pages.v1",),
+        provides=(),
+    )

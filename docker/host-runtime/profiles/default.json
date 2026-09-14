@@ -33,13 +33,18 @@
   },
   "plugins": [
     {
-      "name": "models",
+      "name": "ui",
       "depends_on": [],
+      "reason": "拥有 Web 与 Dashboard 的注册、校验和资源生命周期。"
+    },
+    {
+      "name": "models",
+      "depends_on": ["ui"],
       "reason": "提供模型目录、连接设置和一次执行所需的冻结选择。"
     },
     {
       "name": "openai-compatible",
-      "depends_on": ["models"],
+      "depends_on": ["models", "ui"],
       "reason": "提供可由 models 选择的 OpenAI-compatible 驱动；不包含凭据。"
     },
     {
@@ -124,7 +129,7 @@
     },
     {
       "name": "akashic_clients",
-      "depends_on": ["models", "reply", "runtime_inspection"],
+      "depends_on": ["models", "reply", "runtime_inspection", "ui"],
       "reason": "提供可替换的 Akashic Web/Mobile 普通 channel；客户端配置和生命周期归插件。"
     },
     {

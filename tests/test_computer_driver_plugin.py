@@ -38,6 +38,7 @@ from agent.workloads.model import (
     WorkloadStopReceipt,
 )
 from bus.event_bus import EventBus
+from plugins.ui import plugin as ui_plugin
 from plugins.assets import plugin as assets_plugin
 from plugins.computer import plugin
 from plugins.computer.control import endpoint_name, request
@@ -64,6 +65,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
         await root.context.provide(key, value)
     path = Path(plugin.__file__).parent
     try:
+        await root.mount(ui_plugin.apply, name="ui")
         await root.mount(
             assets_plugin.apply, name="assets",
             runtime=PluginRuntime(
@@ -576,7 +578,7 @@ async def _computer_harness(tmp_path: Path, *, log: MessageLog | None = None,
     source_root = tmp_path / "computer-plugins"
     repo_plugins = Path(plugin.__file__).parent.parent
     source_root.mkdir(exist_ok=True)
-    for name in ("assets", "content", "tools", "turn_projection", "computer"):
+    for name in ("ui", "assets", "content", "tools", "turn_projection", "computer"):
         destination = source_root / name
         if not destination.exists():
             shutil.copytree(

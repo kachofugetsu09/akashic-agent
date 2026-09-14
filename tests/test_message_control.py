@@ -28,7 +28,7 @@ async def runtime(tmp_path, monkeypatch, *, programmatic=False):
     source = tmp_path / "plugins"
     shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", source / "conversation")
     shutil.copytree(Path(__file__).parents[1] / "plugins/sources", source / "sources")
-    for name in ("content", "models"):
+    for name in ("ui", "content", "models"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name)
     if programmatic:
         for name in ("programmatic", "turn_projection"):

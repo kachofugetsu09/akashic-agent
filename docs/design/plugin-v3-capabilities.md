@@ -47,8 +47,6 @@ Core 用一个位置参数调用 `apply(ctx)`，不限制参数名字或默认�
 | `inject` | 根 Fiber 激活所需的 `ServiceKey` |
 | `is_active(services)` | 根据冻结的静态 Service view 决定是否发布静态贡献 |
 | `workspace_roots`、`workspace_files` | 声明被授权的 workspace 路径；只授予真正的数据 owner |
-| `dashboard_module` | 发布 Dashboard HTTP/面板模块 |
-| `web_module`、`web_requires`、`web_provides`、`web_contract_digests` | 发布 Web 模块及版本化组合合同 |
 
 配置从 `ctx.config` 读取，是当前组合固定输入的插件本地副本，不跟随全局文件变化。
 插件自行选择解析方式，例如 `config = Config.model_validate(ctx.config)`；`Config` 只是插件内部普通类，
@@ -289,12 +287,47 @@ Provider 返回结构化 `ModelUsage` 和公开错误类型；未知能力保持
 
 ## 5. Dashboard 与 Web
 
-`dashboard_module = "dashboard.py"` 让 Core 用 `DashboardContext` 加载模块。Dashboard 只能通过
-`workspace_root()`、`workspace_file()` 和 `workload_url()` 取得已声明资源。
+Web/UI 由显式选择的普通 `ui` 插件提供；Core 不读取 UI 模块常量。
+贡献方声明 `inject = (UI,)`，在自己的 `apply(ctx)` 中注册：
 
-`web_module` 指向随 artifact 发布的浏览器模块。`web_requires` / `web_provides` 声明组合合同，
-`web_contract_digests` 固定合同内容。缺少 provider、digest 不一致或越界资源在 publication Gate
-fail-loud。
+```python
+from importlib import import_module
+from agent.plugin_composition.ui import UI
+
+inject = (UI,)
+
+async def apply(ctx):
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        dashboard=lambda: import_module(".dashboard", __package__),
+        requires=("shell.pages.v1",),
+    )
+```
+
+`web` 和 `dashboard` 至少选一个。Web 路径必须位于贡献 Context 的固定代码制品；
+Dashboard loader 必须定义在该制品中，返回的模块也必须属于同一制品。
+延迟 loader 保留原包的 Python 类型身份，并让 provider 处理导入失败和资源取得。
+`requires`、`provides` 和 `contract_digests` 是这次注册的领域参数。
+provider 在 `SNAPSHOT_SEALING` 校验并封存目录；重复 provider、合同 digest 不匹配、
+越界资源和无效 JS/CSS 都显式失败。未挂载的浏览器 mount 合同仍允许 consumer 自己等待，
+不把缺少可选 mount 误判为缺少 Python UI 服务。
+
+Dashboard 继续使用 `DashboardContext` 的 `require()`、`workspace_root()`、
+`workspace_file()` 和 `workload_url()`；请求必须属于注册 Context 的实际 Root。
+注册 Effect 拥有路由资源，关闭失败保留句柄供原 Effect 重试，不重放初始化。
+初次导入失败仅允许 dashboard-only 插件暂不可用；配套 Web/API 不能半发布。
+Web bootstrap 和 DashboardHost 从所选 Root 的 typed service 读取目录；
+`RuntimeSnapshot` 不复制 Web/UI 字段，Core compiler 不解释 UI 合同。
+
+```text
+贡献插件 apply(ctx) ── UI.register ──┐
+                                   ▼
+                        本 Root 的 UI provider
+                        ├── seal：Web 目录
+                        └── Effect：Dashboard 资源
+                                   │
+              实际请求租约 ────────┘
+```
 
 ## 6. Generation 与 candidate
 

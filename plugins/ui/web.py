@@ -3,18 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import tree_sitter_javascript
 from tree_sitter import Language, Node, Parser
 
-from agent.plugins.generation import PluginGeneration, WebModuleAsset
-
-if TYPE_CHECKING:
-    from agent.plugins.snapshot import RuntimeSnapshotStore
+from agent.plugin_composition.ui import WebModuleAsset, WebModuleDescriptor, WebUiCatalog
 
 
 WEB_MODULE_MAX_BYTES = 4 * 1024 * 1024
@@ -36,78 +30,6 @@ _WEB_MODULE_IMPORTS = frozenset(
         "@akashic/web-ui-v1",
     }
 )
-
-
-@dataclass(frozen=True)
-class WebModuleDescriptor:
-    plugin_id: str
-    generation_id: str
-    source_revision: str
-    asset: WebModuleAsset
-
-
-@dataclass(frozen=True)
-class WebUiCatalog:
-    identity: str
-    modules: tuple[WebModuleDescriptor, ...]
-
-    def encode_bootstrap(self, snapshot_id: str) -> bytes:
-        """Encode one exact catalog together with every executable byte."""
-
-        payload = {
-            "schemaVersion": 1,
-            "snapshotId": snapshot_id,
-            "catalogId": self.identity,
-            "modules": [
-                {
-                    "pluginId": item.plugin_id,
-                    "generationId": item.generation_id,
-                    "module": item.asset.module,
-                    "moduleSha256": item.asset.module_sha256,
-                    "moduleBytes": item.asset.module_bytes,
-                    "stylesheet": item.asset.stylesheet,
-                    "stylesheetSha256": item.asset.stylesheet_sha256,
-                    "stylesheetBytes": item.asset.stylesheet_bytes,
-                    "requires": list(item.asset.requires),
-                    "provides": list(item.asset.provides),
-                    "contractDigests": dict(item.asset.contract_digests),
-                    "contractSha256": item.asset.contract_sha256,
-                }
-                for item in self.modules
-            ],
-        }
-        return json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        ).encode("utf-8")
-
-
-class PluginWebUiProvider:
-    """Materialize a complete browser bootstrap from one snapshot lease."""
-
-    def __init__(self, snapshot_store: RuntimeSnapshotStore) -> None:
-        self._snapshot_store = snapshot_store
-
-    async def bootstrap(self) -> bytes:
-        from agent.plugins.snapshot import lease_runtime_snapshot
-
-        async with lease_runtime_snapshot(self._snapshot_store) as snapshot:
-            catalog = snapshot.web_ui_catalog
-            if catalog is None:
-                raise RuntimeError("当前 snapshot 缺少 Web UI catalog")
-            return catalog.encode_bootstrap(snapshot.snapshot_id)
-
-    async def state(self) -> dict[str, str]:
-        from agent.plugins.snapshot import lease_runtime_snapshot
-
-        async with lease_runtime_snapshot(self._snapshot_store) as snapshot:
-            catalog = snapshot.web_ui_catalog
-            if catalog is None:
-                raise RuntimeError("当前 snapshot 缺少 Web UI catalog")
-            return {"snapshotId": snapshot.snapshot_id, "catalogId": catalog.identity}
 
 
 def resolve_web_module(
@@ -182,25 +104,9 @@ def resolve_web_module(
     )
 
 
-def freeze_web_ui_catalog(
-    generations: Mapping[str, PluginGeneration],
-    active_plugin_ids: frozenset[str],
-) -> WebUiCatalog:
-    """Project active generation assets into one immutable browser catalog."""
+def freeze_web_ui_catalog(modules: tuple[WebModuleDescriptor, ...]) -> WebUiCatalog:
+    """校验本 Root 的实际注册，冻结完整浏览器目录。"""
 
-    modules = tuple(
-        WebModuleDescriptor(
-            plugin_id=generation.plugin_id,
-            generation_id=generation.generation_id,
-            source_revision=generation.source_revision,
-            asset=asset,
-        )
-        for plugin_id in sorted(generations)
-        if plugin_id in active_plugin_ids
-        for generation in (generations[plugin_id],)
-        for asset in (generation.contributions.web_module,)
-        if asset is not None
-    )
     _validate_web_contracts(modules)
     total_bytes = sum(
         item.asset.module_bytes + item.asset.stylesheet_bytes for item in modules
@@ -214,7 +120,6 @@ def freeze_web_ui_catalog(
             (
                 item.plugin_id,
                 item.generation_id,
-                item.source_revision,
                 item.asset.module_sha256,
                 item.asset.stylesheet_sha256 or "",
                 item.asset.contract_sha256,

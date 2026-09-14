@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from importlib import import_module
+from agent.plugin_composition.ui import UI
+
 from agent.plugin_composition import (
     CHAT_MODELS,
     EMBEDDINGS,
@@ -35,20 +38,22 @@ name = "models"
 version = "1.0.0"
 desc = "Provider-neutral model connections, selection, and execution"
 author = "Akashic Core"
-inject = ()
+inject = (UI,)
 workspace_roots = ()
 workspace_files = ("model-registry.sqlite3",)
-web_module = "web_module.js"
-web_requires = ("shell.pages.v1",)
-web_provides = ("models.connection-types.v1",)
-web_contract_digests = {
-    "models.connection-types.v1": "005155186b59c61f0d67311ce2e0f06dba016d516ba32f3142f0eef754208a4f",
-}
-dashboard_module = "dashboard.py"
 
 
 async def apply(ctx: Context) -> None:
     """Publish narrow views over one Root-local model state."""
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        dashboard=lambda: import_module(".dashboard", __package__),
+        requires=("shell.pages.v1",),
+        provides=("models.connection-types.v1",),
+        contract_digests={
+            "models.connection-types.v1": "005155186b59c61f0d67311ce2e0f06dba016d516ba32f3142f0eef754208a4f",
+        },
+    )
 
     store = ModelsStore(
         ctx.workspace_file("model-registry.sqlite3"),

@@ -80,7 +80,7 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
     http = SharedHttpResources()
     sources = tmp_path / "plugins"
-    for name in ("models", "openai_compatible"):
+    for name in ("ui", "models", "openai_compatible"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[sources])

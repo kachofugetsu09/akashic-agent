@@ -1,3 +1,5 @@
+from importlib import import_module
+from agent.plugin_composition.ui import UI
 """从消息学习；模型未配置时保持可见的记忆不可用状态。"""
 from __future__ import annotations
 
@@ -37,13 +39,6 @@ api_version = 3
 name = "akasha"
 version = "4.0.0"
 desc = "从消息学习并提供普通 Context 材料与记忆工具"
-dashboard_module = "dashboard.py"
-web_module = "web_module.js"
-web_requires = ("workbench.panels.v2",)
-web_provides = ()
-web_contract_digests = {
-    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
-}
 workspace_roots = ("memory",)
 
 MaterialData = Mapping[str, object]
@@ -58,7 +53,7 @@ class MaterialRegistry(Protocol):
 
 
 MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")
-inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
+inject = (UI, TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
           BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, UI_SLOTS, COMMANDS)
 
 
@@ -113,6 +108,15 @@ AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
 
 async def apply(ctx: Context) -> None:
     """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        dashboard=lambda: import_module(".dashboard", __package__),
+        requires=("workbench.panels.v2",),
+        provides=(),
+        contract_digests={
+            "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+        },
+    )
     config = Config.model_validate(ctx.config)
     catalog: ToolCatalog = ctx.require(TOOLS)
     content: ContentCapability = ctx.require(CONTENT)

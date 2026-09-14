@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent.plugin_composition.ui import UI
+
 import asyncio
 from contextlib import closing
 import hashlib
@@ -17,7 +19,7 @@ import pytest
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot
-from agent.plugins.web_ui import WebModuleDescriptor
+from agent.plugin_composition.ui import WebModuleDescriptor
 from bootstrap.dashboard_api import create_dashboard_app
 from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
 from plugins.delivery.history import DELIVERY_READ
@@ -45,7 +47,7 @@ def _file_snapshot(path: Path) -> dict[str, tuple[int, str]]:
 
 
 def _web_headers(snapshot: RuntimeSnapshot, plugin_id: str) -> tuple[WebModuleDescriptor, dict[str, str]]:
-    catalog = snapshot.web_ui_catalog
+    catalog = snapshot.composition_root.context.require(UI).catalog()
     assert catalog is not None
     module = next(item for item in catalog.modules if item.plugin_id == plugin_id)
     headers = {

@@ -71,8 +71,8 @@ def test_standalone_dashboard_does_not_import_plugin_backend(
         "api_version = 3\n"
         "name = 'observe'\n"
         "version = '1.0.0'\n"
-        "dashboard_module = 'dashboard.py'\n"
-        "async def apply(ctx): pass\n",
+        "from importlib import import_module\nfrom agent.plugin_composition.ui import UI\ninject = (UI,)\n"
+        "async def apply(ctx):\n    await ctx.require(UI).register(ctx, dashboard=lambda: import_module('.dashboard', __package__))\n",
         encoding="utf-8",
     )
     pointer = ArtifactPointer(".artifacts/1.0.0-test")
