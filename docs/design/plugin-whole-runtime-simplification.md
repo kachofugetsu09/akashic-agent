@@ -20,16 +20,23 @@ Web/Dashboard、Mobile UI 已迁入显式 `ui` provider，命令目录与执行�
 及旁路依赖列表；功能启用分支留在 `apply(ctx)`，选入组合的硬依赖仍必须满足。
 旧 `ToolRegistry` 在实际启动链没有构造者；只有测试向 Manager 注入它，复制 MCP facade
 并写入另一份 snapshot 目录。这条路径及其搜索后端已删除，实际工具仍由 `plugins/tools`
-与 MCP 的调用 scope 拥有。MCP 只读工具目录尚待对应 provider 提供，当前继续明确报告
-`mcp_catalog_unavailable`，不把未打开的服务伪装成空工具成功。
+与 MCP 的调用 scope 拥有。普通 `mcp` provider 在每次实际 open 后提供工具目录，并在候选
+route 上执行只读限制；没有打开会话的 runtime catalog 继续明确报告 `mcp_catalog_unavailable`，
+不把未打开的服务伪装成空工具成功。
+MCP、Workload、托管进程已移入[普通资源 provider](plugin-resource-providers.md)，
+Snapshot 不再保存这三类目录，Manager 不再为它们执行第二次启动。
 候选、正式及失败恢复现从同一组固定组件归档分别创建全新的模块、Scope 和 generation；
 snapshot 保存实际挂载的实例，禁止跨 snapshot 共用物理 Root 或 generation。
 关闭候选后才开始正式换代；旧组合排空并实际释放后再创建新正式组合。
 旧 payload 替换、候选 clone 以及正式/候选目录和身份来回切换已删除。
 恢复也是一次真实新 Root 构建，关闭失败仍由原 Root 或 Store 保存 owner，不能隐式重试。
 Dashboard 从该实例的验证环境归属读取限制，不再比较两份不一致的数据路径猜测环境。
-这仍未完成整体重构：Manager 仍拥有业务验证、逐类运行宿主和发布特例，
-snapshot 仍枚举其他能力，App 启动装配仍有下述接线缺口。不能把局部删除视作整体换代已经完成。
+运行目录已按[当前 snapshot 查询投影](plugin-active-projections.md)收敛：
+删除重复 loaded/active metadata/Scope 索引和 PluginContributions；未交接 Root、待发布候选、
+Store 和清理失败的原 owner 仍保留。
+这仍未完成整体重构：Manager 仍拥有业务验证、Channel 宿主和发布特例，
+Snapshot 仍枚举 Channel。候选操作与实际调用 lease 的衔接、旧发布死分支和最终累计审查
+仍在处理，不能把局部删除视作整体换代已经完成。
 
 余下收敛顺序如下；并行实现只用于互不争夺 owner 的切片：
 
@@ -77,7 +84,7 @@ snapshot 仍枚举其他能力，App 启动装配仍有下述接线缺口。不�
 
 `agent/plugins/selection.py` 的 `PluginSelection(workspace)` 拥有唯一可变文件
 `runtime/plugin-stable.json`。Manager 的 boot、整组替换和显式恢复现消费该选择；
-App 的自动 watcher 和安装扫描接线仍需主协调器处理，不能单独发布本层。
+App 已移除 boot 时的安装清单改写；watcher 首次扫描只建立基线，不自动选择未晋升代码。
 
 指针 v1 为 `{"version": 1, "root_ref": null}` 或指向 SHA-256 记录的同形对象。
 null 只由显式 `initialize()` 创建，表示尚无成功提交；它与已提交的空组件集合不同。
