@@ -1,5 +1,7 @@
 # 插件 v3 生产替代清单
 
+> 2026-09-15 勘误：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 已取代本文的两参数入口、精确参数名和 Core 配置模型校验。现行入口为 `apply(ctx)`，插件自行解析 `ctx.config`；下文相关描述仅保留历史背景。凭据脱敏及正式解析授权边界不因此取消。
+
 > 历史执行清单：其中 E1～E4 表格记录 2026-08 的迁移计划，不再是当前 CI 或发布命令。2026-09-02 的 Gate 去留与代码演进依据见[测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md)；当前候选入口以 [`docs/WORKFLOW.md`](../WORKFLOW.md) 为准。
 
 本文是 Issue [#394](https://github.com/kachofugetsu09/akashic-agent/issues/394) 的唯一执行清单。

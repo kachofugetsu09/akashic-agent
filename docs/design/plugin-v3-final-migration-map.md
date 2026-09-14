@@ -1,5 +1,7 @@
 # 插件 v3 最终迁移地图
 
+> 2026-09-15 勘误：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 已取代本文的两参数入口、精确参数名和 Core 配置模型校验。现行入口为 `apply(ctx)`，插件自行解析 `ctx.config`；下文相关描述仅保留历史背景。凭据脱敏及正式解析授权边界不因此取消。
+
 > 历史迁移地图：E1～E4 是 2026-08 的分批计划，不是当前可执行 Gate。当前入口与删除依据分别见 [`docs/WORKFLOW.md`](../WORKFLOW.md) 和[测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md)。
 
 本文记录 Issue [#394](https://github.com/kachofugetsu09/akashic-agent/issues/394)

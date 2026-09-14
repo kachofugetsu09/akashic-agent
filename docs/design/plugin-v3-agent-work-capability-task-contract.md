@@ -1,5 +1,7 @@
 # 插件 v3 Agent Work 能力任务合同
 
+> 2026-09-15 勘误：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 已取代本文的两参数入口、精确参数名和 Core 配置模型校验。现行入口为 `apply(ctx)`，插件自行解析 `ctx.config`；下文相关描述仅保留历史背景。凭据脱敏及正式解析授权边界不因此取消。
+
 本文只为 GitHub Watcher 的两个现存 consumer 建立最窄 Core seam：在一个 committed
 Background Job 内提交 programmatic Turn，以及向同一 RuntimeSnapshot 登记插件工具。它不恢复
 旧 `AgentInputService`、`PLUGIN_TOOLS` 或 `TIMER_SERVICE`，也不向插件暴露 AgentLoop、
