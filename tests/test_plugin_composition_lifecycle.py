@@ -606,6 +606,7 @@ async def apply(ctx):
         )
         candidate_root = candidate.composition_root
         assert candidate_root is not None and candidate_root is not old_root
+        assert candidate_root.frozen and old_root.frozen
         assert manager._building_roots == {}
         assert stable_snapshot.composition_root is old_root
         stable.runtime_snapshot = candidate
@@ -617,6 +618,7 @@ async def apply(ctx):
         root = stable_snapshot.composition_root
         assert root is not None
         assert root.receipt().ready
+        assert root.frozen
         module = stable.instance.module
         assert module is not None
         assert module.__dict__["_registry"] == {stable.generation_id}
@@ -821,3 +823,207 @@ async def test_compilation_cancellation_with_successful_cleanup_stays_cancelled(
     assert manager._building_roots == {}
     assert manager._draining_generations == {}
     await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_compiled_root_rejects_binding_changes_without_restarting_work():
+    """编译后拒绝全部绑定入口，已有消费者继续使用原实例和激活身份。"""
+    from agent.plugin_composition import ServiceKey
+
+    root = CompositionRoot("fixed-bindings")
+    service = ServiceKey[list[str]]("test.fixed.service")
+    values = ["original"]
+    contexts = []
+    calls = []
+
+    async def provider(ctx):
+        await ctx.provide(service, values)
+
+    async def consumer(ctx):
+        contexts.append(ctx)
+        calls.append(ctx.require(service))
+
+    await root.mount(provider, name="provider")
+    fiber = await root.mount(consumer, name="consumer", inject=(service,))
+    context = contexts[0]
+    token = context.fiber.activation_token
+    missing = ServiceKey("test.new.service")
+    await root.context.inject((missing,), lambda ctx: calls.append("late activation"))
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    assert snapshot.composition_root is root and root.frozen
+    changes = (
+        lambda: root.mount(lambda ctx: None, name="late-root-child"),
+        lambda: context.mount(lambda ctx: None, name="late-child"),
+        lambda: context.inject((service,), lambda ctx: None, name="late-inject"),
+        lambda: context.provide(service, ["replacement"]),
+        lambda: context.provide(missing, object()),
+        context.fiber.restart,
+    )
+    for change in changes:
+        with pytest.raises(CompositionError) as caught:
+            await change()
+        assert caught.value.code == "COMPOSITION_FROZEN"
+    # 服务内部状态仍可变化；协调通知不能产生新实例。
+    values.append("client retry completed")
+    await fiber.reconcile()
+    assert calls == [values]
+    assert context.require(service) is values
+    assert context.fiber.activation_token is token
+    assert root.topology_view() == snapshot.composition_topology
+    await root.dispose()
+    assert root.frozen
+
+
+@pytest.mark.asyncio
+async def test_pending_initial_dependency_resolves_then_frozen_teardown_closes_consumers_first():
+    """初始待定依赖可激活；退出顺序按实际依赖而非挂载顺序。"""
+    from agent.plugin_composition import ServiceKey
+
+    root = CompositionRoot("initial-resolution")
+    service = ServiceKey[list[str]]("test.initial.service")
+    events = []
+
+    async def consumer(ctx):
+        shared = ctx.require(service)
+        events.append("consumer-start")
+        await ctx.effect(lambda: lambda: shared.append("consumer-close"))
+
+    async def provider(ctx):
+        await ctx.effect(lambda: lambda: events.append("provider-close"))
+        await ctx.provide(service, events)
+
+    await root.mount(consumer, name="consumer", inject=(service,))
+    assert events == []
+    await root.mount(provider, name="provider")
+    assert events == ["consumer-start"]
+    RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    await root.dispose()
+    assert events == ["consumer-start", "consumer-close", "provider-close"]
+
+
+@pytest.mark.asyncio
+async def test_frozen_service_removal_retains_binding_until_consumer_cleanup_succeeds():
+    """关闭服务失败不能先删 provider，成功后也不能重新绑定消费者。"""
+    from agent.plugin_composition import ServiceKey
+
+    root = CompositionRoot("fixed-service-removal")
+    service = ServiceKey[object]("test.removal.service")
+    value = object()
+    registration = await root.context.provide(service, value)
+    attempts = 0
+    starts = []
+
+    async def consumer(ctx):
+        starts.append(ctx.require(service))
+        def close():
+            nonlocal attempts
+            attempts += 1
+            assert ctx.require(service) is value
+            if attempts == 1:
+                raise OSError("consumer connection still open")
+        await ctx.effect(lambda: close)
+
+    await root.mount(consumer, name="consumer", inject=(service,))
+    RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    with pytest.raises(BaseExceptionGroup):
+        await registration.aclose()
+    assert root.context.require(service) is value
+    assert attempts == 1
+    await registration.aclose()
+    assert root.context.get(service) is None
+    assert attempts == 2 and starts == [value]
+    with pytest.raises(CompositionError) as caught:
+        await root.context.provide(service, object())
+    assert caught.value.code == "COMPOSITION_FROZEN"
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sealing_precedes_freeze_and_started_resources_and_health_remain_live():
+    """封印回调完成装配，启动回调仍能取得资源，健康变化不重启绑定。"""
+    from agent.plugin_composition import SNAPSHOT_SEALING, SnapshotSealing, RuntimeStarted, ServiceKey
+
+    root = CompositionRoot("freeze-start-resources")
+    service = ServiceKey[list[str]]("test.sealing.service")
+    values = []
+    contexts, health, tasks = [], [], []
+    running = asyncio.Event()
+    closed = []
+
+    async def plugin(ctx):
+        contexts.append(ctx)
+        health.append(await ctx.health("connection"))
+        async def seal(_):
+            await ctx.provide(service, values)
+        async def follow():
+            running.set()
+            await asyncio.Event().wait()
+        async def start(_):
+            assert root.frozen
+            await ctx.effect(lambda: lambda: closed.append("connection"))
+            tasks.append(await ctx.spawn(follow(), name="connection-follower"))
+        await ctx.on(SNAPSHOT_SEALING, seal)
+        await ctx.on(RUNTIME_STARTED, start)
+
+    await root.mount(plugin, name="resource-owner")
+    await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
+    token = contexts[0].fiber.activation_token
+    async with _bound_root(root):
+        await root.context.serial(RUNTIME_STARTED, RuntimeStarted())
+        await running.wait()
+        health[0].degrade("connection retrying")
+        assert root.receipt().required_degraded
+        values.append("reconnected")
+        health[0].recover()
+        assert root.receipt().ready
+        assert contexts[0].fiber.activation_token is token
+        assert root.context.require(service) == ["reconnected"]
+    assert tasks[0].done()
+    assert closed == ["connection"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["observer", "apply"])
+async def test_freeze_rejects_incomplete_mount_without_caching_assembly_status(phase):
+    """已有 Fiber 过渡锁覆盖挂载 observer 与 apply 的异步等待。"""
+    root = CompositionRoot("freeze-during-mount")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait():
+        entered.set()
+        await release.wait()
+    async def observer(fiber):
+        if phase == "observer":
+            await wait()
+    async def plugin(ctx):
+        if phase == "apply":
+            await wait()
+
+    root.on_mount(observer)
+    mount = asyncio.create_task(root.mount(plugin, name="mounting"))
+    await entered.wait()
+    with pytest.raises(CompositionError) as caught:
+        root.freeze()
+    assert caught.value.code == "COMPOSITION_NOT_SETTLED"
+    assert not root.frozen
+    release.set()
+    await mount
+    root.freeze()
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_failed_compilation_does_not_freeze_root(monkeypatch):
+    """目录编译失败尚未越过冻结边界，初始化 owner 仍可继续装配。"""
+    from agent.plugin_composition import ServiceKey
+    from agent.plugins import snapshot as snapshot_module
+
+    root = CompositionRoot("failed-compile-not-frozen")
+    def fail_catalog(*args, **kwargs):
+        raise ValueError("catalog failed")
+    monkeypatch.setattr(snapshot_module, "freeze_web_ui_catalog", fail_catalog)
+    with pytest.raises(ValueError, match="catalog failed"):
+        RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    assert not root.frozen
+    await root.context.provide(ServiceKey("test.after.failed.compile"), object())
+    await root.dispose()

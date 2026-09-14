@@ -295,7 +295,7 @@ class Context:
         *,
         name: str | None = None,
     ) -> FiberHandle:
-        """Mount an optional child that activates only while deps exist."""
+        """初始化时挂载可选子插件；Root 冻结后不再补挂或重绑。"""
 
         reject_executor_context_access()
         return await self.mount(
@@ -638,7 +638,7 @@ class Fiber:
         """Move to the state implied by the newest dependency epoch."""
 
         async with self._locked_transition():
-            if self._dispose_requested or self._is_root:
+            if self._dispose_requested or self._is_root or self.root.frozen:
                 return
             providers = self.root._dependency_snapshot(self._activation_dependencies)
             target_epoch = self.root._provider_epoch(providers)
@@ -654,6 +654,7 @@ class Fiber:
             await self._load(providers, target_epoch)
 
     async def restart(self) -> None:
+        self.root._require_unfrozen("restart Fiber")
         self._reject_direct_reentrant_wait("restart")
         if self._restart_task is None or self._restart_task.done():
             self._restart_task = asyncio.create_task(
@@ -823,7 +824,7 @@ class Fiber:
 
 
 class CompositionRoot:
-    """Own one generation topology and derive its validation receipt."""
+    """拥有初始装配、不可逆的绑定冻结和整棵资源树的退出。"""
 
     RECENT_INCIDENT_LIMIT = 128
 
@@ -843,6 +844,7 @@ class CompositionRoot:
         self._next_fiber_id = 1
         self._next_provider_revision = 1
         self._composition_revision = 0
+        self._frozen = False
         self._fibers: dict[int, Fiber] = {}
         self._providers: dict[ServiceKey[object], _Provider] = {}
         self._mount_observers: list[FiberObserver] = []
@@ -888,6 +890,39 @@ class CompositionRoot:
         """标识单个 Root 实例，不参与可持久化拓扑身份。"""
 
         return self._instance_token
+
+    @property
+    def frozen(self) -> bool:
+        """服务绑定与挂载树是否已经不可逆地冻结。"""
+        return self._frozen
+
+    def freeze(self) -> None:
+        """装配完成后固定绑定；资源、服务内部状态和诊断仍归原 owner。"""
+
+        if self._frozen:
+            return
+        # 1. 不把仍在挂载、重启或退出的 Fiber 固定成可发布组合。
+        for fiber in (self.root_fiber, *self._fibers.values()):
+            if (
+                fiber._transition.locked()
+                or fiber.state in {FiberState.LOADING, FiberState.UNLOADING, FiberState.DISPOSED}
+                or any(task is not None and not task.done() for task in (
+                    fiber._restart_task, fiber._dispose_task,
+                ))
+            ):
+                raise CompositionError(
+                    "COMPOSITION_NOT_SETTLED", f"{fiber.name} 尚未完成装配或正在退出",
+                )
+        if self._dispose_task is not None:
+            raise CompositionError("COMPOSITION_NOT_SETTLED", "Root 已开始退出")
+        # 2. 同步提交后没有解冻路径；后续组合变化必须建立新 Root。
+        self._frozen = True
+
+    def _require_unfrozen(self, operation: str) -> None:
+        if self._frozen:
+            raise CompositionError(
+                "COMPOSITION_FROZEN", f"Root 已冻结，不能 {operation}；请建立新 Root",
+            )
 
     def _bind_runtime_scope_acquirer(
         self,
@@ -1266,6 +1301,7 @@ class CompositionRoot:
     ) -> Fiber:
         """Publish only after parent ownership exists, then reconcile."""
 
+        self._require_unfrozen("mount / inject")
         # 1. Resolve the narrow apply(ctx) contract.
         apply, resolved_name, dependencies = self._resolve_plugin(
             plugin,
@@ -1303,7 +1339,9 @@ class CompositionRoot:
         self._fibers[fiber.fiber_id] = fiber
         self._bump_composition_revision()
         try:
-            await self._notify_mount(fiber)
+            # 挂载 observer 也属于正在进行的装配，不能在其等待中 freeze。
+            async with fiber._locked_transition():
+                await self._notify_mount(fiber)
         except BaseException as error:
             await self._rollback_mount(fiber, error)
             raise
@@ -1367,6 +1405,7 @@ class CompositionRoot:
         owner: Fiber,
         *, binding_contributors: Callable[[], tuple[Context, ...]] | None = None,
     ) -> None:
+        self._require_unfrozen("provide Service")
         existing = self._providers.get(key)
         if existing is not None:
             raise CompositionError(
@@ -1384,6 +1423,7 @@ class CompositionRoot:
         self._bump_composition_revision()
 
     def _set_static_active(self, owner: Fiber, active: bool) -> None:
+        self._require_unfrozen("改变插件启用状态")
         if not isinstance(active, bool):
             raise TypeError("static active 状态必须是 bool")
         if owner.static_active == active:
@@ -1404,9 +1444,13 @@ class CompositionRoot:
                 "SERVICE_OWNER_MISMATCH",
                 f"{owner.name} 不能移除 {provider.owner.name} 的 Service {key.name}",
             )
+        if self._frozen:
+            # 先关闭持有此绑定的消费者；失败时服务和资源仍留在原 owner。
+            await self._reconcile_dependents((key,), exclude=owner)
         del self._providers[key]
         self._bump_composition_revision()
-        await self._reconcile_dependents((key,), exclude=owner)
+        if not self._frozen:
+            await self._reconcile_dependents((key,), exclude=owner)
 
     def _active_provider(self, key: ServiceKey[object]) -> _Provider | None:
         provider = self._providers.get(key)
@@ -1472,6 +1516,8 @@ class CompositionRoot:
         *,
         exclude: Fiber,
     ) -> None:
+        """初始化时解析依赖；冻结后只关闭消费者，不再重新装配。"""
+
         if not keys:
             return
         affected = [
@@ -1483,7 +1529,7 @@ class CompositionRoot:
         ]
         if affected:
             results = await asyncio.gather(
-                *(fiber.reconcile() for fiber in affected),
+                *(fiber.dispose() if self._frozen else fiber.reconcile() for fiber in affected),
                 return_exceptions=True,
             )
             errors = [result for result in results if isinstance(result, BaseException)]

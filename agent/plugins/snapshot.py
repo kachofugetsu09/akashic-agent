@@ -338,7 +338,7 @@ class RuntimeSnapshotCompiler:
             )
         )
         snapshot_id = hashlib.sha256(canonical_identity.encode()).hexdigest()[:16]
-        return RuntimeSnapshot(
+        snapshot = RuntimeSnapshot(
             snapshot_id=snapshot_id,
             generations=MappingProxyType(dict(generations)),
             web_ui_catalog=web_ui_catalog,
@@ -373,6 +373,9 @@ class RuntimeSnapshotCompiler:
             composition_topology=composition_topology,
             composition_active_plugin_ids=composition_active_plugin_ids,
         )
+        if composition_root is not None:
+            composition_root.freeze()
+        return snapshot
 
     @staticmethod
     def _validate_channel_registry(
