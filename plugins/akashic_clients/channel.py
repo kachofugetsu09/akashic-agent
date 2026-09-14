@@ -439,7 +439,7 @@ class _GenerationAkashicAdapter:
                 yield {
                     "version": 2,
                     "session_id": session_id,
-                    "snapshot_id": None,
+                    "snapshot_id": self._context.snapshot_id,
                     "available": True,
                     "items": [dict(item) for item in frame],
                 }

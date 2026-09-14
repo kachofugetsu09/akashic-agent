@@ -167,6 +167,56 @@ async def test_apply_registers_one_formal_channel_definition() -> None:
     plugin.unregister_generation("generation-1")
 
 
+@pytest.mark.asyncio
+async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: Path) -> None:
+    """Active reply status must name the snapshot that owns the scoped reader."""
+
+    class ReplyRead:
+        async def follow(self, _session_id: str):
+            yield ()
+
+    class ReplyScope:
+        def require(self, _key: Any) -> ReplyRead:
+            return ReplyRead()
+
+    @asynccontextmanager
+    async def open_scope():
+        yield ReplyScope()
+
+    generation = "reply-status-generation"
+    register_generation(generation, AkashicClientsConfig(), tmp_path)
+    try:
+        from agent.plugin_composition.channels import ChannelFactoryContext
+
+        context = ChannelFactoryContext(
+            snapshot_id="reply-status-snapshot",
+            generation_id=generation,
+            boot_id="boot-1",
+            binding_token="binding-1",
+            config={},
+            credentials={},
+            provider_client_factory=cast(ProviderClientFactory, object()),
+            ingress=None,
+            identity=None,
+            open_scope=open_scope,
+        )
+        adapter = build_akashic_channel(context)
+        stream = adapter._follow_reply_status("akashic:session-1")
+        try:
+            assert await anext(stream) == {
+                "version": 2,
+                "session_id": "akashic:session-1",
+                "snapshot_id": "reply-status-snapshot",
+                "available": True,
+                "items": [],
+            }
+        finally:
+            await stream.aclose()
+            await adapter.stop()
+    finally:
+        unregister_generation(generation)
+
+
 def test_same_generation_allows_distinct_binding_tokens(tmp_path: Path) -> None:
     generation = "binding-generation"
     register_generation(generation, AkashicClientsConfig(), tmp_path)
