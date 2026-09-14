@@ -73,6 +73,7 @@
 
 | 文件或目录 | 回答的问题 | 读取策略 |
 |---|---|---|
+| [插件整体换代重构](design/plugin-whole-runtime-simplification.md) | 0071 的入口、归属、整体组合与 stacked PR 实施 | 本轮插件简化的固定入口 |
 | [插件 V3 能力手册](design/plugin-v3-capabilities.md) | V3 当前有哪些原子能力、插件怎样使用 | 开发或审查 V3 插件时读取 |
 | [hua-home 插件运行事实](design/hua-home-plugin-runtime-source-of-truth.md) | 线上权威路径、固定查找方法、本地镜像边界和 exact fleet snapshot | 审计、同步或部署插件时先读取 |
 | [`WORKFLOW.md`](WORKFLOW.md) | 修改仓库文件时怎样从接手任务走到提交评审 | 每个修改任务读取 |
@@ -351,3 +352,5 @@ docs/
 - [0067 · 客户端属于普通插件](decisions/0067-clients-are-ordinary-plugin.md)：Web/Mobile 业务与中立渠道宿主的归属边界。
 
 插件旧数据处理责任见 [0070](decisions/0070-plugins-own-persisted-data.md)。
+
+插件简化与整体换代见 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md)。

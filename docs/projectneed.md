@@ -691,13 +691,16 @@ Mobile 中止按钮和 channel `/stop` 只追加带精确 `source` 与 `through_
 
 ## 10. 插件 generation 与 snapshot
 
+本节按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 修订为整体换代目标。
+旧实现的迁移差距与分层验收见[重构合同](design/plugin-whole-runtime-simplification.md)。
+
 ### PLG-001 候选插件不得污染正式状态
 
 候选在 commit 前只能使用 generation 私有 staging、只读 session/memory 和 staged event bus。初始化失败后，正式 KV、session、memory、事件和外部服务必须与开始前一致。
 
-### PLG-002 单次 reconciliation 使用一个发现快照
+### PLG-002 一次装配使用一份固定输入
 
-同一轮候选准备、禁用和发布使用同一个不可变 topology revision。扫描后的文件变化只进入下一轮。
+一次装配固定全部插件制品、入口、运行环境与配置。文件变化只形成下一份候选输入，不改变已发布组合。底座解释硬依赖、服务选择、冲突和环；provider 初始化完成后才初始化其消费者，不另设启动优先级语言。
 
 ### PLG-003 在途请求绑定同一 runtime snapshot
 
@@ -705,31 +708,31 @@ Mobile 中止按钮和 channel `/stop` 只追加带精确 `source` 与 `through_
 
 ### PLG-004 发布对外观察必须原子
 
-candidate 在所有 invariant 通过前不接受公开请求。commit 临界区一次切换 current 与 admission；失败继续使用 previous。恢复指针但无法撤销已发生外部效果不算完整回滚。
+候选初始化和公开接纳分离。完整组合初始化成功后才允许提交 stable，提交后开放唯一 admission 屏障。提交前失败不改变 stable；恢复旧选择必须真实完成旧组合启动，不能靠恢复内存指针假报恢复，更不表示外部效果或数据已回滚。
 
-### PLG-005 独占 endpoint 先停 admission 再排空
+### PLG-005 低频更新使用完整组合换代
 
-端口、channel 和 managed service 换代前暂停新请求，等待旧 lease 归零，再切换 endpoint。失败时先恢复旧 endpoint 和 admission，随后清理候选；持有当前 lease 的调用栈不得发起会等待自身的切换。
+更新先关闭新工作来源，再排空已有有限工作，停止旧组合并启动完整新组合。允许短暂停服，不拼接新旧 Root，不在已发布组合内响应式替换 provider。持有当前 lease 的调用栈只能登记更新，不能等待自身排空。新插件负责理解现有数据；旧代码可能无法读取新写入，底座不承诺数据回滚或自动安全降级。
 
 ### PLG-006 清理逆序、抗取消并保留全部失败
 
-插件 task、process、subscription 和 catalog cleanup 按注册逆序执行。调用方取消不能截断清理；每项都要尝试，完成全部清理后聚合错误。
+Scope 唯一持有资源关闭责任，provider 实现实际关闭。消费者先于其依赖退出，同一作用域内按取得资源的逆序释放。取消不能丢失关闭责任；并发关闭等待同一次操作。成功释放才移除句柄，失败保留原 owner、句柄及清理仍需要的依赖，并报告错误；重试关闭不授予重放业务效果的权限。跨进程资源由宿主 controller 保留实际回收责任。
 
-### PLG-007 Watcher 单轮失败不终止生命周期
+### PLG-007 发现变化不等于提交更新
 
-一次 scan 或 reconcile 失败只影响当前 revision，旧插件继续服务。相同失败 revision 只允许有界自动重试，不得无限重试；达到上限后由后续变化或显式 wake 恢复。只有 reconcile 成功才能推进已确认 revision 并发布 catalog changed 等后置通知，失败状态不得要求消费者通过清缓存恢复。stop 必须可等待。
+发现变化只能提出候选，不改变 stable。加载或装配检查失败明确返回错误，不无限重试，不自动续跑未提交更新。成功发布后才发出变更通知；停止必须可等待。
 
 ### PLG-008 动态协议和冲突 fail-loud
 
-active 检查错误、generation key 错配、名称冲突、依赖缺失和拓扑环必须在发布前拒绝。不得以“后注册覆盖前者”或默认 active 掩盖错误。
+入口无法调用、制品身份错配、服务冲突、硬依赖缺失和拓扑环必须在发布前拒绝。插件自行解释配置并抛出初始化错误，底座保留归属和原错误。不限制入口参数名字，不比较静态与动态两份运行规格，不把业务自测或诊断状态升级为装配合法性。
 
 ### PLG-009 Skill 和 MCP 通过插件安装发布
 
-Skill、Drift skill 和 MCP server 都由 V3 插件 artifact 声明并通过插件安装系统进入 Akashic。模块通过 `asset_roots` 声明类别与目录；Core 只固定每个 generation 的资产树，Skill 格式、可用性和目录由普通插件解释。旧 `skill_roots`、`drift_skill_roots` 只在模块加载边界转换成资产声明。MCP 的 static manifest admission identity 必须与 `apply` 中 `MCP_SERVERS.register(...)` 的 Fiber-owned registration 完全一致。安装阶段准备代码与 MCP runtime，generation readiness 全部通过后再原子发布。Core 不创建、重建或删除 workspace 中的历史 skill 软链接，也不读取手工 skill 目录补齐能力。原有目录、链接及 ownership journal 保留，不能借重构自动减少；旧未完成外部效果保留为待恢复。独立 `mcp/servers/*.toml` 和 `[packages]` 均不属于当前安装模型。
+Skill、Drift skill 和 MCP server 由固定插件制品中的代码通过对应 provider 注册。插件底座不解释 `akashic.plugin.toml`，不保留静态资产导出与 `apply` 并行的注册路径。安装只准备代码与运行环境；资源请求只定义一次，由拥有该资源的 provider 验证和执行。Core 固定制品与组合，不解释 Skill 格式、MCP 命令或 Workload 端点关联。历史 skill 目录、软链接和 ownership journal 保留，不自动减少；未完成外部效果仍由原 owner 负责。
 
 ### PLG-010 卸载插件默认保留 plugin-data
 
-插件代码、安装清单和 workspace 内 `plugin-data` 使用不同生命周期。普通卸载只移除插件 cache、manifest entry 和能力投影，必须保留 `<workspace>/plugin-data/<plugin>-<marketplace>/`。永久删除插件数据需要名称不同的用户操作、影响预览、独立备份和再次确认，不能作为卸载的隐式 cascade。
+插件制品、stable 组合选择和 workspace 内 `plugin-data` 使用不同生命周期。普通卸载提交一份不含该插件的组合，释放旧运行资源，但保留数据、历史 binding 与恢复仍引用的制品。不把物理制品 GC 混入换代。永久删除插件数据需要名称不同的用户操作、影响预览、独立备份和再次确认，不能作为卸载的隐式 cascade。
 
 ### PLG-011 移动插件完整投影有界语义结果
 
@@ -739,15 +742,15 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 
 ### PLG-012 Turn 内卸载使用 Runtime owner 的异步排空
 
-持有 runtime snapshot lease 的 turn 可以登记卸载，但不得同步等待自己的 lease，不得在 turn 内停 endpoint、修改 manifest 或删除代码。只有 parent turn 正常结束且没有同 turn `plugin-revert` 时，Core 才在 lease 释放后异步停用、排空、移除 manifest/cache 和能力投影。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败必须报告实际残留，不能假报完成。
+持有 runtime snapshot lease 的 turn 可以登记卸载，但不得同步等待自己的 lease，不得在 turn 内停 endpoint 或删除代码。Agent 更新来源只在 parent turn 正常结束且没有同 turn `plugin-revert` 时提交授权；底座在 lease 释放后按完整组合换代。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败保留实际 owner 并报告残留，不能假报完成。
 
-### PLG-013 插件行为验证使用 stable 与 latest
+### PLG-013 stable 是最后一次已提交的完整组合
 
-普通请求只租用已验证的 stable；latest 仍是 Core 内部候选，但只由发起 install 的 parent turn 所创建的 attached programmatic child 因果继承。父 turn 保持旧 stable；detached child、其他 turn 和没有匹配 generation/source identity 的请求不得取得候选。Agent 不手工选择 latest 或调用 promote/discard。
+普通请求只租用 stable 对应的运行组合。安装增加不可变制品，不修改 stable；候选单独固定完整代码、配置与环境输入。候选访问必须有匹配该候选的授权，不能通过任务上下文意外继承给无关工作。
 
-install 成功只表示候选可验证。至少一个匹配当前候选的 attached child 正常完成、没有 revert 且 parent 正常结束时，Core 才在 lease 释放后自动提交；无验证、child/parent 非正常终结或身份漂移必须丢弃。Core 只检查 child 的因果归属、generation/source identity 和正常终态，不要求某类插件、Tool 或 Skill 提供特制证明；parent 负责判断本次检查是否满足业务目标，检查失败必须在 parent terminal 前执行 `plugin-revert`。独占 managed service 使用 Core 分配的隔离端口和 plugin-data 副本；插件必须声明并读取 `validation_port_env`，否则 fail-loud。Channel 正式 ownership 只在 turn 后切换。cache artifact 按 source revision/tree digest 不可变保存，旧代码保留到提交、readiness、恢复检查和 lease 排空完成。 更新中进程死亡时，下次启动先恢复更新前的指针与受影响插件的启用状态，再按旧版启动；已明确提交成功则保留新版。不自动续跑安装、重建候选或继续验证，详见 [0056](decisions/0056-plugin-update-crashes-return-to-stable.md)。
+业务验证归调用程序和资源 provider。Agent 更新来源负责候选验证、parent 正常完成和未 revert 的判断；底座只检查提交授权、候选身份及基准 stable 未变化，不解释 attached child 或业务测试。候选使用无正式可写权限的独立实例，一致数据由数据 owner 或验证调用程序准备，不在正式实例上切换数据目录。
 
-外部 operator 已经独立承担信任判断时，可以在 Supervisor 与 Runtime 均停止后使用名称明确的 trusted batch 入口，把完整 commit SHA 指向的 pure-v3 artifact 直接发布为 stable/latest。Runtime 消费 plugin-home 的整个生命周期都必须独占该 home 的 publication lock；trusted batch 必须先取得 supervisor/runtime 两把 workspace 生命周期锁，再取得同一 publication lock，拒绝 active turn、分支 ref、未知 batch 字段和非 v3 static manifest。回执必须写明 `programmaticValidation=bypassed_by_operator_trust`，不得伪造行为验证成功。在线安装、Agent 自改进和普通 `plugin-install` 继续无例外地走 candidate + attached programmatic child。
+stable 通过一次耐久原子提交选择整个组合，不拼接各插件 latest 与 enabled 状态。提交前进程死亡恢复旧 stable，提交后恢复新 stable；不自动续跑未提交候选。恢复的是代码与配置选择，不是业务数据或外部效果。显式 operator 更新可以由 operator 承担验证授权，但仍固定精确制品、独占发布并记录真实验证来源，不伪造测试成功。旧状态格式只在带备份、锁与完整性检查的显式升级中转换，不在普通启动路径维持双读双写。
 
 ### PLG-014 新插件使用开放组合能力并保留 Core 晋升
 
@@ -755,7 +758,7 @@ install 成功只表示候选可验证。至少一个匹配当前候选的 attac
 
 通用事件只有五种 dispatch 合同：`emit` 同步串行并立即传播失败；`serial` 逐个等待且只有显式 `Bail` 可以短路；`parallel` 只接收异步 listener，并发执行、等待全部 settle 后聚合失败；`transform` 按注册顺序把同类型 immutable payload 显式变换成下一份；`observe` 调用全部 observer、等待异步 settle，并把普通失败隔离成 Incident 而不改写最终事实。listener 只使用同一 generation 内稳定注册顺序，不增加 priority、listener dependency DAG 或通用 waterfall。同步并发由有界 Executor Service 执行插件显式提交的纯同步任务；工作线程不得取得 Context、Fiber 或 Core 权限。
 
-组合拓扑只能生成候选能力，不能自行声明成功或晋升。Core 继续唯一拥有 artifact、generation identity、候选隔离、readiness、行为验证回执、stable/latest、snapshot lease、父 Turn 授权、晋升、丢弃和恢复日志。旧插件在逐个完成能力等价回放前保持原 lifecycle 与顺序；迁移完成后删除对应 legacy 分支，不为每个旧插件长期保留适配器。
+组合拓扑只能生成候选能力，不能自行晋升。底座唯一拥有制品身份、组合装配、Scope、snapshot lease、接纳与 stable 提交；具体能力、业务验证、配置和数据由其 owner 管理。snapshot 固定服务绑定与注册结果，不列举各类扩展目录。迁移完成后删除旧协议，不为仓库内插件长期保留适配器。
 
 ### PLG-015 插件诊断保留边界与领域 owner
 
@@ -784,8 +787,8 @@ provide/inject、Tool、热重载、卸载和 plugin-data 边界。
 Workload 只表达插件 generation 拥有的外部运行生命周期。插件声明固定 image digest、命名端口、当前
 plugin-data 下的数据目录、资源上限和 health；Core 不按 Computer、Browser、OpenCLI 或插件 ID 分支。
 需要在非 root 容器中建立自身沙箱的 Workload 可以声明 `user_namespaces=true`；它只选择 Core 固定的
-受限 seccomp profile，不能传入任意 Docker security option，并进入静态 identity、spec 和漂移核对。
-Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；停止和 cleanup 失败由 Core 与 Controller
+受限 seccomp profile，不能传入任意 Docker security option；请求由 Workload provider 与 Controller 校验。
+Workload readiness 完成后，同一组合的 MCP 才能通过实际资源引用取得其端点；停止和 cleanup 失败由 Scope、provider 与 Controller
 保留 owner 和可重试证据。正式 Core 停止后 Controller 必须独立完成强 stop；supervised 新 boot 只能恢复
 当前 release 中仍存在的内置插件，不能伪造 installed artifact pointer，也不能把缺少当前插件的状态记为
 成功。内置插件不得绕过该路径直接管理容器。
