@@ -117,7 +117,8 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
 
         # 2. 更新后旧 MCP 延迟读取自己的 CA bundle，新旧调用各自保持代际身份。
         old_probe = await _call_runtime_probe(old_server)
-        latest_probe = await _call_runtime_probe(latest_server)
+        async with RuntimeScope(latest_lease.fork()):
+            latest_probe = await _call_runtime_probe(latest_server)
         assert {
             key: old_probe[key]
             for key in (
@@ -403,7 +404,8 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
         assert old_lease.snapshot is manager.current_snapshot
         latest_generation = latest_lease.snapshot.generations[plugin_id]
         latest_runtime = _mcp_registration(latest_lease.snapshot)
-        latest_probe = await _call_runtime_probe(_mcp_server(latest_runtime))
+        async with RuntimeScope(latest_lease.fork()):
+            latest_probe = await _call_runtime_probe(_mcp_server(latest_runtime))
         assert latest_probe["runtime_version"] == "v2"
         assert latest_probe["ca_bundle"] != str(old_ca_bundle)
     finally:
