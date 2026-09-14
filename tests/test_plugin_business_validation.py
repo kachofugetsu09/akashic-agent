@@ -737,18 +737,35 @@ async def test_validation_rejects_binding_added_after_data_copy(tmp_path, monkey
         copied = []
         added = []
 
-        async def copy_then_bind(snapshot, workspace, archive, bindings):
-            await copy_components(snapshot, workspace, archive, bindings)
-            copied.append(workspace)
+        data_copied = asyncio.Event()
+        binding_saved = asyncio.Event()
+
+        async def bind_in_formal_task():
+            await data_copied.wait()
             async with lease_runtime_snapshot(host.snapshot_store) as stable:
                 added.append(stable.composition_root.context.require(BINDINGS).bind(
                     TOOLS, {"created": "during validation copy"},
                 ))
+            binding_saved.set()
+
+        async def copy_then_bind(snapshot, workspace, archive, bindings):
+            await copy_components(snapshot, workspace, archive, bindings)
+            copied.append(workspace)
+            data_copied.set()
+            await asyncio.wait_for(binding_saved.wait(), 10)
 
         monkeypatch.setattr(host, "_copy_validation_components", copy_then_bind)
-        with pytest.raises(RuntimeError, match="候选复制期间 binding 已变化"):
-            async with host.open_validation(result.update_id):
-                pytest.fail("不完整排除声明的副本不能开放")
+        # 正式任务在进入 candidate scope 前创建，不能借验证上下文取得正式权限。
+        formal_task = asyncio.create_task(bind_in_formal_task())
+        try:
+            with pytest.raises(RuntimeError, match="候选复制期间 binding 已变化"):
+                async with host.open_validation(result.update_id):
+                    pytest.fail("不完整排除声明的副本不能开放")
+            await formal_task
+        finally:
+            if not formal_task.done():
+                formal_task.cancel()
+            await asyncio.gather(formal_task, return_exceptions=True)
         assert len(copied) == 1 and not copied[0].parent.exists()
         assert len(added) == 1
         assert log.read_binding(added[0])["metadata"] == {"created": "during validation copy"}
