@@ -15,6 +15,27 @@ from agent.workloads.client import WorkloadController
 from agent.workloads.model import WorkloadStartRequest, WorkloadLease
 
 
+async def cleanup_workloads_for_boot(
+    controller: WorkloadController | None, workspace_id: str,
+) -> None:
+    """真实 Core boot 清理旧候选；未确认容器和挂载释放时阻止启动。"""
+    if controller is None:
+        return
+    # 1. 沿当前启动 operation 等待宿主；不另起任务，也不重放 start。
+    receipts = await controller.cleanup_candidates(workspace_id)
+    # 2. 每份回执必须属于本 workspace 的候选，且两项释放都已确认。
+    incomplete = tuple(receipt for receipt in receipts if (
+        receipt.lease.workspace_id != workspace_id
+        or receipt.lease.mode != "candidate"
+        or not receipt.container_absent
+        or not receipt.mounts_released
+    ))
+    if incomplete:
+        raise RuntimeError(
+            f"Workload boot cleanup 未确认: workspace={workspace_id} receipts={incomplete!r}"
+        )
+
+
 @dataclass(frozen=True)
 class CodeOwner:
     generation_id: str
