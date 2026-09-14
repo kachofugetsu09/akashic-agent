@@ -832,7 +832,7 @@ def _namespace_result(
         "api_version": api_version,
         "name": name,
         "inject": list(inject or ()),
-        "apply_signature": "apply(ctx)" if not errors else None,
+        "apply_entrypoint": "module-level apply" if not errors else None,
         "errors": errors,
     }
 
