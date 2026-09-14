@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from agent.control.scoped_turn import TurnAdmissionRetiredError
+from agent.plugin_composition.effect import _join_cleanup
 
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
@@ -1649,12 +1650,16 @@ class RuntimeSnapshotStore:
                 self._condition.notify_all()
 
     async def retry_drains(self) -> None:
-        await self._await_drain_tasks(tuple(self._drain_tasks))
+        """等待已有关闭；每个尚未关闭的 snapshot 本次最多尝试一次。"""
+
+        running = tuple(self._drain_tasks)
+        await self._await_drain_tasks(running)
         for snapshot in tuple(self._snapshots.values()):
-            self._schedule_drain(snapshot)
+            if snapshot.snapshot_id not in running:
+                self._schedule_drain(snapshot)
         attempted = tuple(self._drain_tasks)
         await self._await_drain_tasks(attempted)
-        self._raise_drain_failures(attempted)
+        self._raise_drain_failures((*running, *attempted))
 
     async def _await_drain_tasks(self, snapshot_ids: tuple[str, ...]) -> None:
         tasks = [
@@ -1663,7 +1668,10 @@ class RuntimeSnapshotStore:
             if (task := self._drain_tasks.get(snapshot_id)) is not None
         ]
         if tasks:
-            await asyncio.gather(*tasks)
+            async def join() -> None:
+                await asyncio.gather(*tasks)
+
+            await _join_cleanup(asyncio.create_task(join(), name="snapshot-drain-join"))
 
     def _raise_drain_failures(self, snapshot_ids: tuple[str, ...]) -> None:
         failures = [

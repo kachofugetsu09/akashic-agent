@@ -898,6 +898,54 @@ async def test_snapshot_admission_waits_while_current_is_quiesced(
 
 
 @pytest.mark.asyncio
+async def test_snapshot_cleanup_failure_requires_another_explicit_close() -> None:
+    """失败资源留在原快照，不在同次关闭中自动重放。"""
+    attempts = 0
+
+    async def drain(snapshot):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("still open")
+
+    store = RuntimeSnapshotStore(drain)
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    with pytest.raises(RuntimeError, match="drain 失败"):
+        await store.close()
+    assert attempts == 1
+    assert snapshot.snapshot_id in store.retained_snapshot_ids
+    await store.close()
+    assert attempts == 2
+    assert store.retained_snapshot_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cleanup_join_survives_repeated_caller_cancel() -> None:
+    """取消等待者不能取消实际 snapshot 资源回收。"""
+    entered, release = asyncio.Event(), asyncio.Event()
+    closed = []
+
+    async def drain(snapshot):
+        entered.set()
+        await release.wait()
+        closed.append(snapshot.snapshot_id)
+
+    store = RuntimeSnapshotStore(drain)
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    closing = asyncio.create_task(store.close())
+    await entered.wait()
+    closing.cancel()
+    asyncio.get_running_loop().call_soon(closing.cancel)
+    asyncio.get_running_loop().call_soon(release.set)
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert closed == [snapshot.snapshot_id]
+    assert store.retained_snapshot_ids == ()
+
+
+@pytest.mark.asyncio
 async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     _write_plugin(tmp_path / "plugins", "snapshot", _v3_source("snapshot"))
     manager = _manager(tmp_path)
