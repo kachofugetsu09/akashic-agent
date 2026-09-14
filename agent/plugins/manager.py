@@ -4856,11 +4856,8 @@ class PluginManager:
                 pointer = plugin_dir / ENVIRONMENT_FILE
                 if pointer.exists():
                     environment_refs = read_environment_refs(plugin_dir, archived_manifest)
-                else:
-                    if any((archived_dir / item.requirements).read_text().strip() for item in archived_manifest.python):
-                        raise RuntimeError("插件尚未准备固定 Python 环境；请通过安装流程重建")
-                    environments = PythonEnvironments(self._workspace)
-                    environment_refs = {item.runtime_root: environments.prepare(archived_dir, item) for item in archived_manifest.python}
+                elif mod["source_type"] == "installed":
+                    raise RuntimeError("插件尚未准备固定 Python 环境；请通过安装流程重建")
             self._import_plugin(
                 mp, archived_dir / Path(module_path).relative_to(plugin_dir)
             )
@@ -6148,6 +6145,8 @@ class PluginManager:
                 raise RuntimeError("外部 runtime 缺少代码归档")
             record = self._archive.read_descriptor(generation.archive_ref)
             refs = cast(Mapping[str, str], record["python_environments"])
+            if runtime_root not in refs:
+                raise RuntimeError("插件命令缺少固定 Python 环境；请通过安装流程准备")
             runtime = next(
                 item
                 for item in runtimes

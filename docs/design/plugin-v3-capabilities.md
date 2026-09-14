@@ -52,7 +52,7 @@ Core 不读取它。无配置时输入为空对象。候选只取得授权允许
 精确名称 `requirements.txt` 表示安装必需输入，包括空文件；`requirements-dev.txt`、
 `requirements-optional.txt` 等其他名称不自动安装，除非被必需文件显式引用。
 发布者不能把无关示例或可选依赖也命名为 `requirements.txt` 留在制品中。
-当前仓库未声明的 `computer/requirements.txt` 为空，采用约定后会增加空固定环境。
+Computer 的空 requirements 文件已删除；容器内命令不需要 Core 的 Python 环境。
 扫描跳过 `.git`、`.venv`、`venv`、`node_modules`、`cache`、`.cache`、`__pycache__`、
 `.pytest_cache`、`.mypy_cache` 和 `.ruff_cache`，不进入目录链接；其余目录链接、失效链接
 或 requirements 文件链接直接拒绝，以免隐藏环境输入。
@@ -70,8 +70,8 @@ Core 不读取它。无配置时输入为空对象。候选只取得授权允许
 
 根 runtime 与嵌套 runtime 共存时，命令按既有脚本路径/cwd 解析结果选择最近的父 runtime。
 缺少已 staging 的显式环境时失败，不借用 PATH 或制品中的 `.venv`。
-本层不修改 Manager 的源码插件加载时准备空环境的既有路径；删除该临时路径由整体换代父层完成。
-正式环境仍由安装器创建，加载或候选不得新增安装路径。本层测试仅编写，未执行。
+环境只由安装器创建，加载或候选不准备环境，包括空 requirements 文件。
+源码插件的纯进程内能力可以直接装配；实际 Python 命令缺少固定环境时明确失败。
 
 ## 2. 组合原子能力
 

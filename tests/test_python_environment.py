@@ -219,3 +219,31 @@ def test_command_binding_uses_frozen_discovery_without_installing(tmp_path, monk
     assert materialize_command(
         code, manifest.python, ("python", "later/server.py"), environment_root=environment
     )[0] == str(interpreter)
+
+
+@pytest.mark.asyncio
+async def test_source_loading_never_prepares_even_an_empty_environment(tmp_path, monkeypatch):
+    """源码装配不安装环境；只有实际 Python 命令需要已安装的引用。"""
+    from agent.plugins.manager import PluginManager
+    from bus.event_bus import EventBus
+
+    code, _ = source(tmp_path)
+    (code / "plugin.py").write_text(
+        "api_version = 3\nname = 'probe'\nversion = '1.0.0'\n"
+        "async def apply(ctx):\n    return None\n"
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("loading cannot prepare environments")
+
+    monkeypatch.setattr(PythonEnvironments, "prepare", forbidden)
+    host = PluginManager([code], event_bus=EventBus(), workspace=tmp_path / "workspace",
+                         installed_cache_root=tmp_path / "empty-cache")
+    try:
+        await host.load_all()
+        generation = host.generation("probe")
+        assert generation is not None
+        with pytest.raises(RuntimeError, match="缺少固定 Python 环境"):
+            host._resolve_runtime_command(generation, ("python", "probe.py"), ".")
+    finally:
+        await host.terminate_all()
