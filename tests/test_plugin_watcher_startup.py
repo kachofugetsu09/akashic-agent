@@ -49,17 +49,20 @@ async def test_startup_scan_does_not_resume_candidate_without_new_input(manual):
 
 
 @pytest.mark.asyncio
-async def test_invalid_live_input_does_not_reconcile_restored_stable():
+@pytest.mark.parametrize("error_type", [ValueError, RuntimeError])
+async def test_invalid_live_input_does_not_reconcile_restored_stable(error_type):
     loop = asyncio.get_running_loop()
     scanned = asyncio.Event()
+    calls = []
 
     class Manager:
         def watch_revision(self):
             loop.call_soon_threadsafe(scanned.set)
-            raise ValueError("invalid live plugin identity")
+            raise error_type("invalid live plugin identity or installation pointer")
 
         async def reconcile_changed(self):
-            raise AssertionError("invalid live inputs cannot replace stable")
+            calls.append("unexpected reconcile")
+            return []
 
     watcher = PluginWatcher(cast(PluginManager, Manager()), interval_seconds=3600)
     task = asyncio.create_task(watcher.run())
@@ -69,3 +72,4 @@ async def test_invalid_live_input_does_not_reconcile_restored_stable():
     finally:
         watcher.stop()
         await task
+    assert calls == []

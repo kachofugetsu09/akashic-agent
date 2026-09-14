@@ -66,7 +66,7 @@ class PluginWatcher:
                     current_revision = await asyncio.to_thread(
                         self._manager.watch_revision
                     )
-                except (OSError, ValueError):
+                except (OSError, ValueError, RuntimeError):
                     self._forced = self._forced or forced or manual_wake
                     self._manual_wake_pending = self._manual_wake_pending or manual_wake
                     logger.exception("插件热重载状态扫描失败")
