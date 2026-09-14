@@ -174,8 +174,11 @@ async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("signature", ["host", "host, settings=None", "*args"])
-async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature: str):
+@pytest.mark.parametrize("signature, accepted", [
+    ("host", True), ("host, settings=None", True), ("*args", True),
+    ("host, settings", False), ("*, host", False),
+])
+async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature: str, accepted: bool):
     """可用一个位置参数调用的入口不受参数命名限制。"""
     source = (
         'api_version = 3\nname = "ordinary"\nversion = "1.0.0"\n'
@@ -185,7 +188,7 @@ async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature
     manager = _manager(tmp_path)
     try:
         await manager.load_all()
-        assert manager.generation("ordinary") is not None
+        assert (manager.generation("ordinary") is not None) is accepted
     finally:
         await manager.terminate_all()
 

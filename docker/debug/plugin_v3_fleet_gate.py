@@ -515,24 +515,14 @@ def _inspect_namespace(root: Path, entrypoint: Path) -> dict[str, object]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == "apply"
     ]
-    apply_ok = False
-    if len(apply_nodes) == 1:
-        args = apply_nodes[0].args
-        positional = [*args.posonlyargs, *args.args]
-        apply_ok = (
-            [item.arg for item in positional] == ["ctx"]
-            and args.vararg is None
-            and args.kwarg is None
-            and not args.kwonlyargs
-            and not args.defaults
-            and not args.kw_defaults
-        )
+    # 实际装配负责调用合法性；静态扫描不另建参数命名协议。
+    apply_ok = len(apply_nodes) == 1
     if api_version != 3:
         errors.append(f"namespace api_version 必须为 3: {api_version!r}")
     if not isinstance(name, str) or not name.strip():
         errors.append("namespace name 必须是非空字符串")
     if not apply_ok:
-        errors.append("namespace 必须提供精确 apply(ctx)")
+        errors.append("namespace 必须提供唯一 apply 入口")
     evidence.update(
         {
             "status": "passed" if not errors else "failed",
