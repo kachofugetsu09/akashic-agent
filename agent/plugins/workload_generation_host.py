@@ -152,13 +152,9 @@ class WorkloadGenerationHost:
                     binding.descriptor,
                 )
                 generation.pending[name] = (binding, request)
-                try:
-                    receipt = await self._controller.start(request)
-                except (asyncio.CancelledError, WorkloadEffectUnknown):
-                    raise
-                except BaseException:
-                    generation.pending.pop(name, None)
-                    raise
+                # 普通错误也可能出现在 Controller 已创建容器之后；只有有效回执
+                # 才能把 pending 请求转为可执行 stop 的 lease，不能按异常类型丢弃责任。
+                receipt = await self._controller.start(request)
                 endpoints = _check_start_receipt(request, receipt)
                 entry = _Entry(binding, receipt, endpoints)
                 generation.entries[name] = entry
@@ -293,18 +289,14 @@ class WorkloadGenerationHost:
         if generation.borrowers:
             _ = await generation.drained.wait()
         errors: list[BaseException] = []
-        for name, (binding, request) in tuple(generation.pending.items()):
-            try:
-                receipt = await self._controller.start(request)
-                endpoints = _check_start_receipt(request, receipt)
-                generation.entries[name] = _Entry(
-                    binding,
-                    receipt,
-                    endpoints,
-                )
-                generation.pending.pop(name)
-            except BaseException as error:
-                errors.append(error)
+        # 缺少有效 lease 时，现有 Controller 没有核实或取消 start 的接口。
+        # 保留原请求并阻断关闭；重发 start 可能创建新资源，不是清理操作。
+        for name, (_binding, request) in tuple(generation.pending.items()):
+            errors.append(WorkloadEffectUnknown(
+                "Workload start 结果未确认，保留 pending owner，未重发请求: "
+                f"{request.workspace_id}:{request.plugin_id}:{name}:"
+                f"{request.mode}:{request.transaction_id}:{request.generation_id}"
+            ))
         for name, entry in reversed(tuple(generation.entries.items())):
             watcher = entry.watcher
             if watcher is not None and watcher is not asyncio.current_task():
