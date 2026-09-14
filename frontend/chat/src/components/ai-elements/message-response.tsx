@@ -5,9 +5,9 @@ import { cn } from "@/lib/utils";
 import { canBatchStreamingMarkdown } from "@/message-rendering-policy";
 import { memo, type ComponentProps, useEffect } from "react";
 import MarkdownRender, {
+  CodeBlockNode,
   MathBlockNode,
   MathInlineNode,
-  MermaidBlockNode,
   setCustomComponents,
   type NodeComponentProps,
 } from "markstream-react";
@@ -39,6 +39,18 @@ function useMathStyles() {
   }, []);
 }
 
+/** 聊天代码块 chrome 对齐 dsh：只留语言标签与复制，去掉行号、折叠、字号等编辑器控件。 */
+const CODE_BLOCK_PROPS = {
+  showLineNumbers: false,
+  showCollapseButton: false,
+  showFontSizeButtons: false,
+  showExpandButton: false,
+  showPreviewButton: false,
+  showTooltips: false,
+  enableFontSizeControl: false,
+  isShowPreview: false,
+} as const;
+
 function DeferredMathBlock({ node, ctx }: NodeComponentProps<DeferredNode>) {
   useMathStyles();
   if (!ctx?.final) return <pre className="markstream-deferred-source">{String(node.raw ?? node.content ?? "")}</pre>;
@@ -51,13 +63,13 @@ function DeferredMathInline({ node, ctx }: NodeComponentProps<DeferredNode>) {
   return <MathInlineNode node={node as ComponentProps<typeof MathInlineNode>["node"]} />;
 }
 
-function DeferredMermaid({ node, ctx, isDark }: NodeComponentProps<DeferredNode>) {
-  if (!ctx?.final) return <pre className="markstream-deferred-source">{String(node.raw ?? node.code ?? "")}</pre>;
+/** Mermaid 已下线；围栏改按普通代码块渲染源码。 */
+function MermaidAsCode({ node, isDark }: NodeComponentProps<DeferredNode>) {
   return (
-    <MermaidBlockNode
-      node={node as ComponentProps<typeof MermaidBlockNode>["node"]}
-      loading={false}
+    <CodeBlockNode
+      node={{ ...node, type: "code_block", language: "mermaid", code: String(node.code ?? node.content ?? "") } as ComponentProps<typeof CodeBlockNode>["node"]}
       isDark={isDark}
+      {...CODE_BLOCK_PROPS}
     />
   );
 }
@@ -66,7 +78,7 @@ setCustomComponents({
   kaomoji_literal: KaomojiLiteral,
   math_block: DeferredMathBlock,
   math_inline: DeferredMathInline,
-  mermaid: DeferredMermaid,
+  mermaid: MermaidAsCode,
 });
 
 /** Render complete or append-only Markdown with Markstream's incremental parser. */
@@ -99,6 +111,9 @@ export const MessageResponse = memo(function MessageResponse({
         viewportPriority
         codeBlockStream={isAnimating}
         renderCodeBlocksAsPre={isAnimating}
+        codeBlockProps={CODE_BLOCK_PROPS}
+        codeBlockLightTheme="vitesse-light"
+        codeBlockDarkTheme="vitesse-dark"
         parseOptions={{ reuseStableTopLevelNodes: true }}
         customMarkdownIt={configureKaomojiMarkdown}
       />

@@ -204,6 +204,9 @@ function webPluginAssetUrl(
   sha256: string,
 ): string {
   const query = new URLSearchParams({ plugin_id: pluginId, plugin_revision: pluginRevision, kind, sha256 });
+  // 远端对 asset URL 发 immutable 年缓存；dev 下插件资源可能被本地中间件替换，
+  // 需要让 URL 每次加载都不同，否则浏览器直接命中远端旧缓存、本地改动不可见。
+  if (import.meta.env.DEV) query.set("_dev", String(Date.now()));
   return `/api/chat/plugin-ui/asset?${query}`;
 }
 
