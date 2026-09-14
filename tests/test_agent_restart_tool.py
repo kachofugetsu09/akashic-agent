@@ -236,6 +236,9 @@ async def apply(ctx):
 
 
 def _write_startup_probe(root: Path, run_id: str, state_root: Path) -> None:
+    # 每次 boot 的输入归 fixture 所有；重启不靠改插件源码替换 stable。
+    state_root.mkdir(parents=True, exist_ok=True)
+    (state_root / "run-id").write_text(run_id)
     probe = root / "startup_probe"
     probe.mkdir()
     (probe / "plugin.py").write_text(
@@ -254,7 +257,6 @@ api_version = 3
 name = "startup_probe"
 version = "1.0.0"
 inject = (MESSAGE_WRITERS, BINDINGS, TOOLS, ALL_TOOLS, FINAL_OUTPUT_DELIVERY)
-RUN_ID = {run_id!r}
 STATE_ROOT = {str(state_root)!r}
 
 
@@ -278,8 +280,9 @@ async def apply(ctx):
     bindings = ctx.require(BINDINGS)
 
     def append_after_prepare(_event):
+        run_id = Path(STATE_ROOT, "run-id").read_text()
         binding = tools.bind(ctx.require(ALL_TOOLS)().select("agent_restart"), bindings)
-        session = "startup-probe:" + RUN_ID
+        session = "startup-probe:" + run_id
         inputs = writers.bind(
             ctx, author="user", source="startup-probe", body_types=(Input,), content={{}},
         )(session)
@@ -287,9 +290,9 @@ async def apply(ctx):
             ctx, author="assistant", source="startup-probe", body_types=(Output,),
             content={{}}, check_call=lambda call: None,
         )(session)
-        inputs.append("startup-input-" + RUN_ID, Input(()))
+        inputs.append("startup-input-" + run_id, Input(()))
         call = outputs.append(
-            "startup-call-" + RUN_ID,
+            "startup-call-" + run_id,
             Output((ToolCall(binding, {{"reason": "startup"}}),), "continue"),
         )
         results = writers.bind(
@@ -297,10 +300,10 @@ async def apply(ctx):
         )(session, call_ref=CallRef(call.message_id, 0))
         def append_result():
             results.append(
-                "startup-result-" + RUN_ID,
+                "startup-result-" + run_id,
                 ToolResult(CallRef(call.message_id, 0), "success", ()),
             )
-            outputs.append("startup-final-" + RUN_ID, Output((), "complete"))
+            outputs.append("startup-final-" + run_id, Output((), "complete"))
 
         asyncio.get_running_loop().call_soon(append_result)
 

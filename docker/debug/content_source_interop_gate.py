@@ -528,6 +528,13 @@ async def _run_coexistence_probe(
         row_count = -1
         try:
             await manager.load_all()
+            # 同一 workspace 的重启保留基线；显式发布新增的普通插件。
+            candidate = await manager.prepare_candidate(plugin_id)
+            if candidate is None:
+                raise GateError(f"coexistence 插件未进入候选: {plugin_id}")
+            publication = await manager.publish_prepared(plugin_id)
+            if publication["publication_state"] != "committed":
+                raise GateError(f"coexistence 插件未提交: {plugin_id}")
             store = EventMailStore(content_path)
             row_count = sum(store.state_counts().values())
             if row_count != expected_rows:

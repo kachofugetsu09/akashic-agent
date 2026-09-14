@@ -318,6 +318,7 @@ async def test_same_source_gets_new_generation_namespace_after_restart(tmp_path:
     assert first is not None
 
     await manager.terminate_all()
+    manager = _manager(tmp_path)
     await manager.load_all()
 
     second = manager.generation("repeat")
@@ -511,7 +512,9 @@ async def test_assets_provider_leaves_skill_duplicates_to_standard_tools(tmp_pat
         "---\ndescription: second\n---\nsecond\n", encoding="utf-8"
     )
 
-    await manager.load_all()
+    assert await manager.prepare_candidate("second_skills") is not None
+    publication = await manager.publish_prepared("second_skills")
+    assert publication["publication_state"] == "committed"
 
     second = manager.generation("second_skills")
     assert second is not None
@@ -829,7 +832,7 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("promoted_on_disk", [False, True])
-async def test_startup_recovers_installed_candidate_from_durable_pointers(
+async def test_restart_keeps_stable_when_legacy_candidate_pointers_drift(
     tmp_path: Path,
     promoted_on_disk: bool,
 ) -> None:
@@ -841,11 +844,7 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
     )
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
-    write_pointers(
-        plugin_base,
-        stable=latest_pointer if promoted_on_disk else stable_pointer,
-        latest=latest_pointer,
-    )
+    write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
     write_plugin_manifest(
         {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
     )
@@ -854,6 +853,18 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
         plugin_dirs=[],
         event_bus=EventBus(),
         workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    await manager.terminate_all()
+    # 安装指针不再决定重启选择；旧 journal 也不能自动晋升候选。
+    write_pointers(
+        plugin_base,
+        stable=latest_pointer if promoted_on_disk else stable_pointer,
+        latest=latest_pointer,
+    )
+    manager = PluginManager(
+        plugin_dirs=[], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
     tx_id = manager.reload_journal.begin(
@@ -871,15 +882,12 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
 
     await manager.load_all()
 
-    assert manager.reload_journal.get(tx_id).phase == (
-        "recovered" if promoted_on_disk else "aborted"
-    )
-    expected = "release-b" if promoted_on_disk else "release-a"
-    assert manager.generation("installed_snapshot@lab").instance.version == expected  # type: ignore[union-attr]
+    # 旧记录没有完整 selection 转换证据，保持未知，不伪造 recovered/aborted。
+    assert manager.reload_journal.get(tx_id).phase == "promoting"
+    assert manager.generation("installed_snapshot@lab").instance.version == "release-a"  # type: ignore[union-attr]
     assert manager.ready_candidate is None
-    if not promoted_on_disk:
-        assert stable_root.exists()
-        assert read_pointer(plugin_base, "latest") == stable_pointer
+    assert stable_root.exists()
+    assert read_pointer(plugin_base, "latest") == latest_pointer
     await manager.terminate_all()
 
 

@@ -341,7 +341,11 @@ class RuntimeStack:
     uses_test_model: bool = True
 
     async def start(self) -> None:
+        selection = PluginSelection(self.workspace)
+        stable = selection.read()
         await self.manager.load_all()
+        if stable is not None and selection.read() != stable:
+            raise GateFailure("RESTART_CHANGED_STABLE_SELECTION")
         if self.after_load is not None:
             await self.after_load()
         await self.manager.start_runtime()
@@ -405,11 +409,9 @@ async def run_suite(
     try:
         # 2. Install through the formal manager and run the ordinary source Timer.
         if model_plugin_dirs:
-            # Model settings are durable, while a running Root keeps the exact
-            # plugin generation that was loaded before the settings write.  Seed
-            # the registry in a short bootstrap Root, then run the chain against
-            # a fresh Root that loads the committed binding and its driver
-            # together.
+            # Model settings belong to the model owner. Seed them once, then
+            # reopen the same stable archives against that owner's saved state.
+            # Restart does not recapture code or select another driver plugin.
             bootstrap = _build_stack(
                 workspace,
                 root,
@@ -496,6 +498,7 @@ async def run_suite(
                 timer,
                 counted,
                 model_plugin_dirs=model_plugin_dirs,
+                configure_selected_model=False,
             )
             await restarted.start()
             await _eventually(

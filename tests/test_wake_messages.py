@@ -590,6 +590,7 @@ async def test_reopen_current_plugins_handle_original_facts_after_source_changes
             with pytest.raises(OSError, match="interrupt before"):
                 await asyncio.wait_for(task.join(), 10)
         saved = log.reader(original.session_id).snapshot()
+        stable_model = host.current_snapshot.generations["models_fixture"].archive_ref
     module = tmp_path / "plugins/models_fixture/plugin.py"
     changed = module.read_text()
     if fault == "input":
@@ -607,6 +608,12 @@ async def test_reopen_current_plugins_handle_original_facts_after_source_changes
         installed_cache_root=tmp_path / "cache", message_log=log, channel_attachment_store=artifacts)
     try:
         await host.load_all()
+        assert host.current_snapshot.generations["models_fixture"].archive_ref == stable_model
+        # 源码变化不改变 stable；由测试调用者显式发布，再接纳原 Wake 工作。
+        assert await host.prepare_candidate("models_fixture") is not None
+        publication = await host.publish_prepared("models_fixture")
+        assert publication["publication_state"] == "committed"
+        assert host.current_snapshot.generations["models_fixture"].archive_ref != stable_model
         await host.start_runtime()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context.require(ServiceKey("fixture.wake"))

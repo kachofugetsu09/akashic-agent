@@ -336,6 +336,7 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
         original = log.reader(session_id).snapshot()
         assert len(original) == (1 if stage == "input" else 4)
         assert CONTROLS[str(tmp_path)].calls == (0 if stage == "input" else 2)
+        stable_model = host.current_snapshot.generations["models_fixture"].archive_ref
         await host.terminate_all()
         log.close()
         # 当前插件处理原已接纳事实；已完成结果不因源码变化重算。
@@ -354,6 +355,13 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                                 channel_attachment_store=artifacts)
         try:
             await resumed.load_all()
+            assert resumed.current_snapshot.generations["models_fixture"].archive_ref == stable_model
+            # 重启只恢复归档；测试调用者显式发布新实现后才恢复业务工作。
+            for plugin_id in ("models_fixture", "standard_tools"):
+                assert await resumed.prepare_candidate(plugin_id) is not None
+                publication = await resumed.publish_prepared(plugin_id)
+                assert publication["publication_state"] == "committed"
+            assert resumed.current_snapshot.generations["models_fixture"].archive_ref != stable_model
             await resumed.start_runtime()
             async def completed():
                 async for _ in reopened.catalog().follow():
