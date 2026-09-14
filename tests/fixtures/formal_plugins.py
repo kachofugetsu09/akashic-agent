@@ -15,6 +15,7 @@ from agent.plugins.manifest import load_plugin_manifest
 from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from bootstrap.init_workspace import init_workspace
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -52,7 +53,7 @@ def install_formal_plugins(
     configure_materials: bool = False,
     initialize_persona: bool = False,
 ) -> tuple[Path, dict[str, PluginInstallResult]]:
-    """把指定 checkout 插件逐个安装到临时 cache，并移走源副本。"""
+    """首次安装显式初始化测试选择；复用完整安装时保留既有选择。"""
 
     workspace = root / "workspace"
     plugin_home = root / "plugin-home"
@@ -79,6 +80,8 @@ def install_formal_plugins(
     if plugin_home.exists():
         raise RuntimeError("已存在的 fixture 安装不完整或已禁用，禁止重装掩盖恢复失败")
 
+    # 首次 fixture setup 明确创建 null；已有选择会报错，不能覆盖恢复基线。
+    initialize_plugin_workspace(workspace)
     source_root = root / "formal-plugin-sources"
     source_root.mkdir(parents=True)
     installed: dict[str, PluginInstallResult] = {}

@@ -85,8 +85,6 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
     """完整内置候选必须同时装配，防止分项夹具遗漏依赖冲突。"""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    from bootstrap.init_workspace import init_workspace
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     plugin_home, _ = install_formal_plugins(
         tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
         initialize_persona=True,
@@ -139,10 +137,8 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
 async def test_default_runtime_starts_settings_without_embedding(tmp_path, monkeypatch):
     """首次真实内置组合的后台生命周期完成，未配置记忆不会阻断模型设置。"""
     from agent.plugin_composition import MODEL_CATALOG
-    from bootstrap.init_workspace import init_workspace
 
     workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     plugin_home, _ = install_formal_plugins(
         tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
         initialize_persona=True,
@@ -174,7 +170,6 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
     from aiohttp import web
     from agent.plugin_composition import ModelUnavailableError
     from agent.plugins.model_control import RuntimeModelControl
-    from bootstrap.init_workspace import init_workspace
     from plugins.context.materials import MATERIALS
     from plugins.akasha.infrastructure.persistence import logical_state_sha256
     from plugins.content.plugin import CONTENT
@@ -206,7 +201,6 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
     port = sock.getsockname()[1]
     await web.SockSite(runner, sock).start()
     workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     plugin_home, _ = install_formal_plugins(
         tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
         initialize_persona=True,
@@ -415,7 +409,6 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     from akashic_sdk import AsyncAkashic
     from agent.plugins.model_control import RuntimeModelControl
     from bootstrap.app import AppRuntime
-    from bootstrap.init_workspace import init_workspace
     from bootstrap.runtime_readiness import RuntimeReadiness
 
     calls = []
@@ -442,7 +435,6 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     port = sock.getsockname()[1]
     await web.SockSite(runner, sock).start()
     workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     plugin_home, _ = install_formal_plugins(
         tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
         initialize_persona=True,

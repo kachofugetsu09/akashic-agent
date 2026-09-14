@@ -20,7 +20,6 @@ from agent.plugin_contracts import ContentPart, Input, Output
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import lease_runtime_snapshot
-from bootstrap.init_workspace import init_workspace
 from bootstrap.tools import build_core_runtime
 from core.net.http import SharedHttpResources
 from plugins.content.plugin import CONTENT
@@ -228,7 +227,6 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
 
     roots = _plugin_roots()
     workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     plugin_home, _ = install_formal_plugins(
         tmp_path,
         _BUILTIN_PLUGINS,

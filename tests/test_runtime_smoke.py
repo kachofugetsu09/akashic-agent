@@ -21,6 +21,7 @@ from agent.config import (
 from plugins.prompt.persona import reset_veda
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
 class _FakeDashboardServer:
@@ -134,6 +135,7 @@ def _write_config(path: Path, socket_path: Path) -> None:
     }
     path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
     _ = workspace_init.init_workspace(config_path=path, workspace=path.parent)
+    initialize_plugin_workspace(path.parent)
 
 
 def test_load_config_has_no_legacy_agent_fields(tmp_path: Path):
