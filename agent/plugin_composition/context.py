@@ -1697,4 +1697,3 @@ def _error_message(error: BaseException) -> str:
     except BaseException:
         return f"<unprintable {type(error).__name__}>"
     return message or type(error).__name__
-
