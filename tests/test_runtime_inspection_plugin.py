@@ -158,7 +158,7 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
     from plugins.akashic_clients.runtime_inspection import ScopedRpcRuntimeInspection
 
     source = tmp_path / "plugins"
-    for name in ("content", "context", "tools", "standard_tools", "runtime_inspection"):
+    for name in ("assets", "content", "context", "tools", "standard_tools", "runtime_inspection"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     asset = source / "external_assets"
@@ -169,8 +169,10 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
         "from agent.plugin_composition import ServiceKey\n"
         "RUNTIME_CATALOG = ServiceKey('core.runtime_catalog.v1')\n"
         "api_version = 3\nname = 'external_assets'\nversion = '1'\n"
-        "inject = (RUNTIME_CATALOG,)\n"
-        "asset_roots = {'skills': ('skills',)}\ndef apply(ctx): pass\n")
+        "from agent.plugin_composition.assets import INSTALLED_ASSETS\n"
+        "inject = (RUNTIME_CATALOG, INSTALLED_ASSETS)\n"
+        "async def apply(ctx):\n"
+        "    await ctx.require(INSTALLED_ASSETS).register(ctx, 'skills', 'skills')\n")
     (tmp_path / "workspace").mkdir()
     configuration = tmp_path / "workspace/plugin-data/context-builtin"
     configuration.mkdir(parents=True)

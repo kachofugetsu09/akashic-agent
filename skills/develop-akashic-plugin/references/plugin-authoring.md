@@ -10,8 +10,10 @@
 唯一入口为 apply(ctx)。插件用 ctx.config 取得该组合固定的输入，自己解析和校验。
 参数名不构成加载合同；入口必须能用一个位置参数调用。
 
-Skill 等静态资产目前通过 asset_roots 按类别声明。MCP、process、Workload 配置只在插件代码中
-构造一次。不要复制旧版 apply(ctx, config)、Config 特殊导出、skill_roots、drift_skill_roots
+资产通过显式安装的普通 assets provider 注册：贡献方依赖 INSTALLED_ASSETS，
+在 apply(ctx) 中调用 register(ctx, category, relative_path)。类别与内容由消费插件解释，
+路径必须属于贡献方固定代码制品。MCP、process、Workload 配置只在插件代码中构造一次。
+不要复制旧版 apply(ctx, config)、Config 特殊导出、skill_roots、drift_skill_roots
 或 TOML MCP/process 示例。最终 manifest 删除与完整换代仍以当前实施合同和真实代码为准。
 
 实际验证前检查用户授权。候选无正式凭据和正式可写数据；已安装、已编译和已提交 PR 都不是

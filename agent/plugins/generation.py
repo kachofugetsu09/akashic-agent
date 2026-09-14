@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from agent.plugins.scope import PluginScope
-    from agent.plugins.skill_host import PreparedAssetCatalog
     from agent.plugins.static_manifest import StaticPluginManifest
     from agent.plugins.snapshot import RuntimeSnapshot
 
@@ -61,7 +60,6 @@ class GateResult:
 @dataclass(frozen=True)
 class PluginContributions:
     manifest: dict[str, object]
-    asset_roots: tuple[tuple[str, tuple[Path, ...]], ...] = ()
     dashboard_module: Path | None = None
     web_module: WebModuleAsset | None = None
 
@@ -86,7 +84,6 @@ class PluginGeneration:
     formal_root_stopped: bool = False
     formal_root_released: bool = False
     entrypoint: str = "plugin.py"
-    asset_catalog: PreparedAssetCatalog | None = None
     runtime_snapshot: RuntimeSnapshot | None = None
     retire_started: bool = False
     state: str = "active"

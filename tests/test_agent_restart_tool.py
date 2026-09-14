@@ -316,6 +316,7 @@ async def _restart_application(
     names = (
         "sources",
         "content",
+        "assets",
         "standard_tools",
         "context",
         "tools",
@@ -719,6 +720,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         (
             "sources",
             "content",
+            "assets",
             "standard_tools",
             "context",
             "tools",

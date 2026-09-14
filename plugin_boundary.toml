@@ -54,8 +54,8 @@ role = "core"
 note = "来源导入与不可变引用"
 
 [capabilities."core.installed_assets.v1"]
-role = "core"
-note = "读取 exact generation 固定的来源中立声明资产树；不解释内容"
+role = "seam"
+note = "普通 assets provider 注册贡献方代码目录，并按 exact Root scope 提供只读资产；不解释内容"
 
 [capabilities."core.credentials"]
 role = "seam"

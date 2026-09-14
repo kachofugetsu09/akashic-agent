@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
@@ -50,7 +51,7 @@ def _environment_reminder(material: Mapping[str, object]) -> str:
 
 
 def prompt_sources(sources):
-    for name in ("prompt", "standard_tools"):
+    for name in ("assets", "prompt", "standard_tools"):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
             sources / name,
@@ -73,9 +74,10 @@ def prompt_sources(sources):
     (sources / "fixture_skills/plugin.py").write_text('''api_version = 3
 name = "fixture_skills"
 version = "1.0.0"
-asset_roots = {'skills': ("skills",)}
+from agent.plugin_composition.assets import INSTALLED_ASSETS
+inject = (INSTALLED_ASSETS,)
 async def apply(ctx):
-    pass
+    await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
 ''')
     personal = sources.parent / "workspace/skills/unmanaged"
     personal.mkdir(parents=True, exist_ok=True)
@@ -201,18 +203,16 @@ async def test_load_skill_uses_new_stable_tree_after_restart(tmp_path):
             metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
             state = cast(Mapping[str, object], metadata["state"])
             assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
-            catalog = snapshot.generations["fixture_skills"].asset_catalog
-            assert catalog is not None
             asset = next(
                 item
-                for item in catalog.assets
+                for item in ctx.require(INSTALLED_ASSETS)()
                 if item.owner_id == "fixture_skills" and item.category == "skills"
             )
             original_root = asset.root_dir / "example"
         # 安装改变后，下一次 stable 只使用新生成的资源树。
         (tmp_path / "plugins/fixture_skills/skills/example/resource.txt").write_text("resource-b")
         (tmp_path / "plugins/fixture_skills/skills/example/SKILL.md").write_text("---\ndescription: updated\n---\n新版指令")
-    assert not original_root.exists()
+    assert (original_root / "resource.txt").read_text() == "resource-a"
     log = MessageLog(tmp_path / "workspace/sessions.db")
     store = ArtifactStore(tmp_path / "workspace/sessions.db")
     artifacts = ChannelAttachmentArtifactStore(

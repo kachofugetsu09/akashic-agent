@@ -65,6 +65,7 @@ def environment(tmp_path, *, reply=False, models=True):
         "tools",
         "content",
         "context",
+        "assets",
         "standard_tools",
         *(("turn_projection", "sources") if reply else ()),
         *(("models",) if reply and models else ()),

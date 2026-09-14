@@ -73,8 +73,13 @@
       "reason": "提供工具搜索及其 Prompt 展示。"
     },
     {
+      "name": "assets",
+      "depends_on": [],
+      "reason": "保存插件自身登记的固定代码资产目录。"
+    },
+    {
       "name": "standard_tools",
-      "depends_on": ["tools"],
+      "depends_on": ["tools", "assets"],
       "reason": "提供本地文件、Shell 和 Skill 等标准工具；不启动 Computer。"
     },
     {

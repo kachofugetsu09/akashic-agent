@@ -31,7 +31,6 @@ from session.artifact_store import ArtifactStore
 from agent.plugins.config import read_config_source
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
-from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG,
     build_runtime_catalog,
@@ -157,7 +156,6 @@ from agent.plugins.reload_journal import (
     ReloadPhase,
     ReloadRecoveryAction,
 )
-from agent.plugins.skill_host import PluginAssetHost
 from agent.plugins.web_ui import resolve_web_module
 from agent.workloads.client import UnixWorkloadController, WorkloadController
 from agent.plugins.snapshot import (
@@ -363,7 +361,6 @@ class PluginManager:
         self._candidate_prepare_lock = asyncio.Lock()
         self._fresh_importer = FreshPluginImporter()
         self._manager_namespace = secrets.token_hex(4)
-        self._asset_host = PluginAssetHost()
         self._composition_runtime_generations: dict[str, PluginGeneration] = {}
         if workload_controller is None:
             workload_socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
@@ -4696,7 +4693,7 @@ class PluginManager:
                     "plugin_id": plugin_id,
                     "active_generation": active.generation_id,
                     "prepared_generation": None,
-                    "gate_status": "active",
+                    "preparation_state": "active",
                     "candidate_revision": source_revision,
                     "mcp_tools": _mcp_tool_names(active),
                     "snapshot_id": (
@@ -4718,16 +4715,15 @@ class PluginManager:
             prepared = await self._load_one(mod, activate=False)
             if prepared is None:
                 _discard_installed_candidate_mod(mod)
-            gate = self.latest_gate(plugin_id)
             result: dict[str, object] = {
                 "plugin_id": plugin_id,
                 "active_generation": active.generation_id,
                 "prepared_generation": (
                     prepared.generation_id if prepared is not None else None
                 ),
-                "gate_status": gate.status if gate is not None else "failed",
+                "preparation_state": "prepared" if prepared is not None else "failed",
                 "candidate_revision": (
-                    gate.candidate_revision if gate is not None else ""
+                    prepared.source_revision if prepared is not None else source_revision
                 ),
                 "mcp_tools": _mcp_tool_names(prepared) if prepared is not None else [],
                 "snapshot_id": (
@@ -5084,35 +5080,6 @@ class PluginManager:
             if stage_stable:
                 generation.boot_created_data_dir = not data_dir.exists()
                 ensure_workspace_plugin_data_dir(data_dir, self._workspace)
-            try:
-                asset_catalog = self._asset_host.prepare(
-                    generation_id,
-                    asset_roots=PluginAssetHost.roots_for([generation]),
-                )
-            except Exception as error:
-                gate_result = self._record_failed_gate(
-                    plugin_id=plugin_id,
-                    revision=source_revision,
-                    check_id="asset_catalog",
-                    reason=str(error),
-                )
-                raise _CandidateRejected(gate_result) from error
-            self._gate_results[plugin_id] = GateResult(
-                gate_id="assembly",
-                plugin_id=plugin_id,
-                candidate_revision=source_revision,
-                status="passed",
-                checks=(GateCheckResult(
-                    check_id="asset_catalog",
-                    status="passed",
-                    evidence=[(asset.owner_id, asset.category) for asset in asset_catalog.assets],
-                ),),
-            )
-            generation.asset_catalog = asset_catalog
-            scope.defer(
-                "asset_catalog",
-                lambda: self._asset_host.close(generation_id),
-            )
             if not activate:
                 validation_root = (
                     self._workspace
@@ -5514,7 +5481,6 @@ class PluginManager:
         """验证并导入固定组件；调用者先关闭 Root 和资源，再释放模块。"""
         modules: list[str] = []
         generations: dict[str, PluginGeneration] = {}
-        asset_scopes = ExitStack()
         try:
             records = tuple(self._archive.read_descriptor(ref) for ref in components)
             # 先检查整个闭包，不能导入前半段后才发现后续组件属于旧接口。
@@ -5567,19 +5533,11 @@ class PluginManager:
                     source_type=cast(Literal["builtin", "installed"], record["source_type"]),
                     archive_ref=ref,
                 )
-                generation = generations[plugin_id]
-                generation.asset_catalog = self._asset_host.prepare(
-                    generation_id, asset_roots=PluginAssetHost.roots_for([generation]),
-                )
-                asset_scopes.callback(self._asset_host.close, generation_id)
 
             yield generations
         finally:
-            try:
-                asset_scopes.close()
-            finally:
-                for module_path in modules:
-                    self._remove_module_tree(module_path)
+            for module_path in modules:
+                self._remove_module_tree(module_path)
 
     async def _resolve_composition_root(
         self,
@@ -5823,24 +5781,6 @@ class PluginManager:
             for generation in mount_order
             for key in cast(ComposablePlugin, generation.instance).inject
         }
-        if INSTALLED_ASSETS in requested:
-            def read_installed_assets() -> tuple[InstalledAsset, ...]:
-                """读取当前 runtime scope 固定的原始声明资产树。"""
-                snapshot = get_current_runtime_snapshot()
-                if snapshot is None:
-                    raise RuntimeError("读取声明资产需要当前任务的 runtime scope")
-                current = snapshot.composition_root
-                if current is None or current.context.require(INSTALLED_ASSETS) is not read_installed_assets:
-                    raise RuntimeError("声明资产不属于当前 runtime scope")
-                assets: list[InstalledAsset] = []
-                for generation in self._static_active_generations(list(snapshot.generations.values())):
-                    catalog = generation.asset_catalog
-                    if catalog is None:
-                        raise RuntimeError(f"generation 声明资产尚未准备: {generation.plugin_id}")
-                    assets.extend(catalog.assets)
-                return tuple(assets)
-
-            _ = await root.context.provide(INSTALLED_ASSETS, read_installed_assets)
         if RUNTIME_CATALOG in requested:
             def read_runtime_catalog() -> dict[str, object]:
                 """Read neutral runtime facts from the exact task-bound snapshot."""
@@ -6823,13 +6763,6 @@ class PluginManager:
         plugin_id: str,
         plugin_dir: Path,
     ) -> PluginContributions:
-        asset_roots = tuple(
-            (
-                category,
-                _resolve_declared_roots(plugin_dir, declared),
-            )
-            for category, declared in instance.asset_roots
-        )
         return PluginContributions(
             manifest={
                 "name": instance.name,
@@ -6837,7 +6770,6 @@ class PluginManager:
                 "desc": instance.desc,
                 "author": instance.author,
             },
-            asset_roots=asset_roots,
             dashboard_module=_resolve_dashboard_module(
                 plugin_dir,
                 instance.dashboard_module,
@@ -7283,25 +7215,6 @@ def _mod_source_revision(mod: dict[str, str] | None) -> str | None:
     return _source_revision(Path(mod["plugin_root"]))
 
 
-def _resolve_declared_roots(
-    plugin_dir: Path,
-    declared: tuple[str, ...],
-) -> tuple[Path, ...]:
-    plugin_root = plugin_dir.resolve(strict=False)
-    roots: list[Path] = []
-    seen: set[Path] = set()
-    for raw_path in declared:
-        path = (plugin_dir / raw_path).resolve(strict=False)
-        _require_plugin_path(plugin_root, path, "能力目录")
-        if not path.is_dir():
-            raise RuntimeError(f"插件能力目录不存在: {path}")
-        if path in seen:
-            raise RuntimeError(f"插件能力目录重复: {path}")
-        seen.add(path)
-        roots.append(path)
-    return tuple(roots)
-
-
 def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | None:
     if declared is None:
         return None
@@ -7602,10 +7515,10 @@ def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
 
 def _log_candidate_status(result: dict[str, object]) -> None:
     logger.info(
-        "plugin_candidate_status plugin=%s gate=%s active=%s prepared=%s "
+        "plugin_candidate_status plugin=%s preparation=%s active=%s prepared=%s "
         "revision=%s mcp_tools=%d",
         result["plugin_id"],
-        result["gate_status"],
+        result["preparation_state"],
         result["active_generation"],
         result["prepared_generation"] or "-",
         str(result["candidate_revision"])[:12],

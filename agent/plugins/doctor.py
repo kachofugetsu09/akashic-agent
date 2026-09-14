@@ -85,16 +85,11 @@ def _inspect_plugin(
             )
         )
         try:
-            declaration = _load_plugin_declaration(
+            _load_plugin_declaration(
                 stable_root,
                 require_static="@" in plugin_id,
             )
-            checks.extend(
-                _check_capabilities(
-                    declaration,
-                    stable_root,
-                )
-            )
+            checks.append(_check("runtime", "deferred", "运行能力由实际装配确定"))
         except Exception as e:
             checks.append(_check("declaration", "error", str(e)))
     elif latest_root is None:
@@ -108,11 +103,11 @@ def _inspect_plugin(
             )
         )
         try:
-            declaration = _load_plugin_declaration(
+            _load_plugin_declaration(
                 latest_root,
                 require_static="@" in plugin_id,
             )
-            checks.extend(_check_candidate_declaration(declaration, latest_root))
+            checks.append(_check("candidate_runtime", "deferred", "运行能力由实际装配确定"))
         except Exception as e:
             checks.append(_check("declaration", "error", str(e)))
     if (
@@ -213,33 +208,6 @@ def _load_optional_static_manifest(
     if not path.exists() and not path.is_symlink():
         return None
     return load_static_plugin_manifest(plugin_root)
-
-
-def _check_capabilities(
-    declaration: ComposablePlugin,
-    plugin_root: Path,
-    *,
-    prefix: str = "",
-) -> list[dict[str, str]]:
-    """检查声明目录存在且位于插件内，不解释任何资产类别的业务格式。"""
-    checks: list[dict[str, str]] = []
-    root = plugin_root.resolve()
-    for category, paths in declaration.asset_roots:
-        invalid = [raw for raw in paths if not (root / raw).resolve().is_relative_to(root)
-                   or not (root / raw).is_dir()]
-        checks.append(_check(
-            f"{prefix}assets:{category}", "error" if invalid else "ok",
-            f"roots={len(paths)} invalid={invalid}",
-        ))
-    checks.append(_check(f"{prefix}runtime", "deferred", "运行能力由实际装配确定"))
-    return checks
-
-
-def _check_candidate_declaration(
-    declaration: ComposablePlugin,
-    plugin_root: Path,
-) -> list[dict[str, str]]:
-    return _check_capabilities(declaration, plugin_root, prefix="candidate_")
 
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:

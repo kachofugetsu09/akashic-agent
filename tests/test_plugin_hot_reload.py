@@ -19,7 +19,7 @@ from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 from starlette.websockets import WebSocketDisconnect
 
 from agent.plugin_composition import CompositionError
-from agent.plugin_composition.assets import InstalledAsset
+from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
 from agent.plugins.dashboard_host import (
     DashboardBinding,
@@ -28,7 +28,6 @@ from agent.plugins.dashboard_host import (
 )
 from agent.plugins.manager import PluginManager, _source_revision
 from agent.plugins.manifest import write_plugin_manifest
-from agent.plugins.skill_host import AssetSnapshot
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
@@ -59,6 +58,24 @@ def _v3_source(
         "async def apply(ctx):\n"
         f"{body}"
     )
+
+
+def _asset_source(name: str, relative_path: str = "skills", *, version: str = "1.0.0") -> str:
+    return _v3_source(
+        name, version=version,
+        exports="from agent.plugin_composition.assets import INSTALLED_ASSETS\ninject = (INSTALLED_ASSETS,)\n",
+        body=f"    await ctx.require(INSTALLED_ASSETS).register(ctx, 'skills', {relative_path!r})\n",
+    )
+
+
+def _copy_assets_provider(tmp_path: Path) -> None:
+    shutil.copytree(Path(__file__).parents[1] / "plugins/assets", tmp_path / "plugins/assets",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
+
+async def _read_assets(manager: PluginManager) -> tuple[InstalledAsset, ...]:
+    async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
+        return snapshot.composition_root.context.require(INSTALLED_ASSETS)()
 
 
 def _write_plugin(root: Path, name: str, source: str) -> Path:
@@ -125,6 +142,15 @@ def _write_installed_artifact(
     return plugin_base, artifact
 
 
+def _install_assets_provider(tmp_path: Path) -> None:
+    source = (Path(__file__).parents[1] / "plugins/assets/plugin.py").read_text()
+    base, _ = _write_installed_artifact(tmp_path, "1.0.0-assets", source, plugin_name="assets")
+    pointer = ArtifactPointer(".artifacts/1.0.0-assets")
+    write_pointers(base, stable=pointer, latest=pointer)
+    write_plugin_manifest({"assets@lab": True, "installed_snapshot@lab": True},
+                          plugins_home=tmp_path / "home")
+
+
 def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
     skill_dir = plugin_root / "skills" / name
     skill_dir.mkdir(parents=True)
@@ -132,31 +158,15 @@ def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
     return skill_dir
 
 
-def test_skill_snapshot_cleanup_removes_readonly_image_copies() -> None:
-    snapshot = AssetSnapshot()
-    nested = snapshot.root / "selected" / "skill"
-    nested.mkdir(parents=True)
-    skill_file = nested / "SKILL.md"
-    skill_file.write_text("# test\n", encoding="utf-8")
-    skill_file.chmod(0o444)
-    nested.chmod(0o555)
-
-    snapshot.cleanup()
-
-    assert not snapshot.root.exists()
-
-
 @pytest.mark.asyncio
-async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
+async def test_candidate_publishes_unique_generation(tmp_path: Path):
     _write_plugin(tmp_path / "plugins", "candidate", _v3_source("candidate"))
     manager = _manager(tmp_path)
 
     await manager.load_all()
 
     generation = manager.generation("candidate")
-    gate = manager.latest_gate("candidate")
     assert generation is not None
-    assert gate is not None and gate.status == "passed"
     assert generation.module_path.startswith("akasic_plugin_plugins_candidate__g")
     assert generation.instance.module.__name__ == generation.module_path
     assert generation.instance.version == "1.0.0"
@@ -331,22 +341,21 @@ async def test_source_revision_includes_helper_changes(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
+    _copy_assets_provider(tmp_path)
     outside = tmp_path / "plugins" / "outside" / "skill"
     outside.mkdir(parents=True)
     (outside / "SKILL.md").write_text("# outside\n", encoding="utf-8")
     _write_plugin(
         tmp_path / "plugins",
         "escaped",
-        _v3_source("escaped", exports="asset_roots = {'skills': ('../outside',)}\n"),
+        _asset_source("escaped", "../outside"),
     )
     manager = _manager(tmp_path)
 
     with pytest.raises(RuntimeError, match="完整插件组合加载失败"):
         await manager.load_all()
 
-    gate = manager.latest_gate("escaped")
-    assert gate is not None and gate.status == "failed"
-    assert gate.checks[0].check_id in {"declarations", "identity"}
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -408,11 +417,12 @@ async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_asset_host_leaves_skill_duplicates_to_standard_tools(tmp_path: Path):
+async def test_assets_provider_leaves_skill_duplicates_to_standard_tools(tmp_path: Path):
+    _copy_assets_provider(tmp_path)
     first_dir = _write_plugin(
         tmp_path / "plugins",
         "first_skills",
-        _v3_source("first_skills", exports="asset_roots = {'skills': ('skills',)}\n"),
+        _asset_source("first_skills", "skills"),
     )
     first_skill = first_dir / "skills" / "shared"
     first_skill.mkdir(parents=True)
@@ -422,18 +432,18 @@ async def test_asset_host_leaves_skill_duplicates_to_standard_tools(tmp_path: Pa
     manager = _manager(tmp_path, workspace=tmp_path / "workspace")
     await manager.load_all()
     first = manager.generation("first_skills")
-    assert first is not None and first.asset_catalog is not None
+    assert first is not None
     first_asset = next(
         asset
-        for asset in first.asset_catalog.assets
-        if asset.category == "skills"
+        for asset in await _read_assets(manager)
+        if asset.category == "skills" and asset.owner_id == "first_skills"
     )
     assert (first_asset.root_dir / "shared" / "SKILL.md").is_file()
 
     second_dir = _write_plugin(
         tmp_path / "plugins",
         "second_skills",
-        _v3_source("second_skills", exports="asset_roots = {'skills': ('skills',)}\n"),
+        _asset_source("second_skills", "skills"),
     )
     second_skill = second_dir / "skills" / "shared"
     second_skill.mkdir(parents=True)
@@ -444,11 +454,11 @@ async def test_asset_host_leaves_skill_duplicates_to_standard_tools(tmp_path: Pa
     await manager.load_all()
 
     second = manager.generation("second_skills")
-    assert second is not None and second.asset_catalog is not None
+    assert second is not None
     second_asset = next(
         asset
-        for asset in second.asset_catalog.assets
-        if asset.category == "skills"
+        for asset in await _read_assets(manager)
+        if asset.category == "skills" and asset.owner_id == "second_skills"
     )
     with pytest.raises(RuntimeError, match="Skill 名称重复"):
         SkillCatalogParser(capability_checker=None).parse(
@@ -465,10 +475,11 @@ async def test_asset_host_leaves_skill_duplicates_to_standard_tools(tmp_path: Pa
 async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
     tmp_path: Path,
 ):
+    _copy_assets_provider(tmp_path)
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "skill_reload",
-        _v3_source("skill_reload", exports="asset_roots = {'skills': ('skills-a',)}\n"),
+        _asset_source("skill_reload", "skills-a"),
     )
     v1_skill = plugin_dir / "skills-a" / "shared"
     v1_skill.mkdir(parents=True)
@@ -484,10 +495,10 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
     manager = _manager(tmp_path, workspace=workspace)
     await manager.load_all()
     active = manager.generation("skill_reload")
-    assert active is not None and active.asset_catalog is not None
+    assert active is not None
     active_asset = next(
         asset
-        for asset in active.asset_catalog.assets
+        for asset in await _read_assets(manager)
         if asset.category == "skills"
     )
     active_root = active_asset.root_dir / "shared"
@@ -502,63 +513,24 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
         "---\ndescription: release b\n---\nbody b\n", encoding="utf-8"
     )
     (plugin_dir / "plugin.py").write_text(
-        _v3_source("skill_reload", exports="asset_roots = {'skills': ('skills-b',)}\n"),
+        _asset_source("skill_reload", "skills-b"),
         encoding="utf-8",
     )
 
     prepared = await manager.prepare_candidate("skill_reload")
 
-    assert prepared is not None and prepared.asset_catalog is not None
+    assert prepared is not None
+    await manager.publish_prepared("skill_reload")
     prepared_asset = next(
-        asset
-        for asset in prepared.asset_catalog.assets
-        if asset.category == "skills"
+        asset for asset in await _read_assets(manager) if asset.category == "skills"
     )
     prepared_root = prepared_asset.root_dir / "shared"
     assert prepared_root.joinpath("SKILL.md").read_text(encoding="utf-8").endswith(
         "body b\n"
     )
     assert active_root != prepared_root
-    await manager.discard_prepared("skill_reload")
+    assert (active_root / "SKILL.md").read_text().endswith("body a\n")
     await manager.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_skill_catalog_cleanup_failure_is_reported(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_plugin(
-        tmp_path / "plugins",
-        "skill_cleanup",
-        _v3_source("skill_cleanup", exports="asset_roots = {'skills': ('skills',)}\n"),
-    )
-    (tmp_path / "plugins" / "skill_cleanup" / "skills").mkdir()
-    manager = _manager(tmp_path)
-    await manager.load_all()
-    generation = manager.generation("skill_cleanup")
-    assert generation is not None and generation.asset_catalog is not None
-    snapshot_root = generation.asset_catalog.snapshot.root
-    real_rmtree = shutil.rmtree
-
-    def fail_snapshot_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
-        if Path(path) == snapshot_root and not args and not kwargs:
-            raise OSError("snapshot cleanup failed")
-        real_rmtree(path, *args, **kwargs)
-
-    monkeypatch.setattr(shutil, "rmtree", fail_snapshot_cleanup)
-    await manager.terminate_all()
-
-    assert any(
-        failure.resource == "asset_catalog"
-        and failure.error == "snapshot cleanup failed"
-        for failure in manager.cleanup_failures
-    )
-    assert manager._asset_host.get(generation.generation_id) is generation.asset_catalog
-    monkeypatch.setattr(shutil, "rmtree", real_rmtree)
-    manager._asset_host.close(generation.generation_id)
-    assert manager._asset_host.get(generation.generation_id) is None
-    assert not snapshot_root.exists()
 
 
 def _installed_snapshot_source(
@@ -566,8 +538,9 @@ def _installed_snapshot_source(
     *,
     skills: bool = False,
 ) -> str:
-    exports = "asset_roots = {'skills': ('skills',)}\n" if skills else ""
-    return _v3_source("installed_snapshot", version=version, exports=exports)
+    if skills:
+        return _asset_source("installed_snapshot", version=version)
+    return _v3_source("installed_snapshot", version=version)
 
 
 @pytest.mark.asyncio
@@ -668,6 +641,7 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
 
 @pytest.mark.asyncio
 async def test_installed_promotion_uses_fixed_assets_without_touching_workspace_skills(tmp_path: Path) -> None:
+    _install_assets_provider(tmp_path)
     plugin_base, stable_root = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a", skills=True)
     )
@@ -688,27 +662,22 @@ async def test_installed_promotion_uses_fixed_assets_without_touching_workspace_
     manager = PluginManager([], event_bus=EventBus(), workspace=workspace,
                             installed_cache_root=tmp_path / "home" / "cache")
 
-    def content():
-        snapshot = manager.current_snapshot
-        assert snapshot is not None
-        generation = snapshot.generations["installed_snapshot@lab"]
-        catalog = generation.asset_catalog
-        assert catalog is not None
-        asset = next(item for item in catalog.assets if item.category == "skills")
+    async def content():
+        asset = next(item for item in await _read_assets(manager) if item.category == "skills")
         return (asset.root_dir / "shared" / "SKILL.md").read_text()
 
     try:
         await manager.load_all()
-        assert content() == "stable body\n"
+        assert await content() == "stable body\n"
         write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
         assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-        assert content() == "stable body\n"
+        assert await content() == "stable body\n"
         await manager.drop_candidate("installed_snapshot@lab")
-        assert content() == "stable body\n"
+        assert await content() == "stable body\n"
         write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
         assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
         assert (await manager.switch_ready("installed_snapshot@lab"))["publication_state"] == "promoted"
-        assert content() == "candidate body\n"
+        assert await content() == "candidate body\n"
     finally:
         await manager.terminate_all()
     assert (personal / "SKILL.md").read_bytes() == b"user-owned bytes"
@@ -720,6 +689,7 @@ async def test_installed_promotion_uses_fixed_assets_without_touching_workspace_
 async def test_workspace_skill_name_does_not_block_plugin_promotion(
     tmp_path: Path,
 ) -> None:
+    _install_assets_provider(tmp_path)
     plugin_base, _ = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a")
     )
@@ -1258,8 +1228,9 @@ async def test_plugin_watcher_reloads_v3_source_without_signal(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_plugin_toggle_changes_assets_without_creating_workspace_projections(tmp_path: Path) -> None:
-    plugin_dir = _write_plugin(tmp_path / "plugins", "computer", _v3_source(
-        "computer", exports="asset_roots = {'skills': ('skills',)}\n",
+    _copy_assets_provider(tmp_path)
+    plugin_dir = _write_plugin(tmp_path / "plugins", "computer", _asset_source(
+        "computer",
     ))
     skill_dir = plugin_dir / "skills" / "opencli"
     skill_dir.mkdir(parents=True)

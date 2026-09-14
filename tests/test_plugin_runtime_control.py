@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -493,9 +494,12 @@ async def _start_runtime_mcp(
     source = tmp_path / "runtime-mcp-source"
     _write_runtime_mcp_source(source, runtime_version="v1")
     _commit_all(source, "runtime-v1")
+    provider = tmp_path / "providers/assets"
+    shutil.copytree(Path(__file__).parents[1] / "plugins/assets", provider,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     bus = EventBus()
     manager = PluginManager(
-        plugin_dirs=[],
+        plugin_dirs=[provider.parent],
         event_bus=bus,
         tool_registry=ToolRegistry(),
         workspace=tmp_path / "workspace",
@@ -523,9 +527,10 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "api_version = 3\n"
         "name = 'runtime_mcp'\n"
         "version = '1.0.0'\n"
-        "inject = (MCP_SERVERS,)\n"
-        "asset_roots = {'skills': ('skills',)}\n"
+        "from agent.plugin_composition.assets import INSTALLED_ASSETS\n"
+        "inject = (MCP_SERVERS, INSTALLED_ASSETS)\n"
         "async def apply(ctx):\n"
+        "    await ctx.require(INSTALLED_ASSETS).register(ctx, 'skills', 'skills')\n"
         "    await ctx.require(MCP_SERVERS).register(\n"
         "        ctx, McpServerDefinition(\n"
         "            name='runtime_probe', command=('python', 'mcp/server.py'),\n"

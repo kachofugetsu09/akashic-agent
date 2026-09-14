@@ -546,7 +546,8 @@ provider+原消费者；第二组没有原 provider 安装，也没有更改消�
 ### 9.28 声明资产与 Skill 解析的归属
 
 Core 删除 SkillIndex、SkillsLoader 和技能 frontmatter 解析，只发布当前任务租约固定的
-InstalledAsset(owner_id, category, root_dir)。插件只使用 asset_roots 声明目录类别，
+InstalledAsset(owner_id, category, root_dir)。本节记录早期静态目录阶段；按 0071，目录注册已改由
+普通 assets provider 持有，当前合同见[能力手册](plugin-v3-capabilities.md#43-调度与外部运行)。
 不再维护 Skill/Drift Skill 专用字段及转换层。standard_tools 拥有技能解析、
 可用性、提示、读取工具与检查投影。工具绑定仍单独归档原始资源树，恢复时不补读
 当前安装。Core 的候选状态删除没有真实数据来源的空技能字段与计数。

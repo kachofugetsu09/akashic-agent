@@ -23,7 +23,6 @@ class ComposablePlugin:
     desc: str
     author: str
     inject: tuple[ServiceKey[object], ...]
-    asset_roots: tuple[tuple[str, tuple[str, ...]], ...]
     workspace_roots: tuple[str, ...]
     workspace_files: tuple[str, ...]
     dashboard_module: str | None
@@ -74,7 +73,6 @@ class ComposablePlugin:
         active = getattr(module, "is_active", None)
         if active is not None and not callable(active):
             raise ValueError("v3 插件 is_active 必须是可调用对象")
-        asset_roots = _asset_roots_export(module)
         workspace_roots = _workspace_roots_export(module)
         workspace_files = _workspace_files_export(module)
         dashboard_module = getattr(module, "dashboard_module", None)
@@ -109,7 +107,6 @@ class ComposablePlugin:
             desc=str(getattr(module, "desc", "")),
             author=str(getattr(module, "author", "")),
             inject=inject,
-            asset_roots=asset_roots,
             workspace_roots=workspace_roots,
             workspace_files=workspace_files,
             dashboard_module=cast(str | None, dashboard_module),
@@ -184,39 +181,6 @@ def _string_tuple_export(module: ModuleType, name: str) -> tuple[str, ...]:
     if len(set(typed)) != len(typed):
         raise ValueError(f"v3 插件 {name} 不得重复")
     return typed
-
-
-def _asset_roots_export(
-    module: ModuleType,
-) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """读取插件自己的资产类别和路径，不解释各类资产的格式。"""
-
-    raw = getattr(module, "asset_roots", None)
-    if raw is None:
-        return ()
-    if not isinstance(raw, Mapping):
-        raise ValueError("v3 插件 asset_roots 必须是类别到路径序列的映射")
-    entries: list[tuple[str, tuple[str, ...]]] = []
-    for raw_category, raw_paths in cast(Mapping[object, object], raw).items():
-        if (
-            not isinstance(raw_category, str)
-            or not raw_category
-            or raw_category.strip() != raw_category
-        ):
-            raise ValueError("v3 插件 asset_roots 类别必须是非空字符串")
-        if not isinstance(raw_paths, (tuple, list)):
-            raise ValueError(f"v3 插件 asset_roots[{raw_category}] 必须是字符串序列")
-        paths = cast(tuple[object, ...] | list[object], raw_paths)
-        if any(
-            not isinstance(path, str) or not path or path.strip() != path
-            for path in paths
-        ):
-            raise ValueError(f"v3 插件 asset_roots[{raw_category}] 包含无效路径")
-        typed_paths = tuple(cast(str, path) for path in paths)
-        if len(set(typed_paths)) != len(typed_paths):
-            raise ValueError(f"v3 插件 asset_roots[{raw_category}] 不得重复路径")
-        entries.append((raw_category, typed_paths))
-    return tuple(sorted(entries))
 
 
 def _contract_digests_export(module: ModuleType) -> tuple[tuple[str, str], ...]:

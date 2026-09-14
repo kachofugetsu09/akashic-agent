@@ -1,10 +1,13 @@
-"""来源中立的 generation 固定插件声明资产读取口。"""
+"""普通插件共享的资产注册与只读合同；不解释资产内容。"""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
+
+from agent.plugin_composition.context import Context
+from agent.plugin_composition.effect import Effect
 
 from agent.plugin_composition.model import ServiceKey
 
@@ -26,9 +29,17 @@ class InstalledAsset:
             raise ValueError("资产 root_dir 必须是绝对路径")
 
 
-INSTALLED_ASSETS = ServiceKey[
-    Callable[[], tuple[InstalledAsset, ...]]
-]("core.installed_assets.v1")
+class InstalledAssets(Protocol):
+    """读取精确作用域的资产，或登记调用方自己的代码目录。"""
+
+    def __call__(self) -> tuple[InstalledAsset, ...]: ...
+
+    async def register(
+        self, ctx: Context, category: str, relative_path: str,
+    ) -> Effect: ...
 
 
-__all__ = ["INSTALLED_ASSETS", "InstalledAsset"]
+INSTALLED_ASSETS = ServiceKey[InstalledAssets]("core.installed_assets.v1")
+
+
+__all__ = ["INSTALLED_ASSETS", "InstalledAsset", "InstalledAssets"]

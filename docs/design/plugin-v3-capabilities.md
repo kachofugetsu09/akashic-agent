@@ -29,7 +29,6 @@ Core 用一个位置参数调用 `apply(ctx)`，不限制参数名字或默认�
 | `api_version`、`name`、`version`、`apply` | 必需的身份和唯一入口 |
 | `inject` | 根 Fiber 激活所需的 `ServiceKey` |
 | `is_active(services)` | 根据冻结的静态 Service view 决定是否发布静态贡献 |
-| `asset_roots` | 以类别映射发布插件资产；资产消费者解释各类格式 |
 | `workspace_roots`、`workspace_files` | 声明被授权的 workspace 路径；只授予真正的数据 owner |
 | `dashboard_module` | 发布 Dashboard HTTP/面板模块 |
 | `web_module`、`web_requires`、`web_provides`、`web_contract_digests` | 发布 Web 模块及版本化组合合同 |
@@ -199,8 +198,33 @@ Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影
 | `WORKLOADS` | `register(ctx, Workload(...))` | 窄 Controller 管理的容器 workload |
 | `EXECUTOR_SERVICE` | `parallel_sync(jobs)` | 有界纯同步工作；worker 不取得 Context/Fiber |
 
-Skill 和 Drift Skill 使用模块级 `asset_roots = {"skills": ("skills",), "drift_skills": ("drift/skills",)}`，由安装、candidate readiness
-和 generation catalog 原子发布。MCP、process 和 Workload 只在插件代码中声明，通过上表 Service
+资产通过普通 `assets` 插件提供的 `INSTALLED_ASSETS` 注册。贡献方在 `inject` 中声明依赖，
+在 `apply(ctx)` 中调用 `await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")`。
+类别只是贡献方与读取方之间的约定；Core 不解释 Skill、Drift Skill 或类别表。provider 必须在
+安装清单或 profile 中显式选择，缺少它时拒绝装配，Manager 不补入隐藏 provider。
+
+```text
+┌────────────────────┐    register(ctx, category, relative_path)
+│ 贡献插件 apply(ctx) │ ──────────────────────────┐
+└────────────────────┘                           ▼
+                                  ┌────────────────────────┐
+                                  │ assets：本 Root 注册表 │
+                                  └───────────┬────────────┘
+                                              │ callable：精确 scope 只读
+                                              ▼
+                                  ┌────────────────────────┐
+                                  │ standard_tools：解析   │
+                                  └────────────────────────┘
+```
+
+provider 从实际 Context 取得 owner 与固定代码制品根；拒绝跨 Root、越界路径与跨制品资源链接。
+注册 Effect 随贡献方关闭，只移除内存记录。读取必须持有同一 Root 的实际 runtime scope，
+返回代码归档中的原目录，不再复制临时资产树。服务 binding 收集注册者 Context，保持资源与
+贡献代码闭包固定；standard_tools 仍独立保存技能工具的资源归档及其相对路径，不弱化解析。
+代码制品、工具归档和用户 workspace 数据没有新的更新、逻辑失效或物理减少协议；关闭不会
+删除它们，恢复仍依赖原代码归档、binding 与各数据 owner 的备份。
+
+MCP、process 和 Workload 只在插件代码中声明，通过上表 Service
 建立 Fiber-owned registration；字段与权限由各 provider 和 Controller 校验。命令直接来自实际注册，
 Python 命令绑定安装制品的固定环境，不再与 TOML 中的第二份命令对账。MCP 引用的 owner 与端口
 暂时仍在 snapshot 组合检查，后续移入对应 provider。

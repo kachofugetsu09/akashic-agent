@@ -21,6 +21,7 @@ from agent.plugin_composition import (
     WorkloadLimits,
     WorkloadPort,
 )
+from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from .inputs import CallSource, Result, TOOLS, TURN_PROJECTION, TurnProjection
@@ -136,6 +137,7 @@ version = "2.0.0"
 desc = "Persistent Linux desktop, browser, and visual control"
 author = "Akashic Core"
 inject = (
+    INSTALLED_ASSETS,
     MCP_SERVERS,
     WORKLOADS,
     TOOLS,
@@ -144,7 +146,6 @@ inject = (
     OWNER_STATE,
     TURN_PROJECTION,
 )
-asset_roots = {'skills': ("skills",)}
 workspace_roots = ()
 workspace_files = ()
 dashboard_module = "dashboard.py"
@@ -252,6 +253,7 @@ async def _open_target(ctx: Context, state: Mapping[str, object]) -> AsyncIterat
 
 async def apply(ctx: Context) -> None:
     """注册唯一 Computer Tool、专属 control binding 与资源声明。"""
+    await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)
     control = ComputerControl(ctx)
     _ = await ctx.provide(COMPUTER_CONTROL, control)
