@@ -342,7 +342,7 @@ def _write_plugin_configs(
     marketplace: str,
     declarations: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
-    """Atomically create declared plugin configs without knowing their fields."""
+    """创建无秘密的分发默认输入；凭据由插件配置命令单独授予。"""
 
     results: list[dict[str, str]] = []
     for declaration in declarations:
@@ -350,8 +350,8 @@ def _write_plugin_configs(
         config = declaration["config"]
         data_dir = workspace_plugin_data_dir(workspace, owner, marketplace)
         config_path = data_dir / CONFIG_INPUT
-        current, _ = load_config(data_dir)
-        if current:
+        _ = load_config(data_dir)
+        if config_path.exists():
             results.append({"owner": owner, "path": str(config_path), "status": "existing"})
             continue
         save_config(data_dir, config)

@@ -43,6 +43,30 @@ def test_unconfigured_plugin_keeps_empty_input_after_writing_business_data(tmp_p
     assert not (data / CONFIG_INPUT).exists()
 
 
+def test_interrupted_upgrade_keeps_legacy_entry_until_backups_are_retired(tmp_path, monkeypatch):
+    """退役备份失败时不能先移走唯一的旧配置格式栅栏。"""
+    from agent.plugin_composition import config_input
+
+    data = tmp_path / "plugin-data/example"
+    data.mkdir(parents=True)
+    source = data / "config.local.toml"
+    source.write_text('enabled=true')
+    (data / "config.local.toml.bak").write_text('enabled=false')
+    rename = config_input.os.rename
+
+    def fail_rename(old, new):
+        if old.name.endswith(".bak"):
+            raise OSError("retirement interrupted")
+        return rename(old, new)
+
+    monkeypatch.setattr(config_input.os, "rename", fail_rename)
+    with pytest.raises(OSError, match="retirement interrupted"):
+        upgrade_config(data, lambda content: tomllib.loads(content.decode()))
+    assert source.read_text() == 'enabled=true'
+    with pytest.raises(RuntimeError, match="升级"):
+        load_config(data)
+
+
 def test_config_reader_and_writer_leave_named_backups_to_owner(tmp_path: Path):
     data = tmp_path / "plugin-data/example"
     data.mkdir(parents=True)

@@ -185,8 +185,8 @@ def upgrade_config(data_dir: Path, convert: Callable[[bytes], Mapping[str, objec
     # 2. 配置程序解释字段并保存私有凭据，传回只含引用的输入。
     encoded = _config_bytes(convert(content))
     _write(input_path, encoded)
-    # 3. 新输入发布后将原件移入恢复目录；中断时剩余旧文件继续阻止启动。
-    for old in legacy:
+    # 3. 顶层旧入口最后退役；此前中断仍会明确要求完成升级。
+    for old in sorted(legacy, key=lambda path: path == source):
         original = backup / "original" / old.relative_to(data_dir)
         if old.read_bytes() != original.read_bytes():
             raise RuntimeError("升级期间旧配置变化；已停止，原件与恢复点均保留")
