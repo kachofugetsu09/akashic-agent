@@ -61,7 +61,6 @@ class _InboundLease:
         self.snapshot_lease = SimpleNamespace(
             active=True,
             snapshot=SimpleNamespace(snapshot_id=self.snapshot_id),
-            validation_candidate_plugin_ids=frozenset(),
         )
         self.closed = 0
         self.closed_event = asyncio.Event()
