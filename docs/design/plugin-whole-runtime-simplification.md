@@ -1,6 +1,6 @@
 # 插件整体换代重构
 
-- 状态：已授权实施，尚未完成
+- 状态：源码已分层提交，运行验收未执行
 - 基线：`origin/main@91b09ecd4f774f00d2d7a61a5d9ea3ad3878a339`
 - 目标及取舍：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md)
 - 范围：本仓库插件、底座、安装加载链、相关测试与文档；外部插件源码迁移、部署和正式数据迁移不在本次范围。
@@ -52,7 +52,7 @@ Channel factory、凭据或适配器启停。底座只提供来源接纳及窄�
 隔离宿主直接持有 Root、SnapshotStore、Task、Process、Bus 和数据连接，不再嵌套完整 Manager，
 装配路径与正式组合共用。卸载依赖实际完整 Root 关闭，删除重复逐代等待和镜像 generation
 租约计数；唯一计数归 snapshot，失败 owner 不由 cache 删除接管。
-这些是源码实现状态，不是整体验收：模型接线的独立审查、最终累计审查及运行证据仍未完成。
+这些是源码实现状态，不是整体验收：模型接线和底座收尾的独立静态审查已完成，运行证据仍未取得。
 
 空候选曾因缺少模型连接和 default 角色而无法回复。现在普通更新程序从来源
 `MODEL_SETTINGS.read_source()` 取得模型 owner 的设置位置，再向确切候选的同一服务
@@ -332,6 +332,18 @@ Git archive/备份分支保留基线，每层 commit 是下一层恢复点。消
 历史归档不得自动减少。旧格式升级必须有明确输入、备份及完整性检查，不能藏进加载路径。
 
 ## 验证与集成
+
+2026-09-15 源码交付收尾：
+
+- [#742](https://github.com/kachofugetsu09/akashic-agent/pull/742)：模型 owner 接续设置与凭据；固定 `c3150bdc` 的 SWE High 审查无 must-fix。
+- [#743](https://github.com/kachofugetsu09/akashic-agent/pull/743)、[#744](https://github.com/kachofugetsu09/akashic-agent/pull/744)：doctor 只读制品、卸载 join 最终回收；固定 `f2de3b71` 的独立审查无 must-fix。
+- [#745](https://github.com/kachofugetsu09/akashic-agent/pull/745)：删除回收时的共享图解释；固定 `38747e42` 的独立审查及 `agent/plugins` 有界终查无 must-fix。
+- 所有层仍为 Draft，未合并、未部署。相邻 diff 与累计 diff 只做静态检查；静态审查不证明默认回复、真实远程调用或崩溃恢复已运行成功。
+
+审查保留一项窄观察：模型 `read_source()` 在验证 scope 打开前执行，内部契约错误会让
+普通 Task 失败并阻止自动晋升，但尚不会写入该 scope 的 update error。当前正常组合的
+硬依赖和绑定检查未显示可达失败路径；不能据此宣称所有前置失败都已得到持久错误记录。
+持久 journal 保留恢复所需状态，本轮没有迁移旧 journal、业务数据或改写历史证据。
 
 复用行为边界测试，补关闭失败、启动顺序、候选隔离和提交前后强杀回归；不保护内部枚举或计数。
 用户明确要求本轮重构不运行 Gate 或 CI，只交付 PR；本轮也不执行测试，不能宣称行为已通过验证。
