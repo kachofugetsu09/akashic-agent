@@ -49,7 +49,8 @@ Core 用一个位置参数调用 `apply(ctx)`，不限制参数名字或默认�
 
 配置从 `ctx.config` 读取，是当前组合固定输入的插件本地副本，不跟随全局文件变化。
 插件自行选择解析方式，例如 `config = Config.model_validate(ctx.config)`；`Config` 只是插件内部普通类，
-Core 不读取它。无配置时输入为空对象。候选只取得授权允许的输入，凭据仍是不可直接解析的引用。
+Core 不读取它。无配置时输入为空对象。固定输入中的凭据仍使用引用；Models 自有连接
+按 PLG-001 由模型 owner 提供给普通 latest 调用，不受此配置存储协议解释。
 启用条件写在普通 `apply` 分支中；所有贡献走同一注册路径，没有另一个 `is_active` 协议。
 
 可选的根目录 `configure.py` 是插件自己的配置程序，不是普通辅助模块名称。
@@ -260,7 +261,8 @@ provider 从实际 Context 取得 owner 与固定代码制品根；拒绝跨 Roo
 MCP、process 和 Workload 由显式选择的普通 provider 提供，Manager 不补入隐式依赖。
 资源在 `apply` 中取得，Scope 在外部等待前登记关闭责任；失败保留同一资源句柄。
 MCP 的端口引用直接使用 Workload/Process 返回的句柄，provider 检查 owner，Snapshot 不再列举
-三类注册表或解释它们的依赖。Python 命令仍由宿主绑定固定制品环境；候选不解析正式凭据。
+三类注册表或解释它们的依赖。Python 命令仍由宿主绑定固定制品环境；候选资源的
+CredentialRef broker 不解析正式凭据，Models 自有连接沿其独立 owner 协议接续。
 公开协议、每调用 MCP 的关闭语义与未知 Controller 请求限制见[普通资源 provider](plugin-resource-providers.md)。
 
 ### 4.4 模型
@@ -425,7 +427,7 @@ Manager 的既有 `core.mobile_ui.v1` 请求 adapter 接线仍保留，但不再
                  ▼
 ┌────────────────────────────────────┐
 │ Core 固定输入 → 插件请求凭据短租约  │
-│ candidate 没有正式凭据解析权        │
+│ candidate broker 不解析正式引用     │
 └────────────────────────────────────┘
 ```
 
@@ -438,7 +440,8 @@ factory 合同；Channel host 不再提取配置字段或维护第二份凭据�
 每次打开租约先核对配置版本、凭据内容版本和撤销标记；已打开的租约保留其取得的值，关闭时
 清空。`revoke_credential(data_dir, ref)` 只增加撤销标记，不删除历史版本。新配置原子替换前把
 旧输入保存在私有 `config-history/`。凭据、撤销标记、配置历史没有自动 GC；恢复必须一起保留
-私有目录和对应配置输入。Models 的连接凭据与刷新协议保持自己的 owner，不使用这份存储。
+私有目录和对应配置输入。Models 的连接凭据与刷新协议保持自己的 owner，不使用这份存储；
+普通 latest 默认复用已有模型设置和凭据，不要求独立账号，见 PLG-001 与 0071。
 
 普通读取与写入只识别准确的旧入口 `config.local.toml`，存在时明确要求升级。
 缺少固定输入时返回空映射，与业务目录是否存在或含哪些数据无关；安装不写空配置占位文件。
@@ -457,9 +460,9 @@ Telegram Channel 和两个 Sender 的 `configure.py --upgrade` 由插件解释�
 含已删除 TOML 字段的旧安装必须显式重装。历史 Yoyo 脚本保持原字节，若它产生旧配置，随后仍须
 经过显式配置升级，不能把旧输出直接作为新输入。
 
-候选不复制私有凭据根，workspace root/file 授权也不能授予它。新格式不是任意 plugin-data 的
-“无秘密证明”：旧的任意命名备份、模型自有存储和其他业务私有数据仍需要其 owner 的隔离/排除
-协议。不能把未知旧目录写一个空输入就声称验收通过。同进程 Python 插件仍属于受信任代码；
+候选不复制此 broker 的私有凭据根，workspace root/file 授权也不能授予它。新格式不解释
+任意 plugin-data、模型自有存储或旧备份；这些数据由各自 owner 使用和接续。
+不能把未知旧目录写一个空输入就声称验收通过。同进程 Python 插件仍属于受信任代码；
 这些窄接口不是操作系统文件沙箱。本层只完成代码与静态 diff 检查，行为验证另行授权。
 
 日常向导、发布 profile、旧渠道升级命令、Docker 调试辅助写入器、共享 fixture 和原先列出的
