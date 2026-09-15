@@ -41,9 +41,12 @@ Channel factory、凭据或适配器启停。底座只提供来源接纳及窄�
 重复验证身份已删除，唯一 stable 仍由完整 selection 提交。
 安装不再自动启动裁判，也不等待父 Turn terminal；更新来源显式发起固定 latest 的普通调用，
 正常完成且未撤销才请求晋升。详见 [latest 普通调用](plugin-latest-programmatic.md)。
-这仍未完成整体重构：隔离调用的输入 owner 接线、非阻塞调用的过程与最终结果可见性、
-通用丢弃入口的安装记录结算和最终累计审查仍在处理。Manager 仍创建隔离调用宿主，
-尚需检查该职责是否可以进一步收缩，不能把局部删除视作整体验收。
+隔离输入已有独立 owner；普通调用返回实际 Task 句柄，过程和结束后的原消息均可查询。
+通用丢弃沿原安装更新结算，关闭成功回执支持取消或文件恢复失败后的精确重试。
+隔离宿主直接持有 Root、SnapshotStore、Task、Process、Bus 和数据连接，不再嵌套完整 Manager，
+装配路径与正式组合共用。卸载依赖实际完整 Root 关闭，删除重复逐代等待和镜像 generation
+租约计数；唯一计数归 snapshot，失败 owner 不由 cache 删除接管。
+这些是源码实现状态，不是整体验收：真实模型授权选择、最终累计审查及运行证据仍未完成。
 
 真实模型路径的静态核对发现一项待决定的授权边界：`models.apply` 从当前 workspace 的
 `model-registry.sqlite3` 加载连接、模型和角色，空库只初始化 schema，不从 `ctx.config`

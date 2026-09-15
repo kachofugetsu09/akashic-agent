@@ -78,6 +78,7 @@
 | [插件运行目录收敛](design/plugin-active-projections.md) | 当前 snapshot 查询投影与实际 Root 清理 owner | 修改 generation 查询或清理路径时读取 |
 | [latest 普通调用](design/plugin-latest-programmatic.md) | 候选调用、结果可见性、撤销与默认晋升 | 修改 Agent 更新入口时读取 |
 | [候选丢弃与安装结算](design/plugin-drop-update-settlement.md) | 同一更新的资源关闭与安装恢复责任 | 修改候选丢弃或安装恢复时读取 |
+| [完整 Root 卸载排空](design/plugin-uninstall-root-drain.md) | 卸载与唯一 snapshot 租约计数的责任 | 修改卸载或租约回收时读取 |
 | [完整 Root 发布路径](design/plugin-single-publication.md) | 新正式 Root 与真实发布租约边界 | 修改 snapshot 发布时读取 |
 | [Channel 资源归属](design/channel-resource-ownership.md) | 接纳许可、adapter、凭据和输入回执 owner | 修改 Channel provider 或客户端时读取 |
 | [插件 V3 能力手册](design/plugin-v3-capabilities.md) | V3 当前有哪些原子能力、插件怎样使用 | 开发或审查 V3 插件时读取 |
