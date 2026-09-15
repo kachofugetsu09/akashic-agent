@@ -120,12 +120,6 @@ class RuntimeSnapshotCompiler:
         ordered = [generations[key] for key in sorted(generations)]
         if any(generation.plugin_id != key for key, generation in generations.items()):
             raise RuntimeError("RuntimeSnapshot generation key 与 plugin_id 不一致")
-        identity = "|".join(
-            f"{generation.plugin_id}:{generation.generation_id}:"
-            f"{generation.source_revision}:{generation.config_revision}"
-            for generation in ordered
-        )
-        identity += f"|snapshot:{snapshot_revision}"
         composition_topology: TopologyView | None = None
         composition_active_plugin_ids: frozenset[str] | None = None
         channel_registry: ChannelRegistrySnapshot | None = None
@@ -144,7 +138,6 @@ class RuntimeSnapshotCompiler:
                 )
             composition_topology = composition_root.topology_view()
             composition_active_plugin_ids = composition_root.active_plugin_ids()
-            identity += f"|composition:{composition_topology.identity}"
             channel_declarations = catalog_context.get(CHANNELS)
             if channel_declarations is not None:
                 channel_registry = _freeze_plugin_channels(
@@ -161,7 +154,6 @@ class RuntimeSnapshotCompiler:
                         for generation in ordered
                     },
                 )
-                identity += f"|channels-v3:{channel_registry.identity}"
             assert composition_active_plugin_ids is not None
             self._validate_channel_registry(
                 channel_registry,
@@ -177,7 +169,6 @@ class RuntimeSnapshotCompiler:
                     else composition_root.instance_token
                 ),
             )
-            identity += f"|core-channels-v3:{channel_catalog.identity}"
         canonical_identity = "|".join(
             (
                 *(
@@ -686,31 +677,6 @@ class RuntimeSnapshotStore:
         async with self._condition:
             self._condition.notify_all()
 
-    async def promote_latest_provisional(self) -> SnapshotTransaction:
-        """Stage a sealed latest candidate without exposing it as stable."""
-
-        # 1. Validate the exact closed latest candidate before moving the pointer.
-        if self._provisional is not None:
-            raise RuntimeError("已有 RuntimeSnapshot provisional 发布事务")
-        candidate = self.unpromoted_candidate
-        if candidate is None:
-            raise RuntimeError("没有等待 promote 的 RuntimeSnapshot 候选")
-        if candidate.accepting_leases:
-            raise RuntimeError("promote 前必须先暂停 candidate lease admission")
-        self._validate_composition(candidate, require_validation=True)
-
-        # 2. Keep the old stable visible but closed until the external step settles.
-        previous = self._current
-        if previous is not None:
-            previous.accepting_leases = False
-        transaction = SnapshotTransaction(previous=previous, candidate=candidate)
-        self._latest = candidate
-        candidate.accepting_leases = False
-        self._provisional = transaction
-        async with self._condition:
-            self._condition.notify_all()
-        return transaction
-
     async def finalize_provisional(
         self,
         transaction: SnapshotTransaction,
@@ -854,53 +820,6 @@ class RuntimeSnapshotStore:
             self._pending = transaction
         async with self._condition:
             self._condition.notify_all()
-
-    async def promote_latest(
-        self,
-        *,
-        before_open: Callable[[], None] | None = None,
-        after_open: Callable[[], None] | None = None,
-    ) -> SnapshotTransaction:
-        """Atomically make the ready latest snapshot stable and retire the old stable."""
-
-        # 1. Switch the public pointer without rebuilding the validated snapshot.
-        if self._provisional is not None:
-            raise RuntimeError("RuntimeSnapshot provisional 发布事务尚未结束")
-        candidate = self.unpromoted_candidate
-        if candidate is None:
-            raise RuntimeError("没有等待 promote 的 RuntimeSnapshot 候选")
-        if candidate.accepting_leases:
-            raise RuntimeError("promote 前必须先暂停 candidate lease admission")
-        self._validate_composition(candidate, require_validation=True)
-        if before_open is not None:
-            before_open()
-        previous = self._current
-        self._current = candidate
-        self._latest = candidate
-        candidate.accepting_leases = True
-
-        # 2. manager owner 切换完成后，旧 stable 才能开始 drain。
-        if previous is not None:
-            previous.state = "retired"
-            previous.accepting_leases = False
-        try:
-            if after_open is not None:
-                after_open()
-        except BaseException:
-            self._current = previous
-            self._latest = candidate
-            candidate.accepting_leases = True
-            if previous is not None:
-                previous.state = "committed"
-                previous.accepting_leases = True
-            async with self._condition:
-                self._condition.notify_all()
-            raise
-        if previous is not None:
-            self._schedule_drain(previous)
-        async with self._condition:
-            self._condition.notify_all()
-        return SnapshotTransaction(previous=previous, candidate=candidate)
 
     async def discard_latest(
         self,
@@ -1133,12 +1052,7 @@ class RuntimeSnapshotStore:
         """Retain the closed exact target for one Core publication participant."""
 
         candidate = transaction.candidate
-        closed_promotion = (
-            candidate is self.unpromoted_candidate
-            and transaction.previous is self._current
-            and not candidate.accepting_leases
-        )
-        if self._pending is not transaction and self._provisional is not transaction and not closed_promotion:
+        if self._pending is not transaction and self._provisional is not transaction:
             raise RuntimeError("RuntimeSnapshot publication target 已失效")
         if self._snapshots.get(candidate.snapshot_id) is not candidate:
             raise RuntimeError("RuntimeSnapshot publication target 未被 Store 持有")
@@ -1298,8 +1212,6 @@ class RuntimeSnapshotStore:
     @staticmethod
     def _validate_composition(
         snapshot: RuntimeSnapshot,
-        *,
-        require_validation: bool = False,
     ) -> None:
         root = snapshot.composition_root
         if root is None:
@@ -1353,18 +1265,6 @@ class RuntimeSnapshotStore:
             raise RuntimeError("RuntimeSnapshot 插件组合拓扑在编译后发生变化")
         if root.composition_revision != topology.composition_revision:
             raise RuntimeError("RuntimeSnapshot 插件组合拓扑在编译后发生过结构变化")
-        if require_validation:
-            if (
-                snapshot.composition_validation_identity is None
-                or snapshot.composition_validation_root_token is None
-            ):
-                raise RuntimeError("RuntimeSnapshot 插件组合候选缺少 Core 验证回执")
-            if (
-                snapshot.composition_validation_root_token is root.instance_token
-                and root.validation_identity()
-                != snapshot.composition_validation_identity
-            ):
-                raise RuntimeError("RuntimeSnapshot 插件组合验证回执在封存后发生变化")
 
     def _selected(self, selector: RuntimeSelector) -> RuntimeSnapshot | None:
         if selector == "stable":

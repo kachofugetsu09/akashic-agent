@@ -1,6 +1,6 @@
 # 完整 Root 的单一发布路径
 
-基线：`8b4e93b2`。状态：Manager 与示例已收敛；Store 方法删除被自动审批阻止。
+基线：`df9179cf`。状态：Manager 与示例已收敛，Store 旧晋升 API 已删除；行为验收未运行。
 依据：[ADR 0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md)。
 本层只有静态检查，未运行测试或实验。
 
@@ -46,13 +46,26 @@ hot-reload 底座测试改为独立 Root：stable/latest lease 分别绑定实�
 候选退出后以相同 provider 输入构造新实例、runtime、数据目录及正式 snapshot，
 不复用物理 Root 或要求相同 snapshot ID。脚本的持久输出仍只属于显式新建实验目录。
 
-## 未完成的 Store 删除
+## Store 的正式发布边界
 
-自动审批拒绝删除 `SnapshotStore.promote_latest` 和 `promote_latest_provisional`，
-理由是当时测试及实验仍有调用者，单独删除会破坏调用链。按用户要求停止该子项，
-没有换工具或重试删除。随后完成两个消费者的独立改写；现在静态搜索仅剩方法定义。
-这两个方法及其 validation helper 原样保留，不能宣称旧 Store 协议已经删除。
-协调器可在明确处理该审批阻塞后继续删除；Root owner、封存与拓扑校验不能连带移除。
+`df9179cf` 已将 hot-reload 测试与 `scripts/plugin_composition_experiment.py` 改为
+先关闭候选，再创建全新正式 Root。删除前全仓静态搜索确认
+`RuntimeSnapshotStore.promote_latest` 与 `promote_latest_provisional` 没有代码消费者；
+本层按明确授权删除两个方法及仅供它们使用的 `require_validation` 参数和分支。
+`retain_publication_target` 只接受 Store 当前持有的 exact pending/provisional 事务，
+删除已关闭 latest 候选的旁路授权。既有 fresh Root 测试补充候选事务与已完成事务拒绝、
+pending/provisional 真实发布 lease 可用的断言；测试尚未运行。
+
+保留候选及 pending Root 的封存入口、验证身份记录、编译冻结、拓扑与生命周期检查，
+以及 snapshot 和 generation 各自的真实 lease 计数。候选记录不复制到全新正式 Root，
+正式 Root 仍在发布边界独立检查。编译器只删除无人读取的 `identity` 局部累加器，
+实际生成 snapshot ID 的 `canonical_identity` 不变。`catalog_generation` 仍有 Manager
+调用，本层保留；Manager、Snapshot Channel 字段及其校验由原 owner 继续维护。
+
+本层只修改 Git worktree 中的源码、测试与本文，不增加、更新、失效或删除正式 workspace
+中的消息、回执、stable 选择、归档和 plugin-data。代码可从 `df9179cf` 恢复；
+修改前文件备份为 `/tmp/akasic-plugin-snapshot-v2-df9179cf-backup/source-before.tar`，
+该备份不是运行数据恢复证据。
 
 验证只执行 `git diff --check`。tests、Gate、CI、build、lint、AST、runtime 及实验
 全部未执行。整体权威设计和 INDEX 由协调器对账，本文件只记录本切片。

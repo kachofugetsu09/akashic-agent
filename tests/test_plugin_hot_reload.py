@@ -1103,7 +1103,8 @@ async def test_runtime_snapshot_latest_closes_before_fresh_formal_publication(
 
     store = RuntimeSnapshotStore(on_drained)
     store.install(stable)
-    await store.commit_latest(store.begin_publish(latest))
+    latest_transaction = store.begin_publish(latest)
+    await store.commit_latest(latest_transaction)
     stable_lease = store.lease()
     latest_lease = store.lease(selector="latest")
     assert stable_lease.snapshot is stable
@@ -1115,6 +1116,10 @@ async def test_runtime_snapshot_latest_closes_before_fresh_formal_publication(
     store.pause_candidate_admission(latest)
     await latest_lease.release()
     await store.wait_for_no_leases(latest)
+    store.seal_candidate_validation(latest)
+    with pytest.raises(RuntimeError, match="publication target 已失效"):
+        store.retain_publication_target(latest_transaction)
+    assert latest.lease_count == 0
     await store.discard_latest(latest)
     assert drained == [latest.snapshot_id]
     assert closed == ["latest"]
@@ -1122,9 +1127,18 @@ async def test_runtime_snapshot_latest_closes_before_fresh_formal_publication(
     assert stable_lease.snapshot is stable
     formal = await build("fresh-formal")
     transaction = store.begin_publish(formal)
+    publication_lease = store.retain_publication_target(transaction)
+    assert publication_lease.snapshot is formal
     await store.commit_provisional(transaction)
     assert store.current is stable
+    provisional_lease = store.retain_publication_target(transaction)
+    assert provisional_lease.snapshot is formal
+    await provisional_lease.release()
+    await publication_lease.release()
     await store.finalize_provisional(transaction)
+    with pytest.raises(RuntimeError, match="publication target 已失效"):
+        store.retain_publication_target(transaction)
+    assert formal.lease_count == 0
     assert transaction.previous is stable
     assert store.current is formal
     assert formal is not latest
