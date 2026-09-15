@@ -2064,6 +2064,12 @@ class PluginManager:
             and self._operation is not None and self._operation.committed is not None
         ):
             raise RuntimeError("更新已提交；revert 不能撤销已提交选择或插件数据")
+        if self._ready_candidate is None:
+            async with asyncio.timeout_at(deadline):
+                await self._run_operation(
+                    lambda: self._discard_update(update_id, reason=reason), allow_stable_lease=True,
+                )
+            return
         ready = self._require_ready_candidate(update.plugin_id)
         if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
             raise RuntimeError("更新与当前待处理候选不匹配")
@@ -2103,18 +2109,47 @@ class PluginManager:
     async def _discard_update(self, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
         """持候选锁核对原请求；不能撤销期间已被替换的另一候选。"""
         update = self._reload_journal.update(update_id)
-        ready = self._require_ready_candidate(update.plugin_id)
-        if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
-            raise RuntimeError("更新与当前待处理候选不匹配")
-        if any(host.parent_lease.snapshot is ready.snapshot for host in self._validation_hosts.values()):
-            raise RuntimeError("验证尚未退出或资源尚未清理")
-        _ = await self._drop_ready(update.plugin_id, error=reason)
+        if self._ready_candidate is not None:
+            ready = self._require_ready_candidate(update.plugin_id)
+            if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
+                raise RuntimeError("更新与当前待处理候选不匹配")
+            if any(host.parent_lease.snapshot is ready.snapshot for host in self._validation_hosts.values()):
+                raise RuntimeError("验证尚未退出或资源尚未清理")
+            _ = await self._drop_ready(update.plugin_id, error=reason)
+        self._check_discarded_update(update_id)
         self._check_operation_commit()
         # runtime 清理不回写安装状态；由持有本次请求的安装入口结算恢复点。
         self._reload_journal.rollback_updates(
             self.installed_plugins_home, update_id=update_id, error=reason,
         )
         self._notify_updates()
+
+    def _check_discarded_update(self, update_id: str) -> None:
+        """只允许原候选已关闭且原 stable 未改变的安装恢复点再次结算。"""
+        update = self._reload_journal.update(update_id)
+        if update.phase != "armed" or update.reload_tx_id is None:
+            raise RuntimeError("更新不是等待结算的已关闭候选")
+        record = self._reload_journal.get(update.reload_tx_id)
+        events = self._reload_journal.events(record.tx_id)
+        if (record.plugin_id != update.plugin_id
+                or record.candidate_artifact_pointer != update.candidate.path
+                or record.phase != "aborted" or record.candidate_snapshot_id is None
+                or not events or events[-1].phase != "aborted"
+                or events[-1].details.get("cleanup_receipt") != "candidate-root-closed"):
+            raise RuntimeError("候选缺少实际关闭回执；请沿原资源 owner 恢复")
+        if (self._ready_candidate is not None
+                or self._snapshot_store.unpromoted_candidate is not None
+                or self._snapshot_store.pending_transaction is not None
+                or record.candidate_snapshot_id in self._snapshot_store.retained_snapshot_ids
+                or self._building_roots
+                or any(host.parent_lease.snapshot.snapshot_id == record.candidate_snapshot_id
+                       for host in self._validation_hosts.values())):
+            raise RuntimeError("候选或资源 owner 仍在，不能结算旧安装更新")
+        if self._publication is not None and self._publication.must_retain:
+            raise RuntimeError("提交结果已确认或不确定；保留原恢复 owner")
+        intent = self._reload_journal.selection_candidate(record.tx_id)
+        if intent is None or self._selection.read() != intent[0]:
+            raise RuntimeError("原 stable 选择已改变或证据未知，不能回退安装更新")
 
     async def _drop_ready(self, plugin_id: str, *, error: str = "candidate behavior rejected") -> dict[str, object]:
         ready = self._require_ready_candidate(plugin_id)
@@ -2140,6 +2175,7 @@ class PluginManager:
             ready.candidate,
             "aborted",
             error=error,
+            details={"cleanup_receipt": "candidate-root-closed"},
         )
         self._ready_candidate = None
         result = self._publication_status(
