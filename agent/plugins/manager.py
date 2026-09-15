@@ -197,6 +197,8 @@ class _PublicationParticipantRestoreError(RuntimeError):
 
 class PluginManager:
     POST_PUBLISH_TIMEOUT_SECONDS = 5.0
+    # 冷启动须归档并挂载完整组合，规模随安装数增长，不参与发布后预算。
+    BOOT_COMMIT_TIMEOUT_SECONDS = 600.0
 
     def __init__(
         self,
@@ -359,12 +361,15 @@ class PluginManager:
     def _start_operation(
         self, work: Callable[[], Awaitable[U]], *, background: bool = False,
         wait_for_snapshot: RuntimeSnapshot | None = None,
+        commit_timeout: float | None = None,
     ) -> ManagerOperation:
         """等待普通调用归还租约后才计提交期限，始终保留同一个任务 owner。"""
         self._require_operation_idle()
+        if commit_timeout is None:
+            commit_timeout = self.POST_PUBLISH_TIMEOUT_SECONDS
         loop = asyncio.get_running_loop()
         operation = ManagerOperation(
-            loop.time() + self.POST_PUBLISH_TIMEOUT_SECONDS
+            loop.time() + commit_timeout
             if wait_for_snapshot is None else float("inf")
         )
         self._operation = operation
@@ -376,7 +381,7 @@ class PluginManager:
             await self._snapshot_store.wait_for_no_leases(wait_for_snapshot)
             if operation.revoked or operation.task.cancelling() or self._stopping:
                 raise asyncio.CancelledError("发布请求已撤销")
-            operation.deadline = loop.time() + self.POST_PUBLISH_TIMEOUT_SECONDS
+            operation.deadline = loop.time() + commit_timeout
             timer = loop.call_at(operation.deadline, self._revoke_operation, operation)
             try:
                 return await work()
@@ -395,6 +400,7 @@ class PluginManager:
 
     async def _run_operation(
         self, work: Callable[[], Awaitable[U]], *, allow_stable_lease: bool = False,
+        commit_timeout: float | None = None,
     ) -> U:
         """公开入口有限观察同一任务；退出观察不释放仍在工作的 owner。"""
         self._reject_operation_lease(allow_stable_lease=allow_stable_lease)
@@ -407,9 +413,9 @@ class PluginManager:
                 async with RuntimeScope(lease.fork()):
                     return await work()
 
-            operation = self._start_operation(scoped_work)
+            operation = self._start_operation(scoped_work, commit_timeout=commit_timeout)
         else:
-            operation = self._start_operation(work)
+            operation = self._start_operation(work, commit_timeout=commit_timeout)
         try:
             return cast(U, await observe_operation(operation, deadline=operation.deadline))
         finally:
@@ -473,7 +479,9 @@ class PluginManager:
             raise asyncio.CancelledError
 
     async def start_runtime(self) -> None:
-        await self._run_operation(self._start_runtime)
+        await self._run_operation(
+            self._start_runtime, commit_timeout=self.BOOT_COMMIT_TIMEOUT_SECONDS,
+        )
 
     async def _start_runtime(self) -> None:
         """Start lifecycle only after the exact Root is public and leasable."""
@@ -668,7 +676,9 @@ class PluginManager:
         return mods
 
     async def load_all(self) -> None:
-        await self._run_operation(self._load_all)
+        await self._run_operation(
+            self._load_all, commit_timeout=self.BOOT_COMMIT_TIMEOUT_SECONDS,
+        )
 
     async def _load_all(self) -> None:
         """从唯一完整选择启动；null 只允许首次固定安装输入。"""
