@@ -136,7 +136,6 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
     manager._building_roots = {}
     manager._draining_generations = {}
     manager._cleanup_failures = []
-    manager._stable_aliases = {"module": "alias"}
     manager._snapshot_store = SimpleNamespace(
         pause_admission=Mock(), generation_is_referenced_elsewhere=Mock(return_value=False),
     )

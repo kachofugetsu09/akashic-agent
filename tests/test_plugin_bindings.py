@@ -87,8 +87,7 @@ async def test_loaded_generation_keeps_assets_and_late_imports_after_source_chan
         generation = host.generation("provider")
         (plugins / "provider" / "asset.txt").write_text("asset B")
         (plugins / "provider" / "late.py").write_text("VALUE = 'late B'\n")
-        alias = host._stable_aliases[generation.module_path]
-        assert importlib.import_module(alias + ".late").VALUE == "late A"
+        assert importlib.import_module(generation.module_path + ".late").VALUE == "late A"
         current = host.current_snapshot
         assert current is not None
         root = await host._resolve_composition_root(dict(current.generations))

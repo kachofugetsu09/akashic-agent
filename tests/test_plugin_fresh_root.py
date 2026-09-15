@@ -159,7 +159,7 @@ async def test_candidate_and_formal_mount_fresh_instances_for_every_plugin(tmp_p
             assert checked.scope.closed and old.scope.closed
             assert actual.instance.module.STATE == {"mounts": 1, "starts": 1, "closes": 0}
             assert host.generation(key) is actual
-            assert sys.modules[host._stable_aliases[actual.module_path]] is actual.instance.module
+            assert sys.modules[actual.module_path] is actual.instance.module
         assert host._building_roots == {}
     finally:
         await host.terminate_all()

@@ -209,7 +209,7 @@ async def test_candidate_publishes_unique_generation(tmp_path: Path):
 
     generation = manager.generation("candidate")
     assert generation is not None
-    assert generation.module_path.startswith("akasic_plugin_plugins_candidate__g")
+    assert sys.modules[generation.module_path] is generation.instance.module
     assert generation.instance.module.__name__ == generation.module_path
     assert generation.instance.version == "1.0.0"
     await manager.terminate_all()
@@ -377,22 +377,24 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
+    modules_before = set(sys.modules)
     with pytest.raises(RuntimeError, match="拓扑未就绪"):
         await manager.load_all()
     assert manager.current_snapshot is None
-    assert not any("plugins_module_tree__g" in name for name in sys.modules)
+    assert not any(name.startswith("_akashic_") for name in set(sys.modules) - modules_before)
 
     save_config(config_dir, {"required": "ok"})
     await manager.load_all()
     generation = manager.generation("module_tree")
     assert generation is not None
     assert f"{generation.module_path}.child" in sys.modules
-    stable_child = importlib.import_module("akasic_plugin_plugins_module_tree.child")
-    assert stable_child.value == 1
+    child = importlib.import_module(generation.module_path + ".child")
+    assert child.value == 1
+    assert child is generation.instance.module.child
 
     await manager.terminate_all()
-    assert not any("plugins_module_tree__g" in name for name in sys.modules)
-    assert "akasic_plugin_plugins_module_tree.child" not in sys.modules
+    assert generation.module_path not in sys.modules
+    assert not any(name.startswith(generation.module_path + ".") for name in sys.modules)
 
 
 @pytest.mark.asyncio

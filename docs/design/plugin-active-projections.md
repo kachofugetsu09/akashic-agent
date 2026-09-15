@@ -15,7 +15,9 @@
 `_loaded/loaded_count` 没有生产消费者；`_active_plugins/ActivePluginInfo/active_plugins`
 及 `_registry_active` 只形成无生产消费者的 metadata 视图。`PluginContributions`
 及 collector 仅给该视图提供 manifest，均删除。插件静态身份与固定配置输入保持原归属。
-发布 alias 只使用明确传入的 previous generation 和 `_stable_aliases`，不扫描 metadata。
+每个 Root 只注册自己的固定模块 namespace，延迟导入继续读取同一归档代码。
+不再发布可变 stable import alias，也不保存别名目录或在退出时猜测别名是否已被新代接管。
+跨插件组合使用声明的服务依赖；没有仓库内插件依赖旧别名入口。
 
 ## Scope 与失败归属
 

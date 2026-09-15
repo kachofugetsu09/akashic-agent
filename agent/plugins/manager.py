@@ -264,7 +264,6 @@ class PluginManager:
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
         self._prepared_generations: dict[str, PluginGeneration] = {}
         self._ready_candidate: _ReadyPluginCandidate | None = None
-        self._stable_aliases: dict[str, str] = {}
         self._fresh_importer = FreshPluginImporter()
         if workload_controller is None:
             workload_socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
@@ -651,8 +650,6 @@ class PluginManager:
                 logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
                 continue
             seen_names.add(name)
-            import_suffix = name.replace("-", "_").replace("@", "_")
-            import_source = source.marketplace or source.plugin_root.parent.name
             module_path = source.plugin_root / "plugin.py"
             mods.append(
                 {
@@ -664,7 +661,6 @@ class PluginManager:
                         if source.static_manifest is not None
                         else ""
                     ),
-                    "import_path": f"akasic_plugin_{import_source}_{import_suffix}",
                     "marketplace": source.marketplace,
                     "source_type": source.source_type,
                 }
@@ -897,7 +893,6 @@ class PluginManager:
         generation: PluginGeneration,
         *,
         state: str,
-        preserve_stable_alias: bool = False,
     ) -> None:
         """成功后才解除 owner；失败或取消保留资源供显式关闭重试。"""
 
@@ -948,13 +943,6 @@ class PluginManager:
 
         # 3. 所有资源确认关闭后才移除模块及排空 owner。
         self._remove_module_tree(generation.module_path)
-        stable_alias = self._stable_aliases.pop(generation.module_path, None)
-        if (
-            stable_alias is not None
-            and not preserve_stable_alias
-            and sys.modules.get(stable_alias) is cast(ComposablePlugin, generation.instance).module
-        ):
-            self._remove_module_tree(stable_alias)
         generation.state = state
         self._forget_drained_generation(generation)
         if cancelled:
@@ -1026,19 +1014,10 @@ class PluginManager:
                 await self._dashboard_validation_releaser(snapshot)
             await composition_root.dispose()
         state = "aborted" if snapshot.state == "aborted" else "retired"
-        current = self._snapshot_store.current
         for generation in unreferenced_generations:
-            replacement = (
-                current.generations.get(generation.plugin_id)
-                if current is not None
-                else None
-            )
             await self._dispose_generation(
                 generation,
                 state=state,
-                preserve_stable_alias=(
-                    replacement is not None and replacement is not generation
-                ),
             )
             self._forget_drained_generation(generation)
         self._finish_drained_reload(snapshot.snapshot_id)
@@ -1944,7 +1923,6 @@ class PluginManager:
         """提交时激活整个新组合，旧组合整体退役。"""
         old = {} if previous is None else previous.generations
         for generation in snapshot.generations.values():
-            self._activate_published_generation(generation, old.get(generation.plugin_id))
             generation.state = "active"
         for generation in old.values():
             self._retire_generation(generation)
@@ -2316,27 +2294,6 @@ class PluginManager:
             plugin_id, active=active, candidate=generation, publication_state="latest_ready",
         )
 
-    def _activate_published_generation(
-        self,
-        generation: PluginGeneration,
-        previous: PluginGeneration | None,
-    ) -> None:
-        published_module = sys.modules[generation.module_path]
-        stable_alias = self._stable_aliases.get(generation.module_path)
-        if stable_alias is None and previous is not None:
-            stable_alias = self._stable_aliases.get(previous.module_path)
-        if stable_alias is None:
-            stable_alias = "_akashic_stable_" + hashlib.sha256(generation.plugin_id.encode()).hexdigest()[:16]
-
-        # 先完成可能失败的查找，再替换 stable import alias。
-        code_dir = generation.code_dir
-        self._remove_module_tree(stable_alias)
-        self._fresh_importer.register(stable_alias, code_dir)
-        sys.modules[stable_alias] = published_module
-        if previous is not None:
-            _ = self._stable_aliases.pop(previous.module_path, None)
-        self._stable_aliases[generation.module_path] = stable_alias
-
     async def _post_publish_invariants(
         self,
         generation: PluginGeneration,
@@ -2645,7 +2602,6 @@ class PluginManager:
                 state="prepared",
             )
             self._building_roots[root] = (source,)
-            self._stable_aliases[module_path] = mod["import_path"]
             if stage_stable:
                 return source
             if activate:
@@ -2661,7 +2617,6 @@ class PluginManager:
             generation = snapshot.generations[plugin_id]
             if root in self._building_roots:
                 await self._close_building_root(root)
-            self._stable_aliases.pop(module_path, None)
             if not activate:
                 if self.current_snapshot is not base_snapshot or (
                     self._selection.read() != base_selection_ref
@@ -2958,10 +2913,6 @@ class PluginManager:
                 self._building_roots[root] = tuple(generations.values())
             else:
                 validation_host.generations = tuple(generations.values())
-            if source is not None and validation_host is None:
-                alias = self._stable_aliases.get(source.module_path)
-                if alias is not None:
-                    self._stable_aliases[module_path] = alias
         return generations
 
     async def _close_root_scope(self, scope: PluginScope, module_path: str) -> None:
@@ -3056,8 +3007,6 @@ class PluginManager:
 
         async def close() -> None:
             await root.dispose()
-            for generation in self._building_roots.get(root, ()):
-                self._stable_aliases.pop(generation.module_path, None)
             # Root.dispose 自己合并并发关闭；各等待者确认同一成功结果。
             self._building_roots.pop(root, None)
 
@@ -3614,9 +3563,6 @@ class PluginManager:
                 )
                 externally_cancelled = externally_cancelled or cancelled
         # 4. 导入前的 Scope 也由前面的 building Root 关闭，不绕过 Root 扫尾。
-        for alias in self._stable_aliases.values():
-            self._remove_module_tree(alias)
-        self._stable_aliases.clear()
         if self._owns_control_frames:
             self._control_frames.close()
         if externally_cancelled:
