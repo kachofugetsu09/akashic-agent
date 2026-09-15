@@ -1,13 +1,13 @@
 ---
 name: plugin-system
-description: 说明并执行 Akashic v3 插件安装、加载、配置、插件内 MCP、Skill、生命周期、卸载与 turn 边界更新。
-when_to_use: 用户询问或要求处理 Akashic 插件、marketplace、插件自带 MCP、Skill、插件配置、安装、更新、卸载或排障时。所有 MCP server 都必须作为 v3 插件声明并经 Core generation host 发布。
+description: 说明并执行 Akashic 插件安装、组合、配置、资源归属及完整 snapshot 换代。
+when_to_use: 用户询问或要求处理 Akashic 插件、marketplace、插件自带 MCP、Skill、插件配置、安装、更新、卸载或排障时。
 metadata: {"akashic": {"always": false}}
 ---
 
 # Akashic 插件系统
 
-优先完成明确的插件请求。创建或改写 source、加入 Skill/MCP、安装候选或递归验证时，先加载 `develop-akashic-plugin`；这里只负责安装链、状态边界和 turn 结果。
+优先完成明确的插件请求。创建或改写 source、加入 Skill/MCP 或准备候选时，先加载 `develop-akashic-plugin`；这里只负责安装链、组合边界和更新结果。历史父 Turn rollout 文档不能覆盖当前合同。
 
 ## 事实来源与边界
 
@@ -18,8 +18,10 @@ metadata: {"akashic": {"always": false}}
 │  └─ 不可变 installed artifact 与 generation pointer
 ├─ <workspace>/plugin-data/<plugin>-<marketplace>/
 │  └─ 插件配置与持久状态
+├─ <workspace>/runtime/plugin-stable.json
+│  └─ 最后成功提交的完整组合；启动只恢复这份选择
 └─ <workspace>/runtime/plugin-reloads.sqlite3
-   └─ reload、candidate、恢复与 turn rollout 证据
+   └─ 更新请求、候选、发布与恢复证据
 ```
 
 外部 source 根必须包含普通文件 `plugin.py`。loader 在 import 前只读取顶层 `name`、`version`、`api_version` 字面量，要求 API 为整数 3；模块提供 `apply(ctx)`。Python 安装输入来自固定制品内实际存在的 `requirements.txt`，不从插件专用 TOML 声明身份、入口或环境。`akashic.plugin.toml` 不再读取或解释，不创建该文件；历史制品中的旧字节不自动删除。Skill、MCP 和其他资源由插件代码向实际 provider 注册。
@@ -33,33 +35,31 @@ metadata: {"akashic": {"always": false}}
 ## Agent 可用动作
 
 ```text
-plugin-install    安装或更新本 turn 的候选
-plugin-uninstall  登记本 turn 结束后的卸载
-plugin-revert     撤销本 turn 最近一次尚未提交的操作
+plugin_install       安装并固定候选，返回 update_id
+plugin_latest run    对该 update_id 发起普通 latest 调用
+plugin_latest status 读取同一次调用的过程和更新状态
+plugin_latest revert 撤销该更新尚未提交的晋升授权
 ```
 
-不要手工编辑 manifest/cache/pointer，不要手工切换 generation、重启 Gateway 或用第二个进程绕过 turn 边界。stable、candidate、lease、排空、提交、恢复、能力投影和服务切换由 Core 拥有。
+以上是工具名与 action，不是 shell 命令。不要手工编辑 manifest/cache/pointer，不要手工切换 generation 或重启 Gateway 绕过排空。底座拥有组合、固定 snapshot、lease 与唯一提交；能力目录、资源启停和业务数据由实际 provider 拥有。
 
 ## 安装与更新
 
-只从已提交 Git HEAD 安装；远程 source 必须先 push 对应 commit：
-
-```bash
-python main.py plugin-install \
-  --source <repo_or_url> \
-  --marketplace <marketplace>
-```
+只从已提交 Git HEAD 安装；远程 source 必须先 push 对应 commit。使用 `plugin_install` 的实际 schema，指定 source、marketplace 以及普通调用的任务要求；不要编造参数或用 shell 安装代替更新来源的请求记录。
 
 正常链路：
 
 ```text
-source test → commit/push → plugin-install
-       → attached child 的真实行为 oracle
-       ├─ pass → 正常结束父 turn → Core 自动提交 → 下一 turn 生效
-       └─ fail → plugin-revert → 修复 source 后递归
+┌─ commit/push → plugin_install → 固定候选
+├─ plugin_latest run → 普通 Task / Message / 工具调用
+│  ├─ 正常 complete，未 revert → 请求晋升
+│  └─ 异常、取消或结果未知 → 不晋升，不自动重跑
+└─ 关闭候选 → 排空旧组合 → 新正式实例就绪 → 提交 stable
 ```
 
-安装成功只表示候选准备并绑定当前父 turn；父 turn 仍使用旧 stable，attached child 自动使用候选。子 turn 不指定 runtime、不 detach、不直接选择 candidate。结果必须保存 candidate identity、reload transaction、child identity、tool trace 和 terminal；只看命令返回或 catalog 不足以证明功能。
+安装成功只证明候选已准备。更新关联的普通调用固定到这次候选，不跟随后来变化的 latest；其他普通调用不会因读取 latest 而获得晋升权。不要求 `passed/reason` JSON，也没有后台业务裁判。发起者通过同一 update_id 查看过程、结果和发布状态，提交前可以 revert。
+
+调用正常结束只是请求晋升，不等于 stable 已提交。底座仍须等实际租约归还、资源关闭与新正式实例就绪；状态和原通知 owner 报告最终结果。未知调用只能查询原证据，不以重试重新执行。不要把候选的空数据运行宣称为正式历史数据兼容证明。
 
 ## Skill、MCP 与服务检查
 
@@ -71,37 +71,36 @@ source test → commit/push → plugin-install
 ├─ managed service
 │  └─ process identity、port_env、readiness、退出与隔离 plugin-data
 ├─ Channel
-│  └─ descriptor、credential paths、stop/start ownership 与恢复
-└─ rollout
-   └─ child terminal、tool items、reload journal、turn 后 generation
+│  └─ channels provider、实际 factory、凭据归属与关闭回执
+└─ 更新
+   └─ exact candidate、普通调用结果、reload journal、stable 选择
 ```
 
 固定 listener 由插件代码向进程或 Workload provider 注册；服务进程和同插件 MCP 必须真正使用 provider 返回的隔离端点，不维护第二份 TOML 资源声明。候选使用宿主授予的候选权限和独立数据目录，不能借用正式容器或改成正式凭据 factory。写型 Tool/MCP 仅在事务、dry-run、隔离目标或明确授权下执行。
 
-Channel candidate 不复制正式 token、webhook 或 long-poll ownership。父 turn 结束后的顺序是：
+Channel candidate 不复制正式 token、webhook 或 long-poll ownership。完整换代顺序是：
 
 ```text
-old Channel.stop → managed service switch → new Channel.start
-       └─ 任一步失败：恢复并验证 old generation
+关闭来源接纳 → 有限排空 → 依赖者先关闭 → 新正式 Root 初始化
+                                      └─ stable 提交后才开放来源
 ```
 
-`stop()` 返回必须证明 ingress、在途工作和 ownership 已收束；`start()` 返回必须证明新 generation ready。验证结果不能把 endpoint 试运行写成正式外部切换。
+资源关闭返回必须证明 ingress、在途工作和 ownership 已收束；失败句柄留给原 owner。失败恢复也创建新的物理实例，不复活旧 Root。提交已确认或结果不确定时，不能恢复旧内存指针来冒充外部效果回滚。
 
 ## 卸载与撤销
 
 ```bash
 python main.py plugin-uninstall demo@github
-python main.py plugin-revert
 ```
 
-卸载成功只表示意图已登记当前 turn；当前 turn 可完成，结束后 Core 停止 endpoint、移除能力投影和 installed code，并保留 `<workspace>/plugin-data/<plugin>-<marketplace>/`。下一 turn 核对 manifest entry、artifact/cache、process/socket 清理和 plugin-data 仍在；清理失败必须报告实际残留和错误。
+卸载是明确的 runtime 管理操作：先停用并排空，再移除 installed code 和安装记录，保留 `<workspace>/plugin-data/<plugin>-<marketplace>/`。只有实际回执才能证明卸载完成；清理失败必须报告实际残留和错误。
 
-`plugin-revert` 只撤销同一 turn 最近一次尚未提交的 install/uninstall，不能跨 turn 回滚已发布版本。不要反复安装、轮询、删除 plugin-data 或借手工文件修改伪造恢复。
+`plugin_latest` 的 `revert` 只撤销对应更新尚未提交的授权，不撤销已发布版本或插件数据。撤销授权与清理完成是两件事；清理失败须保留原 owner 和诊断。不要反复安装、删除 plugin-data 或借手工修改伪造恢复。
 
 ## 配置与排障
 
 插件自行解析 `ctx.config`，Core 不寻找 `Config` 导出。固定配置与私有 `CredentialRef` 继续经过显式配置及升级入口；旧配置和备份不能因 TOML 策略退役而自动删除。不要改主 `config.toml`。缺少依赖、导入失败、代码身份不一致、配置错误、命令失败、readiness 失败和数据损坏必须 fail-loud。
 
-只有以下情况才进入 runtime diagnostics：子 turn 长时间 queued、超时、terminal 错误、candidate identity 不一致、cleanup 残留或行为 oracle 缺层。按 reload journal、SessionDB、tool items、process/readiness 和 write set 逐层定位，不重复安装同一 source revision。
+调用长期无结果、超时、candidate identity 不一致或 cleanup 残留时，沿原 update、普通 Message/ToolResult、reload journal 和实际资源 owner 定位，不重复安装同一 source revision。按用户要求拉长查询间隔，不忙轮询。
 
-完成时至少能独立证明：source commit 可回源；代码身份、安装输入、source tests 和 readiness 通过；attached child 使用目标 generation 并实际执行 Skill/Tool/MCP；父 turn 正常结束；下一 turn 的 Core 事实已提交或明确报告恢复失败；正式 SessionDB、memory、plugin-data 和未授权外部效果没有被候选验证改写。未执行的验证必须明确标注，不能以静态检查代替运行证据。
+交付时区分源码与安装身份、编译合法性、真实普通调用结果、资源关闭、stable 提交及恢复证据。明确哪些验证未执行；静态阅读和 PR 不证明真实模型、Skill/Tool/MCP、发布或故障恢复成功。用户禁止测试或 Gate 时遵守，不为了填写完成结论擅自运行。正式 SessionDB、memory、plugin-data 和外部效果始终受各自授权边界约束。

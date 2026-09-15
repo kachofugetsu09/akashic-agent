@@ -34,9 +34,16 @@ Dashboard 从该实例的验证环境归属读取限制，不再比较两份不�
 运行目录已按[当前 snapshot 查询投影](plugin-active-projections.md)收敛：
 删除重复 loaded/active metadata/Scope 索引和 PluginContributions；未交接 Root、待发布候选、
 Store 和清理失败的原 owner 仍保留。
-这仍未完成整体重构：Manager 仍拥有业务验证、Channel 宿主和发布特例，
-Snapshot 仍枚举 Channel。候选操作与实际调用 lease 的衔接、旧发布死分支和最终累计审查
-仍在处理，不能把局部删除视作整体换代已经完成。
+Channel 已迁入显式 `channels` provider，Snapshot 不再枚举其目录，Manager 不再解释
+Channel factory、凭据或适配器启停。底座只提供来源接纳及窄输入端口，输入队列仍归实际宿主。
+插件专用 TOML 与正式业务数据复制链已删除，候选从独立空目录开始；
+安装清单及用户业务配置不是本次删除对象。旧 Snapshot 晋升 API、固定发布参数和
+重复验证身份已删除，唯一 stable 仍由完整 selection 提交。
+安装不再自动启动裁判，也不等待父 Turn terminal；更新来源显式发起固定 latest 的普通调用，
+正常完成且未撤销才请求晋升。详见 [latest 普通调用](plugin-latest-programmatic.md)。
+这仍未完成整体重构：隔离调用的输入 owner 接线、非阻塞调用的过程与最终结果可见性、
+通用丢弃入口的安装记录结算和最终累计审查仍在处理。Manager 仍创建隔离调用宿主，
+尚需检查该职责是否可以进一步收缩，不能把局部删除视作整体验收。
 
 余下收敛顺序如下；并行实现只用于互不争夺 owner 的切片：
 
