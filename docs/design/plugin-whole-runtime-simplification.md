@@ -27,6 +27,8 @@ MCP、Workload、托管进程已移入[普通资源 provider](plugin-resource-pr
 Snapshot 不再保存这三类目录，Manager 不再为它们执行第二次启动。
 候选、正式及失败恢复现从同一组固定组件归档分别创建全新的模块、Scope 和 generation；
 snapshot 保存实际挂载的实例，禁止跨 snapshot 共用物理 Root 或 generation。
+Store 接纳时负责拒绝共享；snapshot 回收直接释放自己独占的 Root 和 generations，
+不再扫描其他 snapshot 猜测共享关系。直接关闭 generation 的存活 owner 检查仍保留。
 模块同样只由实际 Root namespace 持有；删除 stable 导入别名及其发布、继承和回收目录。
 延迟相对导入仍从该 Root 的固定制品加载，跨插件通信通过服务组合。
 安装 doctor 只读取指针与制品声明，不再另行导入插件、触发模块副作用或建立第二套加载。

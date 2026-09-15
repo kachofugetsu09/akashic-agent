@@ -988,33 +988,18 @@ class PluginManager:
             _ = self._draining_generations.pop(generation.plugin_id, None)
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
+        """回收这张 snapshot 独占的 Root 和 generations。"""
         if any(self._building_root_uses(item) for item in snapshot.generations.values()):
             raise RuntimeError("未交接 Root 仍持有 snapshot 模块和数据，须显式 terminate 重试")
         composition_root = snapshot.composition_root
-        root_unreferenced = (
-            composition_root is not None
-            and not self._snapshot_store.composition_is_referenced_elsewhere(
-                composition_root,
-                excluding_snapshot_id=snapshot.snapshot_id,
-            )
-        )
-        if root_unreferenced:
+        # Store 在接纳时已拒绝物理 Root/generation 共享，回收不再解释共享图。
+        if composition_root is not None:
             await self._stop_runtime_snapshot(snapshot)
-        unreferenced_generations = tuple(
-            generation
-            for generation in snapshot.generations.values()
-            if not self._snapshot_store.generation_is_referenced_elsewhere(
-                generation,
-                excluding_snapshot_id=snapshot.snapshot_id,
-            )
-        )
-        if root_unreferenced:
-            assert composition_root is not None
             if self._dashboard_validation_releaser is not None:
                 await self._dashboard_validation_releaser(snapshot)
             await composition_root.dispose()
         state = "aborted" if snapshot.state == "aborted" else "retired"
-        for generation in unreferenced_generations:
+        for generation in snapshot.generations.values():
             await self._dispose_generation(
                 generation,
                 state=state,
