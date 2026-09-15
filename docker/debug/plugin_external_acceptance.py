@@ -1115,19 +1115,8 @@ async def _exercise(
             )
         else:
             evidence["checks"]["apply"] = False
-            gate = None if manager is None else manager.latest_gate(plugin_id)
-            if gate is not None:
-                evidence["gate"] = {
-                    "status": gate.status,
-                    "failure_reason": gate.failure_reason,
-                    "checks": [
-                        {"id": item.check_id, "status": item.status, "evidence": item.evidence}
-                        for item in gate.checks
-                    ],
-                }
             evidence["error"] = (
-                (gate.failure_reason if gate is not None else None)
-                or startup.get("start_error")
+                startup.get("start_error")
                 or "formal install 后未形成 stable generation/module"
             )
         visible = _visible_checkout_modules(repo_root, source_checkout)
@@ -1337,23 +1326,10 @@ async def _exercise_fleet(
                 )
             else:
                 row["checks"]["apply"] = False
-                gate = None if manager is None else manager.latest_gate(plugin_id)
-                row["checks"]["apply_attempted"] = gate is not None
-                row["gate"] = (
-                    None
-                    if gate is None
-                    else {
-                        "status": gate.status,
-                        "failure_reason": gate.failure_reason,
-                        "checks": [
-                            {"id": item.check_id, "status": item.status, "evidence": item.evidence}
-                            for item in gate.checks
-                        ],
-                    }
-                )
+                # 整组启动失败不能证明每个插件是否已执行 apply。
+                row["checks"]["apply_attempted"] = None
                 row["error"] = (
-                    (gate.failure_reason if gate is not None else None)
-                    or load_error
+                    load_error
                     or "formal install 后未形成 stable generation/module"
                 )
             row["checkout_modules_visible"] = visible

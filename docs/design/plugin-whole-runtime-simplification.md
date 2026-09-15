@@ -67,6 +67,11 @@ Channel factory、凭据或适配器启停。底座只提供来源接纳及窄�
 
 底座继续解释依赖及服务选择，发布后的绑定固定。不增加通用业务规格、兼容层或恢复入口。
 
+装配错误只沿原异常、Root incident 与所属更新记录报告，不再另存 Manager `GateResult`。
+原 Gate 缓存仅覆盖 snapshot 编译的一个失败分支，导入、配置和拓扑失败已直接抛出，
+不能用其缺失推断插件没有尝试初始化。验收脚本读取真实启动错误；整组失败时未取得
+实例的插件是否执行过 apply 保持未知。Root 清理失败仍保留实际 owner 和原异常。
+
 候选编译不再读取 `runtime/deliveries/settlements.sqlite` 的历史目标来决定服务是否可移除。
 原 `_preflight_durable_delivery_targets` 是 Manager 唯一的业务库消费者，`forward_targets`
 只有该检查调用；两者及只保护这项旧检查的测试已删除。旧投递存储、恢复实现、迁移和未知效果

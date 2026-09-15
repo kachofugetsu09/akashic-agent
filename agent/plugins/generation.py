@@ -10,26 +10,6 @@ if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshot
 
 
-GateStatus = Literal["passed", "failed"]
-
-
-@dataclass(frozen=True)
-class GateCheckResult:
-    check_id: str
-    status: GateStatus
-    evidence: object = ""
-
-
-@dataclass(frozen=True)
-class GateResult:
-    gate_id: str
-    plugin_id: str
-    candidate_revision: str
-    status: GateStatus
-    checks: tuple[GateCheckResult, ...]
-    failure_reason: str = ""
-
-
 @dataclass
 class PluginGeneration:
     plugin_id: str

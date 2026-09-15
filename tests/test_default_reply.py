@@ -224,15 +224,14 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_bad_reply_tool_configuration_fails_before_consuming_any_input(tmp_path):
-    async with application(tmp_path, replying=True, start=False, missing_tool=True) as (
-        log,
-        host,
-    ):
-        assert host.generation("reply") is None
-        gate = host.latest_gate("reply")
-        assert gate is not None and gate.status == "failed"
-        assert gate.failure_reason == "tools: Extra inputs are not permitted"
+    with pytest.raises(RuntimeError, match="插件组合拓扑未就绪"):
+        async with application(tmp_path, replying=True, start=False, missing_tool=True):
+            pytest.fail("坏配置不得启动完整组合")
+    log = MessageLog(tmp_path / "sessions.db")
+    try:
         assert log.catalog().snapshot_heads() == {}
+    finally:
+        log.close()
 
 
 @pytest.mark.asyncio

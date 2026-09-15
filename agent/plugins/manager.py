@@ -106,11 +106,7 @@ from agent.plugins.artifacts import (
 from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.plugins.selection import PluginSelection, SelectionConflictError, SelectionWriteError
 from agent.plugins.scope import CleanupFailure, PluginScope
-from agent.plugins.generation import (
-    GateCheckResult,
-    GateResult,
-    PluginGeneration,
-)
+from agent.plugins.generation import PluginGeneration
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.static_manifest import (
@@ -268,7 +264,6 @@ class PluginManager:
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
         self._prepared_generations: dict[str, PluginGeneration] = {}
         self._ready_candidate: _ReadyPluginCandidate | None = None
-        self._gate_results: dict[str, GateResult] = {}
         self._stable_aliases: dict[str, str] = {}
         self._fresh_importer = FreshPluginImporter()
         if workload_controller is None:
@@ -537,9 +532,6 @@ class PluginManager:
 
     def generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._active_generations.get(plugin_id)
-
-    def latest_gate(self, plugin_id: str) -> GateResult | None:
-        return self._gate_results.get(plugin_id)
 
     def prepared_generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._prepared_generations.get(plugin_id)
@@ -2594,7 +2586,6 @@ class PluginManager:
             return self._active_generations[plugin_id]
         if load_plugin_manifest(_plugins_home(self._installed_cache_root)).get(plugin_id, True) is False:
             return None
-        self._gate_results.pop(plugin_id, None)
         plugin_dir = Path(mod["plugin_root"])
         entry = plugin_dir / "plugin.py"
         if Path(mod["module_path"]).absolute() != entry.absolute():
@@ -2687,7 +2678,6 @@ class PluginManager:
                     generation, "prepared", candidate_snapshot_id=snapshot.snapshot_id,
                 )
                 self._prepared_generations[plugin_id] = generation
-            self._gate_results.pop(plugin_id, None)
             return generation
         except BaseException as error:
             if root in self._building_roots:
@@ -2713,15 +2703,7 @@ class PluginManager:
             )
         except BaseException as error:
             await self._discard_building_root(composition_root, error)
-            if not isinstance(error, Exception):
-                raise
-            gate = self._record_failed_gate(
-                plugin_id=generation.plugin_id,
-                revision=generation.source_revision,
-                check_id="runtime_snapshot",
-                reason=str(error),
-            )
-            raise _CandidateRejected(gate) from error
+            raise
         for item in generations.values():
             item.runtime_snapshot = snapshot
         return snapshot
@@ -3508,31 +3490,6 @@ class PluginManager:
         return "base"
 
 
-    def _record_failed_gate(
-        self,
-        *,
-        plugin_id: str,
-        revision: str,
-        check_id: str,
-        reason: str,
-    ) -> GateResult:
-        result = GateResult(
-            gate_id="assembly",
-            plugin_id=plugin_id,
-            candidate_revision=revision,
-            status="failed",
-            checks=(
-                GateCheckResult(
-                    check_id=check_id,
-                    status="failed",
-                    evidence=reason,
-                ),
-            ),
-            failure_reason=reason,
-        )
-        self._gate_results[plugin_id] = result
-        return result
-
     def _import_plugin(self, module_name: str, plugin_root: Path) -> None:
         """只从固定制品根导入普通 plugin.py，不接受入口别名。"""
         path = plugin_root / "plugin.py"
@@ -3664,24 +3621,6 @@ class PluginManager:
             self._control_frames.close()
         if externally_cancelled:
             raise asyncio.CancelledError
-
-
-class _CandidateRejected(Exception):
-    def __init__(self, gate: GateResult) -> None:
-        super().__init__(gate.failure_reason)
-        self.gate = gate
-
-
-def _gate_failure_details(gate: GateResult) -> str:
-    """把失败 Gate 的 check 与证据压成可持久诊断文本。"""
-    return (
-        "; ".join(
-            f"{check.check_id}: {check.evidence}"
-            for check in gate.checks
-            if check.status == "failed"
-        )
-        or gate.failure_reason
-    )
 
 
 def _resolve_plugin_id(mod: dict[str, str]) -> str:

@@ -241,23 +241,46 @@ async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature
 
 
 @pytest.mark.asyncio
-async def test_import_failure_report_is_replaced_by_next_load_attempt(tmp_path: Path):
+async def test_invalid_source_does_not_block_next_load_attempt(tmp_path: Path):
+    """坏源码直接报告加载错误；修复后可重新加载完整组合。"""
     plugin = _write_plugin(tmp_path / "plugins", "broken", "this is not python !!!\n")
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
     try:
-        with pytest.raises(RuntimeError, match="插件 broken 导入失败"):
+        with pytest.raises(ValueError, match="插件身份源码无法解析"):
             await manager.load_all()
-        gate = manager.latest_gate("broken")
-        assert gate is not None and gate.status == "failed"
-        assert gate.checks[0].check_id == "import"
         assert manager.generation("broken") is None
+        assert manager.current_snapshot is None
 
         (plugin / "plugin.py").write_text(_v3_source("broken"), encoding="utf-8")
         await manager.load_all()
         assert manager.generation("broken") is not None
-        assert manager.latest_gate("broken") is None
+    finally:
+        await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_compile_error_keeps_original_error_and_stable(tmp_path: Path, monkeypatch):
+    """编译失败清理候选，原错误直接交给调用者，正式选择不变。"""
+    plugin = _write_plugin(tmp_path / "plugins", "ordinary", _v3_source("ordinary"))
+    initialize_plugin_workspace(tmp_path / "workspace")
+    manager = _manager(tmp_path)
+    try:
+        await manager.load_all()
+        stable = manager.current_snapshot
+        (plugin / "plugin.py").write_text(_v3_source("ordinary", version="2.0.0"))
+        failure = ValueError("fixture compilation failed")
+
+        def fail_compile(*args, **kwargs):
+            raise failure
+
+        monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_compile)
+        with pytest.raises(ValueError, match="fixture compilation failed") as caught:
+            await manager.prepare_candidate("ordinary")
+        assert caught.value is failure
+        assert manager.current_snapshot is stable
+        assert manager.prepared_generation("ordinary") is None
     finally:
         await manager.terminate_all()
 
@@ -429,12 +452,12 @@ async def test_source_symlink_cannot_escape_plugin_root(tmp_path: Path):
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
-    with pytest.raises(RuntimeError, match="完整插件组合加载失败"):
-        await manager.load_all()
-
-    gate = manager.latest_gate("linked_source")
-    assert gate is not None and gate.status == "failed"
-    assert gate.checks[0].check_id == "source_boundary"
+    try:
+        with pytest.raises(RuntimeError, match="源码符号链接.*越界"):
+            await manager.load_all()
+        assert manager.current_snapshot is None
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
