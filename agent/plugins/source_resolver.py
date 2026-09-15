@@ -161,11 +161,6 @@ def _validate_installed_identity(
 def _is_plugin_root(path: Path) -> bool:
     if path.is_symlink() or not path.is_dir():
         return False
-    manifest_path = path / "akashic.plugin.toml"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        _ = load_static_plugin_manifest(path)
-        return True
-    # Built-ins may keep the conventional plugin.py entrypoint without an install manifest.
     plugin_file = path / "plugin.py"
     if plugin_file.is_symlink():
         raise ValueError(f"插件 plugin.py 不能是符号链接: {plugin_file}")

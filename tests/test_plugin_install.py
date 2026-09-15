@@ -88,24 +88,22 @@ def test_code_identity_rejects_unsupported_api_before_import(tmp_path: Path, api
 
 
 @pytest.mark.parametrize("declaration", [
-    'schema_version = 1', 'name = "probe"', 'version = "1.0.0"', 'api_version = 3',
+    'name = "other"',
+    'entrypoint = "nested/custom.py"',
+    '[validation]\nexclude_data_paths = ["secret.txt"]',
+    'invalid TOML [',
 ])
-def test_old_toml_identity_requires_artifact_upgrade(tmp_path: Path, declaration: str) -> None:
+def test_plugin_identity_and_discovery_ignore_old_policy_file(tmp_path: Path, declaration: str) -> None:
+    """旧策略不改变代码身份、摘要或入口发现，也不会被解析。"""
     _write_v3_plugin(tmp_path, name="probe")
+    identity = load_static_plugin_manifest(tmp_path)
     (tmp_path / "akashic.plugin.toml").write_text(declaration + "\n")
-    with pytest.raises(ValueError, match="升级制品"):
-        load_static_plugin_manifest(tmp_path)
-
-
-@pytest.mark.parametrize("entrypoint", ["plugin.py", "nested/custom.py"])
-def test_manifest_rejects_entrypoint_declarations(tmp_path: Path, entrypoint: str) -> None:
-    """入口文件固定后，旧 TOML 字段不能悄悄继续生效。"""
-    repo = tmp_path / "source"
-    _write_v3_plugin(repo, name="probe")
-    path = repo / "akashic.plugin.toml"
-    path.write_text(f"entrypoint = {entrypoint!r}\n")
-    with pytest.raises(ValueError, match="未知字段.*entrypoint"):
-        load_static_plugin_manifest(repo)
+    assert load_static_plugin_manifest(tmp_path) == identity
+    [source] = resolve_plugin_sources([tmp_path])
+    assert source.plugin_root == tmp_path.resolve()
+    assert source.static_manifest == identity
+    (tmp_path / "plugin.py").unlink()
+    assert resolve_plugin_sources([tmp_path]) == []
 
 
 @pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
@@ -121,8 +119,11 @@ def test_manifest_requires_plain_root_plugin_file(tmp_path: Path, kind: str) -> 
         entry.mkdir()
     with pytest.raises(ValueError, match="plugin.py"):
         load_static_plugin_manifest(repo)
-    with pytest.raises(ValueError, match="plugin.py"):
-        resolve_plugin_sources([repo])
+    if kind == "symlink":
+        with pytest.raises(ValueError, match="plugin.py"):
+            resolve_plugin_sources([repo])
+    else:
+        assert resolve_plugin_sources([repo]) == []
 
 
 def test_plugins_root_honors_explicit_environment(

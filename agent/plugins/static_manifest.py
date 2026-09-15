@@ -1,4 +1,4 @@
-"""Static identity and runtime policy for external v3 plugin artifacts."""
+"""从固定插件制品读取代码身份和 Python 安装输入。"""
 
 from __future__ import annotations
 
@@ -7,21 +7,12 @@ import hashlib
 import json
 import os
 import re
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import cast
-
-STATIC_MANIFEST_FILENAME = "akashic.plugin.toml"
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_TOP_LEVEL_KEYS = frozenset(
-    {
-        "validation",
-    }
-)
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?")
 
 
@@ -35,13 +26,12 @@ class StaticPythonRuntime:
 
 @dataclass(frozen=True, slots=True)
 class StaticPluginManifest:
-    """代码身份和安装输入；TOML 仅暂存剩余策略。"""
+    """plugin.py 身份和制品内 requirements 安装输入。"""
 
     name: str
     version: str
     api_version: int
     python: tuple[StaticPythonRuntime, ...]
-    exclude_data_paths: tuple[str, ...]
     identity_digest: str
 
     @property
@@ -52,24 +42,42 @@ class StaticPluginManifest:
 
 
 def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
-    """不导入插件，从 plugin.py 读取身份并加载可选安装策略。"""
+    """不导入插件，只读取 plugin.py 身份和实际 requirements 文件。"""
 
     # 1. Resolve the artifact root without accepting a symlink as its owner.
     root = plugin_root.resolve(strict=True)
     if plugin_root.is_symlink() or not root.is_dir():
         raise ValueError(f"插件 artifact 根必须是普通目录: {plugin_root}")
-    path = root / STATIC_MANIFEST_FILENAME
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise ValueError(f"插件策略必须是普通文件: {path}")
-    if not path.exists():
-        return _validate_manifest(root, {})
-
-    # 2. Parse only data; no module, callable or process is touched here.
-    try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise ValueError(f"插件静态 manifest 无法解析: {path}") from error
-    return _validate_manifest(root, raw)
+    # 2. 身份与 requirements 都来自固定代码制品，不读取数据复制策略。
+    name, version, api_version = load_plugin_identity(root)
+    python = _python_runtimes(root)
+    identity: dict[str, object] = {
+        "name": name,
+        "version": version,
+        "api_version": api_version,
+        "python": [
+            {
+                "requirements": item.requirements,
+                "runtime_root": item.runtime_root,
+            }
+            for item in python
+        ],
+    }
+    identity_digest = hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return StaticPluginManifest(
+        name=name,
+        version=version,
+        api_version=api_version,
+        python=python,
+        identity_digest=identity_digest,
+    )
 
 
 def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:
@@ -161,52 +169,6 @@ def materialize_command(
     return (str(interpreter), "-E", "-s", "-B", *command[1:])
 
 
-def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginManifest:
-    """合并代码身份与剩余策略，并检查制品相对路径。"""
-
-    # 1. Reject fields for which Core has no static contract.
-    unknown = sorted(set(raw) - _TOP_LEVEL_KEYS)
-    if unknown:
-        raise ValueError(
-            f"插件静态 manifest 包含未知字段: {unknown}；"
-            "请升级制品：身份只在 plugin.py 声明，TOML 仅保留策略"
-        )
-    name, version, api_version = load_plugin_identity(root)
-    # 2. Requirements are complete before the artifact is published.
-    python = _python_runtimes(root)
-    exclude_data_paths = _validation_paths(root, raw.get("validation", {}))
-
-    identity: dict[str, object] = {
-        "name": name,
-        "version": version,
-        "api_version": api_version,
-        "python": [
-            {
-                "requirements": item.requirements,
-                "runtime_root": item.runtime_root,
-            }
-            for item in python
-        ],
-        "exclude_data_paths": list(exclude_data_paths),
-    }
-    identity_digest = hashlib.sha256(
-        json.dumps(
-            identity,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    return StaticPluginManifest(
-        name=name,
-        version=version,
-        api_version=api_version,
-        python=python,
-        exclude_data_paths=exclude_data_paths,
-        identity_digest=identity_digest,
-    )
-
-
 def _python_runtimes(root: Path) -> tuple[StaticPythonRuntime, ...]:
     """从固定制品发现 requirements.txt；不读取运行数据或准备环境。"""
     excluded = {
@@ -241,29 +203,6 @@ def _python_runtimes(root: Path) -> tuple[StaticPythonRuntime, ...]:
 
     visit(root)
     return tuple(sorted(result, key=lambda item: item.requirements))
-
-
-def _validation_paths(root: Path, raw: object) -> tuple[str, ...]:
-    if raw == {}:
-        return ()
-    table = _table(raw, "validation")
-    _exact_keys(table, {"exclude_data_paths"}, "validation")
-    paths = table.get("exclude_data_paths", [])
-    if not isinstance(paths, list):
-        raise ValueError("validation.exclude_data_paths 必须是字符串数组")
-    result: list[str] = []
-    seen: set[str] = set()
-    for index, item in enumerate(paths):
-        normalized = _relative_policy_path(
-            root,
-            item,
-            label=f"validation.exclude_data_paths[{index}]",
-        )
-        if normalized in seen:
-            raise ValueError(f"validation.exclude_data_paths 重复: {normalized}")
-        seen.add(normalized)
-        result.append(normalized)
-    return tuple(result)
 
 
 def command_python_runtime(
@@ -309,17 +248,6 @@ def _venv_python(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
 
-def _string_list(raw: object, label: str) -> tuple[str, ...]:
-    if not isinstance(raw, list) or not all(
-        isinstance(item, str) and item and item == item.strip() for item in raw
-    ):
-        raise ValueError(f"{label} 必须是非空字符串数组")
-    values = tuple(cast(str, item) for item in raw)
-    if len(set(values)) != len(values):
-        raise ValueError(f"{label} 不得重复")
-    return values
-
-
 def _relative_artifact_path(
     root: Path,
     raw: object,
@@ -345,21 +273,6 @@ def _relative_artifact_path(
     return "/".join(path.parts) or "."
 
 
-def _relative_policy_path(root: Path, raw: object, *, label: str) -> str:
-    if not isinstance(raw, str) or not raw or raw != raw.strip():
-        raise ValueError(f"{label} 必须是非空相对路径")
-    path = PurePosixPath(raw.replace("\\", "/"))
-    if (
-        not path.parts
-        or _is_absolute_path(raw)
-        or any(part in {"", ".", ".."} for part in path.parts)
-    ):
-        raise ValueError(f"{label} 必须是 artifact/data 内的相对路径")
-    resolved = root.joinpath(*path.parts)
-    _reject_symlink_ancestors(root, resolved, label)
-    return "/".join(path.parts)
-
-
 def _reject_symlink_ancestors(root: Path, path: Path, label: str) -> None:
     current = root
     try:
@@ -382,18 +295,6 @@ def _is_absolute_path(value: str) -> bool:
     """Reject POSIX and Windows absolute paths before PurePosix normalization."""
 
     return Path(value).is_absolute() or bool(re.match(r"^[A-Za-z]:[/\\]", value))
-
-
-def _table(raw: object, label: str) -> dict[str, object]:
-    if not isinstance(raw, dict):
-        raise ValueError(f"{label} 必须是表")
-    return cast(dict[str, object], raw)
-
-
-def _exact_keys(raw: Mapping[str, object], allowed: set[str], label: str) -> None:
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        raise ValueError(f"{label} 包含未知字段: {unknown}")
 
 
 def _integer(raw: Mapping[str, object], key: str) -> int:

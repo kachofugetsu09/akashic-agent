@@ -22,7 +22,9 @@ metadata: {"akashic": {"always": false}}
    └─ reload、candidate、恢复与 turn rollout 证据
 ```
 
-外部 source 根必须包含普通文件 `plugin.py`。loader 在 import 前只读取顶层 `name`、`version`、`api_version` 字面量，要求 API 为整数 3；模块提供 `apply(ctx)`。不再从 TOML 声明身份或让导入后的模块重复报告身份。`akashic.plugin.toml` 可省略，仅暂存 validation/credential 策略；旧身份字段明确拒绝。Skill/MCP 通过 source 的静态 root 和 typed service 进入 generation catalog。
+外部 source 根必须包含普通文件 `plugin.py`。loader 在 import 前只读取顶层 `name`、`version`、`api_version` 字面量，要求 API 为整数 3；模块提供 `apply(ctx)`。Python 安装输入来自固定制品内实际存在的 `requirements.txt`，不从插件专用 TOML 声明身份、入口或环境。`akashic.plugin.toml` 不再读取或解释，不创建该文件；历史制品中的旧字节不自动删除。Skill、MCP 和其他资源由插件代码向实际 provider 注册。
+
+这不影响 installer 的 `<plugins_home>/manifest.toml` 安装选择，也不删除用户业务 `config.toml`。候选从独立空数据目录开始；删除旧 `validation.exclude_data_paths` 不授权复制正式数据。验证材料由调用程序与数据 owner 显式准备，不能把正式浏览器 profile、登录资料、凭据、环境或资源句柄带入候选。
 
 不要查找或创建 `registry.json`、`.aka-plugin/plugin.json`、`manifest.yaml`、插件级 `mcp/servers.json` 或 workspace 手工 Skill owner。不要直接编辑 cache、pointer、全局 manifest、workspace Skill 软链接或正式 plugin-data。
 
@@ -65,7 +67,7 @@ source test → commit/push → plugin-install
 ┌─ Skill
 │  └─ source root、SKILL.md、references、catalog source、真实触发轨迹
 ├─ MCP
-│  └─ manifest command、requirements、required tools、candidate read-only tools、endpoint env
+│  └─ 代码注册的 command、实际 requirements、required tools、candidate read-only tools、endpoint env
 ├─ managed service
 │  └─ process identity、port_env、readiness、退出与隔离 plugin-data
 ├─ Channel
@@ -74,7 +76,7 @@ source test → commit/push → plugin-install
    └─ child terminal、tool items、reload journal、turn 后 generation
 ```
 
-固定 listener 必须在 manifest 的 `[[processes]]` 中声明 `port_env`、`formal_port`、`readiness_path` 和超时；module 的 typed `ManagedProcessDefinition` 必须与其一致，服务进程和同插件 MCP 必须真正读取注入端口。候选验证使用隔离端点和数据副本，写型 Tool/MCP 仅在事务、dry-run、隔离目标或明确授权下执行。
+固定 listener 由插件代码向进程或 Workload provider 注册；服务进程和同插件 MCP 必须真正使用 provider 返回的隔离端点，不维护第二份 TOML 资源声明。候选使用宿主授予的候选权限和独立数据目录，不能借用正式容器或改成正式凭据 factory。写型 Tool/MCP 仅在事务、dry-run、隔离目标或明确授权下执行。
 
 Channel candidate 不复制正式 token、webhook 或 long-poll ownership。父 turn 结束后的顺序是：
 
@@ -98,8 +100,8 @@ python main.py plugin-revert
 
 ## 配置与排障
 
-插件 `Config` 是 module namespace 中可选的 typed 配置模型；配置只写对应 plugin-data，不改主 `config.toml`。缺少依赖、导入失败、manifest/module 不一致、配置错误、命令失败、readiness 失败和数据损坏必须 fail-loud。
+插件自行解析 `ctx.config`，Core 不寻找 `Config` 导出。固定配置与私有 `CredentialRef` 继续经过显式配置及升级入口；旧配置和备份不能因 TOML 策略退役而自动删除。不要改主 `config.toml`。缺少依赖、导入失败、代码身份不一致、配置错误、命令失败、readiness 失败和数据损坏必须 fail-loud。
 
 只有以下情况才进入 runtime diagnostics：子 turn 长时间 queued、超时、terminal 错误、candidate identity 不一致、cleanup 残留或行为 oracle 缺层。按 reload journal、SessionDB、tool items、process/readiness 和 write set 逐层定位，不重复安装同一 source revision。
 
-完成时至少能独立证明：source commit 可回源；manifest/module、source tests 和 readiness 通过；attached child 使用目标 generation 并实际执行 Skill/Tool/MCP；父 turn 正常结束；下一 turn 的 Core 事实已提交或明确报告恢复失败；正式 SessionDB、memory、plugin-data 和未授权外部效果没有被候选验证改写。
+完成时至少能独立证明：source commit 可回源；代码身份、安装输入、source tests 和 readiness 通过；attached child 使用目标 generation 并实际执行 Skill/Tool/MCP；父 turn 正常结束；下一 turn 的 Core 事实已提交或明确报告恢复失败；正式 SessionDB、memory、plugin-data 和未授权外部效果没有被候选验证改写。未执行的验证必须明确标注，不能以静态检查代替运行证据。

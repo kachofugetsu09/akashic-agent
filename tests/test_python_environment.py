@@ -186,12 +186,14 @@ def test_requirements_discovery_rejects_symlink_runtime_paths(tmp_path, kind):
         load_static_plugin_manifest(code)
 
 
-def test_manifest_rejects_removed_python_declarations(tmp_path):
-    code, _ = source(tmp_path)
+def test_python_inputs_come_from_requirements_not_old_policy(tmp_path):
+    """旧 TOML 不能增减实际 requirements 输入或改变其身份摘要。"""
+    code, original = source(tmp_path)
     path = code / "akashic.plugin.toml"
-    path.write_text('\n[[python]]\nrequirements = "requirements.txt"\n')
-    with pytest.raises(ValueError, match="未知字段.*python"):
-        load_static_plugin_manifest(code)
+    path.write_text('\n[[python]]\nrequirements = "missing.txt"\n')
+    assert load_static_plugin_manifest(code) == original
+    (code / "requirements.txt").unlink()
+    assert load_static_plugin_manifest(code).python == ()
 
 
 def test_command_binding_uses_frozen_discovery_without_installing(tmp_path, monkeypatch):
