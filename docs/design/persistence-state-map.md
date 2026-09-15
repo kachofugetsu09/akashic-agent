@@ -826,7 +826,25 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 环境发布失败与材料丢失都必须能区分；读取路径不 mkdir、不 pip、不改写引用。环境协议依赖同一 POSIX 主机的基础 Python，不能替代操作系统、动态库与凭据的恢复合同。当前没有更换宿主后的自动迁移或 GC 协议。Workload 借用只保存内存 token；原 Workload owner 仍拥有控制面与持久状态，不复制容器数据或环境。调用 scope 清理失败只保留现有 host 的内存 owner/tombstone；公开查询与重试不另存业务或 reload 事务。监督进程的 boot 身份仍由 guardian 扫除残留子进程，历史资源不得触发正式插件指针恢复。所有验证使用一次性 workspace，正式数据未改写。
 
 
-### 第 09 层候选业务验证的持久证据
+### 当前候选普通调用的数据边界（0071）
+
+本节覆盖下文历史第 09 层的数据复制方案。安装、候选编译与普通 latest 调用
+不再读取正式 MessageLog 的历史 binding，也不复制正式消息、图、附件或 plugin-data。
+插件专用 TOML 与 `validation.exclude_data_paths` 已退役，不能据此恢复全目录复制。
+固定组件归档及配置仍由各输入 owner 校验；候选没有正式凭据解析权。
+
+| 对象 | 增加、原位更新与 owner | 失效、减少与恢复证据 |
+|---|---|---|
+| 隔离调用目录与库 | 一次调用创建空数据环境；实际 Message、Artifact、接纳、入站与身份 owner 只操作自己的库，插件初始化自己的数据 | 退出关闭连接与资源，不删除目录；失败保留原宿主及租约，没有自动 GC。目录、固定组件引用与原 update 提供证据 |
+| 原安装及普通调用请求 | plugin_update 的 owner_records 保存原请求；实际消息与 ToolResult 按消息合同追加 | 未知结果不授权重跑；不自动减少请求或正文。完整原消息库保留请求与结果 |
+| 正式业务数据 | 本层不复制、迁移或回滚；新正式插件负责解释既有数据 | 代码选择回退不减少或恢复数据；数据恢复须由该 owner 按显式授权执行 |
+| stable 与更新 journal | selection 独占完整提交；journal 保存实际候选、授权撤销及发布证据 | 正常更新不删除历史证据；提交未知保留实际 owner，不以旧内存指针假装回滚 |
+
+程序所需样本由知道数据格式的 owner 明确准备；空库上的正常调用不证明历史业务数据兼容。
+详见 [latest 普通调用](plugin-latest-programmatic.md) 与 [Channel 资源归属](channel-resource-ownership.md)。
+本次只有源码和静态检查，没有执行正式数据操作、测试或故障恢复实验。
+
+### 第 09 层候选业务验证的持久证据（历史，已由 0071 替代）
 
 候选业务验证另在 `runtime/plugin-update-validation/<id>/workspace/` 保存一次运行的独立证据。PluginManager 先从正式 MessageLog 读取一次 binding，并只读扫描正式 archive 中的 manifest；旧 manifest 的 credential/exclude 声明与 current manifest 在 current data 首次复制前合并生效。随后只复制实际候选 snapshot 的固定代码、descriptor、声明的 plugin-data 与 workspace 数据（含图）；SQLite 不复制 WAL/SHM。图与其他 workspace 复制完成后，PluginManager 只用 MessageLog 原生 backup 一次固定已提交的 `sessions.db`，再由独立 MessageLog 与 ArtifactStore 打开。这样复制期间追加的 Message 也覆盖图已有引用。旧 binding 的 root/component descriptor 仍从正式 archive 保存为 provenance，但旧组件代码、plugin-data 和 workspace 不复制、不导入。副本包括历史 Message、向量、binding、owner record 与附件元数据；已发布附件通过原 Artifact 读取 owner 校验后复制其字节。验证 Message、binding、owner record 和 Artifact 只写入此目录；正式消息库及插件数据不因此变化。Python 环境仍只读已发布的不可变环境及原路径。
 
@@ -856,6 +874,8 @@ Delivery provider 的 Core Tasks 按目标 key 持有活动计数和短发送排
 ### Subagent / Wake 内部 Message（SEC-011）
 
 来源接纳独立内部工作时新增 Session、Input 和来源自己的恢复记录；回复程序只追加 Output、ToolResult，工具和 Delivery owner 原位推进各自回执。来源取消或失败只记录控制/业务终态，不删除消息。内部 Session 固定 `visibility=internal`、`learning=excluded`，默认投递策略排除它们。已有旧 Turn 记录保持原值，不回填猜测消息或自动重跑；正式迁移另走发布流程。当前没有自动减少条件。恢复证据包括同一 `sessions.db` 的完整消息、owner_records、binding 与业务插件数据备份；选择和 ACK 仍由 EventMail/Wake 原 owner 提交。见 [0057](../decisions/0057-internal-source-messages.md)。
+
+以下两段记录旧凭据与数据复制实现；当前不再从正式环境复制业务数据，按上文 0071 执行。
 
 原生 Sender 的凭据仍由原 plugin-data 的 `config.local.toml` 拥有。静态 `credential_paths` 授予通用短租约，旧 Channel 声明只授予自身 factory；二者的并集只用于脱敏。验证副本的数据排除只由 `validation.exclude_data_paths` 显式声明，不从凭据声明推断文件名。归档只增加原配置版本和 CredentialRef，不保存明文或复制新 token。用户改写/撤销配置后，旧 binding 版本检查失败；没有自动凭据迁移、轮换或减少。本任务只写隔离 fixture 配置，未操作正式凭据。
 

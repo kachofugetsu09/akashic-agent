@@ -9,7 +9,8 @@
 当前优先完成全部本地插件的行为回归、默认组合与无 checkout 的分发产物验收。
 维护者已明确将第三方外部插件的进一步迁移与验收后置；已提交改动保留，
 不将第三方迁移完成作为本地插件阶段的退出条件。
-实现全部完成后统一处理完整测试、独立概念评审、Gate 和 CI；不等待 CI 阻塞下一实施层。
+当前维护者要求只交付 stacked Draft PR；仅做静态检查和独立只读评审，
+不运行测试、Gate 或 CI。真实运行验收须另行获得授权，不因实现完成自动开始。
 验收必须覆盖 Core-only CLI/AppRuntime、独立子集和异名 provider、generation/归档生命周期、
 实际 Message 与持久送达闭环；不能以 import 数量清零代替这些证据。
 
@@ -26,9 +27,10 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 - 移动端用户 checkout 存在未提交 Theme diff（Theme.kt 等 5 个文件）；D2 决策（原生壳与 WebUI token 边界）完成前不得合入。
 
-## P0 · 插件递归自验证
+## P0 · 插件普通调用与晋升
 
 - 按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 调整为调用程序拥有验证、provider 拥有隔离资源、底座拥有整体 stable 提交。旧 `validation_port_env`、双指针与 attached child 的 Core 特例不再是目标合同。
+- 按 [latest 普通调用](design/plugin-latest-programmatic.md) 完成非阻塞调用的过程/最终结果可见性、发起者撤销和原 owner 清理；正常完成默认请求晋升，不引入后台裁判或批准 JSON。继续核对隔离宿主的最小职责与累计消费者。
 - 独立 Fitbit source 的候选 listener 与正式资源隔离仍待该仓库交付，本轮不修改外部插件。
 - 提交前后崩溃、排空失败和真实恢复的行为证据尚缺；本轮用户要求只提 PR，不执行 Gate/CI，不能将代码交付视作这些验收已完成。
 
