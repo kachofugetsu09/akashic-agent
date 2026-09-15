@@ -1215,32 +1215,6 @@ class CompositionRoot:
                 dependencies.setdefault(fiber.runtime.plugin_id, set()).update(fiber.dependencies)
         return {owner: frozenset(keys) for owner, keys in dependencies.items()}
 
-    def validation_identity(self) -> str:
-        """Bind the Core-observed topology and audit receipt at validation close."""
-
-        receipt = self.receipt()
-        writes = ",".join(
-            f"{item.plugin_id}:{item.operation}:{item.relative_path}:{item.sha256}"
-            for item in receipt.writes
-        )
-        external = ",".join(
-            f"{item.kind}:{item.target}:{item.outcome}"
-            for item in receipt.external_effects
-        )
-        return "|".join(
-            (
-                self.topology_identity(),
-                f"revision:{self._composition_revision}",
-                f"required:{','.join(receipt.required_pending)}",
-                f"optional:{','.join(receipt.optional_pending)}",
-                f"degraded:{','.join(receipt.required_degraded)}",
-                f"incidents:{receipt.incident_sequence}",
-                f"incident_overflowed:{receipt.incident_overflowed}",
-                f"writes:{writes}",
-                f"external:{external}",
-            )
-        )
-
     async def _mount(
         self,
         *,

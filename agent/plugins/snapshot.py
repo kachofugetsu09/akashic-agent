@@ -61,11 +61,6 @@ class RuntimeSnapshot:
     composition_root: CompositionRoot | None = None
     composition_topology: TopologyView | None = None
     composition_active_plugin_ids: frozenset[str] | None = None
-    composition_validation_identity: str | None = None
-    composition_validation_root_token: object | None = field(
-        default=None,
-        repr=False,
-    )
     state: SnapshotState = "compiled"
     lease_count: int = 0
     accepting_leases: bool = True
@@ -921,18 +916,11 @@ class RuntimeSnapshotStore:
         self._seal_composition_validation(candidate)
 
     def _seal_composition_validation(self, candidate: RuntimeSnapshot) -> None:
-        """在无 lease 的隔离 Root 上保存不可变验证证明。"""
+        """检查已停止接纳且无 lease 的实际隔离 Root。"""
 
         if candidate.accepting_leases or candidate.lease_count:
             raise RuntimeError("封存验证回执前必须暂停并排空 candidate lease")
         self._validate_composition(candidate)
-        root = candidate.composition_root
-        candidate.composition_validation_identity = (
-            None if root is None else root.validation_identity()
-        )
-        candidate.composition_validation_root_token = (
-            None if root is None else root.instance_token
-        )
 
     async def wait_for_no_leases(self, snapshot: RuntimeSnapshot) -> None:
         async with self._condition:

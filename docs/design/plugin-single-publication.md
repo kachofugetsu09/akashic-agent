@@ -56,9 +56,10 @@ hot-reload 底座测试改为独立 Root：stable/latest lease 分别绑定实�
 删除已关闭 latest 候选的旁路授权。既有 fresh Root 测试补充候选事务与已完成事务拒绝、
 pending/provisional 真实发布 lease 可用的断言；测试尚未运行。
 
-保留候选及 pending Root 的封存入口、验证身份记录、编译冻结、拓扑与生命周期检查，
-以及 snapshot 和 generation 各自的真实 lease 计数。候选记录不复制到全新正式 Root，
-正式 Root 仍在发布边界独立检查。编译器只删除无人读取的 `identity` 局部累加器，
+保留候选及 pending Root 的关闭后检查入口、编译冻结、拓扑与生命周期检查，
+以及 snapshot 和 generation 各自的真实 lease 计数。旧晋升入口删除后，验证摘要字段
+只有写入，没有读取者；摘要字段与 Root 的专用摘要计算一并删除。候选无接纳、无 lease
+及实际组合合法性仍被检查，正式 Root 仍在发布边界独立检查。编译器删除无人读取的 `identity` 局部累加器，
 实际生成 snapshot ID 的 `canonical_identity` 不变。`catalog_generation` 仍有 Manager
 调用，本层保留；Manager、Snapshot Channel 字段及其校验由原 owner 继续维护。
 
