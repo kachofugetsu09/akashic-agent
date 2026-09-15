@@ -173,14 +173,3 @@ def rollback(conn: sqlite3.Connection, update: UpdateRollback, plugins_home: Pat
         "UPDATE plugin_updates SET phase='rolled_back',updated_at=?,error=? WHERE update_id=? AND phase='armed'",
         (now, error, update.update_id),
     )
-
-
-def rollback_linked(conn: sqlite3.Connection, tx_id: str, *, now: str, error: str) -> None:
-    if not check_schema(conn):
-        return
-    row = conn.execute(
-        "SELECT update_id FROM plugin_updates WHERE reload_tx_id=? AND phase='armed'", (tx_id,),
-    ).fetchone()
-    if row is not None:
-        update = read(conn, row[0])
-        rollback(conn, update, update.plugin_base.parents[2], now=now, error=error)

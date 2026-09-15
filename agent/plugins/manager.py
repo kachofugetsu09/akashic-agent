@@ -1994,6 +1994,20 @@ class PluginManager:
         }
 
     async def drop_candidate(self, plugin_id: str) -> dict[str, object]:
+        """安装候选交回所属更新结算，普通候选只关闭运行资源。"""
+        self._reject_operation_lease(allow_stable_lease=True)
+        ready = self._require_ready_candidate(plugin_id)
+        tx_id = ready.candidate.reload_tx_id
+        if tx_id is None:
+            raise RuntimeError("latest candidate 缺少 reload transaction")
+        update = self._reload_journal.update_for_reload(tx_id)
+        if update is not None:
+            # 更新入口先撤销提交权，再取得 operation；不能在 operation 内嵌套调用。
+            await self.discard_update(update.update_id)
+            return self._publication_status(
+                plugin_id, active=ready.previous, candidate=ready.candidate,
+                publication_state="discarded",
+            )
         return await self._run_operation(
             lambda: self._drop_ready(plugin_id), allow_stable_lease=True,
         )
