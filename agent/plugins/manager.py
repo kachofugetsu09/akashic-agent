@@ -2750,7 +2750,7 @@ class PluginManager:
                 lambda: self._prepare_validation(update_id, caller), allow_stable_lease=True,
             )
             async with RuntimeScope(host.parent_lease.fork()):
-                async with RuntimeScope(await host.manager._snapshot_store.acquire()):
+                async with RuntimeScope(await host.snapshot_store.acquire()):
                     yield scope
         except asyncio.CancelledError as error:
             failure = error
@@ -2771,8 +2771,10 @@ class PluginManager:
             )
             operation = self._operation
             if retained is not None:
+                # 准备失败已尝试关闭且设为 inactive；不在同一次 finally 里重试失败资源。
+                needs_close = host is not None or retained.active
                 retained.active = False
-                if not self._stopping and (operation is None or operation.task.done()):
+                if needs_close and not self._stopping and (operation is None or operation.task.done()):
                     try:
                         await self._run_operation(
                             lambda: self._retry_validation_cleanup(retained.identity),
@@ -2820,35 +2822,16 @@ class PluginManager:
                     "components": [item.archive_ref for item in ready.snapshot.generations.values()],
                     "profile": "explicit_program_with_candidate_resources",
                 })
-                child = host.manager
                 components = tuple(cast(str, item.archive_ref) for item in ready.snapshot.generations.values())
-                root = CompositionRoot("validation:" + host.identity)
-                host.root = root
-                child._building_roots[root] = ()
-                generations = child._archived_generations(
-                    components, root, workspace=host.workspace,
-                    sources=ready.snapshot.generations,
+                generations = dict(ready.snapshot.generations)
+                root = await self._resolve_composition_root(
+                    generations, components=components, validation_host=host,
                 )
-                root._bind_runtime_scope_acquirer(  # pyright: ignore[reportPrivateUsage]
-                    lambda: child._snapshot_store.acquire_composition_root(root)
-                )
-                ordered = tuple(generations[key] for key in sorted(generations))
-                for generation in ordered:
-                    ensure_workspace_plugin_data_dir(generation.data_dir, host.workspace)
-                await child._provide_composition_services(root, ordered, candidate=False)
-                for generation in ordered:
-                    await child._mount_generation_composition(root, generation)
-                if not root.receipt().ready:
-                    raise RuntimeError(f"验证 provider 闭包不完整: {root.receipt().required_pending}")
-                result = await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
-                if result is not None:
-                    raise RuntimeError("验证 snapshot.sealing 不接受 Bail")
                 snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
                 for generation in generations.values():
                     generation.runtime_snapshot = snapshot
                 self._check_operation_commit()
-                child._snapshot_store.install(snapshot)
-                child._building_roots.pop(root)
+                host.snapshot_store.install(snapshot)
                 # 2. apply 已通过候选授权取得资源，不再重复执行启动阶段。
                 scope = BindingScope(root)
                 self._reload_journal.annotate(cast(str, update.reload_tx_id), {
@@ -2905,43 +2888,19 @@ class PluginManager:
             message_bus = MessageBus()
             message_bus.bind_session_admission_owner(admissions)
             message_bus.bind_durable_inbound_store(inbound_store)
-            child = PluginManager(
-                [], event_bus=event_bus, workspace=workspace, message_log=messages,
-                installed_cache_root=workspace.parent / "plugins" / "cache",
-                channel_attachment_store=physical, channel_identities=identities,
-                input_custody=InputCustody(
-                    message_bus.prepare_channel_input, message_bus.complete_channel_input,
-                    message_bus.retain_channel_input, message_bus.reserve_durable_inbound,
-                    message_bus.defer_durable_inbound, message_bus.settle_rejected_inbound,
-                    message_bus.has_pending_durable_inbound,
-                    message_bus.pending_durable_attachment_refs, message_bus.recover_durable_inbounds,
-                ),
-                workload_controller=self._workload_controller,
-            )
-            child._python_environments = self._python_environments
-            child._validation_only = True
             task = asyncio.current_task()
             assert task is not None
-            # 2. 关闭权交给实际宿主；不启动出站 dispatcher 或正式来源。
+            # 2. 宿主只持有实际资源；没有第二份安装、更新或 stable 控制面。
             host = ValidationHost(
-                identity, workspace, child, messages, artifacts, event_bus, task, lease.fork(),
+                identity, workspace, messages, artifacts, event_bus, task, lease.fork(),
                 message_bus=message_bus, admissions=admissions,
                 identities=identities, inbound_store=inbound_store,
+                archive=archive, attachments=physical,
             )
             message_bus.bind_durable_inbound_recoverer(host.recover_input)
             cleanup.pop_all()
             return host
 
-
-    async def stop_validation_resources(self) -> None:
-        """验证宿主也经同一关闭 owner；迟到清理不能绕过 shutdown。"""
-        parent = current_operation.get()
-        if parent is None or parent is self._operation:
-            await self.terminate_all()
-            return
-        # 父 Manager 的有限观察已经覆盖这个内部关闭；连接不能越过子任务先关闭。
-        operation = self._begin_termination()
-        await _complete_critical(operation.task)
 
     async def retry_validation_cleanup(self, identity: str) -> None:
         await self._run_operation(
@@ -2965,10 +2924,12 @@ class PluginManager:
         *,
         workspace: Path,
         sources: Mapping[str, PluginGeneration],
+        validation_host: ValidationHost | None = None,
     ) -> dict[str, PluginGeneration]:
         """从固定输入创建只属于当前 Root 的模块、Scope 和 generation。"""
 
-        records = tuple(self._archive.read_descriptor(ref) for ref in components)
+        archive = self._archive if validation_host is None else validation_host.archive
+        records = tuple(archive.read_descriptor(ref) for ref in components)
         for record in records:
             if record["version"] != 4 or record["runtime"] != {
                 "python_tag": sys.implementation.cache_tag,
@@ -2978,7 +2939,7 @@ class PluginManager:
         generations: dict[str, PluginGeneration] = {}
         namespace = secrets.token_hex(12)
         for index, (ref, record) in enumerate(zip(components, records, strict=True)):
-            code_dir = self._archive.open(cast(str, record["code"]))
+            code_dir = archive.open(cast(str, record["code"]))
             revision = cast(str, record["source_revision"])
             if _source_revision(code_dir) != revision:
                 raise RuntimeError("插件归档源码身份不一致")
@@ -3022,8 +2983,11 @@ class PluginManager:
                 state="prepared",
             )
             generations[plugin_id] = generation
-            self._building_roots[root] = tuple(generations.values())
-            if source is not None:
+            if validation_host is None:
+                self._building_roots[root] = tuple(generations.values())
+            else:
+                validation_host.generations = tuple(generations.values())
+            if source is not None and validation_host is None:
                 alias = self._stable_aliases.get(source.module_path)
                 if alias is not None:
                     self._stable_aliases[module_path] = alias
@@ -3045,6 +3009,7 @@ class PluginManager:
         *,
         candidate_owner: PluginGeneration | None = None,
         components: tuple[str, ...] | None = None,
+        validation_host: ValidationHost | None = None,
     ) -> CompositionRoot:
         """同一归档组合在每个环境重新实例化，返回实际挂载的 generation 表。"""
 
@@ -3055,16 +3020,20 @@ class PluginManager:
             "plugins:" + secrets.token_hex(16),
             candidate_incident_limit=1024 if candidate_owner is not None else None,
         )
-        self._building_roots[root] = ()
+        if validation_host is None:
+            self._building_roots[root] = ()
+        else:
+            validation_host.root = root
+        store = self._snapshot_store if validation_host is None else validation_host.snapshot_store
         root._bind_runtime_scope_acquirer(
-            lambda: self._snapshot_store.acquire_composition_root(root)
+            lambda: store.acquire_composition_root(root)
         )
-        workspace = self._workspace
+        workspace = self._workspace if validation_host is None else validation_host.workspace
         if candidate_owner is not None:
             workspace = self._workspace / "runtime" / "plugin-validation" / secrets.token_hex(16) / "workspace"
         try:
             actual = self._archived_generations(
-                components, root, workspace=workspace, sources=sources,
+                components, root, workspace=workspace, sources=sources, validation_host=validation_host,
             )
             generations.clear()
             generations.update(actual)
@@ -3073,7 +3042,7 @@ class PluginManager:
             for item in ordered:
                 ensure_workspace_plugin_data_dir(item.data_dir, workspace)
             await self._provide_composition_services(
-                root, ordered, candidate=candidate_owner is not None,
+                root, ordered, candidate=candidate_owner is not None, validation_host=validation_host,
             )
             for item in ordered:
                 await self._mount_generation_composition(root, item)
@@ -3092,7 +3061,9 @@ class PluginManager:
                     "snapshot.sealing 接入点不接受 Bail",
                 )
         except BaseException as error:
-            await self._discard_building_root(root, error)
+            # 验证构建从分配 Root 起就归 host；由外层同一次失败路径清理。
+            if validation_host is None:
+                await self._discard_building_root(root, error)
             raise
         return root
 
@@ -3164,26 +3135,47 @@ class PluginManager:
         mount_order: tuple[PluginGeneration, ...],
         *,
         candidate: bool,
+        validation_host: ValidationHost | None = None,
     ) -> None:
         """向当前 stable 或 candidate Root 提供宿主能力。"""
 
+        host = validation_host
+        isolated = host is not None or self._validation_only
+        store = self._snapshot_store if host is None else host.snapshot_store
+        boot_id = self._host_boot_id if host is None else host.identity
+        archive = self._archive if host is None else host.archive
+        message_log = self._message_log if host is None else host.messages
+        tasks = self._plugin_tasks if host is None else host.tasks
+        processes = self._plugin_processes if host is None else host.processes
+        channel_store = self._channel_attachment_store if host is None else host.attachments
+        artifact_read = self._artifact_read if host is None else host.artifact_read
+        artifact_import = self._artifact_import if host is None else host.artifact_import
+        restart_gate = self._restart_gate if host is None else host.restart_gate
+        control_frames = self._control_frames if host is None else host.control_frames
+        workspace_id = self._workload_workspace_id if host is None else host.workspace_id
+        interaction_owner = self._interaction_undo if host is None else None
+
         await root.context.provide(SOURCE_ADMISSION, SourceAdmission(
-            root.context, self._snapshot_store, boot_id=self._host_boot_id,
-            candidate=candidate or self._validation_only,
+            root.context, store, boot_id=boot_id,
+            candidate=candidate or isolated,
         ))
         # 隔离装配保留能力形状，但所有 I/O 都显式拒绝，不取得正式对象。
-        custody = None if candidate else self._input_custody
+        custody = None if candidate else (self._input_custody if host is None else host.input_custody)
         await root.context.provide(INPUT_CUSTODY,
             unavailable_input_custody() if custody is None else custody)
-        identity = (
-            ChannelIdentity(unavailable, unavailable, unavailable)
-            if candidate or self._channel_identities is None else ChannelIdentity(
+        if candidate:
+            identity = ChannelIdentity(unavailable, unavailable, unavailable)
+        elif host is not None:
+            identity = host.channel_identity
+        elif self._channel_identities is None:
+            identity = ChannelIdentity(unavailable, unavailable, unavailable)
+        else:
+            identity = ChannelIdentity(
                 self._resolve_channel_identity, self._remember_channel_identity,
                 self._rollback_channel_identity,
             )
-        )
         await root.context.provide(CHANNEL_IDENTITY, identity)
-        attachments = None if candidate else self._channel_attachment_store
+        attachments = None if candidate else channel_store
         await root.context.provide(CHANNEL_ATTACHMENT_IMPORT, ChannelAttachmentImport(
             unavailable if attachments is None else attachments.import_bytes,
         ))
@@ -3193,12 +3185,12 @@ class PluginManager:
         ))
         execution = ExecutionAccess(root.instance_token, {
             item.plugin_id: CodeOwner(item.generation_id, item.code_dir,
-                lambda command, cwd, item=item: self._resolve_runtime_command(item, command, cwd))
+                lambda command, cwd, item=item: self._resolve_runtime_command(item, command, cwd, archive=archive))
             for item in mount_order
-        }, candidate=candidate or self._validation_only)
+        }, candidate=candidate or isolated)
         await root.context.provide(EXECUTION, execution)
         await root.context.provide(WORKLOAD_CONTROLLER,
-            ControllerAccess(execution, self._workload_controller, self._workload_workspace_id))
+            ControllerAccess(execution, self._workload_controller, workspace_id))
         requested = {
             key
             for generation in mount_order
@@ -3221,7 +3213,7 @@ class PluginManager:
 
             _ = await root.context.provide(RUNTIME_CATALOG, read_runtime_catalog)
         if CREDENTIALS in requested:
-            clients = CredentialClients(None if candidate or self._validation_only else {
+            clients = CredentialClients(None if candidate or isolated else {
                 generation.plugin_id: CoreProviderClientFactory(
                     generation.data_dir,
                     generation.config_projection, generation.config_revision,
@@ -3232,13 +3224,13 @@ class PluginManager:
             root._defer_internal_cleanup("credential_clients", clients.aclose)  # pyright: ignore[reportPrivateUsage]
         if PLUGIN_UPDATES in requested:
             _ = await root.context.provide(
-                PLUGIN_UPDATES, PluginUpdates(None if candidate or self._validation_only else self),
+                PLUGIN_UPDATES, PluginUpdates(None if candidate or isolated else self),
             )
         message_services: set[ServiceKey[object]] = {
             MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION, BINDINGS
         }
         if RESTART_GATE in requested:
-            gate = self._restart_gate
+            gate = restart_gate
             if candidate:
                 gate = RestartGate(
                     boot_id="candidate",
@@ -3248,44 +3240,43 @@ class PluginManager:
             elif gate is None:
                 # 直接使用 PluginManager 的测试/嵌入式运行没有 Supervisor；仍提供
                 # 一个允许正常 work 的 unmanaged gate，不伪造可提交的重启通道。
-                gate = RestartGate(boot_id=self._host_boot_id, supervised=False)
+                gate = RestartGate(boot_id=boot_id, supervised=False)
                 self._restart_gate = gate
             _ = await root.context.provide(RESTART_GATE, gate)
         if CONTROL_FRAMES in requested:
             # 候选与独立验证只读取副本；它们不能取得正式连接的发送 owner。
-            isolated = candidate
-            frames = FrameBook() if candidate else self._control_frames
+            frames = FrameBook() if candidate else control_frames
             _ = await root.context.provide(CONTROL_FRAMES, frames)
-            if isolated:
+            if candidate:
                 root._defer_internal_cleanup("control_frames.close", frames.close)  # pyright: ignore[reportPrivateUsage]
         # 正式能力归宿主所有，不计入历史 provider 的依赖拓扑。
-        log = None if candidate else self._message_log
-        if requested & message_services and self._message_log is None:
+        log = None if candidate else message_log
+        if requested & message_services and message_log is None:
             raise RuntimeError("消息能力需要 bootstrap 提供已迁移的 MessageLog")
-        if self._message_log is not None:
+        if message_log is not None:
             _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
             _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
             _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
             _ = await root.context.provide(OWNER_STATE, OwnerState(log))
             _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
             _ = await root.context.provide(
-                BINDINGS, Bindings(log, self._archive, root)
+                BINDINGS, Bindings(log, archive, root)
             )
-        if TASKS in requested or self._message_log is not None:
+        if TASKS in requested or message_log is not None:
             _ = await root.context.provide(
-                TASKS, PluginTasks(formal=False) if candidate else self._plugin_tasks
+                TASKS, PluginTasks(formal=False) if candidate else tasks
             )
         if PROCESSES in requested:
             _ = await root.context.provide(
-                PROCESSES, PluginProcesses(formal=False) if candidate else self._plugin_processes
+                PROCESSES, PluginProcesses(formal=False) if candidate else processes
             )
-        if self._artifact_read is not None:
+        if artifact_read is not None:
             _ = await root.context.provide(
-                ARTIFACT_READ, ArtifactRead(None) if candidate else self._artifact_read
+                ARTIFACT_READ, ArtifactRead(None) if candidate else artifact_read
             )
-        if ARTIFACT_IMPORT in requested and self._artifact_import is not None:
+        if ARTIFACT_IMPORT in requested and artifact_import is not None:
             _ = await root.context.provide(
-                ARTIFACT_IMPORT, ArtifactImport(None) if candidate else self._artifact_import
+                ARTIFACT_IMPORT, ArtifactImport(None) if candidate else artifact_import
             )
         if TIMERS in requested:
             timers = (
@@ -3314,7 +3305,7 @@ class PluginManager:
                 display_only: bool,
             ) -> list[dict[str, object]]:
                 return await project_message_rows(
-                    self._snapshot_store,
+                    store,
                     page,
                     display_only=display_only,
                 )
@@ -3326,7 +3317,9 @@ class PluginManager:
         if "core.mobile_ui.v1" in host_ui_requested:
             from agent.plugins.mobile_ui import PluginMobileUiProvider
 
-            mobile_ui = PluginMobileUiProvider(self)
+            # 现有 provider 实际只消费 snapshot_store；验证不能回落到父 Store。
+            # 构造类型仍声明 Manager，窄接口的类型收敛留给该文件 owner。
+            mobile_ui = PluginMobileUiProvider(self if host is None else host)  # pyright: ignore[reportArgumentType]
             _ = await root.context.provide(
                 ServiceKey[object]("core.mobile_ui.v1"),
                 mobile_ui,
@@ -3339,11 +3332,11 @@ class PluginManager:
             INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
         ):
-            if not candidate and self._interaction_undo is None:
+            if not candidate and interaction_owner is None:
                 raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
             interaction_undo = (
-                InteractionUndoService(self._interaction_undo.undo_latest)
-                if not candidate and self._interaction_undo is not None
+                InteractionUndoService(interaction_owner.undo_latest)
+                if not candidate and interaction_owner is not None
                 else InteractionUndoService.candidate_validation()
             )
             _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
@@ -3386,6 +3379,8 @@ class PluginManager:
         generation: PluginGeneration,
         command: tuple[str, ...],
         cwd: str,
+        *,
+        archive: PluginArchive | None = None,
     ) -> tuple[str, ...]:
         """仅在实际打开目标前校验其环境，不阻挡同组件的纯读取能力。"""
         manifest = generation.static_manifest
@@ -3395,7 +3390,7 @@ class PluginManager:
         if runtime_root is not None:
             if generation.archive_ref is None:
                 raise RuntimeError("外部 runtime 缺少代码归档")
-            record = self._archive.read_descriptor(generation.archive_ref)
+            record = (self._archive if archive is None else archive).read_descriptor(generation.archive_ref)
             refs = cast(Mapping[str, str], record["python_environments"])
             if runtime_root not in refs:
                 raise RuntimeError("插件命令缺少固定 Python 环境；请通过安装流程准备")

@@ -38,6 +38,10 @@ async def test_validation_custody_owns_inputs_and_retains_failed_close(tmp_path,
         result, _ = await host.install_candidate(
             source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
         )
+        # 完整 Manager 只能由正式宿主创建；隔离调用必须使用实际资源 owner。
+        def reject_child_manager(*args, **kwargs):
+            raise AssertionError("验证不得构造第二个 Manager")
+        monkeypatch.setattr(type(host), "__init__", reject_child_manager)
         before = log.reader("formal").snapshot()
         with closing(sqlite3.connect(workspace / "sessions.db")) as db:
             formal_before = tuple(db.iterdump())

@@ -76,9 +76,10 @@ async def test_validation_runs_real_reply_model_projection_and_tool_records(tmp_
         before = log.catalog().snapshot_heads()
         async with host.open_validation(result.update_id) as scope:
             validation = next(iter(host._validation_hosts.values()))
-            child = validation.manager
-            for plugin_id, generation in child.current_snapshot.generations.items():
-                assert child.generation(plugin_id) is generation
+            snapshot = validation.snapshot_store.current
+            assert snapshot is not None
+            for plugin_id, generation in snapshot.generations.items():
+                assert generation in validation.generations
                 assert generation is not host.latest_snapshot.generations[plugin_id]
             output = await scope.require(ServiceKey("test.validation"))()
             assert output.body.finish == "complete"
@@ -217,14 +218,14 @@ async def test_shutdown_waits_for_validation_cleanup_already_in_progress(tmp_pat
         async def validate():
             async with host.open_validation(result.update_id):
                 validation = next(iter(host._validation_hosts.values()))
-                original = validation.manager.stop_validation_resources
+                original = validation.stop_resources
                 async def close_resources():
                     nonlocal calls
                     calls += 1
                     cleanup_entered.set()
                     await release_cleanup.wait()
                     await original()
-                monkeypatch.setattr(validation.manager, "stop_validation_resources", close_resources)
+                monkeypatch.setattr(validation, "stop_resources", close_resources)
         task = asyncio.create_task(validate())
         await asyncio.wait_for(cleanup_entered.wait(), 10)
         validation = next(iter(host._validation_hosts.values()))
@@ -278,11 +279,10 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
         with pytest.raises(RuntimeError, match="cleanup|清理"):
             async with host.open_validation(result.update_id) as scope:
                 validation = next(iter(host._validation_hosts.values()))
-                child = validation.manager
                 # 已安装 provider 使用自己的模块 namespace，按实际会话 host 注入故障。
                 async with scope.require(SERVICE)() as server:
                     from agent.plugin_composition.mcp_slots import MCP_SERVERS
-                    service = child.current_snapshot.composition_root.context.require(MCP_SERVERS)
+                    service = validation.root.context.require(MCP_SERVERS)
                     session = service._sessions[server.generation_id]
                     actual = session._host._cleanup_entry
                     async def fail_actual(entry):
@@ -352,7 +352,8 @@ async def test_candidate_has_only_its_own_messages_and_plugin_data(tmp_path):
             assert validation.messages.read_bindings() == ()
             assert not (validation.workspace / "plugin-data/probe-lab/history.txt").exists()
             assert not (validation.workspace / "plugin-data/probe-lab/private-link").exists()
-            actual = validation.manager.current_snapshot
+            actual = validation.snapshot_store.current
+            assert actual is not None
             assert {key: value.archive_ref for key, value in actual.generations.items()} == {
                 key: value.archive_ref for key, value in host.latest_snapshot.generations.items()
             }

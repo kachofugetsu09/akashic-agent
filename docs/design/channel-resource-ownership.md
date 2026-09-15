@@ -121,3 +121,52 @@ owner 和普通 program，检查独立交接接纳/结算、pending 保留、关
   不会自动补 channels。旧 installed/stable 选择也需显式完整换代；本切片不改正式状态。
 - Telegram/QQ 不在默认本地 profile，属于有意后续选入；扩展组合选入它们时必须同时选 channels。
   未读取任何正式安装 cache 或运行选择，因此不声称已审计部署实例。
+
+## 930b5ede 后：验证宿主不再创建子 Manager
+
+本切片只收缩隔离装配与关闭 owner。父 Manager 继续固定候选归档、持有更新请求与
+parent lease，并独占撤销、提交阻断和 stable；没有修改 latest、消息证据读取或安装回退。
+上一节 profile/FULL fixture 遗漏已由协调者修复，不是本切片待办。
+
+```text
+┌─────────────────────────────┐
+│ 父 Manager：exact candidate  │
+│ 同一装配方法：实例化/挂载/封存 │
+└──────────────┬──────────────┘
+               ▼
+┌─────────────────────────────┐
+│ ValidationHost              │
+│ 独立 Root / SnapshotStore   │
+│ Task / Process / Bus / stores│
+└──────────────┬──────────────┘
+               ▼
+┌─────────────────────────────┐
+│ 排空 lease 后关闭 Root/module│
+│ 失败保留原宿主；成功释放 parent│
+└─────────────────────────────┘
+```
+
+`_prepare_validation` 复用 `_resolve_composition_root`，删除第二份挂载/ready/sealing
+流程。物理 Root 仍相互独立，初始化前固定服务；不交换已封存服务，不合并第一候选与验证实例。
+ValidationHost 没有安装、selection、reload journal、发布操作或嵌套 Manager。
+每个构建 Root 从分配起归真实 owner；已导入模块的卸载回调仍登记在原 Root，
+验证实例不进入父 Manager 的 building Roots 或 stable alias 集合。
+
+关闭先关闭来源接纳、Task、Process，再由 SnapshotStore 核对 lease 并关闭 Root；
+未发布 Root 由 ValidationHost 直接关闭。Root 内的模块和 Scope 关闭成功后才解除资源归属。
+随后关闭本地 frames、输入 Bus、EventBus、存储连接，最后释放 parent lease。
+准备取消且关闭失败时，open_validation 的 finally 不立即重复关闭；显式 retry 或 terminate
+继续使用原宿主。消息、pending 和 plugin-data 保留，不新增数据减少或兼容性裁决协议。
+
+Mobile UI 的运行实现只读取传入对象的 snapshot_store，本次传真实 ValidationHost，
+避免无继承 context 的请求回落到主 Store。其现有构造类型仍写 Manager；因文件 writer
+边界未扩大，只在接线处记录类型例外，后续可把该类型收窄到 Store，不应恢复子 Manager。
+
+新增 owner 测试覆盖未释放 lease 保留模块、无 context 的 UI 查询使用验证 Store、
+取消构建且关闭失败保留未发布 Root、显式重试后卸载模块。迁移既有真实程序/MCP/关闭
+并发测试，输入接纳测试明确拒绝再次构造完整 Manager。所有测试只写未运行。
+
+恢复基线：`930b5edebc240ecc82dd9eda61a1421d1e17c167`；源码备份：
+`/tmp/validation-host-930b5ede-before.tar`。验证限静态搜索、阅读与 git diff --check，
+没有 Gate、CI、build、lint、AST 或产品运行证据。正式 workspace、cache 与其他 writer
+worktree 未改；共享 INDEX、NOW 和整体设计指南未改。
