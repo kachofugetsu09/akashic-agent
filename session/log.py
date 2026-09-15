@@ -246,6 +246,14 @@ class WriterExpired(RuntimeError):
     """任务已释放写入权，不能再提交新的输出。"""
 
 
+def read_persisted_messages(path: str | Path, session_id: str) -> tuple[Message, ...]:
+    """只读已有库的原消息，不初始化 schema；缺失或损坏直接报错。"""
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT * FROM messages WHERE session_key = ? ORDER BY seq", (session_id,))
+        return tuple(_message(row) for row in rows)
+
+
 class MessageLog:
     """SQLite 消息权威存储；只向消费者分配窄 reader/writer。"""
 

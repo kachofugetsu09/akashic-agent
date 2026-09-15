@@ -9,10 +9,9 @@ import logging
 import os
 import secrets
 import shutil
-import sqlite3
 import sys
 from dataclasses import dataclass
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager
 from contextvars import Context as TaskContext
 from pathlib import Path
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
@@ -44,8 +43,7 @@ from agent.plugin_composition.messages import (
     MessageWriters, OwnerState, SessionAdmission,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from session.log import MessageCatalog, MessageLog
-from session.log import _message as decode_message_row  # pyright: ignore[reportPrivateUsage]
+from session.log import MessageCatalog, MessageLog, read_persisted_messages
 from session.message import Message
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import RuntimeScope
@@ -1214,11 +1212,7 @@ class PluginManager:
         evidence_root = (self._workspace / "runtime" / "plugin-update-validation").resolve()
         if not database.resolve().is_relative_to(evidence_root):
             raise RuntimeError("调用证据越过隔离目录")
-        # 只连接已存在的原库；缺失或损坏明确报错，绝不创建空库冒充无结果。
-        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
-            connection.row_factory = sqlite3.Row
-            rows = connection.execute("SELECT * FROM messages WHERE session_key = ? ORDER BY seq", (session_id,))
-            return tuple(decode_message_row(row) for row in rows)
+        return read_persisted_messages(database, session_id)
 
     def start_update_publication(self, update_id: str) -> None:
         """同步接纳无 lease 的宿主任务；返回只表示已接纳，不表示已晋升。"""
