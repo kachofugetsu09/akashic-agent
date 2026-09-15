@@ -47,7 +47,10 @@ async def test_uninstall_waits_for_snapshot_and_fork_then_closes_whole_root(tmp_
         lease = host.snapshot_store.lease()
         fork = lease.fork()
         waiting = asyncio.Event()
+        drain_started = asyncio.Event()
+        finish_drain = asyncio.Event()
         original_wait = host.snapshot_store.wait_for_no_leases
+        original_drain = host.snapshot_store._on_drained
 
         async def wait(snapshot):
             if snapshot is old:
@@ -55,6 +58,14 @@ async def test_uninstall_waits_for_snapshot_and_fork_then_closes_whole_root(tmp_
             await original_wait(snapshot)
 
         monkeypatch.setattr(host.snapshot_store, "wait_for_no_leases", wait)
+
+        async def hold_drain(snapshot):
+            if snapshot is old:
+                drain_started.set()
+                await finish_drain.wait()
+            await original_drain(snapshot)
+
+        monkeypatch.setattr(host.snapshot_store, "_on_drained", hold_drain)
         task = asyncio.create_task(AppRuntime._uninstall_plugin(app, "target@lab"))
         await waiting.wait()
         assert not task.done() and cache.is_dir()
@@ -62,6 +73,10 @@ async def test_uninstall_waits_for_snapshot_and_fork_then_closes_whole_root(tmp_
         await lease.release()
         assert old.lease_count == 1 and not task.done() and cache.is_dir()
         await fork.release()
+        await drain_started.wait()
+        assert not task.done() and cache.is_dir()
+        assert target_state["closes"] == peer_state["closes"] == 0
+        finish_drain.set()
         result = await task
         assert result["pluginId"] == "target@lab"
         assert old.lease_count == 0
@@ -78,6 +93,52 @@ async def test_uninstall_waits_for_snapshot_and_fork_then_closes_whole_root(tmp_
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        finish_drain.set()
+        await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_uninstall_rejoins_the_same_running_drain(tmp_path, monkeypatch):
+    """调用者取消不删除 cache；重试只等待已经登记的原 snapshot drain。"""
+    host, app, cache = installed_app(tmp_path)
+    first = None
+    finish_drain = asyncio.Event()
+    drain_started = asyncio.Event()
+    try:
+        await host.load_all()
+        old = host.current_snapshot
+        target = old.generations["target@lab"]
+        original_drain = host.snapshot_store._on_drained
+
+        async def hold_drain(snapshot):
+            if snapshot is old:
+                drain_started.set()
+                await finish_drain.wait()
+            await original_drain(snapshot)
+
+        monkeypatch.setattr(host.snapshot_store, "_on_drained", hold_drain)
+        first = asyncio.create_task(AppRuntime._uninstall_plugin(app, "target@lab"))
+        await drain_started.wait()
+        operation = host._operation
+        assert operation is not None
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await asyncio.wait((operation.task,))
+        assert cache.is_dir() and target.module_path in sys.modules
+        retry = asyncio.create_task(AppRuntime._uninstall_plugin(app, "target@lab"))
+        await asyncio.sleep(0)
+        assert not retry.done() and cache.is_dir()
+        finish_drain.set()
+        result = await retry
+        assert result["pluginId"] == "target@lab"
+        assert not cache.exists() and target.scope.closed
+        assert host.current_snapshot.accepting_leases
+    finally:
+        finish_drain.set()
+        if first is not None and not first.done():
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
         await host.terminate_all()
 
 

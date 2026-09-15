@@ -1330,11 +1330,26 @@ class PluginManager:
                     f"{self._ready_candidate.plugin_id}"
                 )
             _ = await self._drop_ready(plugin_id)
+        retired: list[RuntimeSnapshot] = []
         if plugin_id in self._active_generations:
+            previous = self.current_snapshot
+            assert previous is not None
             _ = await self._deactivate_plugin(plugin_id)
-        # 整体换代已等待 snapshot 租约并关闭旧 Root；残留失败 owner 不归卸载接管。
+            retired.append(previous)
+        else:
+            for generation in self._draining_generations.get(plugin_id, ()):
+                snapshot = generation.runtime_snapshot
+                if snapshot is not None and all(item is not snapshot for item in retired):
+                    retired.append(snapshot)
+        # 整体换代异步排空旧 Root；只 join 已登记的原 snapshot，不自动重试失败资源。
+        for snapshot in retired:
+            await self._snapshot_store.wait_for_snapshot_drained(snapshot)
         if self._draining_generations.get(plugin_id):
             raise RuntimeError(f"插件仍有未关闭的资源 owner，须先 recovery/terminate: {plugin_id}")
+        current = self.current_snapshot
+        if current is not None and not current.accepting_leases:
+            self._check_operation_commit()
+            await self._resume_source_admission(current)
 
     async def _deactivate_plugin(self, plugin_id: str) -> dict[str, object]:
         """禁用也重建整个组合，不能保留其他插件的旧模块。"""
