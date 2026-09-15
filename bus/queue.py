@@ -527,6 +527,8 @@ class MessageBus:
         不会被复制成第二个 owner。
         """
 
+        if self._outbound_closed:
+            raise RuntimeError("message bus 已关闭")
         self._raise_inbound_cleanup_error()
         store = self._durable_inbound_store
         if store is None:
@@ -648,6 +650,8 @@ class MessageBus:
 
     async def _defer_durable_inbound(self, handoff_id: str) -> bool:
         async with self._durable_handoff_lock:
+            if self._outbound_closed:
+                raise RuntimeError("message bus 已关闭")
             admission = self._durable_admissions.get(handoff_id)
             if admission is None:
                 return True
@@ -666,6 +670,8 @@ class MessageBus:
     ) -> None:
         """明确拒绝的命令收据落库后，释放未接纳的交接及 Session 租约。"""
         async with self._durable_handoff_lock:
+            if self._outbound_closed:
+                raise RuntimeError("message bus 已关闭")
             store = self._durable_inbound_store
             if store is None:
                 raise RuntimeError("durable inbound durable handoff store 未绑定")
