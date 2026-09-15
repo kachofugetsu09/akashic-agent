@@ -29,6 +29,8 @@ Snapshot 不再保存这三类目录，Manager 不再为它们执行第二次启
 snapshot 保存实际挂载的实例，禁止跨 snapshot 共用物理 Root 或 generation。
 模块同样只由实际 Root namespace 持有；删除 stable 导入别名及其发布、继承和回收目录。
 延迟相对导入仍从该 Root 的固定制品加载，跨插件通信通过服务组合。
+安装 doctor 只读取指针与制品声明，不再另行导入插件、触发模块副作用或建立第二套加载。
+入口、依赖和资源是否合法由实际 Root 装配判断；doctor 对这些检查明确报告 deferred。
 关闭候选后才开始正式换代；旧组合排空并实际释放后再创建新正式组合。
 旧 payload 替换、候选 clone 以及正式/候选目录和身份来回切换已删除。
 恢复也是一次真实新 Root 构建，关闭失败仍由原 Root 或 Store 保存 owner，不能隐式重试。
