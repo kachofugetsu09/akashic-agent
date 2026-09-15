@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-import uuid
 from pathlib import Path
 from typing import Any, cast
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
-from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
@@ -20,6 +16,7 @@ def run_plugin_doctor(
     workspace: Path,
     plugins_home: Path | None = None,
 ) -> dict[str, Any]:
+    """只读安装制品；实际入口、依赖和资源检查留给完整 Root 装配。"""
     resolved_workspace = workspace
     manifest = load_plugin_manifest(plugins_home)
     selected = [plugin_id] if plugin_id else sorted(manifest)
@@ -29,7 +26,6 @@ def run_plugin_doctor(
         _inspect_plugin(
             current_id,
             manifest[current_id],
-            resolved_workspace,
             plugins_home,
         )
         for current_id in selected
@@ -57,7 +53,6 @@ def format_plugin_doctor_report(report: dict[str, Any]) -> str:
 def _inspect_plugin(
     plugin_id: str,
     enabled: bool,
-    workspace: Path,
     plugins_home: Path | None,
 ) -> dict[str, Any]:
     checks = [
@@ -83,11 +78,9 @@ def _inspect_plugin(
             )
         )
         try:
-            _load_plugin_declaration(
-                stable_root,
-            )
+            load_static_plugin_manifest(stable_root)
             checks.append(_check("runtime", "deferred", "运行能力由实际装配确定"))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             checks.append(_check("declaration", "error", str(e)))
     elif latest_root is None:
         checks.append(_check("install", "error", "未找到插件目录"))
@@ -100,11 +93,9 @@ def _inspect_plugin(
             )
         )
         try:
-            _load_plugin_declaration(
-                latest_root,
-            )
+            load_static_plugin_manifest(latest_root)
             checks.append(_check("candidate_runtime", "deferred", "运行能力由实际装配确定"))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             checks.append(_check("declaration", "error", str(e)))
     if (
         resolution_error is None
@@ -146,34 +137,6 @@ def _find_plugin_roots(
 
     # 3. 外部插件只认原子 pointer，不扫描旧版可见目录。
     return None, None
-
-
-def _load_plugin_declaration(
-    plugin_root: Path,
-) -> ComposablePlugin:
-    """读取并校验一个 v3 namespace。"""
-
-    static_manifest = load_static_plugin_manifest(plugin_root)
-    module_name = f"akasic_plugin_doctor_{uuid.uuid4().hex}"
-    path = plugin_root / "plugin.py"
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"插件 plugin.py 必须是普通文件: {path}")
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        path,
-        submodule_search_locations=[str(path.parent)],
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"无法加载 {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-        if module.__file__ is None or Path(module.__file__).resolve(strict=True) != path.resolve(strict=True):
-            raise RuntimeError("插件 module 文件与固定制品 plugin.py 不一致")
-        return ComposablePlugin.from_module(module, static_manifest)
-    finally:
-        _ = sys.modules.pop(module_name, None)
 
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:
