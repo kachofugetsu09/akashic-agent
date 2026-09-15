@@ -19,8 +19,9 @@
 ```
 
 `_replace_formal_root` 在关闭旧 Root 前关闭接纳并等待 `wait_for_no_leases`，
-随后提交新 Root；`_activate_snapshot` 登记旧 generations，最终发布才调用
-`schedule_retired_drain` 启动异步 Root.dispose。卸载因此必须继续调用
+随后 `_close_formal_root` 已完成旧 Root 的资源关闭，再提交新 Root；
+`_activate_snapshot` 登记旧 generations，最终发布才调用 `schedule_retired_drain`
+异步完成旧 snapshot 的最终回收，包括模块和 generation 登记。卸载因此必须继续调用
 `wait_for_snapshot_drained(previous)`，等待这一张既有旧 snapshot 的实际回调完成。
 该接口只 join 已登记 task，并直接传播 `_drain_failures`，不调用 `retry_drains`
 自动重试失败资源。成功后 draining owner 已由 dispose 路径移除，才允许安装 owner

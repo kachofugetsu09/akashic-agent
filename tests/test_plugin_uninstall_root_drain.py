@@ -36,6 +36,7 @@ def installed_app(tmp_path, *, fail_close=False):
 async def test_uninstall_waits_for_snapshot_and_fork_then_closes_whole_root(tmp_path, monkeypatch):
     host, app, cache = installed_app(tmp_path)
     lease = fork = task = None
+    finish_drain = asyncio.Event()
     try:
         await host.load_all()
         old = host.current_snapshot
@@ -48,7 +49,6 @@ async def test_uninstall_waits_for_snapshot_and_fork_then_closes_whole_root(tmp_
         fork = lease.fork()
         waiting = asyncio.Event()
         drain_started = asyncio.Event()
-        finish_drain = asyncio.Event()
         original_wait = host.snapshot_store.wait_for_no_leases
         original_drain = host.snapshot_store._on_drained
 
@@ -75,7 +75,8 @@ async def test_uninstall_waits_for_snapshot_and_fork_then_closes_whole_root(tmp_
         await fork.release()
         await drain_started.wait()
         assert not task.done() and cache.is_dir()
-        assert target_state["closes"] == peer_state["closes"] == 0
+        assert target_state["closes"] == peer_state["closes"] == 1
+        assert target.module_path in sys.modules
         finish_drain.set()
         result = await task
         assert result["pluginId"] == "target@lab"
@@ -126,8 +127,17 @@ async def test_cancelled_uninstall_rejoins_the_same_running_drain(tmp_path, monk
             await first
         await asyncio.wait((operation.task,))
         assert cache.is_dir() and target.module_path in sys.modules
+        retry_waiting = asyncio.Event()
+        original_wait = host.snapshot_store.wait_for_snapshot_drained
+
+        async def wait_for_retired(snapshot):
+            if snapshot is old:
+                retry_waiting.set()
+            await original_wait(snapshot)
+
+        monkeypatch.setattr(host.snapshot_store, "wait_for_snapshot_drained", wait_for_retired)
         retry = asyncio.create_task(AppRuntime._uninstall_plugin(app, "target@lab"))
-        await asyncio.sleep(0)
+        await retry_waiting.wait()
         assert not retry.done() and cache.is_dir()
         finish_drain.set()
         result = await retry
