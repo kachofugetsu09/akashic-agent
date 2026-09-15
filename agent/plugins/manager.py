@@ -368,18 +368,39 @@ class PluginManager:
 
     def _start_operation(
         self, work: Callable[[], Awaitable[U]], *, background: bool = False,
+        wait_for_snapshot: RuntimeSnapshot | None = None,
     ) -> ManagerOperation:
-        """一次接纳固定一个任务和截止，后台发布清空调用者的 lease 上下文。"""
+        """等待普通调用归还租约后才计提交期限，始终保留同一个任务 owner。"""
         self._require_operation_idle()
-        operation = ManagerOperation(asyncio.get_running_loop().time() + self.POST_PUBLISH_TIMEOUT_SECONDS)
+        loop = asyncio.get_running_loop()
+        operation = ManagerOperation(
+            loop.time() + self.POST_PUBLISH_TIMEOUT_SECONDS
+            if wait_for_snapshot is None else float("inf")
+        )
         self._operation = operation
+
+        async def admitted_work() -> U:
+            if wait_for_snapshot is None:
+                return await work()
+            # 普通调用不是发布的执行阶段；等待时仍可查询、revert 和 terminate。
+            await self._snapshot_store.wait_for_no_leases(wait_for_snapshot)
+            if operation.revoked or operation.task.cancelling() or self._stopping:
+                raise asyncio.CancelledError("发布请求已撤销")
+            operation.deadline = loop.time() + self.POST_PUBLISH_TIMEOUT_SECONDS
+            timer = loop.call_at(operation.deadline, self._revoke_operation, operation)
+            try:
+                return await work()
+            finally:
+                timer.cancel()
+
         operation.task = asyncio.create_task(
-            run_operation(operation, work), name="plugin-manager-operation",
+            run_operation(operation, admitted_work), name="plugin-manager-operation",
             context=TaskContext() if background else None,
         )
         operation.task.add_done_callback(self._operation_finished)
-        timer = asyncio.get_running_loop().call_at(operation.deadline, self._revoke_operation, operation)
-        operation.task.add_done_callback(lambda _: timer.cancel())
+        if wait_for_snapshot is None:
+            timer = loop.call_at(operation.deadline, self._revoke_operation, operation)
+            operation.task.add_done_callback(lambda _: timer.cancel())
         return operation
 
     async def _run_operation(
@@ -1225,6 +1246,7 @@ class PluginManager:
             raise RuntimeError(f"验证尚未退出或资源尚未清理: {retained}")
         operation = self._start_operation(
             lambda: self._publish_update(update_id, update.plugin_id), background=True,
+            wait_for_snapshot=self.current_snapshot,
         )
         self._update_publication = (update_id, operation.task)
         self._notify_updates()
@@ -1253,10 +1275,6 @@ class PluginManager:
     async def _publish_update(self, update_id: str, plugin_id: str) -> None:
         """沿原发布 owner 排空和切换；失败作为恢复点诊断保留。"""
         try:
-            # 调用者仍可读状态和 revert；在它释放正式租约前不开始关闭候选或旧组合。
-            current = self.current_snapshot
-            if current is not None:
-                await self._snapshot_store.wait_for_no_leases(current)
             self._check_operation_commit()
             _ = await self._switch_ready(plugin_id, update_id=update_id)
         except asyncio.CancelledError:
