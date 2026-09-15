@@ -47,7 +47,6 @@ class PluginGeneration:
     runtime_snapshot: RuntimeSnapshot | None = None
     retire_started: bool = False
     state: str = "active"
-    lease_count: int = 0
     reload_tx_id: str | None = None
     validation_workspace: Path | None = None
     archive_ref: str | None = None

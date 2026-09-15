@@ -26,7 +26,6 @@ async def test_mobile_ui_query_keeps_the_callers_snapshot_after_promotion() -> N
         plugin_id="fixture",
         generation_id="fixture-s1",
         source_revision="rev-1",
-        lease_count=0,
     )
     first = RuntimeSnapshot(
         "s1",
@@ -68,7 +67,6 @@ async def test_mobile_ui_query_keeps_the_callers_snapshot_after_promotion() -> N
             plugin_id="fixture",
             generation_id="fixture-s2",
             source_revision="rev-2",
-            lease_count=0,
         )
         second = RuntimeSnapshot(
             "s2",

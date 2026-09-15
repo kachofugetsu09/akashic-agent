@@ -981,8 +981,6 @@ class RuntimeSnapshotStore:
 
     def _claim_lease(self, snapshot: RuntimeSnapshot) -> RuntimeSnapshotLease:
         snapshot.lease_count += 1
-        for generation in snapshot.generations.values():
-            generation.lease_count += 1
         return RuntimeSnapshotLease(self, snapshot)
 
     def fork_lease(self, source: RuntimeSnapshotLease) -> RuntimeSnapshotLease:
@@ -993,8 +991,6 @@ class RuntimeSnapshotStore:
         ):
             raise RuntimeError("RuntimeSnapshot lease 不可复制")
         snapshot.lease_count += 1
-        for generation in snapshot.generations.values():
-            generation.lease_count += 1
         return RuntimeSnapshotLease(self, snapshot)
 
     async def release_lease(self, snapshot: RuntimeSnapshot) -> None:
@@ -1003,20 +999,9 @@ class RuntimeSnapshotStore:
                 f"RuntimeSnapshot lease 计数失衡: {snapshot.snapshot_id}"
             )
         snapshot.lease_count -= 1
-        for generation in snapshot.generations.values():
-            generation.lease_count -= 1
         self._schedule_drain(snapshot)
         async with self._condition:
             self._condition.notify_all()
-
-    async def wait_for_generation_drained(
-        self,
-        generation: PluginGeneration,
-    ) -> None:
-        async with self._condition:
-            while generation.lease_count:
-                await self._condition.wait()
-        await self.retry_drains()
 
     def _schedule_drain(self, snapshot: RuntimeSnapshot) -> None:
         if (
