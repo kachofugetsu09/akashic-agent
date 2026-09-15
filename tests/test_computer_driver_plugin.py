@@ -778,28 +778,21 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
         assert harness.composition_root.receipt().ready
 
         computer_source = harness.root / "computer" / "plugin.py"
-        manifest_source = harness.root / "computer" / "akashic.plugin.toml"
         old_digest = "4a4381b211024ac1fbf3730bd835a8cfa6cd7dd36996bf018437c13796ef0894"
         old_image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:" + old_digest
         new_image = old_image[:-1] + "a"
         new_digest = new_image.rsplit(":", 1)[1]
         source_text = computer_source.read_text()
-        manifest_text = manifest_source.read_text()
         assert source_text.count(old_digest) == 1
-        assert manifest_text.count(old_image) == 1
+        assert source_text.count('command=("mcp_server.py",),') == 1
         changed_source_text = (
             source_text.replace(old_digest, new_digest)
             .replace('command=("mcp_server.py",),', 'command=("mcp_server.py", "--new-target"),')
             + "\n# source revision after binding capture\n"
         )
-        changed_manifest_text = manifest_text.replace(old_image, new_image).replace(
-            'command = ["mcp_server.py"]',
-            'command = ["mcp_server.py", "--new-target"]',
-        )
         # Boot from the durable old stable source; the changed source is made
         # visible after restart and then published through reconcile/promote.
         computer_source.write_text(source_text)
-        manifest_source.write_text(manifest_text)
         # A real restart releases the old manager's process owners.  The new
         # manager then restores its archived stable workload before publishing
         # the changed source as a fresh candidate.
@@ -815,7 +808,6 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
             controller=harness.controller,
         )
         computer_source.write_text(changed_source_text)
-        manifest_source.write_text(changed_manifest_text)
         try:
             await _wait_until(lambda: harness.log.owner("plugin:computer").read(
                 "computer-use:message:[\"failure-output\",0]"

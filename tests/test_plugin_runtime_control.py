@@ -35,7 +35,7 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
     builtin = tmp_path / "builtin" / "baseline"
     _write_v3_plugin(builtin, name="baseline")
     source = tmp_path / "candidate"
-    _write_v3_plugin(source, name="candidate", static_manifest=True)
+    _write_v3_plugin(source, name="candidate")
     _commit(source)
     bus = EventBus()
     initialize_plugin_workspace(tmp_path / "workspace")
@@ -68,7 +68,7 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
     await latest_lease.release()
 
     blocked_source = tmp_path / "blocked"
-    _write_v3_plugin(blocked_source, name="blocked", static_manifest=True)
+    _write_v3_plugin(blocked_source, name="blocked")
     _commit(blocked_source)
     with pytest.raises(
         RuntimeError,
@@ -429,7 +429,7 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
     sources: dict[str, Path] = {}
     for name in ("alpha", "beta"):
         source = tmp_path / name
-        _write_v3_plugin(source, name=name, static_manifest=True)
+        _write_v3_plugin(source, name=name)
         _commit(source)
         sources[name] = source
     bus = EventBus()
@@ -681,7 +681,6 @@ def _write_v3_plugin(
     *,
     name: str,
     version: str = "1.0.0",
-    static_manifest: bool = False,
 ) -> None:
     """Write a minimal module-level v3 plugin fixture."""
 
@@ -694,7 +693,6 @@ def _write_v3_plugin(
         "    return None\n",
         encoding="utf-8",
     )
-    if static_manifest:
 
 
 def _commit_all(repo: Path, message: str) -> None:

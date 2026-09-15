@@ -30,7 +30,7 @@ from session.message import CallRef, ContentPart, ContentReferences, Control, In
 def sources(path):
     for name in ("akasha", "turn_projection", "tools", "content"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, path / name,
-                        ignore=shutil.ignore_patterns("__pycache__", "akashic.plugin.toml"))
+                        ignore=shutil.ignore_patterns("__pycache__"))
     # 这里只装配真实纯学习能力；正式 Akasha 的 recall/UI/worker 接线另行验收。
     (path / "akasha/plugin.py").write_text('''
 from contextlib import asynccontextmanager
