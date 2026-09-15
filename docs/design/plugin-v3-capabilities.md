@@ -87,7 +87,7 @@ Computer 的空 requirements 文件已删除；容器内命令不需要 Core 的
 环境只由安装器创建，加载或候选不准备环境，包括空 requirements 文件。
 源码插件的纯进程内能力可以直接装配；实际 Python 命令缺少固定环境时明确失败。
 
-### 身份读取与剩余策略（0071 身份层）
+### 身份读取（0071）
 
 安装和每次加载前，loader 只用 AST 读取 `plugin.py` 顶层三个单次字面量赋值：
 `name`、`version`、`api_version`。支持普通赋值和带类型注解的赋值，不接受计算表达式、
@@ -95,10 +95,10 @@ Computer 的空 requirements 文件已删除；容器内命令不需要 Core 的
 API 必须为整数 `3`。身份由 loader 固定后交给 Composable；运行中的模块属性变化不改变
 安装名、展示版本或 API，也不触发第二次 expected/actual 比对。
 
-`akashic.plugin.toml` 是可选的临时策略文件，只接受 `validation.exclude_data_paths`。
+`akashic.plugin.toml` 已退役，loader 不再读取或解释它，也不创建该文件。
 凭据通过固定配置中的 `CredentialRef` 与独立正式授权解析，不再声明凭据路径。
-旧 `schema_version/name/version/api_version`
-以及已删除的入口、Python 声明都明确拒绝，不能靠忽略字段兼容旧格式。没有策略就不发布该文件。
+历史制品中的旧 TOML 字节保留在原代码归档，不因此取得运行语义。安装清单的
+`manifest.toml` 与插件自己的业务 `config.toml` 不是插件协议文件，不随本次删除。
 代码树摘要、source revision、实际导入文件路径和环境引用继续固定原始来源。
 
 v4 组件记录只新增；旧记录和正式数据不改写、不自动迁移或删除。旧格式需用原 Core 和完整
@@ -110,13 +110,13 @@ v4 组件记录只新增；旧记录和正式数据不改写、不自动迁移�
 初始化约束在 `apply` 或对应 provider 的实际注册中检查并抛出错误。底座不调用另一个
 `static_semantic_checks` 自测入口，也不把报告存入运行 generation；诊断报告只记录真实装配步骤。
 
-每次 `apply` 都属于一个 generation-bound Fiber。下列注册和任务归该 Fiber 所有，并在失活、
-重启或卸载时逆序清理。
+每次 `apply` 都属于一个 generation-bound Fiber。下列注册和任务归该 Fiber 所有，
+编译后组合冻结；换代或卸载关闭整个 Root，依赖者先于 provider 退出，不原位重启 Fiber。
 
 | 原子能力 | 最短用法 | 语义 |
 |---|---|---|
 | 硬依赖 | 模块级 `inject = (KEY,)` | 全部 Service 可用时根 Fiber 才激活 |
-| 可选依赖 | `await ctx.inject((KEY,), child)` | 子 Fiber 随依赖出现和消失，不阻塞 Root readiness |
+| 可选依赖 | `await ctx.inject((KEY,), child)` | 初始化期间按依赖选择子 Fiber，不阻塞 Root readiness；编译后不重绑 |
 | 子 Fiber | `await ctx.mount(child, name="worker")` | 分开生命周期、Health、Effect 和依赖 |
 | 提供 Service | `await ctx.provide(KEY, value)` | 当前 Fiber 成为该 key 的活动 provider |
 | 读取 Service | `ctx.require(KEY)` / `ctx.get(KEY)` | 必需读取 fail-loud；可选读取返回 `None` |
@@ -185,7 +185,7 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 | `COMMANDS` | `register(ctx, CommandDefinition(...))` | 显式 `commands` provider 拥有人类命令、alias、封存与执行；消费者声明硬依赖 |
 | `TOOLS` | `register(...)`、`bind(...)`、`open(...)` | `plugins.tools` 的工具描述、参数准备、exact binding 与执行入口 |
 | `UI_SLOTS` | `register_mobile(ctx, definition, query=...)` | Mobile 页面、查询和导航 |
-| `CHANNELS` / `CHANNEL_INPUT` | 注册 blueprint，按绑定调用入站入口 | inbound/outbound Channel 适配 |
+| `CHANNELS` / `CHANNEL_INPUT` | 注册实际 factory，按绑定调用入站入口 | 显式 `channels` provider 拥有连接、接纳、原绑定发送与恢复；来源插件拥有输入消费 |
 | `DELIVERY` / `DELIVERY_READ` | 打开发送 admission 或只读历史 | Delivery 发送、恢复和查询 |
 
 旧 Core `TOOL_CATALOG` 及其注册、冻结和快照装配已删除。旧 `DELIVERIES`、
@@ -376,13 +376,13 @@ Manager 的既有 `core.mobile_ui.v1` 请求 adapter 接线仍保留，但不再
 ```
 
 - Candidate 与正式 Root 使用同一组精确归档，但模块、Scope 和 generation 都重新创建，
-  不把候选实例或目录改作正式实例。当前候选数据副本与 workspace 投影仍在迁出底座的过渡阶段。
+  不把候选实例或目录改作正式实例。候选从独立空数据环境开始，底座不复制正式业务库或目录。
 - Root 不能自行晋升。调用程序拥有业务验证与正常终态/未撤销授权；底座检查候选和基线，
   只在初始化成功后提交完整 stable。重启只读取该记录，不追随尚未晋升的源码或安装指针。
 - 整组换代先等待旧请求结束，再释放旧资源；不是逐插件无停顿替换。写入结果不确定时保留
   实际 owner 并关闭接纳，不能自动重放外部启动或声称已回滚。代码恢复不回滚插件数据。
 - Workspace path 是显式授予正式数据 owner 的高权限能力，不应替代窄 Service；candidate
-  只得到声明路径在 attempt workspace 内的副本。
+  只得到声明路径在独立 workspace 内的位置，所需数据由插件自行准备，不是正式目录的副本。
 - 普通卸载删除代码、manifest 和派生投影，默认保留 plugin-data。`manifest.toml` 只接受
   独立 `[plugins."<id>"]` 条目；旧 `[packages]` 分组不会展开、保留或静默忽略。
 
