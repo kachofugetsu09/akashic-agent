@@ -1646,6 +1646,8 @@ class PluginManager:
             raise
         if cancelled:
             self._abort_reload(candidate, error="候选关闭期间取消")
+            if self._reload_journal.get(tx_id).phase == "aborted":
+                self._reload_journal.annotate(tx_id, {"cleanup_receipt": "candidate-root-closed"})
             self._ready_candidate = None
             raise asyncio.CancelledError
         def before_open() -> None:
@@ -1672,6 +1674,8 @@ class PluginManager:
                 raise
             if self._reload_journal.get(tx_id).phase not in {"cleanup_failed", "degraded"}:
                 self._abort_reload(candidate, error="正式组合发布失败")
+                if self._reload_journal.get(tx_id).phase == "aborted":
+                    self._reload_journal.annotate(tx_id, {"cleanup_receipt": "candidate-root-closed"})
                 self._ready_candidate = None
                 if current is not None:
                     self._drain_transactions.pop(current.snapshot_id, None)
@@ -2052,6 +2056,8 @@ class PluginManager:
         deadline = asyncio.get_running_loop().time() + self.POST_PUBLISH_TIMEOUT_SECONDS
         self._reject_operation_lease(allow_stable_lease=True)
         update = self._reload_journal.update(update_id)
+        if update.phase == "rolled_back":
+            return
         if update.phase == "committed" or (
             self._update_publication is not None and self._update_publication[0] == update_id
             and self._operation is not None and self._operation.committed is not None
@@ -2102,10 +2108,29 @@ class PluginManager:
     async def _discard_update(self, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
         """持候选锁核对原请求；不能撤销期间已被替换的另一候选。"""
         update = self._reload_journal.update(update_id)
+        if update.phase == "rolled_back":
+            return
+        if update.phase != "armed" or update.reload_tx_id is None:
+            raise RuntimeError("更新不是等待丢弃的候选")
+        record = self._reload_journal.get(update.reload_tx_id)
+        if (record.plugin_id != update.plugin_id
+                or record.candidate_artifact_pointer != update.candidate.path
+                or record.candidate_snapshot_id is None):
+            raise RuntimeError("更新缺少精确候选资源记录")
         if self._ready_candidate is not None:
             ready = self._require_ready_candidate(update.plugin_id)
             if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
                 raise RuntimeError("更新与当前待处理候选不匹配")
+        # 原程序已退出才重试原 host；保留失败 owner，不扫描清理其他候选。
+        retained = tuple(
+            host.identity for host in self._validation_hosts.values()
+            if host.parent_lease.snapshot.snapshot_id == record.candidate_snapshot_id
+            and not host.active
+        )
+        for identity in retained:
+            await self._retry_validation_cleanup(identity)
+        if self._ready_candidate is not None:
+            ready = self._require_ready_candidate(update.plugin_id)
             if any(host.parent_lease.snapshot is ready.snapshot for host in self._validation_hosts.values()):
                 raise RuntimeError("验证尚未退出或资源尚未清理")
             _ = await self._drop_ready(update.plugin_id, error=reason)

@@ -36,6 +36,17 @@ Root 与 generation 关闭成功后，既有 aborted 事件增加 `candidate-roo
 保留原资源 owner。随后取消或文件回退失败即使已经清空 ready，也可用同一 update ID
 再次调用 `discard_update`，不重建或重复关闭候选。
 
+基于 `d8694e17` 的补充覆盖发布入口：`_switch_ready` 已成功等待
+`discard_latest` 后，关闭期间取消或后续正式发布失败也会沿原 abort 事件记录
+同一关闭回执。实际候选关闭失败、cleanup_failed/degraded 或保留中的已提交/
+不确定 publication 不生成这份成功回执；正式 Root 的失败 owner 仍走原恢复协议。
+
+公开 `PluginUpdates.discard` 在现有 operation 内按该 update 的固定 reload 记录
+核对 plugin/artifact/snapshot，只对这个 snapshot 的 inactive ValidationHost 调用
+既有 `_retry_validation_cleanup`。实际关闭成功才移除 host 并释放租约，失败继续
+保留原 host；active 调用仍先取消/等待。不会重跑验证、清理其他候选或增加公开 API。
+已经 rolled_back 的重复 discard 直接返回，不访问或撤销后来准备的新候选。
+
 重试在现有 operation 内重新读取原 armed 更新，核对 reload/plugin/artifact 关联、
 aborted 和关闭回执；候选 snapshot 不得仍被 store 保留，不能有新 ready、pending
 候选、building Root 或该候选的验证 owner。保留中的已提交/不确定 publication 拒绝
@@ -61,10 +72,14 @@ aborted 和关闭回执；候选 snapshot 不得仍被 store 保留，不能有�
 约束不再阻塞新更新。普通候选沿用现有 hot reload 与 runtime control 覆盖。
 后续测试覆盖关闭后取消、指针/清单写入前后失败的精确重试、资源关闭失败保留、
 旧更新拒绝丢弃新候选，以及外部指针、启用状态、stable 改写后的拒绝。
+发布交错测试覆盖候选关闭期间撤销及进入正式 Root 前撤销；独立公开 API 测试覆盖
+验证退出清理失败、首次 discard 再次失败、再次 discard 实际关闭并完成回退。
 本次未执行测试、Gate、CI、lint、build、AST 或产品命令，仅做静态阅读与 diff 检查。
 
 源码恢复点为上述基线，修改前备份位于
 `/tmp/akasic-drop-update-324d26e3-backup/source-before.tar`。
 后续切片恢复点为 `1b60cd2e`，修改前备份为
 `/tmp/akasic-discard-retry-1b60cd2e-backup/source-before.tar`。
+发布/验证清理补充恢复点为 `d8694e17`，备份为
+`/tmp/akasic-discard-publish-d8694e17-backup/source-before.tar`。
 文档索引由主协调者统一接入；本切片不修改其他 writer 的指南、latest 工具或验证宿主。

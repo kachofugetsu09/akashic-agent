@@ -52,13 +52,81 @@ async def test_drop_installed_candidate_settles_update_and_allows_next_install(t
         assert replacement.update_id != result.update_id
         assert host.reload_journal.update(replacement.update_id).phase == "armed"
         replacement_ready = host.ready_candidate
-        with pytest.raises(RuntimeError, match="不匹配"):
-            await host.discard_update(result.update_id)
+        await host.discard_update(result.update_id)
         assert host.ready_candidate is replacement_ready
         assert host.reload_journal.update(replacement.update_id).phase == "armed"
         await host.discard_update(replacement.update_id)
         assert host.reload_journal.update(replacement.update_id).phase == "rolled_back"
     finally:
+        await host.terminate_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", ["closing_candidate", "before_formal_root"])
+async def test_revert_during_publication_settles_closed_candidate(tmp_path, monkeypatch, cut):
+    """发布与撤销交错时，两条实际关闭后的 abort 路径都能完成安装回退。"""
+    source, home, workspace, old = prepare(tmp_path)
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    entered, release, revoked = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    discard = None
+    try:
+        await host.load_all()
+        selection = PluginSelection(workspace).read()
+        pointers = read_pointers(old.installed_path.parents[1])
+        result, _ = await host.install_candidate(
+            source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+        )
+        candidate = host.latest_snapshot
+        if cut == "closing_candidate":
+            original_close = host.snapshot_store.discard_latest
+
+            async def close_then_wait(*args, **kwargs):
+                closed = await original_close(*args, **kwargs)
+                entered.set()
+                await release.wait()
+                return closed
+
+            monkeypatch.setattr(host.snapshot_store, "discard_latest", close_then_wait)
+        else:
+            original_replace = host._replace_formal_root
+
+            async def wait_before_formal(*args, **kwargs):
+                entered.set()
+                await release.wait()
+                return await original_replace(*args, **kwargs)
+
+            monkeypatch.setattr(host, "_replace_formal_root", wait_before_formal)
+        original_error = host.reload_journal.record_update_error
+
+        def record_revoke(update_id, error):
+            original_error(update_id, error)
+            if update_id == result.update_id and error == "test revoke":
+                revoked.set()
+
+        monkeypatch.setattr(host.reload_journal, "record_update_error", record_revoke)
+        host.start_update_publication(result.update_id)
+        await entered.wait()
+        assert candidate.snapshot_id not in host.snapshot_store.retained_snapshot_ids
+        discard = asyncio.create_task(host.discard_update(result.update_id, reason="test revoke"))
+        await revoked.wait()
+        if cut == "closing_candidate":
+            release.set()
+        await discard
+        assert host.ready_candidate is None
+        update = host.reload_journal.update(result.update_id)
+        assert update.phase == "rolled_back"
+        assert host.reload_journal.get(update.reload_tx_id).phase == "aborted"
+        assert host.reload_journal.events(update.reload_tx_id)[-1].details["cleanup_receipt"] == "candidate-root-closed"
+        assert PluginSelection(workspace).read() == selection
+        assert read_pointers(old.installed_path.parents[1]) == pointers
+        await host.discard_update(result.update_id)
+        assert host.reload_journal.update(result.update_id).phase == "rolled_back"
+    finally:
+        release.set()
+        if discard is not None and not discard.done():
+            discard.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await discard
         await host.terminate_all()
 
 
