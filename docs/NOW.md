@@ -31,6 +31,7 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 - 按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 调整为调用程序拥有验证、provider 拥有隔离资源、底座拥有整体 stable 提交。旧 `validation_port_env`、双指针与 attached child 的 Core 特例不再是目标合同。
 - 按 [latest 普通调用](design/plugin-latest-programmatic.md) 完成非阻塞调用的过程/最终结果可见性、发起者撤销和原 owner 清理；正常完成默认请求晋升，不引入后台裁判或批准 JSON。继续核对隔离宿主的最小职责与累计消费者。
+- 已确认真实模型集成缺口：空候选的 `model-registry.sqlite3` 没有连接、模型和默认角色；`models.execution` 在回复前报“尚未配置 default 聊天模型”。固定配置归档不包含这份业务库。须由维护者选择候选独立连接或显式授权现有连接；不得偷偷复制正式模型库或转交正式凭据。测试替身不构成真实可用性证据。
 - 独立 Fitbit source 的候选 listener 与正式资源隔离仍待该仓库交付，本轮不修改外部插件。
 - 提交前后崩溃、排空失败和真实恢复的行为证据尚缺；本轮用户要求只提 PR，不执行 Gate/CI，不能将代码交付视作这些验收已完成。
 
