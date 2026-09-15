@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from agent.plugin_composition.channel_io import InputCustody
+from agent.plugin_composition.channels import CHANNELS
+from agent.plugin_composition.context import RuntimeScope
+
 import logging
 import os
 from collections.abc import Iterable
@@ -157,6 +161,12 @@ def build_core_runtime(
         manager = PluginManager(
             plugin_dirs=resolved_plugin_dirs, event_bus=event_bus,
             workspace=workspace, message_log=message_log, channel_identities=identities,
+            input_custody=InputCustody(
+                bus.prepare_channel_input, bus.complete_channel_input, bus.retain_channel_input,
+                bus.reserve_durable_inbound, bus.defer_durable_inbound,
+                bus.settle_rejected_inbound, bus.has_pending_durable_inbound,
+                bus.pending_durable_attachment_refs, bus.recover_durable_inbounds,
+            ),
             installed_cache_root=plugins_root() / "cache",
             channel_attachment_store=attachments,
             disabled_builtin_plugins=_disabled_builtin_plugins_for_runtime(
@@ -165,8 +175,23 @@ def build_core_runtime(
             restart_gate=restart_gate,
             control_frames=control_frames,
         )
-        manager.channel_generation_host.bind_input_custody(bus)
-        bus.bind_channel_outbound_dispatcher(manager.channel_generation_host.dispatch_outbound)
+        async def recover_input(raw):
+            snapshot = manager.current_snapshot
+            if snapshot is None or not snapshot.accepting_leases:
+                return False
+            lease = manager.snapshot_store.lease(snapshot.snapshot_id)
+            async with RuntimeScope(lease):
+                root = lease.snapshot.composition_root
+                if root is None:
+                    raise RuntimeError("durable input 恢复需要当前 Root")
+                channels = root.context.get(CHANNELS)
+                return False if channels is None else await channels.recover_inbound(raw)
+
+        async def deliver_output(envelope, binding):
+            return await binding.deliver(envelope)
+
+        bus.bind_durable_inbound_recoverer(recover_input)
+        bus.bind_channel_outbound_dispatcher(deliver_output)
         runtime = CoreRuntime(
             config=config, workspace=workspace, http_resources=http_resources,
             bus=bus, event_bus=event_bus, message_log=message_log,

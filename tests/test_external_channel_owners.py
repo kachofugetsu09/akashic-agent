@@ -116,7 +116,6 @@ def _context(
         boot_id="test-boot",
         binding_token="binding-1",
         config={**config, **(credentials or {})},
-        provider_client_factory=provider,
         ingress=ingress,
         identity=_Identity(),
         attachment_import=_AttachmentImport(),
@@ -231,7 +230,7 @@ async def test_telegram_external_owner_handles_inbound_delivery_and_stop(
         credentials={"token": CredentialRef(("token",))},
         attachment_read=attachment_read,
     )
-    adapter = telegram_channel.build_telegram_channel(context)
+    adapter = telegram_channel.build_telegram_channel(context, create_client=provider.create)
     adapter.attach_runtime(
         ChannelRuntimePorts(
             snapshot_id=context.snapshot_id,
@@ -329,7 +328,7 @@ async def test_telegram_start_failure_preserves_error_and_cleanup_can_finish(
         config={"allow_from": []},
         credentials={"token": CredentialRef(("token",))},
     )
-    adapter = telegram_channel.build_telegram_channel(context)
+    adapter = telegram_channel.build_telegram_channel(context, create_client=provider.create)
     adapter.attach_runtime(
         ChannelRuntimePorts(
             snapshot_id=context.snapshot_id,
@@ -352,7 +351,7 @@ async def test_telegram_start_failure_preserves_error_and_cleanup_can_finish(
         config={"allow_from": []},
         credentials={"token": CredentialRef(("token",))},
     )
-    adapter = telegram_channel.build_telegram_channel(context)
+    adapter = telegram_channel.build_telegram_channel(context, create_client=provider.create)
     adapter.attach_runtime(
         ChannelRuntimePorts(
             snapshot_id=context.snapshot_id,
@@ -374,7 +373,7 @@ async def test_telegram_start_failure_preserves_error_and_cleanup_can_finish(
     assert not failed.resources_closed
     assert any(item.resource == "updater" for item in failed.failures)
     assert adapter._app is not None
-    assert provider.client.closed
+    assert not provider.client.closed
     adapter._app.updater.stop = original_stop
     assert (await adapter.stop()).resources_closed
 
@@ -384,11 +383,11 @@ async def test_telegram_cancelled_stop_waiter_does_not_cancel_shared_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(telegram_channel, "Application", _TelegramApplicationFactory)
-    context, _, _ = _context(
+    context, _, provider = _context(
         config={"allow_from": []},
         credentials={"token": CredentialRef(("token",))},
     )
-    adapter = telegram_channel.build_telegram_channel(context)
+    adapter = telegram_channel.build_telegram_channel(context, create_client=provider.create)
     adapter.attach_runtime(
         ChannelRuntimePorts(
             snapshot_id=context.snapshot_id,
@@ -626,7 +625,7 @@ async def test_qq_start_failure_and_cancellation_close_actual_resources(
 ) -> None:
     failed_bot = _QQBot(_QQApi(), backend_error=RuntimeError("fixture startup failure"))
     config = _install_qq_fixture(monkeypatch, tmp_path, failed_bot)
-    context, _, _ = _context(config={"bot_uin": "9001"})
+    context, _, provider = _context(config={"bot_uin": "9001"})
     adapter = qq_channel.build_qq_channel(context)
     adapter.attach_runtime(
         ChannelRuntimePorts(
@@ -647,7 +646,7 @@ async def test_qq_start_failure_and_cancellation_close_actual_resources(
 
     cancelled_bot = _QQBot(_QQApi(), hold_backend=True)
     config = _install_qq_fixture(monkeypatch, tmp_path, cancelled_bot, config=config)
-    context, _, _ = _context(config={"bot_uin": "9002"})
+    context, _, provider = _context(config={"bot_uin": "9002"})
     adapter = qq_channel.build_qq_channel(context)
     adapter.attach_runtime(
         ChannelRuntimePorts(
@@ -705,7 +704,7 @@ async def test_qq_ncatbot_config_is_exclusive_and_restored_between_generations(
 ) -> None:
     first_bot = _QQBot(_QQApi())
     config = _install_qq_fixture(monkeypatch, tmp_path, first_bot)
-    context, _, _ = _context(config={"bot_uin": "7001"})
+    context, _, provider = _context(config={"bot_uin": "7001"})
     first = qq_channel.build_qq_channel(context)
     first.attach_runtime(
         ChannelRuntimePorts(
@@ -724,7 +723,7 @@ async def test_qq_ncatbot_config_is_exclusive_and_restored_between_generations(
 
     second_bot = _QQBot(_QQApi())
     sys.modules["ncatbot.core"].BotClient = lambda: second_bot  # type: ignore[attr-defined]
-    context, _, _ = _context(config={"bot_uin": "7002"})
+    context, _, provider = _context(config={"bot_uin": "7002"})
     second = separate_qq_generation.build_qq_channel(context)
     assert type(first) is not type(second)
     second.attach_runtime(
@@ -744,7 +743,7 @@ async def test_qq_ncatbot_config_is_exclusive_and_restored_between_generations(
     assert not first_runtime.exists()
     assert config.bt_uin == "original"
 
-    context, _, _ = _context(config={"bot_uin": "7002"})
+    context, _, provider = _context(config={"bot_uin": "7002"})
     third = separate_qq_generation.build_qq_channel(context)
     third.attach_runtime(
         ChannelRuntimePorts(
@@ -769,7 +768,7 @@ async def test_qq_stop_failure_and_cancelled_waiter_share_unconfirmed_cleanup(
 ) -> None:
     bot = _QQBot(_QQApi(), unload_error=RuntimeError("fixture unload failure"))
     _install_qq_fixture(monkeypatch, tmp_path, bot)
-    context, _, _ = _context(config={"bot_uin": "9001"})
+    context, _, provider = _context(config={"bot_uin": "9001"})
     adapter = qq_channel.build_qq_channel(context)
     adapter.attach_runtime(
         ChannelRuntimePorts(
@@ -793,7 +792,7 @@ async def test_qq_stop_failure_and_cancelled_waiter_share_unconfirmed_cleanup(
 
     bot = _QQBot(_QQApi())
     _install_qq_fixture(monkeypatch, tmp_path, bot)
-    context, _, _ = _context(config={"bot_uin": "9001"})
+    context, _, provider = _context(config={"bot_uin": "9001"})
     adapter = qq_channel.build_qq_channel(context)
     adapter.attach_runtime(
         ChannelRuntimePorts(

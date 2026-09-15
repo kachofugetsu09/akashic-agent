@@ -1,22 +1,15 @@
-"""Formal-only, generation-scoped host for v3 text channel adapters.
-
-The host deliberately owns only live adapter bindings.  Publication, snapshot
-leases and the current runtime remain Core/Manager responsibilities.
-"""
+"""Channel provider：贡献 Context 拥有连接，原 binding 拥有外部效果回执。"""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import inspect
-import json
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
-from contextlib import asynccontextmanager, nullcontext
-from contextvars import ContextVar, Token
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from types import ModuleType
 from typing import TYPE_CHECKING, Any, ContextManager, Literal, Protocol, cast
 
 from agent.plugin_composition.context import Context, RuntimeScope
@@ -24,7 +17,9 @@ from agent.plugin_composition.model import CompositionError, FiberState, Service
 from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.channels import (
+    CHANNELS,
     CHANNEL_INPUT,
+    ChannelDefinition,
     AttachmentKind,
     AttachmentReadLease,
     AttachmentRef,
@@ -38,17 +33,13 @@ from agent.plugin_composition.channels import (
     ChannelFactoryContext,
     ChannelPresentationPorts,
     ChannelReady,
-    ChannelRegistrySnapshot,
     ChannelRuntimePorts,
-    CommittedChannelCatalog,
-    CoreChannelDefinition,
     ControlReceipt,
     ControlResponseBodies,
     DeliveryStatus,
     InboundEnvelope,
     InboundIdentity,
     OutboundEnvelope,
-    ProviderClientFactory,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
     PresentationReceipt,
@@ -63,69 +54,17 @@ from agent.plugin_composition.channels import (
     TurnStreamEventKind,
     TurnStreamPort,
     TurnStartedPresentation,
-    channel_config_revision,
 )
-from agent.plugins.composable import ComposablePlugin
+
+from agent.plugin_composition.admission import SOURCE_ADMISSION
+from agent.plugin_composition.channel_io import (
+    InputCustody, INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
+)
+from agent.plugin_composition.runtime_lifecycle import RUNTIME_STARTING, RuntimeStarting
+from agent.plugins.snapshot import get_current_runtime_lease
 
 if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotLease
-
-BeforeStartCallback = Callable[["ChannelStartRecord"], Awaitable[None]]
-ConfigRevisionChecker = Callable[["ChannelStartRecord"], Awaitable[None]]
-FailureCallback = Callable[["ChannelCleanupTombstone"], Awaitable[None] | None]
-SnapshotLeaseAcquirer = Callable[[str], "RuntimeSnapshotLease"]
-class InputCustody(Protocol):
-    """Core 传输 owner 保留提交前的 handoff，完成后释放 lease 与接纳权。"""
-
-    async def prepare_channel_input(self, envelope: InboundEnvelope) -> None: ...
-    async def complete_channel_input(self, envelope: InboundEnvelope) -> None: ...
-    async def retain_channel_input(self, envelope: InboundEnvelope) -> None: ...
-
-    async def reserve_durable_inbound(self, raw: RawInbound) -> bool: ...
-
-    def bind_durable_inbound_recoverer(
-        self,
-        recoverer: Callable[[RawInbound], Awaitable[bool]],
-    ) -> None: ...
-
-    async def recover_durable_inbounds(self) -> None: ...
-
-    async def defer_durable_inbound(self, handoff_id: str) -> bool: ...
-
-    async def settle_rejected_inbound(
-        self,
-        *,
-        channel: str,
-        session_key: str,
-        provider_message_id: str,
-    ) -> None: ...
-
-    def has_pending_durable_inbound(
-        self,
-        *,
-        channel: str,
-        session_key: str,
-        provider_message_id: str,
-    ) -> bool: ...
-
-    def pending_durable_attachment_refs(
-        self,
-        *,
-        channel: str,
-        session_key: str,
-        provider_message_id: str,
-    ) -> tuple[AttachmentRef, ...] | None: ...
-
-
-IdentityResolver = Callable[[str, str], str | None]
-IdentityRememberer = Callable[
-    [str, str, str],
-    Coroutine[object, object, object | None],
-]
-IdentityRollbacker = Callable[[object], Coroutine[object, object, bool]]
-ControlInterrupter = Callable[[RawInbound], Awaitable[object]]
-ControlResponseDispatcher = Callable[..., Awaitable[ChannelDeliveryReceipt]]
-
 
 class _PresentationContractFailure(TypeError):
     def __init__(self, message: str, receipt: PresentationReceipt) -> None:
@@ -146,96 +85,24 @@ class _ChannelStopReceiptFailure(RuntimeError):
         self.failures = failures
 
 
-@dataclass(frozen=True, slots=True)
-class ChannelStartRecord:
-    """Durable-start identity written before an adapter can acquire resources."""
-
-    snapshot_id: str
-    catalog_identity: str
-    plugin_id: str
-    generation_id: str
-    channel_name: str
-    binding_token: str
-    module_name: str
-    artifact_pointer: str
-    factory_export: str
-    source_revision: str
-    config_revision: str
-    raw_config_revision: str
-    descriptor_digest: str
-    target: str
-    boot_owner: str
-    attempt: int = 1
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelCleanupTombstone:
-    """Retain every exact runtime owner until cleanup succeeds."""
-
-    snapshot_id: str
-    catalog_identity: str
-    plugin_id: str
-    generation_id: str
-    channel_name: str
-    module: ModuleType
-    adapter: ChannelAdapter | None
-    factory: Callable[[ChannelFactoryContext], ChannelAdapter] | None
-    factory_context: ChannelFactoryContext | None
-    provider_client_factory: ProviderClientFactory
-    binding_token: str
-    artifact_pointer: str
-    factory_export: str
-    source_revision: str
-    config_revision: str
-    raw_config_revision: str
-    descriptor_digest: str
-    target: str
-    boot_owner: str
-    adapter_stop_settled: bool
-    adapter_stop_succeeded: bool
-    factory_close_settled: bool
-    factory_close_succeeded: bool
-    resource: str
-    error_type: str
-    message: str
-    action: str
-    attempt_count: int = 1
-
-    @property
-    def error(self) -> str:
-        """Return a stable human-readable cleanup error."""
-
-        return self.message
-
-
 @dataclass
 class _ChannelBindingState:
     snapshot_id: str
-    catalog_identity: str
     plugin_id: str
     generation_id: str
     channel_name: str
     capabilities: tuple[ChannelCapability, ...]
     inbound_identity: InboundIdentity | None
-    module: ModuleType
-    artifact_pointer: str
-    factory: Callable[[ChannelFactoryContext], ChannelAdapter] | None
+    factory: Callable[[ChannelFactoryContext], ChannelAdapter]
     adapter: ChannelAdapter | None
-    provider_client_factory: ProviderClientFactory
     binding_token: str
     config: Mapping[str, object]
     factory_context: ChannelFactoryContext | None
-    factory_export: str
-    source_revision: str
-    config_revision: str
-    raw_config_revision: str
-    descriptor_digest: str
-    target: str
-    boot_owner: str
-    start_attempt: int
     plugin_context: Context | None = None
     activation_token: object | None = None
+    listeners: set[asyncio.Task[object]] = field(default_factory=set)
     start_task: asyncio.Task[object] | None = None
+    stop_task: asyncio.Task[StopReceipt] | None = None
     start_attempted: bool = False
     started: bool = False
     admission_open: bool = False
@@ -249,8 +116,6 @@ class _ChannelBindingState:
     runtime_attached: bool = False
     adapter_stop_settled: bool = False
     adapter_stop_succeeded: bool = False
-    factory_close_settled: bool = False
-    factory_close_succeeded: bool = False
     inbound_message_ids: deque[tuple[str, str]] = field(default_factory=deque)
     inbound_message_id_set: set[tuple[str, str]] = field(default_factory=set)
     durable_reservations: dict[str, "_DurableReservation"] = field(default_factory=dict)
@@ -282,10 +147,8 @@ def _channel_entrypoint(
     state: _ChannelBindingState,
     operation: str,
 ) -> ContextManager[object]:
-    """Record only external plugin adapters, not Core-owned channel bindings."""
+    """记录真实贡献插件的调用边界。"""
 
-    if state.plugin_id == "core":
-        return nullcontext()
     return plugin_entrypoint(
         plugin_id=state.plugin_id,
         generation_id=state.generation_id,
@@ -295,94 +158,12 @@ def _channel_entrypoint(
     )
 
 
-class ChannelBinding:
-    """Small facade for one exact channel binding owned by the Host."""
-
-    def __init__(self, host: ChannelGenerationHost, key: tuple[str, str]) -> None:
-        self._host = host
-        self._key = key
-
-    @property
-    def snapshot_id(self) -> str:
-        return self._host._binding(self._key).snapshot_id
-
-    @property
-    def generation_id(self) -> str:
-        return self._host._binding(self._key).generation_id
-
-    @property
-    def plugin_id(self) -> str:
-        return self._host._binding(self._key).plugin_id
-
-    @property
-    def channel_name(self) -> str:
-        return self._host._binding(self._key).channel_name
-
-    @property
-    def binding_token(self) -> str:
-        return self._host._binding(self._key).binding_token
-
-    @property
-    def admission_open(self) -> bool:
-        return self._host._binding(self._key).admission_open
-
-    @property
-    def in_flight(self) -> int:
-        return self._host._binding(self._key).in_flight
-
-    @property
-    def turn_stream(self) -> TurnStreamPort | None:
-        return self._host._binding(self._key).turn_stream_port
-
-    @property
-    def stopped(self) -> bool:
-        state = self._host._bindings.get(self._key)
-        return state is None or state.stopped
-
-    def open_admission(self) -> None:
-        """Open this staged binding after publication has finalized."""
-
-        self._host._open_admission(self._key)
-
-    def close_admission(self) -> None:
-        """Synchronously reject new deliveries while allowing in-flight work."""
-
-        self._host._close_admission(self._key)
-
-    async def drain(self) -> None:
-        """Wait until every delivery accepted before close is terminal."""
-
-        await self._host._drain(self._key)
-
-    async def deliver(self, request: ProviderDeliveryRequest) -> ProviderDeliveryReceipt:
-        """Deliver one text request through this exact binding."""
-
-        return await self._host._deliver(self._key, request)
-
-    async def publish_turn_event(
-        self,
-        event: TurnStreamEvent,
-    ) -> tuple[PresentationReceipt, ...]:
-        """Publish one typed turn event through this binding's subscriptions."""
-
-        return await self._host.publish_turn_event(
-            self.snapshot_id,
-            self.channel_name,
-            event,
-        )
-
-    async def stop(self) -> StopReceipt:
-        """Close admission, drain and stop this binding."""
-
-        return await self._host._stop_binding_critical(self._key)
-
-
 class ChannelBindingLease:
     """Own one forked snapshot lease and one exact Host in-flight claim."""
 
     def __init__(
         self,
-        host: ChannelGenerationHost,
+        host: PluginChannels,
         key: tuple[str, str],
         snapshot_lease: RuntimeSnapshotLease,
     ) -> None:
@@ -490,57 +271,12 @@ class ChannelBindingLease:
         self._closed = True
 
 
-@dataclass(frozen=True, slots=True)
-class _ChannelTurnBinding:
-    lease: ChannelBindingLease
-    owner_task: asyncio.Task[object] | None
-
-
-_current_channel_binding: ContextVar[_ChannelTurnBinding | None] = ContextVar(
-    "current_channel_binding",
-    default=None,
-)
-
-
-def bind_channel_turn_binding(
-    binding: object,
-) -> Token[_ChannelTurnBinding | None]:
-    """Bind the exact inbound Channel owner for one ConversationRuntime task."""
-
-    active = getattr(binding, "active", None)
-    if active is not True:
-        raise RuntimeError("turn Channel binding 必须是当前 Host 的 active lease")
-    return _current_channel_binding.set(
-        _ChannelTurnBinding(
-            cast(ChannelBindingLease, binding),
-            asyncio.current_task(),
-        )
-    )
-
-
-def reset_channel_turn_binding(
-    token: Token[_ChannelTurnBinding | None],
-) -> None:
-    _current_channel_binding.reset(token)
-
-
-def get_current_channel_turn_binding() -> ChannelBindingLease | None:
-    binding = _current_channel_binding.get()
-    if (
-        binding is None
-        or binding.owner_task is not asyncio.current_task()
-        or not binding.lease.active
-    ):
-        return None
-    return binding.lease
-
-
 class _ChannelIngress:
     """Admit provider text into one exact formal binding."""
 
     def __init__(
         self,
-        host: ChannelGenerationHost,
+        host: PluginChannels,
         key: tuple[str, str],
     ) -> None:
         self._host = host
@@ -555,7 +291,7 @@ class _ChannelDurableInbound:
 
     def __init__(
         self,
-        host: ChannelGenerationHost,
+        host: PluginChannels,
         key: tuple[str, str],
     ) -> None:
         self._host = host
@@ -733,7 +469,7 @@ class _ChannelIdentity:
 
     def __init__(
         self,
-        host: ChannelGenerationHost,
+        host: PluginChannels,
         key: tuple[str, str],
     ) -> None:
         self._host = host
@@ -746,7 +482,7 @@ class _ChannelIdentity:
 class _ChannelControl:
     """Expose one exact binding's deduplicated interrupt facade."""
 
-    def __init__(self, host: ChannelGenerationHost, key: tuple[str, str]) -> None:
+    def __init__(self, host: PluginChannels, key: tuple[str, str]) -> None:
         self._host = host
         self._key = key
 
@@ -808,7 +544,7 @@ class _ChannelControl:
 class _ChannelTurnStream:
     """Register callback subscriptions on one exact binding."""
 
-    def __init__(self, host: ChannelGenerationHost, key: tuple[str, str]) -> None:
+    def __init__(self, host: PluginChannels, key: tuple[str, str]) -> None:
         self._host = host
         self._key = key
 
@@ -830,7 +566,7 @@ class _ChannelStreamSubscription:
 
     def __init__(
         self,
-        host: ChannelGenerationHost,
+        host: PluginChannels,
         key: tuple[str, str],
         callback: TurnStreamCallback,
     ) -> None:
@@ -971,7 +707,7 @@ class _ChannelAttachmentImport:
 
     def __init__(
         self,
-        host: ChannelGenerationHost,
+        host: PluginChannels,
         key: tuple[str, str],
         port: ChannelAttachmentImportPort,
     ) -> None:
@@ -1012,7 +748,7 @@ class _ChannelAttachmentRead:
 
     def __init__(
         self,
-        host: ChannelGenerationHost,
+        host: PluginChannels,
         key: tuple[str, str],
         port: ChannelAttachmentReadPort,
     ) -> None:
@@ -1058,7 +794,7 @@ class _ChannelAttachmentReadLease:
 
     def __init__(
         self,
-        host: ChannelGenerationHost,
+        host: PluginChannels,
         key: tuple[str, str],
         lease: AttachmentReadLease,
         ref: AttachmentRef,
@@ -1110,418 +846,113 @@ class _ChannelAttachmentReadLease:
             self._closed = True
 
 
-class ChannelGeneration:
-    """A closed set of channel bindings staged for one committed snapshot."""
+class PluginChannels:
+    """一个 Root 的普通 Channel provider；不跨 Root 复用连接。"""
 
-    def __init__(
-        self,
-        host: ChannelGenerationHost,
-        snapshot_id: str,
-        keys: tuple[tuple[str, str], ...],
-    ) -> None:
-        self._host = host
-        self.snapshot_id = snapshot_id
-        self._keys = keys
-
-    def channel(self, channel_name: str) -> ChannelBinding:
-        key = (self.snapshot_id, channel_name)
-        if key not in self._host._bindings:
-            raise KeyError(channel_name)
-        return ChannelBinding(self._host, key)
-
-    def open_admission(self) -> None:
-        """Open all channels only after the caller has finalized publication."""
-
-        for key in self._keys:
-            self._host._open_admission(key)
-
-    def close_admission(self) -> None:
-        """Close all channels synchronously before draining them."""
-
-        for key in self._keys:
-            self._host._close_admission(key)
-
-    async def drain(self) -> None:
-        """Wait for all accepted deliveries in this generation."""
-
-        await asyncio.gather(*(self._host._drain(key) for key in self._keys))
-
-    async def stop(self) -> tuple[StopReceipt, ...]:
-        """Stop all channels in reverse declaration order."""
-
-        return await self._host.stop(self.snapshot_id)
-
-
-class ChannelGenerationHost:
-    """Materialize formal adapters without retaining a plugin Fiber or Context."""
-
-    def __init__(
-        self,
-        *,
-        on_before_start: BeforeStartCallback,
-        config_revision_checker: ConfigRevisionChecker,
-        on_failure: FailureCallback,
-        boot_id: str | None = None,
-        snapshot_lease_acquirer: SnapshotLeaseAcquirer | None = None,
-        recovery_snapshot_lease_acquirer: SnapshotLeaseAcquirer | None = None,
-        identity_resolver: IdentityResolver | None = None,
-        identity_rememberer: IdentityRememberer | None = None,
-        identity_rollbacker: IdentityRollbacker | None = None,
-        attachment_import: ChannelAttachmentImportPort | None = None,
-        attachment_read: ChannelAttachmentReadPort | None = None,
-        control_interrupter: ControlInterrupter | None = None,
-        control_response_dispatcher: ControlResponseDispatcher | None = None,
-    ) -> None:
-        if not callable(on_before_start):
-            raise TypeError("on_before_start 必须是 async callback")
-        if not callable(config_revision_checker):
-            raise TypeError("config_revision_checker 必须是 async callback")
-        if not callable(on_failure):
-            raise TypeError("on_failure 必须可调用")
-        if boot_id is not None:
-            _text(boot_id, "boot_id")
-        if snapshot_lease_acquirer is not None and not callable(
-            snapshot_lease_acquirer
-        ):
-            raise TypeError("snapshot_lease_acquirer 必须可调用")
-        if recovery_snapshot_lease_acquirer is not None and not callable(
-            recovery_snapshot_lease_acquirer
-        ):
-            raise TypeError("recovery_snapshot_lease_acquirer 必须可调用")
-        if (identity_resolver is None) != (identity_rememberer is None):
-            raise TypeError("identity resolver/rememberer 必须同时绑定")
-        if identity_resolver is not None and not callable(identity_resolver):
-            raise TypeError("identity_resolver 必须可调用")
-        if identity_rememberer is not None and not callable(identity_rememberer):
-            raise TypeError("identity_rememberer 必须可调用")
-        if identity_rollbacker is not None and identity_rememberer is None:
-            raise TypeError("identity rollbacker 需要 identity rememberer")
-        if identity_rollbacker is not None and not callable(identity_rollbacker):
-            raise TypeError("identity_rollbacker 必须可调用")
-        if (attachment_import is None) != (attachment_read is None):
-            raise TypeError("attachment import/read ports 必须同时绑定")
-        if attachment_import is not None and not callable(
-            getattr(attachment_import, "import_bytes", None)
-        ):
-            raise TypeError("attachment_import 必须提供 import_bytes(data, ...)")
-        if attachment_read is not None and not callable(
-            getattr(attachment_read, "acquire", None)
-        ):
-            raise TypeError("attachment_read 必须提供 acquire(ref)")
-        if control_interrupter is not None and not callable(control_interrupter):
-            raise TypeError("control_interrupter 必须可调用")
-        if control_response_dispatcher is not None and not callable(
-            control_response_dispatcher
-        ):
-            raise TypeError("control_response_dispatcher 必须可调用")
-        self._on_before_start = on_before_start
-        self._config_revision_checker = config_revision_checker
-        self._on_failure = on_failure
-        # One host may publish many generations.  Keep this identity on the
-        # host instance so a client can distinguish a process restart from a
-        # normal generation replacement without sharing state across hosts.
-        self._boot_id = boot_id or uuid.uuid4().hex
-        self._snapshot_lease_acquirer = snapshot_lease_acquirer
-        # Recovery is the only internal path allowed to retain a closed,
-        # drained current snapshot.  Standalone hosts without a Manager use
-        # the ordinary acquirer for both paths.
-        self._recovery_snapshot_lease_acquirer = (
-            recovery_snapshot_lease_acquirer or snapshot_lease_acquirer
-        )
-        self._input_custody: InputCustody | None = None
-        self._identity_resolver = identity_resolver
-        self._identity_rememberer = identity_rememberer
-        self._identity_rollbacker = identity_rollbacker
-        self._attachment_import = attachment_import
-        self._attachment_read = attachment_read
-        self._control_interrupter = control_interrupter
-        self._control_response_dispatcher = control_response_dispatcher
+    def __init__(self, ctx: Context) -> None:
+        self._context = ctx
+        self._root_token = ctx.root_instance_token
+        self._admission = ctx.require(SOURCE_ADMISSION)
+        self._input_custody = ctx.require(INPUT_CUSTODY)
+        identity = ctx.require(CHANNEL_IDENTITY)
+        self._identity_resolver = identity.resolve
+        self._identity_rememberer = identity.remember
+        self._identity_rollbacker = identity.rollback
+        self._attachment_import = ctx.require(CHANNEL_ATTACHMENT_IMPORT)
+        self._attachment_read = ctx.require(CHANNEL_ATTACHMENT_READ)
+        self._snapshot_lease_acquirer = self._admission.lease
+        self._recovery_snapshot_lease_acquirer = self._admission.lease
+        self._boot_id = self._admission.boot_id
         self._bindings: dict[tuple[str, str], _ChannelBindingState] = {}
+        self._declarations: dict[str, ChannelDefinition] = {}
         self._durable_reservation_owners: dict[str, tuple[str, str]] = {}
         self._binding_leases: set[ChannelBindingLease] = set()
-        self._tombstones: dict[tuple[str, str], ChannelCleanupTombstone] = {}
-        self._start_counts: dict[tuple[str, str], int] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
         self._startup_snapshot_leases: dict[str, RuntimeSnapshotLease] = {}
+        self._sealed = False
+        self._opened = asyncio.Event()
 
-    @property
-    def boot_id(self) -> str:
-        """Return the stable identity shared by this host's generations."""
+    def seal(self) -> None:
+        """封存本 Root 贡献；不向 Core 复制目录。"""
+        self._sealed = True
 
-        return self._boot_id
+    async def register(self, ctx: Context, definition: ChannelDefinition) -> None:
+        """连接、factory 和停止回执由贡献 Context 持有。"""
+        if ctx.root_instance_token is not self._root_token or ctx.require(CHANNELS) is not self:
+            raise CompositionError("CHANNEL_SERVICE_ROOT_MISMATCH", "Channel provider 不属于当前 Root")
+        if self._sealed:
+            raise CompositionError("PLUGIN_CHANNELS_FROZEN", "Channel 贡献已封存")
+        if not isinstance(definition, ChannelDefinition):
+            raise TypeError("Channel 贡献必须是 ChannelDefinition")
+        if definition.name in self._declarations:
+            raise CompositionError("DUPLICATE_PLUGIN_CHANNEL", definition.name)
+        if ChannelCapability.INBOUND in definition.capabilities:
+            ctx.require(CHANNEL_INPUT)
+        def declare() -> Callable[[], None]:
+            self._declarations[definition.name] = definition
 
-    def bind_input_custody(self, custody: InputCustody) -> None:
-        """绑定传输接纳 owner，并让 Host 独占 durable recovery 路由。"""
-        if self._input_custody is not None:
-            raise RuntimeError("Channel input custody 已绑定")
-        for method in (
-            "prepare_channel_input",
-            "complete_channel_input",
-            "retain_channel_input",
-            "reserve_durable_inbound",
-            "defer_durable_inbound",
-            "settle_rejected_inbound",
-            "has_pending_durable_inbound",
-            "pending_durable_attachment_refs",
-            "bind_durable_inbound_recoverer",
-            "recover_durable_inbounds",
-        ):
-            if not callable(getattr(custody, method, None)):
-                raise TypeError(f"Channel input custody 缺少 {method}(...)")
-        custody.bind_durable_inbound_recoverer(self._recover_current_durable_inbound)
-        self._input_custody = custody
+            def remove() -> None:
+                del self._declarations[definition.name]
 
-    async def recover_durable_inbounds(self) -> None:
-        """Recover rows after the current exact channel generation is open."""
+            return remove
 
-        custody = self._input_custody
-        if custody is None:
-            return
-        await custody.recover_durable_inbounds()
+        await ctx.effect(declare, label=f"channel-definition:{definition.name}")
+        key: tuple[str, str] | None = None
 
-    def bind_control_interrupter(self, interrupter: ControlInterrupter) -> None:
-        """Bind Core's typed interrupt effect owner exactly once."""
-
-        if not callable(interrupter):
-            raise TypeError("control interrupter 必须可调用")
-        if self._control_interrupter is not None:
-            raise RuntimeError("control interrupter 已绑定")
-        self._control_interrupter = interrupter
-
-    def bind_control_response_dispatcher(
-        self,
-        dispatcher: ControlResponseDispatcher,
-    ) -> None:
-        """Bind same-binding awaited control response dispatch exactly once."""
-
-        if not callable(dispatcher):
-            raise TypeError("control response dispatcher 必须可调用")
-        if self._control_response_dispatcher is not None:
-            raise RuntimeError("control response dispatcher 已绑定")
-        self._control_response_dispatcher = dispatcher
-
-    async def start_formal(
-        self,
-        snapshot: object,
-        provider_client_factories: Mapping[str, ProviderClientFactory],
-        *,
-        boot_owner: str = "plugin-manager",
-        startup_snapshot_lease: RuntimeSnapshotLease | None = None,
-    ) -> ChannelGeneration:
-        """Start one exact committed snapshot using only the formal target."""
-
-        committed = _require_committed_snapshot(snapshot)
-        _text(boot_owner, "boot_owner")
-        catalog = getattr(committed, "channel_catalog", None)
-        registry = (
-            catalog.registry
-            if isinstance(catalog, CommittedChannelCatalog)
-            else committed.channel_registry
-        )
-        if registry is None:
-            raise RuntimeError("committed snapshot 缺少 channel registry")
-        snapshot_id = _text(committed.snapshot_id, "snapshot_id")
-        if snapshot_id in self._locks or any(
-            key[0] == snapshot_id for key in self._tombstones
-        ):
-            raise RuntimeError(f"channel generation 已存在: {snapshot_id}")
-        if not isinstance(provider_client_factories, Mapping):
-            raise TypeError("provider_client_factories 必须是 mapping")
-        descriptors = tuple(registry.descriptors)
-        expected_names = {descriptor.name for descriptor in descriptors}
-        if set(provider_client_factories) != expected_names:
-            raise RuntimeError("provider client factory 必须与 committed channel catalog 精确匹配")
-        if not descriptors:
-            return ChannelGeneration(self, snapshot_id, ())
-        if len({id(value) for value in provider_client_factories.values()}) != len(
-            provider_client_factories
-        ):
-            raise RuntimeError("一个 provider client factory 不能被多个 channel 共享")
-        if startup_snapshot_lease is not None:
-            if not startup_snapshot_lease.active:
-                raise RuntimeError("channel startup snapshot lease 已关闭")
-            if startup_snapshot_lease.snapshot.snapshot_id != snapshot_id:
-                raise RuntimeError("channel startup snapshot lease 与 snapshot 不一致")
-        lock = asyncio.Lock()
-        self._locks[snapshot_id] = lock
-        if startup_snapshot_lease is not None:
-            self._startup_snapshot_leases[snapshot_id] = startup_snapshot_lease
-        started_keys: list[tuple[str, str]] = []
-        try:
-            for descriptor in descriptors:
-                key = (snapshot_id, descriptor.name)
-                state = await self._materialize_binding(
-                    committed,
-                    registry,
-                    descriptor,
-                    provider_client_factories[descriptor.name],
-                    boot_owner=boot_owner,
-                )
-                self._bindings[key] = state
-                started_keys.append(key)
-                await self._start_binding(key)
-            return ChannelGeneration(self, snapshot_id, tuple(started_keys))
-        except BaseException as error:
-            cleanup_task = asyncio.create_task(
-                self._cleanup_keys(
-                    snapshot_id,
-                    tuple(started_keys)
-                    + tuple(
-                        key
-                        for key in self._bindings
-                        if key[0] == snapshot_id and key not in started_keys
-                    ),
-                    cause=error,
-                ),
-                name=f"channel_generation_cleanup:{snapshot_id}",
-            )
-            try:
-                await _await_task_after_cancellation(cleanup_task)
-            except asyncio.CancelledError as cleanup_cancelled:
-                if _task_succeeded(cleanup_task):
-                    self._remove_generation(snapshot_id)
-                if isinstance(error, asyncio.CancelledError):
-                    raise error
-                raise cleanup_cancelled from error
-            except BaseException as cleanup_error:
-                raise error from cleanup_error
-            else:
-                self._remove_generation(snapshot_id)
-            raise error
-        finally:
-            self._startup_snapshot_leases.pop(snapshot_id, None)
-            if snapshot_id not in self._bindings and not any(
-                key[0] == snapshot_id for key in self._tombstones
-            ):
-                self._locks.pop(snapshot_id, None)
-
-    async def stop(self, snapshot_id: str) -> tuple[StopReceipt, ...]:
-        """Stop a staged generation after closing admission and draining it."""
-
-        keys = self._generation_keys(snapshot_id)
-        if not keys:
-            if any(key[0] == snapshot_id for key in self._tombstones):
-                raise RuntimeError(f"channel generation cleanup 未完成: {snapshot_id}")
-            return ()
-        lock = self._locks.setdefault(snapshot_id, asyncio.Lock())
-        async with lock:
-            for key in keys:
+        def close() -> None:
+            if key is not None:
                 self._close_admission(key)
-            cleanup_task = asyncio.create_task(
-                self._stop_keys(keys),
-                name=f"channel_generation_stop:{snapshot_id}",
+
+        def open() -> None:
+            if key is None:
+                raise RuntimeError("Channel 必须 closed 启动 ready 后才能开放")
+            self._open_admission(key)
+            self._opened.set()
+
+        await self._admission.watch(ctx, close=close, open=open)
+
+        async def stop() -> None:
+            nonlocal key
+            if key is not None:
+                await self._stop_binding_critical(key)
+                del self._bindings[key]
+                key = None
+
+        await ctx.effect(lambda: stop, label=f"channel:{definition.name}")
+
+        async def start(_event: RuntimeStarting) -> None:
+            nonlocal key
+            self._admission.require_starting(ctx)
+            if key is not None:
+                raise RuntimeError("同一 Channel Context 不允许重新启动旧连接")
+            lease = get_current_runtime_lease()
+            assert lease is not None
+            key = (lease.snapshot.snapshot_id, definition.name)
+            self._bindings[key] = _ChannelBindingState(
+                snapshot_id=key[0], plugin_id=ctx.runtime.plugin_id,
+                generation_id=ctx.runtime.generation_id, channel_name=definition.name,
+                capabilities=tuple(definition.capabilities), inbound_identity=definition.inbound_identity,
+                factory=definition.factory, adapter=None, binding_token=uuid.uuid4().hex,
+                config=definition.config, factory_context=None, plugin_context=ctx,
+                activation_token=ctx.fiber.activation_token,
             )
+            self._startup_snapshot_leases[key[0]] = lease
             try:
-                receipts = await _await_task_after_cancellation(cleanup_task)
-            except asyncio.CancelledError:
-                if _task_succeeded(cleanup_task):
-                    self._remove_generation(snapshot_id)
-                raise
-            except BaseException:
-                raise
-            if not any(key[0] == snapshot_id for key in self._tombstones):
-                self._remove_generation(snapshot_id)
-            return cast(tuple[StopReceipt, ...], receipts)
+                await self._start_binding(key)
+            finally:
+                self._startup_snapshot_leases.pop(key[0], None)
 
-    def open_admission(self, snapshot_id: str) -> None:
-        """Open every channel in one staged snapshot after publication."""
+        await ctx.on(RUNTIME_STARTING, start)
 
-        generation = self.get(snapshot_id)
-        if generation is None:
-            raise KeyError(snapshot_id)
-        generation.open_admission()
-
-    def close_admission(self, snapshot_id: str) -> None:
-        """Close every channel in one snapshot before a critical drain."""
-
-        generation = self.get(snapshot_id)
-        if generation is None:
-            raise KeyError(snapshot_id)
-        generation.close_admission()
-
-    async def drain(self, snapshot_id: str) -> None:
-        """Drain all in-flight provider deliveries for one snapshot."""
-
-        generation = self.get(snapshot_id)
-        if generation is None:
+    async def start_recovery(self) -> None:
+        """提交开放后才恢复 pending 输入，任务归当前 provider Scope。"""
+        if not any(ChannelCapability.DURABLE_INBOUND in item.capabilities for item in self._declarations.values()):
             return
-        await generation.drain()
 
-    async def retry_generation_cleanup(self, binding_token: str) -> None:
-        """Retry one retained owner by exact binding token only."""
+        async def recover() -> None:
+            await self._opened.wait()
+            await self._input_custody.recover_durable_inbounds()
 
-        await self._retry_binding_cleanup(binding_token)
-
-    async def _retry_binding_cleanup(self, binding_token: str) -> None:
-        """Retry one tombstone only when its exact binding token is supplied."""
-
-        _text(binding_token, "binding_token")
-        matches = tuple(
-            (key, tombstone)
-            for key, tombstone in self._tombstones.items()
-            if tombstone.binding_token == binding_token
-        )
-        if len(matches) != 1:
-            raise RuntimeError("channel cleanup binding token 未知或不唯一")
-        (key, tombstone), = matches
-        snapshot_id = key[0]
-        lock = self._locks.setdefault(snapshot_id, asyncio.Lock())
-        async with lock:
-            cleanup_task = asyncio.create_task(
-                self._retry_keys((key,)),
-                name=f"channel_generation_retry:{snapshot_id}",
-            )
-            try:
-                await _await_task_after_cancellation(cleanup_task)
-            except asyncio.CancelledError:
-                if _task_succeeded(cleanup_task):
-                    self._remove_generation(snapshot_id)
-                raise
-            if not any(key[0] == snapshot_id for key in self._tombstones):
-                self._remove_generation(snapshot_id)
-
-    def failure(
-        self,
-        snapshot_id: str,
-        channel_name: str | None = None,
-        *,
-        binding_token: str | None = None,
-    ) -> ChannelCleanupTombstone | tuple[ChannelCleanupTombstone, ...] | None:
-        """Return the exact cleanup tombstone(s), if any."""
-
-        if channel_name is not None:
-            tombstone = self._tombstones.get((snapshot_id, channel_name))
-            if binding_token is not None and (
-                tombstone is None or tombstone.binding_token != binding_token
-            ):
-                return None
-            return tombstone
-        failures = tuple(
-            tombstone
-            for (owner, _), tombstone in self._tombstones.items()
-            if owner == snapshot_id
-            and (binding_token is None or tombstone.binding_token == binding_token)
-        )
-        return failures or None
-
-    def start_count(self, snapshot_id: str, channel_name: str | None = None) -> int:
-        """Return adapter.start invocation count; journal failure leaves it at zero."""
-
-        if channel_name is not None:
-            return self._start_counts.get((snapshot_id, channel_name), 0)
-        return sum(
-            count
-            for (owner, _), count in self._start_counts.items()
-            if owner == snapshot_id
-        )
-
-    def get(self, snapshot_id: str) -> ChannelGeneration | None:
-        """Return a facade while at least one binding remains owned."""
-
-        keys = self._generation_keys(snapshot_id)
-        if not keys:
-            return None
-        return ChannelGeneration(self, snapshot_id, keys)
+        await self._context.spawn(recover(), name="channel-pending-inputs")
 
     def acquire_binding(
         self,
@@ -1538,25 +969,13 @@ class ChannelGenerationHost:
         snapshot_id = _text(snapshot.snapshot_id, "snapshot_id")
         key = (snapshot_id, _text(channel_name, "channel_name"))
         state = self._binding(key)
-        catalog = getattr(snapshot, "channel_catalog", None)
-        if state.plugin_id == "core":
-            if not isinstance(catalog, CommittedChannelCatalog):
-                raise RuntimeError("Core channel binding 缺少 committed catalog")
-            definition = catalog.definition(state.channel_name)
-            if definition is None or definition.generation_id != state.generation_id:
-                raise RuntimeError("Core channel binding 与 catalog generation 不一致")
-            registry = catalog.registry
-        else:
-            generation = snapshot.generations.get(state.plugin_id)
-            if generation is None or generation.generation_id != state.generation_id:
-                raise RuntimeError("Channel binding 与 RuntimeSnapshot generation 不一致")
-            registry = snapshot.channel_registry
-        if registry is None or not any(
-            descriptor.name == state.channel_name
-            and descriptor.owner == state.plugin_id
-            for descriptor in registry.descriptors
-        ):
-            raise RuntimeError("Channel binding 不属于 exact RuntimeSnapshot catalog")
+        root = snapshot.composition_root
+        context = state.plugin_context
+        if (root is None or root.instance_token is not self._root_token
+                or root.context.require(CHANNELS) is not self
+                or context is None or root.context_owner(context) != state.plugin_id
+                or context.fiber.activation_token is not state.activation_token):
+            raise RuntimeError("Channel binding 不属于 exact Root/provider/贡献 Context")
         if state.stopped or (
             not _allow_claimed_after_close
             and (not state.admission_open or state.stopping)
@@ -1644,7 +1063,21 @@ class ChannelGenerationHost:
         if state is None or state.plugin_context is None or state.start_task is not asyncio.current_task():
             coroutine.close()
             raise RuntimeError("channel spawn_owned 只允许 adapter.start 当前任务调用")
-        return await state.plugin_context.spawn(coroutine, name=name)
+        # binding 的关闭 Effect 已在 factory 前登记，先让 adapter 正常停止监听。
+        # 不能再登记更晚的 task Effect，否则 Scope 会先取消监听再调用 adapter.stop。
+        async def run() -> T:
+            with _channel_entrypoint(state, "channel.listener"):
+                return await coroutine
+
+        task = asyncio.create_task(run(), name=name)
+        state.listeners.add(task)
+
+        def finished(result: asyncio.Task[T]) -> None:
+            if not result.cancelled() and result.exception() is not None:
+                state.plugin_context.report_incident("CHANNEL_LISTENER_FAILED", str(result.exception()))
+
+        task.add_done_callback(finished)
+        return task
 
     @asynccontextmanager
     async def _open_request_scope(self, key: tuple[str, str]) -> AsyncIterator[RequestContext]:
@@ -1693,13 +1126,13 @@ class ChannelGenerationHost:
                     raise CompositionError("REQUEST_SCOPE_MISSING", "请求声明 activation 已失效")
                 if key not in allowed:
                     raise CompositionError("SERVICE_UNDECLARED", f"请求未声明能力: {key.name}")
-                return root.context.require(key)
+                return context.require(key)
 
             request = RequestContext(
                 plugin_id=runtime.plugin_id,
                 plugin_dir=runtime.plugin_dir,
                 data_root=runtime.data_dir,
-                validation=False,
+                validation=self._admission.validation,
                 _workspace_roots=tuple((name, runtime.workspace_root(name)) for name in runtime.workspace_roots),
                 _workspace_files=tuple((name, runtime.workspace_file(name)) for name in runtime.workspace_files),
                 _resolve=resolve,
@@ -1770,13 +1203,14 @@ class ChannelGenerationHost:
         response_bodies: ControlResponseBodies,
         binding: ChannelBindingLease,
     ) -> ControlReceipt:
-        interrupter = self._control_interrupter
+        interrupter = self._declarations[self._binding(key).channel_name].interrupt
         if interrupter is None:
             raise RuntimeError("Channel control interrupt owner 未绑定")
-        result = interrupter(raw)
-        if not inspect.isawaitable(result):
-            raise TypeError("control interrupter 必须返回 awaitable")
-        result = await result
+        async with RuntimeScope(binding.snapshot_lease.fork()):
+            result = interrupter(raw)
+            if not inspect.isawaitable(result):
+                raise TypeError("control interrupter 必须返回 awaitable")
+            result = await result
         reason = _control_reason(result)
         accepted = reason == "interrupted"
         response = await self._dispatch_control_response(
@@ -1794,7 +1228,6 @@ class ChannelGenerationHost:
         body: str,
         binding: ChannelBindingLease,
     ) -> ChannelDeliveryReceipt | None:
-        dispatcher = self._control_response_dispatcher
         state = self._binding(key)
         delivery_id = _control_delivery_id(state.binding_token, raw.message_id)
         envelope = OutboundEnvelope(
@@ -1810,10 +1243,7 @@ class ChannelGenerationHost:
             metadata={"control_message_id": raw.message_id},
         )
         try:
-            if dispatcher is None:
-                result = binding.deliver(envelope)
-            else:
-                result = _invoke_control_dispatcher(dispatcher, envelope, binding)
+            result = binding.deliver(envelope)
             if not inspect.isawaitable(result):
                 raise TypeError("control response dispatcher 必须返回 awaitable")
             result = await result
@@ -1907,7 +1337,7 @@ class ChannelGenerationHost:
     def _release_presentation_operation(self, key: tuple[str, str]) -> None:
         self._release_in_flight(key)
 
-    async def _recover_current_durable_inbound(self, raw: RawInbound) -> bool:
+    async def recover_inbound(self, raw: RawInbound) -> bool:
         """Route a persisted handoff to the one current exact channel binding."""
 
         if not isinstance(raw, RawInbound):
@@ -2186,141 +1616,9 @@ class ChannelGenerationHost:
             raise RuntimeError("Channel identity runtime port 未绑定")
         return resolver(state.channel_name, provider_identity)
 
-    async def _materialize_binding(
-        self,
-        snapshot: Any,
-        registry: ChannelRegistrySnapshot,
-        descriptor: Any,
-        provider_client_factory: ProviderClientFactory,
-        *,
-        boot_owner: str,
-    ) -> _ChannelBindingState:
-        catalog = getattr(snapshot, "channel_catalog", None)
-        core_definition: CoreChannelDefinition | None = None
-        plugin_context: Context | None = None
-        activation_token: object | None = None
-        if descriptor.owner == "core":
-            if not isinstance(catalog, CommittedChannelCatalog):
-                raise RuntimeError("Core channel 缺少 committed catalog")
-            core_definition = catalog.definition(descriptor.name)
-            if core_definition is None:
-                raise RuntimeError(f"Core channel definition 缺失: {descriptor.name}")
-            module = ModuleType(f"akashic_core_channel_{descriptor.name}")
-            provenance = core_definition.provenance
-            config = core_definition.config
-            generation_id = core_definition.generation_id
-            factory: Callable[[ChannelFactoryContext], ChannelAdapter] | None = (
-                core_definition.factory
-            )
-            artifact_pointer = "core"
-            source_revision = core_definition.source_revision
-            raw_config_revision = core_definition.config_revision
-        else:
-            generation = snapshot.generations.get(descriptor.owner)
-            if generation is None:
-                raise RuntimeError(f"channel owner generation 缺失: {descriptor.owner}")
-            if not isinstance(generation.instance, ComposablePlugin):
-                raise RuntimeError(f"channel owner 不是 ComposablePlugin: {descriptor.owner}")
-            plugin_context, activation_token = registry._contexts[descriptor.name]
-            if (
-                snapshot.composition_root.context_owner(plugin_context) != descriptor.owner
-                or plugin_context.runtime.generation_id != generation.generation_id
-                or plugin_context.fiber.state is not FiberState.ACTIVE
-                or plugin_context.fiber.activation_token is not activation_token
-            ):
-                raise RuntimeError("channel 声明 Context 不属于当前 activation")
-            plugin = generation.instance
-            module = plugin.module
-            if not isinstance(module, ModuleType):
-                raise RuntimeError(f"channel owner module 无效: {descriptor.owner}")
-            provenance = _find_provenance(
-                registry,
-                descriptor.owner,
-                generation.generation_id,
-                descriptor.name,
-            )
-            if (
-                provenance.source_revision != generation.source_revision
-                or provenance.config_revision
-                != channel_config_revision(generation.config_projection)
-                or provenance.factory_export != descriptor.factory_export
-            ):
-                raise RuntimeError(f"channel factory provenance drift: {descriptor.name}")
-            config = generation.config_projection
-            if not isinstance(config, Mapping):
-                raise RuntimeError(
-                    f"channel generation config projection 无效: {descriptor.owner}"
-                )
-            generation_id = generation.generation_id
-            factory = None
-            artifact_pointer = str(generation.plugin_dir)
-            source_revision = generation.source_revision
-            raw_config_revision = generation.config_revision
-        if provenance.factory_export != descriptor.factory_export:
-            raise RuntimeError(f"channel factory provenance drift: {descriptor.name}")
-        binding_token = uuid.uuid4().hex
-        descriptor_digest = _descriptor_digest(descriptor)
-        _validate_provider_factory(provider_client_factory, descriptor.name)
-        return _ChannelBindingState(
-            snapshot_id=snapshot.snapshot_id,
-            catalog_identity=registry.identity,
-            plugin_id=descriptor.owner,
-            generation_id=generation_id,
-            channel_name=descriptor.name,
-            capabilities=descriptor.capabilities,
-            inbound_identity=descriptor.inbound_identity,
-            module=module,
-            artifact_pointer=artifact_pointer,
-            factory=factory,
-            adapter=None,
-            provider_client_factory=provider_client_factory,
-            binding_token=binding_token,
-            config=config,
-            factory_context=None,
-            factory_export=descriptor.factory_export,
-            source_revision=source_revision,
-            config_revision=provenance.config_revision,
-            raw_config_revision=raw_config_revision,
-            descriptor_digest=descriptor_digest,
-            target="formal",
-            boot_owner=boot_owner,
-            start_attempt=1,
-            plugin_context=plugin_context,
-            activation_token=activation_token,
-        )
-
     async def _start_binding(self, key: tuple[str, str]) -> None:
         state = self._binding(key)
-        record = ChannelStartRecord(
-            snapshot_id=state.snapshot_id,
-            catalog_identity=state.catalog_identity,
-            plugin_id=state.plugin_id,
-            generation_id=state.generation_id,
-            channel_name=state.channel_name,
-            binding_token=state.binding_token,
-            module_name=state.module.__name__,
-            artifact_pointer=state.artifact_pointer,
-            factory_export=state.factory_export,
-            source_revision=state.source_revision,
-            config_revision=state.config_revision,
-            raw_config_revision=state.raw_config_revision,
-            descriptor_digest=state.descriptor_digest,
-            target=state.target,
-            boot_owner=state.boot_owner,
-            attempt=state.start_attempt,
-        )
-        await _require_awaitable(self._on_before_start(record), "on_before_start")
-        await _require_awaitable(
-            self._config_revision_checker(record),
-            "config_revision_checker",
-        )
         factory = state.factory
-        if factory is None:
-            factory = _resolve_sync_factory(
-                state.module,
-                state.factory_export,
-            )
-            state.factory = factory
         state.control_port = (
             _ChannelControl(self, key)
             if ChannelCapability.CONTROL in state.capabilities
@@ -2337,7 +1635,6 @@ class ChannelGenerationHost:
             boot_id=self._boot_id,
             binding_token=state.binding_token,
             config=state.config,
-            provider_client_factory=state.provider_client_factory,
             ingress=(
                 _ChannelIngress(self, key)
                 if ChannelCapability.INBOUND in state.capabilities
@@ -2378,7 +1675,6 @@ class ChannelGenerationHost:
             state.internal_cancellation = "factory-start"
             raise
         state.adapter = cast(ChannelAdapter, adapter)
-        self._start_counts[key] = self._start_counts.get(key, 0) + 1
         state.start_attempted = True
         if ChannelCapability.INBOUND in state.capabilities:
             attach_runtime = getattr(adapter, "attach_runtime", None)
@@ -2527,6 +1823,8 @@ class ChannelGenerationHost:
 
     def _close_admission(self, key: tuple[str, str]) -> None:
         state = self._binding(key)
+        for subscription in tuple(state.subscriptions.values()):
+            subscription.close_admission()
         was_open = state.admission_open
         state.admission_open = False
         if not was_open:
@@ -2649,41 +1947,23 @@ class ChannelGenerationHost:
             # after a successful adapter stop; a failed stop keeps the old
             # binding as the cleanup owner and therefore cannot be reclaimed.
             if state.adapter_stop_succeeded:
+                for listener in state.listeners:
+                    if not listener.done():
+                        listener.cancel()
+                if state.listeners:
+                    await asyncio.gather(*state.listeners, return_exceptions=True)
+                    state.listeners.clear()
                 failures.extend(await self._defer_durable_reservations(key, state))
-            if not state.factory_close_succeeded:
-                state.factory_close_settled = False
-                try:
-                    await _close_provider_factory(state.provider_client_factory)
-                    state.factory_close_succeeded = True
-                except BaseException as error:
-                    failures.append(
-                        _cleanup_failure(
-                            state,
-                            "provider-client-factory",
-                            str(error),
-                            error,
-                        )
-                    )
-                finally:
-                    state.factory_close_settled = True
-            if state.internal_cancellation is not None and not failures:
-                failures.append(
-                    _cleanup_failure(
-                        state,
-                        state.internal_cancellation,
-                        f"{state.internal_cancellation} cancelled",
-                    )
-                )
             if failures:
                 error = RuntimeError("channel cleanup failed: " + "; ".join(item.message for item in failures))
-                await self._retain_tombstone(key, state, failures[0], error)
+                assert state.plugin_context is not None
+                state.plugin_context.report_incident("CHANNEL_STOP_FAILED", str(error))
                 raise error
             if receipt is None:
                 receipt = StopReceipt(binding_token=state.binding_token, resources_closed=True)
             state.stop_receipt = receipt
             state.stopped = True
             state.stopping = False
-            self._tombstones.pop(key, None)
             return receipt
         except asyncio.CancelledError:
             state.stopping = True
@@ -2692,114 +1972,16 @@ class ChannelGenerationHost:
     async def _stop_binding_critical(self, key: tuple[str, str]) -> StopReceipt:
         """Finish one binding cleanup before restoring caller cancellation."""
 
-        cleanup_task = asyncio.create_task(
-            self._stop_binding(key),
-            name=f"channel_binding_stop:{key[0]}:{key[1]}",
-        )
-        return cast(StopReceipt, await _await_task_after_cancellation(cleanup_task))
-
-    async def _stop_keys(self, keys: tuple[tuple[str, str], ...]) -> tuple[StopReceipt, ...]:
-        receipts: list[StopReceipt] = []
-        failures: list[BaseException] = []
-        for key in reversed(keys):
-            try:
-                receipts.append(await self._stop_binding(key))
-            except asyncio.CancelledError:
-                raise
-            except BaseException as error:
-                failures.append(error)
-        if failures:
-            raise RuntimeError(
-                "channel generation cleanup failed: "
-                + "; ".join(str(error) or type(error).__name__ for error in failures)
-            ) from failures[0]
-        return tuple(receipts)
-
-    async def _cleanup_keys(
-        self,
-        generation_id: str,
-        keys: tuple[tuple[str, str], ...],
-        *,
-        cause: BaseException,
-    ) -> None:
-        for key in reversed(keys):
-            state = self._bindings.get(key)
-            if state is None:
-                continue
-            self._close_admission(key)
-        await asyncio.gather(*(self._drain(key) for key in keys if key in self._bindings))
-        await self._stop_keys(keys)
-
-    async def _retry_keys(self, keys: tuple[tuple[str, str], ...]) -> None:
-        failures: list[BaseException] = []
-        for key in reversed(keys):
-            state = self._bindings.get(key)
-            tombstone = self._tombstones.get(key)
-            if state is None or tombstone is None:
-                continue
-            if tombstone.binding_token != state.binding_token:
-                failures.append(RuntimeError("channel cleanup exact binding token drift"))
-                continue
-            try:
-                state.internal_cancellation = None
-                await self._stop_binding(key)
-                self._tombstones.pop(key, None)
-            except asyncio.CancelledError:
-                raise
-            except BaseException as error:
-                failures.append(error)
-        if failures:
-            raise RuntimeError("channel generation cleanup retry failed") from failures[0]
-
-    async def _retain_tombstone(
-        self,
-        key: tuple[str, str],
-        state: _ChannelBindingState,
-        failure: ChannelCleanupFailure,
-        error: BaseException,
-    ) -> None:
-        previous = self._tombstones.get(key)
-        tombstone = ChannelCleanupTombstone(
-            snapshot_id=state.snapshot_id,
-            catalog_identity=state.catalog_identity,
-            plugin_id=state.plugin_id,
-            generation_id=state.generation_id,
-            channel_name=state.channel_name,
-            module=state.module,
-            adapter=state.adapter,
-            factory=state.factory,
-            factory_context=state.factory_context,
-            provider_client_factory=state.provider_client_factory,
-            binding_token=state.binding_token,
-            artifact_pointer=state.artifact_pointer,
-            factory_export=state.factory_export,
-            source_revision=state.source_revision,
-            config_revision=state.config_revision,
-            raw_config_revision=state.raw_config_revision,
-            descriptor_digest=state.descriptor_digest,
-            target=state.target,
-            boot_owner=state.boot_owner,
-            adapter_stop_settled=state.adapter_stop_settled,
-            adapter_stop_succeeded=state.adapter_stop_succeeded,
-            factory_close_settled=state.factory_close_settled,
-            factory_close_succeeded=state.factory_close_succeeded,
-            resource=failure.resource,
-            error_type=type(error).__name__,
-            message=str(error),
-            action="retry_generation_cleanup",
-            attempt_count=1 if previous is None else previous.attempt_count + 1,
-        )
-        self._tombstones[key] = tombstone
-        result = self._on_failure(tombstone)
-        if inspect.isawaitable(result):
-            await result
+        state = self._binding(key)
+        if state.stop_task is None or state.stop_task.done():
+            state.stop_task = asyncio.create_task(
+                self._stop_binding(key), name=f"channel-binding-stop:{key[0]}:{key[1]}",
+            )
+        return cast(StopReceipt, await _await_task_after_cancellation(state.stop_task))
 
     def _binding(self, key: tuple[str, str]) -> _ChannelBindingState:
         state = self._bindings.get(key)
         if state is None:
-            tombstone = self._tombstones.get(key)
-            if tombstone is not None:
-                raise RuntimeError(f"channel binding cleanup 未完成: {key[1]}")
             raise KeyError(key[1])
         return state
 
@@ -2859,127 +2041,9 @@ class ChannelGenerationHost:
                 )
         return tuple(failures)
 
-    def _generation_keys(self, generation_id: str) -> tuple[tuple[str, str], ...]:
-        return tuple(key for key in self._bindings if key[0] == generation_id)
 
-    def _remove_generation(self, generation_id: str) -> None:
-        states = [state for key, state in self._bindings.items() if key[0] == generation_id]
-        if any(not state.stopped for state in states):
-            return
-        for key in tuple(self._bindings):
-            if key[0] == generation_id:
-                self._bindings.pop(key, None)
-        if not any(key[0] == generation_id for key in self._tombstones):
-            self._locks.pop(generation_id, None)
-
-
-def _require_committed_snapshot(snapshot: object) -> Any:
-    if not hasattr(snapshot, "snapshot_id") or not hasattr(snapshot, "channel_registry"):
-        raise TypeError("ChannelGenerationHost 只接受 RuntimeSnapshot")
-    if getattr(snapshot, "state", None) != "committed":
-        raise RuntimeError("ChannelGenerationHost 只接受 committed RuntimeSnapshot")
-    root = getattr(snapshot, "composition_root", None)
-    registry = getattr(snapshot, "channel_registry", None)
-    catalog = getattr(snapshot, "channel_catalog", None)
-    if catalog is not None:
-        if not isinstance(catalog, CommittedChannelCatalog):
-            raise TypeError("channel_catalog 类型无效")
-        if root is not None and catalog.root_instance_token is not root.instance_token:
-            raise RuntimeError("committed channel catalog 不属于 exact composition Root")
-        registry = catalog.registry
-    if root is None or registry is None:
-        raise RuntimeError("committed snapshot 必须带 exact composition Root/channel registry")
-    if registry.root_instance_token is not root.instance_token:
-        raise RuntimeError("channel registry 不属于 exact composition Root")
-    if catalog is None and getattr(snapshot, "channel_registry_identity", registry.identity) != registry.identity:
-        raise RuntimeError("channel registry identity drift")
-    if not isinstance(registry, ChannelRegistrySnapshot):
-        raise TypeError("channel_registry 类型无效")
-    return snapshot
-
-
-def _find_provenance(
-    registry: ChannelRegistrySnapshot,
-    owner: str,
-    generation_id: str,
-    channel_name: str,
-) -> Any:
-    matches = tuple(
-        item
-        for item in registry.factories
-        if item.plugin_id == owner
-        and item.generation_id == generation_id
-        and item.channel_name == channel_name
-    )
-    if len(matches) != 1:
-        raise RuntimeError(f"channel factory provenance 缺失或重复: {channel_name}")
-    return matches[0]
-
-
-def _descriptor_digest(descriptor: Any) -> str:
-    """Hash the complete immutable descriptor identity for durable ownership."""
-
-    payload = {
-        "owner": descriptor.owner,
-        "name": descriptor.name,
-        "capabilities": [item.value for item in descriptor.capabilities],
-        "factory_export": descriptor.factory_export,
-        "inbound_identity": (
-            None if descriptor.inbound_identity is None else descriptor.inbound_identity.value
-        ),
-    }
-    return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
-            "utf-8"
-        )
-    ).hexdigest()
-
-
-def _resolve_sync_factory(module: ModuleType, export: str) -> Callable[[ChannelFactoryContext], ChannelAdapter]:
-    value: object = module
-    for segment in export.replace(":", ".").split("."):
-        value = getattr(value, segment)
-    if not callable(value):
-        raise TypeError(f"channel factory export 不可调用: {export}")
-    if inspect.iscoroutinefunction(value):
-        raise TypeError(f"channel factory 不得是 async: {export}")
-    try:
-        inspect.signature(value).bind(cast(object, None))
-    except (TypeError, ValueError) as error:
-        raise TypeError(f"channel factory ABI 必须是 factory(context): {export}") from error
-    return cast(Callable[[ChannelFactoryContext], ChannelAdapter], value)
-
-
-def _validate_adapter(adapter: object, channel_name: str) -> None:
-    if any(not callable(getattr(adapter, name, None)) for name in ("start", "deliver", "stop")):
-        raise TypeError(f"channel adapter ABI 无效: {channel_name}")
-
-
-def _validate_provider_factory(factory: object, channel_name: str) -> None:
-    if any(not callable(getattr(factory, name, None)) for name in ("create", "aclose")):
-        raise TypeError(f"provider client factory ABI 无效: {channel_name}")
-
-
-async def _invoke_async(adapter: object, method_name: str, *args: object) -> object:
-    result = getattr(adapter, method_name)(*args)
-    if not inspect.isawaitable(result):
-        raise TypeError(f"channel adapter.{method_name} 必须返回 awaitable")
-    return await result
-
-
-async def _close_provider_factory(factory: ProviderClientFactory) -> None:
-    result = factory.aclose()
-    if not inspect.isawaitable(result):
-        raise TypeError("provider client factory.aclose 必须返回 awaitable")
-    await result
-
-
-def _validate_attachment_read_lease(
-    lease: object,
-    ref: AttachmentRef,
-) -> None:
-    """Validate the store lease before transferring its drain ownership."""
-
+def _validate_attachment_read_lease(lease: object, ref: AttachmentRef) -> None:
+    """附件边界确认回执及释放方法后才交接排空占位。"""
     if not callable(getattr(lease, "read_bytes", None)):
         raise TypeError("attachment read lease 必须提供 read_bytes(max_bytes=...)")
     if not callable(getattr(lease, "aclose", None)):
@@ -2989,18 +2053,22 @@ def _validate_attachment_read_lease(
 
 
 async def _invoke_attachment_lease_close(lease: AttachmentReadLease) -> None:
-    """Invoke a store lease close and preserve its cancellation/error result."""
-
     result = lease.aclose()
     if not inspect.isawaitable(result):
         raise TypeError("attachment read lease aclose 必须返回 awaitable")
     await result
 
 
-async def _require_awaitable(result: object, name: str) -> None:
+def _validate_adapter(adapter: object, channel_name: str) -> None:
+    if any(not callable(getattr(adapter, name, None)) for name in ("start", "deliver", "stop")):
+        raise TypeError(f"channel adapter ABI 无效: {channel_name}")
+
+
+async def _invoke_async(adapter: object, method_name: str, *args: object) -> object:
+    result = getattr(adapter, method_name)(*args)
     if not inspect.isawaitable(result):
-        raise TypeError(f"{name} 必须是 async callback")
-    await cast(Awaitable[None], result)
+        raise TypeError(f"channel adapter.{method_name} 必须返回 awaitable")
+    return await result
 
 
 def _cleanup_failure(
@@ -3044,10 +2112,7 @@ async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
         except asyncio.CancelledError:
             cancelled = True
             continue
-    try:
-        result = task.result()
-    except asyncio.CancelledError:
-        result = None
+    result = task.result()
     if cancelled:
         raise asyncio.CancelledError
     return result
@@ -3102,27 +2167,7 @@ def _control_delivery_id(binding_token: str, message_id: str) -> str:
     return "control:" + hashlib.sha256(payload).hexdigest()
 
 
-def _invoke_control_dispatcher(
-    dispatcher: ControlResponseDispatcher,
-    envelope: OutboundEnvelope,
-    binding: ChannelBindingLease,
-) -> object:
-    """Dispatch one control response through its exact retained binding."""
-
-    return dispatcher(envelope, binding)
-
-
 def _is_async_callback(callback: object) -> bool:
     return inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
         getattr(callback, "__call__", None)
     )
-
-
-__all__ = [
-    "ChannelBinding",
-    "ChannelBindingLease",
-    "ChannelCleanupTombstone",
-    "ChannelGeneration",
-    "ChannelGenerationHost",
-    "ChannelStartRecord",
-]

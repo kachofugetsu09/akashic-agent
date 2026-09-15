@@ -287,7 +287,7 @@ class EventBus:
         """在隔离 task 中运行单个 observer，并区分 observer 与调用方取消。"""
 
         from agent.plugins.snapshot import get_current_runtime_lease
-        from agent.plugins.channel_generation_host import (
+        from agent.plugin_composition.channels import (
             get_current_channel_turn_binding,
         )
 
@@ -348,7 +348,7 @@ class EventBus:
     ) -> None:
         channel_token = None
         if channel_binding is not None:
-            from agent.plugins.channel_generation_host import (
+            from agent.plugin_composition.channels import (
                 bind_channel_turn_binding,
             )
 
@@ -372,7 +372,7 @@ class EventBus:
                 await result
         finally:
             if channel_token is not None:
-                from agent.plugins.channel_generation_host import (
+                from agent.plugin_composition.channels import (
                     reset_channel_turn_binding,
                 )
 

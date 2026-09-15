@@ -9,7 +9,8 @@ from agent.plugin_composition import (
 )
 
 from .capabilities import CLIENT_CAPABILITIES
-from .channel import build_akashic_channel, register_generation, unregister_generation
+from .channel import build_akashic_channel_factory
+from agent.plugin_composition.channels import CHANNEL_INPUT
 from .config import AkashicClientsConfig
 
 api_version = 3
@@ -19,7 +20,7 @@ desc = "Web and Mobile Akashic client channel"
 author = "Akashic"
 # Every dependency is a separate composition capability.  In particular,
 # there is no client-wide service bus for Core to assemble.
-inject = (CHANNELS, *CLIENT_CAPABILITIES)
+inject = (CHANNELS, CHANNEL_INPUT, *CLIENT_CAPABILITIES)
 Config = AkashicClientsConfig
 
 
@@ -30,16 +31,6 @@ async def apply(ctx: Context) -> None:
     if not config.enabled:
         return
 
-    # Context.generation_id identifies the whole composition Root.  The
-    # channel host resolves factories with the plugin generation identity, so
-    # bind this state to the exact runtime generation owned by this plugin.
-    generation_id = ctx.runtime.generation_id
-    register_generation(generation_id, config, ctx.runtime.workspace)
-
-    async def cleanup() -> None:
-        unregister_generation(generation_id)
-
-    _ = await ctx.effect(lambda: cleanup, label="akashic-clients-generation")
     await ctx.require(CHANNELS).register(
         ctx,
         ChannelDefinition(
@@ -52,7 +43,7 @@ async def apply(ctx: Context) -> None:
                     ChannelCapability.TURN_STREAM,
                 }
             ),
-            factory_export="build_akashic_channel",
+            factory=build_akashic_channel_factory(config, ctx.runtime.workspace),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
         ),
     )
@@ -63,7 +54,6 @@ __all__ = [
     "api_version",
     "apply",
     "author",
-    "build_akashic_channel",
     "desc",
     "inject",
     "name",

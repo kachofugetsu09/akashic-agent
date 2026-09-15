@@ -460,7 +460,7 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
         assert app.core is not None and app.app_server is not None
         assert app.restart_gate is not None
         assert app.core.restart_gate.boot_id == readiness.boot_id
-        assert app.core.plugin_manager.channel_generation_host.boot_id == readiness.boot_id
+        assert app.core.plugin_manager._host_boot_id == readiness.boot_id
         control = RuntimeModelControl(app.core.plugin_manager.snapshot_store)
         await _model_command(control, {
             "type": "add_connection",

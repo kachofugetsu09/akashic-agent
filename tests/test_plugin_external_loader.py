@@ -52,7 +52,7 @@ async def test_core_starts_with_no_checkout_plugins_and_keeps_manager_usable(
         assert core.plugin_manager.discover() == []
         assert core.plugin_manager._dirs == []
         assert core.restart_gate.boot_id != "unmanaged"
-        assert core.plugin_manager.channel_generation_host.boot_id == core.restart_gate.boot_id
+        assert core.plugin_manager._host_boot_id == core.restart_gate.boot_id
         await core.start()
         assert core.plugin_manager.discover() == []
         snapshot = core.plugin_manager.current_snapshot
@@ -84,8 +84,8 @@ async def test_unmanaged_core_runtime_gets_a_new_boot_id_per_host(
     second = bootstrap.build_core_runtime(Config(), second_workspace, second_http)
     try:
         assert first.restart_gate.boot_id != second.restart_gate.boot_id
-        assert first.plugin_manager.channel_generation_host.boot_id == first.restart_gate.boot_id
-        assert second.plugin_manager.channel_generation_host.boot_id == second.restart_gate.boot_id
+        assert first.plugin_manager._host_boot_id == first.restart_gate.boot_id
+        assert second.plugin_manager._host_boot_id == second.restart_gate.boot_id
     finally:
         await first.stop()
         await first.bus.aclose()

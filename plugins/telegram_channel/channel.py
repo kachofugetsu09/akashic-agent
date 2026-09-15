@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import logging
 from collections import deque
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -38,6 +38,7 @@ from agent.plugin_composition import (
     StopReceipt,
 )
 from agent.plugin_composition.channels import (
+    CredentialRef, ProviderClient,
     ChannelPresentationPorts,
     ChannelRuntimePorts,
     ControlResponseBodies,
@@ -73,7 +74,10 @@ class _MessageDeduper:
         return False
 
 
-def build_telegram_channel(context: ChannelFactoryContext) -> ChannelAdapter:
+def build_telegram_channel(
+    context: ChannelFactoryContext, *,
+    create_client: Callable[[Mapping[str, CredentialRef]], Awaitable[ProviderClient]],
+) -> ChannelAdapter:
     """Build a side-effect-free Telegram adapter for the exact Core binding."""
 
     if not isinstance(context, ChannelFactoryContext):
@@ -84,7 +88,7 @@ def build_telegram_channel(context: ChannelFactoryContext) -> ChannelAdapter:
         raise RuntimeError("Telegram channel 需要 Core identity")
     if context.attachment_import is None:
         raise RuntimeError("Telegram channel 需要 Core attachment import")
-    return TelegramChannelAdapter(context)
+    return TelegramChannelAdapter(context, create_client=create_client)
 
 
 class TelegramChannelAdapter:
@@ -93,12 +97,15 @@ class TelegramChannelAdapter:
     name = _CHANNEL
     v3_inbound_identity = InboundIdentity.PROVIDER_MESSAGE_ID
 
-    def __init__(self, context: ChannelFactoryContext) -> None:
+    def __init__(
+        self, context: ChannelFactoryContext, *,
+        create_client: Callable[[Mapping[str, CredentialRef]], Awaitable[ProviderClient]],
+    ) -> None:
         self._context = context
         self._binding_token = context.binding_token
         self._ingress = context.ingress
         self._identity = context.identity
-        self._provider_factory = context.provider_client_factory
+        self._create_client = create_client
         self._credentials = {"token": TelegramChannelConfig.model_validate(context.config).token}
         self._attachment_import = context.attachment_import
         self._attachment_read = context.attachment_read
@@ -162,7 +169,7 @@ class TelegramChannelAdapter:
         if token_ref is None:
             raise RuntimeError("Telegram channel 缺少 token credential")
         try:
-            self._provider_client = await self._provider_factory.create(self._credentials)
+            self._provider_client = await self._create_client(self._credentials)
             token = self._provider_client.credential(token_ref)
             self._app = (
                 Application.builder()
@@ -316,7 +323,7 @@ class TelegramChannelAdapter:
             if not any(item.resource in {"updater", "application", "shutdown"} for item in failures):
                 self._app = None
         provider = self._provider_client
-        if provider is not None:
+        if provider is not None and self._app is None:
             try:
                 await provider.aclose()
             except BaseException as error:

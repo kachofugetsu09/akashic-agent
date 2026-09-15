@@ -7,7 +7,7 @@ from agent.plugin_composition.events import EmitEventKey, SerialEventKey
 
 @dataclass(frozen=True, slots=True)
 class RuntimeStarting:
-    """在正式接纳开放前同步恢复临时资源；不启动外部工作。"""
+    """在正式接纳开放前等待资源就绪；不启动外部工作。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +25,7 @@ class SnapshotSealing:
     """Signal that a ready candidate must freeze its private registries."""
 
 
-RUNTIME_STARTING = EmitEventKey[RuntimeStarting]("runtime.starting")
+RUNTIME_STARTING = SerialEventKey[RuntimeStarting, object]("runtime.starting")
 RUNTIME_STARTED = SerialEventKey[RuntimeStarted, object]("runtime.started")
 RUNTIME_STOPPING = SerialEventKey[RuntimeStopping, object]("runtime.stopping")
 SNAPSHOT_SEALING = SerialEventKey[SnapshotSealing, object]("snapshot.sealing")

@@ -249,9 +249,7 @@ class _ClientGeneration:
 
     config: AkashicClientsConfig
     workspace: Any
-    # A generation can be rebound to a new snapshot while its plugin fiber
-    # remains alive.  The binding token, rather than generation_id, owns one
-    # adapter lifecycle.
+    # 固定输入与实际 adapter 只属于本次 apply。
     adapters: dict[str, "_GenerationAkashicAdapter"]
 
     def __init__(self, config: AkashicClientsConfig, workspace: Any) -> None:
@@ -260,49 +258,18 @@ class _ClientGeneration:
         self.adapters = {}
 
 
-_GENERATIONS: dict[str, _ClientGeneration] = {}
+def build_akashic_channel_factory(config: AkashicClientsConfig, workspace: Any):
+    """为本次 apply 保留固定输入，实际 binding 由贡献 Scope 关闭。"""
+    state = _ClientGeneration(config, workspace)
 
-
-def register_generation(
-    generation_id: str,
-    config: AkashicClientsConfig,
-    workspace: Any,
-) -> None:
-    """Register config only; service values are resolved in an exact request scope."""
-
-    if generation_id in _GENERATIONS:
-        raise RuntimeError(f"akashic clients generation 已注册: {generation_id}")
-    _GENERATIONS[generation_id] = _ClientGeneration(config, workspace)
-
-
-def unregister_generation(generation_id: str) -> None:
-    """Release factory inputs after the exact generation has stopped."""
-
-    state = _GENERATIONS.get(generation_id)
-    if state is not None:
-        active = tuple(adapter for adapter in state.adapters.values() if adapter.started)
-        if active:
-            raise RuntimeError("akashic clients generation 在 adapter 停止前被释放")
+    def build(context: ChannelFactoryContext) -> _GenerationAkashicAdapter:
         if state.adapters:
-            raise RuntimeError("akashic clients generation 仍保留未完成的 channel binding")
-    _GENERATIONS.pop(generation_id, None)
+            raise RuntimeError("本次 apply 的 Channel binding 尚未释放")
+        adapter = _GenerationAkashicAdapter(state, context)
+        state.adapters[context.binding_token] = adapter
+        return adapter
 
-
-def build_akashic_channel(
-    context: ChannelFactoryContext,
-) -> "_GenerationAkashicAdapter":
-    """Build one binding adapter over the generation's ordinary client owners."""
-
-    state = _GENERATIONS.get(context.generation_id)
-    if state is None:
-        raise RuntimeError(
-            f"akashic clients 缺少 generation service binding: {context.generation_id}"
-        )
-    if context.binding_token in state.adapters:
-        raise RuntimeError("同一 akashic clients binding token 不允许重复创建 channel")
-    adapter = _GenerationAkashicAdapter(state, context)
-    state.adapters[context.binding_token] = adapter
-    return adapter
+    return build
 
 
 class _GenerationAkashicAdapter:
@@ -773,7 +740,4 @@ class _GenerationAkashicAdapter:
 
 
 __all__ = [
-    "build_akashic_channel",
-    "register_generation",
-    "unregister_generation",
 ]

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from types import SimpleNamespace
 
 from agent.plugin_composition.config_input import load_config
 
@@ -333,8 +334,10 @@ def test_core_probe_records_real_start_and_stop_contract(
     calls: list[str] = []
 
     class Manager:
-        current_snapshot = object()
-        channel_generation_host = object()
+        current_snapshot = SimpleNamespace(
+            snapshot_id="snapshot", generations={},
+            composition_root=SimpleNamespace(context=SimpleNamespace(get=lambda _key: object())),
+        )
 
     class Core:
         plugin_manager = Manager()

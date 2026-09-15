@@ -1483,34 +1483,9 @@ async def _settle_cleanup_task(task: asyncio.Task[Any]) -> Any:
     return task.result()
 
 
-def build_web_channel_definition(channel: WebChatChannel) -> Any:
-    """Project the already-started Web owner into a Core native channel definition."""
-
-    from agent.plugin_composition.channels import (
-        ChannelCapability,
-        CoreChannelDefinition,
-    )
-
-    if not isinstance(channel, WebChatChannel):
-        raise TypeError("Web Core channel definition 只接受 WebChatChannel")
-
-    return CoreChannelDefinition(
-        name=channel.name,
-        capabilities=frozenset({ChannelCapability.INBOUND, ChannelCapability.OUTBOUND}),
-        factory=channel.build_v3_adapter,
-        inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-        source_revision="core-web-v3",
-        config_revision="core-web-v3",
-        generation_id="core-web-v3",
-        config={"channel": channel.name},
-        factory_export="web_chat.WebChatChannel.build_v3_adapter",
-    )
-
-
 __all__ = [
     "MAX_UPLOAD_BYTES",
     "UploadTooLargeError",
     "WebChatChannel",
     "WebNativeChannelAdapter",
-    "build_web_channel_definition",
 ]

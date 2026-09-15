@@ -658,11 +658,11 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
 ])
 async def test_channel_authority_rejects_untrusted_session_override_before_enqueue(plugin, channel, metadata):
     from types import SimpleNamespace
-    from agent.plugins.channel_generation_host import ChannelGenerationHost
+    from plugins.channels.provider import PluginChannels
     from agent.plugin_composition import ChannelCapability, InboundIdentity
     async def unused(*args):
         raise AssertionError('unauthorized input must not open runtime resources')
-    host = ChannelGenerationHost(on_before_start=unused, config_revision_checker=unused, on_failure=unused)
+    host = object.__new__(PluginChannels)
     host._binding = lambda key: SimpleNamespace(
         plugin_id=plugin, channel_name=channel, capabilities=(ChannelCapability.INBOUND,),
         inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID, admission_open=True,
@@ -676,40 +676,14 @@ async def test_channel_authority_rejects_untrusted_session_override_before_enque
         await host._admit_inbound(('snapshot', channel), raw)
 
 
-def test_channel_host_boot_id_is_stable_and_host_scoped():
-    from agent.plugins.channel_generation_host import ChannelGenerationHost
+def test_source_admission_boot_id_is_shared_across_roots():
+    from agent.plugin_composition.admission import SourceAdmission
 
-    async def unused(*args):
-        return None
-
-    first = ChannelGenerationHost(
-        on_before_start=unused,
-        config_revision_checker=unused,
-        on_failure=unused,
-        boot_id="app-host-1",
-    )
-    second = ChannelGenerationHost(
-        on_before_start=unused,
-        config_revision_checker=unused,
-        on_failure=unused,
-        boot_id="app-host-2",
-    )
-    generated_a = ChannelGenerationHost(
-        on_before_start=unused,
-        config_revision_checker=unused,
-        on_failure=unused,
-    )
-    generated_b = ChannelGenerationHost(
-        on_before_start=unused,
-        config_revision_checker=unused,
-        on_failure=unused,
-    )
-
-    assert first.boot_id == "app-host-1"
-    assert first.boot_id == first.boot_id
-    assert second.boot_id == "app-host-2"
-    assert first.boot_id != second.boot_id
-    assert generated_a.boot_id and generated_a.boot_id != generated_b.boot_id
+    first = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-1", candidate=False)
+    second = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-1", candidate=False)
+    other = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-2", candidate=False)
+    assert first.boot_id == second.boot_id
+    assert first.boot_id != other.boot_id
 
 
 def test_plugin_manager_passes_supervisor_boot_id_to_channel_host(tmp_path: Path) -> None:
@@ -719,7 +693,7 @@ def test_plugin_manager_passes_supervisor_boot_id_to_channel_host(tmp_path: Path
 
     gate = RestartGate(boot_id="supervisor-boot", supervised=False)
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path, restart_gate=gate)
-    assert manager.channel_generation_host.boot_id == gate.boot_id
+    assert manager._host_boot_id == gate.boot_id
 
 
 def test_plugin_manager_without_gate_gets_one_fresh_host_boot_id(tmp_path: Path) -> None:
@@ -729,25 +703,19 @@ def test_plugin_manager_without_gate_gets_one_fresh_host_boot_id(tmp_path: Path)
     first = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "first")
     second = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "second")
 
-    assert first.channel_generation_host.boot_id
-    assert first.channel_generation_host.boot_id != second.channel_generation_host.boot_id
-    assert first._host_boot_id == first.channel_generation_host.boot_id
+    assert first._host_boot_id
+    assert first._host_boot_id != second._host_boot_id
 
 
 @pytest.mark.asyncio
 async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> None:
     from agent.plugin_composition.channels import ChannelCapability, InboundIdentity
-    from agent.plugins.channel_generation_host import ChannelGenerationHost
+    from plugins.channels.provider import PluginChannels
 
     async def unused(*args):
         return None
 
-    host = ChannelGenerationHost(
-        on_before_start=unused,
-        config_revision_checker=unused,
-        on_failure=unused,
-        boot_id="boot-router",
-    )
+    host = object.__new__(PluginChannels)
     states = {}
     for channel in ("alpha", "beta"):
         states[("snapshot", channel)] = SimpleNamespace(
@@ -785,7 +753,7 @@ async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> Non
             },
         ),
     )
-    assert await host._recover_current_durable_inbound(raw) is True
+    assert await host.recover_inbound(raw) is True
     assert seen == [(("snapshot", "beta"), "beta")]
 
     states[("other", "beta")] = SimpleNamespace(
@@ -797,7 +765,7 @@ async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> Non
         stopped=False,
     )
     with pytest.raises(RuntimeError, match="不唯一"):
-        await host._recover_current_durable_inbound(raw)
+        await host.recover_inbound(raw)
 
 
 @pytest.mark.asyncio

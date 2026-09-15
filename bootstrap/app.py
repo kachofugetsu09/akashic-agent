@@ -240,9 +240,7 @@ class AppRuntime:
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
 
-            # ChannelGenerationHost owns installed channel bindings.  Recovery
-            # runs after those exact bindings are open; no Core channel table
-            # or legacy ChannelHost is constructed here.
+            # provider 已开放实际 binding；这里只触发传输 owner 的 pending 恢复。
             await self.bus.recover_durable_inbounds()
             if self.readiness is not None:
                 self.readiness.mark_stage("channels.ready")

@@ -15,7 +15,6 @@ from agent.plugin_composition.effect import _join_cleanup
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.selection import SelectionWriteError
 from agent.plugin_composition import (
-    CHANNELS,
     CompositionRoot,
     CompositionError,
     TopologyView,
@@ -23,14 +22,7 @@ from agent.plugin_composition import (
 
 if TYPE_CHECKING:
     from session.log import MessagePage
-from agent.plugin_composition.channels import (
-    ChannelFactoryFreezeInput,
-    ChannelRegistrySnapshot,
-    CommittedChannelCatalog,
-    CoreChannelDefinition,
-    _freeze_plugin_channels,
-    channel_config_revision,
-)
+
 
 SnapshotState = Literal[
     "compiled",
@@ -55,9 +47,6 @@ class _ReplyStatusReader(Protocol):
 class RuntimeSnapshot:
     snapshot_id: str
     generations: Mapping[str, PluginGeneration]
-    channel_registry: ChannelRegistrySnapshot | None = None
-    channel_registry_identity: str | None = None
-    channel_catalog: CommittedChannelCatalog | None = None
     composition_root: CompositionRoot | None = None
     composition_topology: TopologyView | None = None
     composition_active_plugin_ids: frozenset[str] | None = None
@@ -109,7 +98,6 @@ class RuntimeSnapshotCompiler:
         catalog_generation: PluginGeneration | None = None,
         snapshot_revision: str = "",
         composition_root: CompositionRoot | None = None,
-        core_channel_definitions: tuple[CoreChannelDefinition, ...] = (),
         require_composition_ready: bool = True,
     ) -> RuntimeSnapshot:
         ordered = [generations[key] for key in sorted(generations)]
@@ -117,11 +105,7 @@ class RuntimeSnapshotCompiler:
             raise RuntimeError("RuntimeSnapshot generation key 与 plugin_id 不一致")
         composition_topology: TopologyView | None = None
         composition_active_plugin_ids: frozenset[str] | None = None
-        channel_registry: ChannelRegistrySnapshot | None = None
-        channel_catalog: CommittedChannelCatalog | None = None
         if composition_root is not None:
-            catalog_root_token = composition_root.instance_token
-            catalog_context = composition_root.context
             receipt = composition_root.receipt()
             if require_composition_ready and not receipt.ready:
                 raise RuntimeError(
@@ -133,37 +117,7 @@ class RuntimeSnapshotCompiler:
                 )
             composition_topology = composition_root.topology_view()
             composition_active_plugin_ids = composition_root.active_plugin_ids()
-            channel_declarations = catalog_context.get(CHANNELS)
-            if channel_declarations is not None:
-                channel_registry = _freeze_plugin_channels(
-                    channel_declarations,
-                    catalog_root_token,
-                    factory_provenance_by_owner={
-                        generation.plugin_id: ChannelFactoryFreezeInput(
-                            generation_id=generation.generation_id,
-                            source_revision=generation.source_revision,
-                            config_revision=channel_config_revision(
-                                generation.config_projection
-                            ),
-                        )
-                        for generation in ordered
-                    },
-                )
             assert composition_active_plugin_ids is not None
-            self._validate_channel_registry(
-                channel_registry,
-                generations,
-            )
-        if core_channel_definitions:
-            channel_catalog = CommittedChannelCatalog(
-                plugin_registry=channel_registry,
-                core_definitions=tuple(core_channel_definitions),
-                root_instance_token=(
-                    None
-                    if composition_root is None
-                    else composition_root.instance_token
-                ),
-            )
         canonical_identity = "|".join(
             (
                 *(
@@ -181,21 +135,12 @@ class RuntimeSnapshotCompiler:
                     if composition_topology is None
                     else composition_topology.identity
                 ),
-                "channels:"
-                + ("" if channel_registry is None else channel_registry.identity),
-                "channel-catalog:"
-                + ("" if channel_catalog is None else channel_catalog.identity),
             )
         )
         snapshot_id = hashlib.sha256(canonical_identity.encode()).hexdigest()[:16]
         snapshot = RuntimeSnapshot(
             snapshot_id=snapshot_id,
             generations=MappingProxyType(dict(generations)),
-            channel_registry=channel_registry,
-            channel_registry_identity=(
-                None if channel_registry is None else channel_registry.identity
-            ),
-            channel_catalog=channel_catalog,
             composition_root=composition_root,
             composition_topology=composition_topology,
             composition_active_plugin_ids=composition_active_plugin_ids,
@@ -203,21 +148,6 @@ class RuntimeSnapshotCompiler:
         if composition_root is not None:
             composition_root.freeze()
         return snapshot
-
-    @staticmethod
-    def _validate_channel_registry(
-        registry: ChannelRegistrySnapshot | None,
-        generations: Mapping[str, PluginGeneration],
-    ) -> None:
-        """确认每个渠道归属于当前组合中的插件。"""
-
-        for descriptor in () if registry is None else registry.descriptors:
-            generation = generations.get(descriptor.owner)
-            if generation is None:
-                raise RuntimeError(
-                    "RuntimeSnapshot channel owner 不属于 generations: "
-                    f"{descriptor.owner}"
-                )
 
 # 插件生命周期边界：一个 turn、job、event 或 proactive tick 必须始终使用同一
 # snapshot；旧 generation 只有在全部 lease 释放后才能 retire 和清理。
@@ -1203,32 +1133,11 @@ class RuntimeSnapshotStore:
     ) -> None:
         root = snapshot.composition_root
         if root is None:
-            if (
-                snapshot.composition_topology is not None
-                or snapshot.channel_registry is not None
-                or snapshot.channel_registry_identity is not None
-                or snapshot.channel_catalog is not None
-            ):
+            if snapshot.composition_topology is not None:
                 raise RuntimeError(
                     "RuntimeSnapshot composition identity 缺少 Root Context"
                 )
             return
-        if snapshot.channel_registry_identity != (
-            None
-            if snapshot.channel_registry is None
-            else snapshot.channel_registry.identity
-        ):
-            raise RuntimeError("RuntimeSnapshot channel descriptor 在编译后发生变化")
-        if (
-            snapshot.channel_registry is not None
-            and snapshot.channel_registry.root_instance_token is not root.instance_token
-        ):
-            raise RuntimeError("RuntimeSnapshot channel registry 不属于 exact Root")
-        if (
-            snapshot.channel_catalog is not None
-            and snapshot.channel_catalog.root_instance_token is not root.instance_token
-        ):
-            raise RuntimeError("RuntimeSnapshot channel catalog 不属于 exact Root")
         topology = snapshot.composition_topology
         if topology is None:
             raise RuntimeError("RuntimeSnapshot composition Root 缺少 TopologyView")

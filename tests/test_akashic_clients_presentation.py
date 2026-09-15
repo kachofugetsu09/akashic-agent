@@ -26,9 +26,7 @@ from agent.plugin_composition.channels import (
 )
 from plugins.akashic_clients import plugin
 from plugins.akashic_clients.channel import (
-    build_akashic_channel,
-    register_generation,
-    unregister_generation,
+    build_akashic_channel_factory,
 )
 from plugins.akashic_clients.config import AkashicClientsConfig
 from plugins.akashic_clients.web_chat import WebChatChannel, WebNativeChannelAdapter
@@ -157,7 +155,7 @@ async def test_apply_registers_one_formal_channel_definition() -> None:
 
     assert registry.definition is not None
     assert registry.definition.name == "akashic"
-    assert registry.definition.factory_export == "build_akashic_channel"
+    assert callable(registry.definition.factory)
     assert registry.definition.capabilities == frozenset(
         {
             ChannelCapability.INBOUND,
@@ -166,7 +164,6 @@ async def test_apply_registers_one_formal_channel_definition() -> None:
             ChannelCapability.TURN_STREAM,
         }
     )
-    plugin.unregister_generation("generation-1")
 
 
 @pytest.mark.asyncio
@@ -186,7 +183,8 @@ async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: P
         yield cast(RequestContext, ReplyScope())
 
     generation = "reply-status-generation"
-    register_generation(generation, AkashicClientsConfig(), tmp_path)
+    build_akashic_channel = build_akashic_channel_factory(AkashicClientsConfig(), tmp_path)
+    adapter = None
     try:
         from agent.plugin_composition.channels import ChannelFactoryContext
 
@@ -196,7 +194,6 @@ async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: P
             boot_id="boot-1",
             binding_token="binding-1",
             config={},
-            provider_client_factory=cast(ProviderClientFactory, object()),
             ingress=None,
             identity=None,
             open_scope=open_scope,
@@ -213,41 +210,28 @@ async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: P
             }
         finally:
             await stream.aclose()
+    finally:
+        if adapter is not None:
             await adapter.stop()
-    finally:
-        unregister_generation(generation)
 
 
-def test_same_generation_allows_distinct_binding_tokens(tmp_path: Path) -> None:
-    generation = "binding-generation"
-    register_generation(generation, AkashicClientsConfig(), tmp_path)
-    try:
-        from agent.plugin_composition.channels import ChannelFactoryContext
+def test_each_apply_owns_its_adapter_until_stop(tmp_path: Path) -> None:
+    from agent.plugin_composition.channels import ChannelFactoryContext
 
-        def context(token: str) -> ChannelFactoryContext:
-            return ChannelFactoryContext(
-                snapshot_id=f"snapshot-{token}",
-                generation_id=generation,
-                boot_id="boot-1",
-                binding_token=token,
-                config={},
-                provider_client_factory=cast(ProviderClientFactory, object()),
-                ingress=None,
-                identity=None,
-            )
+    context = ChannelFactoryContext(
+        snapshot_id="snapshot", generation_id="generation", boot_id="boot",
+        binding_token="binding", config={}, ingress=None, identity=None,
+    )
+    factory = build_akashic_channel_factory(AkashicClientsConfig(), tmp_path)
+    first = factory(context)
+    with pytest.raises(RuntimeError, match="尚未释放"):
+        factory(context)
+    second_factory = build_akashic_channel_factory(AkashicClientsConfig(), tmp_path)
+    second = second_factory(context)
+    assert second is not first
+    asyncio.run(first.stop())
+    asyncio.run(second.stop())
 
-        first = build_akashic_channel(context("binding-a"))
-        second = build_akashic_channel(context("binding-b"))
-        assert first is not second
-
-        # A successful stop releases only its exact token so a snapshot
-        # replacement can construct another binding in the same generation.
-        asyncio.run(first.stop())
-        replacement = build_akashic_channel(context("binding-a"))
-        asyncio.run(second.stop())
-        asyncio.run(replacement.stop())
-    finally:
-        unregister_generation(generation)
 
 
 @pytest.mark.asyncio

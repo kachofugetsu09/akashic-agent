@@ -121,7 +121,8 @@ async def apply(ctx: Context) -> None:
         ChannelDefinition(
             name="recording",
             capabilities=frozenset({ChannelCapability.OUTBOUND}),
-            factory_export="build_channel",
+            factory=build_channel,
+            config=ctx.config,
             inbound_identity=None,
         ),
     )

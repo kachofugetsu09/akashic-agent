@@ -10,10 +10,12 @@ import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 from agent.plugin_composition.channels import (
-    ChannelCapability, ChannelInboundMessage, ChannelReady, CoreChannelDefinition,
+    ChannelCapability, ChannelInboundMessage, ChannelReady,
     InboundIdentity, RawInbound, StopReceipt,
 )
 from agent.plugins.manager import PluginManager
+from agent.plugin_composition.channels import CHANNELS
+from agent.plugin_composition.channel_io import InputCustody
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from session.identities import ChannelIdentities
@@ -80,7 +82,7 @@ class Custody(MessageBus):
 @asynccontextmanager
 async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recover=True, artifacts=None, inbound_store=None, admissions=None, durable_identities=False):
     sources = tmp_path / "plugins"
-    for name in ("commands", "ui", "content", "models", "conversation", "sources"):
+    for name in ("commands", "ui", "content", "models", "conversation", "sources", "channels"):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
             sources / name,
@@ -88,10 +90,7 @@ async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recov
             dirs_exist_ok=True,
         )
     log = MessageLog(tmp_path / "sessions.db")
-    identity_store = ChannelIdentities(tmp_path / "sessions.db") if durable_identities else None
-    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home", message_log=log,
-                         channel_attachment_store=artifacts, channel_identities=identity_store)
+    identity_store = ChannelIdentities(tmp_path / "sessions.db")
     custody = Custody()
     if session_manager is not None:
         inbound_store, admissions = session_manager.inbound_store, session_manager.admissions
@@ -107,29 +106,54 @@ async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recov
         rollbacks.append(key)
         del identities[key]
         return True
-    def factory(context):
-        adapter = Adapter(context)
-        adapters.append(adapter)
-        return adapter
-    channel = host.channel_generation_host
-    if not durable_identities:
-        channel._identity_rememberer = remember
-        channel._identity_rollbacker = rollback
-    channel.bind_input_custody(custody)
+    probe = sources / "probe_channel"
+    probe.mkdir(exist_ok=True)
+    probe_source = """from agent.plugin_composition import CHANNELS, ChannelDefinition, ChannelCapability, InboundIdentity
+from agent.plugin_composition.channels import CHANNEL_INPUT
+from tests.test_channel_input import Adapter
+api_version = 3
+name = 'probe_channel'
+version = '1.0.0'
+inject = (CHANNELS, CHANNEL_INPUT)
+async def apply(ctx):
+    await ctx.require(CHANNELS).register(ctx, ChannelDefinition(
+        name=CHANNEL_NAME, capabilities=frozenset(CAPABILITIES),
+        factory=Adapter, inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID))
+"""
+    capabilities = "[ChannelCapability.INBOUND]"
+    if inbound_store is not None:
+        capabilities = "[ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND]"
+    (probe / "plugin.py").write_text(probe_source.replace("CHANNEL_NAME", repr(channel_name)).replace("CAPABILITIES", capabilities))
+    host = PluginManager(
+        [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home", message_log=log,
+        channel_attachment_store=artifacts, channel_identities=identity_store,
+        input_custody=InputCustody(
+            custody.prepare_channel_input, custody.complete_channel_input, custody.retain_channel_input,
+            custody.reserve_durable_inbound, custody.defer_durable_inbound,
+            custody.settle_rejected_inbound, custody.has_pending_durable_inbound,
+            custody.pending_durable_attachment_refs, custody.recover_durable_inbounds,
+        ),
+    )
+
+    async def recover_input(raw):
+        snapshot = host.current_snapshot
+        if snapshot is None or not snapshot.accepting_leases:
+            return False
+        return await channels(host).recover_inbound(raw)
+
+    custody.bind_durable_inbound_recoverer(recover_input)
     try:
         await host.load_all()
-        capabilities = {ChannelCapability.INBOUND}
-        if inbound_store is not None:
-            capabilities.add(ChannelCapability.DURABLE_INBOUND)
-        await host.bind_core_channel_definitions((CoreChannelDefinition(
-            name=channel_name, capabilities=frozenset(capabilities),
-            factory=factory, inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            source_revision="test", config_revision="test", generation_id="test",
-        ),))
-        if inbound_store is not None:
-            assert adapters[-1].ports.durable_inbound is not None
-            if recover:
-                await custody.recover_durable_inbounds()
+        channel = channels(host)
+        if not durable_identities:
+            channel._identity_rememberer = remember
+            channel._identity_rollbacker = rollback
+            channel._identity_resolver = lambda channel, provider: identities.get((channel, provider))
+        adapter = channel._bindings[(host.current_snapshot.snapshot_id, channel_name)].adapter
+        adapters.append(adapter)
+        if inbound_store is not None and recover:
+            await custody.recover_durable_inbounds()
         yield log, host, custody, identities, rollbacks, adapters[-1]
     finally:
         custody.prepare_gate.set()
@@ -140,6 +164,10 @@ async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recov
         log.close()
         if identity_store is not None:
             identity_store.close()
+
+
+def channels(host):
+    return host.current_snapshot.composition_root.context.require(CHANNELS)
 
 
 def raw():
@@ -208,8 +236,8 @@ async def test_durable_prepare_requires_prior_port_reservation(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_durable_recovery_retains_closed_current_snapshot_lease(tmp_path):
-    """暂停快照期间的 Host recovery 仍可使用 exact current lease。"""
+async def test_durable_recovery_waits_until_current_root_reopens(tmp_path):
+    """暂停来源时保留 pending；不绕过关闭许可，重开后只恢复一次。"""
 
     from session.manager import SessionManager
 
@@ -228,15 +256,18 @@ async def test_durable_recovery_retains_closed_current_snapshot_lease(tmp_path):
             assert await durable.reserve(mobile_raw())
             assert await durable.defer("handoff-1") is None
 
-            snapshot = host.snapshot_store.pause_admission()
+            snapshot = host._pause_source_admission()
             assert snapshot is host.current_snapshot
             assert snapshot is not None
             await host.snapshot_store.wait_for_no_leases(snapshot)
-            await host.channel_generation_host.recover_durable_inbounds()
+            await custody.recover_durable_inbounds()
 
+            assert custody.completed == 0
+            assert manager.inbound_store.list_inbound_handoffs()
+            await host._resume_source_admission(snapshot)
+            await custody.recover_durable_inbounds()
             assert custody.completed == 1
             assert manager.inbound_store.list_inbound_handoffs() == []
-            await host.snapshot_store.resume(snapshot)
     finally:
         manager.close()
 
@@ -593,28 +624,18 @@ async def test_adapter_stop_failure_retains_reservation_owner_until_retry(tmp_pa
             adapter.stop = fail_stop
             key = (host.current_snapshot.snapshot_id, "akashic")
             with pytest.raises(RuntimeError, match="cleanup failed"):
-                await host.channel_generation_host._stop_binding(key)
-            assert host.channel_generation_host.failure(
-                host.current_snapshot.snapshot_id, "akashic"
-            ) is not None
-            assert "handoff-1" in host.channel_generation_host._durable_reservation_owners
-            assert "handoff-1" in host.channel_generation_host._bindings[key].durable_reservations
+                await channels(host)._stop_binding(key)
+            assert not channels(host)._bindings[key].stopped
+            assert "handoff-1" in channels(host)._durable_reservation_owners
+            assert "handoff-1" in channels(host)._bindings[key].durable_reservations
             assert not custody._durable_admissions["handoff-1"].recoverable
 
             async def successful_stop():
                 return StopReceipt(adapter.context.binding_token, True)
 
             adapter.stop = successful_stop
-            await host.channel_generation_host.retry_generation_cleanup(
-                adapter.context.binding_token
-            )
-            assert host.channel_generation_host.failure(
-                host.current_snapshot.snapshot_id, "akashic"
-            ) is None
-            # This test drives the binding's private retry directly; detach
-            # the manager facade before the fixture's normal full shutdown.
-            host._active_channel_generation = None
-            host._active_channel_catalog_identity = None
+            await channels(host)._stop_binding_critical(key)
+            assert channels(host)._bindings[key].stopped
     finally:
         manager.close()
 
@@ -656,7 +677,7 @@ async def test_reserve_cancellation_registers_owner_before_propagating(tmp_path)
                 await reserving
 
             key = (host.current_snapshot.snapshot_id, "akashic")
-            assert host.channel_generation_host._durable_reservation_owners[
+            assert channels(host)._durable_reservation_owners[
                 "handoff-1"
             ] == key
             assert await durable.defer("handoff-1") is None
@@ -686,10 +707,10 @@ async def test_same_host_replacement_recovers_reserve_only_row_without_manual_re
             durable = adapter.ports.durable_inbound
             assert durable is not None
             assert await durable.reserve(mobile_raw())
-            replacement = await host._compile_topology_snapshot(
-                dict(host._active_generations)
-            )
-            await host._publish_committed_snapshot(replacement)
+            await host._run_operation(lambda: host._replace_formal_root(
+                dict(host._active_generations), expected_ref=host._selection.read(),
+            ))
+            await custody.committed.wait()
             messages = log.reader("akashic:room").snapshot()
             assert [item.message_id for item in messages] == ["mobile-1"]
             assert custody.completed == 1
@@ -699,46 +720,32 @@ async def test_same_host_replacement_recovers_reserve_only_row_without_manual_re
 
 
 @pytest.mark.asyncio
-async def test_same_host_replacement_recovery_failure_restores_old_binding(tmp_path):
-    """A post-open recovery error rolls the stable channel owner back."""
-
+async def test_recovery_failure_keeps_committed_root_and_pending_input(tmp_path):
+    """恢复失败不回滚已经提交的选择，也不删 pending 输入。"""
     from session.manager import SessionManager
 
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
         initialize_plugin_workspace(tmp_path / "workspace")
-        async with runtime(
-            tmp_path,
-            channel_name="akashic",
-            session_manager=manager,
-            recover=False,
-        ) as (_, host, custody, _, _, adapter):
+        async with runtime(tmp_path, channel_name="akashic", session_manager=manager, recover=False) as (_, host, custody, _, _, adapter):
             durable = adapter.ports.durable_inbound
-            assert durable is not None
             assert await durable.reserve(mobile_raw())
             await durable.defer("handoff-1")
             original = host.current_snapshot
-            recover = host.channel_generation_host.recover_durable_inbounds
-            calls = 0
+            channel = channels(host)
+            recover = channel._recover_inbound
 
-            async def fail_once():
-                nonlocal calls
-                calls += 1
-                if calls == 1:
-                    raise KeyError("temporary recovery failure")
-                return await recover()
+            async def fail(*args, **kwargs):
+                raise KeyError("temporary recovery failure")
 
-            host.channel_generation_host.recover_durable_inbounds = fail_once
-            replacement = await host._compile_topology_snapshot(
-                dict(host._active_generations)
-            )
+            channel._recover_inbound = fail
             with pytest.raises(KeyError, match="temporary recovery failure"):
-                await host._publish_committed_snapshot(replacement)
+                await custody.recover_durable_inbounds()
             assert host.current_snapshot is original
-            restored_key = (original.snapshot_id, "akashic")
-            assert host.channel_generation_host._bindings[restored_key].admission_open
-            assert calls == 2
+            assert manager.inbound_store.list_inbound_handoffs()
+            channel._recover_inbound = recover
+            await custody.recover_durable_inbounds()
             assert not manager.inbound_store.list_inbound_handoffs()
     finally:
         manager.close()
@@ -750,7 +757,7 @@ async def test_old_port_cannot_settle_handoff_reclaimed_by_next_generation(tmp_p
 
     from dataclasses import replace
     from session.manager import SessionManager
-    from agent.plugins.channel_generation_host import _ChannelDurableInbound
+    from plugins.channels.provider import _ChannelDurableInbound
 
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
@@ -766,7 +773,7 @@ async def test_old_port_cannot_settle_handoff_reclaimed_by_next_generation(tmp_p
             assert old_port is not None
             raw_message = mobile_raw()
             assert await old_port.reserve(raw_message)
-            channel_host = host.channel_generation_host
+            channel_host = channels(host)
             old_key = (host.current_snapshot.snapshot_id, "akashic")
             old_state = channel_host._bindings[old_key]
             old_state.admission_open = False
@@ -878,7 +885,7 @@ async def test_mobile_precommit_cancel_or_shutdown_keeps_exact_attachment_handof
             await asyncio.wait_for(custody.reserved.wait(), 2)
             if close_bus:
                 # Core 停机先终结 ingress，再释放进程接纳权。
-                host.channel_generation_host.close_admission(host.current_snapshot.snapshot_id)
+                host._pause_source_admission()
             submit.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(submit, 2)

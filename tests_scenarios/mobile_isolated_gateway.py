@@ -917,7 +917,6 @@ async def attach_open_mobile_v3(channel: Any, ingress: Any) -> Any:
         boot_id="test-boot",
         binding_token="device-perf-binding",
         config={},
-        provider_client_factory=cast(Any, object()),
         ingress=ingress,
         identity=None,
     )

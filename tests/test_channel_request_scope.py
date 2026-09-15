@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -15,6 +16,7 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 MODULE = '''import asyncio
 from agent.plugin_composition import (
     CHANNELS, TIMERS, ChannelCapability, ChannelDefinition, ChannelReady, StopReceipt, InboundIdentity)
+from agent.plugin_composition.channels import CHANNEL_INPUT
 api_version = 3
 name = "request_channel"
 version = "1.0.0"
@@ -55,13 +57,16 @@ def build_channel(context):
             raise AssertionError("request scope test must not send")
     return Adapter()
 async def apply(ctx):
+    async def unused_input(*args):
+        raise AssertionError("request test cannot accept input")
+    await ctx.provide(CHANNEL_INPUT, unused_input)
     async def child(child_ctx):
         global declaration_context
         declaration_context = child_ctx
         await child_ctx.require(CHANNELS).register(child_ctx, ChannelDefinition(
             name="request-test", capabilities=frozenset({ChannelCapability.INBOUND, ChannelCapability.OUTBOUND}),
-            factory_export="build_channel", inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID))
-    await ctx.mount(child, name="listener", inject=(CHANNELS,))
+            factory=build_channel, inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID))
+    await ctx.mount(child, name="listener", inject=(CHANNELS, CHANNEL_INPUT))
 '''
 
 
@@ -73,6 +78,7 @@ async def test_request_scope_keeps_child_grants_and_blocks_shutdown_until_releas
     source = tmp_path / "plugins/request_channel"
     source.mkdir(parents=True)
     (source / "plugin.py").write_text(MODULE)
+    shutil.copytree(Path(__file__).parents[1] / "plugins/channels", source.parent / "channels", ignore=shutil.ignore_patterns("__pycache__"))
     log = MessageLog(tmp_path / "sessions.db")
     initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager(

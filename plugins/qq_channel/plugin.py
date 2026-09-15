@@ -8,6 +8,8 @@ from agent.plugin_composition import (
     InboundIdentity,
 )
 
+from agent.plugin_composition.channels import CHANNEL_INPUT
+
 from .channel import QQChannelAdapter, build_qq_channel
 from .config import QQChannelConfig
 
@@ -16,7 +18,7 @@ name = "qq_channel"
 version = "3.0.0"
 desc = "NapCat OneBot QQ inbound and outbound v3 channel adapter"
 author = "Akashic"
-inject = (CHANNELS,)
+inject = (CHANNELS, CHANNEL_INPUT)
 Config = QQChannelConfig
 
 
@@ -31,7 +33,8 @@ async def apply(ctx: Context) -> None:
         ChannelDefinition(
             name="qq",
             capabilities=frozenset({ChannelCapability.INBOUND, ChannelCapability.OUTBOUND}),
-            factory_export="build_qq_channel",
+            factory=build_qq_channel,
+            config=ctx.config,
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
         ),
     )
