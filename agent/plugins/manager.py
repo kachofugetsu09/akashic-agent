@@ -9,13 +9,11 @@ import logging
 import os
 import secrets
 import shutil
-import sqlite3
 import sys
-import time
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from contextvars import Context as TaskContext
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from typing import Any, Literal, TypeVar, cast
 from uuid import uuid4
@@ -31,7 +29,7 @@ from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironment
 from agent.plugins.validation import ValidationHost
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, PluginUpdates, UpdateStatus
 from session.artifact_store import ArtifactStore
-from agent.plugin_composition.config_input import CONFIG_INPUT, check_config_format, load_config
+from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
 from agent.plugin_composition.runtime_catalog import (
@@ -46,6 +44,7 @@ from agent.plugin_composition.messages import (
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from session.log import MessageCatalog, MessageLog
+from session.message import Message
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import RuntimeScope
 from agent.restart import RESTART_GATE, RestartGate
@@ -1854,8 +1853,27 @@ class PluginManager:
         ready = (update.phase == "armed" and candidate is not None and update.reload_tx_id is not None
                  and candidate.reload_tx_id == update.reload_tx_id
                  and self._reload_journal.get(update.reload_tx_id).phase == "latest_ready")
+        record = None if update.reload_tx_id is None else self._reload_journal.get(update.reload_tx_id)
+        evidence = None
+        if update.reload_tx_id is not None:
+            for event in self._reload_journal.events(update.reload_tx_id):
+                if event.details.get("event") == "business_validation_opened":
+                    evidence = cast(str, event.details["workspace"])
         return UpdateStatus(update_id, update.plugin_id, update.phase, ready,
-                            self.update_is_publishing(update_id), update.error)
+                            self.update_is_publishing(update_id), update.error,
+                            None if record is None else record.candidate_snapshot_id,
+                            None if record is None else record.phase, evidence)
+
+    def read_validation_messages(self, update_id: str, session_id: str) -> tuple[Message, ...]:
+        """按更新固定的候选读取当前调用证据；没有活动调用时不打开或创建数据库。"""
+        update = self._reload_journal.update(update_id)
+        if update.reload_tx_id is None:
+            return ()
+        snapshot_id = self._reload_journal.get(update.reload_tx_id).candidate_snapshot_id
+        for host in self._validation_hosts.values():
+            if host.parent_lease.snapshot.snapshot_id == snapshot_id:
+                return host.messages.reader(session_id).snapshot()
+        return ()
 
     def start_update_publication(self, update_id: str) -> None:
         """同步接纳无 lease 的宿主任务；返回只表示已接纳，不表示已晋升。"""
@@ -1872,6 +1890,10 @@ class PluginManager:
         ready = self._require_ready_candidate(update.plugin_id)
         if ready.candidate.reload_tx_id != update.reload_tx_id:
             raise RuntimeError("更新恢复点与当前候选不匹配")
+        if self._reload_journal.get(cast(str, update.reload_tx_id)).phase != "latest_ready":
+            raise RuntimeError("候选已失去提交授权")
+        if update.error:
+            raise RuntimeError("候选调用失败或结果未知，不能发布")
         retained = [host.identity for host in self._validation_hosts.values()
                     if host.parent_lease.snapshot is ready.snapshot]
         if retained:
@@ -1906,6 +1928,11 @@ class PluginManager:
     async def _publish_update(self, update_id: str, plugin_id: str) -> None:
         """沿原发布 owner 排空和切换；失败作为恢复点诊断保留。"""
         try:
+            # 调用者仍可读状态和 revert；在它释放正式租约前不开始关闭候选或旧组合。
+            current = self.current_snapshot
+            if current is not None:
+                await self._snapshot_store.wait_for_no_leases(current)
+            self._check_operation_commit()
             _ = await self._switch_ready(plugin_id, update_id=update_id)
         except asyncio.CancelledError:
             if self._reload_journal.update(update_id).phase == "committed":
@@ -2331,6 +2358,10 @@ class PluginManager:
         def before_open() -> None:
             if self._reload_journal.get(tx_id).phase != "latest_ready":
                 raise RuntimeError("更新已失去发布授权")
+            if update_id is not None:
+                update = self._reload_journal.update(update_id)
+                if update.phase != "armed" or update.reload_tx_id != tx_id or update.error:
+                    raise RuntimeError("更新请求已撤销或失去精确候选授权")
             self._advance_reload(candidate, "promoting")
 
         try:
@@ -2746,9 +2777,50 @@ class PluginManager:
 
 
     async def discard_update(self, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
-        await self._run_operation(
-            lambda: self._discard_update(update_id, reason=reason), allow_stable_lease=True,
-        )
+        """先同步撤销提交权，再等待原调用和资源退出；提交后明确拒绝假回滚。"""
+        deadline = asyncio.get_running_loop().time() + self.POST_PUBLISH_TIMEOUT_SECONDS
+        self._reject_operation_lease(allow_stable_lease=True)
+        update = self._reload_journal.update(update_id)
+        if update.phase == "committed" or (
+            self._update_publication is not None and self._update_publication[0] == update_id
+            and self._operation is not None and self._operation.committed is not None
+        ):
+            raise RuntimeError("更新已提交；revert 不能撤销已提交选择或插件数据")
+        ready = self._require_ready_candidate(update.plugin_id)
+        if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
+            raise RuntimeError("更新与当前待处理候选不匹配")
+        publication = self._publication
+        if (publication is not None and publication.must_retain
+                and publication.candidate.generations.get(update.plugin_id) is not None
+                and publication.candidate.generations[update.plugin_id].reload_tx_id == update.reload_tx_id):
+            raise RuntimeError("提交结果已确认或不确定；保留恢复 owner，不能伪称 revert 成功")
+        phase = self._reload_journal.get(cast(str, update.reload_tx_id)).phase
+        if phase in {"latest_ready", "promoting"}:
+            self._advance_reload(ready.candidate, "discarding", error=reason)
+        elif phase != "discarding":
+            raise RuntimeError(f"候选不能从 {phase} revert；请沿原恢复 owner 处理")
+        self._reload_journal.record_update_error(update_id, reason)
+        self._notify_updates()
+        current = asyncio.current_task()
+        running = tuple(host.task for host in self._validation_hosts.values()
+                        if host.parent_lease.snapshot is ready.snapshot and host.active)
+        if current in running:
+            raise RuntimeError("提交权已撤销；请先退出自己的候选调用再清理")
+        for task in running:
+            task.cancel()
+        operation = self._operation
+        if (self.update_is_publishing(update_id) and operation is not None
+                and operation.task is self._update_publication[1]):
+            operation.revoke()
+            async with asyncio.timeout_at(deadline):
+                await asyncio.wait((operation.task,))
+        if running:
+            async with asyncio.timeout_at(deadline):
+                await asyncio.wait(running)
+        async with asyncio.timeout_at(deadline):
+            await self._run_operation(
+                lambda: self._discard_update(update_id, reason=reason), allow_stable_lease=True,
+            )
 
     async def _discard_update(self, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
         """持候选锁核对原请求；不能撤销期间已被替换的另一候选。"""
@@ -3396,6 +3468,11 @@ class PluginManager:
         ready = self._require_ready_candidate(update.plugin_id)
         if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
             raise RuntimeError("更新恢复点与当前候选不匹配")
+        if self._reload_journal.get(cast(str, update.reload_tx_id)).phase != "latest_ready" or update.error:
+            raise RuntimeError("候选调用已失败或提交权已撤销")
+        if any(event.details.get("event") == "business_validation_opened"
+               for event in self._reload_journal.events(cast(str, update.reload_tx_id))):
+            raise RuntimeError("已有候选调用只能查询，未知结果不得重跑")
         lease = self._snapshot_store.lease(ready.snapshot.snapshot_id)
         host: ValidationHost | None = None
         scope: BindingScope | None = None
@@ -3404,8 +3481,6 @@ class PluginManager:
                 host = await self._build_validation_host(lease)
                 host.task = caller
                 self._validation_hosts[host.identity] = host
-                await self._copy_validation_bindings(host)
-                await self._copy_validation_artifacts(host)
                 self._reload_journal.annotate(cast(str, update.reload_tx_id), {
                     "event": "business_validation_opened", "validation_id": host.identity,
                     "candidate_generation": ready.candidate.generation_id,
@@ -3427,6 +3502,8 @@ class PluginManager:
                     lambda: child._snapshot_store.acquire_composition_root(root)
                 )
                 ordered = tuple(generations[key] for key in sorted(generations))
+                for generation in ordered:
+                    ensure_workspace_plugin_data_dir(generation.data_dir, host.workspace)
                 await child._provide_composition_services(root, ordered, candidate=False)
                 for generation in ordered:
                     await child._mount_generation_composition(root, generation)
@@ -3464,35 +3541,18 @@ class PluginManager:
     async def _build_validation_host(
         self, lease: RuntimeSnapshotLease,
     ) -> ValidationHost:
-        """先读取排除声明，再复制候选数据，最后固定消息库副本。"""
-        if self._message_log is None:
-            raise RuntimeError("业务验证缺少正式 MessageLog")
+        """建立独立消息 owner 与固定代码；不扫描或复制插件业务数据。"""
         identity = secrets.token_hex(16)
         workspace = self._workspace / "runtime" / "plugin-update-validation" / identity / "workspace"
         workspace.mkdir(parents=True)
         archive = PluginArchive(workspace / "runtime" / "plugin-archives")
-        messages: MessageLog | None = None
-        try:
-            bindings = self._message_log.read_bindings()
-            await self._copy_validation_components(
-                lease.snapshot, workspace, archive, bindings,
-            )
-            # 图副本可能引用复制期间追加的 Message；最后一次 backup 必须覆盖这些引用。
-            await _copy_in_thread(self._message_log.backup, workspace / "sessions.db")
-            messages = MessageLog(workspace / "sessions.db")
-            # 新 binding 可能带来旧凭据排除声明；不开放按较早声明复制的数据。
-            # backup 之后追加的 binding 不在副本内，必须再对正式库复查一次。
-            if (
-                messages.read_bindings() != bindings
-                or self._message_log.read_bindings() != bindings
-            ):
-                raise RuntimeError("候选复制期间 binding 已变化；本次验证副本不可用")
-        except BaseException:
-            if messages is not None:
-                messages.close()
-            await _copy_in_thread(_remove_validation_data_dir, workspace.parent)
-            raise
-        assert messages is not None
+        for generation in lease.snapshot.generations.values():
+            ref = self._generation_archive_ref(generation)
+            record = self._archive.read_descriptor(ref)
+            code = cast(str, record["code"])
+            if archive.save(self._archive.open(code)) != code or archive.save_descriptor(record) != ref:
+                raise RuntimeError("隔离候选固定制品身份不一致")
+        messages = MessageLog(workspace / "sessions.db")
         try:
             artifacts = ArtifactStore(workspace / "sessions.db")
         except BaseException:
@@ -3516,90 +3576,6 @@ class PluginManager:
         assert task is not None
         return ValidationHost(identity, workspace, child, messages, artifacts, bus, task, lease.fork())
 
-    async def _copy_validation_components(
-        self,
-        snapshot: RuntimeSnapshot,
-        workspace: Path,
-        archive: PluginArchive,
-        bindings: tuple[Mapping[str, object], ...],
-    ) -> None:
-        """逐项保存声明数据；每个 SQLite 自身一致，不承诺跨文件的共同切点。"""
-        binding_exclusions = self._validation_binding_exclusions(bindings)
-        for generation in snapshot.generations.values():
-            if generation.archive_ref is None:
-                raise RuntimeError(f"验证组件缺少归档: {generation.plugin_id}")
-            record = self._archive.read_descriptor(generation.archive_ref)
-            code = cast(str, record["code"])
-            if archive.save(self._archive.open(code)) != code:
-                raise RuntimeError("验证代码副本身份不一致")
-            if archive.save_descriptor(record) != generation.archive_ref:
-                raise RuntimeError("验证组件描述身份不一致")
-            data_dir = workspace / cast(str, record["data_dir"])
-            validate_workspace_plugin_data_path(data_dir, workspace)
-            excluded = set(_candidate_data_exclude_paths(generation.static_manifest))
-            excluded.update(binding_exclusions.get(cast(str, record["data_dir"]), ()))
-            # 历史 binding 的旧声明必须在 current data 首次复制前生效。
-            _ = await _copy_in_thread(
-                _copy_validation_tree, generation.data_dir, data_dir,
-                tuple(sorted(excluded)),
-            )
-        plugins = tuple(cast(ComposablePlugin, item.instance) for item in snapshot.generations.values())
-        await self._project_candidate_workspace_roots(plugins, workspace)
-        await self._project_candidate_workspace_files(plugins, workspace)
-
-    def _validation_binding_exclusions(
-        self, bindings: tuple[Mapping[str, object], ...],
-    ) -> dict[str, tuple[str, ...]]:
-        """只读扫描固定 binding manifest，提前合并候选数据的排除路径。"""
-        exclusions: dict[str, set[str]] = {}
-        for binding in bindings:
-            if binding["version"] != 1:
-                raise ValueError("验证副本包含不支持的 binding 版本")
-            root = self._archive.read_descriptor(cast(str, binding["root_ref"]))
-            for component_ref in cast(tuple[str, ...], root["components"]):
-                record = self._archive.read_descriptor(component_ref)
-                plugin_dir = self._archive.open(cast(str, record["code"]))
-                manifest = load_static_plugin_manifest(plugin_dir)
-                exclusions.setdefault(cast(str, record["data_dir"]), set()).update(
-                    _candidate_data_exclude_paths(manifest)
-                )
-        return {data_dir: tuple(sorted(paths)) for data_dir, paths in exclusions.items()}
-
-    async def _copy_validation_bindings(self, host: ValidationHost) -> None:
-        """只保存 binding provenance，不导入旧代码、数据或 workspace。"""
-        archive = host.manager._archive
-        current = {item.archive_ref for item in host.parent_lease.snapshot.generations.values()}
-        refs = dict.fromkeys(cast(str, ref) for ref in current)
-        for binding in host.messages.read_bindings():
-            if binding["version"] != 1:
-                raise ValueError("验证副本包含不支持的 binding 版本")
-            root_ref = cast(str, binding["root_ref"])
-            root = self._archive.read_descriptor(root_ref)
-            if archive.save_descriptor(root) != root_ref:
-                raise RuntimeError("验证 binding 闭包身份不一致")
-            refs.update(dict.fromkeys(cast(tuple[str, ...], root["components"])))
-
-        for ref in refs:
-            record = self._archive.read_descriptor(ref)
-            if archive.save_descriptor(record) != ref:
-                raise RuntimeError("验证历史组件身份不一致")
-
-    async def _copy_validation_artifacts(self, host: ValidationHost) -> None:
-        """复制消息副本已引用的不可变文件，读取仍经过正式 Artifact owner 校验。"""
-        for record in host.artifacts.list_attachments():
-            if self._artifact_read is None:
-                raise RuntimeError("验证历史 Artifact 缺少读取能力")
-            lease = await self._artifact_read.acquire(record.ref)
-            try:
-                payload = await lease.read_bytes(max_bytes=record.ref.size_bytes)
-                path = host.workspace / record.storage_key
-                path.parent.mkdir(parents=True, exist_ok=True)
-                def write_payload() -> None:
-                    with path.open("xb") as output:
-                        _ = output.write(payload)
-                await _copy_in_thread(write_payload)
-            finally:
-                await lease.aclose()
 
     async def stop_validation_resources(self) -> None:
         """验证宿主也经同一关闭 owner；迟到清理不能绕过 shutdown。"""
@@ -3730,10 +3706,6 @@ class PluginManager:
         workspace = self._workspace
         if candidate_owner is not None:
             workspace = self._workspace / "runtime" / "plugin-validation" / secrets.token_hex(16) / "workspace"
-            root._defer_internal_cleanup(
-                "candidate_data",
-                lambda: _copy_in_thread(_remove_validation_data_dir, workspace.parent),
-            )
         try:
             actual = self._archived_generations(
                 components, root, workspace=workspace, sources=sources,
@@ -3741,21 +3713,9 @@ class PluginManager:
             generations.clear()
             generations.update(actual)
             ordered = tuple(actual.values())
-            if candidate_owner is not None:
-                for item in ordered:
-                    record = self._archive.read_descriptor(self._generation_archive_ref(item))
-                    source_data = self._workspace / cast(str, record["data_dir"])
-                    item.data_dir.parent.mkdir(parents=True, exist_ok=True)
-                    await _copy_in_thread(
-                        _copy_validation_tree, source_data, item.data_dir,
-                        _candidate_data_exclude_paths(item.static_manifest),
-                    )
-                plugins = tuple(cast(ComposablePlugin, item.instance) for item in ordered)
-                await self._project_candidate_workspace_roots(plugins, workspace)
-                await self._project_candidate_workspace_files(plugins, workspace)
-            else:
-                for item in ordered:
-                    ensure_workspace_plugin_data_dir(item.data_dir, workspace)
+            # 数据初始化由实际插件完成；每个实例只获得自己环境的数据目录。
+            for item in ordered:
+                ensure_workspace_plugin_data_dir(item.data_dir, workspace)
             await self._provide_composition_services(
                 root, ordered, candidate=candidate_owner is not None,
             )
@@ -4072,43 +4032,6 @@ class PluginManager:
         )
 
 
-    async def _project_candidate_workspace_roots(
-        self,
-        plugins: tuple[ComposablePlugin, ...],
-        attempt_workspace: Path,
-    ) -> None:
-        """把声明式共享目录复制到一次 candidate attempt。"""
-
-        # 1. 全部 generation 由同一个 Manager workspace 发布。
-        names: set[str] = set()
-        for plugin in plugins:
-            names.update(plugin.workspace_roots)
-
-        # 2. 缺失目录保持缺失；已有目录获得独立副本。
-        for name in sorted(names):
-            source = resolve_declared_workspace_root(self._workspace, name)
-            if not source.exists():
-                continue
-            _ = await _copy_in_thread(_copy_validation_tree, source, attempt_workspace / name, ())
-
-    async def _project_candidate_workspace_files(
-        self,
-        plugins: tuple[ComposablePlugin, ...],
-        attempt_workspace: Path,
-    ) -> None:
-        """Copy declared product files into the isolated candidate workspace."""
-
-        names = {name for plugin in plugins for name in plugin.workspace_files}
-        for name in sorted(names):
-            source = resolve_declared_workspace_file(self._workspace, name)
-            if not source.exists():
-                continue
-            target = attempt_workspace / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if _is_sqlite_database(source):
-                await _copy_in_thread(_copy_sqlite_snapshot, source, target)
-            else:
-                _ = await _copy_in_thread(shutil.copy2, source, target)
 
 
     def _resolve_runtime_command(
@@ -4524,18 +4447,6 @@ def _installed_artifact_base_from_root(plugin_dir: Path) -> Path:
     )
 
 
-def _remove_validation_data_dir(path: Path) -> None:
-    if path.exists():
-        shutil.rmtree(path)
-
-
-def _candidate_data_exclude_paths(
-    manifest: StaticPluginManifest | None,
-) -> tuple[str, ...]:
-    """验证副本只排除插件显式声明的数据路径。"""
-    if manifest is None:
-        return ()
-    return tuple(sorted(manifest.exclude_data_paths))
 
 
 def _validate_candidate_formal_snapshot_identity(
@@ -4565,123 +4476,6 @@ async def _copy_in_thread(copy_files: Callable[..., U], *args: Any, **kwargs: An
     return result
 
 
-def _copy_validation_tree(
-    source: Path,
-    target: Path,
-    exclude_paths: tuple[str, ...],
-    *, keep_existing: bool = False,
-) -> tuple[str, ...]:
-    """复制已核对的数据树；历史补全可保留已经固定的候选文件。"""
-    if ".plugin-credentials" in source.parts:
-        raise RuntimeError("候选不能复制正式私有凭据目录")
-    excluded = tuple(PurePosixPath(item).as_posix() for item in exclude_paths)
-
-    # 1. A new plugin has no formal bytes; candidate starts from an empty tree.
-    if not source.exists():
-        target.mkdir(parents=True, exist_ok=keep_existing)
-        return ()
-    if source.parent.name == "plugin-data":
-        check_config_format(source)
-    source_root = source.resolve(strict=True)
-
-    # 2. Candidate data must never retain an edge back into formal storage.
-    for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
-        root = Path(directory)
-        if ".plugin-credentials" in dirnames:
-            raise RuntimeError("候选数据不能包含正式私有凭据目录")
-        relative_dir = root.relative_to(source_root)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
-        ]
-        retained_files = [
-            name
-            for name in filenames
-            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
-        ]
-        for name in (*dirnames, *retained_files):
-            path = root / name
-            if path.is_symlink():
-                raise RuntimeError(f"candidate 数据不允许复制符号链接: {path}")
-            if not path.is_file() and not path.is_dir():
-                raise RuntimeError(f"candidate 数据只能复制普通文件或目录: {path}")
-
-    # 3. Copy SQLite through its snapshot API; never race WAL/SHM companion files.
-    target.mkdir(parents=True, exist_ok=keep_existing)
-    for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
-        root = Path(directory)
-        if ".plugin-credentials" in dirnames:
-            raise RuntimeError("候选数据不能包含正式私有凭据目录")
-        relative_dir = root.relative_to(source_root)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
-        ]
-        for name in dirnames:
-            relative = relative_dir / name
-            (target / relative).mkdir(exist_ok=keep_existing)
-        retained = [name for name in filenames
-                    if not _candidate_data_path_is_excluded(relative_dir / name, excluded)]
-        databases = {name for name in retained if _is_sqlite_database(root / name)}
-        sidecars = {name + suffix for name in databases for suffix in ("-wal", "-shm")}
-        for name in retained:
-            if name in sidecars:
-                continue
-            relative = relative_dir / name
-            source_file = root / name
-            target_file = target / relative
-            if keep_existing and target_file.exists():
-                continue
-            if name in databases:
-                _copy_sqlite_snapshot(source_file, target_file)
-            else:
-                _ = shutil.copy2(source_file, target_file)
-
-    # 4. Freeze a relative file inventory for review and Gate evidence.
-    inventory: list[str] = []
-    for directory, _dirnames, filenames in os.walk(target):
-        root = Path(directory)
-        for filename in filenames:
-            inventory.append(root.joinpath(filename).relative_to(target).as_posix())
-    return tuple(sorted(inventory))
-
-
-def _is_sqlite_database(path: Path) -> bool:
-    with path.open("rb") as stream:
-        return stream.read(16) == b"SQLite format 3\x00"
-
-
-_SQLITE_BACKUP_LOCK_TIMEOUT_SECONDS = 5.0
-
-
-def _copy_sqlite_snapshot(source: Path, target: Path) -> None:
-    """Copy one transactionally consistent SQLite snapshot."""
-
-    deadline = time.monotonic() + _SQLITE_BACKUP_LOCK_TIMEOUT_SECONDS
-
-    def check_progress(status: int, remaining: int, total: int) -> None:
-        # Chromium 等外部进程可持有独占锁；失败由候选 owner 撤销临时副本。
-        if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) and time.monotonic() >= deadline:
-            raise TimeoutError(f"候选 SQLite 备份等待锁超时: {source}")
-
-    reader = sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)
-    writer = sqlite3.connect(target, timeout=0.0)
-    try:
-        reader.backup(writer, pages=256, progress=check_progress, sleep=0.05)
-    finally:
-        writer.close()
-        reader.close()
-    _ = shutil.copymode(source, target)
-
-
-def _candidate_data_path_is_excluded(
-    relative_path: Path,
-    excluded: tuple[str, ...],
-) -> bool:
-    relative = relative_path.as_posix()
-    return any(relative == item or relative.startswith(item + "/") for item in excluded)
 
 
 def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:

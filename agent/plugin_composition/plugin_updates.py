@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from agent.plugin_composition.bindings import BindingScope
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
+from agent.plugin_contracts import Message
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
@@ -23,6 +24,9 @@ class UpdateStatus:
     ready: bool
     publishing: bool
     error: str
+    candidate_id: str | None = None
+    candidate_phase: str | None = None
+    evidence: str | None = None
 
 
 class PluginUpdates:
@@ -49,6 +53,10 @@ class PluginUpdates:
             return host.read_update(update_id)
         except KeyError:
             return None
+
+    def messages(self, ctx: Context, update_id: str, session_id: str) -> tuple[Message, ...]:
+        """只读取该更新当前隔离调用的消息，不开放正式库或 SQL。"""
+        return self._request(ctx, update_id).read_validation_messages(update_id, session_id)
 
     async def install(
         self, ctx: Context, update_id: str, *, source: str, marketplace: str,

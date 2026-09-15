@@ -132,9 +132,9 @@ async def test_queued_publication_cannot_publish_a_replacement_candidate(tmp_pat
         await host.discard_update(first.update_id)
         second, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         release.set()
-        await asyncio.wait_for(host._update_publication[1], 10)
+        with pytest.raises(asyncio.CancelledError):
+            await host._update_publication[1]
         assert host.reload_journal.update(first.update_id).phase == "rolled_back"
-        assert "不匹配" in host.reload_journal.update(first.update_id).error
         assert host.reload_journal.update(second.update_id).phase == "armed"
         assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "old"
         assert host.ready_candidate.reload_tx_id == host.reload_journal.update(second.update_id).reload_tx_id

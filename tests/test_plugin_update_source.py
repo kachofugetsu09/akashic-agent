@@ -79,6 +79,28 @@ async def apply(ctx):
             identity = receipt.get("update_id")
             assert isinstance(identity, str)
             assert receipt.get("phase") == "armed"
+            assert not host._validation_hosts
+            assert host._update_publication is None
+            if passed is not None:
+                latest_binding = tools.bind(
+                    root.require(ALL_TOOLS)().select("plugin_latest"), root.require(BINDINGS),
+                )
+                output.append("latest-call", Output((ToolCall(
+                    latest_binding, {"update_id": identity, "action": "run"},
+                ),), "continue"))
+                latest_writer = log.writer(
+                    "test:room", author="tool", source="conversation", body_types=(ToolResult,),
+                    content={"text": check_text}, call_ref=CallRef("latest-call", 0),
+                )
+                latest_reply = MessageReply(
+                    "latest-result", CallRef("latest-call", 0), reader, latest_writer, lambda: None,
+                )
+                latest_result = await tools.execution(authorize).execute_call(latest_reply)
+                assert latest_result.outcome == ("success" if passed else "error")
+                if passed:
+                    assert latest_result.parts[0].value == "finished"
+                    assert host.read_update(identity).publishing
+                    assert PluginSelection(tmp_path / "workspace").read() == stable
         async def restart():
             nonlocal log, host, reader
             await host.terminate_all()
@@ -97,7 +119,7 @@ async def apply(ctx):
             assert PluginSelection(tmp_path / "workspace").read() == stable
             assert host.ready_candidate is None
             assert host.generation("probe@lab") is None
-        report_id = identity + (":problem" if passed is None else ":complete")
+        report_id = identity + (":complete" if passed else ":problem")
         # 只等待真实追加通知；原 conversation 保持 open，没有 terminal 来驱动发布。
         async with asyncio.timeout(20):
             async for _ in log.catalog().follow():
@@ -112,7 +134,9 @@ async def apply(ctx):
             assert update.phase == "armed"
             assert update.error and "explicit settlement" in update.error
         else:
-            assert update.phase == ("committed" if passed else "rolled_back")
+            assert update.phase == ("committed" if passed else "armed")
+            if not passed:
+                assert update.error
         assert not any(isinstance(row.body, Output) and row.body.finish == "complete"
                        for row in rows if row.source == "conversation")
         databases = list((tmp_path / "workspace/runtime/plugin-update-validation").glob("*/workspace/sessions.db"))
@@ -120,7 +144,10 @@ async def apply(ctx):
         if databases:
             with closing(MessageLog(databases[0])) as validation:
                 validation_rows = validation.reader("plugin-validation:" + identity).snapshot()
-                assert tuple(type(row.body) for row in validation_rows) == (Input, Output, ToolResult, Output)
+                assert tuple(type(row.body) for row in validation_rows[:3]) == (Input, Output, ToolResult)
+                if passed:
+                    assert isinstance(validation_rows[-1].body, Output)
+                    assert validation_rows[-1].body.finish == "complete"
                 assert validation.reader("plugin-validation:" + identity).attributes.learning == "excluded"
             assert (next(databases[0].parent.rglob("effect.txt"))).read_text() == "once\n"
         for generation in host.current_snapshot.generations.values():

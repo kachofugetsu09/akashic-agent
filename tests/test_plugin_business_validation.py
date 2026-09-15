@@ -1,13 +1,11 @@
 """真实候选的独立消息/Task 与清理；不把程序验证冒充正式来源启动。"""
 import asyncio
 from contextlib import closing
-from typing import cast
 
 import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
-from agent.plugin_composition.config_input import save_config, load_config
 
 from agent.plugin_composition import ServiceKey
 from agent.plugins.install import install_git_plugin
@@ -123,7 +121,7 @@ async def apply(ctx):
             entered.set()
             await release.wait()
             path = ctx.runtime.data_dir / "history.txt"
-            assert path.read_text() == "formal history"
+            assert not path.exists()
             path.write_text("isolated effect")
             return writer.append("output", Output((ContentPart("text", "old"),), "complete"))
         task = await ctx.require(TASKS).open(ctx).admit("validation", lambda slot: slot.start(program))
@@ -254,28 +252,6 @@ async def test_shutdown_waits_for_validation_cleanup_already_in_progress(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_validation_copy_failure_closes_connections_and_releases_candidate(tmp_path):
-    source, workspace, old, log, host = prepare(tmp_path)
-    try:
-        await host.load_all()
-        (source / "plugin.py").write_text(MODULE + "\nmarker = 'new'\n")
-        _commit(source)
-        result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        (host.ready_candidate.data_dir / "invalid-link").symlink_to(old.data_path / "history.txt")
-        with pytest.raises(RuntimeError, match="符号链接"):
-            async with host.open_validation(result.update_id):
-                pytest.fail("invalid data was copied")
-        assert host._validation_hosts == {}
-        assert host.latest_snapshot.lease_count == 0
-        for database in (workspace / "runtime/plugin-update-validation").glob("*/workspace/sessions.db"):
-            with closing(MessageLog(database)) as recovered:
-                assert recovered.reader("validation").snapshot() == ()
-    finally:
-        await host.terminate_all()
-        log.close()
-
-
-@pytest.mark.asyncio
 async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_retry(tmp_path, monkeypatch):
     from tests.test_mcp_binding_scope import SERVICE, write_plugin, select_mcp_provider
 
@@ -322,7 +298,7 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
         assert failed and process is not None and process.returncode is None
         assert host.latest_snapshot.lease_count == 1
         assert tuple(host._validation_hosts) == (validation.identity,)
-        with pytest.raises(RuntimeError, match="资源尚未清理"):
+        with pytest.raises(RuntimeError, match="资源尚未清理|调用失败"):
             host.start_update_publication(result.update_id)
         await host.retry_validation_cleanup(validation.identity)
         assert process.returncode is not None
@@ -358,426 +334,30 @@ async def test_validation_host_construction_failure_releases_candidate_scope(tmp
         log.close()
 
 
-def memory_sources(root):
-    """安装 Akasha/Markdown 及其实际摘要依赖，只替换外部 embedding provider。"""
-    from pathlib import Path
-    import shutil
-    shutil.copytree(Path(__file__).parents[1] / "plugins/ui", root / "ui",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    for name in ("akasha", "markdown_memory", "compaction"):
-        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
-                        ignore=shutil.ignore_patterns("__pycache__"))
-    settings = root.parent / "workspace/plugin-data/context-builtin"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    config, _ = load_config(settings)
-    config.update({"summary_source": ["compaction", "compaction"],
-                   "prompt_sources": {"markdown_memory": "markdown_memory"}})
-    save_config(settings, config)
-    provider = root / "fixture_embeddings"
-    provider.mkdir()
-    (provider / "plugin.py").write_text('''
-from contextlib import asynccontextmanager
-from agent.plugin_composition import EMBEDDINGS
-from agent.plugin_composition.models import EmbeddingSpaceDescriptor, EmbeddingResult
-api_version = 3
-name = "fixture_embeddings"
-version = "1.0.0"
-inject = ()
-async def apply(ctx):
-    descriptor = EmbeddingSpaceDescriptor(
-        plugin_snapshot_id="fixture", model_revision=0, model_id="fixture", connection_id="fixture",
-        driver_id="fixture", driver_contract_version="1", auth_identity="fixture",
-        connection_fingerprint="fixture", model="fixture", dimensions=2,
-        normalization="unit", capability_digest="fixture")
-    class Model:
-        async def embed(self, texts):
-            with (ctx.runtime.data_dir / "embeddings.txt").open("a") as output:
-                output.write(repr(list(texts)) + "\\n")
-            return EmbeddingResult(tuple((0.6, 0.8) for text in texts))
-    model = Model()
-    model.descriptor = descriptor
-    class Embeddings:
-        def save_binding(self, bindings, *, model_id=None):
-            from agent.plugin_composition.models import SavedEmbedding
-            return bindings.bind(EMBEDDINGS, SavedEmbedding(
-                model_id=descriptor.model_id,
-                space_identity=descriptor.identity,
-                dimensions=descriptor.dimensions,
-            ).model_dump())
-        def describe(self, *, model_id=None):
-            return descriptor
-        @asynccontextmanager
-        async def bind(self, *, model_id=None):
-            yield model
-    await ctx.provide(EMBEDDINGS, Embeddings())
-''')
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize("history", [False, True])
-async def test_validation_reply_reads_real_memory_without_starting_learning(tmp_path, history):
-    """初始态与已发布图均走真实回复，验证查询不写正式图、向量或档案。"""
-    from agent.plugin_composition import EMBEDDINGS
-    from agent.plugin_composition.bindings import BINDINGS
-    from agent.plugin_composition.messages import MESSAGE_EMBEDDINGS
-    from agent.plugins.snapshot import lease_runtime_snapshot
-    from plugins.akasha.application.consumer import MessageConsumer
-    from plugins.akasha.domain.model import MemoryConfig
-    from plugins.akasha.infrastructure.persistence import logical_state_sha256
-    from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
-    from plugins.akasha.recalls import RecallRecords
-    from plugins.content.plugin import CONTENT
-    from plugins.markdown_memory.plugin import start_store
-    from plugins.markdown_memory.store import MarkdownProfileStore
-    from session.message import Output
-    from tests.test_default_reply import application
-    import shutil
-
-    async with application(tmp_path, replying=False, start=False, provider_effect_data=True,
-                           extra_sources=memory_sources) as (log, host):
-        memory = tmp_path / "workspace/memory"
-        graph = memory / "akasha.db"
-        if history:
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                ctx = snapshot.composition_root.context
-                api = ctx.require(EMBEDDINGS)
-                bindings = ctx.require(BINDINGS)
-                vectors = ctx.require(MESSAGE_EMBEDDINGS)
-                consumer = await MessageConsumer.load(graph, legacy_index=None, catalog=log.catalog(),
-                    embeddings=vectors, bindings=bindings, config=MemoryConfig())
-                try:
-                    async with ctx.require(CONTENT).bind() as content:
-                        writer = log.writer("past", author="user", source="conversation",
-                            body_types=(Input, Output), content=content.checks)
-                        writer.append("historical-input", Input((ContentPart("text", "remember my hiking route"),)))
-                        writer.append("historical-answer", Output((ContentPart("text", "we walked to the blue lake"),), "complete"))
-                    descriptor = api.describe()
-                    binding = bindings.bind(AKASHA_LEARNING, LearningConfig(
-                        embedding_model=descriptor.identity, dimension=2, sources=("conversation",)).model_dump())
-                    async def embed(texts):
-                        async with api.bind() as model:
-                            return [list(vector) for vector in (await model.embed(texts)).vectors]
-                    assert await consumer.consume(catalog=log.catalog(), learning_binding=binding,
-                        embeddings=vectors, bindings=bindings, embed_batch=embed) == 1
-                finally:
-                    consumer.close()
-            profile = MarkdownProfileStore(memory / "MEMORY.md", memory / "SELF.md",
-                                           memory / "markdown-profile-writes.db")
-            await start_store(profile, memory / "markdown-profile.lock", memory / "PENDING.md",
-                              memory / "PENDING.snapshot.md", memory / "PENDING.retired.md")
-            (memory / "MEMORY.md").write_text("known hiking preference")
-        source = tmp_path / "source"
-        _write_v3_plugin(source, name="probe", module_source=REPLY_MODULE)
-        _commit(source)
-        result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        shutil.rmtree(tmp_path / "plugins")
-        (source / "plugin.py").unlink()
-        before = tuple(log._connection.iterdump())
-        files_before = {path.name: path.read_bytes() for path in memory.iterdir() if path.is_file()} if memory.exists() else {}
-        graph_before = logical_state_sha256(graph) if history else None
-        async with host.open_validation(result.update_id) as scope:
-            validation = next(iter(host._validation_hosts.values()))
-            output = await asyncio.wait_for(scope.require(ServiceKey("test.validation"))(), 20)
-            assert output.body.finish == "complete"
-            records = RecallRecords(validation.messages.owner("plugin:akasha")).list()
-            assert records
-            assert all(record.graph_version == (1 if history else 0) for _, record in records)
-            if history:
-                assert all(record.presented_message_ids == ("historical-input", "historical-answer")
-                           for _, record in records)
-                assert validation.messages.reader("past").snapshot() == log.reader("past").snapshot()
-                assert logical_state_sha256(validation.workspace / "memory/akasha.db") == graph_before
-            else:
-                assert all(record.presented_message_ids == () for _, record in records)
-                assert not (validation.workspace / "memory/akasha.db").exists()
-                assert not (validation.workspace / "memory/MEMORY.md").exists()
-            calls = scope.require(ServiceKey("fixture.calls"))
-            prompt = str(calls[0].messages)
-            assert ("known hiking preference" if history else "Akashic 自我认知") in prompt
-        assert tuple(log._connection.iterdump()) == before
-        assert ({path.name: path.read_bytes() for path in memory.iterdir() if path.is_file()}
-                if memory.exists() else {}) == files_before
-        assert (logical_state_sha256(graph) if history else None) == graph_before
-
-
-@pytest.mark.asyncio
-async def test_validation_message_backup_covers_graph_reference_added_during_copy(tmp_path, monkeypatch):
-    """图复制期间追加的消息必须随最后一次日志副本一同进入验证宿主。"""
-    from datetime import datetime
-    import sqlite3
-
-    from agent.plugin_composition import EMBEDDINGS
-    from agent.plugin_composition.bindings import BINDINGS
-    from agent.plugin_composition.messages import MESSAGE_EMBEDDINGS
-    from agent.plugins.snapshot import lease_runtime_snapshot
-    from plugins.akasha.application.consumer import MessageConsumer
-    from plugins.akasha.domain.model import MemoryConfig
-    from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
-    from plugins.akasha.projection import applied_source, dialogue_turn, project_samples
-    from plugins.content.plugin import CONTENT
-    from plugins.turn_projection.plugin import TurnProjection
-    from session.message import Output
-    from tests.test_default_reply import application
-    import agent.plugins.manager as manager_module
-
-    async with application(tmp_path, replying=False, start=False, provider_effect_data=True,
-                           extra_sources=memory_sources) as (log, host):
-        memory = tmp_path / "workspace/memory"
-        graph = memory / "akasha.db"
-        consumer = None
-        try:
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                ctx = snapshot.composition_root.context
-                api = ctx.require(EMBEDDINGS)
-                bindings = ctx.require(BINDINGS)
-                vectors = ctx.require(MESSAGE_EMBEDDINGS)
-                learning = ctx.require(AKASHA_LEARNING)
-                consumer = await MessageConsumer.load(
-                    graph, legacy_index=None, catalog=log.catalog(), embeddings=vectors,
-                    bindings=bindings, config=MemoryConfig(),
-                )
-                async with ctx.require(CONTENT).bind() as content:
-                    writer = log.writer(
-                        "past", author="user", source="conversation",
-                        body_types=(Input, Output), content=content.checks,
-                    )
-                    writer.append("historical-input", Input((
-                        ContentPart("text", "remember the original route"),
-                    )))
-                    writer.append("historical-answer", Output((
-                        ContentPart("text", "the original route is the blue lake"),
-                    ), "complete"))
-                descriptor = api.describe()
-                binding = bindings.bind(AKASHA_LEARNING, LearningConfig(
-                    embedding_model=descriptor.identity, dimension=2,
-                    sources=("conversation",),
-                ).model_dump())
-
-                async def embed(texts):
-                    async with api.bind() as model:
-                        return [list(vector) for vector in (await model.embed(texts)).vectors]
-
-                assert await consumer.consume(
-                    catalog=log.catalog(), learning_binding=binding, embeddings=vectors,
-                    bindings=bindings, embed_batch=embed,
-                ) == 1
-
-            source = tmp_path / "source"
-            _write_v3_plugin(source, name="probe", module_source=REPLY_MODULE)
-            _commit(source)
-            await host.install_candidate(
-                source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
-            )
-
-            def text(message):
-                return "".join(
-                    part.value for part in message.body.parts
-                    if isinstance(part, ContentPart) and isinstance(part.value, str)
-                )
-
-            appended = False
-            real_copy = manager_module._copy_validation_tree
-
-            def append_graph_reference() -> None:
-                assert consumer is not None
-                writer = log.writer(
-                    "past", author="user", source="conversation",
-                    body_types=(Input, Output),
-                    content={"text": lambda part: ContentReferences()},
-                )
-                user = writer.append("during-copy-input", Input((
-                    ContentPart("text", "message appended while copying the graph"),
-                )))
-                answer = writer.append("during-copy-answer", Output((
-                    ContentPart("text", "the graph now points at this message"),
-                ), "complete"))
-                records = vectors.bind(learning.text)
-                records.save(user, model=descriptor.identity, embedding=[0.6, 0.8])
-                records.save(answer, model=descriptor.identity, embedding=[0.6, 0.8])
-                sample = project_samples(
-                    log.catalog(), TurnProjection(),
-                    include=lambda session, source: source == "conversation",
-                )[-1]
-                turn = dialogue_turn(
-                    sample, node_id=consumer.cycle.state_version,
-                    previous=datetime.fromisoformat(consumer.cycle.turns[-1].committed_at),
-                    text=text, embeddings=records,
-                    embedding_model=descriptor.identity, dimension=2,
-                )
-                assert turn is not None
-                assert consumer.apply(
-                    turn, applied_source(sample, learning_binding=binding),
-                )
-
-            def copy_tree(source, target, exclude_paths, *, keep_existing=False):
-                nonlocal appended
-                if source.resolve() == memory.resolve() and not appended:
-                    appended = True
-                    append_graph_reference()
-                return real_copy(
-                    source, target, exclude_paths, keep_existing=keep_existing,
-                )
-
-            monkeypatch.setattr(manager_module, "_copy_validation_tree", copy_tree)
-            candidate = host.latest_snapshot
-            assert candidate is not None
-            lease = host.snapshot_store.lease(candidate.snapshot_id)
-            validation = await host._build_validation_host(lease)
-            try:
-                assert appended
-                with closing(sqlite3.connect(validation.workspace / "memory/akasha.db")) as copied:
-                    refs = copied.execute(
-                        "SELECT user_message_id, assistant_message_id FROM turn_nodes ORDER BY node_id"
-                    ).fetchall()
-                assert refs[-1] == ("during-copy-input", "during-copy-answer")
-                assert {
-                    row.message_id for row in validation.messages.reader("past").snapshot()
-                } >= {"during-copy-input", "during-copy-answer"}
-            finally:
-                await validation.close()
-                await lease.release()
-        finally:
-            if consumer is not None:
-                consumer.close()
-
-
-@pytest.mark.asyncio
-async def test_validation_preserves_history_without_archived_workspace(tmp_path):
-    """验证保留历史事实和 descriptor，但不复活旧服务、代码或 workspace。"""
-    from agent.plugin_composition.artifacts import ARTIFACT_READ
-    from agent.plugin_composition.bindings import BINDINGS
-    from agent.plugins.snapshot import lease_runtime_snapshot
-    from infra.channels.artifacts import ChannelAttachmentArtifactStore
-    from session.artifact_store import ArtifactStore
-    from session.artifacts import AttachmentKind
-
-    source, workspace, home = (tmp_path / name for name in ("source", "workspace", "home"))
-    original = MODULE.replace('api_version = 3',
-        'workspace_roots = ("legacy",)\nworkspace_files = ("old-setting.txt",)\napi_version = 3') + '''
-    async def history():
-        return (ctx.workspace_root("legacy") / "old.txt").read_text() + ctx.workspace_file("old-setting.txt").read_text()
-    await ctx.provide(ServiceKey("test.history"), history)
-'''
-    _write_v3_plugin(source, name="probe", module_source=original)
-    (source / "akashic.plugin.toml").write_text(
-        '\n[validation]\nexclude_data_paths = ["legacy-secret.txt"]\n'
-    )
-    _commit(source)
-    old = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
-    (workspace / "legacy").mkdir()
-    (workspace / "legacy/old.txt").write_text("old workspace")
-    (workspace / "old-setting.txt").write_text(" and file")
-    (old.data_path / "legacy-secret.txt").write_text("old private data")
-    log = MessageLog(workspace / "sessions.db")
-    _ = log._connection.execute("PRAGMA journal_mode=WAL").fetchall()
-    artifacts = ArtifactStore(workspace / "sessions.db")
-    physical = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=artifacts)
-    initialize_plugin_workspace(workspace)
-    host = PluginManager([], event_bus=EventBus(), workspace=workspace, message_log=log,
-                         installed_cache_root=home / "cache", channel_attachment_store=physical)
+async def test_candidate_has_only_its_own_messages_and_plugin_data(tmp_path):
+    """插件自行准备隔离数据；Core 不复制正式消息、文件或历史 binding。"""
+    source, workspace, old, log, host = prepare(tmp_path)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            reference = snapshot.composition_root.context.require(BINDINGS).bind(ServiceKey("test.history"), {})
-        binding = log.read_binding(reference)
-        root_ref = cast(str, binding["root_ref"])
-        root_descriptor = host._archive.read_descriptor(root_ref)
-        component_refs = cast(tuple[str, ...], root_descriptor["components"])
-        component_descriptors = {
-            ref: host._archive.read_descriptor(ref) for ref in component_refs
-        }
-        old_code_ref = cast(str, component_descriptors[component_refs[0]]["code"])
-        attachment = await physical.import_bytes(b"historical attachment bytes", kind=AttachmentKind.FILE,
-                                                filename="history.txt", media_type="text/plain")
-        def check_file(part):
-            assert isinstance(part.value, str)
-            return ContentReferences(artifact_ids=(part.value,))
-        log.writer("past", author="user", source="conversation", body_types=(Input,),
-            content={"file": check_file}).append(
-            "past-input", Input((ContentPart("file", attachment.artifact_id),)))
-        assert (workspace / "sessions.db-wal").stat().st_size > 0
-        (source / "plugin.py").write_text(MODULE)
-        (source / "akashic.plugin.toml").unlink()
+        (old.data_path / "private-link").symlink_to(old.data_path / "history.txt")
+        (source / "plugin.py").write_text(MODULE + "\nmarker = 'new'\n")
         _commit(source)
         result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        (source / "plugin.py").unlink()
         before = tuple(log._connection.iterdump())
-        async with host.open_validation(result.update_id) as scope:
+        async with host.open_validation(result.update_id):
             validation = next(iter(host._validation_hosts.values()))
-            assert validation.messages.reader("past").snapshot() == log.reader("past").snapshot()
-            assert validation.manager._archive.read_descriptor(root_ref) == root_descriptor
-            for ref, descriptor in component_descriptors.items():
-                assert validation.manager._archive.read_descriptor(ref) == descriptor
-            assert not (validation.manager._archive.path / old_code_ref).exists()
-            with pytest.raises(RuntimeError, match="当前 runtime scope 不提供服务"):
-                async with scope.require(BINDINGS).open(reference, ServiceKey("test.history")):
-                    pytest.fail("removed historical provider was imported")
-            assert not (validation.workspace / "legacy").exists()
-            assert not (validation.workspace / "old-setting.txt").exists()
-            assert not (validation.workspace / "plugin-data/probe-lab/legacy-secret.txt").exists()
-            lease = await scope.require(ARTIFACT_READ).acquire(attachment)
-            try:
-                assert await lease.read_bytes(max_bytes=attachment.size_bytes) == b"historical attachment bytes"
-            finally:
-                await lease.aclose()
-        assert (workspace / "legacy/old.txt").read_text() == "old workspace"
-        assert (workspace / "old-setting.txt").read_text() == " and file"
-        assert (old.data_path / "legacy-secret.txt").read_text() == "old private data"
+            assert validation.messages.reader("formal").snapshot() == ()
+            assert validation.messages.read_bindings() == ()
+            assert not (validation.workspace / "plugin-data/probe-lab/history.txt").exists()
+            assert not (validation.workspace / "plugin-data/probe-lab/private-link").exists()
+            actual = validation.manager.current_snapshot
+            assert {key: value.archive_ref for key, value in actual.generations.items()} == {
+                key: value.archive_ref for key, value in host.latest_snapshot.generations.items()
+            }
         assert tuple(log._connection.iterdump()) == before
+        assert (old.data_path / "history.txt").read_text() == "formal history"
+        assert validation.workspace.exists()
     finally:
         await host.terminate_all()
-        artifacts.close()
         log.close()
-
-
-@pytest.mark.asyncio
-async def test_validation_rejects_binding_added_after_data_copy(tmp_path, monkeypatch):
-    """复制后新增的 binding 未参与凭据排除，必须拒绝并清理整个副本。"""
-    from agent.plugin_composition.bindings import BINDINGS
-    from agent.plugins.snapshot import lease_runtime_snapshot
-    from plugins.tools.plugin import TOOLS
-    from tests.test_default_reply import application
-
-    async with application(tmp_path, replying=False, start=False) as (log, host):
-        source = tmp_path / "source"
-        _write_v3_plugin(source, name="probe", module_source=REPLY_MODULE)
-        _commit(source)
-        result, _ = await host.install_candidate(
-            source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
-        )
-        copy_components = host._copy_validation_components
-        copied = []
-        added = []
-
-        data_copied = asyncio.Event()
-        binding_saved = asyncio.Event()
-
-        async def bind_in_formal_task():
-            await data_copied.wait()
-            async with lease_runtime_snapshot(host.snapshot_store) as stable:
-                added.append(stable.composition_root.context.require(BINDINGS).bind(
-                    TOOLS, {"created": "during validation copy"},
-                ))
-            binding_saved.set()
-
-        async def copy_then_bind(snapshot, workspace, archive, bindings):
-            await copy_components(snapshot, workspace, archive, bindings)
-            copied.append(workspace)
-            data_copied.set()
-            await asyncio.wait_for(binding_saved.wait(), 10)
-
-        monkeypatch.setattr(host, "_copy_validation_components", copy_then_bind)
-        # 正式任务在进入 candidate scope 前创建，不能借验证上下文取得正式权限。
-        formal_task = asyncio.create_task(bind_in_formal_task())
-        try:
-            with pytest.raises(RuntimeError, match="候选复制期间 binding 已变化"):
-                async with host.open_validation(result.update_id):
-                    pytest.fail("不完整排除声明的副本不能开放")
-            await formal_task
-        finally:
-            if not formal_task.done():
-                formal_task.cancel()
-            await asyncio.gather(formal_task, return_exceptions=True)
-        assert len(copied) == 1 and not copied[0].parent.exists()
-        assert len(added) == 1
-        assert log.read_binding(added[0])["metadata"] == {"created": "during validation copy"}

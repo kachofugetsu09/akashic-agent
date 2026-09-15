@@ -316,9 +316,10 @@ async def test_background_publication_is_accepted_without_inheriting_caller_leas
             operation = host._operation
             host.start_update_publication(update.update_id)
             assert host._operation is operation
-            await entered.wait()
+            assert not entered.is_set()
             assert host.current_snapshot is stable
             assert host.update_is_publishing(update.update_id)
+        await entered.wait()
         release.set()
         await settle(operation.task)
         assert host.current_snapshot is not stable

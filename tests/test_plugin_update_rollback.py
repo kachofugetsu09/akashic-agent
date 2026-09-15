@@ -135,8 +135,12 @@ async def test_publication_returns_to_caller_before_waiting_for_its_generation(t
                 with pytest.raises(asyncio.CancelledError):
                     await publication
                 assert host._reload_journal.update(result.update_id).error == "publication cancelled"
-                host.start_update_publication(result.update_id)
-                publication = host._update_publication[1]
+                with pytest.raises(RuntimeError, match="失败|未知"):
+                    host.start_update_publication(result.update_id)
+                await host.discard_update(result.update_id)
+                assert host.read_update(result.update_id).phase == "rolled_back"
+                assert host.current_snapshot is stable
+                return
             if finish == "shutdown":
                 shutdown = asyncio.create_task(host.terminate_all())
                 with pytest.raises(asyncio.CancelledError):

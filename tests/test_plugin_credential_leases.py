@@ -191,18 +191,10 @@ async def apply(ctx):
         async with host.open_validation(result.update_id) as scope:
             validation = next(iter(host._validation_hosts.values()))
             copied = validation.workspace / "plugin-data/secret_reader-builtin"
-            assert load_config(validation.workspace / "plugin-data/plain-lab")[0] == {"label": "public config"}
-            if shared_directory:
-                assert (copied / CONFIG_INPUT).is_file()
-                assert (copied / "notes.txt").read_text() == "preserved history"
-                async with scope.require(BINDINGS).open(reference, PROBE) as (reader, _):
-                    with pytest.raises(RuntimeError, match="candidate 验证期"):
-                        await reader.read()
-            else:
-                assert not copied.exists()
-                with pytest.raises(RuntimeError, match="当前 runtime scope 不提供服务"):
-                    async with scope.require(BINDINGS).open(reference, PROBE):
-                        pytest.fail("removed historical provider was reopened")
+            assert not (validation.workspace / "plugin-data/plain-lab" / CONFIG_INPUT).exists()
+            assert validation.messages.read_bindings() == ()
+            assert not (copied / CONFIG_INPUT).exists()
+            assert not (copied / "notes.txt").exists()
             for path in validation.workspace.rglob("*"):
                 if path.is_file():
                     assert b"fixture-private-token" not in path.read_bytes(), path

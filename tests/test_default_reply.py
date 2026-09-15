@@ -144,11 +144,10 @@ async def apply(ctx):
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
             repr(str(tmp_path / "effect.txt")), 'ctx.runtime.data_dir / "effect.txt"'))
-    if updates:
-        import json
+    if updates and not validation_passed:
         module = provider / "plugin.py"
-        verdict = json.dumps({"passed": validation_passed, "reason": "tool evidence checked"})
-        module.write_text(module.read_text().replace('return LLMResponse("finished")', f'return LLMResponse({verdict!r})'))
+        module.write_text(module.read_text().replace(
+            'return LLMResponse("finished")', 'raise RuntimeError("candidate execution failed")'))
     if discovery:
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(

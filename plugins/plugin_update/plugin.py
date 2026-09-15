@@ -22,6 +22,7 @@ from agent.plugin_contracts import json_value
 
 from .tool import InstallPlugin, InstallInput, Request
 from .validation import PLUGIN_VALIDATION, Validation
+from .latest import Latest, LatestInput
 
 logger = logging.getLogger(__name__)
 REPLY_EXECUTE = ServiceKey("reply.execute.v1")
@@ -75,7 +76,7 @@ async def apply(ctx: Context) -> None:
     _ = await catalog.register(
         ctx,
         name="plugin_install",
-        description="安装或更新插件，并按 validation_prompt 验证后发布；稍后单独报告结果",
+        description="安装或更新插件并固定候选；随后用 plugin_latest run 执行普通候选调用，status 查看，revert 撤销",
         parameters=InstallInput.model_json_schema(),
         open=open_tool,
         capture=capture,
@@ -89,24 +90,18 @@ async def apply(ctx: Context) -> None:
         ),
     )
 
-    async def validate(identity: str, request: Request) -> None:
-        """本次存活运行验证一次；失败清理候选，进程重启只报告 Core 的回退。"""
-        async with ctx.runtime_scope():
-            updates = ctx.require(PLUGIN_UPDATES)
-            try:
-                async with updates.open_validation(ctx, identity) as scope:
-                    result = await scope.require(PLUGIN_VALIDATION).run(identity, request.install)
-            except Exception as error:
-                # 原验证 owner 已记录真实错误；这里只能尝试撤销本次候选。
-                try:
-                    await updates.discard(ctx, identity, reason=str(error) or type(error).__name__)
-                except Exception:
-                    logger.exception("验证失败且资源尚未确认清理 update=%s", identity)
-                return
-            if result.passed:
-                updates.publish(ctx, identity)
-            else:
-                await updates.discard(ctx, identity, reason=result.reason)
+    @asynccontextmanager
+    async def open_latest(state: Mapping[str, object]) -> AsyncGenerator[Latest]:
+        if state:
+            raise ValueError("plugin_latest 不接收 binding 配置")
+        yield Latest(ctx)
+
+    _ = await catalog.register(
+        ctx, name="plugin_latest",
+        description="run 显式执行固定 latest 的普通程序，正常完成且未 revert 后请求晋升；status 只读过程与状态；revert 撤销提交授权",
+        parameters=LatestInput.model_json_schema(), open=open_latest,
+        idempotent=False, risk="external-side-effect",
+    )
 
     async def report(identity: str, request: Request, status: UpdateStatus) -> None:
         """完成正文只写一次；重启沿原 Message 和发送回执查询，不重做更新。"""
@@ -140,19 +135,15 @@ async def apply(ctx: Context) -> None:
         """通知只驱动读取；没有持久执行队列、父 Turn barrier 或恢复后重跑。"""
         changed = asyncio.Event()
         active: set[str] = set()
-        attempted: set[str] = set()
         reported: set[tuple[str, str]] = set()
 
         async def changes() -> None:
             async for _ in ctx.require(PLUGIN_UPDATES).changes(ctx):
                 changed.set()
 
-        async def run(identity: str, request: Request, status: UpdateStatus, *, validating: bool) -> None:
+        async def run(identity: str, request: Request, status: UpdateStatus) -> None:
             try:
-                if validating:
-                    await validate(identity, request)
-                else:
-                    await report(identity, request, status)
+                await report(identity, request, status)
             except Exception:
                 # 保留原请求和领域回执；一个报告失败不抹掉其他已提交更新。
                 logger.exception("插件更新来源未完成 update=%s", identity)
@@ -174,10 +165,7 @@ async def apply(ctx: Context) -> None:
                         if status is None or status.publishing:
                             continue
                         request = Request.model_validate(json_value(record.value))
-                        validating = status.ready and not status.error and identity not in attempted
-                        if validating:
-                            attempted.add(identity)
-                        elif status.phase in {"committed", "rolled_back"} or status.error:
+                        if status.phase in {"committed", "rolled_back"} or status.error:
                             phase = "complete" if status.phase in {"committed", "rolled_back"} else "problem"
                             if (identity, phase) in reported:
                                 continue
@@ -185,7 +173,7 @@ async def apply(ctx: Context) -> None:
                         else:
                             continue
                         active.add(identity)
-                        _ = group.create_task(run(identity, request, status, validating=validating))
+                        _ = group.create_task(run(identity, request, status))
 
     async def start(_event: object) -> None:
         nonlocal watcher
