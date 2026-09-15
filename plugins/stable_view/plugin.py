@@ -10,13 +10,13 @@ from agent.plugin_composition.commands import (
     CommandInvocation,
     CommandResult,
 )
-from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+from agent.plugin_composition.runtime_catalog import build_stable_plugin_catalog
 
 api_version = 3
 name = "stable_view"
 version = "1.0.0"
 desc = "命令行查看当前 stable 插件组合树"
-inject = (COMMANDS, RUNTIME_CATALOG)
+inject = (COMMANDS,)
 
 _FIBER_KEYS = ("name", "parent", "state", "required", "dependencies",
                "missing_services", "error")
@@ -96,13 +96,7 @@ def _render_plugin(
 
 
 def format_stable_catalog(catalog: Mapping[str, object]) -> str:
-    """把 runtime catalog 投影渲染成 stable 组合 ASCII 树。"""
-    unavailable = catalog.get("unavailable")
-    if isinstance(unavailable, Mapping):
-        return (
-            "stable 视图暂不可用 "
-            f"[{unavailable.get('code')}]: {unavailable.get('message')}"
-        )
+    """把 stable 组合投影渲染成 ASCII 依赖树。"""
     lines = [
         f"stable snapshot {_short(catalog.get('snapshot_id'), 16)}",
         "plugins",
@@ -112,22 +106,35 @@ def format_stable_catalog(catalog: Mapping[str, object]) -> str:
     for index, item in enumerate(items):
         _render_plugin(lines, item, "   ", index == len(items) - 1)
     servers = catalog.get("mcp_servers")
-    if servers:
+    if isinstance(servers, Sequence) and not isinstance(servers, str):
         lines.append("mcp_servers")
-        for index, server in enumerate(servers):
+        entries = list(servers)
+        for index, server in enumerate(entries):
             label = server.get("name") if isinstance(server, Mapping) else server
-            lines.append(f"   {'└─' if index == len(servers) - 1 else '├─'} {label}")
+            lines.append(f"   {'└─' if index == len(entries) - 1 else '├─'} {label}")
+    mcp_unavailable = catalog.get("mcp_unavailable")
+    if isinstance(mcp_unavailable, Mapping):
+        lines.append(
+            "mcp_servers  (按调用打开，无持久会话目录"
+            f" [{mcp_unavailable.get('code')}])"
+        )
     return "\n".join(lines)
 
 
 async def apply(ctx: Context) -> None:
-    """注册 /stable 只读命令；目录读取失败时明确返回错误。"""
-    catalog = ctx.require(RUNTIME_CATALOG)
+    """注册 /stable 只读命令；经 runtime scope 读取真实 snapshot 投影。"""
 
-    def show_stable(_invocation: CommandInvocation) -> CommandResult:
+    async def show_stable(_invocation: CommandInvocation) -> CommandResult:
         try:
-            return CommandResult("success", format_stable_catalog(catalog()))
-        except Exception as error:  # catalog owner 失败也必须如实回报
+            from agent.plugins.snapshot import get_current_runtime_lease
+
+            async with ctx.runtime_scope():
+                lease = get_current_runtime_lease()
+                if lease is None or lease.snapshot is None:
+                    return CommandResult("error", "runtime scope 未绑定 stable snapshot")
+                catalog = build_stable_plugin_catalog(lease.snapshot)
+            return CommandResult("success", format_stable_catalog(catalog))
+        except Exception as error:  # snapshot owner 失败也必须如实回报
             return CommandResult("error", f"读取 stable 组合失败: {error}")
 
     _ = await ctx.require(COMMANDS).register(ctx, CommandDefinition(

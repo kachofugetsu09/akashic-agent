@@ -42,6 +42,23 @@ def build_runtime_catalog(snapshot: RuntimeSnapshot) -> dict[str, object]:
     }
 
 
+def build_stable_plugin_catalog(snapshot: RuntimeSnapshot) -> dict[str, object]:
+    """Project plugin composition facts; MCP 会话目录缺席不遮蔽组合视图。"""
+
+    catalog: dict[str, object] = {
+        "snapshot_id": snapshot.snapshot_id,
+        "plugins": _plugin_items(snapshot),
+    }
+    try:
+        catalog["mcp_servers"] = _mcp_items(snapshot)
+    except RuntimeCatalogUnavailable as error:
+        catalog["mcp_unavailable"] = {
+            "code": error.code,
+            "message": str(error),
+        }
+    return catalog
+
+
 def _plugin_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
     """Project generation and composition facts from one leased snapshot."""
 
@@ -203,4 +220,5 @@ __all__ = [
     "RuntimeCatalogReader",
     "RuntimeCatalogUnavailable",
     "build_runtime_catalog",
+    "build_stable_plugin_catalog",
 ]
