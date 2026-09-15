@@ -33,6 +33,11 @@
   },
   "plugins": [
     {
+      "name": "channels",
+      "depends_on": [],
+      "reason": "拥有实际 Channel 连接、接纳、发送回执与输入恢复。"
+    },
+    {
       "name": "workloads",
       "depends_on": [],
       "reason": "普通 provider 持有 Workload；无贡献时不调用 Controller。"
@@ -149,7 +154,7 @@
     },
     {
       "name": "akashic_clients",
-      "depends_on": ["models", "reply", "runtime_inspection", "ui", "commands"],
+      "depends_on": ["models", "reply", "runtime_inspection", "ui", "commands", "channels"],
       "reason": "提供可替换的 Akashic Web/Mobile 普通 channel；客户端配置和生命周期归插件。"
     },
     {
