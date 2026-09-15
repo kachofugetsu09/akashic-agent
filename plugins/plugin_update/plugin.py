@@ -13,7 +13,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from agent.plugin_composition.tasks import TASKS
-from .inputs import CONTENT
+from .inputs import CONTENT, MODEL_SETTINGS
 from .inputs import DELIVERY, INPUT_ORIGIN
 from .inputs import DELIVERY_SENDERS
 from .inputs import ALL_TOOLS, TOOLS
@@ -33,6 +33,7 @@ version = "1.0.0"
 desc = "按实际要求验证候选，排空后发布，并用原渠道报告结果"
 inject = (
     CONTENT,
+    MODEL_SETTINGS,
     INPUT_ORIGIN,
     REPLY_EXECUTE,
     PLUGIN_UPDATES,

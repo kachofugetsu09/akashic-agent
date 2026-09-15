@@ -58,6 +58,7 @@ from .settings import (
     FinishConnectionAuth,
     MODEL_SETTINGS,
     ModelChange,
+    ModelSettingsSource,
     SetDefaultModel,
     SettingsReceipt,
     StartConnectionAuth,
@@ -325,6 +326,12 @@ class _SettingsView:
     def __init__(self, state: ModelsState) -> None:
         self._state = state
 
+    def read_source(self) -> ModelSettingsSource:
+        return self._state.read_settings_source()
+
+    def use_source(self, source: ModelSettingsSource) -> None:
+        self._state.use_settings_source(source)
+
     async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]:
         return await self._state.discover_models(connection)
 
@@ -366,6 +373,7 @@ class ModelsState:
         capability_catalog: _CapabilityCatalog | None = None,
     ) -> None:
         self.store = store
+        self._settings_store = store
         self.root_instance_token = root_instance_token
         self.context = context
         self.capability_catalog = capability_catalog
@@ -765,12 +773,29 @@ class ModelsState:
         if driver is None:
             driver = await definition.open(
                 _driver_connection_descriptor(connection),
-                self.store.credential_handle(
+                self._settings_store.credential_handle(
                     connection.connection_id, connection.auth_identity
                 ),
             )
             opened[connection.connection_id] = driver
         return definition, driver
+
+    def read_settings_source(self) -> ModelSettingsSource:
+        """在来源真实 Scope 内交出设置位置；凭据仍由原 connection 持久化。"""
+        self._check_snapshot_service(MODEL_SETTINGS, self.settings)
+        return ModelSettingsSource(self._settings_store.path, self._settings_store.backup_dir)
+
+    def use_settings_source(self, source: ModelSettingsSource) -> None:
+        """空 Root 一次接续已有设置；新 models/driver 执行，调用账仍写本地 store。"""
+        self._check_snapshot_service(MODEL_SETTINGS, self.settings)
+        if not self.sealed:
+            raise RuntimeError("接续模型设置需要已发布的调用 Scope")
+        if self._settings_store is not self.store or self.store.read_snapshot() != StoredSnapshot.empty():
+            raise RuntimeError("只能为空模型 Root 接续一次设置，不能替换已有设置")
+        settings = ModelsStore(source.path, source.backup_dir)
+        if settings.read_snapshot() is None:
+            raise ModelUnavailableError("原模型设置库不存在")
+        self._settings_store = settings
 
     async def apply_change(self, command: ModelChange) -> SettingsReceipt:
         """Keep the exact driver generation alive across settings network I/O."""
@@ -818,6 +843,8 @@ class ModelsState:
             ) from error
 
     async def _apply_change(self, command: ModelChange) -> SettingsReceipt:
+        if self._settings_store is not self.store:
+            raise RuntimeError("接续的模型设置只用于执行；请在原设置 owner 修改连接、模型或角色")
         if not self.sealed:
             raise RuntimeError("models settings 只能使用已发布 snapshot")
         if isinstance(command, AddConnection):
@@ -1211,13 +1238,13 @@ class ModelsState:
         return definition
 
     def _snapshot_required(self) -> StoredSnapshot:
-        snapshot = self.store.read_snapshot()
+        snapshot = self._settings_store.read_snapshot()
         if snapshot is None:
             raise ModelUnavailableError("尚未配置任何模型")
         return snapshot
 
     def _snapshot_or_empty(self) -> StoredSnapshot:
-        return self.store.read_snapshot() or StoredSnapshot.empty()
+        return self._settings_store.read_snapshot() or StoredSnapshot.empty()
 
     def _availability(self, connection: StoredConnection) -> ModelAvailability:
         if not connection.enabled:

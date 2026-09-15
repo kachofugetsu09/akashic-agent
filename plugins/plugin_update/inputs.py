@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
@@ -90,3 +91,18 @@ class InputOrigin(Protocol):
 
 
 INPUT_ORIGIN = ServiceKey[InputOrigin]("delivery.input-origin.v1")
+
+
+class ModelSettingsSource(Protocol):
+    @property
+    def path(self) -> Path: ...
+    @property
+    def backup_dir(self) -> Path: ...
+
+
+class ModelSettings(Protocol):
+    def read_source(self) -> ModelSettingsSource: ...
+    def use_source(self, source: ModelSettingsSource) -> None: ...
+
+
+MODEL_SETTINGS = ServiceKey[ModelSettings]("models.settings.v1")

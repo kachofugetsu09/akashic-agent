@@ -75,12 +75,13 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from pathlib import Path
-from agent.plugin_composition import CHAT_MODELS, ServiceKey
+from agent.plugin_composition import CHAT_MODELS, SNAPSHOT_SEALING, ServiceKey
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
 from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
 from plugins.models.content import MODEL_CONTENT, ContentOwner
 from plugins.models.selection import MODEL_SELECTION, SelectionOwner
-from plugins.models.state import _BoundChat
+from plugins.models.state import _BoundChat, ModelsState
+from plugins.models.settings import MODEL_SETTINGS
 from plugins.models.store import ModelsStore
 from plugins.tools.api import Result
 from plugins.standard_tools.shell import shell_cleanup
@@ -94,6 +95,9 @@ async def apply(ctx):
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
+    settings = ModelsState(store, root_instance_token=ctx.root_instance_token, context=ctx)
+    await ctx.provide(MODEL_SETTINGS, settings.settings)
+    await ctx.on(SNAPSHOT_SEALING, settings.seal)
     class Driver:
         max_tool_schemas = None
         def estimate_context_tokens(self, messages, tools):

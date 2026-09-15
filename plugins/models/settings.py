@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol, TypeAlias
 
@@ -127,7 +128,19 @@ class SettingsReceipt:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class ModelSettingsSource:
+    """模型 owner 的现有设置位置；不携带旧 Root、driver 或数据库连接。"""
+
+    path: Path
+    backup_dir: Path
+
+
 class ModelSettings(Protocol):
+    def read_source(self) -> ModelSettingsSource: ...
+
+    def use_source(self, source: ModelSettingsSource) -> None: ...
+
     async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]: ...
 
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
@@ -146,6 +159,7 @@ __all__ = [
     "MODEL_SETTINGS",
     "ModelChange",
     "ModelSettings",
+    "ModelSettingsSource",
     "SetDefaultModel",
     "SettingsReceipt",
     "StartConnectionAuth",

@@ -14,7 +14,7 @@ from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_contracts import ContentPart, body_to_dict, json_value
 
-from .inputs import CallSource, Result
+from .inputs import CallSource, Result, MODEL_SETTINGS
 from .tool import Request
 from .validation import PLUGIN_VALIDATION
 
@@ -134,7 +134,9 @@ class Latest:
         publish = updates.publication(ctx, identity)
 
         async def program(_task: Task) -> object:
+            settings_source = ctx.require(MODEL_SETTINGS).read_source()
             async with updates.open_validation(ctx, identity) as scope:
+                scope.require(MODEL_SETTINGS).use_source(settings_source)
                 return await scope.require(PLUGIN_VALIDATION).run(identity, install.install)
 
         def accept(slot: TaskSlot) -> tuple[Task, LatestCall]:

@@ -2,6 +2,7 @@
 
 - 状态：已按维护者授权实现，等待主协调者只读 review；未运行测试。
 - 控制可见性切片基线：`cf5cc7b39ffba1d3e7de8deeb866611b74ae4891`；分支 `codex/plugin-latest-control-v3`。
+- 模型接线切片基线：`b9356e1418120c411d8464d6fc2be8c73f2ea3bc`；分支 `codex/plugin-model-settings-latest`。
 - 上游：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md)、[0070](../decisions/0070-plugins-own-persisted-data.md)。
 - 本文由 programmatic writer 独立维护；共享 INDEX、NOW 和整体设计由主协调者合栈后统一对账。
 
@@ -62,8 +63,8 @@ ctx.spawn 登记的 Fiber-owned 完成任务只 join 同一普通 Task，等待�
 
 候选结构装配和 latest 程序分别创建独立实例，两者与正式新实例使用同一组不可变制品和配置输入。
 底座不再备份正式消息库、复制历史 binding/附件、扫描历史排除声明，或按文件头识别并复制业务 SQLite。
-各实例只获得自己环境下的数据目录。配置仍来自固定归档，凭据授权仍在原宿主边界；
-`apply(ctx)` 和普通工具负责自身数据初始化及所需样本，缺少数据就明确失败。
+各实例仍以自己环境下的数据目录初始化。插件配置来自固定归档；模型设置按下节的用户授权
+由 models 接续现有来源。其他业务数据仍由 `apply(ctx)` 和普通工具负责准备，缺少数据就明确失败。
 这个改变不表示“空库验证已证明现有业务数据兼容”；需要真实历史数据的检查必须由该插件
 通过自己的明确数据准备流程提供，不能恢复 Core 全目录复制或把正式目录链接进候选。
 
@@ -75,6 +76,51 @@ ctx.spawn 登记的 Fiber-owned 完成任务只 join 同一普通 Task，等待�
 | journal | 既有 owner 保存调用证据与错误，revert 推进原候选 discarding | 诊断不等于物理效果回滚；不删除旧事件 |
 | stable | 原 selection owner 同步核对授权和 base 后提交 | 已提交或写入不确定不能伪称 revert 成功；恢复沿原 owner |
 | 正式业务数据 | 本层无复制、迁移或回滚权；正式新插件仍处理自己的数据 | 不删除、覆盖或迁移正式状态 |
+
+## 现有模型设置与凭据接续
+
+维护者已明确批准：候选默认使用现有模型设置和凭据，不另配账号、不增加凭据审批。
+插件是可信本地代码。该授权替代此前候选完全不读正式模型凭据的限制；底座仍不认识模型库，
+不获得业务复制或迁移职责。仅固定插件配置归档不够：空模型库没有 default，普通调用会在输出前失败。
+
+```text
+┌──────────────────────────────────────────────┐
+│ 发起 Task / 原 Scope：MODEL_SETTINGS.read_source │
+│ 只取得 models 设置位置，不携带旧模型服务或 driver│
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│ exact latest Scope：MODEL_SETTINGS.use_source │
+│ 新 models 读设置 → 新 driver → 普通 reply.execute│
+└──────────────────────┬───────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────┐
+│ 原 connection owner：凭据读取/refresh/备份/锁  │
+│ 候选 models owner：真实调用账及结算            │
+└──────────────────────────────────────────────┘
+```
+
+`MODEL_SETTINGS` 增加 `read_source/use_source`，来源只含 settings path 和 backup_dir。
+两端都核对当前真实 Scope 与服务 owner。接收方必须已封印、模型设置为空且未接续过；
+它用自己的 models 实现建立 store，不调用来源 Root 的 `CHAT_MODELS`、ModelsState 或 driver。
+接续不初始化来源数据库，不复制数据库文件或历史调用账。缺失、损坏、不兼容 schema、缺 default
+或新 driver 不支持现有配置都明确失败，不填默认模型、不重跑、不请求晋升。
+
+每次 execution 按既有模型合同读取当前 committed 设置，并固定其 revision、connection、endpoint、
+角色、模型参数和 auth identity；实际执行使用 exact latest 的 driver 注册。
+凭据仍通过既有 connection-scoped handle 读取和刷新。候选取消或 revert 不撤销已发生的远程请求、
+token refresh 或调用账；刷新沿原 credential owner 的锁、事务和备份协议，不产生第二份 token。
+普通连接、模型和角色修改在接续 Root 明确拒绝，需从原设置 owner 执行；正式设置 API 保持原行为。
+
+| 对象 | 正常增加或原位更新及 owner | 减少与恢复 |
+|---|---|---|
+| 原模型连接、角色、参数与 revision | 候选只读；原 models 设置 owner 继续按已有 CAS 修改 | 本片不删除、不复制、不迁移 |
+| 原 connection credential | 新 driver 使用原 models credential handle；refresh 原位更新 payload，不增加 revision | 既有 models 备份保存写前状态；revert 不恢复可能已失效的旧 token |
+| 候选 model_calls | 候选 models 在真实 driver I/O 前增加 started，按实际成功、失败或取消结算 | 无自动减少；保留同一证据目录，不混入正式调用账 |
+| 设置来源位置 | 只在本次 Root 内保存引用，跟随实际 Scope/关闭资源生命周期 | 不写 update journal，不创建持久状态镜像；关闭不删除来源 |
+
+本片只把这次关联更新的普通程序接上现有模型设置；自动晋升仍要求程序正常完成且未 revert，
+并等待 Scope 释放。没有提前给结构候选运行模型，也没有新增后台调用或通用数据准备框架。
 
 ## 取消、失败与真实 owner
 
@@ -97,12 +143,17 @@ revert 在资源释放期间发生时可能留下需要显式恢复的错误；�
 原 Core 数据复制算法的专属测试随算法删除，生命周期回归保留。
 本片增加真实工具顺序 run/status/revert、跨 session 拒绝、关闭及重启后原消息读取、
 证据缺失不创建数据库、跨更新授权拒绝，以及请求 publication 时来源租约已释放的断言。
+模型接线测试使用真实 models、OpenAI-compatible driver、设置 RPC 和普通 latest 工具，只有 HTTP
+传输使用受控响应；分别改变候选 models/driver 代码证明选择生效，检查原 endpoint、角色、参数、
+credential refresh 与候选调用账。另覆盖缺 default 不调用/不晋升/不重跑、跨 Root 服务拒绝、
+缺失或损坏来源不初始化、重复接续拒绝及接续 Root 不改正式设置。测试已写，未运行。
 
 没有运行测试、Gate、CI、build、lint、AST 或产品命令。没有改 Manager Channel 段或 Snapshot。
 主协调者需对累计栈做静态 review、共享文档入口对账，然后按用户授权 push/开 stacked Draft PR。
 真实插件数据准备、真实模型/工具调用和发布故障恢复尚无本层运行证据，不能据此部署。
 
 本片恢复点：`/tmp/akasic-latest-control-cf5cc7b3-before.tar`，完整源码基线为上述 commit。
+模型接线恢复点：`/tmp/akasic-model-settings-b9356e14-before.tar`；源码基线为 `b9356e14`。
 前片恢复点：`/tmp/akasic-programmatic-v2-df9179cf-before.tar`。
 正式 workspace、安装 cache 和原 checkout 未被修改；代码回退不代表插件数据已回滚。
 
