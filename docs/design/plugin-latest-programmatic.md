@@ -125,7 +125,8 @@ token refresh 或调用账；刷新沿原 credential owner 的锁、事务和备
 ## 取消、失败与真实 owner
 
 来源 Task 与调用 Scope 先释放，随后才提交 publication 请求。发布任务还会等待其他正式租约归还，
-再关闭候选与进入整体切换；等待仍受原 Manager deadline 限制。
+再关闭候选与进入整体切换。等待来源租约仍属于同一个可取消的 Manager operation；
+租约归还后才启动实际换代截止时间，不让正在观察结果的发起者耗尽执行时限。
 revert 先同步把原候选推进 discarding，再取消相关程序/发布任务。等待和清理失败会明确报错，
 提交权不会恢复；资源仍归原 Scope、ValidationHost 或 publication owner，不能先移除句柄。
 调用 scope 没有退出或资源没有真正关闭时禁止发布。清理异常写入原 update error，并保留真实

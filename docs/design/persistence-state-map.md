@@ -840,6 +840,8 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 | 隔离调用目录与库 | 一次调用创建空数据环境；实际 Message、Artifact、接纳、入站与身份 owner 只操作自己的库，插件初始化自己的数据 | 退出关闭连接与资源，不删除目录；失败保留原宿主及租约，没有自动 GC。目录、固定组件引用与原 update 提供证据 |
 | 原安装及普通调用请求 | plugin_update 的 owner_records 保存原请求；实际消息与 ToolResult 按消息合同追加 | 未知结果不授权重跑；不自动减少请求或正文。完整原消息库保留请求与结果 |
 | 正式业务数据 | 本层不复制、迁移或回滚；新正式插件负责解释既有数据 | 代码选择回退不减少或恢复数据；数据恢复须由该 owner 按显式授权执行 |
+| Models 设置与凭据 | 普通 latest 的新 models/driver 读取原模型 owner 的连接、角色和参数；token refresh 沿原 credential owner 的锁、事务与写前备份原位更新，revision 不变 | 不复制、不删除；revert 不恢复可能已失效的旧 token。设置位置只在调用 Root 内引用，不写入 journal |
+| latest 模型调用账 | 新 models owner 在该次独立环境增加并结算 model_calls，不混入正式调用账 | 关闭连接与 Scope 不删除证据，无自动 GC |
 | stable 与更新 journal | selection 独占完整提交；journal 保存实际候选、授权撤销及发布证据 | 正常更新不删除历史证据；提交未知保留实际 owner，不以旧内存指针假装回滚 |
 
 程序所需样本由知道数据格式的 owner 明确准备；空库上的正常调用不证明历史业务数据兼容。

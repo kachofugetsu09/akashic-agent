@@ -31,7 +31,7 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 - 按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 调整为调用程序拥有验证、provider 拥有隔离资源、底座拥有整体 stable 提交。旧 `validation_port_env`、双指针与 attached child 的 Core 特例不再是目标合同。
 - 按 [latest 普通调用](design/plugin-latest-programmatic.md) 完成非阻塞调用的过程/最终结果可见性、发起者撤销和原 owner 清理；正常完成默认请求晋升，不引入后台裁判或批准 JSON。继续核对隔离宿主的最小职责与累计消费者。
-- 按 PLG-001 接上真实模型：维护者已确认 latest 默认沿用现有模型设置和凭据，由模型插件提供，不要求独立账号。空候选缺少连接、模型和默认角色的接线仍需完成；固定配置归档本身不包含业务库，测试替身不构成真实可用性证据。
+- 普通 latest 的模型接线仍需独立审查与后续运行证据；已按 PLG-001 由模型 owner 接续现有设置和凭据，新组合使用自己的 driver，调用账写在本次调用环境。真实插件链的测试已写未跑，不能据此声明实际模型请求与晋升验收通过。
 - 独立 Fitbit source 的候选 listener 与正式资源隔离仍待该仓库交付，本轮不修改外部插件。
 - 提交前后崩溃、排空失败和真实恢复的行为证据尚缺；本轮用户要求只提 PR，不执行 Gate/CI，不能将代码交付视作这些验收已完成。
 
