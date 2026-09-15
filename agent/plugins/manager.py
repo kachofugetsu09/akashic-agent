@@ -196,8 +196,10 @@ class _PublicationParticipantRestoreError(RuntimeError):
 
 
 class PluginManager:
-    POST_PUBLISH_TIMEOUT_SECONDS = 5.0
-    # 冷启动须归档并挂载完整组合，规模随安装数增长，不参与发布后预算。
+    # 提交预算覆盖候选准备、整组重建与发布；生产组合规模下挂载数十个
+    # 归档插件远超秒级，预算只用于截断真正挂起的提交，不能按交互延迟设定。
+    POST_PUBLISH_TIMEOUT_SECONDS = 300.0
+    # 冷启动还须归档全部安装输入并挂载完整组合，规模随安装数增长。
     BOOT_COMMIT_TIMEOUT_SECONDS = 600.0
 
     def __init__(
