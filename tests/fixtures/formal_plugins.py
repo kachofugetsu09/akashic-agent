@@ -25,6 +25,7 @@ MARKETPLACE = "fixture"
 # 需要 Workload Controller 的 computer，以及它们的渠道构造都由专门测试覆盖。
 MINIMAL_MESSAGE_PLUGINS = ("commands", "ui", "sources", "content", "models", "conversation")
 FULL_RUNTIME_PLUGINS = (
+    "channels",
     "commands",
     "ui",
     "assets", "akasha", "akashic_clients", "akashic_sender", "codex", "compaction", "content", "context",

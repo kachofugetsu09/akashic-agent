@@ -76,6 +76,9 @@
 | [插件整体换代重构](design/plugin-whole-runtime-simplification.md) | 0071 的入口、归属、整体组合与 stacked PR 实施 | 本轮插件简化的固定入口 |
 | [普通资源 provider](design/plugin-resource-providers.md) | MCP、Workload、进程的实际资源归属与宿主授权 | 使用或修改外部资源 provider 时读取 |
 | [插件运行目录收敛](design/plugin-active-projections.md) | 当前 snapshot 查询投影与实际 Root 清理 owner | 修改 generation 查询或清理路径时读取 |
+| [latest 普通调用](design/plugin-latest-programmatic.md) | 候选调用、结果可见性、撤销与默认晋升 | 修改 Agent 更新入口时读取 |
+| [完整 Root 发布路径](design/plugin-single-publication.md) | 新正式 Root 与真实发布租约边界 | 修改 snapshot 发布时读取 |
+| [Channel 资源归属](design/channel-resource-ownership.md) | 接纳许可、adapter、凭据和输入回执 owner | 修改 Channel provider 或客户端时读取 |
 | [插件 V3 能力手册](design/plugin-v3-capabilities.md) | V3 当前有哪些原子能力、插件怎样使用 | 开发或审查 V3 插件时读取 |
 | [hua-home 插件运行事实](design/hua-home-plugin-runtime-source-of-truth.md) | 线上权威路径、固定查找方法、本地镜像边界和 exact fleet snapshot | 审计、同步或部署插件时先读取 |
 | [`WORKFLOW.md`](WORKFLOW.md) | 修改仓库文件时怎样从接手任务走到提交评审 | 每个修改任务读取 |
