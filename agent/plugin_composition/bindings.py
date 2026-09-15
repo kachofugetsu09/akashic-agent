@@ -69,7 +69,7 @@ class Bindings:
         lease = get_current_runtime_lease()
         if lease is None or lease.snapshot.composition_root is None:
             raise RuntimeError("固定 binding 需要实际 runtime scope")
-        if not self._root_is_selected(lease.snapshot.composition_root):
+        if lease.snapshot.composition_root is not self._root:
             raise RuntimeError("固定 binding 的所属 Root 不属于当前 runtime scope")
         if lease.snapshot.composition_root.context.get(service) is None:
             raise RuntimeError(f"当前 scope 不提供服务: {service.name}")
