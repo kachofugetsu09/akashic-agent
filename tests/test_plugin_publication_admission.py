@@ -4,6 +4,7 @@ import asyncio
 import pytest
 
 from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugins._operation import OperationBusyError
 from tests.test_plugin_update_operation_lease import installed_host, update_api
 
 
@@ -40,3 +41,25 @@ async def test_publication_wait_outlives_commit_deadline(tmp_path, monkeypatch):
             assert (workspace / "runtime/plugin-stable.json").read_bytes() == before
         await host._update_publication[1]
         assert host.read_update("slow-caller").phase == "committed"
+
+
+@pytest.mark.asyncio
+async def test_rejected_publication_is_visible_and_can_be_discarded(tmp_path, monkeypatch):
+    async with installed_host(tmp_path) as (host, source, _, _):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            api, ctx = update_api(snapshot)
+            await api.install(ctx, "busy-publisher", source=str(source), marketplace="lab")
+            start = host._start_operation
+
+            def busy(*args, **kwargs):
+                raise OperationBusyError("原操作尚未结束")
+
+            monkeypatch.setattr(host, "_start_operation", busy)
+            with pytest.raises(OperationBusyError):
+                api.publish(ctx, "busy-publisher")
+            status = api.read(ctx, "busy-publisher")
+            assert not status.publishing
+            assert "发布未开始" in status.error
+            monkeypatch.setattr(host, "_start_operation", start)
+            await api.discard(ctx, "busy-publisher")
+            assert api.read(ctx, "busy-publisher").phase == "rolled_back"

@@ -1237,10 +1237,15 @@ class PluginManager:
                     if host.parent_lease.snapshot is ready.snapshot]
         if retained:
             raise RuntimeError(f"验证尚未退出或资源尚未清理: {retained}")
-        operation = self._start_operation(
-            lambda: self._publish_update(update_id, update.plugin_id), background=True,
-            wait_for_snapshot=self.current_snapshot,
-        )
+        try:
+            operation = self._start_operation(
+                lambda: self._publish_update(update_id, update.plugin_id), background=True,
+                wait_for_snapshot=self.current_snapshot,
+            )
+        except OperationBusyError as error:
+            self._reload_journal.record_update_error(update_id, f"发布未开始：{error}")
+            self._notify_updates()
+            raise
         self._update_publication = (update_id, operation.task)
         self._notify_updates()
 
