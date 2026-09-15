@@ -96,11 +96,12 @@ async def apply(ctx):
                     "latest-result", CallRef("latest-call", 0), reader, latest_writer, lambda: None,
                 )
                 latest_result = await tools.execution(authorize).execute_call(latest_reply)
-                assert latest_result.outcome == ("success" if passed else "error")
-                if passed:
-                    assert latest_result.parts[0].value == "finished"
-                    assert host.read_update(identity).publishing
-                    assert PluginSelection(tmp_path / "workspace").read() == stable
+                assert latest_result.outcome == "success"
+                accepted = json.loads(latest_result.parts[0].value)
+                assert accepted["update_id"] == identity
+                assert accepted["candidate_id"] == host.read_update(identity).candidate_id
+                assert accepted["handle"]
+                assert PluginSelection(tmp_path / "workspace").read() == stable
         async def restart():
             nonlocal log, host, reader
             await host.terminate_all()
@@ -149,6 +150,7 @@ async def apply(ctx):
                     assert isinstance(validation_rows[-1].body, Output)
                     assert validation_rows[-1].body.finish == "complete"
                 assert validation.reader("plugin-validation:" + identity).attributes.learning == "excluded"
+            assert host.read_validation_messages(identity, "plugin-validation:" + identity) == validation_rows
             assert (next(databases[0].parent.rglob("effect.txt"))).read_text() == "once\n"
         for generation in host.current_snapshot.generations.values():
             assert not (generation.data_dir / "effect.txt").exists()
@@ -171,6 +173,8 @@ async def apply(ctx):
         await restart()
         await asyncio.wait_for(recovered_report.wait(), 10)
         await host.terminate_all()
+        if databases:
+            assert host.read_validation_messages(identity, "plugin-validation:" + identity) == validation_rows
         assert len(reader.snapshot()) == len(rows)
         assert list((tmp_path / "workspace/runtime/plugin-update-validation").glob("*/workspace/sessions.db")) == databases
         sent_again = [json.loads(line) for line in next((tmp_path / "workspace/plugin-data").rglob("sent.jsonl")).read_text().splitlines()]

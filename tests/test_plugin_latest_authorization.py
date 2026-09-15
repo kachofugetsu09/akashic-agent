@@ -1,5 +1,7 @@
 """候选程序的查询、撤销与真实提交边界；用 Event 固定调度。"""
 import asyncio
+import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +17,9 @@ async def test_reading_latest_does_not_request_promotion(tmp_path):
             api, ctx = update_api(snapshot)
             status = await api.install(ctx, "read-only", source=str(source), marketplace="lab")
             assert status.candidate_id == host.latest_snapshot.snapshot_id
-            assert api.messages(ctx, "read-only", "any-session") == ()
+            assert api.messages(ctx, "read-only", "plugin-validation:read-only") == ()
+            with pytest.raises(PermissionError, match="会话不属于"):
+                api.messages(ctx, "read-only", "any-session")
             assert api.read(ctx, "read-only") == status
             assert host._update_publication is None
             assert not host._validation_hosts
@@ -105,3 +109,42 @@ async def test_revert_after_commit_reports_commit_and_keeps_selection(tmp_path):
         with pytest.raises(RuntimeError, match="已提交"):
             await host.discard_update("request")
         assert (workspace / "runtime/plugin-stable.json").read_bytes() == selected
+
+
+@pytest.mark.asyncio
+async def test_closed_evidence_missing_is_an_error_and_never_creates_a_database(tmp_path):
+    async with installed_host(tmp_path) as (host, source, _, _):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            api, ctx = update_api(snapshot)
+            await api.install(ctx, "request", source=str(source), marketplace="lab")
+            async with api.open_validation(ctx, "request"):
+                evidence = api.read(ctx, "request").evidence
+            assert not host._validation_hosts
+            assert evidence is not None
+            database = Path(evidence) / "sessions.db"
+            backup = database.with_suffix(".saved")
+            database.rename(backup)
+            try:
+                with pytest.raises(sqlite3.OperationalError):
+                    api.messages(ctx, "request", "plugin-validation:request")
+                assert not database.exists()
+            finally:
+                backup.rename(database)
+            await api.discard(ctx, "request")
+
+
+@pytest.mark.asyncio
+async def test_deferred_publication_cannot_authorize_a_different_update(tmp_path):
+    async with installed_host(tmp_path) as (host, source, _, _):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            api, ctx = update_api(snapshot)
+            await api.install(ctx, "first", source=str(source), marketplace="lab")
+            publish = api.publication(ctx, "first")
+            await api.discard(ctx, "first")
+            second = await api.install(ctx, "second", source=str(source), marketplace="lab")
+            with pytest.raises(RuntimeError, match="回退"):
+                publish()
+            with pytest.raises(RuntimeError, match="不匹配"):
+                await api.discard(ctx, "first")
+            assert api.read(ctx, "second") == second
+            await api.discard(ctx, "second")

@@ -296,6 +296,7 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
                     async with server.route() as route:
                         assert (await route.call("ping", {})).output == "fixed B"
         assert failed and process is not None and process.returncode is None
+        assert host.read_update(result.update_id).error
         assert host.latest_snapshot.lease_count == 1
         assert tuple(host._validation_hosts) == (validation.identity,)
         with pytest.raises(RuntimeError, match="资源尚未清理|调用失败"):

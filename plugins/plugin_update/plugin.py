@@ -98,7 +98,7 @@ async def apply(ctx: Context) -> None:
 
     _ = await catalog.register(
         ctx, name="plugin_latest",
-        description="run 显式执行固定 latest 的普通程序，正常完成且未 revert 后请求晋升；status 只读过程与状态；revert 撤销提交授权",
+        description="run 启动固定 latest 的普通程序并立即返回 update/call 句柄；status 读取过程和结束后的原结果；revert 撤销本 session 更新授权；正常完成且未撤销才晋升",
         parameters=LatestInput.model_json_schema(), open=open_latest,
         idempotent=False, risk="external-side-effect",
     )

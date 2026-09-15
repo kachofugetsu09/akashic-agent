@@ -9,9 +9,10 @@ import logging
 import os
 import secrets
 import shutil
+import sqlite3
 import sys
 from dataclasses import dataclass
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from contextvars import Context as TaskContext
 from pathlib import Path
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
@@ -44,6 +45,7 @@ from agent.plugin_composition.messages import (
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from session.log import MessageCatalog, MessageLog
+from session.log import _message as decode_message_row  # pyright: ignore[reportPrivateUsage]
 from session.message import Message
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import RuntimeScope
@@ -1167,7 +1169,9 @@ class PluginManager:
                             None if record is None else record.phase, evidence)
 
     def read_validation_messages(self, update_id: str, session_id: str) -> tuple[Message, ...]:
-        """按更新固定的候选读取当前调用证据；没有活动调用时不打开或创建数据库。"""
+        """只读原调用消息；关闭后的证据沿原 Message 解码，不初始化或重放程序。"""
+        if session_id != "plugin-validation:" + update_id:
+            raise PermissionError("会话不属于该更新调用")
         update = self._reload_journal.update(update_id)
         if update.reload_tx_id is None:
             return ()
@@ -1175,7 +1179,26 @@ class PluginManager:
         for host in self._validation_hosts.values():
             if host.parent_lease.snapshot.snapshot_id == snapshot_id:
                 return host.messages.reader(session_id).snapshot()
-        return ()
+        opened = [event for event in self._reload_journal.events(update.reload_tx_id)
+                  if event.details.get("event") == "business_validation_opened"]
+        if not opened:
+            return ()
+        if len(opened) != 1:
+            raise RuntimeError("更新调用证据不唯一")
+        details = opened[0].details
+        workspace = self._workspace / "runtime" / "plugin-update-validation" / cast(str, details["validation_id"]) / "workspace"
+        if (details["candidate_snapshot"] != snapshot_id
+                or Path(cast(str, details["workspace"])).resolve() != workspace.resolve()):
+            raise RuntimeError("调用证据与固定候选不一致")
+        database = workspace / "sessions.db"
+        evidence_root = (self._workspace / "runtime" / "plugin-update-validation").resolve()
+        if not database.resolve().is_relative_to(evidence_root):
+            raise RuntimeError("调用证据越过隔离目录")
+        # 只连接已存在的原库；缺失或损坏明确报错，绝不创建空库冒充无结果。
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute("SELECT * FROM messages WHERE session_key = ? ORDER BY seq", (session_id,))
+            return tuple(decode_message_row(row) for row in rows)
 
     def start_update_publication(self, update_id: str) -> None:
         """同步接纳无 lease 的宿主任务；返回只表示已接纳，不表示已晋升。"""
@@ -2686,6 +2709,10 @@ class PluginManager:
                             allow_stable_lease=True,
                         )
                     except BaseException as cleanup_error:
+                        self._reload_journal.record_update_error(
+                            update_id, str(cleanup_error) or type(cleanup_error).__name__,
+                        )
+                        self._notify_updates()
                         if failure is not None:
                             raise BaseExceptionGroup("验证与资源回收均失败", [failure, cleanup_error]) from None
                         raise
