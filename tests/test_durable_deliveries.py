@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 from agent.control.scoped_turn import TurnAcceptedReceipt
-from agent.plugin_composition import TopologyView
 from agent.plugin_composition.channels import (
     ChannelDeliveryReceipt,
     DeliveryStatus,
@@ -23,9 +22,6 @@ from agent.plugin_composition.durable_deliveries import (
     PluginDurableDeliveries,
 )
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import RuntimeSnapshot
-from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from session.manager import SessionManager
 
@@ -470,130 +466,6 @@ def test_delivery_body_preserves_surrounding_newlines(tmp_path: Path) -> None:
         projection_session_id="projection:body",
         body=body,
     ).body == body
-
-
-def test_candidate_fence_keeps_akashic_crash_recovery_target(
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    manager = PluginManager([], event_bus=EventBus(), workspace=workspace)
-    store = DurableDeliveryStore(
-        workspace / "runtime" / "deliveries" / "settlements.sqlite"
-    )
-    store.initialize()
-    request = _request()
-    _ = store.prepare(
-        {
-            "logical_delivery_id": request.logical_delivery_id,
-            "accepted_session_id": request.accepted_turn.session_id,
-            "accepted_turn_id": request.accepted_turn.turn_id,
-            "target_service": request.target_service,
-            "channel": "akashic",
-            "recipient": request.recipient,
-            "projection_session_id": request.projection_session_id,
-            "body": request.body,
-            "metadata": dict(request.metadata),
-        }
-    )
-
-    def candidate(services: tuple[str, ...]) -> RuntimeSnapshot:
-        return RuntimeSnapshot(
-            "candidate",
-            {},
-            (),
-            composition_topology=TopologyView(
-                generation_id="root:candidate",
-                identity="topology:candidate",
-                composition_revision=1,
-                fibers=(),
-                services=services,
-                effects=(),
-                listeners=(),
-            ),
-        )
-
-    manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
-        candidate(("eventmail.delivery.v1",))
-    )
-    with pytest.raises(RuntimeError, match="target service 不可解析"):
-        manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
-            candidate(())
-        )
-
-    _ = store.mark_provider_started(
-        request.logical_delivery_id,
-        attempt_id="attempt:changed-binding",
-        snapshot_id="snapshot:changed",
-        generation_id="generation:changed",
-        binding_token="binding:changed",
-    )
-    with pytest.raises(RuntimeError, match="target service 不可解析"):
-        manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
-            candidate(())
-        )
-    _ = store.mark_provider_result(
-        request.logical_delivery_id,
-        state="delivered",
-        receipt={"status": "delivered"},
-    )
-    _ = store.mark_projected(request.logical_delivery_id, "message:one")
-    with pytest.raises(RuntimeError, match="target service 不可解析"):
-        manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
-            candidate(())
-        )
-    _ = store.confirm_settled(request.logical_delivery_id, "content:receipt")
-    manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
-        candidate(())
-    )
-
-
-@pytest.mark.parametrize("terminal", ("rejected", "failed"))
-def test_candidate_fence_ignores_nonrecoverable_terminal_rows(
-    tmp_path: Path,
-    terminal: str,
-) -> None:
-    workspace = tmp_path / "workspace"
-    manager = PluginManager([], event_bus=EventBus(), workspace=workspace)
-    store = DurableDeliveryStore(
-        workspace / "runtime" / "deliveries" / "settlements.sqlite"
-    )
-    store.initialize()
-    request = _request(f"delivery:{terminal}")
-    envelope = {
-        "logical_delivery_id": request.logical_delivery_id,
-        "accepted_session_id": request.accepted_turn.session_id,
-        "accepted_turn_id": request.accepted_turn.turn_id,
-        "target_service": request.target_service,
-        "channel": request.channel,
-        "recipient": request.recipient,
-        "projection_session_id": request.projection_session_id,
-        "body": request.body,
-        "metadata": {},
-    }
-    _ = store.prepare(envelope)
-    _ = store.mark_provider_started(
-        request.logical_delivery_id,
-        attempt_id=request.logical_delivery_id,
-        snapshot_id="snapshot:one",
-        generation_id="generation:one",
-        binding_token="binding:one",
-    )
-    _ = store.mark_provider_result(
-        request.logical_delivery_id,
-        state=terminal,
-        receipt={"status": terminal},
-    )
-    snapshot = RuntimeSnapshot(
-        "candidate",
-        {},
-        (),
-        composition_topology=TopologyView(
-            "root:candidate", "topology:candidate", 1, (), (), (), ()
-        ),
-    )
-    manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
-        snapshot
-    )
 
 
 def test_oversized_logical_id_is_rejected_before_any_write_or_provider(

@@ -321,19 +321,6 @@ class DurableDeliveryStore:
             ).fetchall()
             return tuple(self._view(row) for row in rows)
 
-    def forward_targets(self) -> frozenset[str]:
-        """Read target identities still needed for provider or settlement progress."""
-
-        if not self.path.exists():
-            return frozenset()
-        self.initialize()
-        with self._transaction(write=False) as connection:
-            rows = connection.execute(
-                "SELECT DISTINCT target_service FROM deliveries WHERE "
-                + _FORWARD_PROGRESS_SQL
-            ).fetchall()
-            return frozenset(str(row[0]) for row in rows)
-
     def _required(self, connection: sqlite3.Connection, logical_id: str) -> dict[str, object]:
         row = connection.execute(
             "SELECT * FROM deliveries WHERE logical_delivery_id = ?", (logical_id,)

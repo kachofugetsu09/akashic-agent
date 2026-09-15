@@ -86,7 +86,6 @@ from agent.plugin_composition.model import (
     resolve_declared_workspace_root,
 )
 from agent.control.timer import AsyncioOneShotTimer
-from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.interaction_undo import InteractionUndoCoordinator
 from agent.plugins.channel_credentials import CoreProviderClientFactory
@@ -2704,8 +2703,6 @@ class PluginManager:
                 generations,
                 composition_root=composition_root,
             )
-            if candidate_owner is not None:
-                self._preflight_durable_delivery_targets(snapshot)
         except BaseException as error:
             await self._discard_building_root(composition_root, error)
             if not isinstance(error, Exception):
@@ -3331,26 +3328,6 @@ class PluginManager:
                 else InteractionUndoService.candidate_validation()
             )
             _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
-
-    def _preflight_durable_delivery_targets(self, snapshot: RuntimeSnapshot) -> None:
-        """Fence forward-completable rows whose target vanished from candidate."""
-
-        store = DurableDeliveryStore(
-            self._workspace / "runtime" / "deliveries" / "settlements.sqlite",
-            read_only=True,
-        )
-        forward_targets = store.forward_targets()
-        if not forward_targets:
-            return
-        topology = snapshot.composition_topology
-        if topology is None:
-            raise RuntimeError("durable delivery candidate 缺少 composition topology")
-        missing = tuple(sorted(forward_targets.difference(topology.services)))
-        if missing:
-            raise RuntimeError(
-                "durable delivery forward target service 不可解析: "
-                + ", ".join(missing)
-            )
 
     async def _mount_generation_composition(
         self,
