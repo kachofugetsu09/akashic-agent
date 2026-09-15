@@ -117,7 +117,6 @@ async def test_invalid_selection_never_calls_controller_or_apply(tmp_path, raw):
     finally:
         await close(owner)
 
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["container", "mounts", "workspace", "formal"])
 async def test_bad_cleanup_receipt_blocks_boot_and_keeps_failure_owner(tmp_path, failure):
@@ -218,21 +217,6 @@ async def test_expired_boot_does_not_apply_after_confirmed_cleanup(tmp_path):
         with pytest.raises(OperationTimeoutError):
             await owner.load_all()
         assert owner.current_snapshot is None
-        assert not (tmp_path / "workspace" / "applied.txt").exists()
-    finally:
-        await close(owner)
-
-
-@pytest.mark.asyncio
-async def test_validation_child_cannot_invoke_boot_cleanup(tmp_path):
-    controller = Controller()
-    owner = setup(tmp_path, controller)
-    owner._validation_only = True
-    try:
-        assert controller.calls == []
-        with pytest.raises(RuntimeError, match="validation Manager"):
-            await owner.load_all()
-        assert controller.calls == []
         assert not (tmp_path / "workspace" / "applied.txt").exists()
     finally:
         await close(owner)

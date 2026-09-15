@@ -226,7 +226,6 @@ class PluginManager:
         self._selection = PluginSelection(workspace)
         self._publication: SnapshotTransaction | None = None
         self._python_environments = PythonEnvironments(workspace)
-        self._validation_only = False
         self._validation_hosts: dict[str, ValidationHost] = {}
         self._update_publication: tuple[str, asyncio.Task[None]] | None = None
         self._update_watchers: set[asyncio.Event] = set()
@@ -685,8 +684,6 @@ class PluginManager:
 
     async def _load_all(self) -> None:
         """从唯一完整选择启动；null 只允许首次固定安装输入。"""
-        if self._validation_only:
-            raise RuntimeError("validation Manager 必须显式装配 candidate")
         selection_ref = self._selection.read()
         if self.current_snapshot is not None:
             raise RuntimeError("load_all 不能重复启动正式 Root")
@@ -866,7 +863,7 @@ class PluginManager:
         plugin_dir: Path,
         source_type: str,
     ) -> str:
-        selection_ref = None if self._validation_only else self._selection.read()
+        selection_ref = self._selection.read()
         base = self.current_snapshot
         base_generation = None if base is None else base.generations.get(plugin_id)
         base_pointer: str | None = None
@@ -1705,7 +1702,7 @@ class PluginManager:
         if self._publication is not None and self._publication.must_retain:
             if not self._publication.candidate.accepting_leases:
                 raise RuntimeError("持久发布尚在 maintenance，必须显式恢复或关闭")
-        if not self._validation_only and self._selection.read() != expected_ref:
+        if self._selection.read() != expected_ref:
             raise SelectionConflictError("完整 Root 基线已变化")
         self._publication = None
         current = self.current_snapshot
@@ -1762,7 +1759,7 @@ class PluginManager:
             try:
                 self._check_operation_commit()
                 # 构建或 teardown 已失败的 owner 只允许显式 recovery/terminate 重试。
-                if not self._validation_only and self._selection.read() != expected_ref:
+                if self._selection.read() != expected_ref:
                     raise SelectionConflictError("恢复前 stable 已变化，不能重建旧输入")
                 if any(
                     root.root_fiber.state == FiberState.UNLOADING
@@ -1827,36 +1824,35 @@ class PluginManager:
             self._check_operation_commit()
             if before_open is not None:
                 before_open()
-            if not self._validation_only:
-                assert transaction is not None
-                components = tuple(self._generation_archive_ref(item) for item in snapshot.generations.values())
-                try:
-                    if self._selection.read() != expected_ref:
-                        raise SelectionConflictError("提交前 stable 基线已变化")
-                    if not commit_selection and (
-                        expected_ref is None or self._selection_components(expected_ref) != components
-                    ):
-                        raise RuntimeError("恢复 Root 输入必须等于已提交完整选择")
-                    if commit_selection and (
-                        expected_ref is None or self._selection_components(expected_ref) != components
-                    ):
-                        self._check_operation_commit()
-                        # 同步调用在返回结果前中断，也不能假定没有提交。
-                        transaction.selection_result = SelectionWriteError(
-                            operation="commit", target_ref=None, outcome="uncertain",
-                            observed_ref=None, observation_error=None,
-                        )
-                        transaction.selection_result = self._selection.commit(components, expected_ref=expected_ref)
-                    else:
-                        self._check_operation_commit()
-                        transaction.selection_result = expected_ref
-                    operation.committed = snapshot
-                except SelectionWriteError as error:
-                    transaction.selection_result = error
-                    raise
-                except SelectionConflictError:
-                    transaction.selection_result = None
-                    raise
+            assert transaction is not None
+            components = tuple(self._generation_archive_ref(item) for item in snapshot.generations.values())
+            try:
+                if self._selection.read() != expected_ref:
+                    raise SelectionConflictError("提交前 stable 基线已变化")
+                if not commit_selection and (
+                    expected_ref is None or self._selection_components(expected_ref) != components
+                ):
+                    raise RuntimeError("恢复 Root 输入必须等于已提交完整选择")
+                if commit_selection and (
+                    expected_ref is None or self._selection_components(expected_ref) != components
+                ):
+                    self._check_operation_commit()
+                    # 同步调用在返回结果前中断，也不能假定没有提交。
+                    transaction.selection_result = SelectionWriteError(
+                        operation="commit", target_ref=None, outcome="uncertain",
+                        observed_ref=None, observation_error=None,
+                    )
+                    transaction.selection_result = self._selection.commit(components, expected_ref=expected_ref)
+                else:
+                    self._check_operation_commit()
+                    transaction.selection_result = expected_ref
+                operation.committed = snapshot
+            except SelectionWriteError as error:
+                transaction.selection_result = error
+                raise
+            except SelectionConflictError:
+                transaction.selection_result = None
+                raise
 
         snapshot = await self._compile_topology_snapshot(inputs)
         transaction: SnapshotTransaction | None = None
@@ -2275,11 +2271,10 @@ class PluginManager:
         if snapshot is None:
             raise RuntimeError("插件候选缺少实际 Root snapshot")
         active = self._active_generations.get(plugin_id)
-        if not self._validation_only:
-            self._reload_journal.annotate(tx_id, {
-                "event": "selection_candidate",
-                "components": [self._generation_archive_ref(item) for item in snapshot.generations.values()],
-            })
+        self._reload_journal.annotate(tx_id, {
+            "event": "selection_candidate",
+            "components": [self._generation_archive_ref(item) for item in snapshot.generations.values()],
+        })
         transaction = self._begin_snapshot_publication(snapshot)
         try:
             self._advance_reload(generation, "validating", candidate_snapshot_id=snapshot.snapshot_id)
@@ -2593,7 +2588,7 @@ class PluginManager:
         """先固定安装输入，再为目标环境构建独立的完整 Root。"""
 
         base_snapshot = self.current_snapshot
-        base_selection_ref = None if self._validation_only else self._selection.read()
+        base_selection_ref = self._selection.read()
         plugin_id = _resolve_plugin_id(mod)
         if activate and plugin_id in self._active_generations:
             return self._active_generations[plugin_id]
@@ -2678,7 +2673,7 @@ class PluginManager:
             self._stable_aliases.pop(module_path, None)
             if not activate:
                 if self.current_snapshot is not base_snapshot or (
-                    not self._validation_only and self._selection.read() != base_selection_ref
+                    self._selection.read() != base_selection_ref
                 ):
                     assert snapshot.composition_root is not None
                     await self._discard_building_root(snapshot.composition_root, SelectionConflictError("候选构建期间基线变化"))
@@ -2973,7 +2968,7 @@ class PluginManager:
                 source_type=cast(Literal["builtin", "installed"], record["source_type"]),
                 archive_ref=ref,
                 reload_tx_id=None,
-                validation_workspace=workspace if workspace != self._workspace or self._validation_only else None,
+                validation_workspace=workspace if workspace != self._workspace else None,
                 state="prepared",
             )
             generations[plugin_id] = generation
@@ -3134,7 +3129,7 @@ class PluginManager:
         """向当前 stable 或 candidate Root 提供宿主能力。"""
 
         host = validation_host
-        isolated = host is not None or self._validation_only
+        isolated = host is not None
         store = self._snapshot_store if host is None else host.snapshot_store
         boot_id = self._host_boot_id if host is None else host.identity
         archive = self._archive if host is None else host.archive
@@ -3311,9 +3306,7 @@ class PluginManager:
         if "core.mobile_ui.v1" in host_ui_requested:
             from agent.plugins.mobile_ui import PluginMobileUiProvider
 
-            # 现有 provider 实际只消费 snapshot_store；验证不能回落到父 Store。
-            # 构造类型仍声明 Manager，窄接口的类型收敛留给该文件 owner。
-            mobile_ui = PluginMobileUiProvider(self if host is None else host)  # pyright: ignore[reportArgumentType]
+            mobile_ui = PluginMobileUiProvider(store)
             _ = await root.context.provide(
                 ServiceKey[object]("core.mobile_ui.v1"),
                 mobile_ui,
@@ -3326,13 +3319,12 @@ class PluginManager:
             INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
         ):
-            if not candidate and interaction_owner is None:
-                raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
-            interaction_undo = (
-                InteractionUndoService(interaction_owner.undo_latest)
-                if not candidate and interaction_owner is not None
-                else InteractionUndoService.candidate_validation()
-            )
+            if candidate or isolated:
+                interaction_undo = InteractionUndoService.candidate_validation()
+            else:
+                if interaction_owner is None:
+                    raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
+                interaction_undo = InteractionUndoService(interaction_owner.undo_latest)
             _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
 
     async def _mount_generation_composition(
@@ -3495,7 +3487,7 @@ class PluginManager:
             generation_id=generation.generation_id,
             source_revision=generation.source_revision,
             config_revision=generation.config_revision,
-            details={"base_selection_ref": None if self._validation_only else self._selection.read()},
+            details={"base_selection_ref": self._selection.read()},
         )
         generation.reload_tx_id = tx_id
         boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
@@ -3510,7 +3502,7 @@ class PluginManager:
         publication = self._publication
         if publication is not None and publication.must_retain:
             return "candidate" if publication.candidate.generations.get(generation.plugin_id) is generation else "base"
-        ref = None if self._validation_only else self._selection.read()
+        ref = self._selection.read()
         if ref is not None and generation.archive_ref in self._selection_components(ref):
             return "candidate"
         return "base"

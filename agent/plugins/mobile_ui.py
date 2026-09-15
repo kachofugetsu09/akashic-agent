@@ -19,10 +19,10 @@ from agent.plugin_composition import (
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugins.generation import PluginGeneration
 from agent.plugin_composition.ui_slots import UI_SLOTS, MobileUiAsset
-from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotLease,
+    RuntimeSnapshotStore,
     get_current_runtime_lease,
     get_current_runtime_snapshot,
 )
@@ -60,8 +60,8 @@ class MobileUiProvider(Protocol):
 class PluginMobileUiProvider:
     """从插件快照提供版本化移动资源和只读查询。"""
 
-    def __init__(self, manager: PluginManager) -> None:
-        self._manager = manager
+    def __init__(self, snapshot_store: RuntimeSnapshotStore) -> None:
+        self._snapshot_store = snapshot_store
         self._executor = ThreadPoolExecutor(
             max_workers=MOBILE_UI_QUERY_WORKERS,
             thread_name_prefix="mobile-plugin-ui",
@@ -172,7 +172,7 @@ class PluginMobileUiProvider:
         current = get_current_runtime_lease()
         if current is not None:
             return current.fork()
-        return await self._manager.snapshot_store.acquire()
+        return await self._snapshot_store.acquire()
 
     async def _reserve_query_slot(self) -> None:
         """在提交线程池前拒绝超过有界 worker+queue 容量的查询。"""

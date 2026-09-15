@@ -250,18 +250,6 @@ async def test_snapshot_callback_failure_cannot_undo_durable_result():
 
 
 @pytest.mark.asyncio
-async def test_validation_manager_does_not_read_formal_selection(tmp_path, monkeypatch):
-    owner = manager(tmp_path)
-    owner._validation_only = True
-    monkeypatch.setattr(owner._selection, "read", forbidden)
-    snapshot = await owner._compile_topology_snapshot(())
-    owner._snapshot_store.install(snapshot)
-    owner._building_roots.pop(snapshot.composition_root)
-    assert not owner._selection.path.exists()
-    await owner.terminate_all()
-
-
-@pytest.mark.asyncio
 async def test_runtime_started_finishes_with_closed_exact_scope_before_commit(tmp_path, monkeypatch):
     root = plugin(tmp_path, "alpha")
     (root / "plugin.py").write_text(

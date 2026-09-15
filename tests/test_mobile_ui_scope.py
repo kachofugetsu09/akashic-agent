@@ -7,7 +7,6 @@ from typing import cast
 
 import pytest
 
-from agent.plugins.manager import PluginManager
 from agent.plugins.mobile_ui import PluginMobileUiProvider
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.snapshot import (
@@ -33,9 +32,7 @@ async def test_mobile_ui_query_keeps_the_callers_snapshot_after_promotion() -> N
         composition_active_plugin_ids=frozenset({"fixture"}),
     )
     store.install(first)
-    provider = PluginMobileUiProvider(
-        cast(PluginManager, SimpleNamespace(snapshot_store=store))
-    )
+    provider = PluginMobileUiProvider(store)
     started = Event()
     release = Event()
     selected: list[str] = []

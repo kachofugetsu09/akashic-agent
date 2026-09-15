@@ -15,7 +15,7 @@ async def candidate(tmp_path):
     await manager.load_all()
     module = MODULE.replace(
         "inject = (MESSAGE_WRITERS, SESSION_ADMISSION, TASKS)",
-        'inject = (MESSAGE_WRITERS, SESSION_ADMISSION, TASKS, ServiceKey("core.mobile_ui.v1"))',
+        'inject = (MESSAGE_WRITERS, SESSION_ADMISSION, TASKS, ServiceKey("core.mobile_ui.v1"), ServiceKey("core.interaction_undo"))',
     )
     (source / "plugin.py").write_text(module + "\nmarker = 'owner-tests'\n")
     _commit(source)
@@ -30,9 +30,16 @@ async def test_validation_lease_retains_root_and_module_until_released(tmp_path)
     log, manager, update_id = await candidate(tmp_path)
     lease = None
     try:
+        undo_key = ServiceKey("core.interaction_undo")
+        # 第一候选与真实隔离宿主都只有拒绝端口，不能获得正式撤销 owner。
+        candidate_undo = manager.latest_snapshot.composition_root.context.require(undo_key)
+        with pytest.raises(RuntimeError, match="禁止撤销正式 interaction"):
+            await candidate_undo.undo_latest("formal")
         with pytest.raises(RuntimeError, match="仍有 lease"):
             async with manager.open_validation(update_id) as scope:
                 host = next(iter(manager._validation_hosts.values()))
+                with pytest.raises(RuntimeError, match="禁止撤销正式 interaction"):
+                    await scope.require(undo_key).undo_latest("formal")
                 ui = scope.require(ServiceKey("core.mobile_ui.v1"))
                 # 没有继承 runtime context 的请求也必须只租用验证 Store。
                 query_lease = await asyncio.create_task(

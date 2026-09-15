@@ -255,7 +255,7 @@ async def test_inspector_reads_actual_queries_through_the_mobile_provider(tmp_pa
                            content=content.checks).append("q", Input((ContentPart("text", "remember it"),)))
                 async with ctx.require(MATERIALS).bind() as materials:
                     await materials.prepare(log.reader("s").snapshot(), "conversation")
-        provider = PluginMobileUiProvider(host)
+        provider = PluginMobileUiProvider(host.snapshot_store)
         try:
             before = (tmp_path / "embedding-calls.txt").read_text()
             listing = await provider.query("akasha", revision, "inspector.recent", {},
@@ -309,7 +309,7 @@ async def test_inspector_reads_saved_queries_when_embedding_is_unavailable(tmp_p
     async with application(tmp_path, embedding_available=False, before_start=seed) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             revision = snapshot.generations["akasha"].source_revision
-        provider = PluginMobileUiProvider(host)
+        provider = PluginMobileUiProvider(host.snapshot_store)
         try:
             listing = await provider.query("akasha", revision, "inspector.recent", {},
                                            session_id=None, turn_id=None)
@@ -360,7 +360,7 @@ async def test_mobile_inspector_bounds_long_messages_without_dropping_hit_member
                     references = _reference_rows(prepared)
                     identity = references[0]["retrieval_ref"]
                     assert isinstance(identity, str)
-        provider = PluginMobileUiProvider(host)
+        provider = PluginMobileUiProvider(host.snapshot_store)
         try:
             detail = await provider.query("akasha", revision, "inspector.detail", {"query_id": identity},
                                           session_id=None, turn_id=None)

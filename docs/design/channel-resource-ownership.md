@@ -170,3 +170,21 @@ Mobile UI 的运行实现只读取传入对象的 snapshot_store，本次传真�
 `/tmp/validation-host-930b5ede-before.tar`。验证限静态搜索、阅读与 git diff --check，
 没有 Gate、CI、build、lint、AST 或产品运行证据。正式 workspace、cache 与其他 writer
 worktree 未改；共享 INDEX、NOW 和整体设计指南未改。
+
+## d2932dc3 后：删除退役 Manager 模式
+
+基线 `d2932dc391cb12f94cd8ec7cf4eb32fa9a2ebf7f` 的 `_validation_only` 在生产代码
+只有构造时赋 False，没有 True setter；仅两个旧子 Manager 测试人为赋 True。
+本切片删除字段、不可达模式分支及这两个测试，保留完整 stable 校验和提交路径。
+真实隔离权限继续由 `host is not None` 表达，不恢复子启动或子更新控制面。
+
+Mobile UI 直接接收 RuntimeSnapshotStore；Manager 传已选定的正式或验证 Store，
+其余四处测试构造同步更新。删除 Manager 类型依赖与接线处的类型例外，不增加 Protocol。
+无继承 context 的 UI 查询仍只能取得所属验证 Store 的 lease。
+
+INTERACTION_UNDO 在第一候选或真实隔离宿主中都使用现有拒绝端口；正式实例仍要求
+实际 Session owner。新增源码断言覆盖两种隔离入口，未授权任何正式撤销、模型数据或凭据能力。
+未改消息证据读取 helper、已删除 preflight/旧 compiler 参数、disabled drain 或 generation counter。
+
+备份：`/tmp/retired-validation-d2932dc3-before.tar`。只做静态阅读、搜索与 diff --check；
+测试未执行，未运行 Gate/CI/build/lint/AST 或产品命令，未操作正式数据。
