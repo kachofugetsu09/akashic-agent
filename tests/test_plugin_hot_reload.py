@@ -1042,9 +1042,9 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     installed = manager.current_snapshot
     assert active is not None and prepared is not None and installed is not None
     compiler = RuntimeSnapshotCompiler()
-    v1 = compiler.compile({"snapshot": active}, catalog_generation=active)
+    v1 = compiler.compile({"snapshot": active})
     next_snapshot = compiler.compile(
-        {"snapshot": prepared}, catalog_generation=prepared
+        {"snapshot": prepared}
     )
     drained: list[str] = []
 
@@ -1062,7 +1062,7 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     assert drained == [next_snapshot.snapshot_id]
     await v1_lease.release()
     next_snapshot = compiler.compile(
-        {"snapshot": prepared}, catalog_generation=prepared
+        {"snapshot": prepared}
     )
     held_v1 = store.lease()
     await store.commit(store.begin_publish(next_snapshot))

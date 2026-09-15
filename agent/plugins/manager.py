@@ -2625,9 +2625,7 @@ class PluginManager:
         try:
             snapshot = self._snapshot_compiler.compile(
                 generations,
-                catalog_generation=generations[generation.plugin_id],
                 composition_root=composition_root,
-                require_composition_ready=True,
             )
             if candidate_owner is not None:
                 self._preflight_durable_delivery_targets(snapshot)

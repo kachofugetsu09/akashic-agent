@@ -95,10 +95,8 @@ class RuntimeSnapshotCompiler:
         self,
         generations: Mapping[str, PluginGeneration],
         *,
-        catalog_generation: PluginGeneration | None = None,
         snapshot_revision: str = "",
         composition_root: CompositionRoot | None = None,
-        require_composition_ready: bool = True,
     ) -> RuntimeSnapshot:
         ordered = [generations[key] for key in sorted(generations)]
         if any(generation.plugin_id != key for key, generation in generations.items()):
@@ -107,7 +105,7 @@ class RuntimeSnapshotCompiler:
         composition_active_plugin_ids: frozenset[str] | None = None
         if composition_root is not None:
             receipt = composition_root.receipt()
-            if require_composition_ready and not receipt.ready:
+            if not receipt.ready:
                 raise RuntimeError(
                     "RuntimeSnapshot 插件组合拓扑未就绪: "
                     f"required_pending={receipt.required_pending}, "
