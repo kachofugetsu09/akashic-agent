@@ -21,6 +21,7 @@ from agent.plugin_composition import (
     ProviderDeliveryRequest,
 )
 from agent.plugin_composition.channels import ChannelRuntimePorts, ChannelAttachmentReadPort
+from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
 from plugins.qq_channel import channel as qq_channel
 from plugins.telegram_channel import channel as telegram_channel
 
@@ -675,7 +676,6 @@ def separate_qq_generation():
     """用正式 fresh importer 创建另一份插件模块，不能共享业务模块里的锁。"""
     import importlib.util
     from pathlib import Path
-from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
     from agent.plugins.importer import FreshPluginImporter
 
     name = "fixture_qq_external_generation"
