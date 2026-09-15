@@ -696,7 +696,7 @@ Mobile 中止按钮和 channel `/stop` 只追加带精确 `source` 与 `through_
 
 ### PLG-001 候选插件不得污染正式状态
 
-候选在 commit 前只能使用 generation 私有 staging、只读 session/memory 和 staged event bus。初始化失败后，正式 KV、session、memory、事件和外部服务必须与开始前一致。
+候选使用独立实例、消息及运行资源，不因装配或检查自动修改正式 KV、session、memory 或接纳正式工作。普通 latest 调用默认由模型插件提供已有模型设置和凭据；实际模型请求及凭据刷新归模型 owner，不要求另配账号。候选隔离是资源与调用归属，不是同进程 Python 的安全沙箱；真实远程调用不会因候选失败而回滚。
 
 ### PLG-002 一次装配使用一份固定输入
 
@@ -742,7 +742,7 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 
 ### PLG-012 Turn 内卸载使用 Runtime owner 的异步排空
 
-持有 runtime snapshot lease 的 turn 可以登记卸载，但不得同步等待自己的 lease，不得在 turn 内停 endpoint 或删除代码。Agent 更新来源只在 parent turn 正常结束且没有同 turn `plugin-revert` 时提交授权；底座在 lease 释放后按完整组合换代。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败保留实际 owner 并报告残留，不能假报完成。
+持有 runtime snapshot lease 的 turn 可以登记卸载，但不得同步等待自己的 lease，不得在 turn 内停 endpoint 或删除代码。Agent 更新授权按 PLG-013 的普通 latest 调用及 revert 处理，不额外等待 parent turn terminal；底座在实际 lease 释放后按完整组合换代。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败保留实际 owner 并报告残留，不能假报完成。
 
 ### PLG-013 stable 是最后一次已提交的完整组合
 
@@ -750,7 +750,7 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 
 业务验证归调用程序和资源 provider。Agent 更新启动一次绑定确切候选的普通 programmatic 调用；升级发起者可以看到调用过程、结果和晋升状态，并在提交前用 revert 撤销本次晋升。该调用正常完成且未被撤销时默认请求晋升，不要求回答专用的通过裁决 JSON；失败、中断或结果未知不得视作正常完成。普通读取 latest 不授予晋升权。调用程序拥有终态与撤销判断，底座只检查提交授权、候选身份及基准 stable 未变化，不解释 attached child 或业务测试。调用退出并释放租约后才执行换代，提交后的撤销请求必须明确报告已提交，不伪装为取消成功。
 
-候选使用无正式可写权限的独立实例，一致数据由数据 owner 或验证调用程序准备，不在正式实例上切换数据目录。
+候选使用独立实例，所需数据及模型连接由数据 owner 或调用程序提供，沿用 PLG-001 的可信插件合同。底座不复制业务数据库，不解释数据格式，也不在正式实例上切换数据目录。
 
 stable 通过一次耐久原子提交选择整个组合，不拼接各插件 latest 与 enabled 状态。提交前进程死亡恢复旧 stable，提交后恢复新 stable；不自动续跑未提交候选。恢复的是代码与配置选择，不是业务数据或外部效果。显式 operator 更新可以由 operator 承担验证授权，但仍固定精确制品、独占发布并记录真实验证来源，不伪造测试成功。旧状态格式只在带备份、锁与完整性检查的显式升级中转换，不在普通启动路径维持双读双写。
 
