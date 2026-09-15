@@ -2774,29 +2774,54 @@ class PluginManager:
             code = cast(str, record["code"])
             if archive.save(self._archive.open(code)) != code or archive.save_descriptor(record) != ref:
                 raise RuntimeError("隔离候选固定制品身份不一致")
-        messages = MessageLog(workspace / "sessions.db")
-        try:
+        from contextlib import ExitStack
+        from bus.queue import MessageBus
+        from session.admissions import SessionAdmissions
+        from session.inbound_store import InboundHandoffStore
+
+        # 1. 只创建验证库的连接；构造尚未取得异步资源时可直接关闭。
+        with ExitStack() as cleanup:
+            messages = MessageLog(workspace / "sessions.db")
+            cleanup.callback(messages.close)
             artifacts = ArtifactStore(workspace / "sessions.db")
-        except BaseException:
-            messages.close()
-            raise
-        physical = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=artifacts)
-        bus = EventBus()
-        try:
+            cleanup.callback(artifacts.close)
+            admissions = SessionAdmissions(workspace / "sessions.db")
+            cleanup.callback(admissions.close)
+            identities = ChannelIdentities(workspace / "sessions.db")
+            cleanup.callback(identities.close)
+            inbound_store = InboundHandoffStore(workspace / "sessions.db")
+            cleanup.callback(inbound_store.close)
+            physical = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=artifacts)
+            event_bus = EventBus()
+            message_bus = MessageBus()
+            message_bus.bind_session_admission_owner(admissions)
+            message_bus.bind_durable_inbound_store(inbound_store)
             child = PluginManager(
-                [], event_bus=bus, workspace=workspace, message_log=messages,
+                [], event_bus=event_bus, workspace=workspace, message_log=messages,
                 installed_cache_root=workspace.parent / "plugins" / "cache",
-                channel_attachment_store=physical, workload_controller=self._workload_controller,
+                channel_attachment_store=physical, channel_identities=identities,
+                input_custody=InputCustody(
+                    message_bus.prepare_channel_input, message_bus.complete_channel_input,
+                    message_bus.retain_channel_input, message_bus.reserve_durable_inbound,
+                    message_bus.defer_durable_inbound, message_bus.settle_rejected_inbound,
+                    message_bus.has_pending_durable_inbound,
+                    message_bus.pending_durable_attachment_refs, message_bus.recover_durable_inbounds,
+                ),
+                workload_controller=self._workload_controller,
             )
-        except BaseException:
-            artifacts.close()
-            messages.close()
-            raise
-        child._python_environments = self._python_environments
-        child._validation_only = True
-        task = asyncio.current_task()
-        assert task is not None
-        return ValidationHost(identity, workspace, child, messages, artifacts, bus, task, lease.fork())
+            child._python_environments = self._python_environments
+            child._validation_only = True
+            task = asyncio.current_task()
+            assert task is not None
+            # 2. 关闭权交给实际宿主；不启动出站 dispatcher 或正式来源。
+            host = ValidationHost(
+                identity, workspace, child, messages, artifacts, event_bus, task, lease.fork(),
+                message_bus=message_bus, admissions=admissions,
+                identities=identities, inbound_store=inbound_store,
+            )
+            message_bus.bind_durable_inbound_recoverer(host.recover_input)
+            cleanup.pop_all()
+            return host
 
 
     async def stop_validation_resources(self) -> None:
@@ -3035,7 +3060,7 @@ class PluginManager:
 
         await root.context.provide(SOURCE_ADMISSION, SourceAdmission(
             root.context, self._snapshot_store, boot_id=self._host_boot_id,
-            candidate=candidate,
+            candidate=candidate or self._validation_only,
         ))
         # 隔离装配保留能力形状，但所有 I/O 都显式拒绝，不取得正式对象。
         custody = None if candidate else self._input_custody

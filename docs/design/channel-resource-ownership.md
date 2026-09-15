@@ -51,7 +51,7 @@ Effect 持有的 binding 中，adapter.stop 先正常结束监听，随后收回
 
 `InputCustody`、身份及附件端口仅暴露明确方法；不把完整 Bus、任意 SQL 或完整 store 给 provider。
 隔离装配只收到显式拒绝 I/O 的端口，不借用正式 workspace。独立验证宿主若需要接纳测试输入，
-必须由验证 writer 将它自己的 Bus 绑定到 `input_custody`，不能借用主宿主。
+现在由 `ValidationHost` 将自己的 MessageBus 绑定到 `input_custody`，不能借用主宿主。
 
 Telegram 的 `/stop` 回调通过来源的现行 CHANNEL_INPUT 提交 pause 并等待旧工作；ack 从原
 binding 发送。去重在 await 前取得，重复控制不再次 pause 或发送。idle 仍返回明确 ack。
@@ -68,3 +68,56 @@ binding 发送。去重在 await 前取得，重复控制不再次 pause 或发�
 恢复点：`/tmp/akasic-channels-v2-df9179cf-before.tar` 与基线 commit。源码备份不代表运行数据备份。
 未修改正式 workspace、cache 或旧草稿 worktree。主协调者合并 writer 切片时需加入文档索引，
 核对独立验证宿主的 I/O 绑定，并审查累计生命周期与正式安装组合是否显式包含 channels provider。
+
+## 39b0b498 后的验证宿主接线
+
+本切片基线为 `39b0b4988492e1e77be013b13bf9acf448e956c8`，只修改 Manager 的
+验证宿主构造及 SourceAdmission 标记、ValidationHost、独立测试和本文。
+不修改 plugin_latest 或晋升控制。恢复点为 `/tmp/channel-validation-39b0b498-before.tar`。
+
+```text
+┌──────────────────────────────┐
+│ 普通验证 program / 验证 Root │
+└──────────────┬───────────────┘
+               ▼
+┌──────────────────────────────┐
+│ 独立 InputCustody / MessageBus│
+│ admissions / handoffs / identity│
+└──────────────┬───────────────┘
+               ▼
+┌──────────────────────────────┐
+│ 本次验证 workspace/sessions.db │
+└──────────────────────────────┘
+```
+
+EventBus 仍只处理事件。MessageBus 绑定本次验证库的 SessionAdmissions 和
+InboundHandoffStore；ChannelIdentity 与附件同样只绑定验证库。恢复回调只取验证 Root
+当前公开 lease，不借主 Bus。没有出站 dispatcher，也不自动运行来源启动事件。
+`candidate or self._validation_only` 标记 SourceAdmission，验证 Root 仍执行普通 program，
+但不能借 child 的 `candidate=False` 启动正式 listener。
+
+关闭顺序为 Manager 运行资源 → Root → MessageBus → EventBus → 本地连接 → parent lease。
+Bus 释放接纳租约后才关闭 stores；失败不移除 host 或关闭其依赖连接。这里没有新建关闭队列，
+沿用 ValidationHost 的 lock 和 Manager 的原 cleanup owner。MessageBus 自身已失败的
+`_close_task` 可能持续报告原失败，本切片不改它的重试协议，也不承诺所有故障可自动恢复。
+
+验证数据的增改减沿用上表：输入交接增加、明确拒绝才结算行、停止释放接纳租约但保留 pending；
+identity 按原 receipt 协议写入，消息只追加。本切片不复制正式业务数据、不删除验证库，
+停止后验证库保留输入与 program 证据。源码备份不代表运行数据备份。
+
+新增 `test_channel_validation_custody.py` 使用真实 Manager 验证 Root、MessageBus、SQLite
+owner 和普通 program，检查独立交接接纳/结算、pending 保留、关闭失败保留句柄、正式库
+完整 SQL 内容不变和关闭后拒绝输入。测试未运行；只做静态搜索、阅读及 diff --check。
+
+### 生产分发与默认组合遗漏（只读交接）
+
+- `scripts/build_plugin_distribution.py:426` 扫描全部 `plugins/**/plugin.py`，会发现 channels；
+  静态未发现 provider 打包枚举遗漏，未实际 build。
+- `docker/host-runtime/profiles/default.json:151` 选入 akashic_clients，但整个 profile 没有
+  channels，且其 depends_on 缺 channels。需由组合 writer 显式补选 provider 和依赖关系。
+- `tests/fixtures/formal_plugins.py:26` 的 FULL_RUNTIME_PLUGINS 同样包含 akashic_clients
+  却没有 channels，不能作为已完整的生产组合测试证据。
+- `bootstrap/tools.py:208` 只读取明确开发目录；正式安装器按 profile 安装，
+  不会自动补 channels。旧 installed/stable 选择也需显式完整换代；本切片不改正式状态。
+- Telegram/QQ 不在默认本地 profile，属于有意后续选入；扩展组合选入它们时必须同时选 channels。
+  未读取任何正式安装 cache 或运行选择，因此不声称已审计部署实例。
