@@ -1,6 +1,7 @@
-"""用真实被杀进程验证更新中断后只回退，不重建或续跑候选。"""
+"""强杀后只读唯一 stable；不续跑候选，也不伪造安装回退。"""
 import asyncio
 from contextlib import closing
+from contextvars import Context
 from pathlib import Path
 import signal
 import shutil
@@ -18,6 +19,7 @@ from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import load_plugin_manifest, set_plugin_enabled, write_plugin_manifest
 from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.selection import PluginSelection, SelectionWriteError
 from bus.event_bus import EventBus
 from tests.test_plugin_install import _commit, _write_v3_plugin
 
@@ -46,20 +48,15 @@ async def run():
         setattr(installer, name, changed)
     result, status = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[], update_id="crash-update")
     assert host.latest_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "new"
-    if cut == "promoting":
-        original = runtime._switch_ready_pointer
+    if cut in {"promoting", "committed"}:
+        original = host._selection.commit
         def switched(*args, **kwargs):
+            if cut == "promoting":
+                kill()
             result = original(*args, **kwargs)
             kill()
             return result
-        runtime._switch_ready_pointer = switched
-    elif cut == "committed":
-        original = ReloadJournal.advance
-        def advanced(self, tx_id, phase, **kwargs):
-            original(self, tx_id, phase, **kwargs)
-            if phase == "committed":
-                kill()
-        ReloadJournal.advance = advanced
+        host._selection.commit = switched
     await host.switch_ready("probe@lab")
     raise AssertionError("crash cut was not reached")
 asyncio.run(run())
@@ -93,7 +90,6 @@ async def test_publication_returns_to_caller_before_waiting_for_its_generation(t
     """真实发布等待调用者归还旧租约，失败及关闭仍由原切换 owner 结算。"""
     from agent.plugins.snapshot import get_current_runtime_lease
     from agent.plugin_composition.context import RuntimeScope
-    import agent.plugins.manager as runtime
 
     source, home, workspace, old = prepare(tmp_path)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
@@ -102,6 +98,7 @@ async def test_publication_returns_to_caller_before_waiting_for_its_generation(t
     try:
         await host.load_all()
         stable = host.current_snapshot
+        selection_before = PluginSelection(workspace).read()
         result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         waiting = asyncio.Event()
         original_wait = host._snapshot_store.wait_for_no_leases
@@ -112,9 +109,12 @@ async def test_publication_returns_to_caller_before_waiting_for_its_generation(t
             await original_wait(snapshot)
         monkeypatch.setattr(host._snapshot_store, "wait_for_no_leases", wait)
         if finish == "pointer_failure":
-            def fail_pointer(*args):
-                raise OSError("injected publication pointer failure")
-            monkeypatch.setattr(runtime, "_switch_ready_pointer", fail_pointer)
+            def fail_pointer(*args, **kwargs):
+                raise SelectionWriteError(
+                    operation="commit", target_ref=None, outcome="unchanged",
+                    observed_ref=selection_before, observation_error=None,
+                )
+            monkeypatch.setattr(host._selection, "commit", fail_pointer)
         elif finish == "cancel_after_commit":
             original_track = host._track_reload_drain
             def cancel_after_commit(*args):
@@ -142,32 +142,37 @@ async def test_publication_returns_to_caller_before_waiting_for_its_generation(t
                 assert host.current_snapshot is stable
                 return
             if finish == "shutdown":
-                shutdown = asyncio.create_task(host.terminate_all())
+                shutdown = asyncio.create_task(host.terminate_all(), context=Context())
                 with pytest.raises(asyncio.CancelledError):
                     await publication
         if shutdown is not None:
             await asyncio.wait_for(shutdown, 10)
+        elif finish == "cancel_after_commit":
+            try:
+                await asyncio.wait_for(publication, 10)
+            except asyncio.CancelledError:
+                pass  # 下方从真实选择和 journal 核对已提交事实。
         else:
             await asyncio.wait_for(publication, 10)
         update = host._reload_journal.update(result.update_id)
         assert not host.update_is_publishing(result.update_id)
-        if finish in {"commit", "cancel_after_commit", "retry_after_cancel"}:
+        if finish in {"commit", "cancel_after_commit"}:
             assert update.phase == "committed"
-            assert update.error == ""
+            assert PluginSelection(workspace).read() != selection_before
             assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "new"
         else:
             assert update.phase != "committed"
-            assert update.error == ("publication cancelled" if finish == "shutdown" else "injected publication pointer failure")
+            expected_error = "publication cancelled" if finish == "shutdown" else "outcome=unchanged"
+            assert expected_error in update.error
+            assert PluginSelection(workspace).read() == selection_before
             assert read_pointers(old.installed_path.parents[1]).stable == update.previous.stable
             if finish == "pointer_failure":
-                assert update.phase == "rolled_back"
+                # 整体运行恢复不伪装成安装 owner 已回写旧 latest。
+                assert update.phase == "armed"
                 assert update.reload_tx_id is not None
                 assert host._reload_journal.get(update.reload_tx_id).phase == "aborted"
-                assert read_pointers(old.installed_path.parents[1]).latest == update.previous.latest
+                assert read_pointers(old.installed_path.parents[1]).latest == update.candidate
                 assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "old"
-                fresh, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-                assert fresh.update_id != result.update_id
-                assert host._reload_journal.update(fresh.update_id).phase == "armed"
     finally:
         if lease is not None:
             await lease.release()
@@ -187,7 +192,10 @@ async def test_killed_update_returns_to_old_pointer_until_commit(tmp_path, cut):
     assert result.returncode == -signal.SIGKILL, result.stdout + result.stderr
     journal = ReloadJournal(workspace)
     before = journal.update("crash-update")
-    assert before.phase == ("committed" if cut == "committed" else "armed")
+    # committed 切点在 selection 已提交、journal 尚未记录的窗口。
+    assert before.phase == "armed"
+    selected_before_boot = PluginSelection(workspace).read()
+    pointers_before_boot = read_pointers(old.installed_path.parents[1])
     # 删除原 Git source，启动不能靠重新拉取或重建候选解决中断。
     (source / "plugin.py").unlink()
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
@@ -196,11 +204,12 @@ async def test_killed_update_returns_to_old_pointer_until_commit(tmp_path, cut):
         value = host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))()
         assert value == ("new" if cut == "committed" else "old")
         update = journal.update("crash-update")
-        assert update.phase == ("committed" if cut == "committed" else "rolled_back")
+        assert update.phase == ("committed" if cut == "committed" else "armed")
+        if cut != "committed" and update.reload_tx_id is not None:
+            assert update.error
         pointers = read_pointers(old.installed_path.parents[1])
-        assert pointers.stable == pointers.latest
-        expected = before.candidate if cut == "committed" else before.previous.stable
-        assert pointers.stable == expected
+        assert pointers == pointers_before_boot
+        assert PluginSelection(workspace).read() == selected_before_boot
         assert host.ready_candidate is None
         assert (old.data_path / "history.txt").read_text() == "existing durable data"
         assert old.installed_path.exists()
