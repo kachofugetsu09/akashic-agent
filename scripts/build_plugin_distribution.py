@@ -52,6 +52,12 @@ _RUNTIME_WIRING = (
     ("docker/host-runtime/Dockerfile.distribution", "Dockerfile.distribution"),
     ("docker/host-runtime/distribution-entrypoint.sh", "distribution-entrypoint.sh"),
 )
+_GENERATED_PLUGIN_UI_FILES = (
+    "web_module.js",
+    "web_module.css",
+    "message_ui.js",
+    "message_ui.css",
+)
 
 
 def git(repository: Path, *args: str, env: dict[str, str] | None = None) -> bytes:
@@ -138,6 +144,7 @@ def _runtime_dependency_record(
                 "npm ci --ignore-scripts",
                 "npm run build:dashboard",
                 "npm run build:chat",
+                "npm run build:web-plugins",
             ],
         },
     }
@@ -170,7 +177,7 @@ def _build_web_assets(
     repository: Path,
     commit: str,
     temporary: Path,
-) -> tuple[Path | None, dict[str, object]]:
+) -> tuple[Path | None, Path | None, dict[str, object]]:
     """在一次性完整源码目录构建 Web，不向调用方 checkout 写入产物。"""
 
     required = (
@@ -181,7 +188,7 @@ def _build_web_assets(
     )
     missing = [path for path in required if _git_file(repository, commit, path) is None]
     if missing:
-        return None, {"enabled": False, "missing_source_paths": missing}
+        return None, None, {"enabled": False, "missing_source_paths": missing}
 
     source = temporary / "web-source"
     source.mkdir()
@@ -199,6 +206,7 @@ def _build_web_assets(
     _run_web_command(["npm", "ci", "--ignore-scripts"], cwd=source, env=env)
     _run_web_command(["npm", "run", "build:dashboard"], cwd=source, env=env)
     _run_web_command(["npm", "run", "build:chat"], cwd=source, env=env)
+    _run_web_command(["npm", "run", "build:web-plugins"], cwd=source, env=env)
     asset_root = source / "static"
     required_outputs = (asset_root / "dashboard", asset_root / "chat")
     if any(not path.is_dir() for path in required_outputs):
@@ -220,19 +228,23 @@ def _build_web_assets(
             text=True,
         ).stdout.strip()
 
-    return asset_root, {
+    return asset_root, source / "plugins", {
         "enabled": True,
         "source_commit": commit,
         "source_paths": [
             "frontend/chat",
             "frontend/dashboard",
+            "frontend/plugins",
             "frontend/theme",
             "packages",
+            "plugins",
+            "scripts/build-web-plugins.mjs",
         ],
         "build_commands": [
             "npm ci --ignore-scripts",
             "npm run build:dashboard",
             "npm run build:chat",
+            "npm run build:web-plugins",
         ],
         "node_version": version(["node", "--version"]),
         "npm_version": version(["npm", "--version"]),
@@ -354,12 +366,19 @@ def _bundle_plugin(
     root: str,
     output: Path,
     names: set[str],
+    generated_plugins_root: Path | None = None,
 ) -> dict[str, str]:
     with tempfile.TemporaryDirectory(prefix="akashic-plugin-source-") as directory:
         package = Path(directory)
         archive = git(repository, "archive", "--format=tar", commit + ":" + root)
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
             stream.extractall(package, filter="data")
+        if generated_plugins_root is not None:
+            generated_plugin = generated_plugins_root / Path(root).name
+            for name in _GENERATED_PLUGIN_UI_FILES:
+                generated = generated_plugin / name
+                if generated.is_file():
+                    (package / name).write_bytes(generated.read_bytes())
         manifest = load_static_plugin_manifest(package)
         if manifest.name in names:
             raise ValueError(f"发布插件名称重复: {manifest.name}")
@@ -438,7 +457,9 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
 
     # 2. Web 构建完全在临时源码副本执行；只把生成的静态目录带入 Core tar。
     with tempfile.TemporaryDirectory(prefix="akashic-distribution-web-") as directory:
-        asset_root, web = _build_web_assets(repository, commit, Path(directory))
+        asset_root, generated_plugins_root, web = _build_web_assets(
+            repository, commit, Path(directory)
+        )
         runtime_metadata = {**runtime_dependencies, "web": web}
         core = _append_bytes(
             core,
@@ -459,6 +480,20 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
                 "static/dashboard",
                 mtime=commit_epoch,
             )
+        # 3. 插件 bundle 使用同一次隔离构建生成的前端资产。
+        names: set[str] = set()
+        rows = [
+            _bundle_plugin(
+                repository,
+                commit,
+                stamp,
+                root,
+                output,
+                names,
+                generated_plugins_root,
+            )
+            for root in roots
+        ]
 
     (output / "core.tar").write_bytes(core)
     report: dict[str, object] = {
@@ -473,16 +508,10 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
             "web": web,
         },
         "runtime_dependencies": runtime_dependencies,
-        "plugins": [],
+        "plugins": rows,
     }
 
-    # 3. 独立 Git 源保留来源证明；安装仍走原有 clone、校验及 artifact 发布链。
-    names: set[str] = set()
-    rows = [
-        _bundle_plugin(repository, commit, stamp, root, output, names)
-        for root in roots
-    ]
-    report["plugins"] = rows
+    # 4. 独立 Git 源保留来源证明；安装仍走原有 clone、校验及 artifact 发布链。
     profile = _copy_profile(repository, commit, output)
     if profile is None:
         raise ValueError(
