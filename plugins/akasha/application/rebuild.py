@@ -60,7 +60,9 @@ async def rebuild_from_catalog(
 
     # 1. 先固定恢复点，再生成候选；失败不触碰已发布的学习图。
     started = time.perf_counter()
-    backup_dir = backup_root / datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
+    backup_dir = backup_root / (
+        datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
+    )
     backup_path = _backup_existing(memory_path, backup_dir)
     memory_path.parent.mkdir(parents=True, exist_ok=True)
     candidate = memory_path.with_name(f".{memory_path.name}.rebuild-{uuid4().hex}.candidate")
@@ -74,8 +76,11 @@ async def rebuild_from_catalog(
 
     try:
         # 2. 空进度且没有切换上界，等价于把全部历史按因果顺序重放一遍。
+        # 候选文件在原子替换前不被任何读者使用，所以每次学习都重写整库没有
+        # 恢复价值；重建只在重放结束后发布一次完整快照。
         consumer = MessageConsumer(
             candidate, turns=[], state=Consumption(cutover_heads=()), config=config,
+            deferred_publish=True,
         )
         try:
             _ = await consumer.consume(
@@ -85,6 +90,8 @@ async def rebuild_from_catalog(
             )
             turns = tuple(consumer.cycle.turns)
             skipped = len(consumer.state.skipped)
+            if turns:
+                _ = consumer.publish_snapshot()
         finally:
             consumer.close()
         count = len(turns)

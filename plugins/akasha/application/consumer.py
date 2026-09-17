@@ -33,11 +33,17 @@ if TYPE_CHECKING:
 class MessageConsumer:
     """拥有一个学习快照；调用者串行提交已用固定规则验证的材料。"""
 
-    def __init__(self, path: Path, *, turns: list[Turn], state: Consumption, config: MemoryConfig):
+    def __init__(
+        self, path: Path, *, turns: list[Turn], state: Consumption, config: MemoryConfig,
+        deferred_publish: bool = False,
+    ):
         state.check_turns(turns)
         self.path = path
         self.state = state
         self.config = config
+        # 完整重建写的是丢弃用候选文件：每次学习都重写整库没有恢复价值，
+        # 因此允许把发布推迟到重放结束的一次原子写入。
+        self._deferred_publish = deferred_publish
         self._error: BaseException | None = None
         self._closed = False
         self._embedding_model: str | None = None
@@ -188,6 +194,24 @@ class MessageConsumer:
                 self._embedding_model = rule.embedding_model
             return count
 
+    def publish_snapshot(self) -> str:
+        """按当前内存状态发布一次完整快照；延迟发布的重建用它收口。"""
+
+        return self.publish_snapshot_for(self.state)
+
+    def publish_snapshot_for(self, state: Consumption) -> str:
+        """用给定消费状态发布当前图；调用者负责保证它与图对应。"""
+
+        cycle = self.cycle
+        if cycle.context is None:
+            raise RuntimeError("已学习图缺少 context")
+        return write_memory_database(
+            self.path, turns=cycle.turns, graph=cycle.graph, events=cycle.events,
+            evidence=cycle.evidence, captures=[], context=cycle.context,
+            burst_members=cycle.burst_members, config=self.config, metadata={},
+            recalls=cycle.recalls, consumption=state,
+        )
+
     def skip(self, sample: Sample, *, reason: str) -> bool:
         """把一个闭段记为明确跳过；重复记事必须完全一致。"""
 
@@ -202,16 +226,11 @@ class MessageConsumer:
                     raise ValueError("重复跳过记事的出处不一致")
                 return False
         state = self.state.mark_skipped(entry)
-        cycle = self.cycle
+        if self._deferred_publish:
+            self.state = state
+            return True
         try:
-            if cycle.context is None:
-                raise RuntimeError("已学习图缺少 context")
-            _ = write_memory_database(
-                self.path, turns=cycle.turns, graph=cycle.graph, events=cycle.events,
-                evidence=cycle.evidence, captures=[], context=cycle.context,
-                burst_members=cycle.burst_members, config=self.config, metadata={},
-                recalls=cycle.recalls, consumption=state,
-            )
+            _ = self.publish_snapshot_for(state)
         except BaseException as error:
             self._error = error
             raise
@@ -249,14 +268,8 @@ class MessageConsumer:
         # 2. MemoryCycle 唯一学习一次；图与消费出处在一个完整文件中一起发布。
         try:
             _ = cycle.commit(turn, None)
-            if cycle.context is None:
-                raise RuntimeError("已学习图缺少 context")
-            _ = write_memory_database(
-                self.path, turns=cycle.turns, graph=cycle.graph, events=cycle.events,
-                evidence=cycle.evidence, captures=[], context=cycle.context,
-                burst_members=cycle.burst_members, config=self.config, metadata={},
-                recalls=cycle.recalls, consumption=state,
-            )
+            if not self._deferred_publish:
+                _ = self.publish_snapshot_for(state)
         except BaseException as error:
             # 发布可能已经 replace；回退 Python 指针不能证明文件没有提交。
             self._error = error

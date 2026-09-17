@@ -181,6 +181,47 @@ def test_cutover_preserves_old_graph_and_publish_failure_keeps_old_snapshot(conv
     assert list(tmp_path.glob("akasha.db.*.tmp"))  # named recovery material
 
 
+def test_deferred_publish_rebuild_produces_the_same_graph(conversation, tmp_path):
+    """重建的延迟发布必须与逐轮发布得到同一份学习图。"""
+
+    from plugins.akasha.application.consumer import MessageConsumer
+    log, append, add, text, records = conversation
+    add('u1', 'question one')
+    add('a1', 'answer one', Output)
+    add('u2', 'question two')
+    add('a2', 'answer two', Output)
+    samples = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)
+    entries = [applied_source(sample, learning_binding='fixed') for sample in samples]
+    typed: list[Turn] = []
+    previous: datetime | None = None
+    for index, sample in enumerate(samples):
+        turn = dialogue_turn(sample, node_id=index, previous=previous, text=text,
+                             embeddings=records, embedding_model='fixed', dimension=2)
+        assert turn is not None
+        typed.append(turn)
+        previous = datetime.fromisoformat(turn.committed_at)
+
+    states: list[str] = []
+    for deferred in (False, True):
+        path = tmp_path / f'consumer-{deferred}.db'
+        consumer = MessageConsumer(path, turns=[], state=Consumption(cutover_heads=()),
+                                   config=MemoryConfig(), deferred_publish=deferred)
+        try:
+            for index, turn in enumerate(typed):
+                assert consumer.apply(turn, entries[index])
+            if deferred:
+                _ = consumer.publish_snapshot()
+        finally:
+            consumer.close()
+        states.append(logical_state_sha256(path))
+        with closing(sqlite3.connect(path)) as connection:
+            endings = [row[0] for row in connection.execute(
+                'SELECT assistant_message_id FROM turn_nodes ORDER BY node_id')]
+        assert endings == ['a1', 'a2']
+
+    assert states[0] == states[1]
+
+
 def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_publish(conversation, tmp_path, monkeypatch):
     from plugins.akasha.application.consumer import MessageConsumer
     from plugins.akasha.projection import restore_sample
