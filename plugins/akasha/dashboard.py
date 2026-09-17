@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 
@@ -10,15 +11,34 @@ from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_contracts import ContentPart, Message
 
-from .plugin import AKASHA_RECORDS_VIEW
+from . import ledger
+from .plugin import AKASHA_MEMORY_PATH, AKASHA_RECORDS_VIEW
 from .recalls import ContextSource, Hit, ProgramSource, Recall, RecallRecordsRead, ToolSource
 
 
-inject = (AKASHA_RECORDS_VIEW, MESSAGE_CATALOG)
+inject = (AKASHA_RECORDS_VIEW, AKASHA_MEMORY_PATH, MESSAGE_CATALOG)
 
 
 def _records(context: DashboardContext) -> RecallRecordsRead:
     return context.require(AKASHA_RECORDS_VIEW)()
+
+
+def _memory_path(context: DashboardContext) -> Path:
+    return context.require(AKASHA_MEMORY_PATH)()
+
+
+def _turn_messages(context: DashboardContext, row: dict[str, object]) -> dict[str, object]:
+    """学习账本的正文只从 canonical Message 读，不在插件里复制第二份。"""
+
+    session_id = str(row["session_key"])
+    reader = context.require(MESSAGE_CATALOG).reader(session_id)
+    texts: dict[str, object] = {}
+    for field in ("user_message_id", "assistant_message_id"):
+        message = reader.get(str(row[field]))
+        if message is None:
+            raise ValueError(f"学习账本出处消息缺失: {row[field]}")
+        texts[field] = _message_text(message)[:2000]
+    return texts
 
 
 def _message_text(message: Message) -> str:
@@ -118,7 +138,33 @@ def _row(identity: str, recall: Recall, context: DashboardContext, *, full_text:
 
 
 def register(app: FastAPI, context: DashboardContext) -> None:
-    """Register read-only routes over Recall and the original Message log."""
+    """Register read-only routes over the learned turns, Recall and the Message log."""
+
+    @app.get("/api/dashboard/akasha-ledger/overview")
+    async def get_ledger_overview() -> dict[str, object]:
+        return ledger.read_overview(_memory_path(context))
+
+    @app.get("/api/dashboard/akasha-ledger/turns")
+    async def list_ledger_turns(
+        session_key: str = "",
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, object]:
+        return ledger.list_turns(
+            _memory_path(context), session_key=session_key, page=page, page_size=page_size,
+        )
+
+    @app.get("/api/dashboard/akasha-ledger/skipped")
+    async def list_ledger_skipped() -> dict[str, object]:
+        items = ledger.list_skipped(_memory_path(context))
+        return {"items": items, "total": len(items)}
+
+    @app.get("/api/dashboard/akasha-ledger/turns/{node_id}")
+    async def get_ledger_turn(node_id: int) -> dict[str, object]:
+        row = ledger.read_turn(_memory_path(context), node_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Akasha 学习节点不存在")
+        return {**row, "messages": _turn_messages(context, row)}
 
     @app.get("/api/dashboard/akasha-inspector/overview")
     async def get_overview() -> dict[str, object]:
