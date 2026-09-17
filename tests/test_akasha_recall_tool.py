@@ -31,7 +31,7 @@ def target(tmp_path, runtime, *, embed=None, binding=None, model_id="fixture", m
     async def open_embedding(model_id: str):
         assert model_id == "fixture"
         yield Model()
-    return RecallTool(memory=tmp_path / "memory.db", legacy_index=None, config=MemoryConfig(),
+    return RecallTool(memory=tmp_path / "memory.db", config=MemoryConfig(),
         catalog=runtime._catalog, embeddings=runtime._embeddings, bindings=runtime._bindings,
         select_learning=lambda: (runtime._learning_binding if binding is None else binding, model_id),
         records=runtime._records, open_embedding=open_embedding, max_chars=max_chars)

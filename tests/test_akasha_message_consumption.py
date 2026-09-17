@@ -10,7 +10,7 @@ import pytest
 
 from plugins.akasha.application.cycle import MemoryCycle
 from plugins.akasha.domain.model import MemoryConfig, Turn
-from plugins.akasha.infrastructure.consumption import Consumption, LegacyPrefix, turns_digest
+from plugins.akasha.infrastructure.consumption import Consumption
 from plugins.akasha.infrastructure.persistence import (
     load_consumption, load_memory_state, logical_state_sha256, write_memory_database,
 )
@@ -97,8 +97,7 @@ def test_interrupted_inputs_learn_one_real_graph_node_and_restore_without_replay
     assert turn.assistant_text == "full answer"
     assert turn.user_dense is not None
     np.testing.assert_allclose(turn.user_dense, [0.6, 0.8])
-    state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256="0" * 64,
-                                                  turns_digest=turns_digest([])), cutover_heads=())
+    state = Consumption(cutover_heads=())
     state = state.append(applied_source(sample, learning_binding="exact-projection"))
     cycle = MemoryCycle()
     cycle.commit(turn, None)
@@ -149,18 +148,18 @@ def test_cutover_preserves_old_graph_and_publish_failure_keeps_old_snapshot(conv
     path = tmp_path / "akasha.db"
     publish(path, cycle, None)
     old_graph = logical_state_sha256(path)
-    state = Consumption(legacy_prefix=LegacyPrefix(count=1, index_state_sha256="1" * 64,
-                                                  turns_digest=turns_digest([turn])),
-                        cutover_heads=tuple(sorted(log.catalog().snapshot_heads().items())))
+    # 切换上界固定后，切换前的闭段不能再被追认为新的学习出处。
+    cutover = Consumption(cutover_heads=tuple(sorted(log.catalog().snapshot_heads().items())))
+    with pytest.raises(ValueError, match="切换前"):
+        cutover.append(applied_source(old, learning_binding="new"))
+    state = Consumption(cutover_heads=()).append(applied_source(old, learning_binding="legacy"))
     publish(path, restore(path, [turn]), state)
-    assert load_consumption(path).legacy_prefix.count == 1
+    assert len(load_consumption(path).applied) == 1
     assert restore(path, [turn]).state_version == 1
     with pytest.raises(ValueError, match="旧 writer"):
         publish(path, cycle, None)
-    with pytest.raises(ValueError, match="切换前"):
-        state.append(applied_source(old, learning_binding="new"))
-    with pytest.raises(ValueError, match="旧学习前缀"):
-        restore(path, [replace(turn, user_text="changed")])
+    with pytest.raises(ValueError, match="学习节点与消费出处不一致"):
+        state.check_turns([replace(turn, assistant_message_id="other")])
     assert old_graph != logical_state_sha256(path)  # graph plus new provenance
     add("u2", "new question")
     add("a2", "new answer", Output)
@@ -196,8 +195,7 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
     add('a1', 'answer one', Output)
     first = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)[0]
     entry = applied_source(first, learning_binding='fixed')
-    state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256='0' * 64,
-                                                  turns_digest=turns_digest([])), cutover_heads=())
+    state = Consumption(cutover_heads=())
     path = tmp_path / 'consumer.db'
     consumer = MessageConsumer(path, turns=[], state=state, config=MemoryConfig())
     try:
@@ -260,8 +258,7 @@ def test_reprojection_rejects_changed_members_and_unknown_consumer_version(conve
                          for turn in TurnProjection().project(messages, source))
     with pytest.raises(ValueError, match='出处发生改变'):
         restore_sample(log.catalog(), WrongProjection(), entry)
-    state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256='0' * 64,
-                                                  turns_digest=turns_digest([])), cutover_heads=())
-    payload = state.model_dump_json().replace('"version":1', '"version":2')
+    state = Consumption(cutover_heads=())
+    payload = state.model_dump_json().replace('"version":2', '"version":1')
     with pytest.raises(ValidationError):
         Consumption.model_validate_json(payload)

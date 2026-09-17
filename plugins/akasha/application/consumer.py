@@ -13,9 +13,14 @@ from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 
 from ..domain.features import BurstAwareFeaturePool
-from ..domain.model import ContextState, EmbeddingSpaceMismatchError, MemoryConfig, Turn
-from ..infrastructure.consumption import Applied, Consumption, LegacyPrefix, turns_digest, load_legacy_prefix, legacy_embedding_model
-from ..infrastructure.frozen_history import FrozenHistory
+from ..domain.model import (
+    ContextState,
+    EmbeddingSpaceMismatchError,
+    MemoryConfig,
+    MemoryRebuildRequiredError,
+    Turn,
+)
+from ..infrastructure.consumption import Applied, Consumption
 from ..infrastructure.lease import WriterLease
 from ..infrastructure.persistence import load_consumption, load_memory_state, write_memory_database
 from .cycle import MemoryCycle
@@ -34,12 +39,12 @@ class MessageConsumer:
         self._embedding_model: str | None = None
         self._lease = WriterLease(path)
         try:
-            # 1. 恢复只能装载已发布图；缺图或缺切换记录不能触发历史重学。
+            # 1. 恢复只能装载已发布图；缺图不能触发历史重学。
             if path.exists():
                 if load_consumption(path) != state:
                     raise ValueError("学习快照与已解析的消费出处不一致")
                 graph, events, evidence, context, recalls, burst = load_memory_state(
-                    path, turns=turns, config=config, source_index_sha256=None,
+                    path, turns=turns, config=config,
                 )
                 self._cycle = MemoryCycle.restore(
                     config=config, turns=turns, graph=graph, events=events,
@@ -48,7 +53,7 @@ class MessageConsumer:
                 if turns:
                     self._cycle.feature_pool = BurstAwareFeaturePool(turns, appendable=True)
             else:
-                if turns or state.legacy_prefix.count or state.applied:
+                if turns or state.applied:
                     raise ValueError("已有消费进度缺少学习图，不能自动重放")
                 self._cycle = MemoryCycle(config)
                 self._cycle.context = ContextState((), None, ())
@@ -63,56 +68,28 @@ class MessageConsumer:
 
     @classmethod
     async def load(
-        cls, path: Path, *, legacy_index: Path | None, catalog: MessageCatalog,
+        cls, path: Path, *, catalog: MessageCatalog,
         embeddings: MessageEmbeddings, bindings: Bindings,
-        config: MemoryConfig, frozen_history: FrozenHistory | None = None,
+        config: MemoryConfig,
     ) -> MessageConsumer:
         """先按原绑定还原材料，再取得唯一 writer 装载图；缺失来源不自动重学。"""
         from ..learning import AKASHA_LEARNING, LearningConfig
 
         # 1. 第一次启用固定已有日志上界，重启前也必须把空图与起点一起发布。
         if not path.exists():
-            if legacy_index is not None and legacy_index.exists():
-                raise ValueError("旧索引仍存在但学习图缺失，需要显式恢复")
-            state = Consumption(
-                legacy_prefix=LegacyPrefix(count=0, index_state_sha256="0" * 64,
-                                           turns_digest=turns_digest([])),
-                cutover_heads=tuple(sorted(catalog.snapshot_heads().items())),
-            )
+            state = Consumption(cutover_heads=tuple(sorted(catalog.snapshot_heads().items())))
             return cls(path, turns=[], state=state, config=config)
         state = load_consumption(path)
         if state is None:
-            raise ValueError("旧学习图尚未完成 yoyo 消费切换")
-        if frozen_history is not None:
-            frozen_history.validate_consumption(state)
-        turns = load_legacy_prefix(state, legacy_index)
-        space = None
-        if state.legacy_prefix.count:
-            if legacy_index is None:
-                raise RuntimeError("已恢复旧前缀缺少其索引路径")
-            space = legacy_embedding_model(legacy_index)
-
-        # 2. 后缀逐项打开原算法闭包；不开模型、不嵌入，也不调用 commit。
+            raise MemoryRebuildRequiredError("学习图缺少当前消费出处，需要显式重建")
+        # 2. 逐项打开原算法闭包；不开模型、不嵌入，也不调用 commit。
+        turns: list[Turn] = []
+        space: str | None = None
         for identity, grouped in groupby(state.applied, key=lambda entry: entry.learning_binding):
             entries = tuple(grouped)
-            if frozen_history is not None and any(
-                frozen_history.uses_binding(entry.learning_binding) for entry in entries
-            ):
-                for entry in entries:
-                    frozen_space = frozen_history.embedding_for(entry)
-                    try:
-                        _check_embedding_space(frozen_space.identity, frozen_space.dimensions, space, turns)
-                    except EmbeddingSpaceMismatchError as error:
-                        raise ValueError("已发布 Akasha 学习图的 frozen embedding 空间不一致") from error
-                    space = frozen_space.identity
-                    turns.append(frozen_history.restore_turn(entry, catalog))
-                continue
             async with bindings.open(identity, AKASHA_LEARNING) as (learning, metadata):
                 rule = LearningConfig.model_validate(dict(metadata))
-                try:
-                    _check_embedding_space(rule.embedding_model, rule.dimension, space, turns)
-                except EmbeddingSpaceMismatchError as error:
-                    raise ValueError("已发布 Akasha 学习图的 embedding 空间不一致") from error
+                _check_embedding_space(rule.embedding_model, rule.dimension, space, turns)
                 space = rule.embedding_model
                 for entry in entries:
                     turns.append(learning.restore(
@@ -144,8 +121,8 @@ class MessageConsumer:
                 self.state.applied[-1].learning_binding, AKASHA_LEARNING,
             )))
             space = prior.embedding_model
-        if space is None and self.state.legacy_prefix.count:
-            raise RuntimeError("旧学习图必须通过 load 恢复其 embedding 身份")
+        if space is None and self.cycle.turns:
+            raise EmbeddingSpaceMismatchError("已学习图必须通过 load 恢复其 embedding 身份")
         _check_embedding_space(model, dimension, space, self.cycle.turns)
 
     async def consume(

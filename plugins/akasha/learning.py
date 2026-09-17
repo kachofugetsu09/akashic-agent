@@ -70,8 +70,7 @@ class Learning:
     ) -> TurnFeedback:
         """从本样本实际成功的 Akasha 调用读取反馈，按完整成员映射学习节点。"""
         # 1. 旧前缀沿原索引身份；新节点包含所有输入，不只首个输入。
-        cutover = state.legacy_prefix.count
-        targets = message_nodes(previous[:cutover], state.applied[:len(previous) - cutover])
+        targets = message_nodes(state.applied[:len(previous)])
         current = {message.message_id for message in sample.messages if isinstance(message.body, Input)}
         return resolve_feedback(self.read_feedback(sample, bindings), targets, current, len(previous))
 

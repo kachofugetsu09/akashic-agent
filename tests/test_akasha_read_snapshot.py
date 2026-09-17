@@ -23,7 +23,7 @@ async def test_read_snapshot_restores_while_live_writer_remains_owned_and_can_ad
         with monkeypatch.context() as patch:
             patch.setattr(MemoryCycle, "commit", no_replay)
             async with read_memory(
-                tmp_path / "memory.db", legacy_index=None, catalog=log.catalog(),
+                tmp_path / "memory.db", catalog=log.catalog(),
                 embeddings=runtime._embeddings, bindings=runtime._bindings, config=MemoryConfig(),
             ) as (cycle, state):
                 assert cycle.state_version == 1
@@ -50,7 +50,7 @@ async def test_read_snapshot_missing_graph_never_creates_formal_storage(tmp_path
     async with memory_runtime(tmp_path) as (runtime, consumer, log, records, calls, write):
         missing = tmp_path / "missing.db"
         with pytest.raises(sqlite3.OperationalError):
-            async with read_memory(missing, legacy_index=None, catalog=log.catalog(),
+            async with read_memory(missing, catalog=log.catalog(),
                 embeddings=runtime._embeddings, bindings=runtime._bindings, config=MemoryConfig()):
                 pytest.fail("missing graph was presented as a valid snapshot")
         assert not missing.exists()
@@ -58,23 +58,14 @@ async def test_read_snapshot_missing_graph_never_creates_formal_storage(tmp_path
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_initial_material_snapshot_uses_original_cutover_and_rejects_lost_graph(tmp_path, legacy):
+async def test_initial_material_snapshot_uses_original_cutover_and_rejects_lost_graph(tmp_path):
     async with memory_runtime(tmp_path) as (runtime, consumer, log, records, calls, write):
         write("existing", "already admitted before initialization")
-        missing, index = tmp_path / "initial.db", tmp_path / "old-index.db"
-        if legacy:
-            index.write_bytes(b"existing legacy evidence")
-            with pytest.raises(ValueError, match="旧索引仍存在"):
-                async with read_memory(missing, legacy_index=index, catalog=log.catalog(),
-                    embeddings=runtime._embeddings, bindings=runtime._bindings, config=MemoryConfig(),
-                    allow_initial=True):
-                    pytest.fail("missing legacy graph was accepted")
-        else:
-            async with read_memory(missing, legacy_index=index, catalog=log.catalog(),
-                embeddings=runtime._embeddings, bindings=runtime._bindings, config=MemoryConfig(),
-                allow_initial=True) as (cycle, state):
-                assert cycle.state_version == 0
-                assert state.cutover_heads == tuple(sorted(log.catalog().snapshot_heads().items()))
+        missing = tmp_path / "initial.db"
+        async with read_memory(missing, catalog=log.catalog(),
+            embeddings=runtime._embeddings, bindings=runtime._bindings, config=MemoryConfig(),
+            allow_initial=True) as (cycle, state):
+            assert cycle.state_version == 0
+            assert state.cutover_heads == tuple(sorted(log.catalog().snapshot_heads().items()))
         assert not missing.exists()
         assert not missing.with_suffix(".db.lock").exists()

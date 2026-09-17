@@ -20,7 +20,7 @@ from agent.plugin_composition.commands import COMMANDS, CommandDefinition, Comma
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE
 from agent.plugin_contracts import Message
 from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
-from .domain.model import EmbeddingSpaceMismatchError
+from .domain.model import EmbeddingSpaceMismatchError, MemoryRebuildRequiredError
 from ._boundaries import CONTENT, TOOLS, TURN_PROJECTION, ContentCapability, ToolCatalog, ToolRef, ToolView
 
 from .application.consumer import MessageConsumer
@@ -35,7 +35,7 @@ from .runtime import MessageMemory, prepare_materials
 from .application.snapshot import read_memory
 from agent.plugin_composition.models import open_embedding as open_saved_embedding, read_embedding_binding
 from .tools import FeedbackArguments, FeedbackTool, check_feedback
-from .infrastructure.frozen_history import FrozenHistory
+from .application.rebuild import manifest_json, rebuild_from_catalog
 
 api_version = 3
 name = "akasha"
@@ -63,10 +63,10 @@ class Config(BaseModel):
     """同名旧配置由 Manager 一次读取并归档，再转换为现有 Akasha 配置。"""
 
     model_config = ConfigDict(extra="forbid")
-    sources: tuple[str, ...] = Field(default=("conversation", "programmatic"), min_length=1)
+    sources: tuple[str, ...] = Field(
+        default=("conversation", "programmatic", "legacy-unattributed"), min_length=1,
+    )
     db_path: str = AkashaConfig.db_path
-    index_path: str = AkashaConfig.index_path
-    frozen_history_path: str = AkashaConfig.frozen_history_path
     inject_max_chars: int = AkashaConfig.inject_max_chars
     context_recall_limit: int = AkashaConfig.context_recall_limit
     restart: float = AkashaConfig.restart
@@ -126,19 +126,21 @@ async def apply(ctx: Context) -> None:
     _ = await catalog.declare_group(ctx, description=desc)
     tool_refs: list[ToolRef] = []
 
-    async def request_reindex(_invocation: CommandInvocation) -> CommandResult:
-        # TODO: 固定旧学习规则与来源的重建合同确认后，再接管旧请求与启动流程。
-        return CommandResult("error", "新消息链路尚未接管 Akasha 重建；原学习图与旧重建记录保持不变。")
+    async def request_reindex(invocation: CommandInvocation) -> CommandResult:
+        if invocation.raw_input.strip().casefold() != "confirm":
+            return CommandResult(
+                "error",
+                "Akasha 重建会用 canonical 来源整体替换派生学习图；确认后以 /akasha_reindex confirm 执行。",
+            )
+        return await run_rebuild()
 
     _ = await ctx.require(COMMANDS).register(ctx, CommandDefinition(
-        name="akasha_reindex", description="查询 Akasha 重建是否可用",
-        handler=request_reindex, read_only=True, input_hint="confirm",
+        name="akasha_reindex", description="从 canonical 来源全量重建 Akasha 学习图",
+        handler=request_reindex, read_only=False, input_hint="confirm",
     ))
     settings = config.settings()
     memory_path = resolve_memory_path(ctx.workspace_root("memory"), settings.db_path)
-    index_path = resolve_memory_path(ctx.workspace_root("memory"), settings.index_path)
-    frozen_history_path = resolve_memory_path(ctx.workspace_root("memory"), settings.frozen_history_path)
-    frozen_history = FrozenHistory.load_optional(frozen_history_path)
+    rebuild_backup_root = ctx.data_root / "backups" / "rebuild"
     learning = Learning(
         ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id,
         post_commit_effect=content.legacy_post_commit_effect,
@@ -213,8 +215,6 @@ async def apply(ctx: Context) -> None:
     def select_learning() -> tuple[str, LearningConfig, str]:
         try:
             descriptor = ctx.require(EMBEDDINGS).describe()
-            if frozen_history is not None:
-                frozen_history.require_embedding(descriptor)
             if memory_rule is not None and (descriptor.identity, descriptor.dimensions) != (
                 memory_rule.embedding_model, memory_rule.dimension,
             ):
@@ -274,15 +274,17 @@ async def apply(ctx: Context) -> None:
             identity, rule, model_id = select_learning()
         except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
             return unavailable()
+        except MemoryRebuildRequiredError as error:
+            health.degrade(str(error))
+            return unavailable()
         bindings = ctx.require(BINDINGS)
         query_records = records()
         try:
             async with bindings.open(identity, AKASHA_LEARNING) as (selected, _metadata):
                 async with read_memory(
-                    memory_path, legacy_index=index_path, catalog=ctx.require(MESSAGE_CATALOG),
+                    memory_path, catalog=ctx.require(MESSAGE_CATALOG),
                     embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=bindings,
                     config=settings.memory_config(), embedding_space=(rule.embedding_model, rule.dimension),
-                    frozen_history=frozen_history,
                     allow_initial=True,
                 ) as (cycle, state):
                     result = await prepare_materials(
@@ -291,7 +293,6 @@ async def apply(ctx: Context) -> None:
                         bindings=bindings, learning_binding=identity, learning=selected, rule=rule,
                         records=query_records, embed_batch=embedder(rule, model_id),
                         limit=settings.context_recall_limit, max_chars=settings.inject_max_chars,
-                        frozen_history=frozen_history,
                     )
         except EmbeddingSpaceMismatchError as error:
             health.degrade(str(error))
@@ -312,7 +313,7 @@ async def apply(ctx: Context) -> None:
                 action,
                 learning,
                 ctx.require(BINDINGS),
-                lambda: load_message_nodes(memory_path, index_path),
+                lambda: load_message_nodes(memory_path),
             )
 
         tool_refs.append(
@@ -353,11 +354,10 @@ async def apply(ctx: Context) -> None:
             identity = bindings.bind(AKASHA_LEARNING, rule.model_dump())
             return identity, selected.embedding_binding
         yield RecallTool(
-            memory=memory_path, legacy_index=index_path, config=settings.memory_config(),
+            memory=memory_path, config=settings.memory_config(),
             catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
             bindings=bindings, select_learning=select, records=records(),
             open_embedding=partial(open_saved_embedding, bindings), max_chars=settings.inject_max_chars,
-            frozen_history=frozen_history,
         )
 
     tool_refs.append(
@@ -390,20 +390,27 @@ async def apply(ctx: Context) -> None:
                 identity, rule, model_id = select_learning()
             except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
                 return False
+            except MemoryRebuildRequiredError as error:
+                # 旧消费版本的图只能由显式重建替换，不能假装可用。
+                health.degrade(str(error))
+                return False
             if memory is not None:
                 health.recover()
                 return True
-            consumer = await MessageConsumer.load(
-                memory_path, legacy_index=index_path, catalog=ctx.require(MESSAGE_CATALOG),
-                embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=ctx.require(BINDINGS),
-                config=settings.memory_config(), frozen_history=frozen_history,
-            )
+            try:
+                consumer = await MessageConsumer.load(
+                    memory_path, catalog=ctx.require(MESSAGE_CATALOG),
+                    embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=ctx.require(BINDINGS),
+                    config=settings.memory_config(),
+                )
+            except MemoryRebuildRequiredError as error:
+                health.degrade(str(error))
+                return False
             runtime_records = records()
             prepared = MessageMemory(
                 consumer, catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
                 bindings=ctx.require(BINDINGS), learning_binding=identity, records=runtime_records,
                 embed_batch=embedder(rule, model_id), limit=settings.context_recall_limit,
-                frozen_history=frozen_history,
                 max_chars=settings.inject_max_chars,
             )
             # 2. 新选择必须与已有图一致；失败先归还 writer，绝不自动重建。
@@ -413,12 +420,37 @@ async def apply(ctx: Context) -> None:
                 await prepared.close()
                 health.degrade(str(error))
                 return False
+            except MemoryRebuildRequiredError as error:
+                await prepared.close()
+                health.degrade(str(error))
+                return False
             except BaseException:
                 await prepared.close()
                 raise
             memory, memory_rule = prepared, rule
             health.recover()
             return True
+
+    async def run_rebuild() -> CommandResult:
+        """操作者显式确认后全量重建；失败时已发布学习图保持不变。"""
+        nonlocal memory, memory_rule
+        # 1. 先确认 embedding 空间可用，避免无谓地停掉在线学习。
+        identity, rule, model_id = select_learning()
+        async with start_lock:
+            # 2. 先归还唯一 writer，再生成候选；同一时刻只有一个学习 writer。
+            if memory is not None:
+                await memory.close()
+                memory, memory_rule = None, None
+            report = await rebuild_from_catalog(
+                catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
+                bindings=ctx.require(BINDINGS), config=settings.memory_config(),
+                learning_binding=identity, embed_batch=embedder(rule, model_id),
+                memory_path=memory_path, backup_root=rebuild_backup_root,
+            )
+        # 3. 用同一启动边界重新装载；装载失败必须让调用者看到。
+        if not await start_if_available():
+            raise RuntimeError("Akasha 重建后无法重新装载学习图")
+        return CommandResult("success", "Akasha 重建完成：" + manifest_json(report))
 
     # 3. 通知只唤醒消费者；模型后配时下一条输入也会经过同一启动边界。
     async def follow() -> None:

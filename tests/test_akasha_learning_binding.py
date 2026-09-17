@@ -57,7 +57,7 @@ async def apply(ctx):
     for action in ("remember", "forget"):
         @asynccontextmanager
         async def open_feedback(candidates, action=action):
-            yield FeedbackTool(action, learning, ctx.require(BINDINGS), lambda: load_message_nodes(Path(MEMORY_PATH), None))
+            yield FeedbackTool(action, learning, ctx.require(BINDINGS), lambda: load_message_nodes(Path(MEMORY_PATH)))
         await ctx.require(TOOLS).register(ctx, name=action + "_memory", description=action + " selected messages",
             parameters=FeedbackArguments.model_json_schema(), open=open_feedback, idempotent=True)
 '''.replace('MEMORY_PATH', repr(str(path.parent / 'memory.db'))))
@@ -84,7 +84,7 @@ async def test_excluded_learning_materials_never_reach_embeddings_or_graph(tmp_p
         assert snapshot is not None and snapshot.composition_root is not None
         bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None,
+        consumer = await MessageConsumer.load(tmp_path / "memory.db", 
             catalog=log.catalog(), embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         raw = '{"effects":{"post_commit":"suppress"}}'
         provenance = ContentPart("history.provenance", {
@@ -140,7 +140,7 @@ async def test_learning_restores_complete_interrupted_turn_without_relearning(tm
         assert snapshot is not None and snapshot.composition_root is not None
         bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         assert memory.exists()  # 首次切换起点在任何学习之前已耐久。
         rule = LearningConfig(embedding_model="fixture-space", dimension=2, sources=("chat",))
@@ -212,11 +212,11 @@ async def test_learning_restores_complete_interrupted_turn_without_relearning(tm
                 db.execute("DELETE FROM message_embeddings WHERE message_id='u2'")
         if damage is not None:
             with pytest.raises((ValueError, FileNotFoundError)):
-                await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+                await MessageConsumer.load(memory, catalog=log.catalog(),
                                            embeddings=embeddings, bindings=bindings, config=MemoryConfig())
             assert logical_state_sha256(memory) == before
             return
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         assert consumer.cycle.state_version == 1
         assert consumer.cycle.turns[0].user_text == turn.user_text
@@ -245,13 +245,13 @@ async def test_initial_cutover_is_not_recomputed_after_restart_before_first_lear
         def accept(identity):
             log.writer("s", author="user", source="chat", body_types=(Input,), content={}).append(identity, Input(()))
         accept("old")
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=MessageEmbeddings(log), bindings=bindings, config=MemoryConfig())
         assert consumer.state.cutover_heads == (("s", 0),)
         consumer.close()
         consumer = None
         accept("new")
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=MessageEmbeddings(log), bindings=bindings, config=MemoryConfig())
         assert consumer.state.cutover_heads == (("s", 0),)
         assert consumer.cycle.state_version == 0
@@ -278,7 +278,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
         assert snapshot is not None and snapshot.composition_root is not None
         bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         rule = LearningConfig(embedding_model="fixture-space", dimension=2, sources=("chat", "wake", "timer"))
         async with lease_runtime_snapshot(host.snapshot_store):
@@ -331,7 +331,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
             assert consumer.cycle.state_version == 1
             consumer.close()
             consumer = None
-            consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+            consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                                   embeddings=embeddings, bindings=bindings, config=MemoryConfig())
             assert await consume() == 2
         else:
@@ -348,7 +348,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
         assert calls[-1] == ["u1", "u2", "u3", "answer"]
         assert all("quiet_input" not in batch and "unfinished" not in batch for batch in calls)
         consumer.close()
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         async with lease_runtime_snapshot(host.snapshot_store):
             changed_model = bindings.bind(AKASHA_LEARNING, {**rule.model_dump(), "embedding_model": "other-space"})
@@ -391,7 +391,7 @@ async def test_feedback_uses_prepared_message_identity_after_interrupt_and_repor
         snapshot = host.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
         bindings = Bindings(log, host._archive, snapshot.composition_root)
-        consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(tmp_path / "memory.db", catalog=log.catalog(),
             embeddings=MessageEmbeddings(log), bindings=bindings, config=MemoryConfig())
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
@@ -489,7 +489,7 @@ async def apply(ctx):
         assert snapshot is not None and snapshot.composition_root is not None
         bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         before = logical_state_sha256(memory)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
@@ -549,7 +549,7 @@ async def test_same_output_feedback_checks_all_member_targets_before_authorizati
         assert snapshot is not None and snapshot.composition_root is not None
         bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(tmp_path / "memory.db", catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         async def embed(texts):
             return [[0.6, 0.8] for _ in texts]

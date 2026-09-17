@@ -13,7 +13,7 @@ import numpy as np
 
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied
-from .infrastructure.sparse_index.encoding import tokenize
+from .infrastructure.lexical import tokenize
 from ._boundaries import TurnProjection
 
 

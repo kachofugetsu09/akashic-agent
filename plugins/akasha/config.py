@@ -14,8 +14,6 @@ class AkashaConfig:
     """Configure storage, output budget, and graph-forming dynamics."""
 
     db_path: str = "memory/akasha.db"
-    index_path: str = "memory/akasha-v2-index.db"
-    frozen_history_path: str = "memory/akasha-frozen-history.json"
     inject_max_chars: int = 12_000
     context_recall_limit: int = 40
     restart: float = 0.25
@@ -29,8 +27,8 @@ class AkashaConfig:
     def validate(self) -> None:
         """Reject invalid adapter and dynamics values at config load."""
 
-        if not self.db_path or not self.index_path or not self.frozen_history_path:
-            raise ValueError("Akasha storage paths cannot be empty")
+        if not self.db_path:
+            raise ValueError("Akasha storage path cannot be empty")
         if self.inject_max_chars <= 0:
             raise ValueError("inject_max_chars must be positive")
         if not 1 <= self.context_recall_limit <= 40:
