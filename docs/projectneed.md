@@ -535,9 +535,9 @@ session compaction ledger 的派生 checkpoint，不替代上述记忆状态；�
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
-`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有完成的 Turn 投影属于普通学习样本；被中断、失败或明确标为 `effects.post_commit=suppress` 的消息段保留在原始会话中，但不要求 embedding，也不进入显式记忆图。历史排除字段由启动 Yoyo 一次性迁为同一个 effect；runtime 与 replay 不保留旧字段解码器。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+`akasha.db` 是唯一的派生 sidecar（旧的 `akasha-v2-index.db` 稀疏索引已退役）。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。重建与在线学习共用同一条实现：重建只是在空图上、没有切换上界地重放同一个 `MessageConsumer`，禁止再有第二份重建实现。只有完成的 Turn 投影属于普通学习样本；被中断、失败或明确标为 `effects.post_commit=suppress` 的消息段保留在原始会话中，但不要求 embedding，也不进入显式记忆图。历史排除字段由启动 Yoyo 一次性迁为同一个 effect；runtime 与 replay 不保留旧字段解码器。同一组输入必须得到可复现的图。学习样本缺少固定 embedding 时不学习该 turn，但必须在消费状态里留下明确的跳过记事（含原因），并在重建报告里计数；跳过是持久事实，在线路径不得稍后乱序补学。模型或维度与目标空间不匹配仍然必须 fail-loud。
 
-用户按 SES-003 撤销一组 Message 后，Akasha 必须从剩余固定输入重建 sidecar；source event 的 embedding + staging、source 删除、pending 清理和派生发布由同一管理协调流程串行化，不能在新完成 Turn 已落库但 embedding 尚未持久化时开始 rebuild。两份 sidecar 之间的发布崩溃窗口必须在重启时通过身份失配确定性收敛；当前进程若未能重建，则 memory query 和管理读取保持 fail-loud。
+用户按 SES-003 撤销一组 Message 后，Akasha 必须从剩余固定输入重建 sidecar；source event 的 embedding + staging、source 删除、pending 清理和派生发布由同一管理协调流程串行化，不能在新完成 Turn 已落库但 embedding 尚未持久化时开始 rebuild。重建直接写丢弃用候选文件并在结束时一次原子替换，崩溃只留下可重跑的候选；当前进程若未能重建，则 memory query 和管理读取保持 fail-loud 并显示需要显式重建。
 
 ### MEM-010 Akasha 对同一 Turn 投影建立一个确定性样本
 

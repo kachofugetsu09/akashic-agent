@@ -5,6 +5,14 @@
 - 决策：[0006](../decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md)
 - 需求：MEM-009、SES-003、GOV-005、TST-002、TST-005
 
+> **2026-09-18 勘误（收口第 8 层的旧兼容层）**：本文以下关于 `akasha-v2-index.db` 稀疏索引、
+> `Consumption.legacy_prefix`、`frozen_history` 导出物、`scripts/build_akasha_db.py` 与
+> `--sessions-db` 离线 CLI 的段落只保留历史证据；这些对象已随单一重建实现一起退役
+> （见 [0006 勘误](../decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md)
+> 与 [MEM-009](../projectneed.md)）。现行行为：`akasha.db` 是唯一派生 sidecar；重建 =
+> 空图 + 无切换上界重放同一个 `MessageConsumer`，由插件自有的一次性 Yoyo 迁移登记并在启动时
+> 兑现；缺少固定向量的单个 turn 明确跳过并记入 `consumption.skipped`。
+
 ## 1. 目标与边界
 
 本迁移把独立 `akasha-v2-engine` 接入 Akasic Agent，保留宿主的 MemoryPlugin、
@@ -155,7 +163,9 @@ BLAS 线程数，不同 `PYTHONHASHSEED` 不得改变 canonical logical state。
 
 ## 6. 重建合同
 
-`scripts/build_akasha_db.py` 只负责把宿主入口转发给 upstream CLI。完整重建分四段：
+`scripts/build_akasha_db.py` 与旧稀疏索引一起退役。完整重建由插件自己的唯一实现执行
+（空图 + 无切换上界重放同一个 `MessageConsumer`），由一次性 Yoyo 迁移登记并在启动时兑现；离线核对使用
+`docker/debug/akasha_replay_dry_run.py`。历史四段式流程保留为背景：
 
 ```text
 只读打开 sessions.db
