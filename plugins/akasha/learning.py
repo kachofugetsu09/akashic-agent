@@ -121,7 +121,7 @@ class Learning:
         """只还原已学习材料，不打开模型、写图或重放学习事件。"""
         if catalog.attributes(entry.session_id).learning != "eligible":
             raise ValueError("已学习样本属于禁止学习的 Session")
-        sample = restore_sample(catalog, self.projection, entry)
+        sample = restore_sample(catalog, entry)
         if not self.accepts(sample):
             raise ValueError("已学习样本包含禁止沉淀的历史成员")
         if sample.ending.source not in config.sources:

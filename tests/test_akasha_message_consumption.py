@@ -249,7 +249,7 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
         consumer.close()
     state = load_consumption(path)
     assert state is not None
-    restored_sample = restore_sample(log.catalog(), TurnProjection(), state.applied[0])
+    restored_sample = restore_sample(log.catalog(), state.applied[0])
     restored_turn = build(restored_sample)
     consumer = MessageConsumer(path, turns=[restored_turn], state=state, config=MemoryConfig())
     assert not consumer.apply(restored_turn, entry)
@@ -283,22 +283,43 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
         consumer.apply(second_turn, second_entry)
 
 
-def test_reprojection_rejects_changed_members_and_unknown_consumer_version(conversation):
+def test_restore_reads_only_recorded_refs_and_rejects_changed_provenance(conversation):
+    """恢复只按出处引用读取；出处被改写必须 fail-loud，且不得重投影整段历史。"""
+
     from plugins.akasha.infrastructure.consumption import Consumption
-    from plugins.akasha.projection import restore_sample
     from pydantic import ValidationError
+    from plugins.akasha.projection import applied_source, restore_sample
     log, append, add, text, records = conversation
     add('u1', 'one')
     add('u2', 'two')
     add('a', 'answer', Output)
     sample = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)[0]
     entry = applied_source(sample, learning_binding='fixed')
-    class WrongProjection(TurnProjection):
-        def project(self, messages, source):
-            return tuple(replace(turn, message_ids=turn.message_ids[1:])
-                         for turn in TurnProjection().project(messages, source))
+
+    # 1. 只读引用：恢复过程中的任何 snapshot 都会让这条断言失败。
+    class NoSnapshotCatalog:
+        def __init__(self, inner):
+            self._inner = inner
+        def reader(self, session_id):
+            inner = self._inner.reader(session_id)
+            class Reader:
+                def get(self, message_id):
+                    return inner.get(message_id)
+                def snapshot(self, **kwargs):
+                    raise AssertionError('恢复不得重投影 Session 前缀')
+            return Reader()
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    restored = restore_sample(NoSnapshotCatalog(log.catalog()), entry)
+    assert [message.message_id for message in restored.messages] == ['u1', 'u2', 'a']
+
+    # 2. 出处被改写（digest 不匹配）必须失败。
+    tampered = entry.model_copy(update={'source_digest': '0' * 64})
     with pytest.raises(ValueError, match='出处发生改变'):
-        restore_sample(log.catalog(), WrongProjection(), entry)
+        restore_sample(log.catalog(), tampered)
+
+    # 3. 未知消费版本仍然被拒绝。
     state = Consumption(cutover_heads=())
     payload = state.model_dump_json().replace('"version":2', '"version":1')
     with pytest.raises(ValidationError):

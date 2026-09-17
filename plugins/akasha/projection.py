@@ -97,18 +97,31 @@ def applied_source(sample: Sample, *, learning_binding: str) -> Applied:
     )
 
 
-def restore_sample(catalog: MessageCatalog, projection: TurnProjection, entry: Applied) -> Sample:
-    """调用者打开出处中的精确 projection 后，重算并核对唯一学习样本。"""
-    samples = project_samples(
-        catalog, projection, heads={entry.session_id: entry.ending[0]},
-        include=lambda session_id, source: True,
-    )
-    selected = next((sample for sample in samples if sample.ending.message_id == entry.ending[1]), None)
-    if selected is None:
-        raise ValueError("已学习结束消息不再产生原投影样本")
-    if applied_source(selected, learning_binding=entry.learning_binding).model_dump() != entry.model_dump():
+def restore_sample(catalog: MessageCatalog, entry: Applied) -> Sample:
+    """按已学出处的精确引用还原样本，不重投影整段历史。
+
+    出处已经固定了成员、观察与结束点，所以恢复只需要按引用读取这些消息，
+    再用 `source_digest` 核对它们没有变化。重投影会让一次恢复的代价随
+    Session 前缀长度增长，而它在每次装载和每次 `recall_memory` 都要付。
+    """
+
+    reader = catalog.reader(entry.session_id)
+
+    def fetch(ref: tuple[int, str]) -> Message:
+        seq, message_id = ref
+        message = reader.get(message_id)
+        if message is None:
+            raise ValueError(f"已学习出处的消息缺失: {message_id}")
+        if message.session_id != entry.session_id or message.seq != seq:
+            raise ValueError(f"已学习出处的 Session 或 seq 不一致: {message_id}")
+        return message
+
+    messages = tuple(fetch(ref) for ref in entry.members)
+    observations = tuple(fetch(ref) for ref in entry.observations)
+    sample = Sample(ending=messages[-1], messages=messages, observations=observations)
+    if applied_source(sample, learning_binding=entry.learning_binding).model_dump() != entry.model_dump():
         raise ValueError("已学习消息的投影出处发生改变")
-    return selected
+    return sample
 
 
 def dialogue_turn(
