@@ -11,8 +11,8 @@
 - 用插件自有 migration bundle 登记的一次性重放完成线上切换，并按
   `docker/debug/akasha_replay_compare.py` 核对历史前缀（本机副本实测：legacy 复现
   5549/5581、相对顺序无逆序、交集身份与时间瞬间零差异）。
-- 重放会丢掉旧图里 26 条 `remember` 反馈事件（旧 `history.transcript` 轨迹不再恢复成
-  独立 ToolResult），需要确认接受该偏差或另立 carry-over 迁移。
+- 重放会丢掉旧图里 26 条早期 `remember` 事件。维护者已确认它们不是 Akasha 现行反馈
+  通道的产物（属于很早期的 tool result），接受该偏差，不另立 carry-over 迁移。
 - `memory/akasha-v2-index.db`（约 511MB）退役后的物理删除单独授权。
 
 ## P0 · 插件正交化实施与最终验收
