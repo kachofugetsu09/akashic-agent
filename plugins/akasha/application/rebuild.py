@@ -1,294 +1,193 @@
-"""Orchestrate one deterministic causal memory rebuild."""
-
+"""用与在线学习同一条路径从 canonical 来源全量重建 Akasha 图。"""
 from __future__ import annotations
 
-import hashlib
 import json
-import resource
+import os
 import sqlite3
-import subprocess
+import tempfile
 import time
+from collections.abc import Awaitable, Callable, Mapping
+from contextlib import closing
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
-import numpy as np
+from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 
-from .cycle import MemoryCycle
-from ..domain.features import BurstAwareFeaturePool
-from ..domain.graph import DynamicMemoryGraph
-from ..domain.model import (
-    Capture,
-    ContextState,
-    MemoryConfig,
-    PlasticityResult,
-    SeedEvidence,
-)
-from ..infrastructure.loader import load_turns
-from ..infrastructure.sparse_index import sparse_index_state_sha256
+from ..domain.model import MemoryConfig
+from ..infrastructure.consumption import Consumption
 from ..infrastructure.persistence import (
     canonical_json,
+    load_consumption,
     logical_state_sha256,
+    memory_turn_count,
     sha256_file,
-    write_memory_database,
 )
-
-DEFAULT_TARGET_SEQUENCES = (
-    7877,
-    10306,
-    8566,
-    9224,
-    8464,
-    9892,
-    4740,
-    9624,
-    9710,
-    5294,
-    3011,
-)
-DEFAULT_TARGET_SESSION = "telegram:7674283004"
+from .consumer import MessageConsumer
 
 
-@dataclass(frozen=True)
-class RebuildSummary:
-    """Report deterministic output identity and non-deterministic runtime cost."""
+@dataclass(frozen=True, slots=True)
+class RebuildReport:
+    """报告一次完整重建的确定性身份与非确定性运行成本。"""
 
     turns: int
     sessions: int
-    hubs: int
-    relations: int
-    targets: int
+    skipped_turns: int
+    embedded_messages: int
     elapsed_seconds: float
-    peak_rss_kib: int
     database_sha256: str
     logical_state_sha256: str
-    progress: tuple[dict[str, float | int], ...]
+    memory_path: str
+    backup_path: str
+    completed_at: str
 
 
-def rebuild_memory(
-    index_path: Path,
-    output_path: Path,
+async def rebuild_from_catalog(
     *,
-    run_report_path: Path | None = None,
-    config: MemoryConfig = MemoryConfig(),
-    target_sequences: tuple[int, ...] = DEFAULT_TARGET_SEQUENCES,
-    target_session: str = DEFAULT_TARGET_SESSION,
-    max_turns: int | None = None,
-) -> RebuildSummary:
-    """Replay all causal turns, persist graph state, and return its identity."""
-
-    # 1. Validate immutable inputs and construct the single causal state machine.
-    config.validate()
-    started = time.perf_counter()
-    turns = load_turns(index_path, max_turns=max_turns)
-    cycle = MemoryCycle(
-        config,
-        turn_capacity=len(turns),
-        feature_pool=BurstAwareFeaturePool(turns),
-    )
-    targets = _target_nodes(turns, target_sequences, target_session, max_turns)
-
-    # 2. Run the single read-before-write event state machine.
-    events, evidence, captures, context, progress = _replay(
-        turns,
-        cycle,
-        targets,
-        started,
-    )
-
-    # 3. Write deterministic state separately from runtime measurements.
-    metadata = deterministic_metadata(index_path)
-    database_hash = write_memory_database(
-        output_path,
-        turns=turns,
-        graph=cycle.graph,
-        events=events,
-        evidence=evidence,
-        captures=captures,
-        context=context,
-        burst_members=cycle.burst_members,
-        config=config,
-        metadata=metadata,
-        recalls=cycle.recalls,
-    )
-    summary = RebuildSummary(
-        turns=len(turns),
-        sessions=len({turn.session_key for turn in turns}),
-        hubs=len(cycle.graph.hubs),
-        relations=len(cycle.graph.source),
-        targets=len(captures),
-        elapsed_seconds=time.perf_counter() - started,
-        peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-        database_sha256=database_hash,
-        logical_state_sha256=logical_state_sha256(output_path),
-        progress=tuple(progress),
-    )
-    if run_report_path is not None:
-        _write_run_report(run_report_path, summary, config, metadata)
-    return summary
-
-
-def _replay(
-    turns: list,
-    cycle: MemoryCycle,
-    targets: set[int],
-    started: float,
-) -> tuple[
-    list[PlasticityResult],
-    list[SeedEvidence],
-    list[Capture],
-    ContextState,
-    list[dict[str, float | int]],
-]:
-    captures: list[Capture] = []
-    progress: list[dict[str, float | int]] = []
-    for event, turn in enumerate(turns):
-        ticket = cycle.retrieve(
-            turn,
-            capture_paths=event in targets,
-            include_completion=True,
-        )
-        committed = cycle.commit(
-            turn,
-            ticket,
-        )
-        if event in targets:
-            captures.append(
-                Capture(event, ticket.evidence, ticket.diffusion)
-            )
-        if committed.diffusion.pushes >= 100_000:
-            print(
-                canonical_json(
-                    {
-                        "hot_event": event,
-                        "pushes": committed.diffusion.pushes,
-                        "seed_support": len(committed.evidence.seed),
-                    }
-                ),
-                flush=True,
-            )
-        _record_progress(progress, event, turns, cycle.graph, started)
-    if cycle.context is None:
-        raise RuntimeError("memory rebuild produced no context")
-    return (
-        list(cycle.events),
-        list(cycle.evidence),
-        captures,
-        cycle.context,
-        progress,
-    )
-
-
-def _target_nodes(
-    turns: list,
-    sequences: tuple[int, ...],
-    session: str,
-    max_turns: int | None,
-) -> set[int]:
-    requested = set(sequences)
-    targets = {
-        turn.node_id
-        for turn in turns
-        if turn.session_key == session and turn.user_seq in requested
-    }
-    found = {turn.user_seq for turn in turns if turn.node_id in targets}
-    missing = sorted(requested - found)
-    if missing and max_turns is None:
-        raise ValueError(f"target sequences not found: {missing}")
-    return targets
-
-
-def _record_progress(
-    progress: list[dict[str, float | int]],
-    event: int,
-    turns: list,
-    graph: DynamicMemoryGraph,
-    started: float,
-) -> None:
-    completed = event + 1
-    if completed % 500 != 0 and completed != len(turns):
-        return
-    item = {
-        "turns": completed,
-        "hubs": len(graph.hubs),
-        "relations": len(graph.source),
-        "seconds": round(time.perf_counter() - started, 3),
-    }
-    progress.append(item)
-    print(canonical_json(item), flush=True)
-
-
-def deterministic_metadata(index_path: Path) -> dict[str, str]:
-    return {
-        "code_sha256": _package_hash(),
-        "git_commit": _git_commit(),
-        "numpy_version": np.__version__,
-        "source_index_sha256": sha256_file(index_path),
-        "source_index_state_sha256": sparse_index_state_sha256(index_path),
-        **_index_identity(index_path),
-    }
-
-
-def _package_hash() -> str:
-    root = Path(__file__).resolve().parents[1]
-    digest = hashlib.sha256()
-    for path in sorted(
-        root.rglob("*.py"),
-        key=lambda item: str(item.relative_to(root)),
-    ):
-        digest.update(
-            str(path.relative_to(root)).encode("utf-8")
-        )
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
-def _index_identity(path: Path) -> dict[str, str]:
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        values = dict(
-            connection.execute(
-                "SELECT key, value FROM metadata ORDER BY key"
-            )
-        )
-    finally:
-        connection.close()
-    return {
-        f"sparse_index_{key}": values[key]
-        for key in (
-            "embedding_model",
-            "index_version",
-            "jieba_dictionary_sha256",
-            "jieba_version",
-            "lexical_normalizer_version",
-            "turns_missing_embeddings",
-        )
-        if key in values
-    }
-
-
-def _git_commit() -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip() if result.returncode == 0 else "uncommitted"
-
-
-def _write_run_report(
-    path: Path,
-    summary: RebuildSummary,
+    catalog: MessageCatalog,
+    embeddings: MessageEmbeddings,
+    bindings: Bindings,
     config: MemoryConfig,
-    metadata: dict[str, str],
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "summary": asdict(summary),
-        "config": asdict(config),
-        "deterministic_metadata": metadata,
-    }
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
-        encoding="utf-8",
+    learning_binding: str,
+    embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]],
+    memory_path: Path,
+    backup_root: Path,
+    skip_missing_embeddings: bool = True,
+) -> RebuildReport:
+    """唯一重建实现：空图 + 无切换上界，跑与在线相同的 MessageConsumer。"""
+
+    # 1. 先固定恢复点，再生成候选；失败不触碰已发布的学习图。
+    started = time.perf_counter()
+    backup_dir = backup_root / (
+        datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
     )
+    backup_path = _backup_existing(memory_path, backup_dir)
+    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = memory_path.with_name(f".{memory_path.name}.rebuild-{uuid4().hex}.candidate")
+    embedded = 0
+
+    async def counting_embed(texts: list[str]) -> list[list[float]]:
+        nonlocal embedded
+        vectors = await embed_batch(texts)
+        embedded += len(texts)
+        return vectors
+
+    try:
+        # 2. 空进度且没有切换上界，等价于把全部历史按因果顺序重放一遍。
+        # 候选文件在原子替换前不被任何读者使用，所以每次学习都重写整库没有
+        # 恢复价值；重建只在重放结束后发布一次完整快照。
+        consumer = MessageConsumer(
+            candidate, turns=[], state=Consumption(cutover_heads=()), config=config,
+            deferred_publish=True,
+        )
+        try:
+            _ = await consumer.consume(
+                catalog=catalog, learning_binding=learning_binding, embeddings=embeddings,
+                bindings=bindings, embed_batch=counting_embed,
+                skip_missing_embeddings=skip_missing_embeddings,
+            )
+            turns = tuple(consumer.cycle.turns)
+            skipped = len(consumer.state.skipped)
+            if turns:
+                _ = consumer.publish_snapshot()
+        finally:
+            consumer.close()
+        count = len(turns)
+        sessions = len({turn.session_key for turn in turns})
+        _verify_candidate(candidate, count)
+
+        # 3. 先发布索引身份，再原子替换学习图；崩溃窗口只会留下可重建的候选文件。
+        if count == 0:
+            candidate.unlink(missing_ok=True)
+            memory_path.unlink(missing_ok=True)
+            database_sha256 = ""
+            state_sha256 = ""
+        else:
+            os.replace(candidate, memory_path)
+            _fsync_directory(memory_path.parent)
+            database_sha256 = sha256_file(memory_path)
+            state_sha256 = logical_state_sha256(memory_path)
+    except BaseException:
+        candidate.unlink(missing_ok=True)
+        raise
+
+    completed_at = datetime.now(UTC).isoformat()
+    report = RebuildReport(
+        turns=count,
+        sessions=sessions,
+        skipped_turns=skipped,
+        embedded_messages=embedded,
+        elapsed_seconds=round(time.perf_counter() - started, 3),
+        database_sha256=database_sha256,
+        logical_state_sha256=state_sha256,
+        memory_path=str(memory_path),
+        backup_path=str(backup_path) if backup_path is not None else "",
+        completed_at=completed_at,
+    )
+    _write_manifest(backup_dir, report, config)
+    return report
+
+
+def _backup_existing(memory_path: Path, backup_dir: Path) -> Path | None:
+    """存在已发布学习图时先做 SQLite 原生备份，再允许替换。"""
+
+    if not memory_path.exists():
+        return None
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    target = backup_dir / "memory-before.db"
+    with closing(sqlite3.connect(f"file:{memory_path}?mode=ro", uri=True)) as incoming:
+        with closing(sqlite3.connect(target)) as outgoing:
+            incoming.backup(outgoing)
+            if outgoing.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise ValueError("Akasha 重建前的学习图备份完整性检查失败")
+    return target
+
+
+def _verify_candidate(candidate: Path, count: int) -> None:
+    """候选必须是自描述、可恢复且与本次学习节点数一致的学习图。"""
+
+    with closing(sqlite3.connect(f"file:{candidate}?mode=ro", uri=True)) as connection:
+        integrity = connection.execute("PRAGMA integrity_check").fetchall()
+        if integrity != [("ok",)]:
+            raise ValueError(f"Akasha 重建候选完整性检查失败: {integrity}")
+    if memory_turn_count(candidate) != count:
+        raise ValueError("Akasha 重建候选的节点数与本次学习结果不一致")
+    state = load_consumption(candidate)
+    if state is None:
+        raise ValueError("Akasha 重建候选缺少消费出处")
+    state.check_count(count)
+    if state.cutover_heads:
+        raise ValueError("Akasha 完整重建不能保留切换上界")
+
+
+def _write_manifest(
+    backup_dir: Path, report: RebuildReport, config: MemoryConfig,
+) -> None:
+    """在同一恢复点目录留下可审阅的重建回执。"""
+
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    payload: Mapping[str, object] = {
+        "schema_version": 1,
+        "report": asdict(report),
+        "config": asdict(config),
+    }
+    temporary = Path(tempfile.mkstemp(prefix="manifest.", suffix=".tmp", dir=backup_dir)[1])
+    temporary.write_text(canonical_json(payload) + "\n", encoding="utf-8")
+    os.replace(temporary, backup_dir / "manifest.json")
+    _fsync_directory(backup_dir)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def manifest_json(report: RebuildReport) -> str:
+    """给命令回执使用的单行 JSON。"""
+
+    return json.dumps(asdict(report), ensure_ascii=False, separators=(",", ":"))

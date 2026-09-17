@@ -11,6 +11,10 @@ class EmbeddingSpaceMismatchError(RuntimeError):
     """已有学习图属于另一个向量空间，必须显式重建。"""
 
 
+class MemoryRebuildRequiredError(RuntimeError):
+    """已有学习图不是当前消费版本，必须用 /akasha_reindex confirm 显式重建。"""
+
+
 @dataclass(frozen=True)
 class MemoryConfig:
     """Configure one deterministic memory dynamics contract."""

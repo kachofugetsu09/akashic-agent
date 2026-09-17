@@ -47,7 +47,7 @@ async def memory_runtime(tmp_path, *, max_chars=12000):
         assert snapshot is not None and snapshot.composition_root is not None
         bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None,
+        consumer = await MessageConsumer.load(tmp_path / "memory.db", 
             catalog=log.catalog(), embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         async with lease_runtime_snapshot(host.snapshot_store):
             rule = LearningConfig(embedding_model="fixed", dimension=2, sources=("chat",))

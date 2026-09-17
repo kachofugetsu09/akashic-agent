@@ -123,7 +123,11 @@ replay：JOIN sessions.metadata（先校验无孤儿消息），统一谓词 or 
 6. `agent/lifecycle/phases/after_reasoning.py`：`_PersistUserMessageModule` 与 `_PersistAssistantMessageModule` 在 `msg.metadata["skip_post_memory"] is True` 时把 `skip_post_memory=True` 写入 user 与 assistant 消息 dict，随 `_persist_session` 落入 `messages.extra`。这同时修复 turn 级标记的 replay 合同（缺口 B）。
 7. `session/compaction_runtime.py`：命中统一谓词时仍提交 session-local checkpoint，
    但不调用 Markdown prepare/commit；receipt recovery 使用同一谓词。
-8. `plugins/akasha/infrastructure/sparse_index/builder.py`：source schema 校验把 `sessions` 加入 required；先校验每条 `messages.session_key` 都有对应 `sessions` 行（孤儿消息带上下文 fail-loud，不静默消失），再 JOIN 读取 `metadata`；`_excluded_session` 改用统一谓词；build/audit 报告新增排除计数。
+8. 对旧稀疏索引 builder 的要求（2026-09-18 勘误：该文件已随稀疏索引退役；现行排除由
+   `plugins/akasha/learning.py` 的 `effects.post_commit=suppress` 判定与内部 session 的
+   `learning=excluded` 覆盖，不再有第二份 builder）：source schema 校验把 `sessions` 加入 required；
+   先校验每条 `messages.session_key` 都有对应 `sessions` 行（孤儿消息带上下文 fail-loud，不静默消失），
+   再 JOIN 读取 `metadata`；`_excluded_session` 改用统一谓词；build/audit 报告新增排除计数。
 9. 新增/更新单元测试（见验收），运行 `docker/debug/gate.py run --base origin/main`。
 
 不需要修改：`sessions.db` schema、memory2 / akasha schema、control 协议 schema、Python SDK 的 `thread_start`、现有在线 memory consumer。

@@ -1,0 +1,20 @@
+schema_version = 1
+bundle_id = "akasha"
+version = "1.0.0"
+migration_root = "akasha_migrations"
+package_name = "akasha_migrations"
+
+[[files]]
+path = "__init__.py"
+sha256 = "a6b9e733b72d82a345c7b835880dd2ae98e1112cc1e6be5eaca1d3c97180ab87"
+
+[[files]]
+path = "20260918_01_register_graph_replay.py"
+sha256 = "ca3dbfcfa0b90dee87e6794f770029f9c38b37b4769c0d973fd777dc966059cc"
+
+[[migrations]]
+id = "20260918_01_register_graph_replay"
+path = "20260918_01_register_graph_replay.py"
+depends = []
+transactional = false
+sha256 = "ca3dbfcfa0b90dee87e6794f770029f9c38b37b4769c0d973fd777dc966059cc"

@@ -146,8 +146,9 @@ storage，不写入 `config.toml`。配置与凭据只写入一次性 sandbox，
 Gate 失败。证据位于
 `docker/debug/reports/akasha-v2-runtime/<run-id>/`。
 
-`scripts/build_akasha_db.py` 仍是旧 schema 的离线 builder，只能用于它已有的 legacy
-重建合同；本 Gate 不把它当作新 Message 链路的 offline rebuild 验证。
+`scripts/build_akasha_db.py` 已随旧稀疏索引一起退役；新 Message 链路的离线重放由
+`docker/debug/akasha_replay_dry_run.py` 在副本上执行，重放前后的学习图用
+`docker/debug/akasha_replay_compare.py` 对比共同前缀。
 
 ## Yoyo 迁移检查
 

@@ -17,9 +17,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.control.client import ControlClient
-from agent.plugins.manifest import builtin_plugin_data_dir
-from plugins.akasha.config import AkashaConfig
-from plugins.akasha.inspector import AkashaInspectorReader
+from contextlib import closing
 
 
 @dataclass
@@ -232,24 +230,73 @@ def _tool_rows(observe_db: Path, session_key: str) -> list[dict[str, Any]]:
 
 
 def _akasha_events(workspace: Path, session_key: str) -> list[dict[str, object]]:
-    """Read the Akasha events committed for this probe session."""
+    """只读已发布学习图里的探针 session 事件；正文仍来自 canonical sessions。"""
 
-    # 1. Resolve the same plugin-owned configuration and sidecars as runtime.
-    data_root = builtin_plugin_data_dir("akasha", workspace)
-    from agent.plugin_composition.config_input import load_config
+    # 1. 每个已学习节点恰好一行，与在线学习共用同一份派生图。
+    memory_db = workspace / "memory" / "akasha.db"
+    if not memory_db.exists():
+        raise RuntimeError(f"探针缺少 Akasha 学习图: {memory_db}")
+    with closing(sqlite3.connect(f"file:{memory_db}?mode=ro", uri=True)) as graph:
+        graph.row_factory = sqlite3.Row
+        events = [
+            dict(row)
+            for row in graph.execute(
+                """
+                SELECT turn.user_seq AS seq, event.seed_support AS seed_count,
+                       COALESCE(
+                           activation.completion_support,
+                           (SELECT COUNT(*) FROM recall_items AS item
+                            WHERE item.query_turn_node_id = turn.node_id)
+                       ) AS activation_count,
+                       turn.user_message_id, turn.assistant_message_id
+                FROM memory_events AS event
+                JOIN turn_nodes AS turn ON turn.node_id = event.current_turn_node_id
+                LEFT JOIN activation_runs AS activation
+                  ON activation.query_turn_node_id = turn.node_id
+                WHERE turn.session_key = ?
+                ORDER BY turn.node_id DESC
+                LIMIT 51
+                """,
+                (session_key,),
+            )
+        ]
+    if len(events) > 50:
+        raise RuntimeError(f"探针 session 的 Akasha 事件超过报告上限: {len(events)}")
 
-    config = AkashaConfig(**load_config(data_root)[0])
-    config.validate()
-    reader = AkashaInspectorReader(
-        memory_root=workspace / "memory",
-        config=config,
+    # 2. 查询正文按原 Message ID 读取，不在探针里复制第二份对话。
+    texts = _message_texts(
+        workspace / "sessions.db",
+        [str(item[key]) for item in events for key in ("user_message_id", "assistant_message_id")],
     )
+    for item in events:
+        item["query_text"] = texts.get(str(item["user_message_id"]), "")
+    return events
 
-    # 2. Return the complete bounded probe session, failing on invalid sidecars.
-    rows, total = reader.list_turns(session_key=session_key, page_size=50)
-    if total > len(rows):
-        raise RuntimeError(f"探针 session 的 Akasha 事件超过报告上限: {total}")
-    return rows
+
+def _message_texts(sessions_db: Path, message_ids: list[str]) -> dict[str, str]:
+    """按 Message ID 取出可见正文，缺正文的消息留空。"""
+
+    if not message_ids:
+        return {}
+    unique = sorted(set(message_ids))
+    placeholders = ", ".join("?" for _ in unique)
+    result: dict[str, str] = {}
+    with closing(sqlite3.connect(f"file:{sessions_db}?mode=ro", uri=True)) as connection:
+        for identity, body in connection.execute(
+            f"SELECT id, body FROM messages WHERE id IN ({placeholders})", unique,
+        ):
+            try:
+                payload = json.loads(str(body))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            result[str(identity)] = "".join(
+                str(part.get("value", ""))
+                for part in payload.get("parts", [])
+                if isinstance(part, dict) and part.get("kind") == "text"
+            )
+    return result
 
 
 def _write_reports(

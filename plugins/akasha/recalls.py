@@ -12,7 +12,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, FiniteFloat, m
 from .application.cycle import MemoryCycle, RetrievalTicket
 from .domain.model import Turn
 from .infrastructure.consumption import Consumption
-from .infrastructure.sparse_index.encoding import tokenize
+from .infrastructure.lexical import tokenize
 from agent.plugin_composition.messages import MessageCatalog, OwnerStore
 from agent.plugin_contracts import CallRef
 from agent.plugin_contracts import json_value
@@ -152,9 +152,7 @@ def select_hits(
 
     def hit(turn: Turn, score: float, lane: Literal["dense", "completion"],
             sources: tuple[str, ...], basins: tuple[str, ...] = ()) -> Hit:
-        suffix = turn.node_id - state.legacy_prefix.count
-        members = ((turn.user_message_id, turn.assistant_message_id) if suffix < 0
-                   else tuple(identity for _, identity in state.applied[suffix].members))
+        members = tuple(identity for _, identity in state.applied[turn.node_id].members)
         return Hit(node_id=turn.node_id, session_id=turn.session_key, message_ids=members,
                    score=score, lane=lane, sources=sources, basin_ids=basins)
 

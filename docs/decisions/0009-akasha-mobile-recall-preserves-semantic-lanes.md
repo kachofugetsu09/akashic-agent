@@ -71,4 +71,6 @@ lane 受 `context_recall_limit` 约束且当前最多四十条，显式 recall t
   小于 192KiB，且不包含完整正文或 Inspector 调试字段。
 - JavaScript 不使用 `slice` 或固定 top-k，CSS 对记忆列表项启用离屏布局与绘制优化。
 - Akasha 上游单测、Agent 插件单测、Node UI 合同和隔离移动 Gateway 场景通过。
-- 镜像 Gate 证明 Agent 的 `plugins/akasha` 与 `UPSTREAM.json` 固定的上游提交逐字节一致。
+- 上游算法单测与 Agent 插件单测通过。2026-09-18 勘误：Agent 侧新增/收口了持久化、
+  消费与重建接线（见 [0006](0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) 勘误），
+  所以不再断言 `plugins/akasha` 与上游逐字节一致；语义通道仍以本决策的验收项为准。
