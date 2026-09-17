@@ -42,8 +42,18 @@ class Applied(BaseModel):
         return self
 
 
+class Skipped(BaseModel):
+    """一个明确不学习的闭段；跳过也是必须持久的消费事实。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    session_id: Text
+    ending: Ref
+    reason: Text
+
+
 class Consumption(BaseModel):
-    """在线学习与完整重建共用的唯一进度：每个节点都有一个已学出处。"""
+    """在线学习与完整重建共用的唯一进度：每个闭段要么已学，要么已明确跳过。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -51,6 +61,7 @@ class Consumption(BaseModel):
     # tuple 避免 frozen model 中仍可原位修改 dict。
     cutover_heads: tuple[tuple[Text, Head], ...]
     applied: tuple[Applied, ...] = ()
+    skipped: tuple[Skipped, ...] = ()
 
     @model_validator(mode="after")
     def check_order(self) -> Self:
@@ -67,12 +78,28 @@ class Consumption(BaseModel):
             if entry.ending[0] <= heads.get(entry.session_id, -1):
                 raise ValueError("新消费不能重新学习切换前的结束消息")
             seen.add(entry.ending[1])
+        for item in self.skipped:
+            if item.ending[1] in seen:
+                raise ValueError("同一结束消息不能既学习又跳过")
+            if item.ending[0] <= heads.get(item.session_id, -1):
+                raise ValueError("跳过记事不能指向切换前的结束消息")
+            seen.add(item.ending[1])
         return self
 
     def append(self, entry: Applied) -> Consumption:
         return Consumption(
             cutover_heads=self.cutover_heads,
             applied=(*self.applied, entry),
+            skipped=self.skipped,
+        )
+
+    def mark_skipped(self, entry: Skipped) -> Consumption:
+        """记录一次明确跳过；图与节点身份不因跳过改变。"""
+
+        return Consumption(
+            cutover_heads=self.cutover_heads,
+            applied=self.applied,
+            skipped=(*self.skipped, entry),
         )
 
     def check_count(self, count: int) -> None:

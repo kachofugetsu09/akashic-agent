@@ -8,6 +8,7 @@ from datetime import datetime
 from itertools import groupby
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
@@ -20,10 +21,13 @@ from ..domain.model import (
     MemoryRebuildRequiredError,
     Turn,
 )
-from ..infrastructure.consumption import Applied, Consumption
+from ..infrastructure.consumption import Applied, Consumption, Skipped
 from ..infrastructure.lease import WriterLease
 from ..infrastructure.persistence import load_consumption, load_memory_state, write_memory_database
 from .cycle import MemoryCycle
+
+if TYPE_CHECKING:
+    from ..projection import Sample
 
 
 class MessageConsumer:
@@ -129,10 +133,11 @@ class MessageConsumer:
         self, *, catalog: MessageCatalog, learning_binding: str,
         embeddings: MessageEmbeddings, bindings: Bindings,
         embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]],
+        skip_missing_embeddings: bool = False,
     ) -> int:
         """追赶一个固定日志前缀；在线只补缺向量，学习与进度仍一次发布。"""
         from agent.plugin_contracts import Input, Output
-        from ..projection import applied_source
+        from ..projection import Sample, applied_source
 
         from ..learning import AKASHA_LEARNING, LearningConfig
 
@@ -144,10 +149,13 @@ class MessageConsumer:
             heads = catalog.snapshot_heads()
             cutover = dict(self.state.cutover_heads)
             applied = {entry.ending[1] for entry in self.state.applied}
+            skipped = {item.ending[1] for item in self.state.skipped}
             records = embeddings.bind(learning.text)
             count = 0
             for sample in learning.samples(catalog, rule, heads=heads):
-                if sample.ending.seq <= cutover.get(sample.ending.session_id, -1) or sample.ending.message_id in applied:
+                if sample.ending.seq <= cutover.get(sample.ending.session_id, -1):
+                    continue
+                if sample.ending.message_id in applied or sample.ending.message_id in skipped:
                     continue
                 inputs = [message for message in sample.messages if isinstance(message.body, Input)]
                 if not any(learning.text(message).strip() for message in inputs) or not learning.text(sample.ending).strip():
@@ -159,6 +167,13 @@ class MessageConsumer:
                            if learning.text(message).strip()
                            and records.read(message, model=rule.embedding_model, dimension=rule.dimension) is None]
                 if missing:
+                    if skip_missing_embeddings:
+                        # 缺少固定向量的闭段明确跳过；跳过必须持久，避免在线路径稍后乱序补学。
+                        count += await run_memory_job(partial(
+                            self.skip, sample, reason="missing-embedding",
+                        ))
+                        skipped.add(sample.ending.message_id)
+                        continue
                     vectors = await embed_batch([learning.text(message) for message in missing])
                     if len(vectors) != len(missing) or any(len(vector) != rule.dimension for vector in vectors):
                         raise ValueError("embedding 返回数量或维度不匹配固定学习空间")
@@ -172,6 +187,37 @@ class MessageConsumer:
                 count += await run_memory_job(partial(self.apply, turn, entry))
                 self._embedding_model = rule.embedding_model
             return count
+
+    def skip(self, sample: Sample, *, reason: str) -> bool:
+        """把一个闭段记为明确跳过；重复记事必须完全一致。"""
+
+        entry = Skipped(
+            session_id=sample.ending.session_id,
+            ending=(sample.ending.seq, sample.ending.message_id),
+            reason=reason,
+        )
+        for existing in self.state.skipped:
+            if existing.ending[1] == entry.ending[1]:
+                if existing != entry:
+                    raise ValueError("重复跳过记事的出处不一致")
+                return False
+        state = self.state.mark_skipped(entry)
+        cycle = self.cycle
+        try:
+            if cycle.context is None:
+                raise RuntimeError("已学习图缺少 context")
+            _ = write_memory_database(
+                self.path, turns=cycle.turns, graph=cycle.graph, events=cycle.events,
+                evidence=cycle.evidence, captures=[], context=cycle.context,
+                burst_members=cycle.burst_members, config=self.config, metadata={},
+                recalls=cycle.recalls, consumption=state,
+            )
+        except BaseException as error:
+            self._error = error
+            raise
+        self.state = state
+        return True
+
 
     def apply(self, turn: Turn, entry: Applied) -> bool:
         """重复通知不强化；提交失败后停止本实例，避免猜测外部发布是否成功。"""

@@ -34,6 +34,7 @@ class RebuildReport:
 
     turns: int
     sessions: int
+    skipped_turns: int
     embedded_messages: int
     elapsed_seconds: float
     database_sha256: str
@@ -53,6 +54,7 @@ async def rebuild_from_catalog(
     embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]],
     memory_path: Path,
     backup_root: Path,
+    skip_missing_embeddings: bool = True,
 ) -> RebuildReport:
     """唯一重建实现：空图 + 无切换上界，跑与在线相同的 MessageConsumer。"""
 
@@ -79,8 +81,10 @@ async def rebuild_from_catalog(
             _ = await consumer.consume(
                 catalog=catalog, learning_binding=learning_binding, embeddings=embeddings,
                 bindings=bindings, embed_batch=counting_embed,
+                skip_missing_embeddings=skip_missing_embeddings,
             )
             turns = tuple(consumer.cycle.turns)
+            skipped = len(consumer.state.skipped)
         finally:
             consumer.close()
         count = len(turns)
@@ -106,6 +110,7 @@ async def rebuild_from_catalog(
     report = RebuildReport(
         turns=count,
         sessions=sessions,
+        skipped_turns=skipped,
         embedded_messages=embedded,
         elapsed_seconds=round(time.perf_counter() - started, 3),
         database_sha256=database_sha256,

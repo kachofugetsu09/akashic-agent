@@ -1,6 +1,8 @@
 """从消息学习；模型未配置时保持可见的记忆不可用状态。"""
 from __future__ import annotations
 
+import logging
+
 from importlib import import_module
 from agent.plugin_composition.ui import UI
 
@@ -36,6 +38,8 @@ from .application.snapshot import read_memory
 from agent.plugin_composition.models import open_embedding as open_saved_embedding, read_embedding_binding
 from .tools import FeedbackArguments, FeedbackTool, check_feedback
 from .application.rebuild import manifest_json, rebuild_from_catalog
+
+logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "akasha"
@@ -141,6 +145,7 @@ async def apply(ctx: Context) -> None:
     settings = config.settings()
     memory_path = resolve_memory_path(ctx.workspace_root("memory"), settings.db_path)
     rebuild_backup_root = ctx.data_root / "backups" / "rebuild"
+    rebuild_request = ctx.data_root / "rebuild-request.json"
     learning = Learning(
         ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id,
         post_commit_effect=content.legacy_post_commit_effect,
@@ -431,8 +436,8 @@ async def apply(ctx: Context) -> None:
             health.recover()
             return True
 
-    async def run_rebuild() -> CommandResult:
-        """操作者显式确认后全量重建；失败时已发布学习图保持不变。"""
+    async def rebuild_now() -> str:
+        """全量重放 canonical 来源；失败时已发布学习图保持不变。"""
         nonlocal memory, memory_rule
         # 1. 先确认 embedding 空间可用，避免无谓地停掉在线学习。
         identity, rule, model_id = select_learning()
@@ -450,12 +455,32 @@ async def apply(ctx: Context) -> None:
         # 3. 用同一启动边界重新装载；装载失败必须让调用者看到。
         if not await start_if_available():
             raise RuntimeError("Akasha 重建后无法重新装载学习图")
-        return CommandResult("success", "Akasha 重建完成：" + manifest_json(report))
+        return manifest_json(report)
+
+    async def run_rebuild() -> CommandResult:
+        """操作者显式确认后全量重建。"""
+        return CommandResult("success", "Akasha 重建完成：" + await rebuild_now())
+
+    async def run_pending_rebuild() -> None:
+        """消费迁移登记的一次性重放请求；只有成功后才移除凭据。"""
+
+        if not rebuild_request.exists():
+            return
+        try:
+            detail = await rebuild_now()
+        except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError) as error:
+            # 缺模型不阻塞启动：请求保留，下一次真实输入或重启再试。
+            health.degrade(f"待执行的 Akasha 重放需要可用 embedding 空间: {error}")
+            return
+        rebuild_request.unlink(missing_ok=True)
+        health.recover()
+        logger.info("Akasha 一次性重放完成: %s", detail)
 
     # 3. 通知只唤醒消费者；模型后配时下一条输入也会经过同一启动边界。
     async def follow() -> None:
         async for _heads in ctx.require(MESSAGE_CATALOG).follow():
             async with ctx.runtime_scope():
+                await run_pending_rebuild()
                 if await start_if_available():
                     assert memory is not None
                     _ = await memory.consume()
@@ -470,6 +495,7 @@ async def apply(ctx: Context) -> None:
             runtime_records = records()
             inspector = RecallInspector(read=runtime_records.read, list_records=runtime_records.list,
                                         catalog=ctx.require(MESSAGE_CATALOG))
+            await run_pending_rebuild()
             _ = await start_if_available()
         watcher = await ctx.spawn(follow(), name="akasha-messages")
 
