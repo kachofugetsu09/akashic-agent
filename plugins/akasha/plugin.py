@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Literal, Protocol, Self
 from functools import partial
 from collections.abc import Mapping
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -105,6 +106,7 @@ AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]](
     "akasha.recall-records.v1"
 )
 AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
+AKASHA_MEMORY_PATH = ServiceKey[Callable[[], Path]]("akasha.memory-path.v1")
 
 
 async def apply(ctx: Context) -> None:
@@ -371,6 +373,8 @@ async def apply(ctx: Context) -> None:
         )
     )
     _ = await ctx.provide(AKASHA_TOOLS, catalog.view(*tool_refs))
+    # 只读账本按声明的 workspace root 解析学习图；不暴露 writer 或任意路径。
+    _ = await ctx.provide(AKASHA_MEMORY_PATH, lambda: memory_path)
 
     async def close_memory() -> None:
         if memory is not None:

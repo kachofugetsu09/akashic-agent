@@ -222,8 +222,132 @@ const panel = {
   },
 } satisfies WorkbenchPanelEntry;
 
+
+interface LedgerRow {
+  node_id: number;
+  turn_id: string;
+  session_key: string;
+  user_seq: number;
+  user_message_id: string;
+  assistant_message_id: string;
+  started_at: string;
+  committed_at: string;
+  active_basin_count: number | null;
+  basin_completion_count: number | null;
+  sharp_completion_count: number | null;
+  candidate_count: number | null;
+  pushes: number | null;
+  residual_l1: number | null;
+  messages?: { user_message_id: string; assistant_message_id: string };
+}
+
+interface LedgerOverview {
+  learned: number;
+  sessions: number;
+  skipped: number;
+  skipped_reasons: Record<string, number>;
+  first_learned_at: string | null;
+  last_learned_at: string | null;
+}
+
+let ledgerOverview: LedgerOverview | null = null;
+
+function ledgerSummary(): string {
+  if (!ledgerOverview) return "已学习的逻辑 turn；图是学习事实的唯一权威。";
+  const reasons = Object.entries(ledgerOverview.skipped_reasons)
+    .map(([reason, count]) => `${reason} ${count}`)
+    .join("、");
+  const skipped = ledgerOverview.skipped ? `；未学习 ${ledgerOverview.skipped} 条（${reasons}）` : "";
+  return `已学习 ${ledgerOverview.learned} 个逻辑 turn，覆盖 ${ledgerOverview.sessions} 个会话${skipped}。`;
+}
+
+function renderLedger(container: HTMLElement, dispatch: PluginDispatch): WebUiDisposer | void {
+  const value = dispatch.filters["session_key"] ?? "";
+  const existing = container.querySelector<HTMLInputElement>("[data-akasha-session]");
+  if (existing) {
+    if (document.activeElement !== existing && existing.value !== value) existing.value = value;
+    return;
+  }
+  container.innerHTML = `<div class="akasha-filter"><label><span>按会话过滤学习账本</span><input type="search" value="${escapeHtml(value)}" placeholder="例如 akashic: 或 telegram:" data-akasha-session /></label><md-text-button data-akasha-clear-session ${value ? "" : "disabled"}>清空</md-text-button></div>`;
+  const input = container.querySelector<HTMLInputElement>("[data-akasha-session]")!;
+  const clear = container.querySelector<HTMLElement>("[data-akasha-clear-session]")!;
+  let timer = 0;
+  const onInput = (): void => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      const session = input.value.trim();
+      if (session) dispatch.setFilter("session_key", session); else dispatch.clearFilter("session_key");
+    }, 200);
+  };
+  const onClear = (): void => { input.value = ""; dispatch.clearFilter("session_key"); };
+  input.addEventListener("input", onInput);
+  clear.addEventListener("click", onClear);
+  return () => { window.clearTimeout(timer); input.removeEventListener("input", onInput); clear.removeEventListener("click", onClear); };
+}
+
+function renderLedgerDetail(item: LedgerRow | null): string {
+  if (!item) {
+    return `<div class="akasha-detail-empty"><div class="akasha-detail-empty__title">Akasha 记忆</div><div class="akasha-detail-empty__text">${escapeHtml(ledgerSummary())}</div></div>`;
+  }
+  const messages = item.messages;
+  return `
+    <article class="akasha-inspector">
+      <header class="akasha-query"><div><h2>#${escapeHtml(item.node_id)} · ${escapeHtml(item.session_key)}</h2><p class="akasha-query-meta">${escapeHtml(shortTime(item.started_at))} · seq ${escapeHtml(item.user_seq)}</p></header>
+      <section class="akasha-overview"><dl class="akasha-metrics">
+        ${metric("候选命中", item.candidate_count ?? 0, "该轮学习时的记忆读出候选数")}
+        ${metric("精确补全", item.sharp_completion_count ?? 0, "召回记录里的 sharp completion 数")}
+        ${metric("情景簇", item.active_basin_count ?? 0, "该轮学习时的活跃情景簇")}
+        ${metric("扩散", item.pushes ?? 0, "该轮学习时的扩散次数")}
+        ${metric("残余质量", fixed(item.residual_l1), "该轮学习时的 residual_l1")}
+      </dl></section>
+      <section class="akasha-evidence-group"><div class="akasha-section-heading"><h3>学习材料</h3><small>正文来自 canonical Message，不在插件里复制</small></div>
+        <ol class="akasha-evidence-list">
+          <li class="akasha-evidence"><div class="akasha-evidence-main"><p>${escapeHtml(messages?.user_message_id ? "用户输入" : "用户输入缺失")}</p><p>${escapeHtml(messages?.user_message_id ?? "")}</p></div></li>
+          <li class="akasha-evidence"><div class="akasha-evidence-main"><p>助手回答</p><p>${escapeHtml(messages?.assistant_message_id ?? "")}</p></div></li>
+        </ol>
+      </section>
+    </article>
+  `;
+}
+
+const ledgerPanel = {
+  id: "akasha-ledger",
+  label: "Akasha 记忆",
+  viewLabel: "Akasha 记忆",
+  pageSize: 25,
+  rowKey: "node_id",
+  countTitle(total: number): string { return `${total} 个逻辑 turn`; },
+  columns: [
+    { key: "session_key", label: "会话", width: 130, fmt: "mono-session", cellClass: "mono cell-session", rawTitle: true },
+    { key: "user_seq", label: "Seq", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "started_at", label: "学习时间", width: 108, fmt: "mono-time", cellClass: "mono cell-time" },
+    { key: "candidate_count", label: "候选", width: 66, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "active_basin_count", label: "情景簇", width: 78, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "basin_completion_count", label: "补全", width: 66, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "pushes", label: "扩散", width: 78, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+  ],
+  renderFilters: renderLedger,
+  async getCount({ signal }: { signal: AbortSignal }): Promise<number | null> {
+    ledgerOverview = await api<LedgerOverview>("/api/dashboard/akasha-ledger/overview", { signal });
+    return ledgerOverview.learned;
+  },
+  async fetchPage({ page, pageSize, filters, signal }: FetchPageOpts): Promise<FetchPageResult> {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (filters?.["session_key"]) params.set("session_key", filters["session_key"]);
+    const result = await api<{ items: Record<string, unknown>[]; total: number }>(`/api/dashboard/akasha-ledger/turns?${params.toString()}`, { signal });
+    return { items: result.items, total: result.total };
+  },
+  async fetchDetail(item: Record<string, unknown>, { signal }: { signal: AbortSignal }): Promise<Record<string, unknown>> {
+    return api(`/api/dashboard/akasha-ledger/turns/${encodePath(String(item["node_id"] ?? ""))}`, { signal });
+  },
+  renderDetail(item: Record<string, unknown> | null, container: HTMLElement): void {
+    container.innerHTML = renderLedgerDetail(item as unknown as LedgerRow | null);
+  },
+} satisfies WorkbenchPanelEntry;
+
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   dashboardRequest = ctx.http.request;
-  const release = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(panel));
-  return () => { release(); dashboardRequest = null; };
+  const releaseRecall = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(panel));
+  const releaseLedger = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(ledgerPanel));
+  return () => { releaseRecall(); releaseLedger(); dashboardRequest = null; };
 }
