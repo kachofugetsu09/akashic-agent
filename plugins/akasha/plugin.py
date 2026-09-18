@@ -1,7 +1,9 @@
 """从消息学习；模型未配置时保持可见的记忆不可用状态。"""
 from __future__ import annotations
 
+import json
 import logging
+from datetime import UTC, datetime
 
 from importlib import import_module
 from agent.plugin_composition.ui import UI
@@ -43,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 # 迁移与插件共同寻址的一次性重放凭据名；两处必须保持一致。
 _REPLAY_REQUEST_NAME = ".akasha-replay-request.json"
+_REPLAY_STATUS_NAME = ".akasha-replay-status.json"
 
 api_version = 3
 name = "akasha"
@@ -469,19 +472,44 @@ async def apply(ctx: Context) -> None:
         """操作者显式确认后全量重建。"""
         return CommandResult("success", "Akasha 重建完成：" + await rebuild_now())
 
+    def _note_replay(payload: Mapping[str, object]) -> None:
+        """把重放状态写进 memory root；这是安装期唯一稳定可读的证据面。"""
+
+        path = rebuild_request_paths[0].with_name(_REPLAY_STATUS_NAME)
+        try:
+            path.write_text(
+                json.dumps({"at": datetime.now(UTC).isoformat(), **payload},
+                           ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return
+
     async def run_pending_rebuild() -> None:
         """消费迁移登记的一次性重放请求；只有成功后才移除凭据。"""
 
         pending = tuple(path for path in rebuild_request_paths if path.exists())
+        # 重放是安装期动作，必须留下可读证据：容器日志级别可能看不到插件 logger。
+        _note_replay({
+            "phase": "scan",
+            "checked": [str(path) for path in rebuild_request_paths],
+            "pending": [str(path) for path in pending],
+        })
         if not pending:
             return
         logger.info("Akasha 发现一次性重放请求: %s", [str(path) for path in pending])
         try:
+            _note_replay({"phase": "rebuilding", "pending": [str(path) for path in pending]})
             detail = await rebuild_now()
+            _note_replay({"phase": "completed", "detail": detail})
         except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError) as error:
             # 缺模型不阻塞启动：请求保留，下一次真实输入或重启再试。
+            _note_replay({"phase": "degraded", "reason": str(error)})
             health.degrade(f"待执行的 Akasha 重放需要可用 embedding 空间: {error}")
             return
+        except BaseException as error:
+            _note_replay({"phase": "failed", "error": f"{type(error).__name__}: {error}"})
+            raise
         for path in pending:
             path.unlink(missing_ok=True)
         health.recover()
