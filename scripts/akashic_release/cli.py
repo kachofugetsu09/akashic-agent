@@ -78,6 +78,7 @@ def install(args: argparse.Namespace) -> dict[str, object]:
             backup_root=paths.backups,
             run=_run,
             unit_root=args.unit_root,
+            runtime_env=args.runtime_env,
         )
         cli_changed = install_operator_entrypoint(
             checkout=paths.source(commit),
