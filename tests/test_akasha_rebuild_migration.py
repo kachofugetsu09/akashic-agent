@@ -14,7 +14,7 @@ from agent.migrations.context import bind_migration_context
 
 REPO = Path(__file__).resolve().parents[1]
 BUNDLE_ID = "akasha"
-MIGRATION_ID = "20260918_01_register_graph_replay"
+MIGRATION_ID = "20260918_02_correct_graph_replay_request"
 
 
 def _step_module() -> ModuleType:
@@ -62,7 +62,10 @@ def _write_memory(root: Path, *, version: int | None) -> Path:
 def test_akasha_bundle_is_discoverable_and_import_clean() -> None:
     bundles = discover_migration_bundles(plugin_dirs=(REPO / "plugins",))
     akasha = next(item for item in bundles if item.bundle_id == BUNDLE_ID)
-    assert akasha.migration_ids == (MIGRATION_ID,)
+    assert akasha.migration_ids == (
+        "20260918_01_register_graph_replay",
+        MIGRATION_ID,
+    )
     assert akasha.plugin_name == "akasha"
 
 
@@ -79,7 +82,7 @@ def test_replay_request_is_registered_once_with_a_readable_recovery_point(tmp_pa
     ):
         step_module.request_akasha_replay(None)
 
-    request = data_root / "rebuild-request.json"
+    request = workspace / "memory" / ".akasha-replay-request.json"
     payload = json.loads(request.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert payload["memory_path"] == str(workspace / "memory" / "akasha.db")
@@ -111,7 +114,7 @@ def test_replay_request_skips_installations_that_do_not_use_akasha(tmp_path: Pat
         bundle_data_roots={BUNDLE_ID: data_root},
     ):
         step_module.request_akasha_replay(None)
-    assert not (data_root / "rebuild-request.json").exists()
+    assert not (workspace / "memory" / ".akasha-replay-request.json").exists()
 
 
 def test_replay_request_is_absent_for_a_workspace_without_a_learned_graph(tmp_path: Path) -> None:
@@ -126,4 +129,4 @@ def test_replay_request_is_absent_for_a_workspace_without_a_learned_graph(tmp_pa
         bundle_data_roots={BUNDLE_ID: data_root},
     ):
         step_module.request_akasha_replay(None)
-    assert not (data_root / "rebuild-request.json").exists()
+    assert not (workspace / "memory" / ".akasha-replay-request.json").exists()

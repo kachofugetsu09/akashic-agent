@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Callable
 
 from scripts.akashic_release.bridge import prepare_bridge_venv, prepare_runtime_checkout
+from scripts.akashic_release.ownership import (
+    operator_environment,
+    release_to_owner,
+    resolve_runtime_owner,
+)
 from scripts.akashic_release.bridge import verify_bridge
 from scripts.akashic_release.image import prepare_core_image
 from scripts.akashic_release.manifest import read_json, write_json
@@ -40,6 +45,7 @@ def prepare_generation(
     origin: str,
     mise: Path,
     run: Run,
+    runtime_env: Path | None = None,
 ) -> dict[str, object]:
     """Prepare and publish one immutable Core plus Bridge generation."""
 
@@ -74,9 +80,18 @@ def prepare_generation(
     if source.exists() or bridge_venv.exists():
         raise RuntimeError("发现未发布的同 commit generation，需先人工审计")
 
+    # 安装产物必须属于运行时属主，而不是 sudo 会话；否则下一轮启动才会以
+    # Permission denied 暴露出来。
+    _user, owner_uid, owner_gid, owner_home = resolve_runtime_owner(
+        runtime_env=runtime_env,
+        environ=os.environ,
+        fallback_uid=os.getuid(),
+        fallback_gid=os.getgid(),
+    )
     temporary_manifest = paths.releases / f".{commit}.{os.getpid()}.preparing.json"
     try:
         prepare_runtime_checkout(bootstrap_checkout, commit, source, origin)
+        release_to_owner(source, uid=owner_uid, gid=owner_gid)
         manifest = prepare_core_image(
             checkout=source,
             commit=commit,
@@ -88,7 +103,9 @@ def prepare_generation(
             target=bridge_venv,
             mise=mise,
             run=run,
+            env=operator_environment(owner_home),
         )
+        release_to_owner(bridge_venv, uid=owner_uid, gid=owner_gid)
         host_identity = manifest.get("hostToolchainIdentity")
         if not isinstance(host_identity, dict):
             raise RuntimeError("release manifest 缺少 Host Bridge identity")
@@ -107,6 +124,7 @@ def prepare_generation(
             }
         )
         write_json(manifest_path, manifest)
+        release_to_owner(manifest_path, uid=owner_uid, gid=owner_gid)
         return manifest
     except BaseException:
         if source.exists():

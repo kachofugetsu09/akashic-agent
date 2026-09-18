@@ -150,3 +150,48 @@ def test_install_units_refuses_to_change_an_installed_environment_file(tmp_path:
             unit_root=unit_root,
             runtime_env=None,
         )
+
+
+def test_operator_environment_points_mise_at_the_owner_home(tmp_path: Path) -> None:
+    """venv 创建必须在操作者家目录下解析运行时，而不是 sudo 的 /root。"""
+
+    from scripts.akashic_release.ownership import operator_environment
+
+    environment = operator_environment(HOME)
+    assert environment["HOME"] == str(HOME)
+    assert not environment.get("XDG_DATA_HOME", "").startswith("/root")
+
+
+def test_release_to_owner_keeps_exec_bits_and_grants_read(tmp_path: Path) -> None:
+    from scripts.akashic_release.ownership import release_to_owner
+
+    root = tmp_path / "artifact"
+    (root / "bin").mkdir(parents=True)
+    script = root / "bin" / "python"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o700)
+    data = root / "manifest.json"
+    data.write_text("{}\n", encoding="utf-8")
+    data.chmod(0o600)
+
+    release_to_owner(root, uid=os.getuid(), gid=os.getgid())
+
+    assert script.stat().st_mode & 0o111, "执行位必须保留"
+    assert script.stat().st_mode & 0o044, "必须补上可读位"
+    assert data.stat().st_mode & 0o044
+
+
+def test_resolve_runtime_owner_matches_the_unit_identity(tmp_path: Path) -> None:
+    from scripts.akashic_release.ownership import resolve_runtime_owner
+
+    env = tmp_path / "runtime.env"
+    env.write_text("A=1\n", encoding="utf-8")
+    user, uid, gid, home = resolve_runtime_owner(
+        runtime_env=env,
+        environ={"SUDO_USER": "root"},
+        fallback_uid=0,
+        fallback_gid=0,
+    )
+    assert user == ACCOUNT.pw_name
+    assert (uid, gid) == (os.getuid(), os.getgid())
+    assert home == HOME

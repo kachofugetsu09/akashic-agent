@@ -72,6 +72,7 @@ def install(args: argparse.Namespace) -> dict[str, object]:
             origin=args.origin,
             mise=args.mise,
             run=_run,
+            runtime_env=args.runtime_env,
         )
         units_changed = install_units(
             checkout=paths.source(commit),

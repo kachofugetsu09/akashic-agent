@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
@@ -30,6 +31,7 @@ def prepare_bridge_venv(
     target: Path,
     mise: Path,
     run: Run,
+    env: Mapping[str, str] | None = None,
 ) -> Path:
     """Create one commit-bound Bridge interpreter and install locked runtime deps."""
 
@@ -41,6 +43,7 @@ def prepare_bridge_venv(
             [str(mise), "install", "--yes"],
             cwd=checkout,
             check=True,
+            env=env,
         )
         python_executable = run(
             [str(mise), "which", "python"],
@@ -48,6 +51,7 @@ def prepare_bridge_venv(
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         ).stdout.strip()
         run(
             [
@@ -62,6 +66,7 @@ def prepare_bridge_venv(
             ],
             cwd=checkout,
             check=True,
+            env=env,
         )
         python = target / "bin" / "python"
         run(
@@ -82,6 +87,7 @@ def prepare_bridge_venv(
             ],
             cwd=checkout,
             check=True,
+            env=env,
         )
     except BaseException:
         if target.exists():

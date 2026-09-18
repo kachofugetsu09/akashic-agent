@@ -41,6 +41,9 @@ from .application.rebuild import manifest_json, rebuild_from_catalog
 
 logger = logging.getLogger(__name__)
 
+# 迁移与插件共同寻址的一次性重放凭据名；两处必须保持一致。
+_REPLAY_REQUEST_NAME = ".akasha-replay-request.json"
+
 api_version = 3
 name = "akasha"
 version = "4.0.0"
@@ -145,7 +148,12 @@ async def apply(ctx: Context) -> None:
     settings = config.settings()
     memory_path = resolve_memory_path(ctx.workspace_root("memory"), settings.db_path)
     rebuild_backup_root = ctx.data_root / "backups" / "rebuild"
-    rebuild_request = ctx.data_root / "rebuild-request.json"
+    # 一次性重放凭据必须放在跨 generation 稳定的位置：迁移在 runtime 之前运行，
+    # 只能寻址 workspace 内的固定路径，而 ctx.data_root 属于当前 generation。
+    rebuild_request_paths = (
+        ctx.workspace_root("memory") / _REPLAY_REQUEST_NAME,
+        ctx.data_root / _REPLAY_REQUEST_NAME,
+    )
     learning = Learning(
         ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id,
         post_commit_effect=content.legacy_post_commit_effect,
@@ -464,15 +472,18 @@ async def apply(ctx: Context) -> None:
     async def run_pending_rebuild() -> None:
         """消费迁移登记的一次性重放请求；只有成功后才移除凭据。"""
 
-        if not rebuild_request.exists():
+        pending = tuple(path for path in rebuild_request_paths if path.exists())
+        if not pending:
             return
+        logger.info("Akasha 发现一次性重放请求: %s", [str(path) for path in pending])
         try:
             detail = await rebuild_now()
         except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError) as error:
             # 缺模型不阻塞启动：请求保留，下一次真实输入或重启再试。
             health.degrade(f"待执行的 Akasha 重放需要可用 embedding 空间: {error}")
             return
-        rebuild_request.unlink(missing_ok=True)
+        for path in pending:
+            path.unlink(missing_ok=True)
         health.recover()
         logger.info("Akasha 一次性重放完成: %s", detail)
 
