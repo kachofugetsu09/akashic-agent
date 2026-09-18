@@ -1,6 +1,6 @@
 schema_version = 1
 bundle_id = "akasha"
-version = "1.2.0"
+version = "1.3.0"
 migration_root = "akasha_migrations"
 package_name = "akasha_migrations"
 
@@ -19,6 +19,10 @@ sha256 = "9c1fc51d69079641cc37764367c5f0c5602efd7dcd282785d57da985196c62cf"
 [[files]]
 path = "20260918_03_register_replay_without_memory_config.py"
 sha256 = "1afb23804dc76a815e9bf6fb49711cc2c13ffb3b5e9a04571b0ec9bcca64b79d"
+
+[[files]]
+path = "20260918_04_retire_removed_config_keys.py"
+sha256 = "246697429bd5b2d47f264ea1e2308e0b2b40108bfd10e0dd6112f444784eeb2b"
 
 [[migrations]]
 id = "20260918_01_register_graph_replay"
@@ -40,3 +44,10 @@ path = "20260918_03_register_replay_without_memory_config.py"
 depends = ["20260918_02_correct_graph_replay_request"]
 transactional = false
 sha256 = "1afb23804dc76a815e9bf6fb49711cc2c13ffb3b5e9a04571b0ec9bcca64b79d"
+
+[[migrations]]
+id = "20260918_04_retire_removed_config_keys"
+path = "20260918_04_retire_removed_config_keys.py"
+depends = ["20260918_03_register_replay_without_memory_config"]
+transactional = false
+sha256 = "246697429bd5b2d47f264ea1e2308e0b2b40108bfd10e0dd6112f444784eeb2b"

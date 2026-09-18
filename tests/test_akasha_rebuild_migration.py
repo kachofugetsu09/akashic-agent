@@ -17,11 +17,12 @@ BUNDLE_ID = "akasha"
 MIGRATION_ID = "20260918_03_register_replay_without_memory_config"
 
 
-def _step_module() -> ModuleType:
+def _step_module(name: str | None = None) -> ModuleType:
     """按文件名加载迁移 step；模块名以数字开头，不能用普通 import 语句。"""
 
-    path = REPO / "plugins" / "akasha" / "akasha_migrations" / f"{MIGRATION_ID}.py"
-    spec = importlib.util.spec_from_file_location(f"akasha_migration_{MIGRATION_ID}", path)
+    target = name or MIGRATION_ID
+    path = REPO / "plugins" / "akasha" / "akasha_migrations" / f"{target}.py"
+    spec = importlib.util.spec_from_file_location(f"akasha_migration_{target}", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     # yoyo 的 step() 从调用帧的 globals 读取 collector；直接加载模块时必须提供它。
@@ -66,6 +67,7 @@ def test_akasha_bundle_is_discoverable_and_import_clean() -> None:
         "20260918_01_register_graph_replay",
         "20260918_02_correct_graph_replay_request",
         MIGRATION_ID,
+        "20260918_04_retire_removed_config_keys",
     )
     assert akasha.plugin_name == "akasha"
 
@@ -132,3 +134,44 @@ def test_replay_request_is_absent_for_a_workspace_without_a_learned_graph(tmp_pa
     ):
         step_module.request_akasha_replay(None)
     assert not (workspace / "memory" / ".akasha-replay-request.json").exists()
+
+
+def test_retired_config_keys_are_removed_with_a_backup(tmp_path: Path) -> None:
+    """旧配置输入里的退役键必须被清理，否则插件 apply 会直接失败。"""
+
+    workspace = tmp_path / "workspace"
+    data_root = workspace / "plugin-data" / "akasha-builtin"
+    data_root.mkdir(parents=True)
+    config_path = data_root / "config.input.json"
+    config_path.write_text(
+        json.dumps({
+            "config": ["map", {
+                "db_path": "memory/akasha.db",
+                "index_path": "memory/akasha-v2-index.db",
+                "frozen_history_path": "memory/akasha-frozen-history.json",
+                "tolerance": 1e-07,
+            }],
+            "version": 1,
+        }),
+        encoding="utf-8",
+    )
+    step = _step_module("20260918_04_retire_removed_config_keys")
+    with bind_migration_context(
+        config_path=_write_config(tmp_path), workspace=workspace,
+        bundle_data_roots={BUNDLE_ID: data_root},
+    ):
+        step._retire_config_keys(None)
+
+    written = json.loads(config_path.read_text(encoding="utf-8"))
+    assert written["config"][1] == {"db_path": "memory/akasha.db", "tolerance": 1e-07}
+    backups = list(data_root.glob("config.input.json.pre-retire-keys-*"))
+    assert len(backups) == 1
+    assert "index_path" in backups[0].read_text(encoding="utf-8")
+
+    # 幂等：已清理的配置不产生新的备份。
+    with bind_migration_context(
+        config_path=_write_config(tmp_path), workspace=workspace,
+        bundle_data_roots={BUNDLE_ID: data_root},
+    ):
+        step._retire_config_keys(None)
+    assert len(list(data_root.glob("config.input.json.pre-retire-keys-*"))) == 1
