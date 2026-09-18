@@ -14,7 +14,7 @@ from agent.migrations.context import bind_migration_context
 
 REPO = Path(__file__).resolve().parents[1]
 BUNDLE_ID = "akasha"
-MIGRATION_ID = "20260918_02_correct_graph_replay_request"
+MIGRATION_ID = "20260918_03_register_replay_without_memory_config"
 
 
 def _step_module() -> ModuleType:
@@ -64,6 +64,7 @@ def test_akasha_bundle_is_discoverable_and_import_clean() -> None:
     akasha = next(item for item in bundles if item.bundle_id == BUNDLE_ID)
     assert akasha.migration_ids == (
         "20260918_01_register_graph_replay",
+        "20260918_02_correct_graph_replay_request",
         MIGRATION_ID,
     )
     assert akasha.plugin_name == "akasha"
@@ -102,19 +103,20 @@ def test_replay_request_is_registered_once_with_a_readable_recovery_point(tmp_pa
     assert not request.exists()
 
 
-def test_replay_request_skips_installations_that_do_not_use_akasha(tmp_path: Path) -> None:
+def test_replay_request_does_not_depend_on_a_memory_config_section(tmp_path: Path) -> None:
     step_module = _step_module()
 
     workspace = tmp_path / "workspace"
     _write_memory(workspace, version=1)
     data_root = workspace / "plugin-data" / "akasha-builtin"
+    # 只要学习图不是当前消费版本就登记重放，与 [memory] 配置段无关。
     with bind_migration_context(
         config_path=_write_config(tmp_path, engine="default"),
         workspace=workspace,
         bundle_data_roots={BUNDLE_ID: data_root},
     ):
         step_module.request_akasha_replay(None)
-    assert not (workspace / "memory" / ".akasha-replay-request.json").exists()
+    assert (workspace / "memory" / ".akasha-replay-request.json").exists()
 
 
 def test_replay_request_is_absent_for_a_workspace_without_a_learned_graph(tmp_path: Path) -> None:
