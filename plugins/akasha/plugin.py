@@ -49,7 +49,7 @@ _REPLAY_STATUS_NAME = ".akasha-replay-status.json"
 
 api_version = 3
 name = "akasha"
-version = "4.0.0"
+version = "4.1.0"
 desc = "从消息学习并提供普通 Context 材料与记忆工具"
 workspace_roots = ("memory",)
 
