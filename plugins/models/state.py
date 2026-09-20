@@ -83,8 +83,6 @@ _LOCAL_ROOT = secrets.token_hex(8)
 # 本进程存活的 attempt 登记先于 started 记录返回，Task 退出时注销；
 # 同 key 的 started 记录只有不属于任何活 attempt 才算孤儿。
 _LIVE_CALLS: set[str] = set()
-# 同 key 且同 digest 的并发调用合并到同一个活 attempt；digest 漂移在准入时拒绝。
-_LIVE_RUNS: dict[tuple[str, str], tuple[asyncio.Future[LLMResponse], str]] = {}
 _RUN_ADMISSION = threading.Lock()
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 _DEFAULT_ROLE = "default"
@@ -142,7 +140,7 @@ class _BoundChat:
         store: ModelsStore,
         *,
         root_instance: str = _LOCAL_ROOT,
-        max_attempts: int = 4,
+        max_attempts: int = 1,
     ) -> None:
         self._descriptor = descriptor
         self._driver = driver
@@ -169,10 +167,16 @@ class _BoundChat:
                 request, f"anonymous:{secrets.token_hex(8)}", digest, budget=1
             )
         request_key = request.request_key
+        # 活 run 合并只发生在同一权威账本内；不同 store 的同 key 是独立调用。
+        live_runs = cast(
+            "dict[tuple[str, str], tuple[asyncio.Future[LLMResponse], str]]",
+            self._store.live_runs,
+        )
         run_key = (request_key, self._descriptor.binding_id)
         owner = False
+        shared: asyncio.Future[LLMResponse]
         with _RUN_ADMISSION:
-            entry = _LIVE_RUNS.get(run_key)
+            entry = live_runs.get(run_key)
             if entry is not None and not entry[0].done():
                 if entry[1] != digest:
                     raise ValueError("同一模型请求 key 的请求内容不一致")
@@ -187,7 +191,7 @@ class _BoundChat:
                 shared.add_done_callback(
                     lambda done: None if done.cancelled() else done.exception()
                 )
-                _LIVE_RUNS[run_key] = (shared, digest)
+                live_runs[run_key] = (shared, digest)
                 owner = True
         if not owner:
             return await asyncio.shield(shared)
@@ -197,12 +201,12 @@ class _BoundChat:
             if not shared.done():
                 shared.set_exception(error)
             raise
+        else:
+            if not shared.done():
+                shared.set_result(result)
+            return result
         finally:
-            if shared.done():
-                _LIVE_RUNS.pop(run_key, None)
-        if not shared.done():
-            shared.set_result(result)
-        return result
+            live_runs.pop(run_key, None)
 
     def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
         """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
@@ -245,108 +249,120 @@ class _BoundChat:
         return None
 
     def _owner_dead(self, record: Mapping[str, Any]) -> bool:
-        """owner 身份为 epoch:进程:Root:attempt；纪元已换代或同纪元内无活登记才算死亡。"""
+        """owner 身份为 epoch:进程:Root:attempt；只凭真实死亡证据结算。
+
+        更早 host_epoch 的 owner 在本 store 持有独占宿主锁时可证明死亡；
+        同纪元内只有本进程签发且 attempt 无活登记者仍属不明，异构或
+        其他进程 token 一律不当作死亡证据。
+        """
         owner = record.get("owner_id")
         if not isinstance(owner, str):
             return False
         parts = owner.split(":")
         if len(parts) != 4:
-            # 非本进程签发的异构 owner 没有存活证据；含本进程 token 的才算疑似存活。
-            return _PROCESS_INSTANCE not in parts
+            return False
         try:
             record_epoch = int(parts[0])
         except ValueError:
             return False
         host_epoch = self._store.host_epoch
-        if host_epoch is not None and record_epoch != host_epoch:
-            return True
-        return parts[1] != _PROCESS_INSTANCE or cast(str, record["id"]) not in _LIVE_CALLS
+        if host_epoch is not None and record_epoch < host_epoch:
+            # 独占宿主锁成立时，旧纪元的写方已经退出，started 永不再结算。
+            return self._store.holds_host_lock
+        return False
 
     async def _attempts(
         self, request: ModelRequest, request_key: str, digest: str, *,
         budget: int | None = None,
     ) -> LLMResponse:
-        """Models 独占重试预算：每次 complete 只做一个真实 attempt，先记账再结算；
-        失败写耐久 next_attempt_at，显式重试按同一 key 重新进入并遵守退避。"""
+        """Models 独占重试预算：一次 complete 内有界自动重试；每个真实 attempt
+        先记账再结算，失败写耐久 next_attempt_at，重试前重新核对准入与孤儿。"""
         budget = self._max_attempts if budget is None else max(1, budget)
-        replayed = self._scan(request_key, digest)
-        if replayed is not None:
-            return replayed
-        records = self._store.calls_for_key(request_key)
-        if len(records) >= budget:
-            raise ModelUnavailableError("模型调用重试预算耗尽")
-        last = records[-1] if records else None
-        next_at = None if last is None else last.get("next_attempt_at")
-        if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
-            delay = float(next_at) - time.time()
-            if delay > 0:
-                await asyncio.sleep(delay)
-        call_id = self._store.resume_call(
-            self._descriptor, request,
-            request_key=request_key,
-            owner_id=(
-                f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
-                f":{self._root_instance}:{secrets.token_hex(8)}"
-            ),
-        )
-        _LIVE_CALLS.add(call_id)
-        started: int | None = None
-        first_token = False
-
-        async def delta(value: dict[str, str]) -> None:
-            nonlocal first_token
-            assert started is not None
-            if not first_token and (
-                value.get("content_delta") or value.get("thinking_delta")
-            ):
-                self._store.record_first_token(
-                    call_id, (monotonic_ns() - started) / 1_000_000
-                )
-                first_token = True
-            if request.on_delta is not None:
-                await request.on_delta(value)
-
-        try:
-            try:
-                # driver 恒单次尝试：accounted 调用统一置 key，重试预算只由 Models 持有。
-                driver_request = replace(
-                    request, on_delta=None if request.on_delta is None else delta,
-                    request_key=request_key,
-                )
-                if request.on_delta is not None:
-                    await request.on_delta({"call_record_id": call_id})
-                started = monotonic_ns()
-                response = await self._driver.complete(driver_request)
-            except BaseException as failure:
-                # 网络请求可能已经到达 provider；本地异常不证明没有计费。
-                retryable = bool(
-                    getattr(failure, "retry_safe", False)
-                    or getattr(failure, "retryable", False)
-                )
-                used = len(records) + 1
-                retry_at = (
-                    time.time() + min(8.0, 0.5 * (2 ** used))
-                    if retryable and used < budget
-                    else None
-                )
-                try:
-                    self._store.finish_call(
-                        call_id, usage=None, failure=type(failure).__name__,
-                        duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
-                        next_attempt_at=retry_at,
-                    )
-                except Exception as record_failure:
-                    raise failure from record_failure
-                raise
-            self._store.finish_call(
-                call_id, usage=response.usage, failure=None,
-                duration_ms=(monotonic_ns() - started) / 1_000_000,
-                response=response,
+        used = 0
+        while True:
+            replayed = self._scan(request_key, digest)
+            if replayed is not None:
+                return replayed
+            if used >= budget:
+                # 预算只约束本次 complete 的自动重试；显式重驱由耐久
+                # next_attempt_at 退避，历史已结算记录不占用新调用预算。
+                raise ModelUnavailableError("模型调用重试预算耗尽")
+            records = self._store.calls_for_key(request_key)
+            last = records[-1] if records else None
+            next_at = None if last is None else last.get("next_attempt_at")
+            if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
+                delay = float(next_at) - time.time()
+                if delay > 0:
+                    # 退避可取消；取消后 attempt 记录保持 started，结果不确定。
+                    await asyncio.sleep(delay)
+            used += 1
+            call_id = self._store.resume_call(
+                self._descriptor, request,
+                request_key=request_key,
+                owner_id=(
+                    f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
+                    f":{self._root_instance}:{secrets.token_hex(8)}"
+                ),
             )
-            response.call_record_id = call_id
-            return response
-        finally:
-            _LIVE_CALLS.discard(call_id)
+            _LIVE_CALLS.add(call_id)
+            started: int | None = None
+            first_token = False
+
+            async def delta(value: dict[str, str]) -> None:
+                nonlocal first_token
+                assert started is not None
+                if not first_token and (
+                    value.get("content_delta") or value.get("thinking_delta")
+                ):
+                    self._store.record_first_token(
+                        call_id, (monotonic_ns() - started) / 1_000_000
+                    )
+                    first_token = True
+                if request.on_delta is not None:
+                    await request.on_delta(value)
+
+            try:
+                try:
+                    # driver 恒单次尝试：accounted 调用统一置 key，重试预算只由 Models 持有。
+                    driver_request = replace(
+                        request, on_delta=None if request.on_delta is None else delta,
+                        request_key=request_key,
+                    )
+                    if request.on_delta is not None:
+                        await request.on_delta({"call_record_id": call_id})
+                    started = monotonic_ns()
+                    response = await self._driver.complete(driver_request)
+                except BaseException as failure:
+                    # 网络请求可能已经到达 provider；本地异常不证明没有计费。
+                    retryable = bool(
+                        getattr(failure, "retry_safe", False)
+                        or getattr(failure, "retryable", False)
+                    )
+                    retry_at = (
+                        time.time() + min(8.0, 0.5 * (2 ** used))
+                        if retryable and used < budget
+                        else None
+                    )
+                    try:
+                        self._store.finish_call(
+                            call_id, usage=None, failure=type(failure).__name__,
+                            duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
+                            next_attempt_at=retry_at,
+                        )
+                    except Exception as record_failure:
+                        raise failure from record_failure
+                    if retry_at is None:
+                        raise
+                    continue
+                self._store.finish_call(
+                    call_id, usage=response.usage, failure=None,
+                    duration_ms=(monotonic_ns() - started) / 1_000_000,
+                    response=response,
+                )
+                response.call_record_id = call_id
+                return response
+            finally:
+                _LIVE_CALLS.discard(call_id)
 
     def estimate_context_tokens(
         self,
@@ -927,12 +943,14 @@ class ModelsState:
             capability_sources=model.capability_sources,
             capability_digest=capability_digest,
         )
-        configured_retries = connection.driver_config.get("max_retries", 3)
+        # Models 重试预算是显式配置，不从 driver 的 max_retries 推导；
+        # 默认单次尝试，回复流自身以生成边界为恢复单位。
+        configured_attempts = connection.driver_config.get("max_attempts", 1)
         max_attempts = (
-            1 + configured_retries
-            if isinstance(configured_retries, int) and not isinstance(configured_retries, bool)
-            and configured_retries >= 0
-            else 4
+            configured_attempts
+            if isinstance(configured_attempts, int) and not isinstance(configured_attempts, bool)
+            and configured_attempts >= 1
+            else 1
         )
         return _BoundChat(
             descriptor,

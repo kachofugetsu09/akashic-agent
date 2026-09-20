@@ -48,8 +48,8 @@ def _descriptor() -> BoundModelDescriptor:
 
 
 @pytest.mark.asyncio
-async def test_unrelated_same_source_result_does_not_supersede_draft(tmp_path):
-    """§10.2-9：无关 ToolResult/Output 抬高 head 时复用同一响应原子提交。"""
+async def test_competing_output_supersedes_draft_without_repaying(tmp_path):
+    """§10.2-9 修订：任何同来源 Output 都改变输出前驱；旧草稿被取代后不提交、不重付。"""
     calls = 0
     injected = asyncio.Event()
 
@@ -57,7 +57,7 @@ async def test_unrelated_same_source_result_does_not_supersede_draft(tmp_path):
         nonlocal calls
         calls += 1
         if calls == 1 and not injected.is_set():
-            # 在 provider 返回前提交一条同来源、非 Input/Control 的事实抬高 head。
+            # 在 provider 返回前提交一条同来源 Output，抢占输出前驱位置。
             writer = log.writer(
                 "s", author="probe", source="conversation",
                 body_types=(Output,), content={},
@@ -75,13 +75,16 @@ async def test_unrelated_same_source_result_does_not_supersede_draft(tmp_path):
         tmp_path, complete, invoke
     ) as (conversation, log, _store, run):
         await conversation.accept("u1", Input(()))
-        result = await (await conversation.start(run)).join()
-        assert result.body.finish == "complete"
+        with pytest.raises(asyncio.CancelledError):
+            await (await conversation.start(run)).join()
         snapshot = log.reader("s").snapshot()
         assert [m.message_id for m in snapshot[:2]] == ["u1", "probe-output"]
         assert not any(
+            isinstance(m.body, Output) and m.author == "agent" for m in snapshot
+        ), "被取代的草稿不得提交陈旧 Output"
+        assert not any(
             isinstance(m.body, Control) for m in snapshot
-        ), "无关事实抬高 head 不能升级为 failure 或中断"
+        ), "竞争取代不能升级为 failure 或中断"
         assert calls == 1
 
 
@@ -103,11 +106,12 @@ async def test_dead_owner_started_call_settles_as_orphan_then_explicit_retry(tmp
 
     request = ModelRequest((), request_key="stable-key")
     descriptor = _descriptor()
-    # 模拟上一进程遗留的 started 记录：owner 不属于任何活 attempt。
+    # 模拟上一宿主纪元遗留的 started 记录：独占宿主锁 + 更早 epoch 才是死亡证据。
     orphan_id = store.resume_call(
-        descriptor, request, request_key="stable-key", owner_id="dead-process"
+        descriptor, request, request_key="stable-key",
+        owner_id=f"{(store.host_epoch or 1) - 1}:old-process:old-root:old-attempt",
     )
-    bound = _BoundChat(descriptor, Driver(), store)
+    bound = _BoundChat(descriptor, Driver(), store, max_attempts=2)
     with pytest.raises(ModelUnavailableError, match="不确定"):
         await bound.complete(request)
     assert calls == 0, "孤儿证据未结算前不得发起新的付费请求"
@@ -334,8 +338,12 @@ async def test_sigkilled_provider_process_leaves_settled_orphan_without_replay(t
         orphan = store.calls_for_key("killed-key")[0]
         assert orphan["state"] == "error" and "orphaned" in orphan["failure"]
 
-        response = await bound.complete(ModelRequest((), request_key="killed-key"))
+        # 显式恢复是新一代/新 key 的真实付费调用，不是对原 key 的重放。
+        response = await bound.complete(
+            ModelRequest((), request_key="killed-key-resume")
+        )
         assert response.content == "explicit retry" and calls == 1
+        assert [row["attempt"] for row in store.calls_for_key("killed-key")] == [0]
     finally:
         if child.poll() is None:
             child.kill()

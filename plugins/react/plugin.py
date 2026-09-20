@@ -141,15 +141,15 @@ def _related_results(messages: Sequence[Message], source: str) -> frozenset[Call
 
 
 def _competing(message: Message, source: str, related: frozenset[CallRef]) -> bool:
-    """同来源 Input/Control/终态 Output 或读集内 ToolResult 使旧草稿失效。"""
+    """同来源 Input/Control/任何 Output 或读集内 ToolResult 使旧草稿失效。"""
     if message.source != source:
         return False
     body = message.body
     if isinstance(body, (Input, Control)):
         return True
     if isinstance(body, Output):
-        # continue 只是同代草稿的中间事实；终态 Output 才关闭前缀边界。
-        return body.finish != "continue"
+        # 任何同来源 Output 都占据输出前驱位置；本代草稿的前提已被取代。
+        return True
     return isinstance(body, ToolResult) and body.call_ref in related
 
 
@@ -388,6 +388,17 @@ async def react(
             await _settle(tools, call, capture_scope)
         snapshot = reader.snapshot()
         head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
+        # 本代准备的固定身份：最近一条同来源 Input/Control（持久边界）。
+        # 无关事实抬高 head 不产生新准备、不重复付费。
+        boundary_id = next(
+            (
+                message.message_id
+                for message in reversed(snapshot)
+                if message.source == writer.source
+                and isinstance(message.body, (Input, Control))
+            ),
+            "initial",
+        )
         frozen = snapshot
 
         def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
@@ -437,7 +448,11 @@ async def react(
         freeze: Callable[[ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None
         request_override: ModelRequest | None = None
         if state is not None:
-            prep_key = f"reply:{reader.session_id}:{writer.source}:{head}:{_steps(snapshot, writer.source)}"
+            # 输出前驱位置用该来源已有 Output 计数；与边界身份共同固定本代。
+            prep_key = (
+                f"reply:{reader.session_id}:{writer.source}"
+                f":{boundary_id}:{_steps(snapshot, writer.source)}"
+            )
             base_seq = reader.head()
             existing = state.transact(lambda transaction: transaction.read(prep_key))
             if existing is not None:
@@ -499,7 +514,8 @@ async def react(
             freeze=freeze,
             request_override=request_override,
             fallback_key=(
-                f"reply:{reader.session_id}:{writer.source}:{head}:{_steps(snapshot, writer.source)}"
+                f"reply:{reader.session_id}:{writer.source}"
+                f":{boundary_id}:{_steps(snapshot, writer.source)}"
             ),
         ) as (response, prepared, message_id):
             decoded, metadata = await content.decode(response.content or "", cast(tuple[Mapping[str, object], ...], prepared.get("references", ())))

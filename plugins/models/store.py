@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import hashlib
 import logging
@@ -182,6 +183,11 @@ class ModelCallReader:
         return records
 
 
+# 宿主锁表达“进程级宿主”身份：同进程多个 store 共享同一把锁，
+# 只有跨进程接管（或旧 store 显式 close）才递增 host_epoch。
+_PROCESS_HOST_LOCKS: dict[Path, tuple[int, int]] = {}
+
+
 class ModelsStore:
     """Own the ordinary models plugin's durable registry and write protocol."""
 
@@ -191,6 +197,9 @@ class ModelsStore:
         self.writable = writable
         self.read_call = ModelCallReader(lambda: self._connect(read_only=True))
         self._host_epoch: int | None = None
+        # 同进程活 attempt 登记属于账本身份：同一 store 的同 key 调用才合并。
+        self.live_runs: dict[object, object] = {}
+        self._host_lock_file: object | None = None
 
     @property
     def host_epoch(self) -> int | None:
@@ -214,6 +223,7 @@ class ModelsStore:
                 raise FileNotFoundError(self.path)
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        new_host = self._acquire_host_lock()
         created = self._create_database_file()
         try:
             with self._connect() as connection:
@@ -239,11 +249,13 @@ class ModelsStore:
                                 f"WHERE provider IN ({','.join('?' for _ in legacy_driver_ids)})",
                                 legacy_driver_ids,
                             )
-                    # 独占接纳该账本的新宿主；更早 epoch 的 owner 一律视为已失效。
-                    connection.execute(
-                        "UPDATE model_registry_meta SET host_epoch = host_epoch + 1 "
-                        "WHERE singleton = 1"
-                    )
+                    # 独占接纳该账本的新宿主才递增 epoch；同进程收养租约的
+                    # store 仍是同一宿主，旧 owner 不能被 epoch 证据判死。
+                    if new_host:
+                        connection.execute(
+                            "UPDATE model_registry_meta SET host_epoch = host_epoch + 1 "
+                            "WHERE singleton = 1"
+                        )
                     connection.commit()
                 self._host_epoch = int(
                     connection.execute(
@@ -935,6 +947,58 @@ class ModelsStore:
             connection.close()
             if not read_only:
                 self._secure_files()
+
+    def _acquire_host_lock(self) -> bool:
+        """账本宿主的独占证据：flock 由持有者在整个生命周期持有。
+
+        只有独占锁成立时，更早 host_epoch 的 owner 才能被证明已退出；
+        拿不到锁说明仍有宿主存活，epoch 递增不能作为死亡证据。
+        同进程后续 store 收养既有租约而不再次递增 epoch：它们仍是同一宿主，
+        旧 Root 的 started 记录依旧只能按含糊处理（fail-closed）。
+        返回 True 表示本进程新接管了账本宿主身份。
+        """
+        if self._host_lock_file is not None:
+            return False
+        lock_path = self.path.with_name(f"{self.path.name}.hostlock")
+        shared = _PROCESS_HOST_LOCKS.get(lock_path)
+        if shared is not None:
+            descriptor, holders = shared
+            _PROCESS_HOST_LOCKS[lock_path] = (descriptor, holders + 1)
+            self._host_lock_file = descriptor
+            return False
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(descriptor)
+            raise RuntimeError(
+                "模型账本仍由另一宿主持有，无法证明旧 owner 已退出"
+            ) from None
+        _PROCESS_HOST_LOCKS[lock_path] = (descriptor, 1)
+        self._host_lock_file = descriptor
+        os.chmod(lock_path, 0o600)
+        return True
+
+    @property
+    def holds_host_lock(self) -> bool:
+        """本 store 是否持有账本宿主的独占证据。"""
+        return self._host_lock_file is not None
+
+    def close(self) -> None:
+        """释放宿主锁；之后的读写不再有独占宿主证据。"""
+        descriptor = self._host_lock_file
+        self._host_lock_file = None
+        if descriptor is None:
+            return
+        lock_path = self.path.with_name(f"{self.path.name}.hostlock")
+        shared = _PROCESS_HOST_LOCKS.get(lock_path)
+        if shared is not None and shared[0] == descriptor:
+            holders = shared[1] - 1
+            if holders > 0:
+                _PROCESS_HOST_LOCKS[lock_path] = (cast(int, descriptor), holders)
+                return
+            del _PROCESS_HOST_LOCKS[lock_path]
+        os.close(cast(int, descriptor))
 
     def _create_database_file(self) -> bool:
         if self.path.exists():

@@ -168,6 +168,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         watcher.cancel()
         await asyncio.gather(watcher, return_exceptions=True)
         await tasks.close()
+        store.close()
         log.close()
 
 

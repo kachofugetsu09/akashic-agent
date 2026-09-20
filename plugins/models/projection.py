@@ -377,15 +377,32 @@ class MessageProjection:
                     continue
                 ref = CallRef(message.message_id, index)
                 if ref in abandoned_calls:
-                    # 放弃前缀的调用不进入 wire 协议；迟到回执记账但不渲染正文，
-                    # 只保留来源中断说明，不合成成功或无效果的观察。
+                    # 放弃前缀的调用不进入 wire 协议；已有耐久回执时如实保留
+                    # 真实状态与内容，只有无回执时才说明效果未知。
                     observation = results.get(ref)
                     if observation is not None:
                         used_results.add(observation.message_id)
-                    blocks.append({"type": "text", "text": (
-                        "一次工具调用随来源前缀放弃而中断；外部效果未结算，状态未知，"
-                        "不能据此重跑。"
-                    )})
+                        settled = cast(ToolResult, observation.body)
+                        if settled.outcome == "denied":
+                            blocks.append({"type": "text", "text": (
+                                "一次工具调用随来源前缀放弃，结算为 denied："
+                                "工具未启动，未产生外部效果。"
+                            )})
+                        elif settled.outcome == "success":
+                            blocks.append({"type": "text", "text": (
+                                "一次工具调用在放弃边界外完成，结算为 success："
+                                "外部效果已经发生，结果正文不重复进入上下文。"
+                            )})
+                        else:
+                            blocks.append({"type": "text", "text": (
+                                f"一次工具调用随来源前缀放弃，结算为 {settled.outcome}："
+                                "外部效果可能已经发生，不能据此重跑。"
+                            )})
+                    else:
+                        blocks.append({"type": "text", "text": (
+                            "一次工具调用随来源前缀放弃而中断；外部效果未结算，状态未知，"
+                            "不能据此重跑。"
+                        )})
                     continue
                 identity = (
                     model_facts["tool_ids"][str(index)]

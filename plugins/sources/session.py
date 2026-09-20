@@ -373,8 +373,11 @@ class SourceSession:
             if not needs_reply(self._reader, self._source):
                 return
             head = self._reader.head(source=self._source)
-            # 回执绑定失败发生时的边界；其间抬高 head 的新事实不属于这次停摆。
-            through = head if boundary is None or boundary < 0 else min(boundary, head)
+            # 负 boundary 是被伪造的身份，如实拒绝；None 表示调用者要求按当前
+            # 真实 head 停摆，读取失败则由 append 的前提检查如实抛出。
+            if boundary is not None and boundary < 0:
+                raise ValueError("failure 回执不能绑定伪造的负边界")
+            through = head if boundary is None else min(boundary, head)
             _ = self._controls.append(
                 uuid4().hex,
                 Control("failure", through, str(error)),

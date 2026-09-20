@@ -151,6 +151,10 @@ async def test_reply_follower_faults_when_drive_makes_no_durable_progress():
         def source_names(self):
             return ("conversation",)
 
+        def head(self, source=None):
+            # 真实持久边界：本测试没有消息追加，head 恒为 0。
+            return 0
+
     class Catalog:
         async def follow(self):
             yield await updates.get()
@@ -162,6 +166,7 @@ async def test_reply_follower_faults_when_drive_makes_no_durable_progress():
 
     class FailedTask:
         done = True
+        boundary_hint = 0
 
         def cancel(self):
             pass
@@ -171,6 +176,10 @@ async def test_reply_follower_faults_when_drive_makes_no_durable_progress():
             raise OSError("failure receipt was not committed")
 
     class Session:
+        def needs_reply(self, reader, source):
+            # 失败没有持久停摆；同一 prefix 仍欠回复。
+            return True
+
         async def start(self, program):
             nonlocal starts
             del program

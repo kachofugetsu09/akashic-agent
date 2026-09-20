@@ -57,33 +57,27 @@ async def follow(
         fault.append(error)
         faulted.set()
 
+    sealed: set[tuple[str, str]] = set()
+
     async def drive(session_id: str, source: Source, wake: _Wake) -> None:
         """每个 Session 独立排空旧工作；并发通知只要求再次读取日志。"""
+        key = (session_id, source.name)
         task: Task | None = None
         task_head = -1
         session: SourceSession | None = None
         pending: tuple[int, BaseException] | None = None
 
         def head() -> int:
-            try:
-                return int(catalog.reader(session_id).head(source=source.name))
-            except AttributeError:
-                # 测试替身可以不提供 head；此时没有可判定的持久边界。
-                return -1
-            except Exception:
-                logger.warning("持久 head 读取失败", exc_info=True)
-                return -1
+            """真实持久边界；读取失败如实抛出，不虚构 -1。"""
+            return int(catalog.reader(session_id).head(source=source.name))
 
         def stalled() -> bool:
             """来源是否已把失败持久停摆；只有持久边界才允许静默退出。"""
             if session is None:
                 return False
-            try:
-                return not bool(session.needs_reply(catalog.reader(session_id), source.name))
-            except AttributeError:
-                return False
-            except Exception:
-                return False
+            return not bool(
+                session.needs_reply(catalog.reader(session_id), source.name)
+            )
 
         def boundary_committed() -> bool:
             """旧任务负责的区间已提交持久终态；lane 不必等它的物理清理。"""
@@ -150,9 +144,22 @@ async def follow(
                             logger.warning("Task 容量等待失败", exc_info=True)
                         wake.changed = True
                         continue
-                    except Exception:
-                        # 接纳故障不重复执行程序；同 head 不再驱动。
-                        logger.warning("来源接纳失败，等待新的持久事实", exc_info=True)
+                    except Exception as admission_error:
+                        # 接纳故障封闭该 item：能拿到 session 时持久停摆到原边界，
+                        # 否则本地封存，只有新的持久事实（head 变化）才解封。
+                        logger.warning("来源接纳失败，封闭该项等待新事实", exc_info=True)
+                        if session is not None:
+                            try:
+                                await session.record_failure(
+                                    admission_error, boundary=head()
+                                )
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                logger.warning(
+                                    "接纳故障停摆回执保存失败", exc_info=True
+                                )
+                        sealed.add(key)
                         return
                     if task is None:
                         # 来源在准入段判定不需要回复；等待下一条持久事实。
@@ -181,10 +188,13 @@ async def follow(
                             # 来源已持久停摆；失败的 Session 不阻塞其他 Session。
                             logger.warning("回复程序失败，保留日志等待新输入或控制", exc_info=True)
                         else:
-                            try:
+                            # 停摆绑定失败任务的真实准入边界；取不到就如实上抛，
+                            # 不把旧故障挂到新 head 下。
+                            hint = task.boundary_hint
+                            if isinstance(hint, int) and hint >= 0:
+                                boundary = hint
+                            else:
                                 boundary = head()
-                            except Exception:
-                                boundary = -1
                             pending = (boundary, error)
                         task = None
                         continue
@@ -259,6 +269,11 @@ async def follow(
                         if source.name not in present:
                             continue
                         key = (session_id, source.name)
+                        if session_id in changed:
+                            # 新的持久事实解封；同 head 的封存项不再重复进入失败位置。
+                            sealed.discard(key)
+                        if key in sealed:
+                            continue
                         due = session_id in changed
                         if not due and key not in active and needs is not None:
                             # 轮询重扫时 head 未变也可能仍欠回复；持久事实决定驱动。
