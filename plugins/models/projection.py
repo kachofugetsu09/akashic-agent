@@ -447,7 +447,9 @@ class MessageProjection:
                 rows.append(row)
                 rows.extend(observations)
         if any(
-            message.seq > after_seq and message.message_id not in used_results
+            message.seq > after_seq
+            and message.message_id not in used_results
+            and cast(ToolResult, message.body).call_ref not in abandoned_calls
             for message in results.values()
         ):
             raise ValueError("工具结果缺少本次视图中的真实调用")

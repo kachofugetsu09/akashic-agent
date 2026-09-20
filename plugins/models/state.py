@@ -164,8 +164,10 @@ class _BoundChat:
             raise ModelUnavailableError("continuation 不属于当前 model binding")
         digest = _request_digest(request)
         if request.request_key is None:
-            # 无 key 调用是独立效果身份：每次调用各立账户，不共享其他调用的回执。
-            return await self._attempts(request, f"anonymous:{secrets.token_hex(8)}", digest)
+            # 无 key 调用是独立效果身份：单次尝试记账，不共享回执也不占用重试预算。
+            return await self._attempts(
+                request, f"anonymous:{secrets.token_hex(8)}", digest, budget=1
+            )
         request_key = request.request_key
         run_key = (request_key, self._descriptor.binding_id)
         owner = False
@@ -261,86 +263,90 @@ class _BoundChat:
         return parts[1] != _PROCESS_INSTANCE or cast(str, record["id"]) not in _LIVE_CALLS
 
     async def _attempts(
-        self, request: ModelRequest, request_key: str, digest: str
+        self, request: ModelRequest, request_key: str, digest: str, *,
+        budget: int | None = None,
     ) -> LLMResponse:
-        """Models 独占重试预算：每次 attempt 先记账，失败写耐久退避，driver 恒单次。"""
-        while True:
-            replayed = self._scan(request_key, digest)
-            if replayed is not None:
-                return replayed
-            records = self._store.calls_for_key(request_key)
-            if len(records) >= self._max_attempts:
-                raise ModelUnavailableError("模型调用自动重试预算耗尽")
-            last = records[-1] if records else None
-            next_at = None if last is None else last.get("next_attempt_at")
-            if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
-                delay = float(next_at) - time.time()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-            call_id = self._store.resume_call(
-                self._descriptor, request,
-                request_key=request_key,
-                owner_id=(
-                    f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
-                    f":{self._root_instance}:{secrets.token_hex(8)}"
-                ),
-            )
-            _LIVE_CALLS.add(call_id)
-            started: int | None = None
-            first_token = False
+        """Models 独占重试预算：每次 complete 只做一个真实 attempt，先记账再结算；
+        失败写耐久 next_attempt_at，显式重试按同一 key 重新进入并遵守退避。"""
+        budget = self._max_attempts if budget is None else max(1, budget)
+        replayed = self._scan(request_key, digest)
+        if replayed is not None:
+            return replayed
+        records = self._store.calls_for_key(request_key)
+        if len(records) >= budget:
+            raise ModelUnavailableError("模型调用重试预算耗尽")
+        last = records[-1] if records else None
+        next_at = None if last is None else last.get("next_attempt_at")
+        if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
+            delay = float(next_at) - time.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+        call_id = self._store.resume_call(
+            self._descriptor, request,
+            request_key=request_key,
+            owner_id=(
+                f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
+                f":{self._root_instance}:{secrets.token_hex(8)}"
+            ),
+        )
+        _LIVE_CALLS.add(call_id)
+        started: int | None = None
+        first_token = False
 
-            async def delta(value: dict[str, str]) -> None:
-                nonlocal first_token
-                assert started is not None
-                if not first_token and (
-                    value.get("content_delta") or value.get("thinking_delta")
-                ):
-                    self._store.record_first_token(
-                        call_id, (monotonic_ns() - started) / 1_000_000
-                    )
-                    first_token = True
-                if request.on_delta is not None:
-                    await request.on_delta(value)
-
-            try:
-                try:
-                    driver_request = request if request.on_delta is None else replace(request, on_delta=delta)
-                    if request.on_delta is not None:
-                        await request.on_delta({"call_record_id": call_id})
-                    started = monotonic_ns()
-                    response = await self._driver.complete(driver_request)
-                except BaseException as failure:
-                    # 网络请求可能已经到达 provider；本地异常不证明没有计费。
-                    retryable = bool(
-                        getattr(failure, "retry_safe", False)
-                        or getattr(failure, "retryable", False)
-                    )
-                    used = len(records) + 1
-                    retry_at = (
-                        time.time() + min(8.0, 0.5 * (2 ** used))
-                        if retryable and used < self._max_attempts
-                        else None
-                    )
-                    try:
-                        self._store.finish_call(
-                            call_id, usage=None, failure=type(failure).__name__,
-                            duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
-                            next_attempt_at=retry_at,
-                        )
-                    except Exception as record_failure:
-                        raise failure from record_failure
-                    if retry_at is None:
-                        raise
-                    continue
-                self._store.finish_call(
-                    call_id, usage=response.usage, failure=None,
-                    duration_ms=(monotonic_ns() - started) / 1_000_000,
-                    response=response,
+        async def delta(value: dict[str, str]) -> None:
+            nonlocal first_token
+            assert started is not None
+            if not first_token and (
+                value.get("content_delta") or value.get("thinking_delta")
+            ):
+                self._store.record_first_token(
+                    call_id, (monotonic_ns() - started) / 1_000_000
                 )
-                response.call_record_id = call_id
-                return response
-            finally:
-                _LIVE_CALLS.discard(call_id)
+                first_token = True
+            if request.on_delta is not None:
+                await request.on_delta(value)
+
+        try:
+            try:
+                # driver 恒单次尝试：accounted 调用统一置 key，重试预算只由 Models 持有。
+                driver_request = replace(
+                    request, on_delta=None if request.on_delta is None else delta,
+                    request_key=request_key,
+                )
+                if request.on_delta is not None:
+                    await request.on_delta({"call_record_id": call_id})
+                started = monotonic_ns()
+                response = await self._driver.complete(driver_request)
+            except BaseException as failure:
+                # 网络请求可能已经到达 provider；本地异常不证明没有计费。
+                retryable = bool(
+                    getattr(failure, "retry_safe", False)
+                    or getattr(failure, "retryable", False)
+                )
+                used = len(records) + 1
+                retry_at = (
+                    time.time() + min(8.0, 0.5 * (2 ** used))
+                    if retryable and used < budget
+                    else None
+                )
+                try:
+                    self._store.finish_call(
+                        call_id, usage=None, failure=type(failure).__name__,
+                        duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
+                        next_attempt_at=retry_at,
+                    )
+                except Exception as record_failure:
+                    raise failure from record_failure
+                raise
+            self._store.finish_call(
+                call_id, usage=response.usage, failure=None,
+                duration_ms=(monotonic_ns() - started) / 1_000_000,
+                response=response,
+            )
+            response.call_record_id = call_id
+            return response
+        finally:
+            _LIVE_CALLS.discard(call_id)
 
     def estimate_context_tokens(
         self,

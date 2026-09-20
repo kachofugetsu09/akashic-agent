@@ -114,7 +114,7 @@ async def follow_abandon(
                     for session_id, head in heads.items()
                     if seen.get(session_id, -1) != head
                 } | failed
-            for session_id in sessions:
+            for session_id in sorted(sessions):
                 reader = catalog.reader(session_id)
                 try:
                     head = await asyncio.to_thread(reader.head)
