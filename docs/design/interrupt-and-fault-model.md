@@ -400,4 +400,4 @@ Devin 首轮独立评审：hgt `T-77bba0`，回执“修订后可接受”，验
 
 本设计 PR 的交付范围仅 `docs/design/interrupt-and-fault-model.md` 和 `docs/INDEX.md`；实现、红测修订与验证证据在 stacked 实现 PR 中。文档差异检查通过；设计评审阶段未运行实现测试、CI、正式 Gate 或真实 provider。补充红测的既有失败结果见 §2.1。
 
-恢复证据位于本机 `/tmp/akashic-liveness-design-20260920-PzWjTc`：原索引 `INDEX.before.md`、基线归档 `source-69a67e7f.tar`、首稿 `design-review-v1.md`、已审修订稿 `design-reviewed-v2.md` 和两轮 `devin-review-v*-reply.md`。临时目录不是长期归档，后续提交时应把必要证据随实施合同保存。首轮后出现的空 `.done` 已移入该目录保留，没有删除用户数据。未 commit、push 或修改远端 PR。
+评审溯源：首稿与已审修订稿及两轮 Devin 回执副本随实施资料保存；评审过程恢复点在协调者侧归档。实现 PR 须附测试与 Gate 证据。
