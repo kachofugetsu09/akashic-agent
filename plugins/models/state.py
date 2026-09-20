@@ -6,6 +6,8 @@ import json
 import logging
 import math
 import secrets
+import threading
+import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
@@ -66,13 +68,24 @@ from .settings import (
     UpdateConnection,
 )
 from agent.plugin_composition.models import ModelContinuation, ModelUsage, ToolCall
-from .store import MODEL_ROLES, ModelsStore, StoredConnection, StoredModel, StoredSnapshot
+from .store import (
+    MODEL_ROLES,
+    ModelsStore,
+    StoredConnection,
+    StoredModel,
+    StoredSnapshot,
+    _request_digest,
+)
 
 logger = logging.getLogger(__name__)
 _PROCESS_INSTANCE = secrets.token_hex(8)
+_LOCAL_ROOT = secrets.token_hex(8)
 # 本进程存活的 attempt 登记先于 started 记录返回，Task 退出时注销；
 # 同 key 的 started 记录只有不属于任何活 attempt 才算孤儿。
 _LIVE_CALLS: set[str] = set()
+# 同 key 且同 digest 的并发调用合并到同一个活 attempt；digest 漂移在准入时拒绝。
+_LIVE_RUNS: dict[tuple[str, str], tuple[asyncio.Future[LLMResponse], str]] = {}
+_RUN_ADMISSION = threading.Lock()
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 _DEFAULT_ROLE = "default"
 _AGENT_ROLE = "agent"
@@ -127,10 +140,15 @@ class _BoundChat:
         descriptor: BoundModelDescriptor,
         driver: DriverChatModel,
         store: ModelsStore,
+        *,
+        root_instance: str = _LOCAL_ROOT,
+        max_attempts: int = 4,
     ) -> None:
         self._descriptor = descriptor
         self._driver = driver
         self._store = store
+        self._root_instance = root_instance
+        self._max_attempts = max(1, max_attempts)
 
     @property
     def descriptor(self) -> BoundModelDescriptor:
@@ -138,103 +156,191 @@ class _BoundChat:
 
     async def complete(self, request: ModelRequest) -> LLMResponse:
         """先登记真实调用，再计时并按实际响应结算。"""
-        # 1. 同一 binding 接续历史；调用账必须先于 provider I/O。
         continuation = request.continuation
         if (
             continuation is not None
             and continuation.binding_id != self._descriptor.binding_id
         ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
-        # 2. 稳定请求身份先查账：已成功响应直接重放，不确定的 started 孤儿先结算。
-        request_key = self._store.request_identity(self._descriptor, request)
-        keyed = True
+        digest = _request_digest(request)
+        if request.request_key is None:
+            # 无 key 调用是独立效果身份：每次调用各立账户，不共享其他调用的回执。
+            return await self._attempts(request, f"anonymous:{secrets.token_hex(8)}", digest)
+        request_key = request.request_key
+        run_key = (request_key, self._descriptor.binding_id)
+        owner = False
+        with _RUN_ADMISSION:
+            entry = _LIVE_RUNS.get(run_key)
+            if entry is not None and not entry[0].done():
+                if entry[1] != digest:
+                    raise ValueError("同一模型请求 key 的请求内容不一致")
+                shared = entry[0]
+            else:
+                replayed = self._scan(request_key, digest)
+                if replayed is not None:
+                    return replayed
+                # attempt owner 内联执行 provider 调用，取消如实送达当前 await；
+                # 并发同 key 等待者只分享同一个记账结果，不杀死真实 attempt。
+                shared = asyncio.get_running_loop().create_future()
+                shared.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
+                _LIVE_RUNS[run_key] = (shared, digest)
+                owner = True
+        if not owner:
+            return await asyncio.shield(shared)
         try:
-            records = self._store.calls_for_key(request_key)
-        except RuntimeError:
-            # 旧库未迁移 attempt 记账列时退回逐次登记，不阻断既有调用。
-            records = ()
-            keyed = False
+            result = await self._attempts(request, request_key, digest)
+        except BaseException as error:
+            if not shared.done():
+                shared.set_exception(error)
+            raise
+        finally:
+            if shared.done():
+                _LIVE_RUNS.pop(run_key, None)
+        if not shared.done():
+            shared.set_result(result)
+        return result
+
+    def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
+        """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
+        records = self._store.calls_for_key(request_key)
+        orphan_found = False
         for record in records:
+            if record["request_digest"] != digest:
+                raise ValueError("同一模型请求 key 的请求内容不一致")
+            binding = record["binding"]
+            if not isinstance(binding, Mapping) or (
+                binding.get("binding_id") != self._descriptor.binding_id
+            ):
+                raise ValueError("同一模型请求 key 的 binding 不一致")
             if record["state"] == "success" and record.get("response") is not None:
                 replayed = _decode_response(record["response"])
                 replayed.call_record_id = cast(str, record["id"])
                 replayed.usage = (
-                    None
-                    if record.get("usage") is None
-                    else ModelUsage(**record["usage"])
+                    None if record.get("usage") is None else ModelUsage(**record["usage"])
                 )
                 return replayed
-        orphans = [
-            record for record in records
-            if record["state"] == "started"
-            and cast(str, record["id"]) not in _LIVE_CALLS
-        ]
-        for orphan in orphans:
+            if record["state"] != "started":
+                continue
+            call_id = cast(str, record["id"])
+            if call_id in _LIVE_CALLS:
+                raise ModelUnavailableError("同一请求的活 attempt 正在结算，请稍后显式重试")
+            if not self._owner_dead(record):
+                raise ModelUnavailableError("无法确认先前调用的执行 owner 已死亡，结果不确定")
             try:
                 self._store.finish_call(
-                    cast(str, orphan["id"]), usage=None,
-                    failure="orphaned: 结算确认丢失，真实结果不确定",
+                    call_id, usage=None,
+                    failure="orphaned: 原执行 owner 已退出，真实结果不确定",
                 )
             except Exception:
-                logger.warning("孤儿 Model 调用结算失败 call_id=%s", orphan["id"], exc_info=True)
-        if orphans:
+                logger.warning("孤儿 Model 调用结算失败 call_id=%s", call_id, exc_info=True)
+            orphan_found = True
+        if orphan_found:
             raise ModelUnavailableError(
                 "同一请求的先前调用结果不确定；孤儿记录已结算，请显式重试"
             )
-        call_id = (
-            self._store.resume_call(
+        return None
+
+    def _owner_dead(self, record: Mapping[str, Any]) -> bool:
+        """owner 身份为 epoch:进程:Root:attempt；纪元已换代或同纪元内无活登记才算死亡。"""
+        owner = record.get("owner_id")
+        if not isinstance(owner, str):
+            return False
+        parts = owner.split(":")
+        if len(parts) != 4:
+            # 非本进程签发的异构 owner 没有存活证据；含本进程 token 的才算疑似存活。
+            return _PROCESS_INSTANCE not in parts
+        try:
+            record_epoch = int(parts[0])
+        except ValueError:
+            return False
+        host_epoch = self._store.host_epoch
+        if host_epoch is not None and record_epoch != host_epoch:
+            return True
+        return parts[1] != _PROCESS_INSTANCE or cast(str, record["id"]) not in _LIVE_CALLS
+
+    async def _attempts(
+        self, request: ModelRequest, request_key: str, digest: str
+    ) -> LLMResponse:
+        """Models 独占重试预算：每次 attempt 先记账，失败写耐久退避，driver 恒单次。"""
+        while True:
+            replayed = self._scan(request_key, digest)
+            if replayed is not None:
+                return replayed
+            records = self._store.calls_for_key(request_key)
+            if len(records) >= self._max_attempts:
+                raise ModelUnavailableError("模型调用自动重试预算耗尽")
+            last = records[-1] if records else None
+            next_at = None if last is None else last.get("next_attempt_at")
+            if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
+                delay = float(next_at) - time.time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            call_id = self._store.resume_call(
                 self._descriptor, request,
                 request_key=request_key,
-                owner_id=f"{_PROCESS_INSTANCE}:{secrets.token_hex(8)}",
+                owner_id=(
+                    f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
+                    f":{self._root_instance}:{secrets.token_hex(8)}"
+                ),
             )
-            if keyed
-            else self._store.start_call(self._descriptor, request)
-        )
-        _LIVE_CALLS.add(call_id)
-        started: int | None = None
-        first_token = False
+            _LIVE_CALLS.add(call_id)
+            started: int | None = None
+            first_token = False
 
-        async def delta(value: dict[str, str]) -> None:
-            nonlocal first_token
-            assert started is not None
-            if not first_token and (
-                value.get("content_delta") or value.get("thinking_delta")
-            ):
-                self._store.record_first_token(
-                    call_id, (monotonic_ns() - started) / 1_000_000
-                )
-                first_token = True
-            if request.on_delta is not None:
-                await request.on_delta(value)
-
-        # 2. 通知调用身份后才开始计时，首段与总耗时使用同一单调时钟。
-        try:
-            try:
-                driver_request = request if request.on_delta is None else replace(request, on_delta=delta)
-                if request.on_delta is not None:
-                    await request.on_delta({"call_record_id": call_id})
-                started = monotonic_ns()
-                response = await self._driver.complete(driver_request)
-            except BaseException as failure:
-                # 网络请求可能已经到达 provider；本地异常不证明没有计费。
-                try:
-                    self._store.finish_call(
-                        call_id, usage=None, failure=type(failure).__name__,
-                        duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
+            async def delta(value: dict[str, str]) -> None:
+                nonlocal first_token
+                assert started is not None
+                if not first_token and (
+                    value.get("content_delta") or value.get("thinking_delta")
+                ):
+                    self._store.record_first_token(
+                        call_id, (monotonic_ns() - started) / 1_000_000
                     )
-                except Exception as record_failure:
-                    raise failure from record_failure
-                raise
-            # 3. 结算失败继续向上传播，不能把未记账的响应交给 Message writer。
-            self._store.finish_call(
-                call_id, usage=response.usage, failure=None,
-                duration_ms=(monotonic_ns() - started) / 1_000_000,
-                response=response,
-            )
-            response.call_record_id = call_id
-            return response
-        finally:
-            _LIVE_CALLS.discard(call_id)
+                    first_token = True
+                if request.on_delta is not None:
+                    await request.on_delta(value)
+
+            try:
+                try:
+                    driver_request = request if request.on_delta is None else replace(request, on_delta=delta)
+                    if request.on_delta is not None:
+                        await request.on_delta({"call_record_id": call_id})
+                    started = monotonic_ns()
+                    response = await self._driver.complete(driver_request)
+                except BaseException as failure:
+                    # 网络请求可能已经到达 provider；本地异常不证明没有计费。
+                    retryable = bool(
+                        getattr(failure, "retry_safe", False)
+                        or getattr(failure, "retryable", False)
+                    )
+                    used = len(records) + 1
+                    retry_at = (
+                        time.time() + min(8.0, 0.5 * (2 ** used))
+                        if retryable and used < self._max_attempts
+                        else None
+                    )
+                    try:
+                        self._store.finish_call(
+                            call_id, usage=None, failure=type(failure).__name__,
+                            duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
+                            next_attempt_at=retry_at,
+                        )
+                    except Exception as record_failure:
+                        raise failure from record_failure
+                    if retry_at is None:
+                        raise
+                    continue
+                self._store.finish_call(
+                    call_id, usage=response.usage, failure=None,
+                    duration_ms=(monotonic_ns() - started) / 1_000_000,
+                    response=response,
+                )
+                response.call_record_id = call_id
+                return response
+            finally:
+                _LIVE_CALLS.discard(call_id)
 
     def estimate_context_tokens(
         self,
@@ -474,6 +580,8 @@ class ModelsState:
         self.catalog = _CatalogView(self)
         self.settings = _SettingsView(self)
         self._auth_attempts: dict[str, _AuthAttempt] = {}
+        # Root 实例身份进入每次真实 attempt 的 owner_id，进程重启后不再继承。
+        self._root_instance = secrets.token_hex(8)
 
     async def register_driver(
         self,
@@ -813,10 +921,19 @@ class ModelsState:
             capability_sources=model.capability_sources,
             capability_digest=capability_digest,
         )
+        configured_retries = connection.driver_config.get("max_retries", 3)
+        max_attempts = (
+            1 + configured_retries
+            if isinstance(configured_retries, int) and not isinstance(configured_retries, bool)
+            and configured_retries >= 0
+            else 4
+        )
         return _BoundChat(
             descriptor,
             driver.bind_chat(descriptor, model.driver_config),
             self.store,
+            root_instance=self._root_instance,
+            max_attempts=max_attempts,
         )
 
     async def _bind_embedding(

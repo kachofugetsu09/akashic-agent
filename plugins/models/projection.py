@@ -265,7 +265,7 @@ class MessageProjection:
         results: dict[CallRef, Message] = {}
         recorded_facts: dict[str, Mapping[str, Any]] = {}
         for message in messages:
-            if not isinstance(message.body, Output) or message.message_id in abandoned:
+            if not isinstance(message.body, Output):
                 continue
             recorded = [part for part in message.body.parts
                         if isinstance(part, ContentPart) and part.kind == "model.facts"]
@@ -284,12 +284,11 @@ class MessageProjection:
             if isinstance(body, Control) and body.action == "abandon" and message.source == self._source:
                 continuation = None
             if isinstance(body, ToolResult):
-                if body.call_ref in abandoned_calls:
-                    continue
+                # 已放弃调用的结算回执仍要配对渲染；call/result 邻接关系不能断。
                 if body.call_ref in results:
                     raise ValueError("同一工具调用出现多个结果")
                 results[body.call_ref] = message
-            if not isinstance(body, Output) or message.message_id in abandoned:
+            if not isinstance(body, Output):
                 continue
             value = recorded_facts.get(message.message_id)
             if value is None:
@@ -315,7 +314,7 @@ class MessageProjection:
                 and message_continuation.binding_id != receipt["binding"]["binding_id"]
             ):
                 raise ValueError("continuation 不属于记录中的模型")
-            if message.source == self._source:
+            if message.source == self._source and message.message_id not in abandoned:
                 continuation = message_continuation
                 continuation_seq = message.seq
                 summaries = [
@@ -360,8 +359,6 @@ class MessageProjection:
                 if isinstance(part, ContentPart):
                     if part.kind == "model.tool_rejection":
                         _ = check_tool_rejection(part)
-                        if message.message_id in abandoned:
-                            continue
                         if model_facts is None:
                             raise ValueError("模型协议拒绝缺少 model.facts")
                         identity = model_facts["tool_ids"][str(index)]
@@ -378,9 +375,18 @@ class MessageProjection:
                     elif part.kind != "model.facts":
                         blocks.extend(self._render_content(part))
                     continue
-                if message.message_id in abandoned:
-                    continue
                 ref = CallRef(message.message_id, index)
+                if ref in abandoned_calls:
+                    # 放弃前缀的调用不进入 wire 协议；迟到回执记账但不渲染正文，
+                    # 只保留来源中断说明，不合成成功或无效果的观察。
+                    observation = results.get(ref)
+                    if observation is not None:
+                        used_results.add(observation.message_id)
+                    blocks.append({"type": "text", "text": (
+                        "一次工具调用随来源前缀放弃而中断；外部效果未结算，状态未知，"
+                        "不能据此重跑。"
+                    )})
+                    continue
                 identity = (
                     model_facts["tool_ids"][str(index)]
                     if model_facts is not None

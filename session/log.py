@@ -384,23 +384,27 @@ class MessageLog:
             return result
 
     def _notify(self) -> None:
-        """逐个通知已注册读者；无法唤醒的 listener 确认死亡即移除。
+        """逐个通知已注册读者；提交已经成立，observer 失败不污染返回结果。
 
-        提交已经成功，通知失败不抹掉已提交事实；首个失败仍如实向写入方报告，
-        其余 listener 继续收到唤醒。
+        只有 loop 确认已关闭的 listener 才移除；无法确认死亡的订阅保留，
+        告警如实记录，由 follow 周期核对兜底恢复持久事实。
         """
-        failure: BaseException | None = None
         for event, loop in tuple(self._listeners.items()):
             try:
                 _ = loop.call_soon_threadsafe(event.set)
             except BaseException as error:
-                # 拒绝投递的 loop 永远无法再唤醒该 listener；按确认死亡驱逐。
-                _ = self._listeners.pop(event, None)
-                if failure is None:
-                    failure = error
-                _logger.warning("日志 listener 已死亡并移除: %r", error)
-        if failure is not None:
-            raise failure
+                is_closed = getattr(loop, "is_closed", None)
+                try:
+                    dead = bool(is_closed()) if callable(is_closed) else False
+                except Exception:
+                    dead = False
+                if dead:
+                    # 拒绝投递且 loop 确认关闭：永远无法再唤醒，确认死亡才移除。
+                    _ = self._listeners.pop(event, None)
+                    _logger.warning("日志 listener 已死亡并移除: %r", error)
+                else:
+                    # 无法确认死亡的订阅保留；持久事实由 level 触发轮询兜底。
+                    _logger.warning("日志 listener 通知失败，保留订阅待周期核对: %r", error)
 
     @contextmanager
     def _read(self) -> Generator[sqlite3.Connection]:

@@ -20,6 +20,9 @@ _FAULT_BACKOFF = 0.2
 
 class SourceSession(Protocol):
     async def start(self, program: Program) -> Task | None: ...
+    def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
+    async def record_failure(self, error: BaseException, *, boundary: int | None = None) -> None: ...
+    async def wait_capacity(self) -> None: ...
 
 
 class Source(Protocol):
@@ -63,33 +66,22 @@ async def follow(
 
         def head() -> int:
             try:
-                reader = catalog.reader(session_id)
-                probe = getattr(reader, "head", None)
-                if probe is not None:
-                    return int(cast(int, probe(source=source.name)))
-                snap = getattr(reader, "snapshot", None)
-                if snap is not None:
-                    return int(max(
-                        (
-                            m.seq
-                            for m in snap()
-                            if getattr(m, "source", None) == source.name
-                        ),
-                        default=-1,
-                    ))
+                return int(catalog.reader(session_id).head(source=source.name))
+            except AttributeError:
+                # 测试替身可以不提供 head；此时没有可判定的持久边界。
+                return -1
             except Exception:
                 logger.warning("持久 head 读取失败", exc_info=True)
-            return -1
+                return -1
 
         def stalled() -> bool:
             """来源是否已把失败持久停摆；只有持久边界才允许静默退出。"""
             if session is None:
                 return False
-            needs = getattr(session, "needs_reply", None)
-            if needs is None:
-                return False
             try:
-                return not bool(needs(catalog.reader(session_id), source.name))
+                return not bool(session.needs_reply(catalog.reader(session_id), source.name))
+            except AttributeError:
+                return False
             except Exception:
                 return False
 
@@ -114,22 +106,16 @@ async def follow(
         try:
             while True:
                 if pending is not None:
-                    # 同位置只允许重试保存停摆回执，不重新进入程序。
+                    # 停摆回执绑定原边界身份；head 变化不直接清除，只重试保存。
                     boundary, error = pending
-                    try:
-                        current_head = head()
-                    except Exception:
-                        current_head = boundary
-                    if current_head != boundary:
-                        pending = None
-                        wake.changed = True
-                        continue
-                    record = getattr(session, "record_failure", None) if session is not None else None
-                    if record is None:
+                    if session is None:
                         fail(RuntimeError(f"回复驱动没有持久进展 (no progress): {error}"))
                         return
                     try:
-                        await record(error)
+                        await session.record_failure(error, boundary=boundary)
+                    except AttributeError:
+                        fail(RuntimeError(f"回复驱动没有持久进展 (no progress): {error}"))
+                        return
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -150,12 +136,14 @@ async def follow(
                     except asyncio.CancelledError:
                         raise
                     except TaskCapacity:
-                        wait = getattr(session, "wait_capacity", None)
+                        # 容量等待是明确的等待原因，不走无进展故障路径。
                         try:
-                            if wait is not None:
-                                await wait()
+                            if session is not None:
+                                await session.wait_capacity()
                             else:
                                 await asyncio.sleep(_FAULT_BACKOFF)
+                        except AttributeError:
+                            await asyncio.sleep(_FAULT_BACKOFF)
                         except asyncio.CancelledError:
                             raise
                         except Exception:
@@ -258,9 +246,15 @@ async def follow(
                     key for key, head in heads.items() if previous.get(key) != head
                 }
                 previous = dict(heads)
+                # needs_reply 是 Sources 的可选核对；缺失时只靠持久 head 变化驱动。
                 needs = getattr(sources, "needs_reply", None)
                 for session_id in heads:
-                    present = catalog.reader(session_id).source_names()
+                    try:
+                        present = catalog.reader(session_id).source_names()
+                    except Exception:
+                        # 单项读取故障只隔离该 Session，不波及其他 lane。
+                        logger.warning("Session 来源读取失败 session=%s", session_id, exc_info=True)
+                        continue
                     for source in sources.entries():
                         if source.name not in present:
                             continue
@@ -288,6 +282,9 @@ async def follow(
                         else:
                             wake.changed = True
                             wake.event.set()
+                # 每次轮询都让存活 lane 重新核对持久边界与容量，丢失的进程内唤醒不致命。
+                for wake in active.values():
+                    wake.event.set()
         finally:
             if next_heads is not None and not next_heads.done():
                 next_heads.cancel()

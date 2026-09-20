@@ -56,6 +56,7 @@ class Task:
         child_permit: Callable[[], ExternalRootPermit] | None = None,
     ):
         self.handle = uuid4().hex
+        self.boundary_hint = -1
         self._active = True
         self._superseded = False
         self._cancel_requested = False
@@ -423,14 +424,22 @@ class TaskAdmission(Protocol):
 
     async def wait_idle(self, key: Hashable) -> None: ...
 
+    async def wait_capacity(self) -> None: ...
+
     def exclusive(self, key: Hashable, *, idle: bool = False) -> AbstractAsyncContextManager[None]: ...
+
+
+_DEFAULT_MAX_RESIDENT = 256
 
 
 class PluginTasks:
     """Core 按真实插件 owner 保留 Task 服务，热更新不会丢失同 owner 的活动工作。"""
 
-    def __init__(self, *, formal: bool = True):
+    def __init__(self, *, formal: bool = True, max_resident: int | None = _DEFAULT_MAX_RESIDENT):
+        if max_resident is not None and (type(max_resident) is not int or max_resident < 1):
+            raise ValueError("Task 准入额度必须是正整数或 None")
         self._formal = formal
+        self._max_resident = max_resident
         self._owners: dict[str, Tasks] = {}
         self._closed = False
 
@@ -444,7 +453,7 @@ class PluginTasks:
             raise RuntimeError("当前不能接纳正式 Task")
         owner = ctx.require_runtime_owner(TASKS, self)
         if owner not in self._owners:
-            self._owners[owner] = Tasks()
+            self._owners[owner] = Tasks(max_resident=self._max_resident)
         return self._owners[owner]
 
     async def close(self) -> None:

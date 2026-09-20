@@ -4,7 +4,11 @@
 """
 
 import asyncio
+import subprocess
+import sys
+import textwrap
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -120,7 +124,7 @@ async def test_dead_owner_started_call_settles_as_orphan_then_explicit_retry(tmp
 
 @pytest.mark.asyncio
 async def test_live_attempt_is_not_treated_as_orphan(tmp_path):
-    """§10.2-6/10：同进程活 attempt 不被误判成孤儿，新代际登记为新 attempt。"""
+    """§10.2-6/10：同进程活 attempt 不被误判成孤儿，并发同 key 调用合并到原 attempt。"""
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
     entered = asyncio.Event()
@@ -134,22 +138,22 @@ async def test_live_attempt_is_not_treated_as_orphan(tmp_path):
             nonlocal calls
             del request
             calls += 1
-            if calls == 1:
-                entered.set()
-                await release.wait()
+            entered.set()
+            await release.wait()
             return LLMResponse(f"answer {calls}")
 
     bound = _BoundChat(_descriptor(), Driver(), store)
     request = ModelRequest((), request_key="same-premise")
     first = asyncio.create_task(bound.complete(request))
     await asyncio.wait_for(entered.wait(), 1)
-    # 第二个同 key 调用发现的是活 attempt，必须另起 attempt 而非结算或重放。
+    # 第二个同 key 调用发现的是活 attempt，必须合并等待而非另付一次外部请求。
     second = asyncio.create_task(bound.complete(request))
     release.set()
-    await asyncio.gather(first, second)
-    assert calls == 2
+    first_result, second_result = await asyncio.gather(first, second)
+    assert calls == 1
+    assert second_result.call_record_id == first_result.call_record_id
     rows = store.calls_for_key("same-premise")
-    assert sorted(row["attempt"] for row in rows) == [0, 1]
+    assert [row["attempt"] for row in rows] == [0]
     assert all(row["state"] == "success" for row in rows)
 
 
@@ -183,25 +187,37 @@ async def test_settlement_store_failure_propagates_without_hidden_retry(tmp_path
 
 @pytest.mark.asyncio
 async def test_dead_listener_evicted_once_and_late_unsubscribe_is_safe(tmp_path):
-    """§10.2-13：确认死亡的 listener 只移除一次，迟到注销幂等。"""
+    """§10.2-13：确认死亡的 listener 移除且不污染提交；未确认死亡的保留，迟到注销幂等。"""
     log = MessageLog(tmp_path / "state.db")
     reader = log.reader("s")
 
     class DeadLoop:
+        def is_closed(self) -> bool:
+            return True
+
         def call_soon_threadsafe(self, callback, *args):
             del callback, args
             raise RuntimeError("loop is closed")
 
+    class UnverifiedLoop:
+        def call_soon_threadsafe(self, callback, *args):
+            del callback, args
+            raise RuntimeError("transient notify failure")
+
     poison = asyncio.Event()
+    unverified = asyncio.Event()
     with log._lock:
         log._listeners[poison] = DeadLoop()
+        log._listeners[unverified] = UnverifiedLoop()
     inputs = log.writer(
         "s", author="test", source="conversation", body_types=(Input,), content={},
     )
-    with pytest.raises(RuntimeError, match="loop is closed"):
-        inputs.append("m1", Input(()))
+    # 已提交事务返回原结果；确认死亡的移除，无法确认死亡的保留待核对。
+    message = inputs.append("m1", Input(()))
+    assert message.message_id == "m1"
     with log._lock:
         assert poison not in log._listeners
+        assert unverified in log._listeners
         # 迟到注销对已驱逐 listener 必须无害。
         log._listeners.pop(poison, None)
     inputs.append("m2", Input(()))
@@ -232,3 +248,95 @@ async def test_failure_control_stalls_lane_until_explicit_resume(tmp_path):
             if isinstance(m.body, Control)
         ]
         assert controls and controls[-1].body.action == "failure"
+
+
+_KILLED_CHILD = """
+import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, {repo!r})
+
+from agent.plugin_composition.models import (
+    BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
+    ModelRequest,
+)
+from plugins.models.state import _BoundChat
+from plugins.models.store import ModelsStore
+
+
+class Driver:
+    max_tool_schemas = None
+
+    async def complete(self, request):
+        await asyncio.Event().wait()
+
+
+descriptor = BoundModelDescriptor(
+    binding_id="bound", plugin_snapshot_id="snapshot", model_revision=0,
+    model_id="model", connection_id="connection", driver_id="driver",
+    driver_contract_version="1", auth_identity="identity", model="model",
+    role="agent", reasoning_effort=None, capabilities=ModelCapabilities(),
+    capability_sources=CapabilitySources(), capability_digest="digest",
+)
+store = ModelsStore(Path(sys.argv[1]), Path(sys.argv[2]))
+store.initialize()
+asyncio.run(
+    _BoundChat(descriptor, Driver(), store).complete(
+        ModelRequest((), request_key="killed-key")
+    )
+)
+"""
+
+
+@pytest.mark.asyncio
+async def test_sigkilled_provider_process_leaves_settled_orphan_without_replay(tmp_path):
+    """§10.2-10 真实强杀：子进程死在 provider 窗口，started 记录按死 owner 结算。"""
+    repo = str(Path(__file__).resolve().parents[1])
+    child = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent(_KILLED_CHILD).format(repo=repo),
+         str(tmp_path / "models.db"), str(tmp_path / "backups")],
+    )
+    try:
+        store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+        # 等子进程的 started 记录真实落库再 SIGKILL，不猜时间。
+        for _ in range(200):
+            try:
+                probe = ModelsStore(tmp_path / "models.db", tmp_path / "backups", writable=False)
+                rows = probe.calls_for_key("killed-key")
+            except Exception:
+                rows = ()
+            if rows:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("子进程未在被杀前持久化 started 记录")
+        child.kill()
+        assert child.wait() != 0
+
+        # 本进程重新初始化宿主纪元：旧 owner 的纪元/进程 token 都失去存活证据。
+        store.initialize()
+        calls = 0
+
+        class Driver:
+            max_tool_schemas = None
+
+            async def complete(self, request):
+                nonlocal calls
+                del request
+                calls += 1
+                return LLMResponse("explicit retry")
+
+        bound = _BoundChat(_descriptor(), Driver(), store)
+        with pytest.raises(ModelUnavailableError, match="不确定"):
+            await bound.complete(ModelRequest((), request_key="killed-key"))
+        assert calls == 0, "孤儿未结算前不得重发付费请求"
+        orphan = store.calls_for_key("killed-key")[0]
+        assert orphan["state"] == "error" and "orphaned" in orphan["failure"]
+
+        response = await bound.complete(ModelRequest((), request_key="killed-key"))
+        assert response.content == "explicit retry" and calls == 1
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()

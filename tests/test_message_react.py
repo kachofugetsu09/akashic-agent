@@ -111,6 +111,16 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
                 log.reader("s"), writer(ToolResult, call), self.check_start,
             ))
 
+        async def settle_abandoned(self, call: CallRef) -> Result:
+            reply = MessageReply(
+                "result:" + call.message_id + ":" + str(call.part_index), call,
+                log.reader("s"), writer(ToolResult, call), self.check_start,
+            )
+            try:
+                return await execution.settle_abandoned(reply)
+            finally:
+                reply.writer.expire()
+
         def check_start(self) -> None:
             if not self.task.active:
                 raise asyncio.CancelledError

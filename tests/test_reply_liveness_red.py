@@ -60,9 +60,11 @@ async def test_committed_input_recovers_when_its_wakeup_is_lost(tmp_path):
             log._listeners[poison] = BrokenLoop()
             log._listeners.update(listeners)
         try:
-            with pytest.raises(RuntimeError, match="stale listener"):
-                await accept(host, "one", "u1")
+            # 已提交事务返回原结果；observer 通知失败不污染已提交的 Input。
+            await accept(host, "one", "u1")
             assert log.reader("one").get("u1") is not None
+            with log._lock:
+                assert log._listeners[poison] is not None
         finally:
             with log._lock:
                 log._listeners.pop(poison, None)

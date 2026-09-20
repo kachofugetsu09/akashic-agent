@@ -102,7 +102,8 @@ class SourceSession:
             _ = self._changed(message)
             current = slot.current
             if current is not None and current.active:
-                current.supersede()
+                # 普通 Input 只协作取消：已开始工作先结算，lane 由 Task owner 保留到排空。
+                current.cancel()
             return message
 
         return await self._tasks.admit(self._key, admit)
@@ -281,6 +282,19 @@ class SourceSession:
                         return cast(Message, result)
         raise RuntimeError("Session 订阅在回传完成前结束")
 
+    def _boundary_committed(self, task: Task) -> bool:
+        """残留任务负责的区间是否已有持久终态；只有确认边界才允许 lane 让位。"""
+        hint = task.boundary_hint
+        if not isinstance(hint, int) or hint < 0:
+            return False
+        return any(
+            message.source == self._source and (
+                isinstance(message.body, Output) and message.body.finish != "continue"
+                or isinstance(message.body, Control)
+            )
+            for message in self._reader.snapshot(after_seq=hint)
+        )
+
     async def start(
         self,
         program: Callable[[Task, MessageReader, str], Awaitable[object]],
@@ -290,12 +304,29 @@ class SourceSession:
         current = await self._tasks.admit(self._key, lambda slot: slot.current)
         if current is not None and current.active:
             return current
+        if (
+            current is not None
+            and not current.superseded
+            and not self._boundary_committed(current)
+        ):
+            # 普通 Input/pause 的残留先真实排空再让位；已提交终态的不等待物理清理。
+            try:
+                _ = await current.join()
+            except asyncio.CancelledError:
+                caller = asyncio.current_task()
+                if caller is not None and caller.cancelling():
+                    raise
+            except Exception:
+                logger.warning("残留回复任务排空失败", exc_info=True)
 
         # 2. 日志判定与 Task 创建间没有 await，不增加持久 active/attempt 状态。
         def admit(slot: TaskSlot) -> Task | None:
             residual = slot.current
             if residual is not None and not residual.superseded:
-                return residual
+                if not self._boundary_committed(residual):
+                    return residual
+                # 旧工作负责的区间已提交持久终态；物理清理转入残留集合。
+                residual.supersede()
             if not needs_reply(self._reader, self._source):
                 return None
 
@@ -328,22 +359,30 @@ class SourceSession:
                 if permit is not None:
                     permit.release()
                 raise
+            # 记录接纳时的来源边界；只有本任务之后的持久终态才允许 lane 让位。
+            task.boundary_hint = self._reader.head(source=self._source)
             if permit is not None:
                 task.on_done(permit.release)
             return task
 
         return await self._tasks.admit(self._key, admit)
 
-    async def record_failure(self, error: BaseException) -> None:
+    async def record_failure(self, error: BaseException, *, boundary: int | None = None) -> None:
         """为无持久进展的失败补记 failure Control；只重试保存，不重新执行程序。"""
         def admit(slot: TaskSlot) -> None:
             if not needs_reply(self._reader, self._source):
                 return
             head = self._reader.head(source=self._source)
+            # 回执绑定失败发生时的边界；其间抬高 head 的新事实不属于这次停摆。
+            through = head if boundary is None or boundary < 0 else min(boundary, head)
             _ = self._controls.append(
                 uuid4().hex,
-                Control("failure", head, str(error)),
+                Control("failure", through, str(error)),
                 expected_source_head=head,
             )
 
         await self._tasks.admit(self._key, admit)
+
+    async def wait_capacity(self) -> None:
+        """等待 Task 残留额度释放；容量等待不构成无进展故障。"""
+        await self._tasks.wait_capacity()

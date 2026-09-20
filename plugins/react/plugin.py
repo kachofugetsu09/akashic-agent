@@ -15,8 +15,10 @@ from agent.plugin_composition.models import (
     ContextLengthError,
     EmptyResponseError,
     LLMResponse,
+    ModelContinuation,
     ModelRequest,
     ModelError,
+    ModelUnavailableError,
     StreamCallback,
 )
 from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter, OwnerStore, OwnerTransaction
@@ -132,6 +134,79 @@ def _pending_calls(messages: Sequence[Message], source: str) -> tuple[CallRef, .
     return _open_calls(messages, source)[0]
 
 
+def _related_results(messages: Sequence[Message], source: str) -> frozenset[CallRef]:
+    """冻结前缀内缺回执的调用：其结算结果属于本代请求的读集。"""
+    pending, abandoned = _open_calls(messages, source)
+    return frozenset((*pending, *abandoned))
+
+
+def _competing(message: Message, source: str, related: frozenset[CallRef]) -> bool:
+    """同来源 Input/Control/终态 Output 或读集内 ToolResult 使旧草稿失效。"""
+    if message.source != source:
+        return False
+    body = message.body
+    if isinstance(body, (Input, Control)):
+        return True
+    if isinstance(body, Output):
+        # continue 只是同代草稿的中间事实；终态 Output 才关闭前缀边界。
+        return body.finish != "continue"
+    return isinstance(body, ToolResult) and body.call_ref in related
+
+
+def _plain_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain_json(item) for item in value]
+    return value
+
+
+def _encode_request(request: ModelRequest) -> Mapping[str, object]:
+    """生成准备只冻结模型可见字段；on_delta/request_key 是执行细节。"""
+    continuation = request.continuation
+    return {
+        "messages": _plain_json(request.messages),
+        "tools": _plain_json(request.tools),
+        "max_output_tokens": request.max_output_tokens,
+        "system_prompt": request.system_prompt,
+        "tool_choice": _plain_json(request.tool_choice),
+        "prompt_cache_key": request.prompt_cache_key,
+        "disable_reasoning": request.disable_reasoning,
+        "continuation": (
+            None
+            if continuation is None
+            else {
+                "binding_id": continuation.binding_id,
+                "payload": _plain_json(continuation.payload),
+            }
+        ),
+    }
+
+
+def _decode_request(value: object) -> ModelRequest:
+    """恢复冻结请求；损坏记录在边界明确失败。"""
+    if not isinstance(value, Mapping):
+        raise ValueError("生成准备中的模型请求记录损坏")
+    continuation = value.get("continuation")
+    return ModelRequest(
+        messages=tuple(cast(Sequence[Mapping[str, Any]], value["messages"])),
+        tools=tuple(cast(Sequence[Mapping[str, Any]], value.get("tools") or ())),
+        max_output_tokens=cast(int, value.get("max_output_tokens") or 0),
+        system_prompt=cast(str, value.get("system_prompt") or ""),
+        tool_choice=cast(Any, value.get("tool_choice", "auto")),
+        prompt_cache_key=cast(str | None, value.get("prompt_cache_key")),
+        disable_reasoning=bool(value.get("disable_reasoning")),
+        continuation=(
+            None
+            if continuation is None
+            else ModelContinuation(
+                cast(str, cast(Mapping[str, object], continuation)["binding_id"]),
+                cast(Mapping[str, Any], cast(Mapping[str, object], continuation)["payload"]),
+            )
+        ),
+    )
+
+
 def _steps(messages: Sequence[Message], source: str) -> int:
     """完成步数来自本来源未闭段的模型 Output，中断或进程重启不会重置。"""
     outputs: list[Message] = []
@@ -218,6 +293,8 @@ async def _complete(
     preview: Preview | None,
     claim: Callable[[int], tuple[str, str | None]] | None = None,
     fallback_key: str | None = None,
+    freeze: Callable[[ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None,
+    request_override: ModelRequest | None = None,
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。"""
     # 1. 本地容量与软水位先交给同一摘要 owner，其他材料不重新获取。
@@ -225,17 +302,23 @@ async def _complete(
         return context.build_attempt(snapshot, materials=prepared, model=projection,
                                      tools=tools.schemas, max_output_tokens=max_output_tokens)
 
-    request, rejection = build()
-    if rejection is not None and reduce is None:
-        raise ContextLengthError(rejection)
-    if reduce is not None:
-        summary = await reduce(snapshot, prepared, request, model, projection,
-                               source=source, force=rejection is not None)
-        if summary is not None and summary != prepared.get("summary"):
-            prepared = {**prepared, "summary": summary}
-            request, rejection = build()
-        if rejection is not None:
+    if request_override is None:
+        request, rejection = build()
+        if rejection is not None and reduce is None:
             raise ContextLengthError(rejection)
+        if reduce is not None:
+            summary = await reduce(snapshot, prepared, request, model, projection,
+                                   source=source, force=rejection is not None)
+            if summary is not None and summary != prepared.get("summary"):
+                prepared = {**prepared, "summary": summary}
+                request, rejection = build()
+            if rejection is not None:
+                raise ContextLengthError(rejection)
+    else:
+        request = request_override
+    if freeze is not None:
+        # 生成准备把首个真实请求与材料一并冻结；恢复后不再重建或漂移。
+        request, prepared = freeze(request, prepared)
     # 2. 每次 provider 调用使用生成准备中已耐久固定的 Output ID 与请求 key。
     with ExitStack() as previews:
         def begin(attempt: int) -> tuple[str, str | None, StreamCallback | None]:
@@ -298,23 +381,18 @@ async def react(
     while True:
         # 1. 串行策略停止补发并排空已开始调用；换算法无需改 Tool effect owner。
         pending, abandoned = _open_calls(reader.snapshot(), writer.source)
-        settle = getattr(tools, "settle_abandoned", None)
-        if settle is not None:
-            for call in abandoned:
-                try:
-                    await settle(call)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    # 单个 item 的结算故障隔离本调用；后台 abandon watcher 仍重扫同一回执。
-                    logger.warning("放弃调用结算失败 call=%s", call.message_id, exc_info=True)
+        for call in abandoned:
+            # 已放弃调用的结算故障必须先阻断本来源：缺回执的调用不能带着未知效果进入新请求。
+            await tools.settle_abandoned(call)
         for call in pending:
             await _settle(tools, call, capture_scope)
         snapshot = reader.snapshot()
         head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
+        frozen = snapshot
 
         def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
-            """检查与追加同事务；同来源新事实直接取代旧草稿。"""
+            """检查与追加同事务；竞争 Output、新边界或读集内结果都取代旧草稿。"""
+            related = _related_results(frozen, writer.source)
             if state is None:
                 current_head = head
                 for _ in range(4):
@@ -324,13 +402,11 @@ async def react(
                             expected_source_head=current_head, metadata=metadata,
                         )
                     except MessageConflict:
-                        # 无关同来源事实（如工具回执）抬高 head 不取代本草稿；
-                        # 只有新 Input/Control 才是真实抢占。
                         newer = [
                             m for m in reader.snapshot(after_seq=current_head)
                             if m.source == writer.source
                         ]
-                        if any(isinstance(m.body, (Input, Control)) for m in newer):
+                        if any(_competing(m, writer.source, related) for m in newer):
                             raise _Superseded from None
                         if not newer:
                             raise
@@ -342,7 +418,7 @@ async def react(
                 if existing is not None:
                     return existing
                 for message in reader.snapshot(after_seq=head):
-                    if message.source == writer.source and isinstance(message.body, (Input, Control)):
+                    if _competing(message, writer.source, related):
                         raise _Superseded
                 return transaction.append(writer, message_id, body, metadata=metadata)
 
@@ -356,54 +432,72 @@ async def react(
         if max_steps > 0 and _steps(snapshot, writer.source) >= max_steps:
             raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出")
 
-        # 2. 生成准备只存引用；材料仍从同一持久前缀重建。
+        # 2. 生成准备冻结请求、材料、binding 与 Output 身份；恢复不重建不漂移。
         claim: Callable[[int], tuple[str, str | None]] | None = None
-        frozen = snapshot
+        freeze: Callable[[ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None
+        request_override: ModelRequest | None = None
         if state is not None:
             prep_key = f"reply:{reader.session_id}:{writer.source}:{head}:{_steps(snapshot, writer.source)}"
             base_seq = reader.head()
+            existing = state.transact(lambda transaction: transaction.read(prep_key))
+            if existing is not None:
+                prep = dict(existing.value)
+                if prep.get("binding_id") != model.descriptor.binding_id:
+                    raise ModelUnavailableError("生成准备记录的 binding 已失效")
+                frozen = reader.snapshot(through_seq=cast(int, prep["base_seq"]))
+                prepared = cast(Materials, prep["materials"])
+                request_override = _decode_request(prep["request"])
+            else:
+                prepared = await materials(frozen)
 
-            def open_prep(transaction: OwnerTransaction) -> Mapping[str, object]:
-                record = transaction.read(prep_key)
-                if record is None:
-                    record = transaction.save(prep_key, {
-                        "version": 1, "output_id": uuid4().hex,
-                        "request_key": uuid4().hex, "base_seq": base_seq, "attempt": 0,
-                    }, expected_version=None)
-                return record.value
+            def freeze_request(
+                request: ModelRequest, built: Materials
+            ) -> tuple[ModelRequest, Materials]:
+                def open_prep(transaction: OwnerTransaction) -> Mapping[str, object]:
+                    record = transaction.read(prep_key)
+                    if record is None:
+                        record = transaction.save(prep_key, {
+                            "version": 2, "output_id": uuid4().hex,
+                            "request_keys": [uuid4().hex], "base_seq": base_seq,
+                            "binding_id": model.descriptor.binding_id,
+                            "request": _encode_request(request),
+                            "materials": dict(built),
+                        }, expected_version=None)
+                    return record.value
 
-            prep = state.transact(open_prep)
-            output_id = cast(str, prep["output_id"])
-            frozen = reader.snapshot(through_seq=cast(int, prep["base_seq"]))
+                value = state.transact(open_prep)
+                return _decode_request(value["request"]), cast(Materials, value["materials"])
 
             def claim_attempt(attempt: int) -> tuple[str, str | None]:
                 def advance(transaction: OwnerTransaction) -> tuple[str, str]:
                     record = transaction.read(prep_key)
                     if record is None:
                         raise RuntimeError("生成准备记录缺失")
-                    value = record.value
-                    if value["attempt"] != attempt:
+                    value = dict(record.value)
+                    keys = list(cast(Sequence[str], value["request_keys"]))
+                    while len(keys) <= attempt:
+                        keys.append(uuid4().hex)
+                    if keys != value["request_keys"]:
                         record = transaction.save(
-                            prep_key,
-                            {**value, "attempt": attempt, "request_key": uuid4().hex},
+                            prep_key, {**value, "request_keys": keys},
                             expected_version=record.version,
                         )
                         value = record.value
-                    return cast(str, value["output_id"]), cast(str, value["request_key"])
+                    return cast(str, value["output_id"]), keys[attempt]
 
-                output_id_claimed, request_key = state.transact(advance)
-                if output_id_claimed != output_id:
-                    raise RuntimeError("生成准备身份不一致")
-                return output_id, request_key
+                return state.transact(advance)
 
+            freeze = freeze_request
             claim = claim_attempt
-
-        # 3. 取得材料与组装请求分开，Context 不获得模型调用或检索权。
-        prepared = await materials(frozen)
+        else:
+            # 3. 取得材料与组装请求分开，Context 不获得模型调用或检索权。
+            prepared = await materials(frozen)
         async with _complete(
             frozen, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             claim=claim,
+            freeze=freeze,
+            request_override=request_override,
             fallback_key=(
                 f"reply:{reader.session_id}:{writer.source}:{head}:{_steps(snapshot, writer.source)}"
             ),

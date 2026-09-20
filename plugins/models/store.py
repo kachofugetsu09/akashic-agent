@@ -190,6 +190,21 @@ class ModelsStore:
         self.backup_dir = backup_dir
         self.writable = writable
         self.read_call = ModelCallReader(lambda: self._connect(read_only=True))
+        self._host_epoch: int | None = None
+
+    @property
+    def host_epoch(self) -> int | None:
+        """当前宿主的账本纪元；只读或未初始化的 store 按需要读取，旧库记为 0。"""
+        if self._host_epoch is None and self.path.is_file():
+            with self._connect(read_only=True) as connection:
+                if "host_epoch" not in _columns(connection, "model_registry_meta"):
+                    self._host_epoch = 0
+                else:
+                    row = connection.execute(
+                        "SELECT host_epoch FROM model_registry_meta WHERE singleton = 1"
+                    ).fetchone()
+                    self._host_epoch = None if row is None else int(row[0])
+        return self._host_epoch
 
     def initialize(self) -> None:
         """Create a new registry or expand the two approved additive columns."""
@@ -224,7 +239,17 @@ class ModelsStore:
                                 f"WHERE provider IN ({','.join('?' for _ in legacy_driver_ids)})",
                                 legacy_driver_ids,
                             )
-                        connection.commit()
+                    # 独占接纳该账本的新宿主；更早 epoch 的 owner 一律视为已失效。
+                    connection.execute(
+                        "UPDATE model_registry_meta SET host_epoch = host_epoch + 1 "
+                        "WHERE singleton = 1"
+                    )
+                    connection.commit()
+                self._host_epoch = int(
+                    connection.execute(
+                        "SELECT host_epoch FROM model_registry_meta WHERE singleton = 1"
+                    ).fetchone()[0]
+                )
         finally:
             self._secure_files()
 
@@ -392,6 +417,7 @@ class ModelsStore:
     def finish_call(
         self, call_id: str, *, usage: ModelUsage | None, failure: str | None,
         duration_ms: float | None = None, response: LLMResponse | None = None,
+        next_attempt_at: float | None = None,
     ) -> None:
         """只结算同一 started 记录；成功先耐久保存响应，未知 usage 不记成零。"""
         if not self.writable:
@@ -402,17 +428,20 @@ class ModelsStore:
             _response_payload(response), "model response"
         )
         columns = self._attempt_columns()
+        has_response = "response_json" in columns
+        has_next = "next_attempt_at" in columns
         update = (
             "UPDATE model_calls SET state=?,usage_json=?,failure=?,"
             "finished_at=CURRENT_TIMESTAMP,duration_ms=?"
-            + (",response_json=?" if "response_json" in columns else "")
+            + (",response_json=?" if has_response else "")
+            + (",next_attempt_at=?" if has_next else "")
             + " WHERE id=? AND state='started'"
         )
-        values = (
-            (state, encoded, failure, duration_ms, body, call_id)
-            if "response_json" in columns
-            else (state, encoded, failure, duration_ms, call_id)
+        extras = (
+            ([body] if has_response else [])
+            + ([next_attempt_at] if has_next else [])
         )
+        values = (state, encoded, failure, duration_ms, *extras, call_id)
         try:
             with self._connect() as connection, connection:
                 cursor = connection.execute(update, values)
@@ -1087,11 +1116,16 @@ def _missing_additive_columns(connection: sqlite3.Connection) -> tuple[str, ...]
         statements.append(
             "ALTER TABLE embedding_models ADD COLUMN capabilities_json TEXT"
         )
+    if "host_epoch" not in _columns(connection, "model_registry_meta"):
+        statements.append(
+            "ALTER TABLE model_registry_meta ADD COLUMN host_epoch INTEGER NOT NULL DEFAULT 0"
+        )
     call_columns = _columns(connection, "model_calls")
-    if call_columns and "request_key" not in call_columns:
+    if call_columns:
         statements.extend(
             f"ALTER TABLE model_calls ADD COLUMN {name} {_MODEL_CALLS_ADDITIVE_TYPES[name]}"
             for name in _MODEL_CALLS_ATTEMPT_COLUMNS
+            if name not in call_columns
         )
     return tuple(statements)
 
@@ -1613,25 +1647,26 @@ ON CONFLICT(id) DO UPDATE SET
 """
 
 
-_LEGACY_MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
-    id TEXT PRIMARY KEY NOT NULL,
-    binding_json TEXT NOT NULL,
-    request_digest TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('started','success','error')),
-    usage_json TEXT,
-    failure TEXT,
-    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    finished_at TEXT,
-    first_token_ms REAL CHECK (first_token_ms >= 0),
-    duration_ms REAL CHECK (duration_ms >= 0 AND (first_token_ms IS NULL OR duration_ms >= first_token_ms))
-)"""
+_MODEL_CALLS_ATTEMPT_COLUMNS = ("request_key", "attempt", "owner_id", "response_json", "next_attempt_at")
+_MODEL_CALLS_BASE_COLUMNS = {
+    "id": "TEXT",
+    "binding_json": "TEXT",
+    "request_digest": "TEXT",
+    "state": "TEXT",
+    "usage_json": "TEXT",
+    "failure": "TEXT",
+    "started_at": "TEXT",
+    "finished_at": "TEXT",
+    "first_token_ms": "REAL",
+    "duration_ms": "REAL",
+}
 
-_MODEL_CALLS_ATTEMPT_COLUMNS = ("request_key", "attempt", "owner_id", "response_json")
 _MODEL_CALLS_ADDITIVE_TYPES = {
     "request_key": "TEXT",
     "attempt": "INTEGER",
     "owner_id": "TEXT",
     "response_json": "TEXT",
+    "next_attempt_at": "REAL",
 }
 
 MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
@@ -1648,28 +1683,34 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
     request_key TEXT,
     attempt INTEGER,
     owner_id TEXT,
-    response_json TEXT
+    response_json TEXT,
+    next_attempt_at REAL
 )"""
 
 
 def require_model_calls_schema(connection: sqlite3.Connection) -> None:
-    """未迁移或同名异构的调用表必须在 provider I/O 前明确失败。"""
-    row = connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='model_calls'"
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("model_calls 缺失，请先运行对应 yoyo 迁移")
-    normalized = "".join(str(row[0]).lower().split())
-    if normalized in {
-        "".join(MODEL_CALLS_SCHEMA.lower().split()),
-        "".join(_LEGACY_MODEL_CALLS_SCHEMA.lower().split()),
-    }:
-        return
-    columns = {
-        str(item[1]) for item in connection.execute("PRAGMA table_info(model_calls)")
+    """缺列、类型不符、主键异构或多出未知列都必须在 provider I/O 前明确失败。"""
+    info = {
+        str(item[1]): item
+        for item in connection.execute("PRAGMA table_info(model_calls)")
     }
-    if not set(_MODEL_CALLS_ATTEMPT_COLUMNS) <= columns:
-        raise RuntimeError("model_calls schema 不匹配，请先运行对应 yoyo 迁移")
+    if not info:
+        raise RuntimeError("model_calls 缺失，请先运行对应 yoyo 迁移")
+    for name, expected in _MODEL_CALLS_BASE_COLUMNS.items():
+        column = info.get(name)
+        if column is None or str(column[2]).upper() != expected:
+            raise RuntimeError(f"model_calls.{name} 缺失或类型不匹配，请先运行对应 yoyo 迁移")
+    if int(info["id"][5]) != 1:
+        raise RuntimeError("model_calls 主键不匹配，请先运行对应 yoyo 迁移")
+    attempt_columns = set(_MODEL_CALLS_ATTEMPT_COLUMNS) & set(info)
+    if attempt_columns and attempt_columns != set(_MODEL_CALLS_ATTEMPT_COLUMNS):
+        raise RuntimeError("model_calls attempt 记账列不完整，请先运行对应 yoyo 迁移")
+    for name in attempt_columns:
+        if str(info[name][2]).upper() != _MODEL_CALLS_ADDITIVE_TYPES[name]:
+            raise RuntimeError(f"model_calls.{name} 类型不匹配，请先运行对应 yoyo 迁移")
+    unknown = set(info) - set(_MODEL_CALLS_BASE_COLUMNS) - attempt_columns
+    if unknown:
+        raise RuntimeError(f"model_calls 存在未知列 {sorted(unknown)}，schema 不被本实现接受")
 
 
 def require_attempt_schema(connection: sqlite3.Connection) -> None:
@@ -1686,7 +1727,8 @@ _SCHEMA = MODEL_CALLS_SCHEMA + ";\n" + """
 CREATE TABLE model_registry_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     revision INTEGER NOT NULL CHECK (revision >= 0),
-    default_embedding_model_id TEXT DEFAULT NULL
+    default_embedding_model_id TEXT DEFAULT NULL,
+    host_epoch INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE model_connections (
