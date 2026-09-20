@@ -102,7 +102,7 @@ class SourceSession:
             _ = self._changed(message)
             current = slot.current
             if current is not None and current.active:
-                current.cancel()
+                current.supersede()
             return message
 
         return await self._tasks.admit(self._key, admit)
@@ -149,7 +149,10 @@ class SourceSession:
                 message_id, body, expected_source_head=expected_head
             ))
             if current is not None and body.action != "resume":
-                current.cancel()
+                if body.action == "abandon":
+                    current.supersede()
+                else:
+                    current.cancel()
             return message, current if body.action != "resume" else None
 
         message, pending = await self._tasks.admit(self._key, admit)
@@ -291,7 +294,7 @@ class SourceSession:
         # 2. 日志判定与 Task 创建间没有 await，不增加持久 active/attempt 状态。
         def admit(slot: TaskSlot) -> Task | None:
             residual = slot.current
-            if residual is not None and residual.active:
+            if residual is not None and not residual.superseded:
                 return residual
             if not needs_reply(self._reader, self._source):
                 return None

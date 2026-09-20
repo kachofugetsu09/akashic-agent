@@ -135,7 +135,7 @@ async def run_reply(
                 materials=build_materials, content=view, tools=menu,
                 max_output_tokens=max_output_tokens, max_steps=max_steps,
                 reduce=reduce, preview=preview, terminal_tools=terminal_tools,
-                state=ctx.require(OWNER_STATE).open(ctx),
+                state=ctx.require(OWNER_STATE).open_scoped(ctx, "generation"),
             )
         finally:
             output.expire()

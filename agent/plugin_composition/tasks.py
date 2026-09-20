@@ -57,6 +57,7 @@ class Task:
     ):
         self.handle = uuid4().hex
         self._active = True
+        self._superseded = False
         self._cancel_requested = False
         self._running = False
         self._child_permit = child_permit
@@ -103,6 +104,15 @@ class Task:
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def superseded(self) -> bool:
+        return self._superseded
+
+    def supersede(self) -> None:
+        """业务边界已耐久提交后调用：撤权并让位，物理清理转入残留集合。"""
+        self._superseded = True
+        self.cancel()
 
     @property
     def done(self) -> bool:
@@ -199,9 +209,9 @@ class TaskSlot:
         self._check_active()
         current = self.current
         if current is not None:
-            if current.active:
+            if not current.superseded:
                 raise TaskBusy("旧任务尚未排空")
-            # 已撤权的旧任务只保留物理清理；持久边界已经提交，lane 立即释放。
+            # 只有持久业务边界已提交的旧任务才让位；撤权但仍在结算的任务继续占 lane。
             self._owner._residual.add(current)
             _ = self._owner._tasks.pop(self._key, None)
         if self._owner._max_resident is not None and (
