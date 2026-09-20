@@ -4,10 +4,10 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
-from session.log import MessageReader, MessageWriter, OwnerStore
-from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerStore
+from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
 Outcome = Literal["success", "denied", "error", "interrupted"]
@@ -43,12 +43,35 @@ class Result:
         object.__setattr__(self, "parts", parts)
 
 
+@runtime_checkable
+class ResultLike(Protocol):
+    """provider 返回的结构结果；tools owner 不依赖 provider 的类身份。"""
+
+    @property
+    def outcome(self) -> Outcome: ...
+    @property
+    def parts(self) -> tuple[ContentPart, ...]: ...
+
+
+def coerce_result(value: object) -> Result:
+    """在 tools 执行边界接纳 provider 结果并重新校验内容。"""
+    if isinstance(value, Result):
+        return value
+    if not isinstance(value, ResultLike):
+        raise TypeError("工具结果必须提供 outcome 和 parts")
+    return Result(value.outcome, tuple(value.parts))
+
+
 @dataclass(frozen=True, slots=True)
 class CallSource:
     """实际调用的不可变消息前缀；不携带 reader 或任何写入能力。"""
 
     call_ref: CallRef
     messages: tuple[Message, ...]
+
+    @property
+    def effect_key(self) -> str:
+        return durable_call_key(self.call_ref)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,13 +165,30 @@ class Denied(Exception):
     """授权 owner 明确拒绝当前最终参数；没有发生本次调用。"""
 
 
-class BoundTool(Protocol):
+class ProviderBoundTool(Protocol):
     @property
     def idempotent(self) -> bool: ...
 
     async def prepare(
         self, arguments: Mapping[str, object], source: CallSource | None = None
-    ) -> Mapping[str, object]: ...
+    ) -> Mapping[str, object] | str: ...
+
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ResultLike: ...
+
+    async def query(self, key: str) -> ResultLike | None:
+        """查询原调用；None 只表示无法确定，不能解释为没有效果。"""
+        ...
+
+
+class BoundTool(Protocol):
+    """tools owner 暴露给执行器的已归一化工具 facade。"""
+
+    @property
+    def idempotent(self) -> bool: ...
+
+    async def prepare(
+        self, arguments: Mapping[str, object], source: CallSource | None = None
+    ) -> Mapping[str, object] | str: ...
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result: ...
 
@@ -158,4 +198,4 @@ class BoundTool(Protocol):
 
 
 OpenTool = Callable[[str], AbstractAsyncContextManager[BoundTool]]
-Authorize = Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object]]]
+Authorize = Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]]

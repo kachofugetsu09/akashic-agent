@@ -1,10 +1,12 @@
 # 插件 Session Read 组合能力任务合同
 
-- 状态：accepted / implementation candidate
+- 状态：historical / superseded（2026-09-13）
 - 日期：2026-08-17
 - 首个 consumer：Status Commands
 - 恢复点：`backup/c26-session-read-pre-integration-20260817@4ca22a5a`
 - 上游：[持久化状态地图](persistence-state-map.md)、[插件 v3 生产替代清单](plugin-v3-production-readiness-checklist.md)
+
+> `SESSION_READ` 的 Core 导出与注册已退役。当前插件通过 `MESSAGE_CATALOG` 和普通 Turn projection 读取消息，见[插件 V3 能力手册](plugin-v3-capabilities.md#42-messagesession-与上下文)。下文保留历史设计及其状态保护依据，不是当前 API 用法。
 
 ## Goal
 

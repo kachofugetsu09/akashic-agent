@@ -24,8 +24,6 @@ name = "content_clock_source"
 version = "3.0.0"
 desc = "Deterministic clock and feed boundary for Content composition tests"
 author = "Akashic Core"
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 
@@ -329,10 +327,9 @@ class SourceRuntime:
         return value.astimezone(UTC)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Bind the fake source to formal runtime lifecycle only."""
 
-    _ = config
     runtime = SourceRuntime(
         FixtureSourceStore(ctx.data_root / "source.sqlite3"),
         ctx.require(TIMERS),

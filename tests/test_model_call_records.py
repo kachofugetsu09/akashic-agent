@@ -1,9 +1,8 @@
+from plugins.context.api import check_summary as _model_summary_check
 import asyncio
-import importlib.util
 import sqlite3
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -15,14 +14,12 @@ from agent.plugin_composition.models import (
     ModelCapabilities,
     ModelContinuation,
     ModelRequest,
-    ModelRole,
     ModelUnavailableError,
     ModelUsage,
     UsageCoverage,
 )
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
-from agent.migrations.context import bind_migration_context
 
 
 class _DriverContract:
@@ -62,7 +59,7 @@ def descriptor():
         driver_contract_version="1",
         auth_identity="identity",
         model="model",
-        role=ModelRole.AGENT,
+        role="agent",
         reasoning_effort=None,
         capabilities=ModelCapabilities(),
         capability_sources=CapabilitySources(),
@@ -200,71 +197,10 @@ async def test_settlement_failure_keeps_provider_failure_and_durable_unknown(
     assert store.read_call(call_id)["usage"] is None
 
 
-@pytest.fixture
-def migration(monkeypatch):
-    import yoyo
-
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    path = Path(__file__).parents[1] / "migrations/yoyo/20260905_03_model_calls.py"
-    spec = importlib.util.spec_from_file_location("model_calls_migration_test", path)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def dump(path):
+    """Return a stable SQLite dump for cross-surface read-only assertions."""
     with closing(sqlite3.connect(path)) as connection:
         return tuple(connection.iterdump())
-
-
-def run_migration(migration, workspace):
-    with bind_migration_context(
-        workspace=workspace, config_path=workspace / "config.toml"
-    ):
-        migration.migrate_model_calls(None)
-
-
-def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
-    store, descriptor, migration, timing_migration
-):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("DROP TABLE model_calls")
-    before = dump(store.path)
-    run_migration(migration, store.path.parent)
-    backups = list(
-        (store.path.parent / "backups/model-calls-v1").glob("*/model-registry.sqlite3")
-    )
-    assert len(backups) == 1
-    assert dump(backups[0]) == before
-    old_schema = dump(store.path)
-    run_migration(migration, store.path.parent)
-    assert dump(store.path) == old_schema
-    run_timing_migration(timing_migration, store.path.parent)
-    from tests.test_execution_failure_migration import load_migration
-    failure = load_migration()
-    failure["_migrate"](store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
-    call_id = store.start_call(descriptor, ModelRequest(()))
-    # 模拟 provider 已接到请求，进程在收到响应前崩溃；不会重放或把费用补成零。
-    reopened = ModelsStore(store.path, store.backup_dir)
-    reopened.initialize()
-    assert reopened.read_call(call_id)["state"] == "started"
-    assert reopened.read_call(call_id)["usage"] is None
-    after = dump(store.path)
-    failure["_migrate"](store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
-    assert dump(store.path) == after
-    assert store.read_snapshot().revision == 0
-
-
-def test_migration_rejects_same_name_with_other_schema_without_write(store, migration):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("DROP TABLE model_calls")
-        connection.execute("CREATE TABLE model_calls (id TEXT)")
-    before = dump(store.path)
-    with pytest.raises(RuntimeError, match="schema"):
-        run_migration(migration, store.path.parent)
-    assert dump(store.path) == before
-    assert not store.backup_dir.exists()
 
 
 @pytest.mark.asyncio
@@ -331,7 +267,7 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
     )
     projection = MessageProjection(
         model,
-        source="conversation",
+        check_summary=_model_summary_check, source="conversation",
         render_content=lambda part: ({"type": "text", "text": part.value},),
         tool_name=lambda binding: {"old-tool-binding": "original_name"}[binding],
         read_call=store.read_call,
@@ -355,14 +291,14 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
     assert projection.render(messages, after_seq=4).messages == ()
     for keep in (("1",), ("4",), ("missing",), ("0", "0")):
         invalid = MessageProjection(
-            model, source="conversation", render_content=lambda part: (),
+            model, check_summary=_model_summary_check, source="conversation", render_content=lambda part: (),
             tool_name=lambda binding: "unused", read_call=store.read_call,
             keep_input_ids=keep,
         )
         with pytest.raises(ValueError, match="真实 Input"):
             invalid.render(messages, after_seq=4)
     repeated = MessageProjection(
-        model, source="conversation",
+        model, check_summary=_model_summary_check, source="conversation",
         render_content=lambda part: ({"type": "text", "text": part.value},),
         tool_name=lambda binding: "unused", read_call=store.read_call,
         keep_input_ids=("2", "0"),
@@ -408,7 +344,7 @@ async def test_message_projection_keeps_source_continuation_and_rejects_unsafe_s
     )
     projection = MessageProjection(
         model,
-        source="conversation",
+        check_summary=_model_summary_check, source="conversation",
         render_content=lambda part: ({"type": "text", "text": part.value},),
         tool_name=lambda binding: "unused",
         read_call=store.read_call,
@@ -420,7 +356,7 @@ async def test_message_projection_keeps_source_continuation_and_rejects_unsafe_s
         projection.render((message, later_other_source), after_seq=0)
     changed = MessageProjection(
         _BoundChat(replace(descriptor, binding_id="new-model"), Driver(), store),
-        source="conversation",
+        check_summary=_model_summary_check, source="conversation",
         render_content=lambda part: (),
         tool_name=lambda binding: "unused",
         read_call=store.read_call,
@@ -556,7 +492,7 @@ async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned
         names.append(binding)
         assert binding == 'completed'
         return 'completed_tool'
-    projection = MessageProjection(model, source='conversation',
+    projection = MessageProjection(model, check_summary=_model_summary_check, source='conversation',
         render_content=lambda part: ({'type': 'text', 'text': part.value},),
         tool_name=tool_name, read_call=store.read_call)
     request = projection.render(tuple(messages), after_seq=-1)
@@ -574,7 +510,7 @@ async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned
 async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_response(store, descriptor):
     from datetime import UTC, datetime
     from dataclasses import replace
-    from plugins.context.api import Materials, Summary
+    from plugins.context.api import Summary
     from plugins.context.plugin import ContextBuilder
     from plugins.models.projection import MessageProjection, response_facts
     from plugins.models.content import render_content
@@ -598,11 +534,23 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
         message(1, Output((ContentPart("text", "old answer"), response_facts(response, [])), "complete")),
         message(2, Input((ContentPart("text", "current question"),))),
     )
-    projection = MessageProjection(model, source="conversation", read_call=store.read_call,
+    projection = MessageProjection(model, check_summary=_model_summary_check, source="conversation", read_call=store.read_call,
         render_content=lambda part: render_content(part, artifacts={}), tool_name=lambda binding: "unused",
         keep_input_ids=("2",))
     summary = Summary("summary-binding", ("0", "1"), "saved old work")
-    request = ContextBuilder().build(before, materials=Materials("", summary=summary),
+    def material_data(summary: Summary) -> dict[str, object]:
+        return {
+            "system_prompt": "",
+            "reminders": (),
+            "summary": {
+                "reference": summary.reference,
+                "source_message_ids": summary.source_message_ids,
+                "content": summary.content,
+            },
+            "references": (),
+        }
+
+    request = ContextBuilder().build(before, materials=material_data(summary),
                                      model=projection, max_output_tokens=100)
     assert request.continuation is None
     payload, _ = _responses_input(request.messages, "", _continuation_items(request.continuation))
@@ -615,30 +563,17 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
         ContentPart("text", "fresh answer"), response_facts(next_response, []),
         ContentPart("context.summary", {"reference": summary.reference}),
     ), "complete")))
-    resumed = ContextBuilder().build(after, materials=Materials("", summary=summary),
+    resumed = ContextBuilder().build(after, materials=material_data(summary),
                                      model=projection, max_output_tokens=100)
     assert resumed.continuation == next_response.continuation
     payload, _ = _responses_input(resumed.messages, "", _continuation_items(resumed.continuation))
     assert payload[0] == {"type": "reasoning", "encrypted_content": "opaque-state"}
     changed = replace(summary, reference="next-summary", source_message_ids=("0", "1", "2", "3"))
-    fresh = ContextBuilder().build(after, materials=Materials("", summary=changed),
+    fresh = ContextBuilder().build(after, materials=material_data(changed),
                                    model=projection, max_output_tokens=100)
     assert fresh.continuation is None
     facts = cast(Mapping[str, object], before[1].body.parts[-1].value)
     assert response.continuation is not None and facts["continuation"] is not None
-
-
-@pytest.fixture
-def timing_migration(monkeypatch):
-    import runpy
-    import yoyo
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    return runpy.run_path(str(Path(__file__).parents[1] / "migrations/yoyo/20260906_06_model_call_timing.py"))
-
-
-def run_timing_migration(migration, workspace):
-    with bind_migration_context(workspace=workspace, config_path=workspace / "config.toml"):
-        migration["migrate_model_call_timing"](None)
 
 
 @pytest.mark.asyncio
@@ -712,48 +647,6 @@ async def test_nonstreaming_call_does_not_enable_stream_or_invent_first_token(st
     assert stats.usage is None
 
 
-def test_timing_migration_keeps_all_old_calls_unknown_and_backup_exact(store, descriptor, migration, timing_migration):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("DROP TABLE model_calls")
-    run_migration(migration, store.path.parent)
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.executemany(
-            "INSERT INTO model_calls(id,binding_json,request_digest,state,usage_json,failure,started_at,finished_at) VALUES (?,?,?,?,?,?,?,?)",
-            [(state, '{"model":"old"}', "digest", state, None, None, "2026-01-01", None) for state in ("started", "success", "unknown")],
-        )
-    before = dump(store.path)
-    with pytest.raises(RuntimeError, match="schema"):
-        store.start_call(descriptor, ModelRequest(()))
-    with pytest.raises(RuntimeError, match="yoyo"):
-        store.read_call_stats("success")
-    assert dump(store.path) == before
-    run_timing_migration(timing_migration, store.path.parent)
-    backups = list((store.path.parent / "backups/model-call-timing").glob("*/model-registry.sqlite3"))
-    assert len(backups) == 1 and dump(backups[0]) == before
-    with closing(sqlite3.connect(store.path)) as connection:
-        rows = connection.execute("SELECT state,first_token_ms,duration_ms FROM model_calls ORDER BY rowid").fetchall()
-    assert rows == [(state, None, None) for state in ("started", "success", "unknown")]
-    after = dump(store.path)
-    run_timing_migration(timing_migration, store.path.parent)
-    assert dump(store.path) == after
-    assert len(list((store.path.parent / "backups/model-call-timing").glob("*"))) == 1
-    assert store.read_snapshot().revision == 0
-
-
-@pytest.mark.parametrize("mutation", ["ALTER TABLE model_calls ADD COLUMN extra TEXT", "CREATE TRIGGER extra AFTER INSERT ON model_calls BEGIN SELECT 1; END"])
-def test_timing_migration_rejects_unknown_schema_without_mutation(store, migration, timing_migration, mutation):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("DROP TABLE model_calls")
-    run_migration(migration, store.path.parent)
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute(mutation)
-    before = dump(store.path)
-    with pytest.raises(RuntimeError):
-        run_timing_migration(timing_migration, store.path.parent)
-    assert dump(store.path) == before
-    assert not (store.path.parent / "backups/model-call-timing").exists()
-
-
 @pytest.mark.asyncio
 async def test_failed_call_id_announcement_does_not_invent_provider_duration(store, descriptor):
     class Driver(_DriverContract):
@@ -769,17 +662,6 @@ async def test_failed_call_id_announcement_does_not_invent_provider_duration(sto
     stats = store.read_call_stats(call_id)
     assert stats.state == 'error' and stats.first_token_ms is None and stats.duration_ms is None
     assert stats.usage is None
-
-
-def test_timing_migration_keeps_its_target_when_runtime_schema_evolves(store, migration, timing_migration, monkeypatch):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute('DROP TABLE model_calls')
-    run_migration(migration, store.path.parent)
-    monkeypatch.setattr('plugins.models.store.MODEL_CALLS_SCHEMA', 'CREATE TABLE model_calls (future TEXT)')
-    run_timing_migration(timing_migration, store.path.parent)
-    with closing(sqlite3.connect(store.path)) as connection:
-        columns = [row[1] for row in connection.execute('PRAGMA table_info(model_calls)')]
-    assert columns[-2:] == ['first_token_ms', 'duration_ms']
 
 
 def test_grouped_call_reads_see_settlement_and_close(store, descriptor):
@@ -866,7 +748,7 @@ def test_repeated_projection_keeps_dynamic_content_and_live_call_validation(stor
     message = Message("answer", "s", 0, datetime.now(UTC), "assistant", "chat",
                       Output((ContentPart("text", "body"), facts), "complete"))
     block: dict[str, object] = {"type": "text", "text": "first"}
-    projection = MessageProjection(_BoundChat(descriptor, _DriverContract(), store), source="chat",
+    projection = MessageProjection(_BoundChat(descriptor, _DriverContract(), store), check_summary=_model_summary_check, source="chat",
         render_content=lambda part: (block,), tool_name=lambda binding: "unused", read_call=store.read_call)
     first = projection.render((message,), after_seq=-1)
     projection.render((message,), after_seq=-1)

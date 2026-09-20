@@ -1,19 +1,33 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Protocol, cast
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from agent.control.protocol.models import StrictModel, SessionIdParams
 from agent.plugin_composition import Context, ServiceKey
-from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResolver
-from agent.control.protocol.method import RequestTransport
+from agent.plugin_composition.control_frames import CONTROL_FRAMES, FrameRouteStage, FrameResolver
+from agent.plugin_composition.rpc import RequestTransport, RpcMethod
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
-from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
-from session.log import MessageReader, SessionAttributes
-from session.message import ContentPart, Input
+from .result import TURN_PROJECTION, TurnProjection
+from agent.plugin_composition.messages import MessageReader, SessionAttributes
+from agent.plugin_contracts import ContentPart, Input
 
 from .result import read_result, read_result_snapshot
+
+
+class FinalOutputTurn(Protocol):
+    @property
+    def source(self) -> str: ...
+    @property
+    def ending_message_id(self) -> str | None: ...
+    @property
+    def message_ids(self) -> tuple[str, ...]: ...
+
+
+class SessionIdParams(BaseModel):
+    """程序调用在自己的 RPC 输入边界校验参数。"""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=512)
 
 
 class AdmitParams(SessionIdParams):
@@ -37,7 +51,7 @@ class ResultParams(SessionIdParams):
     input_id: str = Field(min_length=1, max_length=256)
 
 
-PARAMS: dict[str, type[StrictModel]] = {
+PARAMS: dict[str, type[BaseModel]] = {
     "programmatic/session/admit": AdmitParams,
     "programmatic/message/send": SendParams,
     "programmatic/message/pause": PauseParams,
@@ -125,7 +139,7 @@ class Programmatic:
             self._resolver(session_id, input_id),
         )
 
-    async def wait(self, reader: MessageReader, turn: Turn) -> None:
+    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
         """等待同连接完整最终 Output frame 的 writer flush。"""
         ending = turn.ending_message_id
         if ending is None:
@@ -141,7 +155,7 @@ class Programmatic:
         await self._frames.wait_input(reader.session_id, input_id, ending)
 
     async def call(
-        self, method: str, params: StrictModel,
+        self, method: str, params: BaseModel,
         transport: RequestTransport | None = None,
     ) -> dict[str, object]:
         """仅接受声明的 typed 方法；每次调用已由入口绑定一个实际 Root。"""
@@ -206,3 +220,17 @@ class Programmatic:
 
 
 PROGRAMMATIC = ServiceKey[Programmatic]("programmatic.v1")
+
+
+def rpc_methods(programmatic: Programmatic) -> dict[str, RpcMethod]:
+    """来源自己声明协议参数；Core 不持有程序调用方法目录。"""
+    def build(name: str, params: type[BaseModel]) -> RpcMethod:
+        async def call(value: BaseModel) -> object:
+            return await programmatic.call(name, value)
+
+        async def call_with_transport(value: BaseModel, transport: RequestTransport) -> object:
+            return await programmatic.call(name, value, transport)
+
+        return RpcMethod(params, call, call_with_transport)
+
+    return {name: build(name, params) for name, params in PARAMS.items()}

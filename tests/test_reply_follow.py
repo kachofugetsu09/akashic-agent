@@ -5,6 +5,8 @@ import shutil
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -19,10 +21,9 @@ from session.message import ContentPart, Input, Output
 @asynccontextmanager
 async def running(tmp_path, program, *, lifecycle=False):
     sources = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", sources / "conversation",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copytree(Path(__file__).parents[1] / "plugins/sources", sources / "sources",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    for name in ("commands", "ui", "conversation", "sources", "content", "models"):
+        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
+                        ignore=shutil.ignore_patterns("__pycache__"))
     probe = sources / "probe"
     probe.mkdir()
     (probe / "plugin.py").write_text('''
@@ -31,10 +32,11 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("probe"), ctx)
 ''')
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     watcher = None

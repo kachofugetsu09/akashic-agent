@@ -5,6 +5,8 @@ import sys
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import PROCESSES, PluginProcesses, ProcessCleanupError, ServiceKey
 from agent.plugin_composition.bindings import Bindings
 from agent.plugins.manager import PluginManager
@@ -26,7 +28,7 @@ api_version = 3
 name = "{name}"
 version = "1.0.0"
 inject = (PROCESSES,)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("fixture.processes.{name}"), ctx)
 ''')
 
@@ -53,6 +55,7 @@ def manager(tmp_path, log):
 @pytest.mark.asyncio
 async def test_formal_and_archived_processes_share_backend_and_isolate_actual_owner(tmp_path, monkeypatch):
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, log)
     built = []
 
@@ -66,25 +69,26 @@ async def test_formal_and_archived_processes_share_backend_and_isolate_actual_ow
         await host.load_all()
         assert built == []
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
             root = snapshot.composition_root.context
             first = root.require(ServiceKey("fixture.processes.first"))
             second = root.require(ServiceKey("fixture.processes.second"))
             processes = root.require(PROCESSES)
-            bindings = Bindings(log, host._archive, host.open_binding)
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             binding = bindings.bind(ServiceKey("fixture.processes.first"), {})
             started = await launch(processes, first, "job", tmp_path, interactive=True)
             assert started.execution_id is not None
-            async with bindings.open(binding, ServiceKey("fixture.processes.first")) as (archived, _):
-                assert archived is not first
-                assert archived.require(PROCESSES) is processes
+            async with bindings.open(binding, ServiceKey("fixture.processes.first")) as (selected, _):
+                assert selected is first
+                assert selected.require(PROCESSES) is processes
                 completed = await processes.write_stdin(
-                    archived, "job", execution_id=started.execution_id, chars="PING\n",
+                    selected, "job", execution_id=started.execution_id, chars="PING\n",
                     yield_time_ms=1000, max_output_tokens=100,
                 )
                 assert b"GOT:PING" in completed.output
                 assert completed.exit_code == 0
-                started = await launch(processes, archived, "job", tmp_path)
-            # 归档 scope 已释放，实际进程仍由同一宿主管理。
+                started = await launch(processes, selected, "job", tmp_path)
+            # binding scope 已释放，实际进程仍由同一宿主管理。
             assert started.execution_id is not None
             pid = int(started.output)
             for context, key in ((first, "other-job"), (second, "job")):
@@ -109,6 +113,7 @@ async def test_formal_and_archived_processes_share_backend_and_isolate_actual_ow
 @pytest.mark.asyncio
 async def test_process_shutdown_failure_retains_original_backend_until_cleanup(tmp_path, monkeypatch):
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, log)
     try:
         await host.load_all()
@@ -150,6 +155,7 @@ async def test_process_shutdown_failure_retains_original_backend_until_cleanup(t
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_shutdown_waits_for_admitted_spawn_before_cleaning_backend(tmp_path, monkeypatch, cancel):
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, log)
     backend = ShellProcessManager()
     entered, release, closing = asyncio.Event(), asyncio.Event(), asyncio.Event()

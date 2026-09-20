@@ -75,10 +75,10 @@ def _resolve_commit(repository: Path, requested: str) -> tuple[str, str]:
     return commit, tree
 
 
-def _create_context(
+def _create_legacy_context(
     repository: Path, commit: str, tree: str, target: Path
 ) -> dict[str, Any]:
-    """Materialize exactly one Git commit and add its verifiable inventory."""
+    """Materialize the compatibility full-source context for the old image."""
 
     # 1. Archive the immutable Git object, never the caller's working tree.
     archive = target.parent / "source.tar"
@@ -116,6 +116,106 @@ def _create_context(
     return manifest
 
 
+def _create_context(
+    repository: Path, commit: str, tree: str, target: Path
+) -> dict[str, Any]:
+    """Create a Core tar plus independent plugin bundles from one commit."""
+
+    from scripts.build_plugin_distribution import build
+
+    report = build(repository, commit, target)
+    core = report.get("core")
+    if not isinstance(core, dict):
+        raise RuntimeError("distribution report 缺少 Core identity")
+    return {
+        "schemaVersion": 2,
+        "sourceCommit": commit,
+        "sourceTree": tree,
+        "coreSha256": str(core["sha256"]),
+        "distributionReportSha256": _sha256(target / "distribution.json"),
+        "distribution": report,
+    }
+
+
+def build_distribution_release(
+    *,
+    repository: Path,
+    requested_commit: str,
+    image_tag: str,
+    output_manifest: Path,
+    base_image: str,
+    arch_snapshot: str,
+    pypi_index_url: str = "https://mirrors.aliyun.com/pypi/simple",
+) -> dict[str, Any]:
+    """Build the formal Core-plus-bundles image without a checkout fallback."""
+
+    repository = repository.resolve(strict=True)
+    commit, tree = _resolve_commit(repository, requested_commit)
+    _assert_release_paths_safe(repository, commit)
+    with tempfile.TemporaryDirectory(prefix="akashic-distribution-runtime-") as temporary:
+        context = Path(temporary) / "distribution"
+        source = _create_context(repository, commit, tree, context)
+        core_sha256 = str(source["coreSha256"])
+        distribution_report = cast(dict[str, Any], source["distribution"])
+        build_arguments = {
+            "AKASHIC_BASE_IMAGE": base_image,
+            "AKASHIC_ARCH_SNAPSHOT": arch_snapshot,
+            "AKASHIC_PYPI_INDEX_URL": pypi_index_url,
+            "AKASHIC_SOURCE_COMMIT": commit,
+            "AKASHIC_SOURCE_TREE": tree,
+            "AKASHIC_CORE_SHA256": core_sha256,
+        }
+        command = ["docker", "build", "--pull=false", "--tag", image_tag]
+        for key, value in build_arguments.items():
+            command.extend(("--build-arg", f"{key}={value}"))
+        command.extend(("--file", str(context / "Dockerfile.distribution"), str(context)))
+        subprocess.run(command, check=True)
+
+    image_id = _run("docker", "image", "inspect", image_tag, "--format", "{{.Id}}")
+    if not image_id.startswith("sha256:"):
+        raise RuntimeError(f"Docker 未返回 content-addressed image ID: {image_id}")
+    runtime_info = json.loads(
+        _run(
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "/bin/cat",
+            image_id,
+            "/opt/akashic/runtime-info.json",
+        )
+    )
+    if (
+        runtime_info.get("schemaVersion") != 3
+        or runtime_info.get("sourceCommit") != commit
+        or runtime_info.get("sourceTree") != tree
+        or runtime_info.get("coreSha256") != core_sha256
+    ):
+        raise RuntimeError("built distribution image runtime identity 不一致")
+    result: dict[str, Any] = {
+        "schemaVersion": 2,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "repository": str(repository),
+        "imageTag": image_tag,
+        "imageId": image_id,
+        "runtimeInfo": runtime_info,
+        "sourceCommit": commit,
+        "sourceTree": tree,
+        "coreSha256": core_sha256,
+        "distributionReportSha256": source["distributionReportSha256"],
+        "distribution": distribution_report,
+        "baseImage": base_image,
+        "archSnapshot": arch_snapshot,
+        "pypiIndexUrl": pypi_index_url,
+    }
+    output_manifest.parent.mkdir(parents=True, exist_ok=True)
+    _ = output_manifest.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
 def build_release(
     *,
     repository: Path,
@@ -125,14 +225,18 @@ def build_release(
     base_image: str,
     arch_snapshot: str,
 ) -> dict[str, Any]:
-    """Build an immutable host-runtime image and record its local content digest."""
+    """Build the legacy checkout image for explicit development compatibility.
+
+    The formal CLI and public ``akashic-release`` path use the distribution
+    builder; callers must opt into this compatibility image explicitly.
+    """
 
     repository = repository.resolve(strict=True)
     commit, tree = _resolve_commit(repository, requested_commit)
     _assert_release_paths_safe(repository, commit)
     with tempfile.TemporaryDirectory(prefix="akashic-host-runtime-") as temporary:
         context = Path(temporary) / "context"
-        source = _create_context(repository, commit, tree, context)
+        source = _create_legacy_context(repository, commit, tree, context)
         requirements_lock = context / "docker" / "host-runtime" / "requirements.lock"
         package_lock = context / "package-lock.json"
         host_toolchain_identity = declared_toolchain_identity(
@@ -202,15 +306,41 @@ def main() -> None:
     parser.add_argument("--output-manifest", type=Path, required=True)
     parser.add_argument("--base-image", default=_DEFAULT_BASE_IMAGE)
     parser.add_argument("--arch-snapshot", default="2026/08/09")
-    args = parser.parse_args()
-    result = build_release(
-        repository=args.repository,
-        requested_commit=args.commit,
-        image_tag=args.image_tag,
-        output_manifest=args.output_manifest,
-        base_image=args.base_image,
-        arch_snapshot=args.arch_snapshot,
+    release_mode = parser.add_mutually_exclusive_group()
+    release_mode.add_argument(
+        "--distribution",
+        action="store_true",
+        help="构建 Core tar + 独立插件 bundle 的正式分发镜像（默认）",
     )
+    release_mode.add_argument(
+        "--legacy-checkout",
+        action="store_true",
+        help="仅供旧 Host Bridge 开发兼容；正式发行不得使用",
+    )
+    parser.add_argument(
+        "--pypi-index-url",
+        default="https://mirrors.aliyun.com/pypi/simple",
+    )
+    args = parser.parse_args()
+    if args.legacy_checkout:
+        result = build_release(
+            repository=args.repository,
+            requested_commit=args.commit,
+            image_tag=args.image_tag,
+            output_manifest=args.output_manifest,
+            base_image=args.base_image,
+            arch_snapshot=args.arch_snapshot,
+        )
+    else:
+        result = build_distribution_release(
+            repository=args.repository,
+            requested_commit=args.commit,
+            image_tag=args.image_tag,
+            output_manifest=args.output_manifest,
+            base_image=args.base_image,
+            arch_snapshot=args.arch_snapshot,
+            pypi_index_url=args.pypi_index_url,
+        )
     print(json.dumps(result, ensure_ascii=False))
 
 

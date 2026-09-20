@@ -1,0 +1,643 @@
+schema_version = 1
+
+[[sources]]
+recovery_commit = '5cb8e8bbff5c2f8a2f37456b3433038091cada09'
+
+[[sources.files]]
+path = 'migrations/core/20260802_01_yoyo_origin.py'
+sha256 = '1bf942ea20d6948f298fa9ec0caa1a4d09947f37ad06ed64cf97f89465626c7a'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/akashic.plugin.toml'
+sha256 = '9e2ef97faed7b8ba59b09d1b75a37d515be4734cc870a2348f8b6aa17e5eb9d4'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260805_01_akasha_sparse_index_v9.py'
+sha256 = 'bf6451e89187ecb330ddc0d7d9472967421f11e91ba9884f694201edd89b9ad0'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260807_01_model_registry_database.py'
+sha256 = 'cc5b18367583e43cab5a9964713102b272a69c3609b1806ad2f40bc7a5536dbd'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260807_01_session_context_compaction_ledger.py'
+sha256 = '847e2fa0de82cb2eac87fa14d5b15659f1e909cfefc65eb6ca03d3ce74b2de1f'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260807_02_embedding_model_registry.py'
+sha256 = '5c2c94d6912b917f6eec2974b233e40f36625c096501ccaf8c474bc8a28e2f30'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260808_01_restore_migrated_reasoning_efforts.py'
+sha256 = '0ac203ba609fbe36d048d6664e66a5370dffed1f0cc015d33496efcbfaaf0c2f'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260808_01_session_mutation_audits.py'
+sha256 = 'c08685fb199825d8500bdad7861981dab8bb394219002b66fa83c9f75132a04a'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260808_02_correct_opencode_go_variants.py'
+sha256 = '8589cde9e17b597c4050107ea7f2c551ec0da1b6f0290cf315b88e2da59cc234'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260808_02_session_compaction_prepares.py'
+sha256 = '6809a7ee27bba489717b6e0cb2a7cd3a4f99124705a174a57e56db68c23a4d12'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260808_03_remove_compaction_trigger.py'
+sha256 = '01d7fe3ca97c62f12b5303699a7c4f92bd28fee52b12736185d1212a014595b1'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260808_04_session_compaction_source_plan_digest.py'
+sha256 = '0bbcb806e8795c03f88fb728170172520777d2f6eb7d8d1c266cf824a8266e8c'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260808_05_activate_session_compaction_cursor.py'
+sha256 = 'a171a5b7030d5d0f148c5757129a9ea2bbd20c93a11ee64e8ef7bedb84dd9ed7'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260808_06_retire_legacy_context_state.py'
+sha256 = 'eb84b664a730af34f0a993d1a469b3b98f75cf35a9e0a2a66e4fae9bd355e3c8'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260817_01_akasha_sparse_index_v10.py'
+sha256 = '54e89207e18140c94eb64c4a56ab70219e1c8c035381b9333fa5f9226700a0b1'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260823_01_retire_legacy_toolset_wiring.py'
+sha256 = '916607b44e30cd6731c00411833aa4337909444662eb17304acb78d372c55e42'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260825_01_migrate_proactive_delivery_target.py'
+sha256 = '0df39658604a667f1242f7e4d9479c57adae9123320e83b0fe6b23606a632079'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260825_02_select_akasha_embedding_plugin.py'
+sha256 = '938621359e32714e81ce0a1328912a5361d539d7cc802d14a2ee9e9c06dd92cf'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260826_01_migrate_turn_effects.py'
+sha256 = '40f48f4f1e19188b6fd2a7ea7e592f37e4f0faf3e58b7e04c7494263e35a97c6'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260826_02_backfill_akasha_message_embeddings.py'
+sha256 = '377f8f20938261cbaf4a0af893ad0340e450730f392ec7eac6c570127a6c9d5a'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260826_03_unify_akashic_channel_identity.py'
+sha256 = '411a4b24445b668bf83e7dc7a5f6041b98973bcf9bd252b7e2adbc10cf1e63cd'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260827_01_normalize_session_timestamps.py'
+sha256 = '667917b1c2d7ede5a6a01a67cdadfedfe8ebd342eee975536b93130513bb80bb'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260827_02_migrate_legacy_mobile_client_ids.py'
+sha256 = '8c0b9443e3d9d36ae722076b8322b29ed694db47aa36142387158fbbd8374f1d'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260828_01_migrate_eventmail_state.py'
+sha256 = '8243654e5ffce162af1b3d9fa7b687cc8f4f9382aa8d89a742fbfe2af3411716'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260828_02_add_wake_content_scores.py'
+sha256 = '728d4a20b4e8495bf5c35ca69ba4fbb58104633f6bb860b491595f2f3d2a0e7a'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260829_01_backfill_plugin_programmatic_effects.py'
+sha256 = '128ac5db626aae744d982bca3973f8f6ab0a27fd0ba90588c0c6e21b37da8fb5'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260829_02_backfill_explicit_programmatic_effects.py'
+sha256 = '390df2a91899119bb27e117579f4d11da63de32bf3d020723008bf36e6ebb025'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260829_03_retire_core_model_config.py'
+sha256 = '9a5f047fe1777b5596985c0d747f89af26920410dbaf03c84b01da595948509e'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260831_01_migrate_compaction_plugin_config.py'
+sha256 = '6db5de6dbe685918c91470816816f8cb375d29a31db517be9f2cb616669cace1'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260905_01_message_log.py'
+sha256 = '09abf0577b2fa8f4aaa31a6b2e47aba93ab8a8a8c34eba8203e3dc9d97c0ba2c'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260905_02_owner_records.py'
+sha256 = '6d73767df8ad79aee0c30bfc06af73170a760e4f2146e173800994949d8b618f'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260905_03_model_calls.py'
+sha256 = 'eb067628c6113d6abb76510b73fe8a7997d27c3b9a923b3296302ff2b2e51697'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260905_04_akasha_consumption.py'
+sha256 = 'b1788ce572df76acf9fb076e0550f9f35d41ca11ee3b4d4e44e9edeac09b02d9'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260905_05_message_embeddings.py'
+sha256 = '239fb3438871b55bfc742dc45ca7a2da453446d6206c2854a46a0248ef1f9761'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260905_06_message_artifacts.py'
+sha256 = 'd353cd67cd021fd9f72b47fe50d119a41aa3a6c3045db90090c3953d721d697f'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260906_01_scheduler_messages.py'
+sha256 = '78ab82b3f40af747c9ec30605ac1c3441a9c7d4e408bfdcae652d2ae6b375374'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260906_01_turn_messages.py'
+sha256 = '983b9490d3461be8117c4141d693cbad404bd5392b39a95302c934f7abacab46'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260906_02_session_attributes.py'
+sha256 = '13231dc4f2a6aae10ae78ba4bdc0f3f2f19de74fe181a9185361bbb78e6f1048'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260906_03_plugin_update_rollback.py'
+sha256 = 'bb5dd7c743e1f709fce79a163fb708cef2443942133b9f1450e046681a4972d5'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260906_04_channel_identities.py'
+sha256 = '3f0a977257b05447970b270723e7d8968d443f90d7f0b742e399080367685914'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260906_05_mobile_input_rejections.py'
+sha256 = '4b03a74198ce429b05cadb681765900a8d3a2bf6d3730ebb8930e44b7cfd025d'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260906_06_model_call_timing.py'
+sha256 = 'a9209ceb3729f4848ccb41eb617ebab795ceb68c8c08882ee16125816ed93643'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_01_context_material_grants.py'
+sha256 = '8c16548e8b267db327fddd2935b5c71898e8346625a3db07537995ab01187193'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_02_retire_legacy_agent_config.py'
+sha256 = '49d58d155c7269a36ea13e677cca45de171d1c76c540fa9f3ebdcf3632b78c90'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_03_message_metadata.py'
+sha256 = 'c2d96a32426371ddd01514aec5cb58050a5a143d0deb3ced55050c05ea67a378'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_03_skill_prompt_grant.py'
+sha256 = '03c6a13a00eb99e80d30d5be3f102137a005df4f6542503d1d5a1f0b18a0987d'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260908_01_legacy_summaries.py'
+sha256 = '6cd92ab1beb63aac2de71416afca453bf63598a5c17977431e6765c46e5e2cdb'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260909_01_close_empty_wake_responses.py'
+sha256 = '2882bc0ce53a9636aa05413848e8a33b32cc65f2b6e6039ece89b189c24d5002'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260909_01_tool_provider_views.py'
+sha256 = '0b83cfb20d5fa3b2440335e45da4c6f3d965d4657e2f063f0d6ea17f714897c4'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260909_02_execution_failures.py'
+sha256 = '027ee2c7d9f0f8138ab2cf8780e7f8bac06feade143716a58cbe7eacef66a001'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/__init__.py'
+sha256 = '4db28db3b046fdd9f66316663f3003ad858574a648c601f68993cac14ac42baf'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/__init__.py'
+sha256 = '1eca2448bfb36a05522441575ab4ebe948c22e116503acbd826cefbd52926159'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/__init__.py'
+sha256 = '6aabe8dce82a5c253b3c4017e462da225bcae79413d6e98cbf84ad8aa1312b93'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/application/__init__.py'
+sha256 = '4ee992e04912469bba09f912be8547ee5177f4ed41ed224f11aadc9381b24669'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/application/cycle.py'
+sha256 = '6d92b58250e0e27e5cd8d4f762a52803e07288fa6b15e9c077ab4acf5d66d882'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/application/rebuild.py'
+sha256 = 'aa2a9b55a9dc4e4e9bf6ff1c4952d4aa262ae4b7ca678e29232f28c62b5c78b2'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/domain/__init__.py'
+sha256 = '31704fdd527e81239c8aca67643849f6b92ab07355041eb58a73aae07e97a4ca'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/domain/diffusion.py'
+sha256 = '07476a613e856d9547e56d61b5ff100d3b8a753449e9b27a6bca3798f98cfda6'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/domain/features.py'
+sha256 = 'd252a5bb8873cf8451be86f09195fdf28508b272f537b1601d041bb376b69031'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/domain/graph.py'
+sha256 = 'c080a730b864a950f7c617877754434d7c581a6136d42131b66675765316c90a'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/domain/model.py'
+sha256 = 'd90fbdf25e9723179cce0ef64541eec8b746b7455379899f6f817ef1bd47cc17'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/domain/readout.py'
+sha256 = 'd144b329a2d1eff563168e70c573831b8992c3f948189c42870dcb913031d89a'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/__init__.py'
+sha256 = '74669c060f90ee5990c1877c441a433ef2072c5ff000696c90aab0d361c42cc1'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/consumption.py'
+sha256 = '9af14f8f543ca8f94bfa43f1b4fb031d29a5552f841e4227d260b47c570f1ca3'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/loader.py'
+sha256 = 'f82754c4c05d0e5bad8205b80b92290362780066e94319564657824b3451ae2b'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/persistence.py'
+sha256 = '5c137fa76e4f9d79fd10bdbc19feb98d5b0eefad9e50541ff64a6edf9fc5876d'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/sparse_index/__init__.py'
+sha256 = '2d95e80e2d6913493f41ff63989daadc057baa80d8815022131046996bdcaba8'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/sparse_index/builder.py'
+sha256 = '0c4d8571851427efc01b7be84ed863b381ce3aaf994b40264efb623c3eacba5a'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/sparse_index/encoding.py'
+sha256 = '4cc91b508c8ba7af71925c70b8c6af518c221353ab6b34f9503d8bec71ff543c'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/sparse_index/model.py'
+sha256 = '19188788b2966b846eeef48cc762a5fdcb5c76a49c365b0da5cd32cb0b5d4cab'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/infrastructure/sparse_index/schema.py'
+sha256 = 'bb8b3e22d63ac4f6ff5bec2776edb440766d12338c2ea600fd3ffe10a5b5191d'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_config.py'
+sha256 = '14b7ffee1ed18ad69aadcaee7074f9a271cf00ae742451fa0cbaed8cd9b74586'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_consumption.py'
+sha256 = '1670f3a999dc59062fe7a446f45e5a867da886c5e1879ab6d4f190986c2bb389'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_consumption_model.py'
+sha256 = '96ee4eefa99c0c9140f06be347095a2504eae58bdee92eb9e74ccaf1478906e7'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_embedding_backfill.py'
+sha256 = '89a926a913e669416dd7506a16fef8202e12f58a04c0232f3fac986867197925'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_loader.py'
+sha256 = '63fcf72750b8a22a1df9674b562e5dd1980af854df19d9d52820eeb87c46d332'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_model.py'
+sha256 = '8204282a50a2c4f09c5ab07d4709915aede1dcaf604eb4148c09b59b3bfe6c47'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_persistence.py'
+sha256 = 'fc4a31d0da58118dccd6dc14d01d943dc8310833f630cd0099a2b78ff6b17e3c'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_sidecar.py'
+sha256 = '858d26f3f75b185da93d31d5fffd64636637b1eda8da1c45d96f50c51e2f4712'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_sparse_index.py'
+sha256 = '40697ea513c9837f394e622234702d2ba4b6c6ea84e72a34c49dbf53677f6e95'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_sparse_index_schema.py'
+sha256 = '4caa75cdb1bd80e4f1626e2de1ade2a44cc4514afb6c485d72bd24637dacfc0d'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/channel_identities.py'
+sha256 = '53c48173119b27cba440a665245e6a79aca366046c6b2c40c5f6af58e86bb210'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/compaction_records.py'
+sha256 = '32da8ae58f1082c83979c79527599c2802dc60ef44f5f67b577350adcc2b2671'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/content_api.py'
+sha256 = '056295fa434d108286bcd8083ec8ff73ce0aa9079318c6c8211adcacd3eeb3db'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/content_plugin.py'
+sha256 = '1a335a1c8c7dd37bdd8c3070b4760cf4348a3dda512c9128d3cd3a142de0c4e3'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/context_api.py'
+sha256 = 'c999134af1756b80babc7829ebefa2c27b619d6d7aa4f48374da532cce4ac132'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/context_compaction.py'
+sha256 = '6171ec1e71331d6db8a34870d470532fae4d48f521392c524f7c37d190f51863'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/conversation_plugin.py'
+sha256 = '00b175ce69f40d541ec7903332751ce57d65aad3391cd7523a6775bbc388c5f6'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/embedder.py'
+sha256 = '6dfbcb90914da8afb4640e2d1e5a4225d6d1c079d4cb4317275d78fb7b74eb65'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/eventmail_v3.py'
+sha256 = '3bb31e551f9a67818bce4b3d526d977cef85c4c9721597fbd9514cee29b876d6'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/legacy_message_log.py'
+sha256 = '9601a9c36051d5f0b3736d4eb3bfcee09442ec76abce20d188f1da5bd6e2d4fc'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/legacy_summaries.py'
+sha256 = '89b21ad4cdd39216ed357e3d02c16151d5f7adc44a9ea5e6d429d87415ef2193'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/mobile_gateway.py'
+sha256 = 'c87f750bb2a8080407fc0b3e18b39a8a5bfde10afbd64dfbdb212cc187f8f9ee'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/mobile_input.py'
+sha256 = '96545bf9cfe50696ad72a7460b3d3ac91420527b1d10d3a4b2d38327edb6be17'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/model_auth.py'
+sha256 = 'bcec828c8160a42d498e9e69d83b9ad19405e90d7d8ae46d2d56217e078816b1'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/model_catalog.py'
+sha256 = '1940003fa63af41ce0e7e2527b18c282da3bf3c8980c781cb2cd46813c5e733f'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/model_contracts.py'
+sha256 = 'ba7950b0c2b72baee6346bfcc0bff341d6fb25e8c788d43276cf51daeeff4fb5'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/model_errors.py'
+sha256 = 'b28f31fe2139991f4520ec870238069ad5790314e1017d8cb308ae14c13fbaf5'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/model_store.py'
+sha256 = '2b1790df80484f3c90d64f17cfedc156bc942ed7be6553ca7235a08e6c54b330'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/plugin_data.py'
+sha256 = '1fc177a3bc3d85722fa72fa450f76b0f16c20ff41d7fb989a608aa938ae7ef90'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/scheduler.py'
+sha256 = '7f604bf4931f6ff7c74131ce0d2f6d9c93840f7c8a9ec9b29b727b7418341310'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/scheduler_schedule.py'
+sha256 = 'f17e9841315d7433e0fb0c9805059edb33fdbb53b9f89a88a2d9a7a17302b904'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/scheduler_store.py'
+sha256 = '5c7d71f767040c3e1b3464fecb3c6fef324a1b4ddd74555a70d0b508b968501e'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/session_attributes.py'
+sha256 = '09e604350722930ad0a4c26ec490ee12860cb77c59fc80e9594e125418f84ce8'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/session_db_backup.py'
+sha256 = '6d6ba5eb5e48272013935261e9c1da2fe2f0c39346347af025bcb284e3d5119f'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/turn_messages.py'
+sha256 = 'fa1f3adcede72c56451668fd246be7ecfe9281bc93c6fd529e70fb5b5b25c942'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/update_rollback.py'
+sha256 = '7f624cb1014b0bfc561a8a3911535c4aa3f21c56e3273ffea88dc4e9de8eaa5d'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/wake_messages.py'
+sha256 = '66978bb7c318c3caa68ab040e243a7e3bd8d97e6da5aca66996a614de0cb5b7d'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/legacy_upgrade_migrations/support/wake_request.py'
+sha256 = '6fb365add37840dddda23a38619cd8b6a8157558b06ac02230068b0929037413'
+
+[[sources.files]]
+path = 'plugins/legacy_upgrade/migration.catalog.toml'
+sha256 = '99cb60fc6714081ceb7f1e4cc57783e711c7a2e69b4670446a69105b693c14d9'
+
+[[sources]]
+recovery_commit = '816dcdf33c0c3e064c46290a3bcd22c66a812f09'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260802_01_yoyo_origin.py'
+sha256 = '1bf942ea20d6948f298fa9ec0caa1a4d09947f37ad06ed64cf97f89465626c7a'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260805_01_akasha_sparse_index_v9.py'
+sha256 = '0370c8c0c69f07dad944355e218cbd300fb301a50f55d7b80d876f6a1cd57268'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260807_01_model_registry_database.py'
+sha256 = '3c3702889c9e530fd3ce25903dc5f36f40077ae2a5225de48f6b315d344390e7'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260807_01_session_context_compaction_ledger.py'
+sha256 = '1fda501a701e2008ba56877d72e880a5fa2296d6a942359912602f41e4ff8759'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260807_02_embedding_model_registry.py'
+sha256 = '0ed354b9199457b3327a7752c2abb459c70163e6626a4e016c3f085975184d46'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260808_01_restore_migrated_reasoning_efforts.py'
+sha256 = '5dc83dda872b2ea661584e5d527f863a40e10d1cd71241825096fad9b76b148b'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260808_01_session_mutation_audits.py'
+sha256 = '1e068a2808a009f4c76d4f32bfbae80d2940e55447061920d3d31e4f3319e8fb'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260808_02_correct_opencode_go_variants.py'
+sha256 = 'c554b1dbbabede0676ac32734b325f9930a58dea8723ab16db3613a56da64f92'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260808_02_session_compaction_prepares.py'
+sha256 = '18ba5f177f7f0e47b5ce286786d8969a3af502a4def8974f6931f6edfac617a4'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260808_03_remove_compaction_trigger.py'
+sha256 = '01d7fe3ca97c62f12b5303699a7c4f92bd28fee52b12736185d1212a014595b1'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260808_04_session_compaction_source_plan_digest.py'
+sha256 = 'de9d5a16c82477d04acb017ee7d964b23cc68d79a94e14a629f0dbb4fb66ddbc'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260808_05_activate_session_compaction_cursor.py'
+sha256 = 'fcde2aa9caa5cf10d91ef59dd210edce6e70023727e5d7d92fdbc32fb4916fce'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260808_06_retire_legacy_context_state.py'
+sha256 = 'eb84b664a730af34f0a993d1a469b3b98f75cf35a9e0a2a66e4fae9bd355e3c8'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260817_01_akasha_sparse_index_v10.py'
+sha256 = 'f2b117ee9185311147975df3d49c41e448ee9d9f5cacd2aad454597632395e87'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260823_01_retire_legacy_toolset_wiring.py'
+sha256 = '916607b44e30cd6731c00411833aa4337909444662eb17304acb78d372c55e42'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260825_01_migrate_proactive_delivery_target.py'
+sha256 = '0df39658604a667f1242f7e4d9479c57adae9123320e83b0fe6b23606a632079'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260825_02_select_akasha_embedding_plugin.py'
+sha256 = '938621359e32714e81ce0a1328912a5361d539d7cc802d14a2ee9e9c06dd92cf'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260826_01_migrate_turn_effects.py'
+sha256 = '44364eaa31ef3a1456dd31ab746ae3ca71f2a15047b5b3a5eab28a0ef7022ab7'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260826_02_backfill_akasha_message_embeddings.py'
+sha256 = 'c4c23e4d7a4c2394231bda29340b5d1ed376314e7ed4e30145e83ed88db75665'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260826_03_unify_akashic_channel_identity.py'
+sha256 = '0a4c42726574c132f9d6162edeeeaff77d6dab3de8b35f2f36a9d3e9bf17eaad'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260827_01_normalize_session_timestamps.py'
+sha256 = '0b89a58e81b971569e72ac677ff2c32acb50eaa2f17840e3c212f6993dad3d16'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260827_02_migrate_legacy_mobile_client_ids.py'
+sha256 = 'dde0e7140c0194ab3f3410d13e68049be96265d843afef4a0e53f29478aedac1'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260828_01_migrate_eventmail_state.py'
+sha256 = 'bdb3f77345a3f90853afc9d50eb3f77795a70b280c48f69a8f174a0c862050e4'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260828_02_add_wake_content_scores.py'
+sha256 = '93b9d94fc9f3a0b2bac987883e4b9a58f663f588bb56240e9c08689e471c2106'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260829_01_backfill_plugin_programmatic_effects.py'
+sha256 = '1d62e285ff776ad821680bb83931d44fbc6dddedf02cc718904661925ccc4bcd'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260829_02_backfill_explicit_programmatic_effects.py'
+sha256 = 'a6185734e3055cdec29c613419071181143464a764c60ad40a1f072a3ad5a3d1'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260829_03_retire_core_model_config.py'
+sha256 = '7f037e2c8d3bf149898d00ec63022d22be14ff4de800552c895c93bcbfb41652'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260831_01_migrate_compaction_plugin_config.py'
+sha256 = '7a1f1b34029f4896e7f655f7877dff80dfda593fb40d63fa13f3c14847eb0838'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260905_01_message_log.py'
+sha256 = 'ec36e682f9b8e8c37e4212d495421eba9892084c13e465eb7d927b91ce7549cb'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260905_02_owner_records.py'
+sha256 = '414f90d42995de4e3915f2a55f8f9ef9061005f26d627b34f08ae9d48bbc7023'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260905_03_model_calls.py'
+sha256 = '2cdbe244fb1fee683155666d9b07395b276f706c82a75d6d4e951b58dc1f08ae'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260905_04_akasha_consumption.py'
+sha256 = 'c7dca0bac5c3f73a79872824285b2111f8bd60997f6e14ad90f3fddeac3a4700'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260905_05_message_embeddings.py'
+sha256 = 'c524fdcdac7849bfe57e3cee7de34217e56a7f2e18bf35fc08d9a871f1cf8e44'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260905_06_message_artifacts.py'
+sha256 = '4b09985e8e7233d986e7685a9f7ac9fb0600d7cb92b8e1eaf8eaf28b34dd0754'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260906_01_scheduler_messages.py'
+sha256 = '5279e938ed384b045ded00434c1b96bb19dec3eef3fe8ffe6727a8d93411d116'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260906_01_turn_messages.py'
+sha256 = '6209d97978a8555c72e40d7fe4c55b20d42b431489087049998a8de8579793ea'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260906_02_session_attributes.py'
+sha256 = '90de96d86669e007a23a2c46c6eeaac8a91084c68e0bb71c4cac2de934063d66'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260906_03_plugin_update_rollback.py'
+sha256 = '5d5cd544e8ef601d1b6e913c4187d0c16b7de940f52b2d1a40e7effcdc54ea1e'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260906_04_channel_identities.py'
+sha256 = '3191d35a3b1ab437b26dcf004a89ca65f2d756a9a0b1f01154a4bcb997a10ff7'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260906_05_mobile_input_rejections.py'
+sha256 = '75ae2e98273660640076108c83af2d11e39045289e8c5c915b36602c8b570376'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260906_06_model_call_timing.py'
+sha256 = '4d1367e3ff5502240b6c4d907d32920d3350ec737fde02462d265b3113c99bd0'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260907_01_context_material_grants.py'
+sha256 = '8c16548e8b267db327fddd2935b5c71898e8346625a3db07537995ab01187193'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260907_02_retire_legacy_agent_config.py'
+sha256 = 'db41e6e265e4a8c5b7eb15ffc8201fc9a7cae3ea6cc90d676f5b0b7323350e68'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260907_03_message_metadata.py'
+sha256 = '8ff1bf4a32dafb964cf5d8a32e9a1aa81ad9fc66f63b35ecaf402baf8482e6d1'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260907_03_skill_prompt_grant.py'
+sha256 = '8763446d97b150068d2f28b1358eb84932a085fdf6fc49fbf70a3f0ea0f4112f'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260908_01_legacy_summaries.py'
+sha256 = '8b1c01a7264621dc46ed2d2a6a63d4389c3a2174d4ee844b60c2685875bb0209'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260909_01_close_empty_wake_responses.py'
+sha256 = 'b44bb42c4d3f03b3792e21bc838351514f5a10c566d3affe9ffb8edcbdc41616'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260909_01_tool_provider_views.py'
+sha256 = '5b8cdfc8850560debeb5b5c45e9fc6160fc14f110502c958e090449933db0feb'
+
+[[sources.files]]
+path = 'migrations/yoyo/20260909_02_execution_failures.py'
+sha256 = '82d1564f330327b88b691232f20b0bc502dbd015da148d4dc39626e380d209c5'

@@ -65,7 +65,9 @@ def env(tmp_path):
                         content={"text": lambda part: ContentReferences()})
     message = writer.append("answer", Output((ContentPart("text", "unique original body"),), "complete"))
     sink = Sink(name="phone", binding_id="original-adapter", address="original-address")
-    execution = Deliveries(records, MessageCatalog(log), tasks, open_sender, task_key="delivery")
+    execution = Deliveries(
+        records, MessageCatalog(log), tasks, open_sender, task_key="delivery",
+    )
     yield log, records, state, reader, writer, message, sink, tasks, provider, opened, denied, execution
     log.close()
 
@@ -290,7 +292,9 @@ async def test_restart_preserves_original_effect_and_queries_before_retry(env, t
         reopened = MessageLog(path)
         try:
             restored = DeliveryRecords(reopened.owner("plugin:delivery"), "fixture")
-            execution = Deliveries(restored, MessageCatalog(reopened), tasks, execution._open_sender, task_key="delivery")
+            execution = Deliveries(
+                restored, MessageCatalog(reopened), tasks, execution._open_sender, task_key="delivery",
+            )
             result = await execution.send(message.message_id, sink.name)
             assert result.status == expected
             assert len(provider.sent) == sends
@@ -614,8 +618,10 @@ async def test_foreign_owner_cannot_join_an_active_send(env):
         pytest.fail("foreign consumer must not open the provider")
         yield provider
 
-    foreign = Deliveries(DeliveryRecords(log.owner("plugin:delivery"), "foreign"), log.catalog(),
-                         tasks, open_sender, task_key="delivery")
+    foreign = Deliveries(
+        DeliveryRecords(log.owner("plugin:delivery"), "foreign"), log.catalog(),
+        tasks, open_sender, task_key="delivery",
+    )
     try:
         with pytest.raises(PermissionError, match="owner"):
             await foreign.send(reply.message_id, sink.name)

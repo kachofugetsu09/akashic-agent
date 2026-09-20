@@ -1,12 +1,11 @@
 import pytest
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 
 from agent.plugin_composition.models import EmbeddingResult, EmbeddingSpaceDescriptor
 
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.recall_tool import RecallTool
-from plugins.tools.api import InvalidArguments
 from session.message import Output
 from tests.test_akasha_message_queries import memory_runtime
 
@@ -32,7 +31,7 @@ def target(tmp_path, runtime, *, embed=None, binding=None, model_id="fixture", m
     async def open_embedding(model_id: str):
         assert model_id == "fixture"
         yield Model()
-    return RecallTool(memory=tmp_path / "memory.db", legacy_index=None, config=MemoryConfig(),
+    return RecallTool(memory=tmp_path / "memory.db", config=MemoryConfig(),
         catalog=runtime._catalog, embeddings=runtime._embeddings, bindings=runtime._bindings,
         select_learning=lambda: (runtime._learning_binding if binding is None else binding, model_id),
         records=runtime._records, open_embedding=open_embedding, max_chars=max_chars)
@@ -46,6 +45,7 @@ async def test_recall_tool_recovers_original_query_after_graph_advances_without_
         assert await runtime.consume() == 1
         recall = target(tmp_path, runtime)
         arguments = await recall.prepare({"query": "original memory"})
+        assert isinstance(arguments, Mapping)
         result = await recall.invoke("request", arguments)
         observed = records.read("tool:request")
         assert observed.source.kind == "program"
@@ -73,8 +73,7 @@ async def test_recall_rejects_invalid_user_arguments_before_query(tmp_path):
     async with memory_runtime(tmp_path) as (runtime, consumer, log, records, calls, write):
         recall = target(tmp_path, runtime)
         for arguments in ({"query": "  "}, {"query": "q", "limit": 0}, {"query": "q", "source": {}}):
-            with pytest.raises(InvalidArguments):
-                await recall.prepare(arguments)
+            assert isinstance(await recall.prepare(arguments), str)
         assert calls == []
 
 
@@ -86,6 +85,7 @@ async def test_prepared_recall_keeps_learning_model_and_budget_when_defaults_cha
         assert await runtime.consume() == 1
         original = target(tmp_path, runtime, max_chars=100)
         prepared = await original.prepare({"query": "recall"})
+        assert isinstance(prepared, Mapping)
         changed = target(tmp_path, runtime, binding="unavailable-new-rule", model_id="new-default", max_chars=1)
         result = await changed.invoke("prepared", prepared)
         record = records.read("tool:prepared")
@@ -103,6 +103,7 @@ async def test_bad_embedding_never_publishes_query_or_changes_learning(tmp_path,
             return values
         recall = target(tmp_path, runtime, embed=invalid)
         prepared = await recall.prepare({"query": "test"})
+        assert isinstance(prepared, Mapping)
         with pytest.raises(ValueError, match="embedding"):
             await recall.invoke("invalid", prepared)
         assert records.read("tool:invalid") is None

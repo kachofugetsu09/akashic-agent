@@ -6,19 +6,17 @@ from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import BoundEmbeddingModel
-from plugins.content.api import Reference
-from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS
-from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
-from session.message import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
-from session.message_codec import json_value
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
+from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import json_value
+from ._boundaries import CallSource, Result, TOOLS
 
 from .application.consumer import run_memory_job
 from .application.snapshot import read_memory
@@ -60,13 +58,13 @@ def check_recall(part: ContentPart) -> ContentReferences:
 def tool_references(
     snapshot: tuple[Message, ...], source: str, learning: Learning,
     bindings: Bindings, records: RecallRecords,
-) -> tuple[Reference, ...]:
+) -> tuple[Mapping[str, object], ...]:
     """只有实际 Akasha 调用产生且属于该 CallRef 的查询记录能授予本地引用。"""
     turns = learning.projection.project(snapshot, source)
     if not turns or turns[-1].status != "open":
         return ()
     by_id = {message.message_id: message for message in snapshot}
-    references: dict[str, Reference] = {}
+    references: dict[str, Mapping[str, object]] = {}
     for call_ref, identity in turns[-1].observations:
         result = by_id[identity].body
         if not isinstance(result, ToolResult) or result.outcome != "success":
@@ -90,8 +88,11 @@ def tool_references(
                 or recall.source.session_id != request.session_id or recall.source.call_ref != call_ref):
                 raise ValueError("召回记录不属于实际工具调用")
             for message_id in recall.presented_message_ids:
-                references[message_id] = Reference(message_id, resolved_ref=message_id,
-                                                   retrieval_ref=marker.retrieval_ref)
+                references[message_id] = {
+                    "ref": message_id,
+                    "resolved_ref": message_id,
+                    "retrieval_ref": marker.retrieval_ref,
+                }
     return tuple(references.values())
 
 
@@ -101,15 +102,15 @@ class RecallTool:
     idempotent = True
 
     def __init__(
-        self, *, memory: Path, legacy_index: Path | None, config: MemoryConfig,
+        self, *, memory: Path, config: MemoryConfig,
         catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
         select_learning: Callable[[], tuple[str, str]], records: RecallRecords,
-        open_embedding: Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]], max_chars: int = 12000,
+        open_embedding: Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]],
+        max_chars: int = 12000,
     ):
         if max_chars <= 0:
             raise ValueError("召回文本预算必须为正")
         self._memory = memory
-        self._legacy_index = legacy_index
         self._config = config
         self._catalog = catalog
         self._embeddings = embeddings
@@ -119,12 +120,14 @@ class RecallTool:
         self._open_embedding = open_embedding
         self._max_chars = max_chars
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(
+        self, arguments: Mapping[str, object], source: CallSource | None = None,
+    ) -> Mapping[str, object] | str:
         """只固定用户查询和实际 CallRef；后来输入不会改变参数出处。"""
         try:
             request = RecallArguments.model_validate(json_value(arguments))
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         origin = None if source is None else ToolSource(
             session_id=source.messages[0].session_id, call_ref=source.call_ref,
         )
@@ -146,7 +149,7 @@ class RecallTool:
         async with self._bindings.open(request.learning_binding, AKASHA_LEARNING) as (learning, metadata):
             rule = LearningConfig.model_validate(dict(metadata))
             async with read_memory(
-                self._memory, legacy_index=self._legacy_index, catalog=self._catalog,
+                self._memory, catalog=self._catalog,
                 embeddings=self._embeddings, bindings=self._bindings, config=self._config,
                 embedding_space=(rule.embedding_model, rule.dimension),
             ) as (cycle, state):
@@ -172,10 +175,10 @@ class RecallTool:
             material = render_materials(identity, recall, learning, self._catalog, max_chars=request.max_chars)
             recall = recall.model_copy(update={
                 "max_chars": request.max_chars,
-                "presented_message_ids": tuple(dict.fromkeys(ref.ref for ref in material.references)),
+                "presented_message_ids": tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))),
             })
             _ = self._records.save(identity, recall)
-            return self._result(identity, recall, tuple(ContentPart("text", part.text) for part in material.reminders))
+            return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))
 
     async def query(self, key: str) -> Result | None:
         """工具外部结果恢复只读实际查询记录；不读当前图或重跑模型。"""
@@ -185,9 +188,9 @@ class RecallTool:
             return None
         async with self._bindings.open(recall.learning_binding, AKASHA_LEARNING) as (learning, _metadata):
             material = render_materials(identity, recall, learning, self._catalog, max_chars=recall.max_chars)
-        if tuple(dict.fromkeys(ref.ref for ref in material.references)) != recall.presented_message_ids:
+        if tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))) != recall.presented_message_ids:
             raise ValueError("原查询呈现的材料发生变化，不能用当前结果冒充恢复")
-        return self._result(identity, recall, tuple(ContentPart("text", part.text) for part in material.reminders))
+        return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))
 
     @staticmethod
     def _result(identity: str, recall: Recall, parts: tuple[ContentPart, ...]) -> Result:

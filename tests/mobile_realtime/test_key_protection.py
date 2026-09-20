@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from infra.mobile_realtime.key_protection import (
+from plugins.akashic_clients.mobile_realtime.key_protection import (
     EncryptedKeyBlobCodec,
     FileMasterKeyStore,
     KeyProtectionError,

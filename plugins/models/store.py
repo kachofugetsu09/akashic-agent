@@ -15,20 +15,22 @@ from typing import Any, Literal, cast
 from urllib.parse import quote
 
 from agent.plugin_composition import (
-    AddConnection,
-    AddModel,
     CapabilitySources,
-    CreateConnectionWithModel,
-    DisableConnection,
     DiscoveredModel,
     ModelCapabilities,
     ModelKind,
     RevisionConflictError,
-    SetDefaultModel,
-    UpdateConnection,
 )
 
 from .credentials import StoredCredentialHandle, encode_credential
+from .settings import (
+    AddConnection,
+    AddModel,
+    CreateConnectionWithModel,
+    DisableConnection,
+    SetDefaultModel,
+    UpdateConnection,
+)
 from agent.plugin_composition.models import (
     BoundModelDescriptor,
     ModelCallStats,
@@ -552,11 +554,9 @@ class ModelsStore:
 
         model_id = _required(command.model_id, "model_id")
         role = command.role
-        role_value = (
-            None
-            if role is None
-            else str(role.value if hasattr(role, "value") else role)
-        )
+        if role is not None and type(role) is not str:
+            raise ValueError("model role must be a string")
+        role_value = role
 
         def write(connection: sqlite3.Connection) -> None:
             if role_value is None:

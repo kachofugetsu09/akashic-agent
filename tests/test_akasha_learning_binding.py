@@ -9,6 +9,8 @@ from typing import Literal
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -28,7 +30,7 @@ from session.message import CallRef, ContentPart, ContentReferences, Control, In
 def sources(path):
     for name in ("akasha", "turn_projection", "tools", "content"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, path / name,
-                        ignore=shutil.ignore_patterns("__pycache__", "akashic.plugin.toml"))
+                        ignore=shutil.ignore_patterns("__pycache__"))
     # 这里只装配真实纯学习能力；正式 Akasha 的 recall/UI/worker 接线另行验收。
     (path / "akasha/plugin.py").write_text('''
 from contextlib import asynccontextmanager
@@ -37,7 +39,6 @@ from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.plugin import TOOLS
 from agent.plugin_composition.bindings import BINDINGS
 from plugins.content.plugin import CONTENT
-from plugins.content.api import ContentSchema
 from .tools import FeedbackTool, FeedbackArguments, check_feedback
 from .infrastructure.consumption import load_message_nodes
 from pathlib import Path
@@ -46,17 +47,17 @@ api_version = 3
 name = "akasha"
 version = "1.0.0"
 inject = (TURN_PROJECTION, TOOLS, CONTENT, BINDINGS)
-async def apply(ctx, config):
-    learning = Learning(ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id)
+async def apply(ctx):
+    learning = Learning(ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id, post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect)
     await ctx.provide(AKASHA_LEARNING, learning)
-    await ctx.require(CONTENT).register(ctx, ContentSchema(name="akasha", content={"akasha.feedback": check_feedback}))
+    await ctx.require(CONTENT).register(ctx, {"name": "akasha", "content": {"akasha.feedback": check_feedback}})
     async def start(event):
         raise AssertionError("restoring learning must not start runtime")
     await ctx.on(RUNTIME_STARTED, start)
     for action in ("remember", "forget"):
         @asynccontextmanager
         async def open_feedback(candidates, action=action):
-            yield FeedbackTool(action, learning, ctx.require(BINDINGS), lambda: load_message_nodes(Path(MEMORY_PATH), None))
+            yield FeedbackTool(action, learning, ctx.require(BINDINGS), lambda: load_message_nodes(Path(MEMORY_PATH)))
         await ctx.require(TOOLS).register(ctx, name=action + "_memory", description=action + " selected messages",
             parameters=FeedbackArguments.model_json_schema(), open=open_feedback, idempotent=True)
 '''.replace('MEMORY_PATH', repr(str(path.parent / 'memory.db'))))
@@ -74,13 +75,16 @@ async def test_excluded_learning_materials_never_reach_embeddings_or_graph(tmp_p
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None,
+        consumer = await MessageConsumer.load(tmp_path / "memory.db", 
             catalog=log.catalog(), embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         raw = '{"effects":{"post_commit":"suppress"}}'
         provenance = ContentPart("history.provenance", {
@@ -121,19 +125,22 @@ async def test_excluded_learning_materials_never_reach_embeddings_or_graph(tmp_p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("damage", [None, "missing_embedding", "missing_archive"])
-async def test_archived_learning_restores_complete_interrupted_turn_and_feedback_without_relearning(tmp_path, monkeypatch, damage):
+@pytest.mark.parametrize("damage", [None, "missing_embedding"])
+async def test_learning_restores_complete_interrupted_turn_without_relearning(tmp_path, monkeypatch, damage):
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     memory = tmp_path / "memory.db"
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         assert memory.exists()  # 首次切换起点在任何学习之前已耐久。
         rule = LearningConfig(embedding_model="fixture-space", dimension=2, sources=("chat",))
@@ -192,24 +199,24 @@ async def test_archived_learning_restores_complete_interrupted_turn_and_feedback
         consumer.close()
         consumer = None
         await host.terminate_all()
-        shutil.rmtree(root)
-        host = manager(tmp_path, [], log)
-        bindings = Bindings(log, host._archive, host.open_binding)
+        host = manager(tmp_path, [root], log)
+        await host.load_all()
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         def forbidden_commit(*args, **kwargs):
             raise AssertionError("loading a published graph must not learn again")
         monkeypatch.setattr(MemoryCycle, "commit", forbidden_commit)
         if damage == "missing_embedding":
             with closing(sqlite3.connect(tmp_path / "sessions.db")) as db, db:
                 db.execute("DELETE FROM message_embeddings WHERE message_id='u2'")
-        elif damage == "missing_archive":
-            shutil.rmtree(tmp_path / "workspace/runtime/plugin-archives")
         if damage is not None:
             with pytest.raises((ValueError, FileNotFoundError)):
-                await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+                await MessageConsumer.load(memory, catalog=log.catalog(),
                                            embeddings=embeddings, bindings=bindings, config=MemoryConfig())
             assert logical_state_sha256(memory) == before
             return
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         assert consumer.cycle.state_version == 1
         assert consumer.cycle.turns[0].user_text == turn.user_text
@@ -226,21 +233,25 @@ async def test_archived_learning_restores_complete_interrupted_turn_and_feedback
 @pytest.mark.asyncio
 async def test_initial_cutover_is_not_recomputed_after_restart_before_first_learning(tmp_path):
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [], log)
-    bindings = Bindings(log, host._archive, host.open_binding)
     memory = tmp_path / "memory.db"
     consumer = None
     try:
+        await host.load_all()
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         def accept(identity):
             log.writer("s", author="user", source="chat", body_types=(Input,), content={}).append(identity, Input(()))
         accept("old")
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=MessageEmbeddings(log), bindings=bindings, config=MemoryConfig())
         assert consumer.state.cutover_heads == (("s", 0),)
         consumer.close()
         consumer = None
         accept("new")
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=MessageEmbeddings(log), bindings=bindings, config=MemoryConfig())
         assert consumer.state.cutover_heads == (("s", 0),)
         assert consumer.cycle.state_version == 0
@@ -257,14 +268,17 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     memory = tmp_path / "memory.db"
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         rule = LearningConfig(embedding_model="fixture-space", dimension=2, sources=("chat", "wake", "timer"))
         async with lease_runtime_snapshot(host.snapshot_store):
@@ -317,7 +331,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
             assert consumer.cycle.state_version == 1
             consumer.close()
             consumer = None
-            consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+            consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                                   embeddings=embeddings, bindings=bindings, config=MemoryConfig())
             assert await consume() == 2
         else:
@@ -334,7 +348,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
         assert calls[-1] == ["u1", "u2", "u3", "answer"]
         assert all("quiet_input" not in batch and "unfinished" not in batch for batch in calls)
         consumer.close()
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         async with lease_runtime_snapshot(host.snapshot_store):
             changed_model = bindings.bind(AKASHA_LEARNING, {**rule.model_dump(), "embedding_model": "other-space"})
@@ -369,12 +383,15 @@ async def test_feedback_uses_prepared_message_identity_after_interrupt_and_repor
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
-        consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None, catalog=log.catalog(),
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        consumer = await MessageConsumer.load(tmp_path / "memory.db", catalog=log.catalog(),
             embeddings=MessageEmbeddings(log), bindings=bindings, config=MemoryConfig())
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
@@ -444,7 +461,7 @@ api_version = 3
 name = "foreign"
 version = "1.0.0"
 inject = (TOOLS,)
-async def apply(ctx, config):
+async def apply(ctx):
     class Target:
         idempotent = True
         async def prepare(self, arguments, source=None):
@@ -462,14 +479,17 @@ async def apply(ctx, config):
         parameters={"type": "object"}, open=open, idempotent=True)
 ''')
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     memory = tmp_path / "memory.db"
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(memory, legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         before = logical_state_sha256(memory)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
@@ -520,13 +540,16 @@ async def test_same_output_feedback_checks_all_member_targets_before_authorizati
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None, catalog=log.catalog(),
+        consumer = await MessageConsumer.load(tmp_path / "memory.db", catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         async def embed(texts):
             return [[0.6, 0.8] for _ in texts]

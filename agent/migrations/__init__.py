@@ -1,3 +1,10 @@
+from agent.migrations.bundles import (
+    MigrationBundle,
+    MigrationBundleBlocked,
+    MigrationBundleError,
+    MigrationRequirement,
+    MigrationSpec,
+)
 from agent.migrations.runner import (
     MigrationOutcome,
     MigrationRunner,
@@ -5,7 +12,12 @@ from agent.migrations.runner import (
 )
 
 __all__ = [
+    "MigrationBundle",
+    "MigrationBundleBlocked",
+    "MigrationBundleError",
     "MigrationOutcome",
     "MigrationRunner",
+    "MigrationRequirement",
+    "MigrationSpec",
     "migrate_installation",
 ]

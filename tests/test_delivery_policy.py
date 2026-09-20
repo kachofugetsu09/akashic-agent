@@ -94,14 +94,16 @@ async def test_failed_sink_does_not_cancel_other_sink_and_restart_keeps_original
         yield {"bad-A": bad, "good-A": good}[binding]
 
     def execution():
-        return Deliveries(records, log.catalog(), tasks, open_sender, task_key="delivery")
+        return Deliveries(
+            records, log.catalog(), tasks, open_sender, task_key="delivery",
+        )
 
     writer = log.writer("chat", author="reply", source="conversation", body_types=(Output,),
                         content={"text": lambda part: ContentReferences()})
     message = writer.append("answer", Output((ContentPart("text", "original"),), "complete"))
     selected = (
-        Sink(name="bad", binding_id="bad-A", address="bad-original"),
-        Sink(name="good", binding_id="good-A", address="good-original"),
+        {"name": "bad", "binding_id": "bad-A", "address": "bad-original"},
+        {"name": "good", "binding_id": "good-A", "address": "good-original"},
     )
     watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, lambda *_: selected))
     try:
@@ -204,7 +206,9 @@ async def test_restart_policy_cannot_send_a_scheduler_notification_cancelled_on_
         yield provider
 
     def execution():
-        return Deliveries(policy, log.catalog(), tasks, open_sender, task_key="delivery")
+        return Deliveries(
+            policy, log.catalog(), tasks, open_sender, task_key="delivery",
+        )
 
     def changed_policy(*_):
         pytest.fail("another owner already fixed this selection")
@@ -221,7 +225,9 @@ async def test_restart_policy_cannot_send_a_scheduler_notification_cancelled_on_
             with pytest.raises(PermissionError, match="owner"):
                 await operation
         assert store.read().fires[fire.key].status == "cancelled"
-        recovery = Deliveries(scheduler, log.catalog(), tasks, open_sender, task_key="delivery")
+        recovery = Deliveries(
+            scheduler, log.catalog(), tasks, open_sender, task_key="delivery",
+        )
         assert await recovery.cancel_prepared(message.message_id, sink.name, "任务已被明确取消")
         assert scheduler.read(message.message_id, sink.name)[1].phase == "rejected"
         assert provider.sent == provider.queries == []

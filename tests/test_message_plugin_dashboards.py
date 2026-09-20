@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent.plugin_composition.ui import UI
+
 import asyncio
 from contextlib import closing
 import hashlib
@@ -17,7 +19,7 @@ import pytest
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot
-from agent.plugins.web_ui import WebModuleDescriptor
+from agent.plugin_composition.ui import WebModuleDescriptor
 from bootstrap.dashboard_api import create_dashboard_app
 from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
 from plugins.delivery.history import DELIVERY_READ
@@ -45,7 +47,7 @@ def _file_snapshot(path: Path) -> dict[str, tuple[int, str]]:
 
 
 def _web_headers(snapshot: RuntimeSnapshot, plugin_id: str) -> tuple[WebModuleDescriptor, dict[str, str]]:
-    catalog = snapshot.web_ui_catalog
+    catalog = snapshot.composition_root.context.require(UI).catalog()
     assert catalog is not None
     module = next(item for item in catalog.modules if item.plugin_id == plugin_id)
     headers = {
@@ -219,7 +221,7 @@ async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_pa
             detail="dashboard fixture",
             completed_at=now,
         )
-        direct_receipt = ctx.require(DELIVERY_READ).status(original.notification_id, original.sink.name)
+        direct_receipt = ctx.require(DELIVERY_READ).status(original.notification_id, original.sink["name"])
         assert direct_receipt is not None
         target_message = log.reader(original.target.session_id).get(original.notification_id)
         assert target_message is not None

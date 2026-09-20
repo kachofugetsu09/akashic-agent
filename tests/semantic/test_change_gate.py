@@ -305,6 +305,8 @@ def test_companion_group_rejects_wrong_path_owner() -> None:
 def test_deleted_path_requires_frozen_base_match(tmp_path: Path, monkeypatch: Any) -> None:
     gate = _gate_module()
     baseline = json.loads(gate.BASELINE_PATH.read_text(encoding="utf-8"))
+    # Keep baseline validation active so this test reaches the deleted-path check.
+    baseline["catalogDigest"] = gate.catalog_digest()
     baseline_path = tmp_path / "coverage-baseline.json"
     baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
     monkeypatch.setattr(gate, "BASELINE_PATH", baseline_path)

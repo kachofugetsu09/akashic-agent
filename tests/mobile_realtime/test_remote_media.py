@@ -7,8 +7,8 @@ from pathlib import Path
 import httpcore
 import pytest
 
-from infra.channels.base import AttachmentStore
-from infra.mobile_realtime.remote_media import (
+from plugins.akashic_clients.attachments import AttachmentStore
+from plugins.akashic_clients.mobile_realtime.remote_media import (
     PinnedNetworkBackend,
     RemoteMediaError,
     snapshot_remote_media,

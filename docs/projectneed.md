@@ -241,11 +241,13 @@ candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有�
 或子插件时按 Web module Effect 递归清理。Core Web Host 与 conversation-ui 不得按 Computer、Browser 或
 其他子插件名称分支，工具区也不得取得 Session、Turn 或插件领域状态所有权。
 
-### AKC-001 Web 与 Mobile 使用一个 Core Akashic Channel
+### AKC-001 Web 与 Mobile 使用一个插件拥有的 Akashic Channel
 
-Web 与 Mobile 对话必须由 Core 内建且只注册一次的 `akashic` Channel 承载。两端只是这个
-Channel 的边界 adapter，不得分别注册 `web`、`mobile` 对话 Channel，也不得为统一入口新增
-共同客户端协议、状态机或平台能力 owner。外部 Channel 不受影响。
+Web 与 Mobile 对话必须由普通 `akashic_clients` 插件只注册一次的 `akashic` Channel 承载。
+两端是这个 Channel 的边界 adapter，不得分别注册 `web`、`mobile` 对话 Channel。客户端认证、
+传输、配对和监听生命周期由该插件拥有；Core 只提供中立渠道、请求作用域与持久输入原子能力，
+不得按客户端名称或插件 ID 分支。共同 Session 身份与既有客户端协议保持不变。
+该归属修订见 [0067](decisions/0067-clients-are-ordinary-plugin.md)。
 
 ### AKC-002 两个 Adapter 复用同一个既有 Session 空间
 
@@ -533,9 +535,9 @@ session compaction ledger 的派生 checkpoint，不替代上述记忆状态；�
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
-`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有完成的 Turn 投影属于普通学习样本；被中断、失败或明确标为 `effects.post_commit=suppress` 的消息段保留在原始会话中，但不要求 embedding，也不进入显式记忆图。历史排除字段由启动 Yoyo 一次性迁为同一个 effect；runtime 与 replay 不保留旧字段解码器。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+`akasha.db` 是唯一的派生 sidecar（旧的 `akasha-v2-index.db` 稀疏索引已退役）。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。重建与在线学习共用同一条实现：重建只是在空图上、没有切换上界地重放同一个 `MessageConsumer`，禁止再有第二份重建实现。只有完成的 Turn 投影属于普通学习样本；被中断、失败或明确标为 `effects.post_commit=suppress` 的消息段保留在原始会话中，但不要求 embedding，也不进入显式记忆图。历史排除字段由启动 Yoyo 一次性迁为同一个 effect；runtime 与 replay 不保留旧字段解码器。同一组输入必须得到可复现的图。学习样本缺少固定 embedding 时不学习该 turn，但必须在消费状态里留下明确的跳过记事（含原因），并在重建报告里计数；跳过是持久事实，在线路径不得稍后乱序补学。模型或维度与目标空间不匹配仍然必须 fail-loud。
 
-用户按 SES-003 撤销一组 Message 后，Akasha 必须从剩余固定输入重建 sidecar；source event 的 embedding + staging、source 删除、pending 清理和派生发布由同一管理协调流程串行化，不能在新完成 Turn 已落库但 embedding 尚未持久化时开始 rebuild。两份 sidecar 之间的发布崩溃窗口必须在重启时通过身份失配确定性收敛；当前进程若未能重建，则 memory query 和管理读取保持 fail-loud。
+用户按 SES-003 撤销一组 Message 后，Akasha 必须从剩余固定输入重建 sidecar；source event 的 embedding + staging、source 删除、pending 清理和派生发布由同一管理协调流程串行化，不能在新完成 Turn 已落库但 embedding 尚未持久化时开始 rebuild。重建直接写丢弃用候选文件并在结束时一次原子替换，崩溃只留下可重跑的候选；当前进程若未能重建，则 memory query 和管理读取保持 fail-loud 并显示需要显式重建。
 
 ### MEM-010 Akasha 对同一 Turn 投影建立一个确定性样本
 
@@ -689,13 +691,16 @@ Mobile 中止按钮和 channel `/stop` 只追加带精确 `source` 与 `through_
 
 ## 10. 插件 generation 与 snapshot
 
+本节按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 修订为整体换代目标。
+旧实现的迁移差距与分层验收见[重构合同](design/plugin-whole-runtime-simplification.md)。
+
 ### PLG-001 候选插件不得污染正式状态
 
-候选在 commit 前只能使用 generation 私有 staging、只读 session/memory 和 staged event bus。初始化失败后，正式 KV、session、memory、事件和外部服务必须与开始前一致。
+候选使用独立实例、消息及运行资源，不因装配或检查自动修改正式 KV、session、memory 或接纳正式工作。普通 latest 调用默认由模型插件提供已有模型设置和凭据；实际模型请求及凭据刷新归模型 owner，不要求另配账号。候选隔离是资源与调用归属，不是同进程 Python 的安全沙箱；真实远程调用不会因候选失败而回滚。
 
-### PLG-002 单次 reconciliation 使用一个发现快照
+### PLG-002 一次装配使用一份固定输入
 
-同一轮候选准备、禁用和发布使用同一个不可变 topology revision。扫描后的文件变化只进入下一轮。
+一次装配固定全部插件制品、入口、运行环境与配置。文件变化只形成下一份候选输入，不改变已发布组合。底座解释硬依赖、服务选择、冲突和环；provider 初始化完成后才初始化其消费者，不另设启动优先级语言。
 
 ### PLG-003 在途请求绑定同一 runtime snapshot
 
@@ -703,31 +708,31 @@ Mobile 中止按钮和 channel `/stop` 只追加带精确 `source` 与 `through_
 
 ### PLG-004 发布对外观察必须原子
 
-candidate 在所有 invariant 通过前不接受公开请求。commit 临界区一次切换 current 与 admission；失败继续使用 previous。恢复指针但无法撤销已发生外部效果不算完整回滚。
+候选初始化和公开接纳分离。完整组合初始化成功后才允许提交 stable，提交后开放唯一 admission 屏障。提交前失败不改变 stable；恢复旧选择必须真实完成旧组合启动，不能靠恢复内存指针假报恢复，更不表示外部效果或数据已回滚。
 
-### PLG-005 独占 endpoint 先停 admission 再排空
+### PLG-005 低频更新使用完整组合换代
 
-端口、channel 和 managed service 换代前暂停新请求，等待旧 lease 归零，再切换 endpoint。失败时先恢复旧 endpoint 和 admission，随后清理候选；持有当前 lease 的调用栈不得发起会等待自身的切换。
+更新先关闭新工作来源，再排空已有有限工作，停止旧组合并启动完整新组合。允许短暂停服，不拼接新旧 Root，不在已发布组合内响应式替换 provider。持有当前 lease 的调用栈只能登记更新，不能等待自身排空。更新有有限截止时间：排空超时且旧资源尚未释放时取消本次更新并恢复旧接纳；释放开始后只有真实恢复成功才开放，否则保持明确故障并交由宿主或维护者处理，不无限静默等待。新插件负责理解现有数据；旧代码可能无法读取新写入，底座不承诺数据回滚或自动安全降级。
 
 ### PLG-006 清理逆序、抗取消并保留全部失败
 
-插件 task、process、subscription 和 catalog cleanup 按注册逆序执行。调用方取消不能截断清理；每项都要尝试，完成全部清理后聚合错误。
+Scope 唯一持有资源关闭责任，provider 实现实际关闭。消费者先于其依赖退出，同一作用域内按取得资源的逆序释放。取消不能丢失关闭责任；并发关闭等待同一次操作。成功释放才移除句柄，失败保留原 owner、句柄及清理仍需要的依赖，并报告错误；重试关闭不授予重放业务效果的权限。跨进程资源由宿主 controller 保留实际回收责任。
 
-### PLG-007 Watcher 单轮失败不终止生命周期
+### PLG-007 发现变化不等于提交更新
 
-一次 scan 或 reconcile 失败只影响当前 revision，旧插件继续服务。相同失败 revision 只允许有界自动重试，不得无限重试；达到上限后由后续变化或显式 wake 恢复。只有 reconcile 成功才能推进已确认 revision 并发布 catalog changed 等后置通知，失败状态不得要求消费者通过清缓存恢复。stop 必须可等待。
+发现变化只能提出候选，不改变 stable。加载或装配检查失败明确返回错误，不无限重试，不自动续跑未提交更新。成功发布后才发出变更通知；停止必须可等待。
 
 ### PLG-008 动态协议和冲突 fail-loud
 
-active 检查错误、generation key 错配、名称冲突、依赖缺失和拓扑环必须在发布前拒绝。不得以“后注册覆盖前者”或默认 active 掩盖错误。
+入口无法调用、制品身份错配、服务冲突、硬依赖缺失和拓扑环必须在发布前拒绝。插件自行解释配置并抛出初始化错误，底座保留归属和原错误。不限制入口参数名字，不比较静态与动态两份运行规格，不把业务自测或诊断状态升级为装配合法性。
 
 ### PLG-009 Skill 和 MCP 通过插件安装发布
 
-Skill、Drift skill 和 MCP server 都由 V3 插件 artifact 声明并通过插件安装系统进入 Akashic。模块的 `skill_roots`、`drift_skill_roots` 属性是 Skill 来源；MCP 的 static manifest admission identity 必须与 `apply` 中 `MCP_SERVERS.register(...)` 的 Fiber-owned registration 完全一致。安装阶段准备代码与 MCP runtime，generation readiness 全部通过后再原子发布 catalog。workspace 中的 skill 软链接只是当前插件 generation 的可重建投影，不是 canonical source。独立 `mcp/servers/*.toml`、手工 skill 目录和 `[packages]` 均不属于当前安装模型，也没有兼容读取入口。
+Skill、Drift skill 和 MCP server 由固定插件制品中的代码通过对应 provider 注册。插件底座不解释 `akashic.plugin.toml`，不保留静态资产导出与 `apply` 并行的注册路径。安装只准备代码与运行环境；资源请求只定义一次，由拥有该资源的 provider 验证和执行。Core 固定制品与组合，不解释 Skill 格式、MCP 命令或 Workload 端点关联。历史 skill 目录、软链接和 ownership journal 保留，不自动减少；未完成外部效果仍由原 owner 负责。
 
 ### PLG-010 卸载插件默认保留 plugin-data
 
-插件代码、安装清单和 workspace 内 `plugin-data` 使用不同生命周期。普通卸载只移除插件 cache、manifest entry 和能力投影，必须保留 `<workspace>/plugin-data/<plugin>-<marketplace>/`。永久删除插件数据需要名称不同的用户操作、影响预览、独立备份和再次确认，不能作为卸载的隐式 cascade。
+插件制品、stable 组合选择和 workspace 内 `plugin-data` 使用不同生命周期。普通卸载提交一份不含该插件的组合，释放旧运行资源，但保留数据、历史 binding 与恢复仍引用的制品。不把物理制品 GC 混入换代。永久删除插件数据需要名称不同的用户操作、影响预览、独立备份和再次确认，不能作为卸载的隐式 cascade。
 
 ### PLG-011 移动插件完整投影有界语义结果
 
@@ -737,15 +742,17 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 
 ### PLG-012 Turn 内卸载使用 Runtime owner 的异步排空
 
-持有 runtime snapshot lease 的 turn 可以登记卸载，但不得同步等待自己的 lease，不得在 turn 内停 endpoint、修改 manifest 或删除代码。只有 parent turn 正常结束且没有同 turn `plugin-revert` 时，Core 才在 lease 释放后异步停用、排空、移除 manifest/cache 和能力投影。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败必须报告实际残留，不能假报完成。
+持有 runtime snapshot lease 的 turn 可以登记卸载，但不得同步等待自己的 lease，不得在 turn 内停 endpoint 或删除代码。Agent 更新授权按 PLG-013 的普通 latest 调用及 revert 处理，不额外等待 parent turn terminal；底座在实际 lease 释放后按完整组合换代。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败保留实际 owner 并报告残留，不能假报完成。
 
-### PLG-013 插件行为验证使用 stable 与 latest
+### PLG-013 stable 是最后一次已提交的完整组合
 
-普通请求只租用已验证的 stable；latest 仍是 Core 内部候选，但只由发起 install 的 parent turn 所创建的 attached programmatic child 因果继承。父 turn 保持旧 stable；detached child、其他 turn 和没有匹配 generation/source identity 的请求不得取得候选。Agent 不手工选择 latest 或调用 promote/discard。
+普通请求只租用 stable 对应的运行组合。安装增加不可变制品，不修改 stable；候选单独固定完整代码、配置与环境输入。候选访问必须有匹配该候选的授权，不能通过任务上下文意外继承给无关工作。
 
-install 成功只表示候选可验证。至少一个匹配当前候选的 attached child 正常完成、没有 revert 且 parent 正常结束时，Core 才在 lease 释放后自动提交；无验证、child/parent 非正常终结或身份漂移必须丢弃。Core 只检查 child 的因果归属、generation/source identity 和正常终态，不要求某类插件、Tool 或 Skill 提供特制证明；parent 负责判断本次检查是否满足业务目标，检查失败必须在 parent terminal 前执行 `plugin-revert`。独占 managed service 使用 Core 分配的隔离端口和 plugin-data 副本；插件必须声明并读取 `validation_port_env`，否则 fail-loud。Channel 正式 ownership 只在 turn 后切换。cache artifact 按 source revision/tree digest 不可变保存，旧代码保留到提交、readiness、恢复检查和 lease 排空完成。 更新中进程死亡时，下次启动先恢复更新前的指针与受影响插件的启用状态，再按旧版启动；已明确提交成功则保留新版。不自动续跑安装、重建候选或继续验证，详见 [0056](decisions/0056-plugin-update-crashes-return-to-stable.md)。
+业务验证归调用程序和资源 provider。Agent 更新启动一次绑定确切候选的普通 programmatic 调用；升级发起者可以看到调用过程、结果和晋升状态，并在提交前用 revert 撤销本次晋升。该调用正常完成且未被撤销时默认请求晋升，不要求回答专用的通过裁决 JSON；失败、中断或结果未知不得视作正常完成。普通读取 latest 不授予晋升权。调用程序拥有终态与撤销判断，底座只检查提交授权、候选身份及基准 stable 未变化，不解释 attached child 或业务测试。调用退出并释放租约后才执行换代，提交后的撤销请求必须明确报告已提交，不伪装为取消成功。
 
-外部 operator 已经独立承担信任判断时，可以在 Supervisor 与 Runtime 均停止后使用名称明确的 trusted batch 入口，把完整 commit SHA 指向的 pure-v3 artifact 直接发布为 stable/latest。Runtime 消费 plugin-home 的整个生命周期都必须独占该 home 的 publication lock；trusted batch 必须先取得 supervisor/runtime 两把 workspace 生命周期锁，再取得同一 publication lock，拒绝 active turn、分支 ref、未知 batch 字段和非 v3 static manifest。回执必须写明 `programmaticValidation=bypassed_by_operator_trust`，不得伪造行为验证成功。在线安装、Agent 自改进和普通 `plugin-install` 继续无例外地走 candidate + attached programmatic child。
+候选使用独立实例，所需数据及模型连接由数据 owner 或调用程序提供，沿用 PLG-001 的可信插件合同。底座不复制业务数据库，不解释数据格式，也不在正式实例上切换数据目录。
+
+stable 通过一次耐久原子提交选择整个组合，不拼接各插件 latest 与 enabled 状态。提交前进程死亡恢复旧 stable，提交后恢复新 stable；不自动续跑未提交候选。恢复的是代码与配置选择，不是业务数据或外部效果。显式 operator 更新可以由 operator 承担验证授权，但仍固定精确制品、独占发布并记录真实验证来源，不伪造测试成功。旧状态格式只在带备份、锁与完整性检查的显式升级中转换，不在普通启动路径维持双读双写。
 
 ### PLG-014 新插件使用开放组合能力并保留 Core 晋升
 
@@ -753,7 +760,7 @@ install 成功只表示候选可验证。至少一个匹配当前候选的 attac
 
 通用事件只有五种 dispatch 合同：`emit` 同步串行并立即传播失败；`serial` 逐个等待且只有显式 `Bail` 可以短路；`parallel` 只接收异步 listener，并发执行、等待全部 settle 后聚合失败；`transform` 按注册顺序把同类型 immutable payload 显式变换成下一份；`observe` 调用全部 observer、等待异步 settle，并把普通失败隔离成 Incident 而不改写最终事实。listener 只使用同一 generation 内稳定注册顺序，不增加 priority、listener dependency DAG 或通用 waterfall。同步并发由有界 Executor Service 执行插件显式提交的纯同步任务；工作线程不得取得 Context、Fiber 或 Core 权限。
 
-组合拓扑只能生成候选能力，不能自行声明成功或晋升。Core 继续唯一拥有 artifact、generation identity、候选隔离、readiness、行为验证回执、stable/latest、snapshot lease、父 Turn 授权、晋升、丢弃和恢复日志。旧插件在逐个完成能力等价回放前保持原 lifecycle 与顺序；迁移完成后删除对应 legacy 分支，不为每个旧插件长期保留适配器。
+组合拓扑只能生成候选能力，不能自行晋升。底座唯一拥有制品身份、组合装配、Scope、snapshot lease、接纳与 stable 提交；具体能力、业务验证、配置和数据由其 owner 管理。snapshot 固定服务绑定与注册结果，不列举各类扩展目录。迁移完成后删除旧协议，不为仓库内插件长期保留适配器。
 
 ### PLG-015 插件诊断保留边界与领域 owner
 
@@ -775,15 +782,15 @@ generation identity 只作为 structured metadata；Prometheus 只聚合经过�
 插件只能导入公开 Plugin API 和自身包内代码；不得导入兄弟插件源码、Core 私有实现或依赖主
 仓库相对路径。跨插件关系只通过本地声明的版本化 `ServiceKey`、结构合同、事件和 provider
 选择的 Tool 表达。发布 Gate 必须在不加入主仓库源码路径的隔离安装中证明 import、apply、
-provide/inject、Tool、热重载、卸载和 plugin-data 边界。
+provide/inject、Tool、整体换代式热更新、卸载和 plugin-data 边界。
 
 ### PLG-017 Workload 是普通插件原子能力
 
 Workload 只表达插件 generation 拥有的外部运行生命周期。插件声明固定 image digest、命名端口、当前
 plugin-data 下的数据目录、资源上限和 health；Core 不按 Computer、Browser、OpenCLI 或插件 ID 分支。
 需要在非 root 容器中建立自身沙箱的 Workload 可以声明 `user_namespaces=true`；它只选择 Core 固定的
-受限 seccomp profile，不能传入任意 Docker security option，并进入静态 identity、spec 和漂移核对。
-Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；停止和 cleanup 失败由 Core 与 Controller
+受限 seccomp profile，不能传入任意 Docker security option；请求由 Workload provider 与 Controller 校验。
+Workload readiness 完成后，同一组合的 MCP 才能通过实际资源引用取得其端点；停止和 cleanup 失败由 Scope、provider 与 Controller
 保留 owner 和可重试证据。正式 Core 停止后 Controller 必须独立完成强 stop；supervised 新 boot 只能恢复
 当前 release 中仍存在的内置插件，不能伪造 installed artifact pointer，也不能把缺少当前插件的状态记为
 成功。内置插件不得绕过该路径直接管理容器。
@@ -796,8 +803,11 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 
 工具注册返回当前 Root 中的实际引用，provider 通过普通 `ServiceKey` 提供引用 view。工具池只按
 引用建立新 binding；持有工具池不能按全局名字取得未依赖的工具。确需完整目录的管理插件必须
-显式依赖 `ALL_TOOLS`。当前引用失效时 fail-loud；已提交 Message 中的 binding 继续打开原归档
-闭包，不因当前安装、卸载或重启重新选择实现。
+显式依赖 `ALL_TOOLS`。当前引用失效时 fail-loud；已提交 Message 中的 binding 保留不可变业务
+metadata、回执和历史事实，并在调用者已经选定的 stable 或 candidate scope 中打开实际 service，
+不把历史 `root_ref` 当作普通执行的永久 generation 锁。插件系统负责依赖与切换，不按代码 hash、
+generation 或 archive_ref 判断旧数据能否处理。当前插件负责自己的持久化数据与外部效果，
+处理不了就明确报错；系统传播错误，不兜底重跑。见 [0070](decisions/0070-plugins-own-persisted-data.md)。
 
 工具搜索只在获授 view 内展示完整 schema，并可把自身协议中的间接调用解码为唯一真实
 ToolCall。固定目录在 system 中按插件列出声明用途及各工具简述；搜索返回获授 view 内整组完整 schema，
@@ -836,11 +846,11 @@ Workload writer；容器名、镜像和 endpoint 都不是持久状态 owner。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 
-迁移框架只从 `migrations/yoyo/` 加载已注册脚本，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。既有 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。
+迁移框架读取 Core 自有脚本和正式安装插件声明的 migration bundle，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。未来已发布 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。业务 schema 由相应插件拥有，Core 只负责通用装配与执行。
 
-### MIG-002 当前结构是迁移原点
+### MIG-002 当前结构是迁移基线，Yoyo 保留未来兼容能力
 
-新系统不接管 Git cursor 时代的迁移历史。历史脚本保留为源码证据，但不注册、不自动执行，也不据此推断旧安装状态。原点迁移只清除退役的配置 companion cursor、lock 和 backups；配置、会话、记忆及其他业务数据保持不变。此后的兼容变换只能新增到 Yoyo 目录，不依赖 Git HEAD、分支拓扑、浅克隆状态或人工产品版本号。
+本次基线假定现有用户的数据、schema 和配置已经是当前状态。按 [0066](decisions/0066-yoyo-current-baseline.md) 删除已经完成使命的历史脚本、`legacy_upgrade` 及其专属兼容代码，清空历史业务 requirement；保留 Yoyo、runner、插件迁移声明和账本。既有历史回执和用户数据不删除、不重跑、不伪造成功。未来迁移不得依赖源码已经退役的历史 ID；新脚本继续遵守 append-only、备份和失败重试合同。
 
 ### FS-001 文件写入限于 allowed root
 
@@ -934,7 +944,7 @@ pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
 
 ### CTRL-003 Programmatic 验证可选择 snapshot 且默认不学习
 
-新 programmatic session 可以在严格类型边界显式选择 `stable` 或 `latest`，默认使用 stable。新 session 默认持久化 thread、messages、tool items 与 terminal，但它的 Turn scope 声明 `effects.post_commit=suppress`：Session 仍记录客观事实，Akasha 等派生投影不消费它；Prompt 是否读取既有记忆与 Tool 是否可用分别由 `disabled_prompt_sections` 和 `ToolGrant` 决定。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
+新 programmatic session 默认使用 stable；只有所属更新授予的精确候选授权才能选择候选，不提供任意 `latest` 选择器。新 session 默认持久化 thread、messages、tool items 与 terminal，但它的 Turn scope 声明 `effects.post_commit=suppress`：Session 仍记录客观事实，Akasha 等派生投影不消费它；Prompt 是否读取既有记忆与 Tool 是否可用分别由 `disabled_prompt_sections` 和 `ToolGrant` 决定。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
 
 ## 13. 独立验收要求
 

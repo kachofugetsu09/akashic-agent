@@ -8,6 +8,19 @@
 - 上游：[v3 production readiness checklist](plugin-v3-production-readiness-checklist.md)、[v3 package contributions](plugin-v3-package-contributions-task-contract.md)
 - 参考但不直接合并：旧 capability lane `6214af1c`、`c828b31d`
 
+## 2026-09-15：普通 UI provider 修订
+
+0071 下，`UI_SLOTS` 由显式安装的 `ui` 插件提供，不由 Manager 根据 inject 补装。
+SDK 只公开 `UiSlots` / `MobileUiRegistry` Protocol 与领域 DTO；注册、路径/大小校验和
+封存实现归 `plugins/ui/mobile.py`。provider 的 `SNAPSHOT_SEALING` hook 封存目录，
+Mobile 域消费者从所选 Root 获取服务及目录，并校验两者的实际 Root token。
+RuntimeSnapshot 的 Mobile UI 字段与 compiler 校验已删除；handler 与 descriptor 不再复制进 snapshot。
+
+同步 query/available、协议 slot、资源预算、revision/摘要、HTTP/RPC、授权以及超时后
+租约持有规则保持不变。注册 Effect 关闭只解除临时内存归属，不减少持久状态。
+本次基线 `d0fe3505`，仅静态阅读和 diff 检查，测试只编写未执行。
+下文的 Core 注册表、snapshot 字段及既往执行结果属于历史实现记录，不代表本次验证。
+
 ## 1. 目标与边界
 
 本 PR 让 v3 Fiber 通过 `core.ui_slots` 登记 Mobile UI 静态资产、动态可用性与只读 query，

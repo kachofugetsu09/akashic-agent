@@ -1,7 +1,6 @@
 export interface MessageRenderingFeatures {
   code: boolean;
   math: boolean;
-  mermaid: boolean;
 }
 
 const fencedCodePattern = /^\s{0,3}(`{3,}|~{3,})([^\n]*)$/gm;
@@ -12,7 +11,6 @@ const markdownSyntaxPattern = /(^|\n)\s{0,3}(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|```|
 /** Detect rich Markdown features so expensive renderers load only when needed. */
 export function detectMessageRenderingFeatures(markdown: string): MessageRenderingFeatures {
   let code = false;
-  let mermaid = false;
   let openFence: { marker: string; length: number } | undefined;
   for (const match of markdown.matchAll(fencedCodePattern)) {
     const fence = match[1];
@@ -26,21 +24,18 @@ export function detectMessageRenderingFeatures(markdown: string): MessageRenderi
     }
     if (marker === "`" && info.includes("`")) continue;
     openFence = { marker, length: fence.length };
-    const language = info.split(/\s+/, 1)[0]?.toLowerCase();
-    if (language === "mermaid") mermaid = true;
-    else code = true;
+    code = true;
   }
   return {
     code,
     math: blockMathPattern.test(markdown) || inlineMathPattern.test(markdown),
-    mermaid,
   };
 }
 
 /** Keep ordinary chat text on the zero-parser path while preserving Markdown semantics. */
 export function messageNeedsMarkdown(markdown: string) {
   const features = detectMessageRenderingFeatures(markdown);
-  return features.code || features.math || features.mermaid || markdownSyntaxPattern.test(markdown);
+  return features.code || features.math || markdownSyntaxPattern.test(markdown);
 }
 
 /** Batch only append-only stream growth; replacements must render immediately. */

@@ -4,14 +4,19 @@ from __future__ import annotations
 # pyright: reportPrivateUsage=false
 
 import asyncio
+import contextvars
 import inspect
 import logging
 from collections.abc import AsyncGenerator, Generator, Awaitable, Callable, Hashable
 from contextlib import AbstractAsyncContextManager, AbstractContextManager, asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TypeVar, Protocol
+from typing import Any, TypeVar, Protocol
 
-from agent.restart import ExternalRootPermit
+from agent.restart import (
+    ExternalRootPermit as ExternalRootPermit, RestartGate as RestartGate,
+    RESTART_GATE as RESTART_GATE, RestartRejectedError as RestartRejectedError,
+)
 
 from agent.plugin_composition.context import Context, RuntimeScope
 from uuid import uuid4
@@ -20,6 +25,13 @@ from agent.plugin_composition.model import ServiceKey
 
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
+
+_TASK_BOUND_VARS: list[ContextVar[Any]] = []
+
+
+def register_task_bound_context(var: ContextVar[Any]) -> None:
+    """登记属于单个 Task 的 ContextVar；新 Task 在创建时不再继承父任务值。"""
+    _TASK_BOUND_VARS.append(var)
 
 
 class TaskBusy(RuntimeError):
@@ -50,7 +62,12 @@ class Task:
         self._scope = None if lease is None else RuntimeScope(lease.fork())
         self._cleanup: list[Callable[[], None]] = []
         self._done_callbacks: list[Callable[[], None]] = []
-        self._task = asyncio.create_task(self._run(operation, admitted))
+        context = contextvars.copy_context()
+        for var in _TASK_BOUND_VARS:
+            _ = context.run(var.set, None)
+        self._task = asyncio.create_task(
+            self._run(operation, admitted), context=context
+        )
         self._task.add_done_callback(self._run_done_callbacks)
 
     def child_permit(self) -> ExternalRootPermit:

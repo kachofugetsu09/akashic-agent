@@ -31,7 +31,8 @@ priority = "p0"
 requirements = ["CTX-001", "CTX-002", "SES-003", "SES-005", "TST-001", "TST-003"]
 paths = [
   "agent/prompting/**",
-  "agent/plugin_composition/session_read.py",
+  "agent/plugin_composition/messages.py",
+  "plugins/turn_projection/**",
   "plugins/context/**",
   "plugins/conversation/**",
   "plugins/reply/**",
@@ -52,14 +53,11 @@ scenarios = ["context_history_nondestructive"]
 priority = "p0"
 requirements = ["OUT-001", "OUT-002", "PLG-003", "PLG-008", "SES-002", "SES-005", "SES-006", "TST-001", "TST-003"]
 paths = [
-  "infra/mobile_realtime/**",
+  "plugins/akashic_clients/mobile_realtime/**",
   "agent/plugins/**",
   "agent/turns/outbound.py",
   "bootstrap/app.py",
   "bootstrap/app_server.py",
-  "bootstrap/channel_host.py",
-  "bootstrap/channels.py",
-  "bootstrap/chat_api.py",
   "bus/events.py",
   "bus/events_lifecycle.py",
   "agent/turn_events/**",
@@ -70,7 +68,7 @@ paths = [
   "plugins/wake/**",
   "schema/mobile-realtime-v1.json",
   "schema/archive/mobile-realtime-v1-mobile-pr6.json",
-  "scripts/generate_mobile_realtime_schema.py",
+  "plugins/akashic_clients/mobile_realtime/schema_cli.py",
   "tests/mobile_realtime/**",
   "tests_scenarios/mobile_isolated_gateway.py",
 ]
@@ -99,13 +97,13 @@ requirements = [
 ]
 paths = [
   "frontend/chat/**",
-  "infra/mobile_realtime/gateway.py",
-  "infra/mobile_realtime/protocol.py",
-  "infra/mobile_webui/**",
+  "plugins/akashic_clients/mobile_realtime/gateway.py",
+  "plugins/akashic_clients/mobile_realtime/protocol.py",
+  "plugins/akashic_clients/mobile_webui/**",
   "package-lock.json",
   "schema/mobile-realtime-v1.json",
-  "scripts/generate_mobile_realtime_schema.py",
-  "scripts/publish-mobile-webui.py",
+  "plugins/akashic_clients/mobile_realtime/schema_cli.py",
+  "plugins/akashic_clients/mobile_webui/release_cli.py",
   "tests/mobile_webui/**",
 ]
 depends_on = ["mobile_realtime"]
@@ -125,6 +123,7 @@ priority = "p0"
 requirements = ["PLG-001", "PLG-004", "PLG-009", "PLG-017", "RUN-016", "WSP-006"]
 paths = [
   "agent/plugin_composition/**",
+  "agent/plugin_contracts/**",
   "agent/plugins/**",
   "agent/workloads/**",
   "docker/computer/**",
@@ -132,7 +131,10 @@ paths = [
   "packages/akashic-web-ui-v1/**",
   "packages/akashic-workbench-ui-v2/**",
   "packages/akashic-models-ui-v1/**",
+  "plugin_boundary.toml",
+  "plugin_boundary_baseline.toml",
   "plugins/**",
+  "scripts/plugin_boundary.py",
   "scripts/plugin_composition_experiment.py",
   "bootstrap/tools.py",
   "tests/test_plugin_*.py",
@@ -153,11 +155,9 @@ paths = [
   "agent/plugins/model_*.py",
   "agent/plugins/snapshot.py",
   "agent/tools/filesystem.py",
-  "agent/tools/vision.py",
-  "agent/migrations/akasha_*.py",
   "agent/model_runtime/**",
   "bootstrap/app.py",
-  "bootstrap/chat_api.py",
+  "plugins/akashic_clients/chat_api.py",
   "bootstrap/init_workspace.py",
   "bootstrap/setup_wizard.py",
   "bootstrap/web_shell.py",
@@ -169,7 +169,6 @@ paths = [
   "plugins/akasha/**",
   "plugins/compaction/**",
   "plugins/markdown_memory/**",
-  "migrations/akasha_*/**",
   "docker/debug/model_plugin_fixture.py",
   "docker/debug/akasha_v2_runtime_probe.py",
   "docker/debug/programmatic_control_probe.py",
@@ -177,12 +176,11 @@ paths = [
   "docker/debug/wake_v3_provider_e2e.py",
   "eval/**",
   "benchmark/harbor_v4flash/**",
-  "migrations/yoyo/*model*.py",
   "tests/model_plugin_fakes.py",
   "tests/test_*model*.py",
   "tests/semantic/test_model_owner_contract.py",
 ]
-deleted_paths = ["agent/provider.py", "bootstrap/providers.py"]
+deleted_paths = ["agent/provider.py", "agent/tools/vision.py", "bootstrap/providers.py"]
 depends_on = ["plugin", "runtime"]
 scenarios = ["model_owner_contract"]
 
@@ -194,10 +192,10 @@ paths = [
   "agent/looping/**",
   "agent/plugin_composition/events.py",
   "agent/plugin_composition/runtime_lifecycle.py",
-  "agent/plugin_composition/session_read.py",
+  "agent/plugin_composition/messages.py",
+  "plugins/turn_projection/**",
   "agent/plugin_composition/tasks.py",
   "agent/plugins/**",
-  "agent/tools/message_push.py",
   "bootstrap/tools.py",
   "bus/queue.py",
   "infra/control/**",
@@ -209,6 +207,7 @@ paths = [
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_runtime_control.py",
 ]
+deleted_paths = ["agent/tools/message_push.py"]
 depends_on = ["plugin", "control", "session_persistence", "channel", "memory"]
 scenarios = ["recursive_plugin_self_validation_contract"]
 
@@ -235,7 +234,7 @@ scenarios = ["contract_catalog", "plugin_domain_observe_events"]
 [groups.channel]
 priority = "p1"
 requirements = ["OUT-001", "OUT-002", "COM-001"]
-paths = ["infra/channels/**", "bootstrap/channel_host.py", "bootstrap/channels.py"]
+paths = ["infra/channels/**", "agent/plugin_composition/channels.py"]
 depends_on = ["events"]
 scenarios = ["contract_catalog"]
 
@@ -257,11 +256,13 @@ requirements = ["MEM-001", "MEM-002", "MEM-003", "SES-005", "WSP-004"]
 paths = [
   "core/memory/**",
   "memory2/**",
+  "plugins/compaction/**",
+  "plugins/markdown_memory/**",
+]
+deleted_paths = [
   "agent/tools/forget_memory.py",
   "agent/tools/memorize.py",
   "agent/tools/recall_memory.py",
-  "plugins/compaction/**",
-  "plugins/markdown_memory/**",
 ]
 depends_on = ["session_persistence"]
 scenarios = ["memory_persistence_contract"]
@@ -303,11 +304,11 @@ paths = [
   "agent/config_models.py",
   "agent/core/**",
   "agent/plugin_composition/runtime_lifecycle.py",
-  "agent/llm_json.py",
+  "plugins/markdown_memory/llm_json.py",
   "agent/model_runtime/**",
-  "agent/persona.py",
+  "plugins/prompt/persona.py",
   "agent/restart.py",
-  "agent/skills.py",
+  "plugins/standard_tools/skills.py",
   "agent/supervisor.py",
   "agent/tool_runtime.py",
   "agent/tools/**",
@@ -319,7 +320,7 @@ paths = [
   "core/net/**",
   "infra/__init__.py",
   "main.py",
-  "prompts/**",
+  "plugins/prompt/**",
   "tests/test_context_compaction_contract.py",
   "tests/test_shell_tool.py",
   "tests/test_unified_exec.py",
@@ -327,6 +328,10 @@ paths = [
 ]
 deleted_paths = [
   "agent/policies/__init__.py",
+  "agent/llm_json.py",
+  "agent/persona.py",
+  "agent/skills.py",
+  "prompts/**",
   "agent/provider.py",
   "agent/tool_bundles.py",
   "infra/providers/**",
@@ -341,9 +346,9 @@ requirements = ["SH-002", "RUN-003", "OUT-001", "ERR-001", "TST-001", "TST-003"]
 paths = [
   "agent/background/boot_guardian.py",
   "agent/supervisor.py",
-  "agent/tools/shell.py",
   "agent/tools/unified_exec.py",
 ]
+deleted_paths = ["agent/tools/shell.py"]
 depends_on = ["events", "session_persistence"]
 scenarios = ["shell_privileged_cleanup_contract", "shell_turn_finality_contract"]
 
@@ -390,26 +395,24 @@ scenarios = ["contract_catalog"]
 priority = "p0"
 requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
 paths = [
-  "agent/tools/memorize.py",
-  "agent/tools/recall_memory.py",
-  "agent/tools/message_push.py",
-  "agent/tools/registry.py",
   "agent/tools/base.py",
   "agent/tool_runtime.py",
-  "agent/plugin_composition/session_read.py",
+  "agent/plugin_composition/messages.py",
+  "plugins/turn_projection/**",
   "agent/plugin_composition/tasks.py",
   "plugins/context/**",
   "plugins/reply/**",
   "agent/turns/outbound.py",
 ]
-deleted_paths = ["agent/looping/handlers.py"]
+deleted_paths = ["agent/looping/handlers.py", "agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py"]
 depends_on = ["memory", "channel"]
 scenarios = ["companion_tool_context_contract"]
 
 [groups.companion_external_io]
 priority = "p0"
 requirements = ["SEC-002", "FS-001", "SES-006", "ERR-001", "TST-001", "TST-003"]
-paths = ["core/net/http.py", "agent/tools/web_fetch.py", "bootstrap/chat_api.py", "infra/channels/base.py", "infra/channels/delivery.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
+paths = ["core/net/http.py", "plugins/akashic_clients/chat_api.py", "infra/channels/base.py", "plugins/delivery/**", "plugins/qq_channel/**", "plugins/qq_sender/**", "plugins/telegram_channel/**", "plugins/telegram_sender/**", "plugins/akashic_clients/web_chat.py", "plugins/akashic_clients/mobile_realtime/attachments.py", "plugins/akashic_clients/mobile_realtime/channel.py", "plugins/akashic_clients/mobile_realtime/gateway.py", "plugins/akashic_clients/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
+deleted_paths = ["agent/tools/web_fetch.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py"]
 depends_on = ["runtime", "mobile_realtime"]
 scenarios = ["companion_external_io_contract"]
 
@@ -432,14 +435,15 @@ scenarios = ["companion_schedule_capacity_contract"]
 [groups.companion_mobile]
 priority = "p0"
 requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001", "TST-003"]
-paths = ["infra/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/app.py", "session/store.py"]
+paths = ["plugins/akashic_clients/mobile_realtime/**", "*/runtime_inspection.py", "agent/plugins/**", "bus/queue.py", "bootstrap/app.py", "session/store.py"]
 depends_on = ["mobile_realtime", "plugin"]
 scenarios = ["companion_mobile_receipt_contract"]
 
 [groups.companion_shell]
 priority = "p0"
 requirements = ["SEC-007", "SH-001", "SH-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/tools/shell.py", "agent/tools/unified_exec.py", "agent/background/**"]
+paths = ["agent/tools/unified_exec.py", "agent/background/**"]
+deleted_paths = ["agent/tools/shell.py"]
 depends_on = ["shell_finality", "runtime"]
 scenarios = ["companion_shell_admission_contract"]
 

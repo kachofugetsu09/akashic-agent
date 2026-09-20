@@ -13,7 +13,11 @@ from typing import cast
 
 import pytest
 
-from agent.plugin_composition import CompositionOverlay, Context
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+from agent.plugin_composition.config_input import save_config
+
+from agent.plugin_composition import CompositionRoot, Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
@@ -32,7 +36,6 @@ from plugins.message_push.restart import PendingRestart, RestartTool
 from plugins.tools.api import (
     CallSource,
     ContentPart,
-    Denied,
     MessageReply,
     durable_call_key,
 )
@@ -116,9 +119,11 @@ from agent.plugin_composition import CHAT_MODELS, ServiceKey
 {fixture_imports}
 from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
-    ModelRole, ToolCall,
+    ToolCall,
 )
-from plugins.models.projection import MODEL_CALLS
+from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 
@@ -127,7 +132,7 @@ name = "restart_provider"
 version = "1.0.0"
 inject = {inject}
 
-async def apply(ctx, config):
+async def apply(ctx):
 {fixture_setup}
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
@@ -155,7 +160,7 @@ async def apply(ctx, config):
         binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture",
         driver_contract_version="1", auth_identity="fixture", model="fixture",
-        role=ModelRole.AGENT, reasoning_effort=None,
+        role="agent", reasoning_effort=None,
         capabilities=ModelCapabilities(context_window=10000),
         capability_sources=CapabilitySources(), capability_digest="fixture",
     )
@@ -168,6 +173,10 @@ async def apply(ctx, config):
 
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
     await ctx.provide(ServiceKey("fixture.calls"), calls)
 """
     )
@@ -192,7 +201,7 @@ inject = (DELIVERY_SENDERS,)
 STATE_ROOT = {str(state_root)!r}
 REJECT_FIRST = {reject_first!r}
 
-async def apply(ctx, config):
+async def apply(ctx):
     Path(STATE_ROOT).mkdir(parents=True, exist_ok=True)
 
     class Sender:
@@ -227,6 +236,9 @@ async def apply(ctx, config):
 
 
 def _write_startup_probe(root: Path, run_id: str, state_root: Path) -> None:
+    # 每次 boot 的输入归 fixture 所有；重启不靠改插件源码替换 stable。
+    state_root.mkdir(parents=True, exist_ok=True)
+    (state_root / "run-id").write_text(run_id)
     probe = root / "startup_probe"
     probe.mkdir()
     (probe / "plugin.py").write_text(
@@ -245,7 +257,6 @@ api_version = 3
 name = "startup_probe"
 version = "1.0.0"
 inject = (MESSAGE_WRITERS, BINDINGS, TOOLS, ALL_TOOLS, FINAL_OUTPUT_DELIVERY)
-RUN_ID = {run_id!r}
 STATE_ROOT = {str(state_root)!r}
 
 
@@ -256,7 +267,7 @@ class Waiter:
         return None
 
 
-async def apply(ctx, config):
+async def apply(ctx):
     delivery = ctx.require(FINAL_OUTPUT_DELIVERY)
     waiter = Waiter()
     delivery.register("startup-probe", waiter)
@@ -269,8 +280,9 @@ async def apply(ctx, config):
     bindings = ctx.require(BINDINGS)
 
     def append_after_prepare(_event):
+        run_id = Path(STATE_ROOT, "run-id").read_text()
         binding = tools.bind(ctx.require(ALL_TOOLS)().select("agent_restart"), bindings)
-        session = "startup-probe:" + RUN_ID
+        session = "startup-probe:" + run_id
         inputs = writers.bind(
             ctx, author="user", source="startup-probe", body_types=(Input,), content={{}},
         )(session)
@@ -278,9 +290,9 @@ async def apply(ctx, config):
             ctx, author="assistant", source="startup-probe", body_types=(Output,),
             content={{}}, check_call=lambda call: None,
         )(session)
-        inputs.append("startup-input-" + RUN_ID, Input(()))
+        inputs.append("startup-input-" + run_id, Input(()))
         call = outputs.append(
-            "startup-call-" + RUN_ID,
+            "startup-call-" + run_id,
             Output((ToolCall(binding, {{"reason": "startup"}}),), "continue"),
         )
         results = writers.bind(
@@ -288,10 +300,10 @@ async def apply(ctx, config):
         )(session, call_ref=CallRef(call.message_id, 0))
         def append_result():
             results.append(
-                "startup-result-" + RUN_ID,
+                "startup-result-" + run_id,
                 ToolResult(CallRef(call.message_id, 0), "success", ()),
             )
-            outputs.append("startup-final-" + RUN_ID, Output((), "complete"))
+            outputs.append("startup-final-" + run_id, Output((), "complete"))
 
         asyncio.get_running_loop().call_soon(append_result)
 
@@ -311,12 +323,15 @@ async def _restart_application(
     names = (
         "sources",
         "content",
+        "assets",
+        "standard_tools",
         "context",
         "tools",
         "conversation",
         "react",
         "turn_projection",
         "reply",
+        "reply_program",
         "tool_search",
         "delivery",
         "message_push",
@@ -337,6 +352,9 @@ async def _restart_application(
     owns_log = message_log is None
     log = MessageLog(tmp_path / "sessions.db") if message_log is None else message_log
     artifact_store = ArtifactStore(tmp_path / "sessions.db")
+    context_config = tmp_path / "workspace/plugin-data/context-builtin"
+    context_config.parent.mkdir(parents=True, exist_ok=True)
+    save_config(context_config, {"prompt_sources": {"skills": "standard_tools"}})
     host = PluginManager(
         [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home/cache", message_log=log,
@@ -394,9 +412,11 @@ async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
         RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None), FrameBook(),
     )
     source = _source()
-    with pytest.raises(ValueError, match="只能包含 reason"):
-        await tool.prepare({"reason": "reload", "extra": True}, source)
+    rejected = await tool.prepare({"reason": "reload", "extra": True}, source)
+    assert isinstance(rejected, str) and "只能包含 reason" in rejected
+    assert tool._prepared is None
     prepared = await tool.prepare({"reason": " reload "}, source)
+    assert isinstance(prepared, Mapping)
     pending = tool._prepared
     assert pending is not None
     assert prepared == {"reason": "reload"}
@@ -447,6 +467,7 @@ async def test_restart_requires_prepare_and_query_is_unknown() -> None:
 @pytest.mark.asyncio
 async def test_unmanaged_runtime_does_not_register_restart_tool(tmp_path: Path) -> None:
     gate = RestartGate(boot_id="fixture-boot", supervised=False)
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (_log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             names = {
@@ -467,6 +488,7 @@ async def test_starting_baseline_ignores_old_result_and_reads_result_after_prepa
         boot_id="first-boot", supervised=True,
         commit=_commit_recorder(first_commits, first_committed),
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(
         tmp_path, first_gate, channel=False, source_tag="baseline-first", startup_run="first",
     ):
@@ -510,12 +532,12 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
             cleanup_blocked.set()
             await cleanup_release.wait()
 
-    import plugins.conversation.program as conversation_program
-
-    monkeypatch.setattr(conversation_program, "shell_cleanup", controlled_cleanup)
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=True) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             context = snapshot.composition_root.context
+            execute = context.require(ServiceKey("reply.execute.v1"))
+            monkeypatch.setitem(execute.keywords, "cleanup", controlled_cleanup)
             accept = context.require(CHANNEL_INPUT)
             await accept(
                 "test:room", "input-1",
@@ -560,6 +582,7 @@ async def test_real_channel_restart_reopens_after_rejected_delivery(
         commit=_commit_recorder(commits, committed),
         drain_timeout_s=2.0,
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(
         tmp_path, gate, channel=True, reject_first=True,
     ) as (log, host):
@@ -613,6 +636,7 @@ async def test_manager_reload_hands_late_tool_result_to_new_watcher(
     )
     log = MessageLog(tmp_path / "sessions.db")
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with _restart_application(
             tmp_path, gate, channel=False, source_tag="reload-first", reload_probe=True,
             message_log=log,
@@ -708,12 +732,15 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         (
             "sources",
             "content",
+            "assets",
+            "standard_tools",
             "context",
             "tools",
             "conversation",
             "react",
             "turn_projection",
             "reply",
+            "reply_program",
             "tool_search",
             "delivery",
             "programmatic",
@@ -729,13 +756,6 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     provider_repo.mkdir()
     provider_source = generated / "restart_provider" / "plugin.py"
     shutil.copy2(provider_source, provider_repo / "plugin.py")
-    (provider_repo / "akashic.plugin.toml").write_text(
-        "schema_version=1\n"
-        "name='restart_provider'\n"
-        "version='1.0.0'\n"
-        "api_version=3\n"
-        "entrypoint='plugin.py'\n",
-    )
     for args in (
         ("git", "init", "-q"),
         ("git", "add", "."),
@@ -758,6 +778,10 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     )
     log = MessageLog(tmp_path / "sessions.db")
     artifact_store = ArtifactStore(tmp_path / "sessions.db")
+    context_config = tmp_path / "workspace/plugin-data/context-builtin"
+    context_config.parent.mkdir(parents=True, exist_ok=True)
+    save_config(context_config, {"prompt_sources": {"skills": "standard_tools"}})
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager(
         [sources],
         event_bus=EventBus(),
@@ -773,11 +797,11 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     original_check = plugin_manager_module._validate_candidate_formal_snapshot_identity
 
     def capture_identity(
-        generation: PluginGeneration, *, candidate: RuntimeSnapshot, formal: RuntimeSnapshot,
+        *, candidate: RuntimeSnapshot, formal: RuntimeSnapshot,
     ) -> None:
         observed["candidate"] = candidate
         observed["formal"] = formal
-        original_check(generation, candidate=candidate, formal=formal)
+        original_check(candidate=candidate, formal=formal)
 
     monkeypatch.setattr(
         plugin_manager_module,
@@ -844,14 +868,13 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             == stable_generation_ids["message_push"]
         )
         assert latest.composition_root is not None
-        candidate_overlay = latest.composition_root
-        assert isinstance(candidate_overlay, CompositionOverlay)
-        expected_replaced = {"reply", "restart_provider@fixture"}
+        candidate_root = latest.composition_root
+        assert isinstance(candidate_root, CompositionRoot)
+        expected_active = {"reply", "restart_provider@fixture"}
         if supervised:
-            expected_replaced.add("message_push")
-        assert expected_replaced <= candidate_overlay.replaced_plugin_ids
-        assert expected_replaced <= candidate_overlay.candidate.active_plugin_ids()
-        candidate_gate = candidate_overlay.context.require(RESTART_GATE)
+            expected_active.add("message_push")
+        assert expected_active <= candidate_root.active_plugin_ids()
+        candidate_gate = candidate_root.context.require(RESTART_GATE)
         assert isinstance(candidate_gate, RestartGate)
         assert candidate_gate.supervised is supervised
         assert candidate_gate.execution_enabled is False
@@ -861,7 +884,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         with pytest.raises(RestartRejectedError, match="不允许重启效果"):
             await candidate_gate.commit("candidate-request")
         candidate_tool_names = {
-            ref.name for ref in candidate_overlay.context.require(ALL_TOOLS)().refs
+            ref.name for ref in candidate_root.context.require(ALL_TOOLS)().refs
         }
         if supervised:
             assert "agent_restart" in candidate_tool_names
@@ -897,10 +920,10 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             )
             entered_authorize = asyncio.Event()
 
-            async def authorize(_binding_id: str, _arguments: Mapping[str, object]) -> Mapping[str, object]:
+            async def authorize(_binding_id: str, _arguments: Mapping[str, object]) -> Mapping[str, object] | str:
                 entered_authorize.set()
                 await release_authorize.wait()
-                raise Denied("old runtime drained before promotion")
+                return "old runtime drained before promotion"
 
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 context = snapshot.composition_root.context
@@ -938,7 +961,10 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         assert promoted["publication_state"] == "promoted"
         candidate = observed["candidate"]
         formal = observed["formal"]
-        assert candidate.snapshot_id == formal.snapshot_id
+        assert candidate.snapshot_id != formal.snapshot_id
+        assert {key: item.archive_ref for key, item in candidate.generations.items()} == {
+            key: item.archive_ref for key, item in formal.generations.items()
+        }
 
         candidate_topology = candidate.composition_topology
         formal_topology = formal.composition_topology
@@ -1012,6 +1038,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
         commit=_commit_recorder(commits, committed),
         drain_timeout_s=2.0,
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:restart"
         frames = host._control_frames  # type: ignore[attr-defined]
@@ -1159,6 +1186,7 @@ async def test_programmatic_restart_watcher_aborts_preclaim_after_disconnect(
         boot_id="fixture-boot", supervised=True,
         commit=commits.append,
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:disconnect"
         frames = host._control_frames  # type: ignore[attr-defined]
@@ -1270,6 +1298,7 @@ async def test_programmatic_restart_rejection_keeps_other_gate_request_and_abort
         boot_id="fixture-boot", supervised=True,
         commit=commits.append,
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:settings"
         frames = host._control_frames  # type: ignore[attr-defined]

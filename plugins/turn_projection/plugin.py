@@ -5,14 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent.plugin_composition import Context, ServiceKey
-from session.message import (
-    CallRef,
-    Input,
-    Message,
-    Output,
-    ToolCall,
-    ToolResult,
-)
+from agent.plugin_contracts import CallRef, Input, Message, Output, ToolCall, ToolResult
 
 api_version = 3
 name = "turn_projection"
@@ -166,6 +159,6 @@ class TurnProjection:
 TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """仅提供普通消费能力；不打开数据库或启动后台任务。"""
     _ = await ctx.provide(TURN_PROJECTION, TurnProjection())

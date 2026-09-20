@@ -5,7 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from agent.plugin_composition import CHAT_MODELS, ModelRole
+from agent.plugin_composition import CHAT_MODELS
 from agent.plugins.snapshot import lease_runtime_snapshot
 
 from .dataset import load_dataset
@@ -43,7 +43,7 @@ async def _run(args: argparse.Namespace) -> None:
             chat_models = root.context.require(CHAT_MODELS)
             async with chat_models.execution() as execution:
                 result["judge_correct"] = await judge_answer(
-                    execution.chat(ModelRole.DEFAULT),
+                    execution.chat("default"),
                     question=result["question"],
                     gold=result["gold_answer"],
                     predicted=result["predicted_answer"],

@@ -11,8 +11,6 @@ name = "content_hint_probe"
 version = "3.0.0"
 desc = "Independent observer for Content's lossy changed hint"
 author = "Akashic Core"
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 
@@ -44,10 +42,9 @@ CONTENT_HINT_PROBE = ServiceKey[ContentHintProbe]("fixture.content-hint-probe.v1
 inject = (EVENTMAIL_WAKE,)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Publish an in-memory hint observer without source or Timer capabilities."""
 
-    _ = config
     probe = ContentHintProbe(ctx.require(EVENTMAIL_WAKE))
     _ = await ctx.provide(CONTENT_HINT_PROBE, probe)
     _ = await ctx.on(EVENTMAIL_CHANGED, probe.changed)

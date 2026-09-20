@@ -4,34 +4,38 @@ import asyncio
 import copy
 import hashlib
 import importlib.util
-import inspect
 import json
 import logging
 import os
 import secrets
 import shutil
-import sqlite3
 import sys
-import time
-import tomllib
-from dataclasses import dataclass, replace
-from contextlib import ExitStack, asynccontextmanager, contextmanager
+from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from contextvars import Context as TaskContext
-from pathlib import Path, PurePosixPath
-from types import MappingProxyType, ModuleType, UnionType
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Mapping
-from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
+from pathlib import Path
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from typing import Any, Literal, TypeVar, cast
+from uuid import uuid4
 
-from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 
 from agent.plugins.archive import PluginArchive, decode_config, encode_config
+from agent.plugins._operation import (
+    ManagerOperation, OperationBusyError, OperationTimeoutError,
+    complete_critical as _complete_critical, current_operation,
+    observe_operation, revoke_on_cancel, run_operation,
+)
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
 from agent.plugins.validation import ValidationHost
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, PluginUpdates, UpdateStatus
 from session.artifact_store import ArtifactStore
-from agent.plugins.config import read_config_source
+from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
+from agent.plugin_composition.runtime_catalog import (
+    RUNTIME_CATALOG,
+    build_runtime_catalog,
+)
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
 from agent.plugin_composition.messages import (
@@ -39,46 +43,23 @@ from agent.plugin_composition.messages import (
     MessageWriters, OwnerState, SessionAdmission,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from session.log import MessageCatalog, MessageLog
+from session.log import MessageCatalog, MessageLog, read_persisted_messages
+from session.message import Message
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import RuntimeScope
 from agent.restart import RESTART_GATE, RestartGate
 from agent.control.frame_book import CONTROL_FRAMES, FrameBook
 
 from agent.plugin_composition import (
-    CHANNELS,
     COMMANDS,
     INTERACTION_UNDO,
     CompositionError,
-    MANAGED_PROCESSES,
-    WORKLOADS,
-    MCP_SERVERS,
-    SESSION_READ,
-    SESSION_COMPACTION_STORAGE,
-    DELIVERIES,
-    DURABLE_DELIVERIES,
     TIMERS,
-    TOOL_CATALOG,
-    UI_SLOTS,
-    CompositionOverlay,
     CompositionRoot,
-    CompositionSnapshotRoot,
-    CredentialRef,
     FiberState,
-    PluginChannels,
-    PluginUiSlots,
-    PluginCommands,
     InteractionUndoService,
-    PluginToolBinding,
-    PluginToolCatalog,
-    PluginTools,
     PluginRuntime,
-    SessionReadService,
-    SessionCompactionStorage,
-    PluginDeliveries,
-    PluginDurableDeliveries,
     PluginTimers,
-    ServiceView,
     ServiceKey,
     RUNTIME_STARTING,
     RUNTIME_STARTED,
@@ -89,44 +70,22 @@ from agent.plugin_composition import (
     RuntimeStopping,
     SnapshotSealing,
 )
-from agent.plugin_composition.channels import (
-    CoreChannelDefinition,
-    ChannelRegistrySnapshot,
-    CredentialRef,
-    ProviderClient,
-    ProviderClientFactory,
+from agent.plugin_composition.admission import SOURCE_ADMISSION, SourceAdmission
+from agent.plugin_composition.channel_io import (
+    INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
+    InputCustody, ChannelIdentity, ChannelAttachmentImport, ChannelAttachmentRead,
+    unavailable, unavailable_input_custody,
 )
-from agent.plugin_composition.mcp_slots import PluginMcpServers
-from agent.plugin_composition.process_slots import PluginManagedProcesses
 from agent.plugin_composition.processes import PROCESSES, PluginProcesses
-from agent.plugin_composition.workload_slots import PluginWorkloads
-from agent.plugin_composition.commands import command_discovery_catalog
+from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
+from agent.host_bridge.plugin_execution import CodeOwner, ExecutionAccess, ControllerAccess, cleanup_workloads_for_boot
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
     resolve_declared_workspace_root,
 )
 from agent.control.timer import AsyncioOneShotTimer
-from agent.plugin_composition.durable_deliveries import (
-    DurableProjector,
-    DurableDeliveryRequest,
-    DurableSender,
-)
-from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from bus.events import ChannelMessage
-from agent.plugin_composition.channels import ChannelDeliveryReceipt
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.interaction_undo import InteractionUndoCoordinator
-from agent.plugins.composition_generation_host import (
-    CompositionGenerationHost,
-    CompositionRuntimeFailure,
-    CompositionRuntimeGeneration,
-)
-from agent.plugins.channel_generation_host import (
-    ChannelCleanupTombstone,
-    ChannelGeneration,
-    ChannelGenerationHost,
-    ChannelStartRecord,
-)
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 
 from agent.plugins.manifest import (
@@ -135,39 +94,26 @@ from agent.plugins.manifest import (
     plugins_root,
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
-    write_plugin_manifest,
 )
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
 from agent.plugins.artifacts import (
-    ArtifactPointer,
     ArtifactSelector,
-    discard_latest_pointer,
-    pointer_state_path,
     read_pointer,
     read_pointers,
-    relative_artifact_pointer,
     resolve_pointer,
-    write_pointers,
 )
 from agent.plugins.source_resolver import resolve_plugin_sources
+from agent.plugins.selection import PluginSelection, SelectionConflictError, SelectionWriteError
 from agent.plugins.scope import CleanupFailure, PluginScope
-from agent.plugins.generation import (
-    GateCheckResult,
-    GateResult,
-    PluginContributions,
-    PluginGeneration,
-    PluginSemanticCheck,
-)
+from agent.plugins.generation import PluginGeneration
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.static_manifest import (
-    StaticManagedProcessDeclaration,
-    StaticMcpDeclaration,
     StaticPluginManifest,
     load_static_plugin_manifest,
-    materialize_static_command,
-    validate_module_exports,
+    command_python_runtime,
+    materialize_command,
 )
 from agent.plugins.reload_journal import (
     RecoveryActionName,
@@ -176,8 +122,6 @@ from agent.plugins.reload_journal import (
     ReloadPhase,
     ReloadRecoveryAction,
 )
-from agent.plugins.skill_host import PluginSkillHost
-from agent.plugins.web_ui import resolve_web_module
 from agent.workloads.client import UnixWorkloadController, WorkloadController
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
@@ -188,91 +132,55 @@ from agent.plugins.snapshot import (
     get_current_runtime_snapshot,
 )
 from bus.event_bus import EventBus
-from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
+PLUGIN_ARCHIVE_BINDING_API = 3
 U = TypeVar("U")
 
 
 def _snapshot_command_catalog(
     snapshot: RuntimeSnapshot | None,
 ) -> tuple[tuple[str, str], ...]:
-    registry = None if snapshot is None else snapshot.command_registry
-    return command_discovery_catalog(registry)
+    """宿主只读取目标 Root 实际选择的命令服务。"""
+    if snapshot is None or snapshot.composition_root is None:
+        return ()
+    commands = snapshot.composition_root.context.get(COMMANDS)
+    if commands is None:
+        return ()
+    return tuple((item.name, item.description) for item in commands.freeze().descriptors)
 
 
-class _NoopProviderClient:
-    def credential(self, ref: CredentialRef) -> str:
-        raise RuntimeError(f"Core channel 未声明 credential: {'.'.join(ref.path)}")
-
-    async def aclose(self) -> None:
-        return None
-
-
-class _NoopProviderClientFactory:
-    async def create(
-        self,
-        credentials: Mapping[str, CredentialRef],
-    ) -> ProviderClient:
-        if credentials:
-            raise RuntimeError("Core channel 不得解析未声明的 provider credential")
-        return _NoopProviderClient()
-
-    async def aclose(self) -> None:
-        return None
-
-
-async def _complete_critical(awaitable: Awaitable[U]) -> tuple[U, bool]:
-    """在外部取消后完成关键异步操作，并返回是否收到取消。"""
-
-    # 1. 将关键操作放入独立任务，避免调用方取消传播进去
-    task = asyncio.ensure_future(awaitable)
-    cancelled = False
-
-    # 2. 屏蔽等待并记录外部取消，直到操作本身结束
-    while not task.done():
-        try:
-            _ = await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-
-    # 3. 读取操作结果，保留其真实异常
-    result = await task
-    return result, cancelled
-
-
-def _reject_retired_activity_recovery(action: ReloadRecoveryAction) -> None:
-    """拒绝依赖已删除 Activity owner 的旧恢复记录。"""
+def _reject_retired_owner_recovery(action: ReloadRecoveryAction) -> None:
+    """拒绝仍依赖已删除 owner 的旧恢复记录，不伪造恢复完成。"""
 
     resource = action.failure_resource or ""
-    if "activity-publication" not in {
+    retired = {"activity-publication", "plugin-skill-projection"}.intersection({
         item.strip() for item in resource.split(",") if item.strip()
-    }:
+    })
+    retired.update(
+        item.strip() for item in resource.split(",")
+        if item.strip().startswith(("channel-binding:", "channel-generation:"))
+        or item.strip() == "channel-publication"
+    )
+    if not retired:
         return
     raise RuntimeError(
         "runtime recovery blocked: durable action retains retired "
-        "activity-publication owner; migrate or resolve it manually before "
+        f"{sorted(retired)} owner; migrate or resolve it manually before "
         f"recovery (tx={action.tx_id}, plugin={action.plugin_id}, "
         f"resource={resource!r}); journal remains pending"
     )
 
 
 @dataclass(frozen=True)
-class ActivePluginInfo:
-    plugin_id: str
-    plugin_dir: Path
-    manifest: dict[str, object]
-    module_path: str
-    skill_roots: tuple[Path, ...] = ()
-    drift_skill_roots: tuple[Path, ...] = ()
-
-
-@dataclass(frozen=True)
 class _ReadyPluginCandidate:
     plugin_id: str
     previous: PluginGeneration | None
-    candidate: PluginGeneration
     snapshot: RuntimeSnapshot
+
+    @property
+    def candidate(self) -> PluginGeneration:
+        return self.snapshot.generations[self.plugin_id]
 
 
 class _PublicationParticipantSwitchError(RuntimeError):
@@ -287,23 +195,12 @@ class _PublicationParticipantRestoreError(RuntimeError):
         self.resources = resources
 
 
-@dataclass
-class _ChannelPublicationState:
-    previous: RuntimeSnapshot | None
-    candidate: RuntimeSnapshot
-    previous_identity: str | None
-    candidate_identity: str | None
-    old_runtime: ChannelGeneration | None
-    old_factories: Mapping[str, ProviderClientFactory]
-    new_factories: Mapping[str, ProviderClientFactory]
-    changed: bool
-    old_closed: bool = False
-    old_stopped: bool = False
-    new_runtime: ChannelGeneration | None = None
-
-
 class PluginManager:
-    POST_PUBLISH_TIMEOUT_SECONDS = 5.0
+    # 提交预算覆盖候选准备、整组重建与发布；生产组合规模下挂载数十个
+    # 归档插件远超秒级，预算只用于截断真正挂起的提交，不能按交互延迟设定。
+    POST_PUBLISH_TIMEOUT_SECONDS = 300.0
+    # 冷启动还须归档全部安装输入并挂载完整组合，规模随安装数增长。
+    BOOT_COMMIT_TIMEOUT_SECONDS = 7200.0
 
     def __init__(
         self,
@@ -311,10 +208,10 @@ class PluginManager:
         *,
         event_bus: EventBus,
         workspace: Path,
-        tool_registry: Any = None,
         session_manager: Any = None,
         message_log: MessageLog | None = None,
         channel_identities: ChannelIdentities | None = None,
+        input_custody: InputCustody | None = None,
         installed_cache_root: Path | None = None,
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
@@ -324,11 +221,11 @@ class PluginManager:
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
-        self._tool_registry = tool_registry
         self._workspace = workspace
         self._archive = PluginArchive(workspace / "runtime" / "plugin-archives")
+        self._selection = PluginSelection(workspace)
+        self._publication: SnapshotTransaction | None = None
         self._python_environments = PythonEnvironments(workspace)
-        self._validation_only = False
         self._validation_hosts: dict[str, ValidationHost] = {}
         self._update_publication: tuple[str, asyncio.Task[None]] | None = None
         self._update_watchers: set[asyncio.Event] = set()
@@ -363,125 +260,192 @@ class PluginManager:
             ]
             | None
         ) = None
-        self._loaded: set[str] = set()
-        self._active_plugins: dict[str, ActivePluginInfo] = {}
-        self._scopes: dict[str, PluginScope] = {}
         self._cleanup_failures: list[CleanupFailure] = []
-        self._active_generations: dict[str, PluginGeneration] = {}
+        # 仅持有尚未交给 snapshot 的真实 Root，以及它仍需使用的模块和数据 owner。
+        self._building_roots: dict[CompositionRoot, tuple[PluginGeneration, ...]] = {}
+        self._operation: ManagerOperation | None = None
+        self._stopping = False
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
         self._prepared_generations: dict[str, PluginGeneration] = {}
         self._ready_candidate: _ReadyPluginCandidate | None = None
-        self._gate_results: dict[str, GateResult] = {}
-        self._stable_aliases: dict[str, str] = {}
-        self._generation_sequence = 0
-        self._composition_pending: tuple[str, ...] = ()
-        self._candidate_prepare_lock = asyncio.Lock()
         self._fresh_importer = FreshPluginImporter()
-        self._manager_namespace = secrets.token_hex(4)
-        self._skill_host = PluginSkillHost(workspace)
-        self._composition_runtime_generations: dict[str, PluginGeneration] = {}
         if workload_controller is None:
             workload_socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
             if workload_socket:
                 workload_controller = UnixWorkloadController(Path(workload_socket))
         self._workload_controller = workload_controller
+        # PluginManager 也可以由嵌入式/测试 host 直接构造；该 host 仍需一
+        # 次性的 boot identity，不能退回固定的 unmanaged marker。
+        self._host_boot_id = restart_gate.boot_id if restart_gate is not None else uuid4().hex
         self._restart_gate = restart_gate
         self._owns_control_frames = control_frames is None
         self._control_frames = FrameBook() if control_frames is None else control_frames
-        workload_workspace_id = hashlib.sha256(
+        self._workload_workspace_id = hashlib.sha256(
             str(workspace.resolve(strict=False)).encode("utf-8")
         ).hexdigest()[:16]
-        self._composition_generation_host = CompositionGenerationHost(
-            workload_controller=workload_controller,
-            workspace_id=(
-                workload_workspace_id if workload_controller is not None else None
-            ),
-            on_failure=self._on_composition_runtime_failure,
-            command_resolver=self._resolve_runtime_command,
-        )
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
         self._runtime_started_roots: set[object] = set()
         self._runtime_starting_roots: set[object] = set()
         self._runtime_lifecycle_lock = asyncio.Lock()
         self._runtime_services_enabled = False
-        self._snapshot_skill_catalogs: dict[str, str] = {}
         self._reload_journal = ReloadJournal(workspace)
-        self._channel_provider_factory_resolver: (
-            Callable[
-                [RuntimeSnapshot],
-                Mapping[str, ProviderClientFactory],
-            ]
-            | None
-        ) = self._default_channel_provider_factories
         self._channel_identities = channel_identities
-        self._channel_generation_host = ChannelGenerationHost(
-            on_before_start=self._reserve_channel_binding,
-            config_revision_checker=self._check_channel_config_revision,
-            on_failure=self._on_channel_cleanup_failure,
-            snapshot_lease_acquirer=self._snapshot_store.lease,
-            identity_resolver=self._resolve_channel_identity,
-            identity_rememberer=self._remember_channel_identity,
-            identity_rollbacker=self._rollback_channel_identity,
-            attachment_import=channel_attachment_store,
-            attachment_read=channel_attachment_store,
-        )
-        self._active_channel_generation: ChannelGeneration | None = None
-        self._active_channel_catalog_identity: str | None = None
-        self._core_channel_definitions: tuple[CoreChannelDefinition, ...] = ()
-        self._channel_boot_transactions: set[str] = set()
+        self._input_custody = input_custody
+        self._channel_attachment_store = channel_attachment_store
         self._drain_transactions: dict[str, str] = {}
         self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
-        self._delivery_sender: (
-            Callable[[ChannelMessage], Awaitable[ChannelDeliveryReceipt]] | None
-        ) = None
-        self._durable_delivery_sender: DurableSender | None = None
-        self._durable_delivery_recovered = False
 
-    @property
-    def loaded_count(self) -> int:
-        return len(self._loaded)
+    def _reject_operation_lease(self, *, allow_stable_lease: bool = False) -> None:
+        """在创建任务前拒绝等待同一 Manager 租约造成的自锁。"""
+        from agent.plugins.snapshot import get_current_runtime_lease
+        lease = get_current_runtime_lease()
+        if lease is not None and lease._store is self._snapshot_store:
+            if (allow_stable_lease and lease.active
+                    and lease.snapshot is self.current_snapshot
+                    and lease.snapshot.state == "committed"
+                    and lease.snapshot.accepting_leases):
+                return
+            raise RuntimeError("持有本 Manager 的 RuntimeSnapshot lease 时不能同步更新或关闭")
 
-    def bind_delivery_sender(
-        self,
-        sender: Callable[[ChannelMessage], Awaitable[ChannelDeliveryReceipt]],
-    ) -> None:
-        """Bind the narrow committed Channel sender before loading plugins."""
+    def _require_operation_idle(self) -> None:
+        if self._stopping:
+            raise RuntimeError("PluginManager 已停止接纳操作；只能显式重试 terminate")
+        if self._operation is not None and not self._operation.task.done():
+            raise OperationBusyError("PluginManager busy：原操作和资源尚未退出")
+        if any(host.active for host in self._validation_hosts.values()):
+            raise OperationBusyError("PluginManager busy：请先退出验证 scope")
 
-        if self._delivery_sender is not None:
-            raise RuntimeError("PluginManager delivery sender 已绑定")
-        self._delivery_sender = sender
+    def _check_operation_commit(self) -> ManagerOperation:
+        """耐久提交前同步调用；检查到实际同步提交之间不得 await。
 
-    def bind_durable_delivery_sender(self, sender: DurableSender) -> None:
-        """Bind the two-stage provider boundary before loading durable consumers."""
+        返回同一操作 owner；耐久写入确认成功后将 committed 设为选中的实际 snapshot。
+        线程写入结果未定时须保留线程任务并停止接纳，不能先宣称回滚。
+        """
+        operation = current_operation.get()
+        if operation is None or operation is not self._operation or operation.task.done():
+            raise RuntimeError("插件提交不属于当前 Manager 操作")
+        if operation.task.cancelling():
+            operation.revoke(cancel=False)
+        if self._stopping or operation.revoked:
+            raise asyncio.CancelledError("插件操作提交许可已撤销")
+        if asyncio.get_running_loop().time() >= operation.deadline:
+            operation.revoke(cancel=False)
+            raise OperationTimeoutError(operation)
+        return operation
 
-        if self._durable_delivery_sender is not None:
-            raise RuntimeError("PluginManager durable delivery sender 已绑定")
-        self._durable_delivery_sender = sender
+    def _operation_can_continue(self) -> bool:
+        """仅查询当前许可；被撤销的操作不能自动恢复或开放接纳。"""
+        operation = current_operation.get()
+        return (
+            operation is not None and operation is self._operation
+            and not operation.task.done() and not self._stopping and not operation.revoked
+            and not operation.task.cancelling()
+            and asyncio.get_running_loop().time() < operation.deadline
+        )
+
+    def _operation_finished(self, task: asyncio.Task[object]) -> None:
+        """观察迟到错误但保留实际 task，供显式 retry/terminate 查询。"""
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.error("插件操作结束但失败: %s", error)
+        self._notify_updates()
+
+    def _revoke_operation(self, operation: ManagerOperation) -> None:
+        """撤销已提交操作也关闭接纳，提交事实本身不回滚。"""
+        operation.revoke()
+        if (operation is self._operation and operation.committed is not None
+                and operation.committed is self.current_snapshot):
+            self._pause_source_admission()
+
+    def _start_operation(
+        self, work: Callable[[], Awaitable[U]], *, background: bool = False,
+        wait_for_snapshot: RuntimeSnapshot | None = None,
+        commit_timeout: float | None = None,
+    ) -> ManagerOperation:
+        """等待普通调用归还租约后才计提交期限，始终保留同一个任务 owner。"""
+        self._require_operation_idle()
+        if commit_timeout is None:
+            commit_timeout = self.POST_PUBLISH_TIMEOUT_SECONDS
+        loop = asyncio.get_running_loop()
+        operation = ManagerOperation(
+            loop.time() + commit_timeout
+            if wait_for_snapshot is None else float("inf")
+        )
+        self._operation = operation
+
+        async def admitted_work() -> U:
+            if wait_for_snapshot is None:
+                return await work()
+            # 普通调用不是发布的执行阶段；等待时仍可查询、revert 和 terminate。
+            await self._snapshot_store.wait_for_no_leases(wait_for_snapshot)
+            if operation.revoked or operation.task.cancelling() or self._stopping:
+                raise asyncio.CancelledError("发布请求已撤销")
+            operation.deadline = loop.time() + commit_timeout
+            timer = loop.call_at(operation.deadline, self._revoke_operation, operation)
+            try:
+                return await work()
+            finally:
+                timer.cancel()
+
+        operation.task = asyncio.create_task(
+            run_operation(operation, admitted_work), name="plugin-manager-operation",
+            context=TaskContext() if background else None,
+        )
+        operation.task.add_done_callback(self._operation_finished)
+        if wait_for_snapshot is None:
+            timer = loop.call_at(operation.deadline, self._revoke_operation, operation)
+            operation.task.add_done_callback(lambda _: timer.cancel())
+        return operation
+
+    async def _run_operation(
+        self, work: Callable[[], Awaitable[U]], *, allow_stable_lease: bool = False,
+        commit_timeout: float | None = None,
+    ) -> U:
+        """公开入口有限观察同一任务；退出观察不释放仍在工作的 owner。"""
+        self._reject_operation_lease(allow_stable_lease=allow_stable_lease)
+        from agent.plugins.snapshot import get_current_runtime_lease
+        lease = get_current_runtime_lease()
+        if lease is not None and lease._store is self._snapshot_store:
+            async def scoped_work() -> U:
+                # 任务取得自己的真实租约；调用者超时退出不能释放仍在工作的 scope。
+                self._check_operation_commit()
+                async with RuntimeScope(lease.fork()):
+                    return await work()
+
+            operation = self._start_operation(scoped_work, commit_timeout=commit_timeout)
+        else:
+            operation = self._start_operation(work, commit_timeout=commit_timeout)
+        try:
+            return cast(U, await observe_operation(operation, deadline=operation.deadline))
+        finally:
+            if operation.revoked:
+                self._revoke_operation(operation)
 
     async def run_runtime_services(self) -> None:
-        """Follow stable Roots without retaining Turn admission across reloads."""
-
+        """订阅 stable 变化；每次启动都经同一操作 owner，关闭由 terminate 负责。"""
         if self._runtime_services_enabled:
             raise RuntimeError("plugin runtime services 已启动")
         self._runtime_services_enabled = True
-        snapshot: RuntimeSnapshot | None = None
         try:
-            while True:
-                async with self._candidate_prepare_lock:
-                    lease = await self._snapshot_store.acquire()
-                    snapshot = lease.snapshot
-                    try:
-                        await self._start_runtime_snapshot(snapshot)
-                    finally:
-                        await lease.release()
-                _ = await self._snapshot_store.wait_for_stable_change(snapshot)
-                await self._snapshot_store.wait_for_snapshot_drained(snapshot)
+            while not self._stopping:
+                try:
+                    await self.start_runtime()
+                except OperationBusyError:
+                    operation = self._operation
+                    assert operation is not None
+                    if not operation.task.done():
+                        await asyncio.wait((operation.task,))
+                        continue
+                snapshot = self.current_snapshot
+                if snapshot is None:
+                    raise RuntimeError("plugin runtime services 尚无 stable Root")
+                await self._snapshot_store.wait_for_stable_change(snapshot)
         finally:
             self._runtime_services_enabled = False
-            if snapshot is not None:
-                _ = await _complete_critical(self._stop_runtime_snapshot(snapshot))
+
 
     async def _start_runtime_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         """Start one exact Root once without retaining an admission lease."""
@@ -517,8 +481,13 @@ class PluginManager:
             raise asyncio.CancelledError
 
     async def start_runtime(self) -> None:
-        """Start lifecycle only after the exact Root is public and leasable."""
+        await self._run_operation(
+            self._start_runtime, commit_timeout=self.BOOT_COMMIT_TIMEOUT_SECONDS,
+        )
 
+    async def _start_runtime(self) -> None:
+        """Start lifecycle only after the exact Root is public and leasable."""
+        self._check_operation_commit()
         snapshot = self.current_snapshot
         if snapshot is None:
             return
@@ -561,60 +530,10 @@ class PluginManager:
             raise asyncio.CancelledError
 
     @property
-    def skill_projection_roots(self) -> list[Path]:
-        roots = list(self._dirs)
-        if self._installed_cache_root is not None:
-            roots.append(self._installed_cache_root)
-        return roots
-
-    def _sync_skill_links(self):
-        """Rebuild workspace links from the active v3 generations."""
-
-        from agent.plugins.skill_links import PluginSkillLinker
-
-        return PluginSkillLinker(
-            workspace=self._workspace,
-            plugin_roots=self.skill_projection_roots,
-        ).sync(self.active_plugins())
-
-    def _prepare_skill_links_for_promotion(
-        self,
-        generation: PluginGeneration,
-        candidate_snapshot: RuntimeSnapshot,
-    ) -> tuple[Any, list[ActivePluginInfo], list[ActivePluginInfo]]:
-        """Build and validate both sides of the stable skill projection switch."""
-
-        from agent.plugins.skill_links import PluginSkillLinker
-
-        contributions = generation.production_contributions or generation.contributions
-        plugin_dir = generation.plugin_dir.resolve(strict=False)
-        target = ActivePluginInfo(
-            plugin_id=generation.plugin_id,
-            plugin_dir=plugin_dir,
-            manifest=contributions.manifest,
-            module_path=generation.module_path,
-            skill_roots=contributions.skill_roots,
-            drift_skill_roots=contributions.drift_skill_roots,
-        )
-        stable = self.active_plugins()
-        post_promotion = [
-            plugin for plugin in stable if plugin.plugin_id != generation.plugin_id
-        ]
-        if any(item is generation for item in candidate_snapshot.active_generations()):
-            post_promotion.append(target)
-        linker = PluginSkillLinker(
-            workspace=self._workspace,
-            plugin_roots=self.skill_projection_roots,
-        )
-        linker.validate(post_promotion)
-        return linker, stable, post_promotion
-
-    def active_plugins(self) -> list[ActivePluginInfo]:
-        return [
-            self._active_plugins[generation.module_path]
-            for generation in self._active_generations.values()
-            if self._registry_active(generation.module_path)
-        ]
+    def _active_generations(self) -> Mapping[str, PluginGeneration]:
+        """当前实例只由 Store 选中的 snapshot 投影，不另存目录。"""
+        snapshot = self.current_snapshot
+        return {} if snapshot is None else snapshot.generations
 
     @property
     def cleanup_failures(self) -> list[CleanupFailure]:
@@ -623,16 +542,8 @@ class PluginManager:
     def generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._active_generations.get(plugin_id)
 
-    def latest_gate(self, plugin_id: str) -> GateResult | None:
-        return self._gate_results.get(plugin_id)
-
     def prepared_generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._prepared_generations.get(plugin_id)
-
-    def workload_urls(self, generation_id: str) -> Mapping[tuple[str, str], str]:
-        """Return ready workload URLs for one exact plugin generation."""
-
-        return self._composition_generation_host.workload_urls(generation_id)
 
     def bind_dashboard_preparer(
         self,
@@ -664,19 +575,6 @@ class PluginManager:
     ) -> None:
         self._endpoint_switcher = switcher
 
-    def bind_channel_provider_factory_resolver(
-        self,
-        resolver: Callable[
-            [RuntimeSnapshot],
-            Mapping[str, ProviderClientFactory],
-        ],
-    ) -> None:
-        """Bind Core's formal-only provider factory projection."""
-
-        if not callable(resolver):
-            raise TypeError("channel provider factory resolver 必须可调用")
-        self._channel_provider_factory_resolver = resolver
-
     def _resolve_channel_identity(self, channel: str, provider_identity: str) -> str | None:
         if self._channel_identities is None:
             raise RuntimeError("Channel identities 未绑定")
@@ -695,404 +593,6 @@ class PluginManager:
         if self._channel_identities is None:
             raise RuntimeError("Channel identities 未绑定")
         return self._channel_identities.rollback(receipt)
-
-    @property
-    def channel_generation_host(self) -> ChannelGenerationHost:
-        return self._channel_generation_host
-
-    @property
-    def composition_generation_host(self) -> CompositionGenerationHost:
-        return self._composition_generation_host
-
-    @staticmethod
-    def _channel_catalog_identity(snapshot: RuntimeSnapshot | None) -> str | None:
-        if snapshot is None:
-            return None
-        catalog = snapshot.channel_catalog
-        registry = (
-            catalog.registry if catalog is not None else snapshot.channel_registry
-        )
-        return None if registry is None else registry.identity
-
-    def _channel_provider_factories(
-        self,
-        snapshot: RuntimeSnapshot | None,
-    ) -> Mapping[str, ProviderClientFactory]:
-        """Resolve provider factories only for a non-empty frozen catalog."""
-
-        if snapshot is None:
-            return {}
-        catalog = snapshot.channel_catalog
-        registry = (
-            catalog.registry if catalog is not None else snapshot.channel_registry
-        )
-        if registry is None or not registry.descriptors:
-            return {}
-        resolver = self._channel_provider_factory_resolver
-        if resolver is None:
-            raise RuntimeError("v3 Channel provider factory resolver 尚未绑定")
-        factories = resolver(cast(RuntimeSnapshot, snapshot))
-        if not isinstance(factories, Mapping):
-            raise TypeError("channel provider factory resolver 必须返回 mapping")
-        return factories
-
-    @staticmethod
-    def _default_channel_provider_factories(
-        snapshot: RuntimeSnapshot,
-    ) -> Mapping[str, ProviderClientFactory]:
-        """Build one formal credential owner for every frozen channel."""
-
-        catalog = snapshot.channel_catalog
-        registry = (
-            catalog.registry if catalog is not None else snapshot.channel_registry
-        )
-        if registry is None:
-            return {}
-        result: dict[str, ProviderClientFactory] = {}
-        for descriptor in registry.descriptors:
-            if descriptor.owner == "core":
-                if catalog is None:
-                    raise RuntimeError("Core channel descriptor 缺少 committed catalog")
-                definition = catalog.definition(descriptor.name)
-                if definition is None:
-                    raise RuntimeError(
-                        f"Core channel definition 缺失: {descriptor.name}"
-                    )
-                result[descriptor.name] = _NoopProviderClientFactory()
-                continue
-            generation = snapshot.generations.get(descriptor.owner)
-            if generation is None:
-                raise RuntimeError(f"channel owner generation 缺失: {descriptor.owner}")
-            result[descriptor.name] = CoreProviderClientFactory(
-                generation.data_dir / "config.local.toml",
-                descriptor.credential_paths,
-                generation.config_revision,
-            )
-        return result
-
-    def _prepare_channel_publication(
-        self,
-        previous: RuntimeSnapshot | None,
-        candidate: RuntimeSnapshot,
-    ) -> _ChannelPublicationState:
-        """Freeze the exact old/new channel owners for one provisional switch."""
-
-        previous_identity = self._channel_catalog_identity(previous)
-        candidate_identity = self._channel_catalog_identity(candidate)
-        changed = self._channel_binding_changed(previous, candidate)
-        old_runtime = self._active_channel_generation
-        if changed and previous_identity is not None:
-            if (
-                old_runtime is None
-                or self._active_channel_catalog_identity != previous_identity
-                or previous is None
-            ):
-                raise RuntimeError("旧 stable Channel runtime owner 不一致")
-        return _ChannelPublicationState(
-            previous=previous,
-            candidate=candidate,
-            previous_identity=previous_identity,
-            candidate_identity=candidate_identity,
-            old_runtime=old_runtime,
-            old_factories=(
-                self._channel_provider_factories(previous) if changed else {}
-            ),
-            new_factories=(
-                self._channel_provider_factories(candidate) if changed else {}
-            ),
-            changed=changed,
-        )
-
-    def _channel_binding_changed(
-        self,
-        previous: RuntimeSnapshot | None,
-        candidate: RuntimeSnapshot,
-    ) -> bool:
-        """判断 exact Channel binding 是否必须随候选 snapshot 换代。"""
-
-        previous_identity = self._channel_catalog_identity(previous)
-        candidate_identity = self._channel_catalog_identity(candidate)
-        return previous_identity != candidate_identity or (
-            candidate_identity is not None
-            and (previous is None or previous.snapshot_id != candidate.snapshot_id)
-        )
-
-    async def _close_channel_publication(
-        self,
-        state: _ChannelPublicationState,
-    ) -> None:
-        """Close, drain, and stop the old runtime before switching endpoints."""
-
-        if not state.changed:
-            return
-        if state.old_runtime is not None:
-            state.old_runtime.close_admission()
-            state.old_closed = True
-            await state.old_runtime.drain()
-            await state.old_runtime.stop()
-            state.old_stopped = True
-            self._active_channel_generation = None
-            self._active_channel_catalog_identity = None
-
-    async def _start_channel_publication(
-        self,
-        state: _ChannelPublicationState,
-    ) -> None:
-        """Start the new exact runtime with admission still closed."""
-
-        if not state.changed:
-            return
-        if state.candidate_identity is not None:
-            state.new_runtime = await self._channel_generation_host.start_formal(
-                state.candidate,
-                state.new_factories,
-            )
-
-    def _open_channel_publication(self, state: _ChannelPublicationState) -> None:
-        """Publish and open the new exact runtime after the stable pointer moved."""
-
-        if not state.changed:
-            return
-        self._active_channel_generation = state.new_runtime
-        self._active_channel_catalog_identity = state.candidate_identity
-        if state.new_runtime is not None:
-            state.new_runtime.open_admission()
-        self._finish_channel_boot_transactions(state.candidate)
-
-    def _finish_channel_boot_transactions(
-        self,
-        snapshot: RuntimeSnapshot,
-    ) -> None:
-        """Finish only journal rows created for a fresh stable Channel boot."""
-
-        registry = snapshot.channel_registry
-        owners = (
-            set()
-            if registry is None
-            else {descriptor.owner for descriptor in registry.descriptors}
-        )
-        for plugin_id in owners:
-            generation = snapshot.generations[plugin_id]
-            tx_id = generation.reload_tx_id
-            if tx_id is None or tx_id not in self._channel_boot_transactions:
-                continue
-            self._advance_reload(generation, "committed")
-            self._advance_reload(generation, "complete")
-            self._channel_boot_transactions.remove(tx_id)
-
-    def _abort_channel_boot_transactions(
-        self,
-        snapshot: RuntimeSnapshot,
-        error: BaseException,
-    ) -> None:
-        """Abort clean fresh-boot rows while preserving cleanup tombstones."""
-
-        for generation in snapshot.generations.values():
-            tx_id = generation.reload_tx_id
-            if tx_id is None or tx_id not in self._channel_boot_transactions:
-                continue
-            phase = self._reload_journal.get(tx_id).phase
-            if phase not in {"cleanup_failed", "degraded"}:
-                self._abort_reload(
-                    generation,
-                    error=str(error) or type(error).__name__,
-                )
-            self._channel_boot_transactions.remove(tx_id)
-
-    async def _stop_staged_channel_publication(
-        self,
-        state: _ChannelPublicationState,
-    ) -> None:
-        """Stop the staged new runtime before restoring other participants."""
-
-        if not state.changed or state.new_runtime is None:
-            return
-        await state.new_runtime.stop()
-
-    async def _restore_old_channel_publication(
-        self,
-        state: _ChannelPublicationState,
-    ) -> None:
-        """Reconstruct the old runtime after all other owners rolled back."""
-
-        if not state.changed:
-            return
-        restored = state.old_runtime
-        if state.old_stopped and state.previous is not None:
-            try:
-                restored = await self._channel_generation_host.start_formal(
-                    state.previous,
-                    state.old_factories,
-                    boot_owner="plugin-manager-rollback",
-                )
-            except BaseException:
-                self._active_channel_generation = None
-                self._active_channel_catalog_identity = None
-                raise
-        self._active_channel_generation = restored
-        self._active_channel_catalog_identity = state.previous_identity
-
-    def _reopen_restored_channel_publication(
-        self,
-        state: _ChannelPublicationState,
-    ) -> None:
-        """Reopen the restored runtime only after the old snapshot is restored."""
-
-        if not state.changed:
-            return
-        runtime = self._active_channel_generation
-        if runtime is not None:
-            runtime.open_admission()
-        if state.previous is not None:
-            self._finish_channel_boot_transactions(state.previous)
-
-    async def _reserve_channel_binding(self, record: ChannelStartRecord) -> None:
-        """Persist an exact binding reservation before plugin code can run."""
-
-        if record.plugin_id == "core":
-            return
-        generation = self._channel_generation(record.plugin_id, record.generation_id)
-        tx_id = self._ensure_runtime_recovery_transaction(generation)
-        if self._reload_journal.get(tx_id).phase == "preparing":
-            self._reload_journal.advance(tx_id, "prepared")
-            self._reload_journal.advance(tx_id, "validating")
-            self._reload_journal.advance(tx_id, "commit_started")
-            self._channel_boot_transactions.add(tx_id)
-        self._reload_journal.annotate(
-            tx_id,
-            {
-                "event": "channel_binding_reserved",
-                "snapshot_id": record.snapshot_id,
-                "catalog_identity": record.catalog_identity,
-                "plugin_id": record.plugin_id,
-                "generation_id": record.generation_id,
-                "channel_name": record.channel_name,
-                "binding_token": record.binding_token,
-                "artifact_pointer": record.artifact_pointer,
-                "factory_export": record.factory_export,
-                "source_revision": record.source_revision,
-                "config_revision": record.config_revision,
-                "raw_config_revision": record.raw_config_revision,
-                "descriptor_digest": record.descriptor_digest,
-                "target": record.target,
-                "boot_owner": record.boot_owner,
-                "attempt": record.attempt,
-            },
-        )
-
-    async def _check_channel_config_revision(
-        self,
-        record: ChannelStartRecord,
-    ) -> None:
-        """Fence formal credential resolution to the frozen raw config bytes."""
-
-        if record.plugin_id == "core":
-            return
-        generation = self._channel_generation(record.plugin_id, record.generation_id)
-        if str(generation.plugin_dir) != record.artifact_pointer:
-            raise RuntimeError("channel artifact pointer 已漂移")
-        _, current_revision = read_config_source(generation.data_dir / "config.local.toml")
-        if current_revision != record.raw_config_revision:
-            raise RuntimeError("channel credential config revision 已漂移")
-
-    async def _on_channel_cleanup_failure(
-        self,
-        failure: ChannelCleanupTombstone,
-    ) -> None:
-        """Persist one retained channel binding without touching plugin Fiber state."""
-
-        if failure.plugin_id == "core":
-            logger.error(
-                "Core channel cleanup pending: channel=%s binding=%s error=%s",
-                failure.channel_name,
-                failure.binding_token,
-                failure.error,
-            )
-            return
-        try:
-            generation = self._channel_generation(
-                failure.plugin_id,
-                failure.generation_id,
-            )
-        except RuntimeError:
-            generation = None
-        if generation is None:
-            actions = tuple(
-                action
-                for action in self._reload_journal.pending_recovery()
-                if action.plugin_id == failure.plugin_id
-                and action.failure_resource
-                == f"channel-binding:{failure.binding_token}"
-            )
-            if len(actions) != 1:
-                raise RuntimeError("channel cleanup failure 缺少 durable exact owner")
-            tx_id = actions[0].tx_id
-            recovery_target = actions[0].recovery_target
-        else:
-            tx_id = self._ensure_runtime_recovery_transaction(generation)
-            recovery_target = self._composition_recovery_target(
-                generation,
-                tx_id=tx_id,
-            )
-        self._reload_journal.advance(
-            tx_id,
-            "cleanup_failed",
-            error=failure.error,
-            resource=f"channel-binding:{failure.binding_token}",
-            formal_effects=("channel_binding_cleanup_pending",),
-            recovery_action="retry_generation_cleanup",
-            recovery_target=recovery_target,
-            details={
-                "event": "channel_binding_cleanup_failed",
-                "snapshot_id": failure.snapshot_id,
-                "catalog_identity": failure.catalog_identity,
-                "channel_name": failure.channel_name,
-                "binding_token": failure.binding_token,
-                "artifact_pointer": failure.artifact_pointer,
-                "factory_export": failure.factory_export,
-                "source_revision": failure.source_revision,
-                "config_revision": failure.config_revision,
-                "raw_config_revision": failure.raw_config_revision,
-                "descriptor_digest": failure.descriptor_digest,
-                "target": failure.target,
-                "boot_owner": failure.boot_owner,
-                "attempt": failure.attempt_count,
-            },
-        )
-
-    def _channel_generation(
-        self,
-        plugin_id: str,
-        generation_id: str,
-    ) -> PluginGeneration:
-        """Find one exact retained generation without consulting a same-name replacement."""
-
-        candidates: list[PluginGeneration] = []
-        for snapshot in (self.current_snapshot, self.latest_snapshot):
-            if snapshot is None:
-                continue
-            snapshot_generation = snapshot.generations.get(plugin_id)
-            if snapshot_generation is not None:
-                candidates.append(snapshot_generation)
-        active = self._active_generations.get(plugin_id)
-        if active is not None:
-            candidates.append(active)
-        prepared = self._prepared_generations.get(plugin_id)
-        if prepared is not None:
-            candidates.append(prepared)
-        ready = self._ready_candidate
-        if ready is not None and ready.plugin_id == plugin_id:
-            candidates.append(ready.candidate)
-            if ready.previous is not None:
-                candidates.append(ready.previous)
-        candidates.extend(self._draining_generations.get(plugin_id, ()))
-        for generation in candidates:
-            if generation.generation_id == generation_id:
-                return generation
-        raise RuntimeError(
-            "channel binding 缺少 exact generation owner: "
-            f"{plugin_id}/{generation_id}"
-        )
 
     @property
     def current_snapshot(self) -> RuntimeSnapshot | None:
@@ -1120,12 +620,6 @@ class PluginManager:
     def reload_journal(self) -> ReloadJournal:
         return self._reload_journal
 
-    def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
-        entries = load_plugin_manifest(plugins_home)
-        for mod in self.discover(installed_selector="latest"):
-            _ = entries.setdefault(_resolve_plugin_id(mod), True)
-        return write_plugin_manifest(entries, plugins_home=plugins_home)
-
     def watch_revision(self) -> str:
         digest = hashlib.sha256()
         home = _plugins_home(self._installed_cache_root)
@@ -1140,52 +634,8 @@ class PluginManager:
             )
             digest.update(plugin_id.encode())
             digest.update(_source_metadata_revision(plugin_dir))
-            digest.update(_path_metadata(data_dir / "config.local.toml"))
+            digest.update(_path_metadata(data_dir / CONFIG_INPUT))
         return digest.hexdigest()
-
-    def _registry_active(self, module_path: str) -> bool:
-        if module_path not in self._active_plugins:
-            return False
-        if self.current_snapshot is None:
-            return False
-        return any(
-            generation.module_path == module_path
-            for generation in self.current_snapshot.active_generations()
-        )
-
-    def stable_channel_catalog(self) -> ChannelRegistrySnapshot | None:
-        """Return the exact committed stable merged channel declaration catalog."""
-
-        snapshot = self.current_snapshot
-        if snapshot is None:
-            return None
-        catalog = snapshot.channel_catalog
-        return catalog.registry if catalog is not None else snapshot.channel_registry
-
-    async def bind_core_channel_definitions(
-        self,
-        definitions: tuple[CoreChannelDefinition, ...],
-    ) -> None:
-        """Commit Core channel projections and publish their exact Host bindings."""
-
-        normalized = tuple(definitions)
-        if any(not isinstance(item, CoreChannelDefinition) for item in normalized):
-            raise TypeError("Core channel definitions 类型无效")
-        if not normalized:
-            return
-        if self._core_channel_definitions:
-            raise RuntimeError("Core channel definitions 已绑定")
-        self._core_channel_definitions = normalized
-        snapshot: RuntimeSnapshot | None = None
-        try:
-            snapshot, _ = await self._compile_topology_snapshot(
-                dict(self._active_generations)
-            )
-            await self._publish_committed_snapshot(snapshot)
-        except BaseException:
-            if self.current_snapshot is not snapshot:
-                self._core_channel_definitions = ()
-            raise
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(
@@ -1210,21 +660,17 @@ class PluginManager:
                 logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
                 continue
             seen_names.add(name)
-            import_suffix = name.replace("-", "_").replace("@", "_")
-            import_source = source.marketplace or source.plugin_root.parent.name
-            module_path = source.plugin_root / source.entrypoint
+            module_path = source.plugin_root / "plugin.py"
             mods.append(
                 {
                     "name": name,
                     "plugin_root": str(source.plugin_root),
-                    "module_path": str(module_path) if module_path is not None else "",
-                    "entrypoint": source.entrypoint,
+                    "module_path": str(module_path),
                     "manifest_digest": (
                         source.static_manifest.identity_digest
                         if source.static_manifest is not None
                         else ""
                     ),
-                    "import_path": f"akasic_plugin_{import_source}_{import_suffix}",
                     "marketplace": source.marketplace,
                     "source_type": source.source_type,
                 }
@@ -1232,86 +678,71 @@ class PluginManager:
         return mods
 
     async def load_all(self) -> None:
-        """先回退未提交更新，再启动 stable；不续跑上个进程的候选。"""
+        await self._run_operation(
+            self._load_all, commit_timeout=self.BOOT_COMMIT_TIMEOUT_SECONDS,
+        )
 
-        # 1. A prior Core boot cannot retain a live candidate lease.
-        self._composition_generation_host.start_scoped()
+    async def _load_all(self) -> None:
+        """从唯一完整选择启动；null 只允许首次固定安装输入。"""
+        selection_ref = self._selection.read()
+        if self.current_snapshot is not None:
+            raise RuntimeError("load_all 不能重复启动正式 Root")
+        self._check_operation_commit()
+        await cleanup_workloads_for_boot(self._workload_controller, self._workload_workspace_id)
+        # 宿主可能延迟返回或吞掉取消；撤销许可后不得继续执行任何 apply。
+        self._check_operation_commit()
         self._plugin_tasks.start()
         self._plugin_processes.start()
-        await self._composition_generation_host.cleanup_candidates()
-
-        self._reload_journal.rollback_updates(self.installed_plugins_home)
-
-        # 2. 按既有资源 owner 清理旧进程，未提交更新已恢复旧指针。
         recovery = self._reload_journal.pending_recovery()
-        self._require_unique_recovery_plugins(recovery)
-        stable_by_id = self._discovered_by_id(installed_selector="stable")
-        latest_by_id = self._discovered_by_id(installed_selector="latest")
-        runtime_recovery = tuple(
-            action
-            for action in recovery
-            if action.action
-            in {
-                "retry_generation_cleanup",
-                "retry_runtime_recovery",
-            }
-        )
-        runtime_receipts = await self._prepare_boot_runtime_recovery(runtime_recovery)
-        recovery = tuple(
-            action for action in recovery if action not in runtime_recovery
-        )
-        if runtime_recovery:
-            stable_by_id = self._discovered_by_id(installed_selector="stable")
-            latest_by_id = self._discovered_by_id(installed_selector="latest")
+        receipts = await self._prepare_boot_runtime_recovery(tuple(
+            action for action in recovery
+            if action.runtime_owner_boot_id is not None
+            or action.action in {"retry_generation_cleanup", "retry_runtime_recovery"}
+        ))
         for action in recovery:
-            if action.action != "discard_candidate":
-                continue
-            self._discard_recovery_pointer(
-                action.plugin_id,
-                action.source_revision,
-                stable_by_id=stable_by_id,
-                latest_by_id=latest_by_id,
+            self._reload_journal.settle_boot(
+                action, committed=self._selection_transition_committed(action.tx_id, selection_ref),
+                cleanup_receipt=receipts.get(action.tx_id),
             )
-            self._reload_journal.finish_recovery(action)
-            self._write_startup_recovery_fact(action, committed=False)
-
-        # 3. 根据 durable pointer 判定 promoting 崩溃发生在切换前还是切换后。
-        stable_by_id = self._discovered_by_id(installed_selector="stable")
-        latest_by_id = self._discovered_by_id(installed_selector="latest")
-        restore_candidates, restore_committed, restore_discarded = (
-            self._classify_reload_recovery(
-                recovery,
-                stable_by_id=stable_by_id,
-                latest_by_id=latest_by_id,
+        if selection_ref is not None:
+            await self._replace_formal_root(
+                self._selection_components(selection_ref), expected_ref=selection_ref,
             )
+            return
+        enabled = load_plugin_manifest(self.installed_plugins_home)
+        selected = tuple(
+            mod for mod in self.discover(installed_selector="stable")
+            if enabled.get(_resolve_plugin_id(mod), True)
         )
-        for action in restore_discarded:
-            self._reload_journal.finish_recovery(action)
-            self._write_startup_recovery_fact(action, committed=False)
+        await self._load_stable_batch(selected)
 
-        # 4. stable 在未发布事务中完整装配；latest 随后以新事务恢复。
-        if self._active_generations:
-            for mod in stable_by_id.values():
-                _ = await self._load_one(mod)
-        else:
-            await self._load_stable_batch(tuple(stable_by_id.values()))
-        self._finish_committed_recovery(restore_committed)
-        self._finish_boot_runtime_recovery(
-            runtime_recovery,
-            runtime_receipts,
-        )
-        await self._restore_latest_candidates(restore_candidates, latest_by_id)
+    def _selection_components(self, ref: str) -> tuple[str, ...]:
+        return cast(tuple[str, ...], self._archive.read_descriptor(ref)["components"])
+
+    def _selection_transition_committed(self, tx_id: str, current_ref: str | None) -> bool | None:
+        """按前驱和完整 refs 认定同一次转换；旧记录缺证据时明确未知。"""
+        intent = self._reload_journal.selection_candidate(tx_id)
+        if intent is None:
+            return None
+        base, components = intent
+        ref = current_ref
+        while ref is not None and ref != base:
+            record = self._archive.read_descriptor(ref)
+            if record["previous"] == base and record["components"] == components:
+                return True
+            ref = cast(str | None, record["previous"])
+        return False
 
     async def _prepare_boot_runtime_recovery(
         self,
         actions: tuple[ReloadRecoveryAction, ...],
     ) -> dict[str, str]:
-        """Clean exact previous boots and normalize their durable artifact targets."""
+        """清理真实旧 boot owner；不改变运行选择或安装输入。"""
 
         if not actions:
             return {}
         for action in actions:
-            _reject_retired_activity_recovery(action)
+            _reject_retired_owner_recovery(action)
         current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
         if os.environ.get("AKASHIC_SUPERVISED") != "1" or not current_boot_id:
             raise RuntimeError("v3 runtime recovery 需要 supervised boot identity")
@@ -1321,580 +752,104 @@ class PluginManager:
         receipts: dict[str, str] = {}
         for action in actions:
             previous_boot_id = action.runtime_owner_boot_id
-            if not previous_boot_id or previous_boot_id == current_boot_id:
+            if previous_boot_id is not None and (
+                not previous_boot_id.strip() or previous_boot_id == current_boot_id
+            ):
                 raise RuntimeError(
                     "v3 runtime recovery 缺少不同于当前进程的旧 boot identity"
                 )
-            if previous_boot_id not in cleaned_boots:
-                await asyncio.to_thread(
-                    _cleanup_boot_processes,
-                    boot_id=previous_boot_id,
-                    gateway_group_id=None,
-                )
-                cleaned_boots.add(previous_boot_id)
-            self._normalize_runtime_recovery_pointer(action)
+            cleanup = "not-required"
+            if previous_boot_id is not None:
+                cleanup = "complete"
+                if previous_boot_id not in cleaned_boots:
+                    await asyncio.to_thread(
+                        _cleanup_boot_processes,
+                        boot_id=previous_boot_id,
+                        gateway_group_id=None,
+                    )
+                    cleaned_boots.add(previous_boot_id)
             receipts[action.tx_id] = (
                 f"boot-reconcile:previous={previous_boot_id}:"
-                f"current={current_boot_id}:cleanup=complete:"
+                f"current={current_boot_id}:cleanup={cleanup}:"
                 f"target={action.recovery_target}"
             )
         return receipts
 
-    def _normalize_runtime_recovery_pointer(
-        self,
-        action: ReloadRecoveryAction,
-    ) -> None:
-        """Verify one exact pointer pair and select only its recorded target."""
-
-        plugin_name, separator, marketplace = action.plugin_id.rpartition("@")
-        if not separator:
-            if (
-                action.base_artifact_pointer is not None
-                or action.candidate_artifact_pointer is not None
-            ):
-                raise RuntimeError("builtin runtime recovery 不接受 artifact pointer")
-            if action.recovery_target != "candidate":
-                raise RuntimeError(
-                    "builtin runtime recovery 只能恢复当前 release 中的插件"
-                )
-            return
-        plugin_base = (
-            _plugins_home(self._installed_cache_root)
-            / "cache"
-            / marketplace
-            / plugin_name
-        )
-        pointers = read_pointers(plugin_base)
-        if pointers is None or action.recovery_target is None:
-            raise RuntimeError("runtime recovery 缺少 durable pointer/target evidence")
-        base = ArtifactPointer(action.base_artifact_pointer)
-        candidate_pointer = action.candidate_artifact_pointer
-        pair = (pointers.stable, pointers.latest)
-        if action.recovery_target == "base":
-            accepted = {(base, base)}
-            if candidate_pointer is not None:
-                candidate = ArtifactPointer(candidate_pointer)
-                accepted.update(
-                    {
-                        (base, candidate),
-                        (candidate, candidate),
-                    }
-                )
-            if pair not in accepted:
-                raise RuntimeError(
-                    f"runtime recovery base pointer 漂移: {plugin_base}: {pair}"
-                )
-            latest = (
-                ArtifactPointer(candidate_pointer)
-                if candidate_pointer is not None
-                else base
-            )
-            _ = write_pointers(plugin_base, stable=base, latest=latest)
-            return
-        if candidate_pointer is None:
-            raise RuntimeError("runtime recovery candidate target 缺少 exact pointer")
-        candidate = ArtifactPointer(candidate_pointer)
-        if pair != (candidate, candidate):
-            raise RuntimeError(
-                f"runtime recovery candidate pointer 未提交: {plugin_base}: {pair}"
-            )
-
-    def _finish_boot_runtime_recovery(
-        self,
-        actions: tuple[ReloadRecoveryAction, ...],
-        receipts: Mapping[str, str],
-    ) -> None:
-        """Seal boot reconciliation only after the authoritative stable Root is live."""
-
-        for action in actions:
-            _reject_retired_activity_recovery(action)
-        snapshot = self.current_snapshot
-        for action in actions:
-            generation = self._active_generations.get(action.plugin_id)
-            expected_pointer = (
-                action.candidate_artifact_pointer
-                if action.recovery_target == "candidate"
-                else action.base_artifact_pointer
-            )
-            if expected_pointer is not None:
-                if generation is None:
-                    raise RuntimeError(
-                        "runtime recovery 未重建 exact stable generation"
-                    )
-                plugin_base = _installed_artifact_base(generation)
-                if plugin_base is None or (
-                    generation.plugin_dir.relative_to(plugin_base).as_posix()
-                    != expected_pointer
-                ):
-                    raise RuntimeError(
-                        "runtime recovery stable artifact identity 不一致"
-                    )
-            elif "@" not in action.plugin_id:
-                if (
-                    action.recovery_target != "candidate"
-                    or generation is None
-                    or generation.source_type != "builtin"
-                ):
-                    raise RuntimeError(
-                        "builtin runtime recovery 未重建当前 release 插件"
-                    )
-            elif generation is not None:
-                raise RuntimeError("runtime recovery 应恢复为无插件 base")
-            if (
-                action.recovery_target == "candidate"
-                and generation is not None
-                and generation.source_type == "installed"
-                and generation.source_revision != action.source_revision
-            ):
-                raise RuntimeError("candidate runtime recovery source revision 不一致")
-            if generation is not None and snapshot is not None:
-                if self._composition_runtime_declared(snapshot, action.plugin_id):
-                    if (
-                        self._composition_generation_host.get(generation.generation_id)
-                        is None
-                    ):
-                        raise RuntimeError("boot runtime recovery stable Host 未就绪")
-                catalog = snapshot.channel_catalog
-                registry = (
-                    catalog.registry
-                    if catalog is not None
-                    else snapshot.channel_registry
-                )
-                channel_declared = registry is not None and any(
-                    descriptor.owner == action.plugin_id
-                    for descriptor in registry.descriptors
-                )
-                if channel_declared:
-                    channel_runtime = self._active_channel_generation
-                    if (
-                        channel_runtime is None
-                        or channel_runtime.snapshot_id != snapshot.snapshot_id
-                        or self._channel_generation_host.get(snapshot.snapshot_id)
-                        is None
-                        or self._active_channel_catalog_identity != registry.identity
-                    ):
-                        raise RuntimeError(
-                            "boot runtime recovery stable Channel Host 未就绪"
-                        )
-            receipt = receipts.get(action.tx_id)
-            if receipt is None:
-                raise RuntimeError("boot runtime recovery receipt 缺失")
-            stable_identity = (
-                "none"
-                if generation is None
-                else f"{generation.generation_id}:{generation.source_revision}"
-            )
-            snapshot_id = "none" if snapshot is None else snapshot.snapshot_id
-            self._reload_journal.finish_recovery(
-                action,
-                retry_receipt=(
-                    f"{receipt}:snapshot={snapshot_id}:stable={stable_identity}"
-                ),
-            )
-            self._write_startup_recovery_fact(
-                action,
-                committed=action.recovery_target == "candidate",
-            )
-
-    async def _load_stable_batch(
-        self,
-        mods: tuple[dict[str, str], ...],
-    ) -> None:
-        """暂存全部 stable 插件并发布一个完整运行时快照。"""
-
-        staged: list[PluginGeneration] = []
-        snapshot: RuntimeSnapshot | None = None
-        catalog_id: str | None = None
+    async def _load_stable_batch(self, mods: tuple[dict[str, str], ...]) -> None:
+        """固定整组归档后一次构建正式 Root，输入模块不进入运行组合。"""
+        inputs: list[PluginGeneration] = []
+        failure: BaseException | None = None
         try:
-            # 1. 只导入、校验并准备声明，不开放任何 stable snapshot。
             for mod in mods:
                 generation = await self._load_one(mod, stage_stable=True)
-                if generation is not None:
-                    staged.append(generation)
-            if not staged:
-                return
-            snapshot, catalog_id = await self._compile_stable_batch_snapshot(staged)
-            for generation in staged:
-                generation.runtime_snapshot = snapshot
-
-            # 2. Root declarations become live only after the whole batch settled.
-            for generation in staged:
-                await self._start_composition_generation_runtime(
-                    generation,
-                    snapshot,
-                    mode="formal",
-                )
-
-            # 3. Root mount 已完成全部 v3 lifecycle，登记待发布 generation。
-            await self._activate_stable_batch(staged)
-
-            # 4. 全部准备成功后才登记 stable owner，并一次安装快照。
-            assert catalog_id is not None
-            await self._publish_stable_batch(staged, snapshot, catalog_id)
+                if generation is None:
+                    raise RuntimeError(f"完整插件组合加载失败: {_resolve_plugin_id(mod)}")
+                inputs.append(generation)
+            components = tuple(self._generation_archive_ref(item) for item in sorted(inputs, key=lambda item: item.plugin_id))
+            # 临时输入模块的清理同样可能失败，必须先于唯一 durable commit。
+            for root, owned in tuple(self._building_roots.items()):
+                if owned and all(any(item is source for source in inputs) for item in owned):
+                    await self._close_building_root(root)
+            await self._replace_formal_root(
+                components, expected_ref=None,
+            )
         except BaseException as error:
-            # 5. 未发布事务失败时恢复所有进程内 owner，并反向释放资源。
-            _, cleanup_cancelled = await _complete_critical(
-                self._discard_stable_batch(
-                    staged,
-                    snapshot=snapshot,
-                    catalog_id=catalog_id,
-                )
-            )
-            if cleanup_cancelled:
-                raise asyncio.CancelledError
-            if isinstance(error, _StablePluginFailed):
-                await self._retry_stable_batch_without_failed(mods, error)
-                return
-            raise
-
-    async def _compile_stable_batch_snapshot(
-        self,
-        staged: list[PluginGeneration],
-    ) -> tuple[RuntimeSnapshot, str]:
-        """为 stable 启动批次编译一个完整的未发布快照。"""
-
-        try:
-            return await self._compile_topology_snapshot(
-                {item.plugin_id: item for item in staged}
-            )
-        except Exception as error:
-            if len(staged) == 1 and "missing_services=" not in str(error):
-                raise _StablePluginFailed(
-                    staged[0], "runtime_snapshot", error
-                ) from error
-            raise
-
-    async def _activate_stable_batch(
-        self,
-        staged: list[PluginGeneration],
-    ) -> None:
-        """Mark every fully mounted v3 generation ready for publication."""
-
-        for generation in staged:
-            try:
-                await self._prepare_generation(generation)
-                generation.state = "activating"
-            except Exception as error:
-                raise _StablePluginFailed(generation, "prepare", error) from error
-
-    async def _publish_stable_batch(
-        self,
-        staged: list[PluginGeneration],
-        snapshot: RuntimeSnapshot,
-        catalog_id: str,
-    ) -> None:
-        """登记全部 stable owner 并一次安装批次快照。"""
-
-        for generation in staged:
-            try:
-                generation.minimum_resource_count = generation.scope.resource_count
-                self._scopes[generation.module_path] = generation.scope
-                self._loaded.add(generation.module_path)
-                generation.state = "active"
-                self._active_generations[generation.plugin_id] = generation
-                self._activate_published_generation(generation, None)
-            except Exception as error:
-                raise _StablePluginFailed(generation, "publish", error) from error
-        self._snapshot_skill_catalogs[snapshot.snapshot_id] = catalog_id
-        await self._publish_committed_snapshot(snapshot)
-        for generation in staged:
-            generation.boot_created_data_dir = False
-            logger.info("插件已加载: %s", generation.plugin_id)
-
-    async def _discard_stable_batch(
-        self,
-        staged: list[PluginGeneration],
-        *,
-        snapshot: RuntimeSnapshot | None,
-        catalog_id: str | None,
-    ) -> None:
-        """释放只归属于未发布启动批次的全部资源。"""
-
-        pending = self._snapshot_store.pending_transaction
-        store_owned_pending = (
-            snapshot is not None
-            and pending is not None
-            and pending.candidate is snapshot
-        )
-        if snapshot is not None and not store_owned_pending:
-            _ = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
-        for generation in reversed(staged):
-            _ = self._active_generations.pop(generation.plugin_id, None)
-            if not store_owned_pending:
-                generation.runtime_snapshot = None
-                await self._dispose_generation(generation, state="discarded")
-        if store_owned_pending:
-            assert pending is not None
-            await self._snapshot_store.abort(pending)
-            for generation in staged:
-                generation.runtime_snapshot = None
-                if generation.boot_created_data_dir:
-                    _remove_validation_data_dir(generation.data_dir)
-                    generation.boot_created_data_dir = False
-        else:
-            for generation in staged:
-                if generation.boot_created_data_dir:
-                    _remove_validation_data_dir(generation.data_dir)
-                    generation.boot_created_data_dir = False
-        if (
-            not store_owned_pending
-            and snapshot is not None
-            and snapshot.composition_root is not None
-        ):
-            await snapshot.composition_root.dispose()
-        if catalog_id is not None and not store_owned_pending:
-            self._skill_host.close(catalog_id)
-
-    async def _retry_stable_batch_without_failed(
-        self,
-        mods: tuple[dict[str, str], ...],
-        failure: _StablePluginFailed,
-    ) -> None:
-        """记录被拒绝的 stable 参与者并重建剩余批次。"""
-
-        generation = failure.generation
-        self._record_failed_gate(
-            plugin_id=generation.plugin_id,
-            revision=generation.source_revision,
-            check_id=failure.phase,
-            reason=str(failure.cause) or type(failure.cause).__name__,
-        )
-        logger.warning(
-            "插件 %s 加载失败，回滚整个未发布批次: %s",
-            generation.plugin_id,
-            failure.cause,
-        )
-        remaining = tuple(
-            mod for mod in mods if _resolve_plugin_id(mod) != generation.plugin_id
-        )
-        await self._load_stable_batch(remaining)
-
-    @staticmethod
-    def _require_unique_recovery_plugins(
-        recovery: tuple[ReloadRecoveryAction, ...],
-    ) -> None:
-        seen: set[str] = set()
-        for action in recovery:
-            if action.plugin_id in seen:
-                raise RuntimeError(
-                    f"同一插件存在多个未完成 ReloadTransaction: {action.plugin_id}"
-                )
-            seen.add(action.plugin_id)
-
-    def _classify_reload_recovery(
-        self,
-        recovery: tuple[ReloadRecoveryAction, ...],
-        *,
-        stable_by_id: dict[str, dict[str, str]],
-        latest_by_id: dict[str, dict[str, str]],
-    ) -> tuple[
-        list[ReloadRecoveryAction],
-        list[ReloadRecoveryAction],
-        list[ReloadRecoveryAction],
-    ]:
-        """Classify durable transactions by the pointer switch already on disk."""
-
-        restore_candidates: list[ReloadRecoveryAction] = []
-        restore_committed: list[ReloadRecoveryAction] = []
-        restore_discarded: list[ReloadRecoveryAction] = []
-        for action in recovery:
-            if action.action == "discard_candidate":
-                continue
-            stable_revision = _mod_source_revision(stable_by_id.get(action.plugin_id))
-            latest_revision = _mod_source_revision(latest_by_id.get(action.plugin_id))
-            if action.action == "restore_candidate":
-                if latest_revision != action.source_revision:
-                    raise RuntimeError(
-                        "ReloadTransaction latest 恢复源码不一致: "
-                        f"{action.plugin_id} expected={action.source_revision} "
-                        f"actual={latest_revision}"
-                    )
-                restore_candidates.append(action)
-                continue
-            if stable_revision == action.source_revision:
-                restore_committed.append(action)
-                continue
-            if (
-                action.phase in {"commit_started", "promoting"}
-                and latest_revision == action.source_revision
-            ):
-                self._discard_recovery_pointer(
-                    action.plugin_id,
-                    action.source_revision,
-                    stable_by_id=stable_by_id,
-                    latest_by_id=latest_by_id,
-                )
-                restore_discarded.append(replace(action, action="discard_candidate"))
-                continue
-            if (
-                action.phase in {"commit_started", "promoting"}
-                and stable_revision == latest_revision
-                and self._has_installed_pointer_state(action.plugin_id)
-            ):
-                restore_discarded.append(action)
-                continue
-            raise RuntimeError(
-                "ReloadTransaction 恢复源码不一致: "
-                f"{action.plugin_id} expected={action.source_revision} "
-                f"stable={stable_revision} latest={latest_revision}"
-            )
-        return restore_candidates, restore_committed, restore_discarded
-
-    def _has_installed_pointer_state(self, plugin_id: str) -> bool:
-        plugin_name, separator, marketplace = plugin_id.rpartition("@")
-        if not separator:
-            return False
-        plugin_base = (
-            _plugins_home(self._installed_cache_root)
-            / "cache"
-            / marketplace
-            / plugin_name
-        )
-        state_path = pointer_state_path(plugin_base)
-        return state_path.exists() or state_path.is_symlink()
-
-    def _finish_committed_recovery(
-        self,
-        recovery: list[ReloadRecoveryAction],
-    ) -> None:
-        """Confirm that every disk-committed generation became active stable."""
-
-        for action in recovery:
-            generation = self._active_generations.get(action.plugin_id)
-            if generation is None:
-                raise RuntimeError(
-                    f"ReloadTransaction 恢复缺少插件: {action.plugin_id}"
-                )
-            assert generation.source_revision == action.source_revision
-            self._reload_journal.finish_recovery(action)
-            self._write_startup_recovery_fact(action, committed=True)
-
-    def _write_startup_recovery_fact(
-        self,
-        action: ReloadRecoveryAction,
-        *,
-        committed: bool,
-    ) -> None:
-        message = (
-            f"{action.plugin_id} 更新已在 Core 重启后确认提交；当前使用新版本。"
-            if committed
-            else f"{action.plugin_id} 更新在 Core 重启时没有完成；候选已丢弃，原版本保持可用。"
-        )
-        atomic_save_json(
-            self._workspace / "runtime" / "plugin-rollout-fact.json",
-            {"message": message},
-            ensure_ascii=False,
-            domain="plugin_rollout_fact",
-        )
-
-    async def _restore_latest_candidates(
-        self,
-        recovery: list[ReloadRecoveryAction],
-        latest_by_id: dict[str, dict[str, str]],
-    ) -> None:
-        """Rebuild latest candidates; reject a bad candidate without losing stable."""
-
-        for action in recovery:
-            self._reload_journal.finish_recovery(action)
-            mod = latest_by_id.get(action.plugin_id)
-            if mod is None:
-                raise RuntimeError(
-                    f"ReloadTransaction latest 恢复缺少插件: {action.plugin_id}"
-                )
-            generation = await self._load_one(mod, activate=False)
-            if generation is None:
-                _discard_installed_candidate_mod(mod)
-                logger.error(
-                    "ReloadTransaction latest 候选恢复失败，保留 stable: %s",
-                    action.plugin_id,
-                )
-                continue
-            try:
-                result = await self._publish_prepared(action.plugin_id)
-            except Exception:
-                await self.discard_prepared(action.plugin_id)
-                _discard_installed_candidate_mod(mod)
-                logger.exception(
-                    "ReloadTransaction latest 候选发布失败，保留 stable: %s",
-                    action.plugin_id,
-                )
-                continue
-            if result["publication_state"] != "latest_ready":
-                _discard_installed_candidate_mod(mod)
-                logger.error(
-                    "ReloadTransaction latest 候选被拒绝，保留 stable: %s",
-                    action.plugin_id,
-                )
-
-    def _discovered_by_id(
-        self,
-        *,
-        installed_selector: ArtifactSelector,
-    ) -> dict[str, dict[str, str]]:
-        return {
-            _resolve_plugin_id(mod): mod
-            for mod in self.discover(installed_selector=installed_selector)
-        }
-
-    @staticmethod
-    def _discard_recovery_pointer(
-        plugin_id: str,
-        source_revision: str,
-        *,
-        stable_by_id: dict[str, dict[str, str]],
-        latest_by_id: dict[str, dict[str, str]],
-    ) -> None:
-        latest = latest_by_id.get(plugin_id)
-        stable = stable_by_id.get(plugin_id)
-        if latest is None or latest.get("source_type") != "installed":
-            return
-        latest_revision = _mod_source_revision(latest)
-        stable_revision = _mod_source_revision(stable)
-        if latest_revision == stable_revision:
-            return
-        if latest_revision != source_revision:
-            raise RuntimeError(
-                "ReloadTransaction discard 源码不一致: "
-                f"{plugin_id} expected={source_revision} actual={latest_revision}"
-            )
-        plugin_base = _installed_artifact_base_from_root(Path(latest["plugin_root"]))
-        _ = discard_latest_pointer(plugin_base)
+            failure = error
+        cleanup_errors: list[BaseException] = []
+        for root, owned in tuple(self._building_roots.items()):
+            if owned and all(any(item is source for source in inputs) for item in owned):
+                if root.root_fiber.state != FiberState.UNLOADING:
+                    try:
+                        await self._close_building_root(root)
+                    except BaseException as error:
+                        cleanup_errors.append(error)
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "启动组合或归档输入清理失败",
+                cleanup_errors if failure is None else [failure, *cleanup_errors],
+            ) from None
+        if failure is not None:
+            raise failure
 
     async def prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
+        return await self._run_operation(
+            lambda: self._prepare_candidate(plugin_id), allow_stable_lease=True,
+        )
+
+    async def _prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
         if self._ready_candidate is not None:
             raise RuntimeError(
                 f"已有 latest 等待 promote/discard: {self._ready_candidate.plugin_id}"
             )
-        await self.discard_prepared(plugin_id, preserve_latest=True)
+        await self._discard_prepared(plugin_id)
         for mod in self.discover(installed_selector="latest"):
             if _resolve_plugin_id(mod) == plugin_id:
                 generation = await self._load_one(mod, activate=False)
-                if generation is None:
-                    _discard_installed_candidate_mod(mod)
                 return generation
         raise KeyError(f"插件不存在: {plugin_id}")
 
     async def discard_prepared(
+        self, plugin_id: str, *, error: str = "candidate discarded",
+    ) -> None:
+        await self._run_operation(lambda: self._discard_prepared(
+            plugin_id, error=error,
+        ), allow_stable_lease=True)
+
+    async def _discard_prepared(
         self,
         plugin_id: str,
         *,
-        preserve_latest: bool = False,
         error: str = "candidate discarded",
     ) -> None:
-        generation = self._prepared_generations.pop(plugin_id, None)
+        generation = self._prepared_generations.get(plugin_id)
         if generation is None:
             return
-        if not preserve_latest:
-            _discard_generation_candidate_pointer(generation)
         _, cancelled = await _complete_critical(
             self._dispose_generation(generation, state="discarded")
         )
-        runtime_failure = self._composition_generation_host.failure(
-            generation.generation_id
-        )
-        if runtime_failure is not None:
-            raise RuntimeError("候选 runtime cleanup 未完成，必须显式 retry")
         self._abort_reload(generation, error=error)
+        if self._prepared_generations.get(plugin_id) is generation:
+            _ = self._prepared_generations.pop(plugin_id)
         if cancelled:
             raise asyncio.CancelledError
 
@@ -1908,6 +863,7 @@ class PluginManager:
         plugin_dir: Path,
         source_type: str,
     ) -> str:
+        selection_ref = self._selection.read()
         base = self.current_snapshot
         base_generation = None if base is None else base.generations.get(plugin_id)
         base_pointer: str | None = None
@@ -1937,6 +893,7 @@ class PluginManager:
             config_revision=config_revision,
             base_artifact_pointer=base_pointer,
             candidate_artifact_pointer=candidate_pointer,
+            details={"base_selection_ref": selection_ref},
         )
 
     def _abort_reload_attempt(self, tx_id: str | None, *, error: str) -> None:
@@ -1948,60 +905,59 @@ class PluginManager:
         generation: PluginGeneration,
         *,
         state: str,
-        preserve_stable_alias: bool = False,
-        skip_composition_runtime: bool = False,
     ) -> None:
-        """完成插件终止、作用域清理和注册表卸载。"""
+        """成功后才解除 owner；失败或取消保留资源供显式关闭重试。"""
 
-        # 1. Host 必须在 exact Root/Health observer 仍存活时先回收进程。
-        externally_cancelled = False
-        if not skip_composition_runtime:
-            try:
-                await self._stop_composition_generation_runtime(generation)
-            except asyncio.CancelledError:
-                externally_cancelled = True
-            except Exception as error:
-                self._cleanup_failures.append(
-                    CleanupFailure(
-                        resource=f"plugin:{generation.plugin_id}:composition-runtime",
-                        error=str(error) or type(error).__name__,
-                    )
+        # 1. 调用者可能已移除 active/prepared，先把责任交给既有排空集合。
+        tracked = self._draining_generations.setdefault(generation.plugin_id, [])
+        if not any(item is generation for item in tracked):
+            tracked.append(generation)
+
+        async def close_resources() -> None:
+            """后取得的资源关闭成功后，才释放其 Root 和作用域依赖。"""
+
+            if self._snapshot_store.generation_is_referenced_elsewhere(
+                generation, excluding_snapshot_id="",
+            ):
+                raise RuntimeError("snapshot 仍持有 generation，必须由 snapshot owner 完成关闭")
+            if self._building_root_uses(generation) and generation.runtime_snapshot is None:
+                raise RuntimeError("未交接 Root 仍持有 generation，须显式 terminate 重试")
+            if generation.runtime_snapshot is not None:
+                root = generation.runtime_snapshot.composition_root
+                if root in self._building_roots and root.root_fiber.state == FiberState.UNLOADING:
+                    raise RuntimeError("构建 Root 清理已失败，须显式 recovery/terminate 重试")
+            if generation.runtime_snapshot is not None:
+                await self._dispose_unreferenced_composition_root(generation.runtime_snapshot)
+            failures = await generation.scope.aclose()
+            self._cleanup_failures.extend(failures)
+            if failures:
+                raise RuntimeError(
+                    "generation scope cleanup 未完成，必须显式 retry: "
+                    + "; ".join(f"{item.resource}: {item.error}" for item in failures)
                 )
 
-        # 2. 回收尚未交给 snapshot store 的组合 Root。
-        if generation.runtime_snapshot is not None:
-            await self._dispose_unreferenced_composition_root(
-                generation.runtime_snapshot
-            )
+        # 2. 重复取消不能截断清理；任何失败均阻止卸载模块与恢复接纳。
+        try:
+            _, cancelled = await _complete_critical(close_resources())
+        except BaseException as error:
+            _ = self._pause_source_admission()
+            if generation.runtime_snapshot is not None:
+                self._record_root_failure(
+                    generation,
+                    error,
+                    formal_effects=("generation_runtime_cleanup_pending",),
+                )
+            self._cleanup_failures.append(CleanupFailure(
+                resource=f"plugin:{generation.plugin_id}:generation:{generation.generation_id}",
+                error=str(error) or type(error).__name__,
+            ))
+            raise
 
-        # 3. 收集作用域失败，确保外部取消不会截断资源清理。
-        cleanup_failures, cleanup_cancelled = await _complete_critical(
-            generation.scope.aclose()
-        )
-        self._cleanup_failures.extend(cleanup_failures)
-        externally_cancelled = externally_cancelled or cleanup_cancelled
-        if (
-            not skip_composition_runtime
-            and self._composition_generation_host.failure(generation.generation_id)
-            is not None
-        ):
-            self._record_composition_runtime_failure(
-                generation,
-                RuntimeError("generation runtime cleanup 未完成"),
-                formal_effects=("generation_runtime_cleanup_pending",),
-            )
-
-        # 4. 清理注册表和模块树。
-        _ = self._scopes.pop(generation.module_path, None)
-        self._loaded.discard(generation.module_path)
-        _ = self._active_plugins.pop(generation.module_path, None)
+        # 3. 所有资源确认关闭后才移除模块及排空 owner。
         self._remove_module_tree(generation.module_path)
-        stable_alias = self._stable_aliases.get(generation.module_path)
-        if stable_alias is not None and not preserve_stable_alias:
-            _ = self._stable_aliases.pop(generation.module_path, None)
-            self._remove_module_tree(stable_alias)
         generation.state = state
-        if externally_cancelled:
+        self._forget_drained_generation(generation)
+        if cancelled:
             raise asyncio.CancelledError
 
     async def _dispose_unreferenced_composition_root(
@@ -2017,7 +973,10 @@ class PluginManager:
         if self._dashboard_validation_releaser is not None:
             await self._dashboard_validation_releaser(snapshot)
         await self._stop_runtime_snapshot(snapshot)
-        await root.dispose()
+        if root in self._building_roots:
+            await self._close_building_root(root)
+        else:
+            await root.dispose()
 
     def _retire_generation(self, generation: PluginGeneration) -> None:
         """通知已关闭 admission 的 generation 进入退役状态。"""
@@ -2041,73 +1000,39 @@ class PluginManager:
             _ = self._draining_generations.pop(generation.plugin_id, None)
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
+        """回收这张 snapshot 独占的 Root 和 generations。"""
+        if any(self._building_root_uses(item) for item in snapshot.generations.values()):
+            raise RuntimeError("未交接 Root 仍持有 snapshot 模块和数据，须显式 terminate 重试")
         composition_root = snapshot.composition_root
-        root_unreferenced = (
-            composition_root is not None
-            and not self._snapshot_store.composition_is_referenced_elsewhere(
-                composition_root,
-                excluding_snapshot_id=snapshot.snapshot_id,
-            )
-        )
-        if root_unreferenced:
+        # Store 在接纳时已拒绝物理 Root/generation 共享，回收不再解释共享图。
+        if composition_root is not None:
             await self._stop_runtime_snapshot(snapshot)
-        unreferenced_generations = tuple(
-            generation
-            for generation in snapshot.generations.values()
-            if not self._snapshot_store.generation_is_referenced_elsewhere(
-                generation,
-                excluding_snapshot_id=snapshot.snapshot_id,
-            )
-        )
-        for generation in unreferenced_generations:
-            try:
-                await self._stop_composition_generation_runtime(generation)
-            except Exception as error:
-                self._record_drained_composition_runtime_failure(
-                    snapshot,
-                    generation,
-                    error,
-                )
-                self._cleanup_failures.append(
-                    CleanupFailure(
-                        resource=(f"plugin:{generation.plugin_id}:composition-runtime"),
-                        error=str(error) or type(error).__name__,
-                    )
-                )
-        if root_unreferenced:
-            assert composition_root is not None
             if self._dashboard_validation_releaser is not None:
                 await self._dashboard_validation_releaser(snapshot)
             await composition_root.dispose()
-        catalog_id = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
-        if catalog_id is not None:
-            self._skill_host.close(catalog_id)
         state = "aborted" if snapshot.state == "aborted" else "retired"
-        current = self._snapshot_store.current
-        for generation in unreferenced_generations:
-            replacement = (
-                current.generations.get(generation.plugin_id)
-                if current is not None
-                else None
-            )
+        for generation in snapshot.generations.values():
             await self._dispose_generation(
                 generation,
                 state=state,
-                preserve_stable_alias=(
-                    replacement is not None and replacement is not generation
-                ),
-                skip_composition_runtime=True,
             )
             self._forget_drained_generation(generation)
         self._finish_drained_reload(snapshot.snapshot_id)
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
-        async with self._candidate_prepare_lock:
-            results = await self._reconcile_changed_locked()
-            _ = self._sync_skill_links()
-            return results
+        return await self._run_operation(self._reconcile_changed)
+
 
     async def install_candidate(
+        self, *, source: str, marketplace: str, ref_name: str,
+        sparse_paths: list[str], update_id: str | None = None,
+    ) -> tuple[PluginInstallResult, dict[str, object]]:
+        return await self._run_operation(lambda: self._install_candidate(
+            source=source, marketplace=marketplace, ref_name=ref_name,
+            sparse_paths=sparse_paths, update_id=update_id,
+        ), allow_stable_lease=True)
+
+    async def _install_candidate(
         self,
         *,
         source: str,
@@ -2116,92 +1041,97 @@ class PluginManager:
         sparse_paths: list[str],
         update_id: str | None = None,
     ) -> tuple[PluginInstallResult, dict[str, object]]:
-        """Stage one immutable artifact and publish its latest runtime atomically."""
+        """只安装并准备本次目标的 latest；正式切换仍需独立发布授权。"""
 
-        # 1. 与 watcher 共用 candidate owner，写 cache 前拒绝未决候选。
-        async with self._candidate_prepare_lock:
-            if update_id is not None:
-                try:
-                    previous_update = self._reload_journal.update(update_id)
-                except KeyError:
-                    previous_update = None
-                if previous_update is not None:
-                    raise RuntimeError("已有更新请求只能查询，不能重跑安装")
-            _, preflight_cancelled = await _complete_critical(
-                self._reconcile_changed_locked()
-            )
-            if preflight_cancelled:
-                raise asyncio.CancelledError
-            status = self.candidate_status()
-            if status["candidate_state"] in {
-                "preparing",
-                "prepared",
-                "validating",
-                "commit_started",
-                "latest_ready",
-                "discarding",
-                "promoting",
-            }:
-                raise RuntimeError(
-                    "已有插件候选等待处理: "
-                    f"plugin={status['candidate_plugin_id']} "
-                    f"phase={status['candidate_state']} "
-                    f"tx={status['candidate_reload_tx_id']}"
-                )
-
-            # 2. 持锁完成 artifact 发布与 runtime reconcile，不留 watcher 插入窗口。
-            result, install_cancelled = await _complete_critical(
-                asyncio.to_thread(
-                    install_git_plugin,
-                    workspace=self._workspace,
-                    source=source,
-                    marketplace=marketplace,
-                    ref_name=ref_name,
-                    sparse_paths=sparse_paths,
-                    plugins_home=self.installed_plugins_home,
-                    stage_candidate=True,
-                    update_id=update_id,
-                )
-            )
+        # 1. 操作 owner 已取得，写 cache 前拒绝未决候选。
+        if update_id is not None:
             try:
-                _, reconcile_cancelled = await _complete_critical(self._reconcile_changed_locked())
-            except BaseException:
-                self._reload_journal.rollback_updates(
-                    self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
-                )
-                raise
-            plugin_id = f"{result.plugin_name}@{result.marketplace}"
-            status = self.candidate_status()
-            if install_cancelled or reconcile_cancelled:
-                if (
-                    result.staged_candidate
-                    and status["candidate_plugin_id"] == plugin_id
-                    and status["candidate_state"] == "latest_ready"
-                ):
-                    _ = await self._drop_ready(plugin_id)
-                self._reload_journal.rollback_updates(
-                    self.installed_plugins_home, update_id=result.update_id, error="install cancelled",
-                )
+                previous_update = self._reload_journal.update(update_id)
+            except KeyError:
+                previous_update = None
+            if previous_update is not None:
+                raise RuntimeError("已有更新请求只能查询，不能重跑安装")
+        self._check_operation_commit()
+        status = self.candidate_status()
+        if status["candidate_state"] in {
+            "preparing",
+            "prepared",
+            "validating",
+            "commit_started",
+            "latest_ready",
+            "discarding",
+            "promoting",
+        }:
+            raise RuntimeError(
+                "已有插件候选等待处理: "
+                f"plugin={status['candidate_plugin_id']} "
+                f"phase={status['candidate_state']} "
+                f"tx={status['candidate_reload_tx_id']}"
+            )
+
+        # 2. 线程结束前一直持有操作与目录；取消不能把线程留给下一次更新。
+        result, install_cancelled = await _complete_critical(
+            asyncio.to_thread(
+                install_git_plugin,
+                workspace=self._workspace,
+                source=source,
+                marketplace=marketplace,
+                ref_name=ref_name,
+                sparse_paths=sparse_paths,
+                plugins_home=self.installed_plugins_home,
+                stage_candidate=True,
+                update_id=update_id,
+            )
+        )
+        publication_before = self._publication
+        plugin_id = f"{result.plugin_name}@{result.marketplace}"
+        try:
+            if install_cancelled:
                 raise asyncio.CancelledError
-            if result.staged_candidate and (
-                status["candidate_plugin_id"] != plugin_id
-                or status["candidate_state"] != "latest_ready"
-            ):
-                self._reload_journal.rollback_updates(
-                    self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
-                )
-                raise RuntimeError(
-                    "插件候选未进入 latest_ready: "
-                    f"requestedPlugin={plugin_id} "
-                    f"installedGitRevision={result.source_revision} "
-                    f"actualPlugin={status['candidate_plugin_id']} "
-                    f"actualRuntimeRevision={status['candidate_source_revision']} "
-                    f"phase={status['candidate_state']} "
-                    f"tx={status['candidate_reload_tx_id']} "
-                    f"error={status['candidate_error']}"
-                )
-            self._notify_updates()
-            return result, status
+            self._check_operation_commit()
+            if self._reload_journal.update(result.update_id).phase == "committed":
+                # 安装器已确认同一制品，不另建无法关联该请求的候选。
+                self._notify_updates()
+                return result, self.candidate_status()
+            # 本次安装只准备自己的目标；不顺手更新其他源码或切换正式 Root。
+            generation = await self._prepare_candidate(plugin_id)
+            if generation is None:
+                raise RuntimeError(f"安装目标未进入候选: {plugin_id}")
+            await self._publish_prepared(plugin_id, candidate_only=True)
+        except BaseException:
+            if self._publication is not publication_before and self._publication is not None:
+                if self._publication.must_retain:
+                    self._hold_selection_publication(self._publication)
+                    raise
+            self._reload_journal.rollback_updates(
+                self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
+            )
+            raise
+        status = self.candidate_status()
+        self._check_operation_commit()
+        if result.staged_candidate and (
+            status["candidate_plugin_id"] != plugin_id
+            or status["candidate_state"] != "latest_ready"
+        ):
+            if self._publication is not publication_before and self._publication is not None:
+                if self._publication.must_retain:
+                    self._hold_selection_publication(self._publication)
+                    raise RuntimeError("运行选择已提交或不确定，安装状态需显式结算")
+            self._reload_journal.rollback_updates(
+                self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
+            )
+            raise RuntimeError(
+                "插件候选未进入 latest_ready: "
+                f"requestedPlugin={plugin_id} "
+                f"installedGitRevision={result.source_revision} "
+                f"actualPlugin={status['candidate_plugin_id']} "
+                f"actualRuntimeRevision={status['candidate_source_revision']} "
+                f"phase={status['candidate_state']} "
+                f"tx={status['candidate_reload_tx_id']} "
+                f"error={status['candidate_error']}"
+            )
+        self._notify_updates()
+        return result, status
 
     def read_update(self, update_id: str) -> UpdateStatus:
         """从原更新 journal 和候选状态生成同一份只读结果。"""
@@ -2210,11 +1140,47 @@ class PluginManager:
         ready = (update.phase == "armed" and candidate is not None and update.reload_tx_id is not None
                  and candidate.reload_tx_id == update.reload_tx_id
                  and self._reload_journal.get(update.reload_tx_id).phase == "latest_ready")
+        record = None if update.reload_tx_id is None else self._reload_journal.get(update.reload_tx_id)
+        evidence = None
+        if update.reload_tx_id is not None:
+            for event in self._reload_journal.events(update.reload_tx_id):
+                if event.details.get("event") == "business_validation_opened":
+                    evidence = cast(str, event.details["workspace"])
         return UpdateStatus(update_id, update.plugin_id, update.phase, ready,
-                            self.update_is_publishing(update_id), update.error)
+                            self.update_is_publishing(update_id), update.error,
+                            None if record is None else record.candidate_snapshot_id,
+                            None if record is None else record.phase, evidence)
+
+    def read_validation_messages(self, update_id: str, session_id: str) -> tuple[Message, ...]:
+        """只读原调用消息；关闭后的证据沿原 Message 解码，不初始化或重放程序。"""
+        if session_id != "plugin-validation:" + update_id:
+            raise PermissionError("会话不属于该更新调用")
+        update = self._reload_journal.update(update_id)
+        if update.reload_tx_id is None:
+            return ()
+        snapshot_id = self._reload_journal.get(update.reload_tx_id).candidate_snapshot_id
+        for host in self._validation_hosts.values():
+            if host.parent_lease.snapshot.snapshot_id == snapshot_id:
+                return host.messages.reader(session_id).snapshot()
+        opened = [event for event in self._reload_journal.events(update.reload_tx_id)
+                  if event.details.get("event") == "business_validation_opened"]
+        if not opened:
+            return ()
+        if len(opened) != 1:
+            raise RuntimeError("更新调用证据不唯一")
+        details = opened[0].details
+        workspace = self._workspace / "runtime" / "plugin-update-validation" / cast(str, details["validation_id"]) / "workspace"
+        if (details["candidate_snapshot"] != snapshot_id
+                or Path(cast(str, details["workspace"])).resolve() != workspace.resolve()):
+            raise RuntimeError("调用证据与固定候选不一致")
+        database = workspace / "sessions.db"
+        evidence_root = (self._workspace / "runtime" / "plugin-update-validation").resolve()
+        if not database.resolve().is_relative_to(evidence_root):
+            raise RuntimeError("调用证据越过隔离目录")
+        return read_persisted_messages(database, session_id)
 
     def start_update_publication(self, update_id: str) -> None:
-        """提交交给宿主任务；调用工具可先返回并归还其原 generation。"""
+        """同步接纳无 lease 的宿主任务；返回只表示已接纳，不表示已晋升。"""
         update = self._reload_journal.update(update_id)
         if update.phase == "committed":
             return
@@ -2228,15 +1194,24 @@ class PluginManager:
         ready = self._require_ready_candidate(update.plugin_id)
         if ready.candidate.reload_tx_id != update.reload_tx_id:
             raise RuntimeError("更新恢复点与当前候选不匹配")
+        if self._reload_journal.get(cast(str, update.reload_tx_id)).phase != "latest_ready":
+            raise RuntimeError("候选已失去提交授权")
+        if update.error:
+            raise RuntimeError("候选调用失败或结果未知，不能发布")
         retained = [host.identity for host in self._validation_hosts.values()
                     if host.parent_lease.snapshot is ready.snapshot]
         if retained:
             raise RuntimeError(f"验证尚未退出或资源尚未清理: {retained}")
-        task = asyncio.create_task(
-            self._publish_update(update_id, update.plugin_id),
-            name="plugin-update:" + update_id, context=TaskContext(),
-        )
-        self._update_publication = (update_id, task)
+        try:
+            operation = self._start_operation(
+                lambda: self._publish_update(update_id, update.plugin_id), background=True,
+                wait_for_snapshot=self.current_snapshot,
+            )
+        except OperationBusyError as error:
+            self._reload_journal.record_update_error(update_id, f"发布未开始：{error}")
+            self._notify_updates()
+            raise
+        self._update_publication = (update_id, operation.task)
         self._notify_updates()
 
     def _notify_updates(self) -> None:
@@ -2263,9 +1238,11 @@ class PluginManager:
     async def _publish_update(self, update_id: str, plugin_id: str) -> None:
         """沿原发布 owner 排空和切换；失败作为恢复点诊断保留。"""
         try:
-            _ = await self.switch_ready(plugin_id, update_id=update_id)
+            self._check_operation_commit()
+            _ = await self._switch_ready(plugin_id, update_id=update_id)
         except asyncio.CancelledError:
             if self._reload_journal.update(update_id).phase == "committed":
+                self._reload_journal.record_update_error(update_id, "已提交；运行收尾取消，须检查保留的恢复 owner")
                 return
             self._reload_journal.record_update_error(update_id, "publication cancelled")
             raise
@@ -2287,8 +1264,8 @@ class PluginManager:
         if plugin_id not in manifest:
             raise RuntimeError(f"插件未安装: {plugin_id}")
 
-    async def _reconcile_changed_locked(self) -> list[dict[str, object]]:
-        """Reconcile discovered latest artifacts while candidate ownership is held."""
+    async def _reconcile_changed(self) -> list[dict[str, object]]:
+        """持有同一操作 owner，处理发现的固定制品输入。"""
 
         await self._snapshot_store.retry_drains()
         results: list[dict[str, object]] = []
@@ -2329,7 +1306,6 @@ class PluginManager:
         for plugin_id in sorted(desired - set(self._active_generations)):
             generation = await self._load_one(discovered[plugin_id], activate=False)
             if generation is None:
-                _discard_installed_candidate_mod(discovered[plugin_id])
                 continue
             publication = await self._publish_prepared(plugin_id)
             results.append(publication)
@@ -2338,146 +1314,51 @@ class PluginManager:
         return results
 
     async def reconcile_disabled_and_drain(self, plugin_id: str) -> None:
-        async with self._candidate_prepare_lock:
-            manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
-            if manifest.get(plugin_id, False):
-                raise RuntimeError(f"插件尚未禁用: {plugin_id}")
-            if self._ready_candidate is not None:
-                if self._ready_candidate.plugin_id != plugin_id:
-                    raise RuntimeError(
-                        "存在其他插件 latest，必须先 promote/discard: "
-                        f"{self._ready_candidate.plugin_id}"
-                    )
-                _ = await self._drop_ready(plugin_id)
-            active = self._active_generations.get(plugin_id)
-            draining = self._draining_generations.get(plugin_id, [])
-            if active is None and not draining:
-                return
-            if active is not None:
-                _ = await self._deactivate_plugin(plugin_id)
-                draining = self._draining_generations[plugin_id]
-            for generation in draining:
-                await self._snapshot_store.wait_for_generation_drained(generation)
-                if not generation.scope.closed:
-                    raise RuntimeError(f"插件旧代资源尚未关闭: {plugin_id}")
-            _ = self._draining_generations.pop(plugin_id, None)
-            _ = self._sync_skill_links()
+        await self._run_operation(lambda: self._reconcile_disabled_and_drain(plugin_id))
+
+    async def _reconcile_disabled_and_drain(self, plugin_id: str) -> None:
+        manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
+        if manifest.get(plugin_id, False):
+            raise RuntimeError(f"插件尚未禁用: {plugin_id}")
+        if self._ready_candidate is not None:
+            if self._ready_candidate.plugin_id != plugin_id:
+                raise RuntimeError(
+                    "存在其他插件 latest，必须先 promote/discard: "
+                    f"{self._ready_candidate.plugin_id}"
+                )
+            _ = await self._drop_ready(plugin_id)
+        retired: list[RuntimeSnapshot] = []
+        if plugin_id in self._active_generations:
+            previous = self.current_snapshot
+            assert previous is not None
+            _ = await self._deactivate_plugin(plugin_id)
+            retired.append(previous)
+        else:
+            for generation in self._draining_generations.get(plugin_id, ()):
+                snapshot = generation.runtime_snapshot
+                if snapshot is not None and all(item is not snapshot for item in retired):
+                    retired.append(snapshot)
+        # 整体换代异步排空旧 Root；只 join 已登记的原 snapshot，不自动重试失败资源。
+        for snapshot in retired:
+            await self._snapshot_store.wait_for_snapshot_drained(snapshot)
+        if self._draining_generations.get(plugin_id):
+            raise RuntimeError(f"插件仍有未关闭的资源 owner，须先 recovery/terminate: {plugin_id}")
+        current = self.current_snapshot
+        if current is not None and not current.accepting_leases:
+            self._check_operation_commit()
+            await self._resume_source_admission(current)
 
     async def _deactivate_plugin(self, plugin_id: str) -> dict[str, object]:
+        """禁用也重建整个组合，不能保留其他插件的旧模块。"""
         active = self._active_generations[plugin_id]
-        generations = {
-            key: generation
-            for key, generation in self._active_generations.items()
-            if key != plugin_id
-        }
-        snapshot, catalog_id = await self._compile_topology_snapshot(generations)
-        try:
-            if self._dashboard_preparer is not None:
-                self._dashboard_preparer(snapshot)
-        except BaseException:
-            self._skill_host.close(catalog_id)
-            await self._dispose_unreferenced_composition_root(snapshot)
-            raise
-
-        old_commands = _snapshot_command_catalog(self.current_snapshot)
-        new_commands = _snapshot_command_catalog(snapshot)
-        current_snapshot = self.current_snapshot
-        exclusive_endpoint_changed = (
-            current_snapshot is not None
-            and self._composition_runtime_declared(current_snapshot, plugin_id)
-        )
-        command_catalog_changed = old_commands != new_commands
-        v3_channel_catalog_changed = self._channel_catalog_identity(
-            self.current_snapshot
-        ) != self._channel_catalog_identity(snapshot)
-        publication_gated = (
-            exclusive_endpoint_changed
-            or command_catalog_changed
-            or v3_channel_catalog_changed
-        )
-        from agent.plugins.snapshot import get_current_runtime_lease
-
-        if (
-            exclusive_endpoint_changed or v3_channel_catalog_changed
-        ) and get_current_runtime_lease() is not None:
-            self._skill_host.close(catalog_id)
-            await self._dispose_unreferenced_composition_root(snapshot)
-            raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换独占端点")
-        quiesced = self._snapshot_store.pause_admission() if publication_gated else None
-        transaction = None
-        try:
-            if quiesced is not None:
-                if exclusive_endpoint_changed and self._endpoint_quiescer is not None:
-                    await self._endpoint_quiescer()
-                if exclusive_endpoint_changed or v3_channel_catalog_changed:
-                    await self._snapshot_store.wait_for_no_leases(quiesced)
-            self._snapshot_skill_catalogs[snapshot.snapshot_id] = catalog_id
-            transaction = self._snapshot_store.begin_publish(snapshot)
-            await self._post_snapshot_invariants(snapshot)
-        except BaseException:
-            if transaction is not None:
-                await self._snapshot_store.abort(transaction)
-            else:
-                await self._snapshot_store.resume(quiesced)
-                _ = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
-                self._skill_host.close(catalog_id)
-                await self._dispose_unreferenced_composition_root(snapshot)
-            if self._endpoint_resumer is not None and exclusive_endpoint_changed:
-                await self._endpoint_resumer()
-            raise
-
-        commit_error: BaseException | None = None
-        commit_cancelled = False
-        try:
-            assert transaction is not None
-            _, commit_cancelled = await _complete_critical(
-                self._commit_snapshot_with_publication_participants(
-                    transaction,
-                    old_commands=old_commands,
-                    new_commands=new_commands,
-                    promote_latest=False,
-                    force_provisional=exclusive_endpoint_changed,
-                    after_open=lambda: self._retire_generation(active),
-                )
-            )
-        except BaseException as error:
-            commit_error = error
-        if commit_error is not None:
-            if self._snapshot_store.pending_candidate is snapshot:
-                await self._snapshot_store.abort(
-                    transaction,
-                    reopen_previous=not isinstance(
-                        commit_error,
-                        _PublicationParticipantRestoreError,
-                    ),
-                )
-            if (
-                self._endpoint_resumer is not None
-                and exclusive_endpoint_changed
-                and self.current_snapshot is not None
-                and self.current_snapshot.accepting_leases
-            ):
-                await self._endpoint_resumer()
-            raise commit_error
-
-        _ = self._active_generations.pop(plugin_id)
-        resume_cancelled = False
-        if self._endpoint_resumer is not None and exclusive_endpoint_changed:
-            _, resume_cancelled = await _complete_critical(self._endpoint_resumer())
-        if commit_cancelled or resume_cancelled:
-            raise asyncio.CancelledError
-        result: dict[str, object] = {
-            "plugin_id": plugin_id,
-            "old_generation": active.generation_id,
-            "new_generation": None,
-            "snapshot_id": snapshot.snapshot_id,
+        snapshot = await self._replace_formal_root({
+            key: item for key, item in self._active_generations.items() if key != plugin_id
+        }, expected_ref=self._selection.read())
+        return {
+            "plugin_id": plugin_id, "old_generation": active.generation_id,
+            "new_generation": None, "snapshot_id": snapshot.snapshot_id,
             "publication_state": "disabled",
         }
-        logger.info(
-            "plugin_snapshot_status %s",
-            json.dumps(result, ensure_ascii=False, sort_keys=True),
-        )
-        return result
 
     async def _switch_plugin_endpoints(
         self,
@@ -2493,8 +1374,30 @@ class PluginManager:
         if old_commands != new_commands:
             raise RuntimeError("command catalog host 尚未绑定")
 
-    def _prepare_runtime_snapshot(self, lease: RuntimeSnapshotLease) -> None:
-        """在 exact closed scope 内同步取得启动资源；失败标记留给 stopping 清理。"""
+    def _pause_source_admission(self) -> RuntimeSnapshot | None:
+        """先关闭新 lease，再同步关闭当前 Root 的全部来源。"""
+        snapshot = self._snapshot_store.pause_admission()
+        if snapshot is not None and snapshot.composition_root is not None:
+            admission = snapshot.composition_root.context.get(SOURCE_ADMISSION)
+            if admission is not None:
+                admission.close()
+        return snapshot
+
+    @staticmethod
+    def _open_source_admission(snapshot: RuntimeSnapshot) -> None:
+        if snapshot.composition_root is not None:
+            admission = snapshot.composition_root.context.get(SOURCE_ADMISSION)
+            if admission is not None:
+                admission.open()
+
+    async def _resume_source_admission(self, snapshot: RuntimeSnapshot | None) -> None:
+        """只有尚未释放的旧 Root 可以原地恢复接纳。"""
+        if snapshot is not None:
+            self._open_source_admission(snapshot)
+        await self._snapshot_store.resume(snapshot)
+
+    async def _prepare_runtime_snapshot(self, lease: RuntimeSnapshotLease) -> None:
+        """在 exact closed scope 内等待启动资源；失败标记留给 stopping 清理。"""
         from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 
         snapshot = lease.snapshot
@@ -2506,24 +1409,11 @@ class PluginManager:
         self._runtime_starting_roots.add(root.instance_token)
         token = bind_runtime_snapshot(lease)
         try:
-            root.context.emit(RUNTIME_STARTING, RuntimeStarting())
+            result = await root.context.serial(RUNTIME_STARTING, RuntimeStarting())
+            if result is not None:
+                raise CompositionError("RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED", "runtime.starting 不接受 Bail")
         finally:
             reset_runtime_snapshot(token)
-
-    async def _prepare_closed_runtime_snapshot(self, snapshot: RuntimeSnapshot) -> None:
-        """旧 Root 重建后，在恢复接纳前准备资源并负责失败清理。"""
-        async with self._runtime_lifecycle_lock:
-            lease = self._snapshot_store.retain_recovery_target(snapshot)
-            try:
-                self._prepare_runtime_snapshot(lease)
-            except BaseException as error:
-                try:
-                    await self._stop_runtime_snapshot_locked(snapshot, lease=lease)
-                except BaseException as cleanup_error:
-                    raise BaseExceptionGroup("恢复准备与资源清理失败", [error, cleanup_error]) from None
-                raise
-            finally:
-                await lease.release()
 
     async def _commit_snapshot_with_publication_participants(
         self,
@@ -2531,50 +1421,45 @@ class PluginManager:
         *,
         old_commands: tuple[tuple[str, str], ...],
         new_commands: tuple[tuple[str, str], ...],
-        promote_latest: bool,
-        force_provisional: bool = False,
-        provisional_started: bool = False,
-        reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
     ) -> SnapshotTransaction:
         """关闭目标 lease 内准备临时资源，全部完成后才开放正式接纳。"""
 
         lease = self._snapshot_store.retain_publication_target(transaction)
-        prepared_here = False
-
-        def prepare() -> None:
-            nonlocal prepared_here
-            if before_open is not None:
-                before_open()
-            root = transaction.candidate.composition_root
-            if root is None:
-                return
-            if root.instance_token in self._runtime_starting_roots:
-                previous = transaction.previous
-                if previous is None or previous.composition_root is not root:
-                    raise RuntimeError("未发布 Root 的启动资源尚未清理")
-                return
-            prepared_here = True
-            self._prepare_runtime_snapshot(lease)
-
         try:
             return await self._commit_snapshot_participants(
                 transaction, old_commands=old_commands, new_commands=new_commands,
-                promote_latest=promote_latest, force_provisional=force_provisional,
-                provisional_started=provisional_started,
-                reopen_previous_on_failure=reopen_previous_on_failure,
-                before_open=prepare, after_open=after_open,
+                before_open=before_open, after_open=after_open,
+                startup_snapshot_lease=lease,
             )
         except BaseException as error:
-            if prepared_here:
-                try:
-                    await self._stop_runtime_snapshot(transaction.candidate, lease=lease)
-                except BaseException as cleanup_error:
-                    raise BaseExceptionGroup("发布与启动资源清理失败", [error, cleanup_error]) from None
+            if transaction.must_retain:
+                self._hold_selection_publication(transaction)
+                raise
+            try:
+                await self._stop_runtime_snapshot(transaction.candidate, lease=lease)
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup("发布与启动资源清理失败", [error, cleanup_error]) from None
             raise
         finally:
             await lease.release()
+
+    async def _start_closed_runtime_snapshot(self, lease: RuntimeSnapshotLease) -> None:
+        """全部生命周期初始化在 closed exact scope 内完成，之后才允许提交。"""
+        async with self._runtime_lifecycle_lock:
+            self._check_operation_commit()
+            root = lease.snapshot.composition_root
+            if root is None:
+                return
+            await self._prepare_runtime_snapshot(lease)
+            async with RuntimeScope(lease.fork()):
+                result = await root.context.serial(RUNTIME_STARTED, RuntimeStarted())
+                if result is not None:
+                    raise CompositionError(
+                        "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED", "runtime.started 接入点不接受 Bail",
+                    )
+                self._runtime_started_roots.add(root.instance_token)
 
     async def _commit_snapshot_participants(
         self,
@@ -2582,140 +1467,68 @@ class PluginManager:
         *,
         old_commands: tuple[tuple[str, str], ...],
         new_commands: tuple[tuple[str, str], ...],
-        promote_latest: bool,
-        force_provisional: bool = False,
-        provisional_started: bool = False,
-        reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
+        startup_snapshot_lease: RuntimeSnapshotLease,
     ) -> SnapshotTransaction:
         """Publish one snapshot around a single closed external-participant step."""
 
-        # 1. Snapshots without external participants retain the one-step path.
-        endpoints_changed = old_commands != new_commands
-        channel_binding_changed = self._channel_binding_changed(
-            transaction.previous,
-            transaction.candidate,
-        )
-        if (
-            not endpoints_changed
-            and not channel_binding_changed
-            and not force_provisional
-            and not provisional_started
-        ):
-            if promote_latest:
-                return await self._snapshot_store.promote_latest(
-                    before_open=before_open,
-                    after_open=after_open,
-                )
-            await self._snapshot_store.commit(
-                transaction,
-                before_open=before_open,
-                after_open=after_open,
-            )
-            return transaction
-
-        # 2. Close both snapshots before any service/channel/command side effect.
+        # 1. 旧 Root 已退出；所有新资源在 closed scope 内由 provider 初始化。
         provisional = transaction
-        if not provisional_started:
-            provisional = (
-                await self._snapshot_store.promote_latest_provisional()
-                if promote_latest
-                else transaction
-            )
-            if not promote_latest:
-                await self._snapshot_store.commit_provisional(provisional)
+        await self._snapshot_store.commit_provisional(provisional)
 
-        channel_state: _ChannelPublicationState | None = None
         participants_switch_attempted = False
         forward_error: BaseException | None = None
         try:
-            channel_state = self._prepare_channel_publication(
-                provisional.previous,
-                provisional.candidate,
-            )
-            await self._close_channel_publication(channel_state)
-            if endpoints_changed:
-                participants_switch_attempted = True
-                try:
-                    await self._switch_plugin_endpoints(
-                        old_commands,
-                        new_commands,
-                    )
-                except BaseException as error:
-                    forward_error = error
-                    raise
-            await self._start_channel_publication(channel_state)
+            participants_switch_attempted = True
+            try:
+                await self._switch_plugin_endpoints(old_commands, new_commands)
+            except BaseException as error:
+                forward_error = error
+                raise
+            await self._start_closed_runtime_snapshot(startup_snapshot_lease)
             def open_participants() -> None:
                 if after_open is not None:
                     after_open()
-                assert channel_state is not None
-                self._open_channel_publication(channel_state)
+                self._open_source_admission(provisional.candidate)
 
             await self._snapshot_store.finalize_provisional(
                 provisional,
                 before_open=before_open,
                 after_open=open_participants,
+                schedule_previous_drain=False,
             )
+            if provisional.previous is not None:
+                self._snapshot_store.schedule_retired_drain(provisional.previous)
         except BaseException as publication_error:
+            revoke_on_cancel(publication_error)
+            if provisional.must_retain:
+                self._hold_selection_publication(provisional)
+                raise
             rollback_errors: list[BaseException] = []
-            channel_cleanup_failed = False
             endpoint_restore_failed = False
-            if channel_state is not None:
-                old_snapshot_id = (
-                    None
-                    if channel_state.previous is None
-                    else (
-                        channel_state.old_runtime.snapshot_id
-                        if channel_state.old_runtime is not None
-                        else None
-                    )
-                )
-                channel_cleanup_failed = self._channel_generation_host.failure(
-                    channel_state.candidate.snapshot_id
-                ) is not None or (
-                    old_snapshot_id is not None
-                    and self._channel_generation_host.failure(old_snapshot_id)
-                    is not None
-                )
+            if participants_switch_attempted:
                 try:
-                    await self._stop_staged_channel_publication(channel_state)
-                except BaseException as caught:
-                    rollback_errors.append(caught)
-                    channel_cleanup_failed = True
-                if channel_cleanup_failed and not rollback_errors:
-                    rollback_errors.append(publication_error)
-            if participants_switch_attempted and not channel_cleanup_failed:
-                try:
-                    await self._switch_plugin_endpoints(
-                        new_commands,
-                        old_commands,
-                    )
+                    await self._switch_plugin_endpoints(new_commands, old_commands)
                 except BaseException as caught:
                     rollback_errors.append(caught)
                     endpoint_restore_failed = True
-            if channel_state is not None and not channel_cleanup_failed:
-                try:
-                    await self._restore_old_channel_publication(channel_state)
-                except BaseException as caught:
-                    rollback_errors.append(caught)
-                    channel_cleanup_failed = True
-            await self._snapshot_store.rollback_provisional(
-                provisional,
-                keep_candidate_latest=promote_latest,
-                reopen_previous=(reopen_previous_on_failure and not rollback_errors),
-            )
-            if not rollback_errors and channel_state is not None:
-                self._reopen_restored_channel_publication(channel_state)
-            self._abort_channel_boot_transactions(
-                provisional.candidate,
-                publication_error,
-            )
+            published_rollback = self._snapshot_store.current is provisional.candidate
+            if published_rollback:
+                await self._snapshot_store.rollback_published(
+                    provisional,
+                    keep_candidate_latest=False,
+                    reopen_previous=False,
+                )
+            if not published_rollback:
+                await self._snapshot_store.rollback_provisional(
+                    provisional,
+                    keep_candidate_latest=False,
+                    reopen_previous=False,
+                )
             if rollback_errors:
                 resources: list[str] = []
-                if channel_cleanup_failed:
-                    resources.extend(("plugin-endpoint", "channel-publication"))
-                elif endpoint_restore_failed:
+                if endpoint_restore_failed:
                     resources.append("plugin-endpoint")
                 raise _PublicationParticipantRestoreError(
                     "外部 publication participant 失败后旧 owner 恢复失败: "
@@ -2736,780 +1549,597 @@ class PluginManager:
 
     async def _compile_topology_snapshot(
         self,
-        generations: dict[str, PluginGeneration],
-    ) -> tuple[RuntimeSnapshot, str]:
-        self._generation_sequence += 1
-        catalog_id = f"topology:{self._generation_sequence}:{secrets.token_hex(4)}"
-        ordered = list(generations.values())
-        active_ordered = self._static_active_generations(ordered)
-        catalog = self._skill_host.prepare(
-            catalog_id,
-            normal_roots=PluginSkillHost.roots_for(active_ordered, drift=False),
-            drift_roots=PluginSkillHost.roots_for(active_ordered, drift=True),
-            ignored_normal_roots=tuple(
-                root
-                for generation in active_ordered
-                for root in generation.contributions.skill_roots
-            ),
-            ignored_drift_roots=tuple(
-                root
-                for generation in active_ordered
-                for root in generation.contributions.drift_skill_roots
-            ),
-        )
-        composition_root, created_root = await self._resolve_composition_root(
-            generations
+        inputs: dict[str, PluginGeneration] | tuple[str, ...],
+    ) -> RuntimeSnapshot:
+        generations = {} if isinstance(inputs, tuple) else dict(inputs)
+        composition_root = await self._resolve_composition_root(
+            generations, components=inputs if isinstance(inputs, tuple) else None,
         )
         try:
             snapshot = self._snapshot_compiler.compile(
                 generations,
-                snapshot_revision=catalog_id,
                 composition_root=composition_root,
-                core_channel_definitions=self._core_channel_definitions,
             )
-            _validate_static_manifest_runtime(snapshot, generations)
-            snapshot.skill_catalog_generation_id = catalog_id
-            snapshot.plugin_skill_index = catalog.normal_plugins
-            self._refresh_composition_runtime_tools(snapshot)
-            return snapshot, catalog_id
-        except BaseException:
-            self._skill_host.close(catalog_id)
-            if created_root and composition_root is not None:
-                await composition_root.dispose()
+        except BaseException as error:
+            await self._discard_building_root(composition_root, error)
             raise
+        for item in generations.values():
+            item.runtime_snapshot = snapshot
+        return snapshot
 
     async def publish_prepared(self, plugin_id: str) -> dict[str, object]:
-        async with self._candidate_prepare_lock:
-            return await self._publish_prepared(plugin_id)
+        return await self._run_operation(lambda: self._publish_prepared(plugin_id))
+
 
     async def switch_ready(self, plugin_id: str, *, update_id: str | None = None) -> dict[str, object]:
-        """Promote the one ready installed candidate without rebuilding it."""
+        return await self._run_operation(lambda: self._switch_ready(plugin_id, update_id=update_id))
 
-        async with self._candidate_prepare_lock:
-            ready = self._require_ready_candidate(plugin_id)
+
+    async def _switch_ready(self, plugin_id: str, *, update_id: str | None = None) -> dict[str, object]:
+        ready = self._require_ready_candidate(plugin_id)
+        candidate = ready.candidate
+        tx_id = candidate.reload_tx_id
+        if tx_id is None or self._reload_journal.get(tx_id).phase != "latest_ready":
+            raise RuntimeError("latest candidate 已失去发布授权")
+        if update_id is not None:
+            update = self._reload_journal.update(update_id)
+            if update.phase != "armed" or update.reload_tx_id != tx_id:
+                raise RuntimeError("待发布更新与当前候选不匹配")
+        record = self._reload_journal.get(tx_id)
+        current = self.current_snapshot
+        if record.base_snapshot_id != (None if current is None else current.snapshot_id):
+            raise RuntimeError("候选基线已变化，必须重新准备完整组合")
+        inputs = tuple(self._generation_archive_ref(item) for item in ready.snapshot.generations.values())
+        intent = self._reload_journal.selection_candidate(tx_id)
+        if intent is None or intent[1] != inputs:
+            raise RuntimeError("候选缺少完整 selection 提交证据")
+        expected_ref = intent[0]
+        if self._selection.read() != expected_ref:
+            raise SelectionConflictError("候选 stable 基线已变化")
+        from agent.plugins.snapshot import get_current_runtime_lease
+        if get_current_runtime_lease() is not None:
+            raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换完整 Root")
+
+        # 1. 验证实例先退出，不能把它的模块、目录或身份改作正式实例。
+        self._snapshot_store.pause_candidate_admission(ready.snapshot)
+        try:
+            await self._snapshot_store.wait_for_no_leases(ready.snapshot)
+            self._check_operation_commit()
+            self._snapshot_store.seal_candidate_validation(ready.snapshot)
+        except BaseException:
+            if not self._stopping and current_operation.get() is self._operation:
+                await self._snapshot_store.resume(ready.snapshot)
+            raise
+        try:
+            _, cancelled = await _complete_critical(self._snapshot_store.discard_latest(ready.snapshot))
+        except BaseException as error:
+            self._record_root_failure(
+                candidate, error, resource="runtime-snapshot-drain",
+                formal_effects=("candidate_runtime_cleanup_pending",), recovery_target="base",
+            )
+            raise
+        if cancelled:
+            self._abort_reload(candidate, error="候选关闭期间取消")
+            if self._reload_journal.get(tx_id).phase == "aborted":
+                self._reload_journal.annotate(tx_id, {"cleanup_receipt": "candidate-root-closed"})
+            self._ready_candidate = None
+            raise asyncio.CancelledError
+        def before_open() -> None:
+            if self._reload_journal.get(tx_id).phase != "latest_ready":
+                raise RuntimeError("更新已失去发布授权")
             if update_id is not None:
                 update = self._reload_journal.update(update_id)
-                if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
-                    raise RuntimeError("待发布更新与当前候选不匹配")
-            generation = ready.candidate
-            tx_id = generation.reload_tx_id
-            if tx_id is None:
-                raise RuntimeError("latest candidate 缺少 reload transaction")
-            if self._reload_journal.get(tx_id).phase != "latest_ready":
-                raise RuntimeError("latest candidate 已被 runtime recovery 撤销准入")
+                if update.phase != "armed" or update.reload_tx_id != tx_id or update.error:
+                    raise RuntimeError("更新请求已撤销或失去精确候选授权")
+            self._advance_reload(candidate, "promoting")
 
-            old_commands = _snapshot_command_catalog(self.current_snapshot)
-            new_commands = _snapshot_command_catalog(ready.snapshot)
-            stable_snapshot = self.current_snapshot
-            v3_runtime_handoff = self._composition_runtime_declared(
-                ready.snapshot,
-                plugin_id,
-            ) or (
-                stable_snapshot is not None
-                and self._composition_runtime_declared(
-                    stable_snapshot,
-                    plugin_id,
-                )
-            )
-            exclusive_endpoint_changed = v3_runtime_handoff
-            command_catalog_changed = old_commands != new_commands
-            v3_channel_catalog_changed = self._channel_catalog_identity(
-                stable_snapshot
-            ) != self._channel_catalog_identity(ready.snapshot)
-            formal_root_handoff = (
-                generation.production_contributions is not None
-                and stable_snapshot is not None
-                and stable_snapshot.composition_root is not None
-            )
-            publication_gated = (
-                exclusive_endpoint_changed
-                or command_catalog_changed
-                or v3_channel_catalog_changed
-                or formal_root_handoff
-            )
-            from agent.plugins.snapshot import get_current_runtime_lease
-
-            if (
-                exclusive_endpoint_changed
-                or v3_channel_catalog_changed
-            ) and get_current_runtime_lease() is not None:
-                raise RuntimeError(
-                    "持有 RuntimeSnapshot lease 时不能切换 Channel runtime"
-                )
-
-            skill_linker, stable_skill_plugins, target_skill_plugins = (
-                self._prepare_skill_links_for_promotion(generation, ready.snapshot)
-            )
-
-            # 1. Seal both stable and validation leases before touching ownership.
-            candidate_snapshot = self._snapshot_store.pause_candidate_admission(
-                ready.snapshot
-            )
-            quiesced_snapshot = (
-                self._snapshot_store.pause_admission()
-                if publication_gated
-                else None
-            )
-            runtime_restore_started = False
-            stable_root_stopped = False
-            provisional_transaction: SnapshotTransaction | None = None
-            provisional_cancelled = False
-            if publication_gated:
-                try:
-                    if (
-                        exclusive_endpoint_changed
-                        and self._endpoint_quiescer is not None
-                    ):
-                        await self._endpoint_quiescer()
-                    if quiesced_snapshot is not None and (
-                        exclusive_endpoint_changed
-                        or v3_channel_catalog_changed
-                        or formal_root_handoff
-                    ):
-                        await self._snapshot_store.wait_for_no_leases(quiesced_snapshot)
-                    await self._snapshot_store.wait_for_no_leases(ready.snapshot)
-                    self._snapshot_store.seal_candidate_validation(ready.snapshot)
-                    (
-                        provisional_transaction,
-                        provisional_cancelled,
-                    ) = await _complete_critical(
-                        self._snapshot_store.promote_latest_provisional()
-                    )
-                    runtime_restore_started = True
-                    try:
-                        await self._restore_ready_runtime(
-                            ready,
-                            stable_snapshot=quiesced_snapshot,
-                        )
-                    finally:
-                        stable_root_stopped = generation.formal_root_stopped
-                    generation = ready.candidate
-                    new_commands = _snapshot_command_catalog(ready.snapshot)
-                except BaseException:
-                    gated_runtime_error: BaseException | None = None
-                    if stable_root_stopped:
-                        assert quiesced_snapshot is not None
-                        try:
-                            await self._recover_stable_root(
-                                generation,
-                                quiesced_snapshot,
-                            )
-                        except BaseException as error:
-                            gated_runtime_error = error
-                    elif runtime_restore_started:
-                        try:
-                            await self._rollback_composition_runtime_replacement(
-                                generation
-                            )
-                        except BaseException as error:
-                            gated_runtime_error = error
-                    if provisional_transaction is not None:
-                        _, rollback_cancelled = await _complete_critical(
-                            self._snapshot_store.rollback_provisional(
-                                provisional_transaction,
-                                keep_candidate_latest=True,
-                                reopen_previous=gated_runtime_error is None,
-                            )
-                        )
-                        provisional_cancelled = (
-                            provisional_cancelled or rollback_cancelled
-                        )
-                    if gated_runtime_error is None:
-                        await self._snapshot_store.resume(quiesced_snapshot)
-                    if (
-                        gated_runtime_error is None
-                        and exclusive_endpoint_changed
-                        and self._endpoint_resumer is not None
-                    ):
-                        await self._endpoint_resumer()
-                    if runtime_restore_started and self._ready_candidate is ready:
-                        if gated_runtime_error is None:
-                            _ = await self._drop_ready(plugin_id, error="candidate publication failed")
-                    else:
-                        await self._snapshot_store.resume(candidate_snapshot)
-                    if gated_runtime_error is not None:
-                        self._record_composition_runtime_failure(
-                            generation,
-                            gated_runtime_error,
-                            formal_effects=(
-                                "candidate_validation_stopped",
-                                "old_runtime_restore_uncertain",
-                            ),
-                            recovery_target="base",
-                        )
-                        raise RuntimeError(
-                            "candidate formalization 失败后旧 v3 runtime 恢复失败"
-                        ) from gated_runtime_error
-                    raise
-            else:
-                try:
-                    await self._snapshot_store.wait_for_no_leases(ready.snapshot)
-                    self._snapshot_store.seal_candidate_validation(ready.snapshot)
-                    runtime_restore_started = True
-                    await self._restore_ready_runtime(
-                        ready,
-                        stable_snapshot=None,
-                    )
-                    generation = ready.candidate
-                except BaseException:
-                    formalization_runtime_error: BaseException | None = None
-                    if runtime_restore_started:
-                        try:
-                            await self._rollback_composition_runtime_replacement(
-                                generation
-                            )
-                        except BaseException as error:
-                            formalization_runtime_error = error
-                    if runtime_restore_started and self._ready_candidate is ready:
-                        if formalization_runtime_error is None:
-                            _ = await self._drop_ready(plugin_id, error="candidate publication failed")
-                    else:
-                        await self._snapshot_store.resume(candidate_snapshot)
-                    if formalization_runtime_error is not None:
-                        self._record_composition_runtime_failure(
-                            generation,
-                            formalization_runtime_error,
-                            formal_effects=(
-                                "candidate_validation_stopped",
-                                "old_runtime_restore_uncertain",
-                            ),
-                        )
-                        raise RuntimeError(
-                            "candidate formalization 失败后旧 v3 runtime 恢复失败"
-                        ) from formalization_runtime_error
-                    raise
-
-            # 2. 先切可回滚的 Skill 投影，再提交持久 pointer；整个回调不跨 await。
-            skill_links_switched = False
-            link_result = None
-
-            def before_open() -> None:
-                nonlocal link_result, skill_links_switched
-                try:
-                    link_result = skill_linker.sync(target_skill_plugins)
-                except BaseException:
-                    skill_linker.sync(stable_skill_plugins)
-                    raise
-                skill_links_switched = True
-                phase = self._reload_journal.get(tx_id).phase
-                if phase != "latest_ready":
-                    raise RuntimeError(
-                        "candidate runtime recovery 已阻止 pointer commit"
-                    )
-                self._advance_reload(generation, "promoting")
-                artifact_base = _installed_artifact_base(generation)
-                if artifact_base is not None:
-                    _switch_ready_pointer(ready, artifact_base)
-
-            # 3. Snapshot pointer 切换后再替换 manager 的 stable generation owner。
-            def after_open() -> None:
-                self._activate_published_generation(generation, ready.previous)
-                generation.state = "active"
-                self._scopes[generation.module_path] = generation.scope
-                self._loaded.add(generation.module_path)
-                self._active_generations[plugin_id] = generation
-                if ready.previous is not None:
-                    self._retire_generation(ready.previous)
-
-            previous_snapshot = self.current_snapshot
-            if previous_snapshot is not None:
-                self._drain_transactions[previous_snapshot.snapshot_id] = tx_id
-            try:
-                transaction, final_cancelled = await _complete_critical(
-                    self._commit_snapshot_with_publication_participants(
-                        provisional_transaction
-                        or SnapshotTransaction(
-                            previous=previous_snapshot,
-                            candidate=ready.snapshot,
-                        ),
-                        old_commands=old_commands,
-                        new_commands=new_commands,
-                        promote_latest=True,
-                        force_provisional=exclusive_endpoint_changed,
-                        provisional_started=provisional_transaction is not None,
-                        reopen_previous_on_failure=not formal_root_handoff,
-                        before_open=before_open,
-                        after_open=after_open,
-                    )
-                )
-                cancelled = provisional_cancelled or final_cancelled
-            except BaseException as publication_error:
-                skill_error: BaseException | None = None
-                pointer_error: BaseException | None = None
-                runtime_error: BaseException | None = None
-                participant_restore_error = (
-                    publication_error
-                    if isinstance(
-                        publication_error,
-                        _PublicationParticipantRestoreError,
-                    )
-                    else None
-                )
-                artifact_base = _installed_artifact_base(generation)
-                if artifact_base is not None:
-                    try:
-                        _preserve_ready_pointer(ready, artifact_base)
-                    except BaseException as error:
-                        pointer_error = error
-                if skill_links_switched:
-                    try:
-                        skill_linker.sync(stable_skill_plugins)
-                    except BaseException as error:
-                        skill_error = error
-                if stable_root_stopped:
-                    assert quiesced_snapshot is not None
-                    try:
-                        await self._recover_stable_root(
-                            generation,
-                            quiesced_snapshot,
-                        )
-                    except BaseException as error:
-                        runtime_error = error
-                elif runtime_restore_started:
-                    try:
-                        await self._rollback_composition_runtime_replacement(generation)
-                    except BaseException as error:
-                        runtime_error = error
-                if (
-                    previous_snapshot is not None
-                    and self.current_snapshot is previous_snapshot
-                ):
-                    _ = self._drain_transactions.pop(
-                        previous_snapshot.snapshot_id,
-                        None,
-                    )
-                if (
-                    runtime_error is None
-                    and skill_error is None
-                    and pointer_error is None
-                    and participant_restore_error is None
-                ):
-                    await self._snapshot_store.resume(quiesced_snapshot)
-                    await self.start_runtime()
-                if (
-                    runtime_error is None
-                    and skill_error is None
-                    and pointer_error is None
-                    and participant_restore_error is None
-                    and self._endpoint_resumer is not None
-                    and exclusive_endpoint_changed
-                ):
-                    await self._endpoint_resumer()
-                recovery_error = (
-                    runtime_error
-                    or participant_restore_error
-                    or skill_error
-                    or pointer_error
-                )
-                if self._ready_candidate is ready and recovery_error is None:
-                    _ = await self._drop_ready(plugin_id, error="candidate publication failed")
-                if recovery_error is not None:
-                    recovery_resources: list[str] = []
-                    recovery_effects: list[str] = []
-                    if runtime_error is not None:
-                        recovery_resources.append("composition-runtime")
-                        recovery_effects.extend(
-                            (
-                                "candidate_formal_started",
-                                "old_runtime_restore_uncertain",
-                            )
-                        )
-                    if participant_restore_error is not None:
-                        recovery_resources.extend(participant_restore_error.resources)
-                        if "plugin-endpoint" in participant_restore_error.resources:
-                            recovery_effects.append("endpoint_restore_uncertain")
-                        if "channel-publication" in participant_restore_error.resources:
-                            recovery_effects.append("stable_channel_restore_uncertain")
-                    if skill_error is not None:
-                        recovery_resources.append("plugin-skill-projection")
-                        recovery_effects.append("stable_skill_restore_uncertain")
-                    if pointer_error is not None:
-                        recovery_resources.append("plugin-artifact-pointer")
-                        recovery_effects.append("stable_pointer_restore_uncertain")
-                    self._record_composition_runtime_failure(
-                        generation,
-                        recovery_error,
-                        resource=",".join(recovery_resources),
-                        formal_effects=tuple(recovery_effects),
-                        recovery_target="base",
-                    )
-                    raise RuntimeError(
-                        "插件 promote 失败后存在未完成的 formal recovery: "
-                        + ", ".join(recovery_resources)
-                    ) from recovery_error
-                raise
-            await self.start_runtime()
-            self._ready_candidate = None
-            generation.replaced_composition_runtime_generation = None
-            generation.formal_root_stopped = False
-            generation.formal_root_released = False
-            self._track_reload_drain(generation, transaction.previous)
-            if self._endpoint_resumer is not None and exclusive_endpoint_changed:
-                await self._endpoint_resumer()
-            assert link_result is not None
-            logger.info(
-                "插件 stable skill 投影同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
-                link_result.expected,
-                link_result.created,
-                link_result.repaired,
-                link_result.removed,
-                link_result.skipped,
-            )
-            result = self._publication_status(
-                plugin_id,
-                active=ready.previous,
-                candidate=generation,
-                publication_state="promoted",
-            )
-            validation_data_dir = (
-                self._workspace
-                / "runtime"
-                / "plugin-validation"
-                / generation.generation_id
-            )
-            try:
-                await asyncio.to_thread(
-                    _remove_validation_data_dir, validation_data_dir
-                )
-            except Exception as error:
-                logger.error(
-                    "候选隔离 plugin-data 清理失败: %s: %s",
-                    validation_data_dir,
-                    error,
-                )
-            logger.info(
-                "plugin_snapshot_status %s",
-                json.dumps(result, ensure_ascii=False, sort_keys=True),
-            )
-            if cancelled:
-                raise asyncio.CancelledError
-            return result
-
-    def resource_failures(self) -> tuple[CompositionRuntimeFailure, ...]:
-        """返回调用 scope 保留的真实资源故障；它们不参与插件发布事务。"""
-        return self._composition_generation_host.scoped_failures()
-
-    async def retry_resource_cleanup(self, scope_id: str) -> str:
-        """按调用的精确资源身份重试清理，不切换安装指针或正式 generation。"""
-        host = self._composition_generation_host
-        cleanup = host.retry_scoped_cleanup(scope_id)
-        result, cancelled = await _complete_critical(cleanup)
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
-
-    async def retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
-        """Retry one durable v3 runtime owner and reconcile its exact pointer target."""
-
-        result, cancelled = await _complete_critical(
-            self._retry_runtime_recovery_critical(plugin_id)
-        )
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
-
-    async def _retry_runtime_recovery_critical(
-        self,
-        plugin_id: str,
-    ) -> dict[str, object]:
-        """Complete one runtime recovery transaction before exposing cancellation."""
-
-        async with self._candidate_prepare_lock:
-            actions = tuple(
-                action
-                for action in self._reload_journal.pending_recovery()
-                if action.plugin_id == plugin_id
-                and action.action
-                in {"retry_generation_cleanup", "retry_runtime_recovery"}
-            )
-            if len(actions) != 1:
-                raise RuntimeError("插件没有待执行的 runtime recovery")
-            action = actions[0]
-            _reject_retired_activity_recovery(action)
-            ready = self._ready_candidate
-            if ready is not None and (
-                ready.plugin_id != plugin_id
-                or ready.candidate.reload_tx_id != action.tx_id
-            ):
-                ready = None
-            prepared = self._prepared_generations.get(plugin_id)
-            if prepared is not None and prepared.reload_tx_id != action.tx_id:
-                prepared = None
-
-            # 1. Retry every exact retained Host owner before changing pointers.
-            receipts: list[str] = []
-            resource = action.failure_resource or ""
-            if "runtime-snapshot-drain" in resource:
-                await self._snapshot_store.retry_drains()
-                receipts.append("runtime-snapshot-drain-complete")
-            channel_tokens = tuple(
-                item.removeprefix("channel-binding:")
-                for item in resource.split(",")
-                if item.startswith("channel-binding:")
-            )
-            for binding_token in channel_tokens:
-                await self._channel_generation_host.retry_generation_cleanup(
-                    binding_token
-                )
-                receipts.append(f"channel-binding-cleanup-complete:{binding_token}")
-            retained_generation_ids = tuple(
-                dict.fromkeys(
-                    generation_id
-                    for generation_id in (
-                        action.generation_id,
-                        action.base_generation_id,
-                    )
-                    if generation_id is not None
-                    and self._composition_generation_host.failure(generation_id)
-                    is not None
-                )
-            )
-            for generation_id in retained_generation_ids:
-                if action.action == "retry_runtime_recovery":
-                    receipts.append(
-                        await self._composition_generation_host.retry_runtime_recovery(
-                            generation_id
-                        )
-                    )
-                if self._composition_generation_host.failure(generation_id) is None:
-                    _ = self._composition_runtime_generations.pop(
-                        generation_id,
-                        None,
-                    )
-                else:
-                    receipts.append(
-                        await self._composition_generation_host.retry_generation_cleanup(
-                            generation_id
-                        )
-                    )
-
-            # 2. Rebuild the exact committed stable runtime when rollback left it absent.
-            stable = self._active_generations.get(plugin_id)
-            current = self.current_snapshot
-            if (
-                action.action == "retry_runtime_recovery"
-                and stable is not None
-                and current is not None
-                and self._composition_runtime_declared(current, plugin_id)
-                and self._composition_generation_host.get(stable.generation_id) is None
-                and (
-                    ready is None
-                    or ready.candidate.replaced_composition_runtime_generation is None
-                )
-            ):
-                _ = self._snapshot_store.pause_admission()
-                await self._snapshot_store.wait_for_no_leases(current)
-                await self._rebuild_stable_root(stable, current)
-                receipts.append("stable-composition-runtime-restored")
-
-            # 3. Restore non-runtime formal effects only while their candidate owner exists.
-            if (
-                action.action == "retry_runtime_recovery"
-                and ready is not None
-                and ready.candidate.replaced_composition_runtime_generation is not None
-            ):
-                if current is None:
-                    raise RuntimeError("runtime recovery 缺少 stable snapshot")
-                await self._recover_stable_root(ready.candidate, current)
-                receipts.append("stable-composition-runtime-restored")
-            if "plugin-skill-projection" in resource:
-                if ready is None:
-                    raise RuntimeError("runtime recovery 缺少 skill candidate owner")
-                linker, stable_plugins, _target_plugins = (
-                    self._prepare_skill_links_for_promotion(
-                        ready.candidate,
-                        ready.snapshot,
-                    )
-                )
-                _ = linker.sync(stable_plugins)
-                receipts.append("stable-skill-projection-restored")
-
-            # 4. Normalize the exact durable target before acquiring new resources.
-            if (
-                action.base_artifact_pointer is not None
-                or action.candidate_artifact_pointer is not None
-            ):
-                self._normalize_runtime_recovery_pointer(action)
-            elif "@" in plugin_id:
-                raise RuntimeError(
-                    "installed runtime recovery 缺少 exact artifact pointer"
-                )
-            cancelled = False
-            candidate_snapshot = self._snapshot_store.unpromoted_candidate
-            if action.recovery_target == "base" and candidate_snapshot is not None:
-                _, cancelled = await _complete_critical(
-                    self._snapshot_store.discard_latest(candidate_snapshot)
-                )
-            if action.recovery_target == "base" and ready is not None:
-                self._ready_candidate = None
-            if action.recovery_target == "base" and prepared is not None:
-                _ = self._prepared_generations.pop(plugin_id, None)
-                _, prepared_cancelled = await _complete_critical(
-                    self._dispose_generation(prepared, state="discarded")
-                )
-                cancelled = cancelled or prepared_cancelled
-            if action.recovery_target == "candidate" and ready is not None:
-                if self.current_snapshot is not ready.snapshot:
-                    raise RuntimeError(
-                        "runtime recovery candidate target 尚未成为 stable"
-                    )
-                self._ready_candidate = None
-
-            # 5. Rebuild the exact stable Channel owner after identity normalization.
-            restored_channel_runtime: ChannelGeneration | None = None
-            current_channel_identity = self._channel_catalog_identity(current)
-            channel_publication_failed = (
-                bool(channel_tokens) or "channel-publication" in resource
-            )
-            if channel_publication_failed and current is None:
-                self._active_channel_generation = None
-                self._active_channel_catalog_identity = None
-            elif channel_publication_failed and current is not None:
-                active_runtime = self._active_channel_generation
-                if current_channel_identity is None:
-                    self._active_channel_generation = None
-                    self._active_channel_catalog_identity = None
-                elif (
-                    active_runtime is None
-                    or self._channel_generation_host.get(active_runtime.snapshot_id)
-                    is None
-                    or self._active_channel_catalog_identity != current_channel_identity
-                ):
-                    restored_channel_runtime = (
-                        await self._channel_generation_host.start_formal(
-                            current,
-                            self._channel_provider_factories(current),
-                            boot_owner="plugin-manager-recovery",
-                        )
-                    )
-
-            # 6. Open the exact Channel owner before any public admission resumes.
-            if restored_channel_runtime is not None:
-                self._active_channel_generation = restored_channel_runtime
-                self._active_channel_catalog_identity = current_channel_identity
-                restored_channel_runtime.open_admission()
-                receipts.append("stable-channel-runtime-restored")
-            receipt = ";".join(receipts) or "runtime-owner-already-clean"
-            _, resume_cancelled = await _complete_critical(
-                self._snapshot_store.resume(self.current_snapshot)
-            )
-            await self.start_runtime()
-            endpoint_resume_cancelled = False
-            participant_only_recovery = all(
-                item.startswith("channel-binding:")
-                or item.startswith("channel-publication:")
-                for item in resource.split(",")
-                if item
-            )
-            if self._endpoint_resumer is not None and not participant_only_recovery:
-                _, endpoint_resume_cancelled = await _complete_critical(
-                    self._endpoint_resumer()
-                )
-            self._reload_journal.finish_recovery(
-                action,
-                retry_receipt=receipt,
-            )
-            if cancelled or resume_cancelled or endpoint_resume_cancelled:
-                raise asyncio.CancelledError
-            active = self._active_generations.get(plugin_id)
-            return {
-                "plugin_id": plugin_id,
-                "publication_state": "recovered",
-                "recovery_target": action.recovery_target,
-                "generation_id": (None if active is None else active.generation_id),
-                "snapshot_id": (
-                    None
-                    if self.current_snapshot is None
-                    else self.current_snapshot.snapshot_id
-                ),
-                "retry_receipt": receipt,
-            }
-
-    async def _restore_ready_runtime(
-        self,
-        ready: _ReadyPluginCandidate,
-        *,
-        stable_snapshot: RuntimeSnapshot | None,
-    ) -> None:
-        """Replace validation and stable Roots without overlapping formal owners."""
-
-        generation = ready.candidate
-        production = generation.production_contributions
-        if production is None:
-            return
-        production_data_dir = generation.production_data_dir
-        if production_data_dir is None:
-            raise RuntimeError("候选缺少 production plugin-data identity")
-        candidate_runtime = self._composition_generation_host.get(
-            generation.generation_id
-        )
-        expected_mcp_catalog_digests = (
-            None if candidate_runtime is None else candidate_runtime.mcp_catalog_digests
-        )
-
-        # 1. 隔离 Root 已封存，先停止其任务，再进入任何 formal await。
-        if self._dashboard_validation_releaser is not None:
-            await self._dashboard_validation_releaser(ready.snapshot)
-        await self._stop_runtime_snapshot(ready.snapshot)
-        await self._stop_composition_generation_runtime(generation)
-        validation_root = ready.snapshot.composition_root
-        if validation_root is not None:
-            await validation_root.dispose()
-
-        # 2. Restore the formal data projection, then refresh the exact Root payload.
-        generation.contributions = production
-        generation.data_dir = production_data_dir
-        await self._stop_stable_root(generation, stable_snapshot)
-        replacement = await self._compile_generation_snapshot(
-            generation,
-        )
         try:
-            _validate_candidate_formal_snapshot_identity(
-                generation,
-                candidate=ready.snapshot,
-                formal=replacement,
-            )
-        except RuntimeError:
-            await self._dispose_unreferenced_composition_root(replacement)
-            raise
-        try:
-            await self._start_snapshot_composition_runtimes(
-                replacement,
-                candidate=generation,
-                expected_mcp_catalog_digests=expected_mcp_catalog_digests,
+            formal = await self._replace_formal_root(
+                inputs, expected_ref=expected_ref, before_open=before_open,
+                attempt=candidate, validated=ready.snapshot,
             )
         except BaseException:
-            await self._stop_snapshot_composition_runtimes(replacement)
-            await self._dispose_unreferenced_composition_root(replacement)
+            publication = self._publication
+            if publication is not None and publication.must_retain and (
+                plugin_id in publication.candidate.generations
+                and publication.candidate.generations[plugin_id].reload_tx_id == tx_id
+            ):
+                self._ready_candidate = None
+                raise
+            if self._reload_journal.get(tx_id).phase not in {"cleanup_failed", "degraded"}:
+                self._abort_reload(candidate, error="正式组合发布失败")
+                if self._reload_journal.get(tx_id).phase == "aborted":
+                    self._reload_journal.annotate(tx_id, {"cleanup_receipt": "candidate-root-closed"})
+                self._ready_candidate = None
+                if current is not None:
+                    self._drain_transactions.pop(current.snapshot_id, None)
+                    self._drained_before_commit.discard(current.snapshot_id)
             raise
-        _replace_snapshot_payload(ready.snapshot, replacement)
-        validation_workspace = generation.validation_workspace
-        generation.validation_workspace = None
-        if validation_workspace is not None:
-            _remove_validation_data_dir(validation_workspace.parent)
-        generation.validation_data_inventory = ()
-        if self._dashboard_preparer is not None:
-            self._dashboard_preparer(ready.snapshot)
-        generation.production_contributions = None
-        generation.production_data_dir = None
+        generation = formal.generations[plugin_id]
+        self._ready_candidate = None
+        try:
+            self._track_reload_drain(generation, current)
+        except BaseException:
+            assert self._publication is not None
+            self._hold_selection_publication(self._publication)
+            raise
+        return self._publication_status(
+            plugin_id, active=ready.previous, candidate=generation,
+            publication_state="promoted",
+        )
+
+    async def _replace_formal_root(
+        self,
+        inputs: dict[str, PluginGeneration] | tuple[str, ...],
+        *,
+        expected_ref: str | None,
+        before_open: Callable[[], None] | None = None,
+        attempt: PluginGeneration | None = None,
+        validated: RuntimeSnapshot | None = None,
+    ) -> RuntimeSnapshot:
+        """排空旧组合，真实关闭外部 owner；失败只在释放成功后重建旧输入。"""
+        self._check_operation_commit()
+        from agent.plugins.snapshot import get_current_runtime_lease
+        if get_current_runtime_lease() is not None:
+            raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换完整 Root")
+        if self._publication is not None and self._publication.must_retain:
+            if not self._publication.candidate.accepting_leases:
+                raise RuntimeError("持久发布尚在 maintenance，必须显式恢复或关闭")
+        if self._selection.read() != expected_ref:
+            raise SelectionConflictError("完整 Root 基线已变化")
+        self._publication = None
+        current = self.current_snapshot
+        if any(
+            root.root_fiber.state == FiberState.UNLOADING
+            or any(item.state == FiberState.UNLOADING for item in root.receipt().fibers)
+            for root in self._building_roots
+        ):
+            raise RuntimeError("构建 Root 清理尚未完成，必须显式 recovery/terminate 重试")
+        if any(
+            identity != (None if current is None else current.snapshot_id)
+            for identity in self._snapshot_store.retained_snapshot_ids
+        ):
+            raise RuntimeError("仍有未释放的 snapshot owner，必须先完成回收")
+        previous = self._pause_source_admission()
+        try:
+            if self._endpoint_quiescer is not None:
+                await self._endpoint_quiescer()
+            if previous is not None:
+                await self._snapshot_store.wait_for_no_leases(previous)
+            self._check_operation_commit()
+        except BaseException:
+            # 只有这段尚未开始 release 的路径可以恢复原接纳；shutdown 永远优先。
+            if not self._stopping and current_operation.get() is self._operation:
+                await self._resume_source_admission(previous)
+                if not self._stopping and self._endpoint_resumer is not None:
+                    await self._endpoint_resumer()
+            raise
+
+        try:
+            # 释放阶段取消也必须等待实际 owner 返回，随后进入恢复而非继续提交。
+            _, cancelled = await _complete_critical(self._close_formal_root(previous))
+            if cancelled:
+                raise asyncio.CancelledError
+            self._check_operation_commit()
+            return await self._build_and_publish_root(
+                inputs, previous=previous,
+                expected_ref=expected_ref,
+                before_open=before_open, attempt=attempt, validated=validated,
+            )
+        except BaseException as error:
+            revoke_on_cancel(error)
+            if self._publication is not None and self._publication.must_retain:
+                raise
+            if not self._operation_can_continue():
+                self._pause_source_admission()
+                owner = attempt or (None if isinstance(inputs, tuple) else next(iter(inputs.values()), None))
+                if owner is not None:
+                    self._record_root_failure(
+                        owner, error, formal_effects=("old_runtime_restore_uncertain",),
+                        recovery_target="base",
+                    )
+                raise
+            try:
+                self._check_operation_commit()
+                # 构建或 teardown 已失败的 owner 只允许显式 recovery/terminate 重试。
+                if self._selection.read() != expected_ref:
+                    raise SelectionConflictError("恢复前 stable 已变化，不能重建旧输入")
+                if any(
+                    root.root_fiber.state == FiberState.UNLOADING
+                    or any(item.state == FiberState.UNLOADING for item in root.receipt().fibers)
+                    for root in self._building_roots
+                ) or any(
+                    identity != (None if previous is None else previous.snapshot_id)
+                    for identity in self._snapshot_store.retained_snapshot_ids
+                ):
+                    raise RuntimeError("新组合仍持有未完成清理的 Root")
+                if previous is not None:
+                    old_root = previous.composition_root
+                    if old_root is not None and old_root.root_fiber.state != FiberState.DISPOSED:
+                        raise RuntimeError("旧 Root 释放未完成，必须显式 retry")
+                    _, recovery_cancelled = await _complete_critical(
+                        self._build_and_publish_root(
+                            tuple(self._generation_archive_ref(item) for item in previous.generations.values()),
+                            previous=previous, expected_ref=expected_ref,
+                            commit_selection=False,
+                        )
+                    )
+                    if recovery_cancelled and not isinstance(error, asyncio.CancelledError):
+                        error = BaseExceptionGroup("发布失败且恢复期间取消", [error, asyncio.CancelledError()])
+            except BaseException as recovery_error:
+                self._pause_source_admission()
+                owner = attempt or (None if isinstance(inputs, tuple) else next(iter(inputs.values()), None))
+                if owner is not None:
+                    self._record_root_failure(
+                        owner, recovery_error, formal_effects=("old_runtime_restore_uncertain",),
+                        recovery_target=(
+                            "candidate"
+                            if previous is None and attempt is None and owner.source_type == "builtin"
+                            else "base"
+                        ),
+                    )
+                raise BaseExceptionGroup("完整 Root 发布与恢复均失败", [error, recovery_error]) from None
+            raise error
+
+    async def _close_formal_root(self, snapshot: RuntimeSnapshot | None) -> None:
+        """关闭实际 Root，让依赖顺序决定资源退出。"""
+        if snapshot is not None:
+            await self._stop_runtime_snapshot(snapshot)
+            if snapshot.composition_root is not None:
+                await snapshot.composition_root.dispose()
+
+    async def _build_and_publish_root(
+        self,
+        inputs: dict[str, PluginGeneration] | tuple[str, ...],
+        *,
+        expected_ref: str | None,
+        commit_selection: bool = True,
+        previous: RuntimeSnapshot | None,
+        before_open: Callable[[], None] | None = None,
+        attempt: PluginGeneration | None = None,
+        validated: RuntimeSnapshot | None = None,
+    ) -> RuntimeSnapshot:
+        """把新物理 snapshot 交给 Store，再启动并提交它的全部 owner。"""
+        operation = self._check_operation_commit()
+
+        def authorize_commit() -> None:
+            # 外部启停需要完成清理，但取消不能因此获得 stable 提交授权。
+            self._check_operation_commit()
+            if before_open is not None:
+                before_open()
+            assert transaction is not None
+            components = tuple(self._generation_archive_ref(item) for item in snapshot.generations.values())
+            try:
+                if self._selection.read() != expected_ref:
+                    raise SelectionConflictError("提交前 stable 基线已变化")
+                if not commit_selection and (
+                    expected_ref is None or self._selection_components(expected_ref) != components
+                ):
+                    raise RuntimeError("恢复 Root 输入必须等于已提交完整选择")
+                if commit_selection and (
+                    expected_ref is None or self._selection_components(expected_ref) != components
+                ):
+                    self._check_operation_commit()
+                    # 同步调用在返回结果前中断，也不能假定没有提交。
+                    transaction.selection_result = SelectionWriteError(
+                        operation="commit", target_ref=None, outcome="uncertain",
+                        observed_ref=None, observation_error=None,
+                    )
+                    transaction.selection_result = self._selection.commit(components, expected_ref=expected_ref)
+                else:
+                    self._check_operation_commit()
+                    transaction.selection_result = expected_ref
+                operation.committed = snapshot
+            except SelectionWriteError as error:
+                transaction.selection_result = error
+                raise
+            except SelectionConflictError:
+                transaction.selection_result = None
+                raise
+
+        snapshot = await self._compile_topology_snapshot(inputs)
+        transaction: SnapshotTransaction | None = None
+        try:
+            if validated is not None:
+                _validate_candidate_formal_snapshot_identity(
+                    candidate=validated, formal=snapshot,
+                )
+            if attempt is not None:
+                actual = snapshot.generations[attempt.plugin_id]
+                actual.reload_tx_id = attempt.reload_tx_id
+                self._reload_journal.annotate(cast(str, attempt.reload_tx_id), {
+                    "event": "formal_root_created",
+                    "formal_snapshot_id": snapshot.snapshot_id,
+                    "runtime_generations": {key: item.generation_id for key, item in snapshot.generations.items()},
+                })
+            transaction = self._begin_snapshot_publication(snapshot)
+            self._publication = transaction
+            self._check_operation_commit()
+            await self._post_snapshot_invariants(snapshot)
+            self._snapshot_store.seal_pending_validation(snapshot)
+            if previous is not None and attempt is not None:
+                self._drain_transactions[previous.snapshot_id] = cast(str, attempt.reload_tx_id)
+            _, cancelled = await _complete_critical(
+                self._commit_snapshot_with_publication_participants(
+                    transaction,
+                    old_commands=_snapshot_command_catalog(previous),
+                    new_commands=_snapshot_command_catalog(snapshot),
+                    before_open=authorize_commit,
+                    after_open=lambda: self._activate_snapshot(snapshot, previous),
+                )
+            )
+        except BaseException as error:
+            if transaction is not None and transaction.must_retain:
+                self._hold_selection_publication(transaction)
+                raise
+            # Participant 的清理已经失败时保留 pending；外层不能隐式重试它。
+            if isinstance(error, _PublicationParticipantRestoreError):
+                if operation.revoked and isinstance(error, Exception):
+                    raise BaseExceptionGroup("发布取消且资源清理失败", [asyncio.CancelledError(), error]) from None
+                raise
+            if operation.revoked and isinstance(error, Exception):
+                error = BaseExceptionGroup("发布取消且资源操作失败", [asyncio.CancelledError(), error])
+            cleanup_cancelled = False
+            try:
+                if transaction is not None and self._snapshot_store.pending_transaction is transaction:
+                    _, cleanup_cancelled = await _complete_critical(
+                        self._snapshot_store.abort(transaction, reopen_previous=False)
+                    )
+                elif transaction is None:
+                    _, cleanup_cancelled = await _complete_critical(
+                        self._dispose_unreferenced_composition_root(snapshot)
+                    )
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup("新 Root 发布与清理均失败", [error, cleanup_error]) from None
+            if cleanup_cancelled and not isinstance(error, asyncio.CancelledError):
+                raise BaseExceptionGroup("发布失败且清理期间取消", [error, asyncio.CancelledError()]) from None
+            raise error
+        try:
+            if self._endpoint_resumer is not None:
+                await self._endpoint_resumer()
+            self._check_operation_commit()
+        except BaseException as error:
+            assert transaction is not None
+            self._hold_selection_publication(transaction)
+            owner = (
+                snapshot.generations[attempt.plugin_id]
+                if attempt is not None else next(iter(snapshot.generations.values()), None)
+            )
+            if owner is not None:
+                self._record_root_failure(
+                    owner, error, formal_effects=("committed_runtime_start_failed",),
+                    recovery_target="candidate",
+                )
+            raise
+        if cancelled:
+            assert transaction is not None
+            self._hold_selection_publication(transaction)
+            raise asyncio.CancelledError
+        return snapshot
+
+    def _hold_selection_publication(self, transaction: SnapshotTransaction) -> None:
+        """保留提交事实和新 owner；失败返回后不得后台开放接纳。"""
+        if transaction.must_retain:
+            self._snapshot_store.hold_failed_publication(transaction)
+        else:
+            self._pause_source_admission()
+            transaction.candidate.accepting_leases = False
+
+    def _begin_snapshot_publication(self, snapshot: RuntimeSnapshot) -> SnapshotTransaction:
+        transaction = self._snapshot_store.begin_publish(snapshot)
+        if snapshot.composition_root is not None:
+            self._building_roots.pop(snapshot.composition_root, None)
+        return transaction
+
+    def _activate_snapshot(self, snapshot: RuntimeSnapshot, previous: RuntimeSnapshot | None) -> None:
+        """提交时激活整个新组合，旧组合整体退役。"""
+        old = {} if previous is None else previous.generations
+        for generation in snapshot.generations.values():
+            generation.state = "active"
+        for generation in old.values():
+            self._retire_generation(generation)
+
+    async def retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
+        return await self._run_operation(lambda: self._retry_runtime_recovery(plugin_id))
+
+    async def _retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
+        """显式重试原资源句柄，再从当前 stable 的固定输入重建整组实例。"""
+        publication = self._publication
+        if publication is not None and isinstance(publication.selection_result, SelectionWriteError):
+            if publication.selection_result.outcome == "uncertain":
+                raise RuntimeError("stable 写入耐久性未确认；保留 owner，需关闭后从磁盘重新启动")
+        selection_ref = self._selection.read()
+        if selection_ref is None:
+            raise RuntimeError("尚无已提交完整选择；关闭后显式重试首次启动")
+        actions = tuple(
+            action for action in self._reload_journal.pending_recovery()
+            if action.plugin_id == plugin_id
+            and action.action in {"retry_generation_cleanup", "retry_runtime_recovery"}
+        )
+        if len(actions) != 1:
+            raise RuntimeError("插件没有唯一待执行的 runtime recovery")
+        action = actions[0]
+        _reject_retired_owner_recovery(action)
+        current = self._pause_source_admission()
+        if self._endpoint_quiescer is not None:
+            await self._endpoint_quiescer()
+        if current is not None:
+            await self._snapshot_store.wait_for_no_leases(current)
+        self._check_operation_commit()
+
+        # 1. 实际资源由其 Root Effect 关闭，不能按插件 ID 重放取得操作。
+        pending = self._snapshot_store.pending_transaction
+        if pending is not None:
+            await _complete_critical(self._snapshot_store.abort(pending, reopen_previous=False))
+        await _complete_critical(self._snapshot_store.retry_drains())
+        for root in tuple(self._building_roots):
+            await self._close_building_root(root)
+        latest = self._snapshot_store.unpromoted_candidate
+        if latest is not None:
+            self._snapshot_store.pause_candidate_admission(latest)
+            await _complete_critical(self._snapshot_store.discard_latest(latest))
+        self._ready_candidate = None
+        for key in tuple(self._prepared_generations):
+            await self._discard_prepared(key)
+
+        # 2. 旧 owner 全部退出后才重建；恢复本身发布真实新 snapshot。
+        self._check_operation_commit()
+        await _complete_critical(self._close_formal_root(current))
+        replacement = await self._build_and_publish_root(
+            self._selection_components(selection_ref),
+            previous=current, expected_ref=selection_ref,
+            commit_selection=False,
+        )
+        self._reload_journal.settle_boot(
+            action, committed=self._selection_transition_committed(action.tx_id, selection_ref),
+            cleanup_receipt="fresh-stable-root-restored",
+        )
+        generation = replacement.generations.get(plugin_id)
+        return {
+            "plugin_id": plugin_id, "publication_state": "recovered",
+            "recovery_target": action.recovery_target,
+            "generation_id": None if generation is None else generation.generation_id,
+            "snapshot_id": replacement.snapshot_id,
+            "retry_receipt": "fresh-stable-root-restored",
+        }
 
     async def drop_candidate(self, plugin_id: str) -> dict[str, object]:
-        """Discard the one ready installed candidate and preserve stable."""
+        """安装候选交回所属更新结算，普通候选只关闭运行资源。"""
+        self._reject_operation_lease(allow_stable_lease=True)
+        ready = self._require_ready_candidate(plugin_id)
+        tx_id = ready.candidate.reload_tx_id
+        if tx_id is None:
+            raise RuntimeError("latest candidate 缺少 reload transaction")
+        update = self._reload_journal.update_for_reload(tx_id)
+        if update is not None:
+            # 更新入口先撤销提交权，再取得 operation；不能在 operation 内嵌套调用。
+            await self.discard_update(update.update_id)
+            return self._publication_status(
+                plugin_id, active=ready.previous, candidate=ready.candidate,
+                publication_state="discarded",
+            )
+        return await self._run_operation(
+            lambda: self._drop_ready(plugin_id), allow_stable_lease=True,
+        )
 
-        async with self._candidate_prepare_lock:
-            return await self._drop_ready(plugin_id)
 
     async def discard_update(self, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
+        """先同步撤销提交权，再等待原调用和资源退出；提交后明确拒绝假回滚。"""
+        deadline = asyncio.get_running_loop().time() + self.POST_PUBLISH_TIMEOUT_SECONDS
+        self._reject_operation_lease(allow_stable_lease=True)
+        update = self._reload_journal.update(update_id)
+        if update.phase == "rolled_back":
+            return
+        if update.phase == "committed" or (
+            self._update_publication is not None and self._update_publication[0] == update_id
+            and self._operation is not None and self._operation.committed is not None
+        ):
+            raise RuntimeError("更新已提交；revert 不能撤销已提交选择或插件数据")
+        if self._ready_candidate is None:
+            async with asyncio.timeout_at(deadline):
+                await self._run_operation(
+                    lambda: self._discard_update(update_id, reason=reason), allow_stable_lease=True,
+                )
+            return
+        ready = self._require_ready_candidate(update.plugin_id)
+        if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
+            raise RuntimeError("更新与当前待处理候选不匹配")
+        publication = self._publication
+        if (publication is not None and publication.must_retain
+                and publication.candidate.generations.get(update.plugin_id) is not None
+                and publication.candidate.generations[update.plugin_id].reload_tx_id == update.reload_tx_id):
+            raise RuntimeError("提交结果已确认或不确定；保留恢复 owner，不能伪称 revert 成功")
+        phase = self._reload_journal.get(cast(str, update.reload_tx_id)).phase
+        if phase in {"latest_ready", "promoting"}:
+            self._advance_reload(ready.candidate, "discarding", error=reason)
+        elif phase != "discarding":
+            raise RuntimeError(f"候选不能从 {phase} revert；请沿原恢复 owner 处理")
+        self._reload_journal.record_update_error(update_id, reason)
+        self._notify_updates()
+        current = asyncio.current_task()
+        running = tuple(host.task for host in self._validation_hosts.values()
+                        if host.parent_lease.snapshot is ready.snapshot and host.active)
+        if current in running:
+            raise RuntimeError("提交权已撤销；请先退出自己的候选调用再清理")
+        for task in running:
+            task.cancel()
+        operation = self._operation
+        if (self.update_is_publishing(update_id) and operation is not None
+                and operation.task is self._update_publication[1]):
+            operation.revoke()
+            async with asyncio.timeout_at(deadline):
+                await asyncio.wait((operation.task,))
+        if running:
+            async with asyncio.timeout_at(deadline):
+                await asyncio.wait(running)
+        async with asyncio.timeout_at(deadline):
+            await self._run_operation(
+                lambda: self._discard_update(update_id, reason=reason), allow_stable_lease=True,
+            )
+
+    async def _discard_update(self, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
         """持候选锁核对原请求；不能撤销期间已被替换的另一候选。"""
-        async with self._candidate_prepare_lock:
-            update = self._reload_journal.update(update_id)
+        update = self._reload_journal.update(update_id)
+        if update.phase == "rolled_back":
+            return
+        if update.phase != "armed" or update.reload_tx_id is None:
+            raise RuntimeError("更新不是等待丢弃的候选")
+        record = self._reload_journal.get(update.reload_tx_id)
+        if (record.plugin_id != update.plugin_id
+                or record.candidate_artifact_pointer != update.candidate.path
+                or record.candidate_snapshot_id is None):
+            raise RuntimeError("更新缺少精确候选资源记录")
+        if self._ready_candidate is not None:
             ready = self._require_ready_candidate(update.plugin_id)
             if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
                 raise RuntimeError("更新与当前待处理候选不匹配")
+        # 原程序已退出才重试原 host；保留失败 owner，不扫描清理其他候选。
+        retained = tuple(
+            host.identity for host in self._validation_hosts.values()
+            if host.parent_lease.snapshot.snapshot_id == record.candidate_snapshot_id
+            and not host.active
+        )
+        for identity in retained:
+            await self._retry_validation_cleanup(identity)
+        if self._ready_candidate is not None:
+            ready = self._require_ready_candidate(update.plugin_id)
             if any(host.parent_lease.snapshot is ready.snapshot for host in self._validation_hosts.values()):
                 raise RuntimeError("验证尚未退出或资源尚未清理")
             _ = await self._drop_ready(update.plugin_id, error=reason)
-            self._notify_updates()
+        self._check_discarded_update(update_id)
+        self._check_operation_commit()
+        # runtime 清理不回写安装状态；由持有本次请求的安装入口结算恢复点。
+        self._reload_journal.rollback_updates(
+            self.installed_plugins_home, update_id=update_id, error=reason,
+        )
+        self._notify_updates()
+
+    def _check_discarded_update(self, update_id: str) -> None:
+        """只允许原候选已关闭且原 stable 未改变的安装恢复点再次结算。"""
+        update = self._reload_journal.update(update_id)
+        if update.phase != "armed" or update.reload_tx_id is None:
+            raise RuntimeError("更新不是等待结算的已关闭候选")
+        record = self._reload_journal.get(update.reload_tx_id)
+        events = self._reload_journal.events(record.tx_id)
+        if (record.plugin_id != update.plugin_id
+                or record.candidate_artifact_pointer != update.candidate.path
+                or record.phase != "aborted" or record.candidate_snapshot_id is None
+                or not events or events[-1].phase != "aborted"
+                or events[-1].details.get("cleanup_receipt") != "candidate-root-closed"):
+            raise RuntimeError("候选缺少实际关闭回执；请沿原资源 owner 恢复")
+        if (self._ready_candidate is not None
+                or self._snapshot_store.unpromoted_candidate is not None
+                or self._snapshot_store.pending_transaction is not None
+                or record.candidate_snapshot_id in self._snapshot_store.retained_snapshot_ids
+                or self._building_roots
+                or any(host.parent_lease.snapshot.snapshot_id == record.candidate_snapshot_id
+                       for host in self._validation_hosts.values())):
+            raise RuntimeError("候选或资源 owner 仍在，不能结算旧安装更新")
+        if self._publication is not None and self._publication.must_retain:
+            raise RuntimeError("提交结果已确认或不确定；保留原恢复 owner")
+        intent = self._reload_journal.selection_candidate(record.tx_id)
+        if intent is None or self._selection.read() != intent[0]:
+            raise RuntimeError("原 stable 选择已改变或证据未知，不能回退安装更新")
 
     async def _drop_ready(self, plugin_id: str, *, error: str = "candidate behavior rejected") -> dict[str, object]:
         ready = self._require_ready_candidate(plugin_id)
@@ -3525,9 +2155,6 @@ class PluginManager:
             )
         elif phase != "discarding":
             raise RuntimeError(f"latest candidate 不能从 {phase} discard")
-        artifact_base = _installed_artifact_base(ready.candidate)
-        if artifact_base is not None and self._reload_journal.update_for_reload(tx_id) is None:
-            _restore_ready_pointer(ready, artifact_base)
         _, cancelled = await _complete_critical(
             self._snapshot_store.discard_latest(ready.snapshot)
         )
@@ -3538,6 +2165,7 @@ class PluginManager:
             ready.candidate,
             "aborted",
             error=error,
+            details={"cleanup_receipt": "candidate-root-closed"},
         )
         self._ready_candidate = None
         result = self._publication_status(
@@ -3612,603 +2240,71 @@ class PluginManager:
             raise RuntimeError(f"latest 属于其他插件: {ready.plugin_id}")
         return ready
 
-    async def _publish_prepared(self, plugin_id: str) -> dict[str, object]:
-        generation = self._prepared_generations.get(plugin_id)
-        if generation is None:
-            raise KeyError(f"插件没有待发布候选: {plugin_id}")
-        if generation.reload_tx_id is not None and (
-            self._reload_journal.get(generation.reload_tx_id).phase != "prepared"
-        ):
-            raise RuntimeError("插件候选已被 runtime recovery 撤销准入")
+    async def _publish_prepared(
+        self, plugin_id: str, *, candidate_only: bool = False,
+    ) -> dict[str, object]:
+        """发布完整隔离候选；直接更新也通过同一个 ready → formal 入口。"""
+        self._check_operation_commit()
+        generation = self._prepared_generations[plugin_id]
+        tx_id = generation.reload_tx_id
+        if tx_id is None or self._reload_journal.get(tx_id).phase != "prepared":
+            raise RuntimeError("插件候选已失去发布授权")
+        snapshot = generation.runtime_snapshot
+        if snapshot is None:
+            raise RuntimeError("插件候选缺少实际 Root snapshot")
         active = self._active_generations.get(plugin_id)
-        stage_latest = _installed_generation_is_candidate(generation)
+        self._reload_journal.annotate(tx_id, {
+            "event": "selection_candidate",
+            "components": [self._generation_archive_ref(item) for item in snapshot.generations.values()],
+        })
+        transaction = self._begin_snapshot_publication(snapshot)
         try:
-            if stage_latest:
-                if (
-                    generation.production_contributions is None
-                    or generation.production_data_dir is None
-                ):
-                    raise RuntimeError("installed candidate 缺少隔离 plugin-data 身份")
-            prepared_snapshot = generation.runtime_snapshot
-            generation.runtime_snapshot = await self._compile_generation_snapshot(
-                generation,
-                candidate_owner=generation,
-            )
-            await self._start_composition_generation_runtime(
-                generation,
-                generation.runtime_snapshot,
-                mode="candidate",
-            )
-            if (
-                prepared_snapshot is not None
-                and prepared_snapshot is not generation.runtime_snapshot
-            ):
-                await self._dispose_unreferenced_composition_root(prepared_snapshot)
-            snapshot = generation.runtime_snapshot
-        except (asyncio.CancelledError, Exception) as error:
-            error_text = str(error) or type(error).__name__
-            self._record_failed_gate(
-                plugin_id=plugin_id,
-                revision=generation.source_revision,
-                check_id="publish_rebase",
-                reason=error_text,
-            )
-            await self.discard_prepared(
-                plugin_id,
-                error=f"publish_rebase: {error_text}",
-            )
-            raise
-        try:
-            await self._prepare_generation(generation)
-        except (asyncio.CancelledError, Exception) as error:
-            error_text = str(error) or type(error).__name__
-            self._record_failed_gate(
-                plugin_id=plugin_id,
-                revision=generation.source_revision,
-                check_id="prepare",
-                reason=error_text,
-            )
-            await self.discard_prepared(
-                plugin_id,
-                error=f"prepare: {error_text}",
-            )
-            if isinstance(error, asyncio.CancelledError):
-                raise
-            result = self._publication_status(
-                plugin_id,
-                active=active,
-                candidate=generation,
-                publication_state="failed",
-            )
-            logger.info(
-                "plugin_snapshot_status %s",
-                json.dumps(result, ensure_ascii=False, sort_keys=True),
-            )
-            return result
-
-        old_commands = _snapshot_command_catalog(self.current_snapshot)
-        new_commands = _snapshot_command_catalog(snapshot)
-        current = self.current_snapshot
-        v3_runtime_handoff = self._composition_runtime_declared(
-            snapshot,
-            plugin_id,
-        ) or (
-            current is not None
-            and self._composition_runtime_declared(current, plugin_id)
-        )
-        exclusive_endpoint_changed = v3_runtime_handoff
-        command_catalog_changed = old_commands != new_commands
-        v3_channel_catalog_changed = self._channel_catalog_identity(
-            current
-        ) != self._channel_catalog_identity(snapshot)
-        formal_root_handoff = (
-            not stage_latest
-            and current is not None
-            and current.composition_root is not None
-            and snapshot.composition_root is not current.composition_root
-        )
-        publication_gated = not stage_latest and (
-            exclusive_endpoint_changed
-            or command_catalog_changed
-            or v3_channel_catalog_changed
-            or formal_root_handoff
-        )
-        if self._dashboard_preparer is not None:
-            try:
+            self._advance_reload(generation, "validating", candidate_snapshot_id=snapshot.snapshot_id)
+            if self._dashboard_preparer is not None:
                 self._dashboard_preparer(snapshot)
-            except Exception as error:
-                error_text = str(error) or type(error).__name__
-                self._record_failed_gate(
-                    plugin_id=plugin_id,
-                    revision=generation.source_revision,
-                    check_id="dashboard",
-                    reason=error_text,
-                )
-                await self.discard_prepared(
-                    plugin_id,
-                    error=f"dashboard: {error_text}",
-                )
-                return self._publication_status(
-                    plugin_id,
-                    active=active,
-                    candidate=generation,
-                    publication_state="failed",
-                )
+            await self._post_publish_invariants(generation, snapshot)
+            def open_candidate() -> None:
+                self._check_operation_commit()
+                self._advance_reload(generation, "commit_started")
 
-        quiesced_snapshot: RuntimeSnapshot | None = None
-        if publication_gated:
-            from agent.plugins.snapshot import get_current_runtime_lease
-
-            if (
-                exclusive_endpoint_changed or v3_channel_catalog_changed
-            ) and get_current_runtime_lease() is not None:
-                error_text = "持有 RuntimeSnapshot lease 时不能切换独占端点"
-                await self.discard_prepared(
-                    plugin_id,
-                    error=f"endpoint_lease: {error_text}",
-                )
-                raise RuntimeError(error_text)
-            quiesced_snapshot = self._snapshot_store.pause_admission()
-            try:
-                if exclusive_endpoint_changed and self._endpoint_quiescer is not None:
-                    await self._endpoint_quiescer()
-                if quiesced_snapshot is not None and (
-                    exclusive_endpoint_changed
-                    or v3_channel_catalog_changed
-                    or formal_root_handoff
-                ):
-                    await self._snapshot_store.wait_for_no_leases(quiesced_snapshot)
-            except BaseException as error:
-                error_text = str(error) or type(error).__name__
-                await self._snapshot_store.resume(quiesced_snapshot)
-                if exclusive_endpoint_changed and self._endpoint_resumer is not None:
-                    await self._endpoint_resumer()
-                await self.discard_prepared(
-                    plugin_id,
-                    error=f"endpoint_quiesce: {error_text}",
-                )
-                raise
-        transaction = self._snapshot_store.begin_publish(snapshot)
-        self._advance_reload(
-            generation,
-            "validating",
-            candidate_snapshot_id=snapshot.snapshot_id,
-        )
-        try:
-            await asyncio.wait_for(
-                self._post_publish_invariants(generation, snapshot),
-                timeout=self.POST_PUBLISH_TIMEOUT_SECONDS,
-            )
-        except (asyncio.CancelledError, Exception):
-            _ = self._prepared_generations.pop(plugin_id, None)
-            generation.state = "aborted"
-            await self._abort_failed_publication(
-                generation,
-                transaction,
-                error="post-publish invariant failed",
-            )
-            if self._endpoint_resumer is not None and exclusive_endpoint_changed:
-                await self._endpoint_resumer()
-            raise
-
-        provisional_started = False
-        provisional_cancelled = False
-        stable_root_stopped = False
-        if not stage_latest:
-            try:
-                self._snapshot_store.seal_pending_validation(snapshot)
-                if publication_gated:
-                    _, provisional_cancelled = await _complete_critical(
-                        self._snapshot_store.commit_provisional(transaction)
-                    )
-                    provisional_started = True
-                try:
-                    _ = await self._restore_direct_candidate_runtime(
-                        generation,
-                        validation_snapshot=snapshot,
-                        stable_snapshot=quiesced_snapshot,
-                    )
-                finally:
-                    stable_root_stopped = generation.formal_root_stopped
-            except (asyncio.CancelledError, Exception) as error:
-                error_text = str(error) or type(error).__name__
-                stable_recovery_error: BaseException | None = None
-                if stable_root_stopped:
-                    assert quiesced_snapshot is not None
-                    try:
-                        await self._recover_stable_root(
-                            generation,
-                            quiesced_snapshot,
-                        )
-                    except BaseException as recovery_error:
-                        stable_recovery_error = recovery_error
-                self._record_failed_gate(
-                    plugin_id=plugin_id,
-                    revision=generation.source_revision,
-                    check_id="production_rebuild",
-                    reason=error_text,
-                )
-                _ = self._prepared_generations.pop(plugin_id, None)
-                generation.state = "aborted"
-                previous_runtime = generation.replaced_composition_runtime_generation
-                if (
-                    previous_runtime is not None
-                    and self._composition_generation_host.get(
-                        previous_runtime.generation_id
-                    )
-                    is None
-                ):
-                    self._record_composition_runtime_failure(
-                        generation,
-                        stable_recovery_error or error,
-                        formal_effects=(
-                            "candidate_pointer_restored",
-                            "old_runtime_restore_uncertain",
-                        ),
-                        recovery_target="base",
-                    )
-                runtime_restore_uncertain = stable_recovery_error is not None or (
-                    previous_runtime is not None
-                    and self._composition_generation_host.get(
-                        previous_runtime.generation_id
-                    )
-                    is None
-                )
-                if provisional_started:
-                    _, rollback_cancelled = await _complete_critical(
-                        self._snapshot_store.rollback_provisional(
-                            transaction,
-                            keep_candidate_latest=False,
-                            reopen_previous=not runtime_restore_uncertain,
-                        )
-                    )
-                    provisional_cancelled = provisional_cancelled or rollback_cancelled
-                await self._abort_failed_publication(
-                    generation,
+            _, cancelled = await _complete_critical(
+                self._snapshot_store.commit_latest(
                     transaction,
-                    error=f"production_rebuild: {error_text}",
-                    reopen_previous=not runtime_restore_uncertain,
+                    before_open=open_candidate,
                 )
-                if (
-                    self._endpoint_resumer is not None
-                    and exclusive_endpoint_changed
-                    and not runtime_restore_uncertain
-                    and self.current_snapshot is not None
-                    and self.current_snapshot.accepting_leases
-                ):
-                    await self._endpoint_resumer()
-                raise
-
-        commit_error: BaseException | None = None
-        commit_cancelled = provisional_cancelled
-
-        def open_candidate() -> None:
-            self._advance_reload(generation, "commit_started")
-            generation.state = "activating"
-            if not stage_latest:
-                self._activate_published_generation(generation, active)
-            generation.state = "candidate" if stage_latest else "active"
-
-        previous_snapshot = transaction.previous
-        if (
-            not stage_latest
-            and generation.reload_tx_id is not None
-            and previous_snapshot is not None
-        ):
-            self._drain_transactions[previous_snapshot.snapshot_id] = (
-                generation.reload_tx_id
             )
-        try:
-            if stage_latest:
-                _, commit_cancelled = await _complete_critical(
-                    self._snapshot_store.commit_latest(
-                        transaction,
-                        before_open=open_candidate,
-                    )
-                )
-            else:
-                _, final_commit_cancelled = await _complete_critical(
-                    self._commit_snapshot_with_publication_participants(
-                        transaction,
-                        old_commands=old_commands,
-                        new_commands=new_commands,
-                        promote_latest=False,
-                        force_provisional=exclusive_endpoint_changed,
-                        provisional_started=provisional_started,
-                        reopen_previous_on_failure=not formal_root_handoff,
-                        before_open=open_candidate,
-                        after_open=(
-                            None
-                            if active is None
-                            else lambda: self._retire_generation(active)
-                        ),
-                    )
-                )
-                commit_cancelled = commit_cancelled or final_commit_cancelled
         except BaseException as error:
-            commit_error = error
-
-        if (
-            commit_error is not None
-            and self._snapshot_store.pending_candidate is snapshot
-        ):
-            if previous_snapshot is not None:
-                _ = self._drain_transactions.pop(
-                    previous_snapshot.snapshot_id,
-                    None,
-                )
-            _ = self._prepared_generations.pop(plugin_id, None)
-            generation.state = "aborted"
-            await self._abort_failed_publication(
-                generation,
-                transaction,
-                error=str(commit_error) or type(commit_error).__name__,
-                finish_journal=False,
-                reopen_previous=not isinstance(
-                    commit_error,
-                    _PublicationParticipantRestoreError,
-                )
-                and not stable_root_stopped,
-            )
-            runtime_restore_error: BaseException | None = None
             try:
-                if stable_root_stopped:
-                    assert quiesced_snapshot is not None
-                    await self._recover_stable_root(
-                        generation,
-                        quiesced_snapshot,
-                    )
-                else:
-                    await self._restore_replaced_composition_runtime(generation)
-            except BaseException as error:
-                runtime_restore_error = error
-            if (
-                runtime_restore_error is None
-                and stable_root_stopped
-                and not isinstance(
-                    commit_error,
-                    _PublicationParticipantRestoreError,
+                _, cleanup_cancelled = await _complete_critical(
+                    self._snapshot_store.abort(transaction, reopen_previous=False)
                 )
-            ):
-                await self._snapshot_store.resume(quiesced_snapshot)
-                await self.start_runtime()
-            participant_restore_error = isinstance(
-                commit_error,
-                _PublicationParticipantRestoreError,
-            )
-            if runtime_restore_error is not None:
-                self._record_composition_runtime_failure(
-                    generation,
-                    runtime_restore_error,
-                    formal_effects=(
-                        "candidate_pointer_restored",
-                        "old_runtime_restore_uncertain",
-                    ),
-                    recovery_target="base",
+            except BaseException as cleanup_error:
+                self._record_root_failure(
+                    generation, cleanup_error, resource="runtime-snapshot-drain",
+                    formal_effects=("candidate_runtime_cleanup_pending",), recovery_target="base",
                 )
-            elif participant_restore_error:
-                participant_resource = (
-                    "plugin-endpoint,channel-publication"
-                    if exclusive_endpoint_changed
-                    else "channel-publication"
-                )
-                participant_effects = (
-                    (
-                        "endpoint_restore_uncertain",
-                        "stable_channel_restore_uncertain",
-                    )
-                    if exclusive_endpoint_changed
-                    else ("stable_channel_restore_uncertain",)
-                )
-                self._record_composition_runtime_failure(
-                    generation,
-                    cast(BaseException, commit_error),
-                    resource=participant_resource,
-                    formal_effects=participant_effects,
-                    recovery_target="base",
-                )
-            else:
-                self._abort_reload(
-                    generation,
-                    error=str(commit_error) or type(commit_error).__name__,
-                )
-            if (
-                self._endpoint_resumer is not None
-                and exclusive_endpoint_changed
-                and self.current_snapshot is not None
-                and self.current_snapshot.accepting_leases
-            ):
-                await self._endpoint_resumer()
-            if runtime_restore_error is not None:
-                raise RuntimeError(
-                    "Snapshot commit 失败后旧 v3 runtime 恢复失败"
-                ) from runtime_restore_error
-            if exclusive_endpoint_changed and isinstance(
-                commit_error, _PublicationParticipantSwitchError
-            ):
-                return self._publication_status(
-                    plugin_id,
-                    active=active,
-                    candidate=generation,
-                    publication_state="failed",
-                )
-            raise commit_error
-        if commit_error is None:
-            if not stage_latest:
-                await self.start_runtime()
-            generation.publication_created_data_dir = False
-
-        _ = self._prepared_generations.pop(plugin_id)
-        if stage_latest:
-            self._ready_candidate = _ReadyPluginCandidate(
-                plugin_id=plugin_id,
-                previous=active,
-                candidate=generation,
-                snapshot=snapshot,
-            )
-            self._advance_reload(generation, "latest_ready")
-            if commit_error is not None:
-                raise commit_error
-            if commit_cancelled:
-                raise asyncio.CancelledError
-            result = self._publication_status(
-                plugin_id,
-                active=active,
-                candidate=generation,
-                publication_state="latest_ready",
-            )
-            logger.info(
-                "plugin_snapshot_status %s",
-                json.dumps(result, ensure_ascii=False, sort_keys=True),
-            )
-            return result
-
-        self._track_reload_drain(generation, previous_snapshot)
-        self._scopes[generation.module_path] = generation.scope
-        self._loaded.add(generation.module_path)
-        generation.state = "active"
-        self._active_generations[plugin_id] = generation
-        generation.replaced_composition_runtime_generation = None
-        generation.formal_root_stopped = False
-        generation.formal_root_released = False
-        if active is not None:
-            active.state = "retired"
-        resume_cancelled = False
-        if self._endpoint_resumer is not None and exclusive_endpoint_changed:
-            _, resume_cancelled = await _complete_critical(self._endpoint_resumer())
-        if commit_error is not None:
-            raise commit_error
-        if commit_cancelled or resume_cancelled:
-            raise asyncio.CancelledError
-        result = self._publication_status(
-            plugin_id,
-            active=active,
-            candidate=generation,
-            publication_state="committed",
-        )
-        logger.info(
-            "plugin_snapshot_status %s",
-            json.dumps(result, ensure_ascii=False, sort_keys=True),
-        )
-        return result
-
-    async def _restore_direct_candidate_runtime(
-        self,
-        generation: PluginGeneration,
-        *,
-        validation_snapshot: RuntimeSnapshot,
-        stable_snapshot: RuntimeSnapshot | None,
-    ) -> RuntimeSnapshot:
-        """Close validation and stable Roots before rebuilding the formal Root."""
-
-        candidate_runtime = self._composition_generation_host.get(
-            generation.generation_id
-        )
-        expected_mcp_catalog_digests = (
-            None if candidate_runtime is None else candidate_runtime.mcp_catalog_digests
-        )
-        if self._dashboard_validation_releaser is not None:
-            await self._dashboard_validation_releaser(validation_snapshot)
-        await self._stop_runtime_snapshot(validation_snapshot)
-        await self._stop_composition_generation_runtime(generation)
-        previous_root = validation_snapshot.composition_root
-        if previous_root is not None:
-            await previous_root.dispose()
-        created_data_dir = not generation.data_dir.exists()
-        ensure_workspace_plugin_data_dir(generation.data_dir, self._workspace)
-        production_snapshot: RuntimeSnapshot | None = None
-        try:
-            await self._stop_stable_root(generation, stable_snapshot)
-            production_snapshot = await self._compile_generation_snapshot(
-                generation,
-            )
-            try:
-                _validate_candidate_formal_snapshot_identity(
-                    generation,
-                    candidate=validation_snapshot,
-                    formal=production_snapshot,
-                )
-            except RuntimeError:
-                await self._dispose_unreferenced_composition_root(production_snapshot)
-                raise
-            await self._start_snapshot_composition_runtimes(
-                production_snapshot,
-                candidate=generation,
-                expected_mcp_catalog_digests=expected_mcp_catalog_digests,
-            )
-        except BaseException:
-            if production_snapshot is not None:
-                await self._stop_snapshot_composition_runtimes(production_snapshot)
-            if production_snapshot is not None:
-                await self._dispose_unreferenced_composition_root(production_snapshot)
-            if created_data_dir:
-                _remove_validation_data_dir(generation.data_dir)
+                raise BaseExceptionGroup("候选发布与清理均失败", [error, cleanup_error]) from None
+            self._prepared_generations.pop(plugin_id, None)
+            self._abort_reload(generation, error=str(error) or type(error).__name__)
+            if cleanup_cancelled and not isinstance(error, asyncio.CancelledError):
+                raise BaseExceptionGroup("候选发布失败且清理期间取消", [error, asyncio.CancelledError()]) from None
             raise
-        generation.publication_created_data_dir = created_data_dir
-        _replace_snapshot_payload(validation_snapshot, production_snapshot)
-        validation_workspace = generation.validation_workspace
-        generation.validation_workspace = None
-        if self._dashboard_preparer is not None:
-            self._dashboard_preparer(validation_snapshot)
-        generation.runtime_snapshot = validation_snapshot
-        if validation_workspace is not None:
-            _remove_validation_data_dir(validation_workspace.parent)
-        generation.validation_data_inventory = ()
-        return validation_snapshot
-
-    def _activate_published_generation(
-        self,
-        generation: PluginGeneration,
-        previous: PluginGeneration | None,
-    ) -> None:
-        plugin_dir = generation.plugin_dir.resolve(strict=False)
-        published_module = sys.modules[generation.module_path]
-        stable_alias = None
-        if previous is not None:
-            stable_alias = self._stable_aliases.get(previous.module_path)
-        retired_module = None
-        if stable_alias is None:
-            retired_module = next(
-                (
-                    module_path
-                    for module_path, info in self._active_plugins.items()
-                    if module_path != generation.module_path
-                    and info.plugin_id == generation.plugin_id
-                ),
-                None,
-            )
-            if retired_module is not None:
-                stable_alias = self._stable_aliases.get(retired_module)
-        if stable_alias is None:
-            stable_alias = generation.module_path.rsplit("__g", 1)[0]
-
-        # 先完成可能失败的查找，再替换 stable import alias。
-        self._remove_module_tree(stable_alias)
-        self._fresh_importer.register(stable_alias, generation.code_dir)
-        sys.modules[stable_alias] = published_module
-        if previous is not None:
-            _ = self._stable_aliases.pop(previous.module_path, None)
-        if retired_module is not None:
-            _ = self._stable_aliases.pop(retired_module, None)
-        self._stable_aliases[generation.module_path] = stable_alias
-        self._active_plugins[generation.module_path] = ActivePluginInfo(
-            plugin_id=generation.plugin_id,
-            plugin_dir=plugin_dir,
-            manifest=generation.contributions.manifest,
-            module_path=generation.module_path,
-            skill_roots=generation.contributions.skill_roots,
-            drift_skill_roots=generation.contributions.drift_skill_roots,
+        for item in snapshot.generations.values():
+            item.state = "candidate"
+        self._prepared_generations.pop(plugin_id)
+        self._ready_candidate = _ReadyPluginCandidate(
+            plugin_id=plugin_id, previous=active, snapshot=snapshot,
         )
-
-    async def _prepare_generation(
-        self,
-        generation: PluginGeneration,
-    ) -> None:
-        if generation.prepare_started:
-            return
-        assert generation.runtime_snapshot is not None
-        generation.prepare_started = True
-        generation.minimum_resource_count = generation.scope.resource_count
+        self._advance_reload(generation, "latest_ready")
+        if cancelled:
+            raise asyncio.CancelledError
+        if not candidate_only and not _installed_generation_is_candidate(generation):
+            result = await self._switch_ready(plugin_id)
+            result["publication_state"] = "committed"
+            return result
+        return self._publication_status(
+            plugin_id, active=active, candidate=generation, publication_state="latest_ready",
+        )
 
     async def _post_publish_invariants(
         self,
@@ -4232,14 +2328,20 @@ class PluginManager:
             or self._snapshot_store.pending_candidate is not snapshot
         ):
             raise RuntimeError("RuntimeSnapshot 候选事务不一致")
-        catalog_id = snapshot.skill_catalog_generation_id
-        if catalog_id is not None and self._skill_host.get(catalog_id) is None:
-            raise RuntimeError("RuntimeSnapshot skill catalog 不可用")
         for item in snapshot.generations.values():
-            if item.scope.closed:
+            if not item.scope.accepting_resources:
                 raise RuntimeError("RuntimeSnapshot 插件作用域已关闭")
-            if item.scope.resource_count < item.minimum_resource_count:
-                raise RuntimeError("RuntimeSnapshot 插件资源数量不足")
+            root = snapshot.composition_root
+            if root is not None:
+                runtime = root.plugin_runtime(item.plugin_id)
+                if runtime.generation_id != item.generation_id or runtime.data_dir != item.data_dir:
+                    raise RuntimeError("RuntimeSnapshot generation 与实际挂载 runtime 不一致")
+                if not any(
+                    fiber.runtime is runtime
+                    and fiber.plugin_module is cast(ComposablePlugin, item.instance).module
+                    for fiber in root.root_fiber.children
+                ):
+                    raise RuntimeError("RuntimeSnapshot generation 与实际挂载模块不一致")
 
     def _advance_reload(
         self,
@@ -4292,74 +2394,6 @@ class PluginManager:
             return
         self._advance_reload(generation, "aborted", error=error)
 
-    async def _abort_failed_publication(
-        self,
-        generation: PluginGeneration,
-        transaction: SnapshotTransaction,
-        *,
-        error: str,
-        finish_journal: bool = True,
-        reopen_previous: bool = True,
-    ) -> None:
-        """撤销失败发布，并留下可被启动恢复判定的持久状态。"""
-
-        # 1. pointer 失败时保留未完成 journal，让重启按磁盘事实恢复。
-        pointer_error: BaseException | None = None
-        try:
-            _discard_generation_candidate_pointer(generation)
-        except BaseException as caught:
-            pointer_error = caught
-
-        # 2. snapshot drain 失败不能阻止已恢复 pointer 的 journal 终态。
-        snapshot_error: BaseException | None = None
-        try:
-            _, _ = await _complete_critical(
-                self._snapshot_store.abort(
-                    transaction,
-                    reopen_previous=reopen_previous,
-                )
-            )
-        except BaseException as caught:
-            snapshot_error = caught
-        tx_id = generation.reload_tx_id
-        if snapshot_error is not None and tx_id is not None:
-            phase = self._reload_journal.get(tx_id).phase
-            if phase not in {"cleanup_failed", "degraded"}:
-                self._record_composition_runtime_failure(
-                    generation,
-                    snapshot_error,
-                    resource="runtime-snapshot-drain",
-                    formal_effects=(
-                        "candidate_pointer_restored",
-                        "candidate_runtime_cleanup_pending",
-                    ),
-                )
-        if (
-            finish_journal
-            and pointer_error is None
-            and (
-                tx_id is None
-                or self._reload_journal.get(tx_id).phase
-                not in {"cleanup_failed", "degraded"}
-            )
-        ):
-            self._abort_reload(generation, error=error)
-
-        # 3. Root 已排空后恢复本次 publication 才创建的正式数据身份。
-        if snapshot_error is not None:
-            raise RuntimeError(
-                "候选发布失败后 RuntimeSnapshot 回收失败"
-            ) from snapshot_error
-        if generation.publication_created_data_dir:
-            _remove_validation_data_dir(generation.data_dir)
-            generation.publication_created_data_dir = False
-
-        # 4. 清理异常优先暴露，避免把半完成恢复伪装成原始发布失败。
-        if pointer_error is not None:
-            raise RuntimeError(
-                "候选发布失败后 artifact pointer 恢复失败"
-            ) from pointer_error
-
     def _track_reload_drain(
         self,
         generation: PluginGeneration,
@@ -4369,6 +2403,8 @@ class PluginManager:
         if tx_id is None:
             return
         phase = self._reload_journal.get(tx_id).phase
+        if phase in {"cleanup_failed", "degraded", "aborted", "recovered", "complete"}:
+            return
         if phase == "latest_ready":
             self._advance_reload(generation, "promoting")
             phase = "promoting"
@@ -4444,22 +2480,13 @@ class PluginManager:
             if mod is None:
                 continue
             plugin_dir = Path(mod["plugin_root"])
-            try:
-                source_revision = _source_revision(plugin_dir)
-                _, config_revision = read_config_source(
-                    _resolve_plugin_data_dir(
-                        mod["name"],
-                        mod,
-                        self._workspace,
-                    )
-                    / "config.local.toml"
-                )
-            except Exception:
-                source_revision = ""
-                config_revision = ""
+            source_revision = _source_revision(plugin_dir)
+            _, config_revision = load_config(
+                _resolve_plugin_data_dir(mod["name"], mod, self._workspace)
+            )
             current_prepared = self._prepared_generations.get(plugin_id)
             if force_reprepare and current_prepared is not None:
-                await self.discard_prepared(plugin_id, preserve_latest=True)
+                await self._discard_prepared(plugin_id)
                 current_prepared = None
             matches_active = (
                 source_revision == active.source_revision
@@ -4468,26 +2495,13 @@ class PluginManager:
             if matches_active:
                 if current_prepared is None:
                     continue
-                await self.discard_prepared(plugin_id)
+                await self._discard_prepared(plugin_id)
                 result = {
                     "plugin_id": plugin_id,
                     "active_generation": active.generation_id,
                     "prepared_generation": None,
-                    "gate_status": "active",
+                    "preparation_state": "active",
                     "candidate_revision": source_revision,
-                    "skills": (
-                        list(active.skill_catalog.names)
-                        if active.skill_catalog is not None
-                        else []
-                    ),
-                    "skill_descriptions": _skill_descriptions(active),
-                    "drift_skill_descriptions": _drift_skill_descriptions(active),
-                    "skill_body_hashes": _skill_body_hashes(active, drift=False),
-                    "drift_skill_body_hashes": _skill_body_hashes(
-                        active,
-                        drift=True,
-                    ),
-                    "mcp_tools": _mcp_tool_names(active),
                     "snapshot_id": (
                         self.current_snapshot.snapshot_id
                         if self.current_snapshot is not None
@@ -4503,43 +2517,18 @@ class PluginManager:
                 and config_revision == current_prepared.config_revision
             ):
                 continue
-            await self.discard_prepared(plugin_id, preserve_latest=True)
+            await self._discard_prepared(plugin_id)
             prepared = await self._load_one(mod, activate=False)
-            if prepared is None:
-                _discard_installed_candidate_mod(mod)
-            gate = self.latest_gate(plugin_id)
             result: dict[str, object] = {
                 "plugin_id": plugin_id,
                 "active_generation": active.generation_id,
                 "prepared_generation": (
                     prepared.generation_id if prepared is not None else None
                 ),
-                "gate_status": gate.status if gate is not None else "failed",
+                "preparation_state": "prepared" if prepared is not None else "failed",
                 "candidate_revision": (
-                    gate.candidate_revision if gate is not None else ""
+                    prepared.source_revision if prepared is not None else source_revision
                 ),
-                "skills": (
-                    list(prepared.skill_catalog.names)
-                    if prepared is not None and prepared.skill_catalog is not None
-                    else []
-                ),
-                "skill_descriptions": (
-                    _skill_descriptions(prepared) if prepared is not None else {}
-                ),
-                "drift_skill_descriptions": (
-                    _drift_skill_descriptions(prepared) if prepared is not None else {}
-                ),
-                "skill_body_hashes": (
-                    _skill_body_hashes(prepared, drift=False)
-                    if prepared is not None
-                    else {}
-                ),
-                "drift_skill_body_hashes": (
-                    _skill_body_hashes(prepared, drift=True)
-                    if prepared is not None
-                    else {}
-                ),
-                "mcp_tools": _mcp_tool_names(prepared) if prepared is not None else [],
                 "snapshot_id": (
                     self.current_snapshot.snapshot_id
                     if self.current_snapshot is not None
@@ -4557,1172 +2546,520 @@ class PluginManager:
         activate: bool = True,
         stage_stable: bool = False,
     ) -> PluginGeneration | None:
-        stable_module_path = mod["import_path"]
+        """先固定安装输入，再为目标环境构建独立的完整 Root。"""
+
+        base_snapshot = self.current_snapshot
+        base_selection_ref = self._selection.read()
+        plugin_id = _resolve_plugin_id(mod)
+        if activate and plugin_id in self._active_generations:
+            return self._active_generations[plugin_id]
+        if load_plugin_manifest(_plugins_home(self._installed_cache_root)).get(plugin_id, True) is False:
+            return None
         plugin_dir = Path(mod["plugin_root"])
-        initial_plugin_id = _resolve_plugin_id(mod)
-        if activate and initial_plugin_id in self._active_generations:
-            return self._active_generations[initial_plugin_id]
-        plugin_manifest = load_plugin_manifest(
-            _plugins_home(self._installed_cache_root)
-        )
-        if plugin_manifest.get(initial_plugin_id, True) is False:
-            logger.info("插件已禁用（manifest.toml）: %s", initial_plugin_id)
-            return None
-        created_activation_data_dir = False
-        self._generation_sequence += 1
-        generation_sequence = self._generation_sequence
-        module_path = mod["module_path"].strip()
-        static_manifest: StaticPluginManifest | None = None
-        manifest_path = plugin_dir / "akashic.plugin.toml"
-        if manifest_path.exists() or manifest_path.is_symlink():
-            try:
-                # Static identity is the admission source.  No plugin module is
-                # imported until this parse and the discovered entrypoint agree.
-                static_manifest = load_static_plugin_manifest(plugin_dir)
-                expected_module_path = plugin_dir / static_manifest.entrypoint
-                discovered_entrypoint = mod.get("entrypoint", "plugin.py")
-                if discovered_entrypoint != static_manifest.entrypoint:
-                    raise RuntimeError(
-                        "source discovery entrypoint 与静态 manifest 不一致: "
-                        f"discovered={discovered_entrypoint} "
-                        f"manifest={static_manifest.entrypoint}"
-                    )
-                if mod.get("manifest_digest", "") != static_manifest.identity_digest:
-                    raise RuntimeError("source discovery manifest identity 已漂移")
-                if Path(module_path).resolve(
-                    strict=False
-                ) != expected_module_path.resolve(strict=False):
-                    raise RuntimeError(
-                        "source discovery module path 与静态 manifest 不一致: "
-                        f"discovered={module_path} expected={expected_module_path}"
-                    )
-            except Exception as error:
-                raise RuntimeError(
-                    f"插件 {initial_plugin_id} 静态 manifest admission 失败: {error}"
-                ) from error
-        elif mod.get("source_type") == "installed":
-            raise RuntimeError(
-                f"installed 插件缺少静态 v3 manifest: {initial_plugin_id}"
-            )
-        try:
-            source_revision = _source_revision(plugin_dir)
-        except Exception as error:
-            revision = hashlib.sha256(f"{plugin_dir}:{error}".encode()).hexdigest()
-            generation_id = f"{initial_plugin_id}:{revision[:12]}:{generation_sequence}"
-            reload_tx_id = (
-                self._begin_reload_attempt(
-                    plugin_id=initial_plugin_id,
-                    generation_id=generation_id,
-                    source_revision=revision,
-                    config_revision="",
-                    plugin_dir=plugin_dir,
-                    source_type=mod.get("source_type", "builtin"),
-                )
-                if not activate
-                else None
-            )
-            error_text = str(error) or type(error).__name__
-            self._record_failed_gate(
-                plugin_id=initial_plugin_id,
-                revision=revision,
-                check_id="source_boundary",
-                reason=error_text,
-            )
-            self._abort_reload_attempt(
-                reload_tx_id,
-                error=f"source_boundary: {error_text}",
-            )
-            return None
-        data_dir = _resolve_plugin_data_dir(
-            mod["name"],
-            mod,
-            self._workspace,
-        )
+        entry = plugin_dir / "plugin.py"
+        if Path(mod["module_path"]).absolute() != entry.absolute():
+            raise RuntimeError("source discovery module path 与制品 plugin.py 不一致")
+        if entry.is_symlink() or not entry.is_file():
+            raise ValueError(f"插件 plugin.py 必须是普通文件: {entry}")
+        identity = load_static_plugin_manifest(plugin_dir)
+        if mod.get("manifest_digest", "") != identity.identity_digest:
+            raise RuntimeError("source discovery identity 已漂移")
+        revision = _source_revision(plugin_dir)
+        data_dir = _resolve_plugin_data_dir(mod["name"], mod, self._workspace)
         validate_workspace_plugin_data_path(data_dir, self._workspace)
-        config_source, config_revision = read_config_source(data_dir / "config.local.toml")
-        generation_id = (
-            f"{initial_plugin_id}:{source_revision[:12]}:{generation_sequence}"
+        config, config_revision = load_config(data_dir)
+        code_ref = self._archive.save(
+            plugin_dir, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
         )
-        reload_tx_id = (
-            self._begin_reload_attempt(
-                plugin_id=initial_plugin_id,
-                generation_id=generation_id,
-                source_revision=source_revision,
-                config_revision=config_revision,
-                plugin_dir=plugin_dir,
-                source_type=mod.get("source_type", "builtin"),
-            )
-            if not activate
-            else None
+        code_dir = self._archive.open(code_ref)
+        if _source_revision(code_dir) != revision or load_static_plugin_manifest(code_dir) != identity:
+            raise RuntimeError("插件源码或安装身份在归档前发生变化")
+        environments: dict[str, str] = {}
+        if identity.python:
+            if (plugin_dir / ENVIRONMENT_FILE).exists():
+                environments = read_environment_refs(plugin_dir, identity)
+            elif mod["source_type"] == "installed":
+                raise RuntimeError("插件尚未准备固定 Python 环境；请通过安装流程重建")
+
+        # 1. 固定输入所需的临时导入也有真实 Root owner。
+        namespace = secrets.token_hex(12)
+        root = CompositionRoot("archive-input:" + namespace)
+        self._building_roots[root] = ()
+        module_path = f"_akashic_input_{namespace}"
+        generation_id = f"{plugin_id}:input:{namespace}"
+        root._defer_internal_cleanup(
+            f"module:{module_path}", lambda: self._remove_module_tree(module_path),
         )
-        mp = (
-            f"{stable_module_path}__g{generation_sequence}_"
-            f"{source_revision[:8]}_{self._manager_namespace}"
-        )
-        if not module_path:
-            error_text = f"插件缺少 plugin.py: {plugin_dir}"
-            self._record_failed_gate(
-                plugin_id=initial_plugin_id,
-                revision=source_revision,
-                check_id="plugin_module",
-                reason=error_text,
-            )
-            self._abort_reload_attempt(
-                reload_tx_id,
-                error=f"plugin_module: {error_text}",
-            )
-            raise RuntimeError(error_text)
-        # Builtin v3 may omit a manifest; installed artifacts were rejected above.
-        try:
-            code_archive = self._archive.save(
-                plugin_dir, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})
-            )
-            archived_dir = self._archive.open(code_archive)
-            if _source_revision(archived_dir) != source_revision:
-                raise RuntimeError("插件源码在加载前发生变化")
-            archived_manifest = (
-                load_static_plugin_manifest(archived_dir)
-                if (archived_dir / "akashic.plugin.toml").exists() else None
-            )
-            if archived_manifest != static_manifest:
-                raise RuntimeError("插件 manifest 在加载前发生变化")
-            environment_refs: dict[str, str] = {}
-            if archived_manifest is not None and archived_manifest.python:
-                pointer = plugin_dir / ENVIRONMENT_FILE
-                if pointer.exists():
-                    environment_refs = read_environment_refs(plugin_dir, archived_manifest)
-                else:
-                    if any((archived_dir / item.requirements).read_text().strip() for item in archived_manifest.python):
-                        raise RuntimeError("插件尚未准备固定 Python 环境；请通过安装流程重建")
-                    environments = PythonEnvironments(self._workspace)
-                    environment_refs = {item.runtime_root: environments.prepare(archived_dir, item) for item in archived_manifest.python}
-            self._import_plugin(
-                mp, archived_dir / Path(module_path).relative_to(plugin_dir)
-            )
-        except Exception as error:
-            error_text = str(error) or type(error).__name__
-            self._record_failed_gate(
-                plugin_id=initial_plugin_id,
-                revision=source_revision,
-                check_id="import",
-                reason=error_text,
-            )
-            self._abort_reload_attempt(
-                reload_tx_id,
-                error=f"import: {error_text}",
-            )
-            raise RuntimeError(
-                f"插件 {initial_plugin_id} 导入失败: {error_text}"
-            ) from error
-        loaded_module = sys.modules.get(mp)
-        if static_manifest is not None:
-            try:
-                if not isinstance(loaded_module, ModuleType):
-                    raise RuntimeError("v3 插件模块未保留在 import registry")
-                validate_module_exports(
-                    static_manifest,
-                    loaded_module,
-                    plugin_root=archived_dir,
-                )
-            except Exception as error:
-                self._remove_module_tree(mp)
-                error_text = str(error) or type(error).__name__
-                self._record_failed_gate(
-                    plugin_id=initial_plugin_id,
-                    revision=source_revision,
-                    check_id="static_manifest_exports",
-                    reason=error_text,
-                )
-                self._abort_reload_attempt(
-                    reload_tx_id,
-                    error=f"static_manifest_exports: {error_text}",
-                )
-                return None
-        is_v3 = (
-            loaded_module is not None
-            and getattr(loaded_module, "api_version", None) == 3
-        )
-        if not is_v3:
-            self._remove_module_tree(mp)
-            self._record_failed_gate(
-                plugin_id=initial_plugin_id,
-                revision=source_revision,
-                check_id="plugin_api",
-                reason="plugin.py 必须声明 api_version = 3",
-            )
-            self._abort_reload_attempt(
-                reload_tx_id,
-                error="plugin_api: plugin.py 必须声明 api_version = 3",
-            )
-            raise RuntimeError(f"插件只接受 api_version = 3: {initial_plugin_id}")
-        try:
-            if not isinstance(loaded_module, ModuleType):
-                raise RuntimeError("v3 插件模块未保留在 import registry")
-            instance = ComposablePlugin.from_module(loaded_module)
-            config_model = cast(type[BaseModel] | None, instance.ConfigModel)
-            name = str(instance.name or mod["name"]).strip()
-            if not name:
-                raise RuntimeError("插件缺少 name")
-            plugin_id = f"{name}@{mod['marketplace']}" if mod["marketplace"] else name
-            if plugin_id != initial_plugin_id:
-                raise RuntimeError(
-                    f"插件目录身份与声明不一致: directory={initial_plugin_id} declared={plugin_id}"
-                )
-            credential_paths = (
-                static_manifest.all_credential_paths
-                if static_manifest is not None
-                else ()
-            )
-            credential_alias_groups = (
-                _validate_credential_schema(
-                    config_model,
-                    credential_paths=credential_paths,
-                )
-                if static_manifest is not None
-                else ()
-            )
-            config_projection = _read_plugin_config_projection(
-                config_source,
-                credential_paths=credential_paths,
-                credential_alias_groups=credential_alias_groups,
-            )
-            plugin_config = _validate_plugin_config_projection(
-                config_projection,
-                config_model,
-            )
-        except Exception as error:
-            self._remove_module_tree(mp)
-            error_text = str(error) or type(error).__name__
-            check_id = "config" if isinstance(error, _PluginConfigError) else "identity"
-            self._record_failed_gate(
-                plugin_id=initial_plugin_id,
-                revision=source_revision,
-                check_id=check_id,
-                reason=error_text,
-            )
-            self._abort_reload_attempt(
-                reload_tx_id,
-                error=f"{check_id}: {error_text}",
-            )
-            return None
-        if not stage_stable and activate:
-            created_activation_data_dir = not data_dir.exists()
-            ensure_workspace_plugin_data_dir(data_dir, self._workspace)
         scope = PluginScope(plugin_id, generation_id=generation_id)
-        generation: PluginGeneration | None = None
-
-        async def rollback_load(error: str) -> None:
-            if reload_tx_id is not None:
-                phase = self._reload_journal.get(reload_tx_id).phase
-                if phase not in {"complete", "aborted", "recovered"}:
-                    self._reload_journal.advance(
-                        reload_tx_id,
-                        "aborted",
-                        error=error,
-                    )
-            if generation is not None and generation.runtime_snapshot is not None:
-                await self._dispose_unreferenced_composition_root(
-                    generation.runtime_snapshot
-                )
-            self._cleanup_failures.extend(await scope.aclose())
-            if created_activation_data_dir:
-                _remove_validation_data_dir(data_dir)
-            elif generation is not None and generation.boot_created_data_dir:
-                _remove_validation_data_dir(generation.data_dir)
-                generation.boot_created_data_dir = False
-            self._remove_module_tree(mp)
-
+        root._defer_internal_cleanup(
+            f"scope:{module_path}", lambda: self._close_root_scope(scope, module_path),
+        )
         try:
-            load_phase = "declarations"
-            instance.bind_static_services(self._composition_service_view())
-            contributions = self._collect_candidate_contributions(
-                instance=instance,
-                plugin_id=plugin_id,
-                plugin_dir=archived_dir,
-            )
-            gate_result = self._validate_candidate(
-                instance=instance,
-                plugin_id=plugin_id,
-                revision=source_revision,
-            )
-            self._gate_results[plugin_id] = gate_result
-            if gate_result.status == "failed":
-                raise _CandidateRejected(gate_result)
-            archive_ref = self._archive.save_descriptor({
-                "version": 2,
-                "code": code_archive,
-                "python_environments": environment_refs,
-                "plugin_id": plugin_id,
-                "source_revision": source_revision,
-                "config_revision": config_revision,
-                "config": encode_config(config_projection),
-                "static_active": instance.static_active,
-                "entrypoint": static_manifest.entrypoint if static_manifest else "plugin.py",
+            self._import_plugin(module_path, code_dir)
+            instance = ComposablePlugin.from_module(sys.modules[module_path], identity)
+            ref = self._archive.save_descriptor({
+                "version": 4, "code": code_ref, "python_environments": environments,
+                "plugin_id": plugin_id, "source_revision": revision,
+                "config_revision": config_revision, "config": encode_config(config),
                 "source_type": mod["source_type"],
                 "data_dir": data_dir.resolve().relative_to(self._workspace.resolve()).as_posix(),
-                "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": 1},
+                "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
             })
-            generation = PluginGeneration(
-                plugin_id=plugin_id,
-                generation_id=generation_id,
-                module_path=mp,
-                source_revision=source_revision,
-                config_revision=config_revision,
-                plugin_dir=plugin_dir,
-                data_dir=data_dir,
-                config=plugin_config,
-                config_projection=config_projection,
-                archive_ref=archive_ref,
-                instance=instance,
-                scope=scope,
-                contributions=contributions,
-                gate_result=gate_result,
-                source_type=cast(
-                    Literal["builtin", "installed"],
-                    mod["source_type"],
-                ),
-                static_manifest=static_manifest,
-                entrypoint=(
-                    static_manifest.entrypoint
-                    if static_manifest is not None
-                    else "plugin.py"
-                ),
+            source = PluginGeneration(
+                plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
+                source_revision=revision, config_revision=config_revision,
+                plugin_dir=plugin_dir, data_dir=data_dir, instance=instance, scope=scope,
+                config_projection=config, archive_ref=ref, static_manifest=identity,
+                source_type=cast(Literal["builtin", "installed"], mod["source_type"]),
                 state="prepared",
-                reload_tx_id=reload_tx_id,
             )
+            self._building_roots[root] = (source,)
             if stage_stable:
-                generation.boot_created_data_dir = not data_dir.exists()
-                ensure_workspace_plugin_data_dir(data_dir, self._workspace)
-            catalog_generations = [
-                active_generation
-                for active_generation in self._active_generations.values()
-                if active_generation.plugin_id != plugin_id
-            ]
-            catalog_generations.append(generation)
-            catalog_generations = self._static_active_generations(catalog_generations)
-            ignored_generations = self._static_active_generations(
-                [*self._active_generations.values(), generation]
-            )
-            try:
-                skill_catalog = self._skill_host.prepare(
-                    generation_id,
-                    normal_roots=PluginSkillHost.roots_for(
-                        catalog_generations,
-                        drift=False,
-                    ),
-                    drift_roots=PluginSkillHost.roots_for(
-                        catalog_generations,
-                        drift=True,
-                    ),
-                    ignored_normal_roots=tuple(
-                        root
-                        for item in ignored_generations
-                        for root in item.contributions.skill_roots
-                    ),
-                    ignored_drift_roots=tuple(
-                        root
-                        for item in ignored_generations
-                        for root in item.contributions.drift_skill_roots
-                    ),
+                return source
+            if activate:
+                inputs = dict(self._active_generations)
+                inputs[plugin_id] = source
+                components = tuple(self._generation_archive_ref(item) for _, item in sorted(inputs.items()))
+                await self._close_building_root(root)
+                snapshot = await self._replace_formal_root(
+                    components, expected_ref=base_selection_ref,
                 )
-            except Exception as error:
-                gate_result = _with_gate_check(
-                    gate_result,
-                    check_id="skill_catalog",
-                    passed=False,
-                    evidence=str(error),
-                )
-                self._gate_results[plugin_id] = gate_result
-                raise _CandidateRejected(gate_result) from error
-            gate_result = _with_gate_check(
-                gate_result,
-                check_id="skill_catalog",
-                passed=True,
-                evidence=list(skill_catalog.names),
-            )
-            self._gate_results[plugin_id] = gate_result
-            generation.gate_result = gate_result
-            generation.skill_catalog = skill_catalog
-            scope.defer(
-                "skill_catalog",
-                lambda: self._skill_host.close(generation_id),
-            )
+            else:
+                snapshot = await self._compile_generation_snapshot(source, candidate_owner=source)
+            generation = snapshot.generations[plugin_id]
+            if root in self._building_roots:
+                await self._close_building_root(root)
             if not activate:
-                validation_root = (
-                    self._workspace
-                    / "runtime"
-                    / "plugin-validation"
-                    / generation.generation_id
-                )
-                if validation_root.exists():
-                    raise RuntimeError(f"候选验证目录已存在: {validation_root}")
-                validation_workspace = validation_root / "workspace"
-                generation.validation_workspace = validation_workspace
-                generation.scope.defer(
-                    "validation_plugin_data",
-                    lambda: asyncio.to_thread(
-                        _remove_validation_data_dir, validation_root
-                    ),
-                )
-            if not activate and _installed_generation_is_candidate(generation):
-                generation.production_contributions = contributions
-                generation.production_data_dir = generation.data_dir
-                assert generation.validation_workspace is not None
-                validation_data_dir = (
-                    generation.validation_workspace
-                    / "plugin-data"
-                    / generation.data_dir.name
-                )
-                validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
-                generation.validation_data_inventory = await _copy_in_thread(_copy_validation_tree,
-                    generation.data_dir,
-                    validation_data_dir,
-                    _candidate_data_exclude_paths(generation.static_manifest),
-                )
-                generation.data_dir = validation_data_dir
-            if not activate:
-                generation.runtime_snapshot = await self._compile_generation_snapshot(
-                    generation,
-                    candidate_owner=generation,
+                if self.current_snapshot is not base_snapshot or (
+                    self._selection.read() != base_selection_ref
+                ):
+                    assert snapshot.composition_root is not None
+                    await self._discard_building_root(snapshot.composition_root, SelectionConflictError("候选构建期间基线变化"))
+                    raise SelectionConflictError("候选构建期间基线变化")
+                generation.reload_tx_id = self._begin_reload_attempt(
+                    plugin_id=plugin_id, generation_id=generation.generation_id,
+                    source_revision=revision, config_revision=config_revision,
+                    plugin_dir=plugin_dir, source_type=mod["source_type"],
                 )
                 self._advance_reload(
-                    generation,
-                    "prepared",
-                    candidate_snapshot_id=generation.runtime_snapshot.snapshot_id,
+                    generation, "prepared", candidate_snapshot_id=snapshot.snapshot_id,
                 )
-                generation.minimum_resource_count = scope.resource_count
                 self._prepared_generations[plugin_id] = generation
-                return generation
-            if stage_stable:
-                return generation
-            generation.runtime_snapshot = await self._compile_generation_snapshot(
-                generation,
-                allow_pending_composition=True,
-            )
-            load_phase = "prepare"
-            await self._prepare_generation(generation)
-            generation.state = "activating"
-            load_phase = "publish"
-            generation.minimum_resource_count = scope.resource_count
-        except asyncio.CancelledError:
-            rollback_task = asyncio.create_task(
-                rollback_load(f"candidate {load_phase} cancelled"),
-                name=f"plugin_rollback:{plugin_id}",
-            )
-            while not rollback_task.done():
-                try:
-                    await asyncio.shield(rollback_task)
-                except asyncio.CancelledError:
-                    continue
-            await rollback_task
+            return generation
+        except BaseException as error:
+            if root in self._building_roots:
+                await self._discard_building_root(root, error)
             raise
-        except _CandidateRejected as error:
-            logger.warning(
-                "插件 %s 候选验证失败: %s",
-                mod["name"],
-                error.gate.failure_reason,
-            )
-            await rollback_load(_gate_failure_details(error.gate))
-            return None
-        except Exception as error:
-            logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], error)
-            self._record_failed_gate(
-                plugin_id=plugin_id,
-                revision=source_revision,
-                check_id=load_phase,
-                reason=str(error),
-            )
-            await rollback_load(str(error) or type(error).__name__)
-            return None
-        self._scopes[mp] = scope
-        self._loaded.add(mp)
-        self._active_plugins[mp] = ActivePluginInfo(
-            plugin_id=plugin_id,
-            plugin_dir=plugin_dir,
-            manifest=contributions.manifest,
-            module_path=mp,
-            skill_roots=contributions.skill_roots,
-            drift_skill_roots=contributions.drift_skill_roots,
-        )
-        generation.state = "active"
-        self._active_generations[plugin_id] = generation
-        self._stable_aliases[mp] = stable_module_path
-        self._remove_module_tree(stable_module_path)
-        self._fresh_importer.register(stable_module_path, generation.code_dir)
-        sys.modules[stable_module_path] = sys.modules[mp]
-        assert generation.runtime_snapshot is not None
-        await self._publish_committed_snapshot(generation.runtime_snapshot)
-        logger.info("插件已加载: %s", mod["name"])
-        return generation
 
     async def _compile_generation_snapshot(
         self,
         generation: PluginGeneration,
         *,
-        allow_pending_composition: bool = False,
         candidate_owner: PluginGeneration | None = None,
-        force_fresh_composition: bool = False,
     ) -> RuntimeSnapshot:
         generations = dict(self._active_generations)
         generations[generation.plugin_id] = generation
-        composition_root, created_root = await self._resolve_composition_root(
+        composition_root = await self._resolve_composition_root(
             generations,
-            allow_pending=allow_pending_composition,
             candidate_owner=candidate_owner,
-            force_fresh=force_fresh_composition,
         )
         try:
-            uses_overlay = isinstance(composition_root, CompositionOverlay)
             snapshot = self._snapshot_compiler.compile(
                 generations,
-                catalog_generation=generation,
                 composition_root=composition_root,
-                base_snapshot=(
-                    self.current_snapshot
-                    if candidate_owner is not None and uses_overlay
-                    else None
-                ),
-                replaced_plugin_ids=(
-                    composition_root.replaced_plugin_ids
-                    if uses_overlay
-                    else frozenset()
-                ),
-                core_channel_definitions=self._core_channel_definitions,
-                require_composition_ready=True,
             )
-            _validate_static_manifest_runtime(snapshot, generations)
-            if candidate_owner is not None:
-                self._preflight_durable_delivery_targets(snapshot)
-            snapshot.tool_registry = self._compile_snapshot_tools(
-                generations,
-                snapshot.plugin_tool_catalog,
-            )
-            return snapshot
-        except Exception as error:
-            if created_root and composition_root is not None:
-                await composition_root.dispose()
-            gate = _with_gate_check(
-                generation.gate_result,
-                check_id="runtime_snapshot",
-                passed=False,
-                evidence=str(error),
-            )
-            generation.gate_result = gate
-            self._gate_results[generation.plugin_id] = gate
-            raise _CandidateRejected(gate) from error
-
-    @asynccontextmanager
-    async def open_binding(self, components: tuple[str, ...]) -> AsyncIterator[BindingScope]:
-        """从归档重建独立 Root；不发布或启动正式 runtime。"""
-        # 1. 每次打开都有自己的模块空间、Root 和 lease store。
-        namespace = secrets.token_hex(12)
-        root = CompositionRoot(f"archive:{namespace}")
-
-        async def drained(_snapshot: RuntimeSnapshot) -> None:
-            await root.dispose()
-
-        store = RuntimeSnapshotStore(drained)
-        root._bind_runtime_scope_acquirer(lambda: store.acquire_composition_root(root))  # pyright: ignore[reportPrivateUsage]
-        modules = ExitStack()
-        scope: BindingScope | None = None
-        installed = False
-        try:
-            generations = modules.enter_context(self._archived_generations(components, namespace))
-
-            # 2. 使用同一 Core 能力装配，依赖只能来自这些归档组件。
-            ordered = tuple(generations[key] for key in sorted(generations))
-            await self._provide_composition_services(root, ordered, candidate=False, archive=True)
-            for generation in ordered:
-                await self._mount_generation_composition(root, generation)
-            if not root.receipt().ready:
-                raise RuntimeError(f"归档 provider 闭包不完整: {root.receipt().required_pending}")
-            result = await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
-            if result is not None:
-                raise RuntimeError("归档 snapshot.sealing 不接受 Bail")
-            snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
-            _validate_static_manifest_runtime(snapshot, generations)
-            store.install(snapshot)
-            installed = True
-            scope = BindingScope(root)
-            async with RuntimeScope(await store.acquire()):
-                yield scope
-        finally:
-            # 3. 先撤销读取并排空 exact leases，成功后才释放模块空间。
-            if scope is not None:
-                scope._expire()  # pyright: ignore[reportPrivateUsage]
-            async def close_scope() -> None:
-                if installed:
-                    snapshot = store.pause_admission()
-                    assert snapshot is not None
-                    await store.wait_for_no_leases(snapshot)
-                try:
-                    if installed:
-                        await store.close()
-                    else:
-                        await root.dispose()
-                finally:
-                    modules.close()
-
-            _, cancelled = await _complete_critical(close_scope())
-            if cancelled:
-                raise asyncio.CancelledError
+        except BaseException as error:
+            await self._discard_building_root(composition_root, error)
+            raise
+        for item in generations.values():
+            item.runtime_snapshot = snapshot
+        return snapshot
 
     @asynccontextmanager
     async def open_validation(self, update_id: str) -> AsyncGenerator[BindingScope]:
-        """在独立数据与候选资源中打开实际组件；调用程序自行解释验证结果。"""
-        # 1. 固定实际候选并持有租约；其他发布必须等待本次资源真正退出。
-        async with self._candidate_prepare_lock:
-            update = self._reload_journal.update(update_id)
-            ready = self._require_ready_candidate(update.plugin_id)
-            if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
-                raise RuntimeError("更新恢复点与当前候选不匹配")
-            lease = self._snapshot_store.lease(ready.snapshot.snapshot_id)
+        """准备和回收使用 Manager owner；调用程序仍拥有验证 scope。"""
+        caller = asyncio.current_task()
+        assert caller is not None
         host: ValidationHost | None = None
         scope: BindingScope | None = None
+        failure: BaseException | None = None
         try:
-            async with RuntimeScope(lease):
-                try:
-                    host = await self._build_validation_host(lease)
-                    self._validation_hosts[host.identity] = host
-                    await self._copy_validation_bindings(host)
-                    await self._copy_validation_artifacts(host)
-                    self._reload_journal.annotate(cast(str, update.reload_tx_id), {
-                        "event": "business_validation_opened", "validation_id": host.identity,
-                        "candidate_generation": ready.candidate.generation_id,
-                        "candidate_snapshot": ready.snapshot.snapshot_id,
-                        "workspace": str(host.workspace),
-                        "components": [item.archive_ref for item in ready.snapshot.generations.values()],
-                        "profile": "explicit_program_with_candidate_resources",
-                    })
-                    child = host.manager
-                    components = tuple(cast(str, item.archive_ref) for item in ready.snapshot.generations.values())
-                    generations = host.modules.enter_context(child._archived_generations(components, host.identity))
-                    root = CompositionRoot("validation:" + host.identity)
-                    host.root = root
-                    root._bind_runtime_scope_acquirer(  # pyright: ignore[reportPrivateUsage]
-                        lambda: child._snapshot_store.acquire_composition_root(root)
-                    )
-                    ordered = tuple(generations[key] for key in sorted(generations))
-                    await child._provide_composition_services(root, ordered, candidate=False)
-                    for generation in ordered:
-                        await child._mount_generation_composition(root, generation)
-                    if not root.receipt().ready:
-                        raise RuntimeError(f"验证 provider 闭包不完整: {root.receipt().required_pending}")
-                    result = await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
-                    if result is not None:
-                        raise RuntimeError("验证 snapshot.sealing 不接受 Bail")
-                    snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
-                    _validate_static_manifest_runtime(snapshot, generations)
-                    child._active_generations = generations
-                    child._snapshot_store.install(snapshot)
-                    # 2. 数据能力指向副本，外部声明仍按 candidate env/权限启动。
-                    for generation in ordered:
-                        _ = await child._start_composition_generation_runtime(generation, snapshot, mode="candidate")
-                    child._refresh_composition_runtime_tools(snapshot)
-                    scope = BindingScope(root)
-                    self._reload_journal.annotate(cast(str, update.reload_tx_id), {
-                        "event": "business_validation_ready", "validation_id": host.identity,
-                        "validation_snapshot": snapshot.snapshot_id,
-                        "generations": {key: value.generation_id for key, value in generations.items()},
-                    })
-                    # 不启动自动来源、正式渠道或 Delivery；这里只运行调用者指定的程序。
-                    async with RuntimeScope(await child._snapshot_store.acquire()):
-                        yield scope
-                finally:
-                    if scope is not None:
-                        scope._expire()  # pyright: ignore[reportPrivateUsage]
-                    if host is not None:
-                        host.active = False
-                        _, cancelled = await _complete_critical(host.close())
-                        _ = self._validation_hosts.pop(host.identity, None)
-                        self._reload_journal.annotate(cast(str, update.reload_tx_id), {
-                            "event": "business_validation_closed", "validation_id": host.identity,
-                        })
-                        if cancelled:
-                            raise asyncio.CancelledError
-        except asyncio.CancelledError:
+            host, scope = await self._run_operation(
+                lambda: self._prepare_validation(update_id, caller), allow_stable_lease=True,
+            )
+            async with RuntimeScope(host.parent_lease.fork()):
+                async with RuntimeScope(await host.snapshot_store.acquire()):
+                    yield scope
+        except asyncio.CancelledError as error:
+            failure = error
             self._reload_journal.record_update_error(update_id, "validation cancelled")
             self._notify_updates()
             raise
-        except Exception as error:
+        except BaseException as error:
+            failure = error
             self._reload_journal.record_update_error(update_id, str(error) or type(error).__name__)
             self._notify_updates()
             raise
+        finally:
+            if scope is not None:
+                scope._expire()  # pyright: ignore[reportPrivateUsage]
+            # 观察者可能恰好在准备结束时超时；实际 host 仍在 Manager 内。
+            retained = host or next(
+                (item for item in self._validation_hosts.values() if item.task is caller), None,
+            )
+            operation = self._operation
+            if retained is not None:
+                # 准备失败已尝试关闭且设为 inactive；不在同一次 finally 里重试失败资源。
+                needs_close = host is not None or retained.active
+                retained.active = False
+                if needs_close and not self._stopping and (operation is None or operation.task.done()):
+                    try:
+                        await self._run_operation(
+                            lambda: self._retry_validation_cleanup(retained.identity),
+                            allow_stable_lease=True,
+                        )
+                    except BaseException as cleanup_error:
+                        self._reload_journal.record_update_error(
+                            update_id, str(cleanup_error) or type(cleanup_error).__name__,
+                        )
+                        self._notify_updates()
+                        if failure is not None:
+                            raise BaseExceptionGroup("验证与资源回收均失败", [failure, cleanup_error]) from None
+                        raise
+                    update = self._reload_journal.update(update_id)
+                    self._reload_journal.annotate(cast(str, update.reload_tx_id), {
+                        "event": "business_validation_closed", "validation_id": retained.identity,
+                    })
+
+    async def _prepare_validation(
+        self, update_id: str, caller: asyncio.Task[object],
+    ) -> tuple[ValidationHost, BindingScope]:
+        """从租约取得到资源交接都属于同一次有限操作，复制线程不脱离 owner。"""
+        update = self._reload_journal.update(update_id)
+        ready = self._require_ready_candidate(update.plugin_id)
+        if update.phase != "armed" or update.reload_tx_id != ready.candidate.reload_tx_id:
+            raise RuntimeError("更新恢复点与当前候选不匹配")
+        if self._reload_journal.get(cast(str, update.reload_tx_id)).phase != "latest_ready" or update.error:
+            raise RuntimeError("候选调用已失败或提交权已撤销")
+        if any(event.details.get("event") == "business_validation_opened"
+               for event in self._reload_journal.events(cast(str, update.reload_tx_id))):
+            raise RuntimeError("已有候选调用只能查询，未知结果不得重跑")
+        lease = self._snapshot_store.lease(ready.snapshot.snapshot_id)
+        host: ValidationHost | None = None
+        scope: BindingScope | None = None
+        async with RuntimeScope(lease):
+            try:
+                host = await self._build_validation_host(lease)
+                host.task = caller
+                self._validation_hosts[host.identity] = host
+                self._reload_journal.annotate(cast(str, update.reload_tx_id), {
+                    "event": "business_validation_opened", "validation_id": host.identity,
+                    "candidate_generation": ready.candidate.generation_id,
+                    "candidate_snapshot": ready.snapshot.snapshot_id,
+                    "workspace": str(host.workspace),
+                    "components": [item.archive_ref for item in ready.snapshot.generations.values()],
+                    "profile": "explicit_program_with_candidate_resources",
+                })
+                components = tuple(cast(str, item.archive_ref) for item in ready.snapshot.generations.values())
+                generations = dict(ready.snapshot.generations)
+                root = await self._resolve_composition_root(
+                    generations, components=components, validation_host=host,
+                )
+                snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
+                for generation in generations.values():
+                    generation.runtime_snapshot = snapshot
+                self._check_operation_commit()
+                host.snapshot_store.install(snapshot)
+                # 2. apply 已通过候选授权取得资源，不再重复执行启动阶段。
+                scope = BindingScope(root)
+                self._reload_journal.annotate(cast(str, update.reload_tx_id), {
+                    "event": "business_validation_ready", "validation_id": host.identity,
+                    "validation_snapshot": snapshot.snapshot_id,
+                    "generations": {key: value.generation_id for key, value in generations.items()},
+                })
+                self._check_operation_commit()
+                return host, scope
+            except BaseException as error:
+                if scope is not None:
+                    scope._expire()  # pyright: ignore[reportPrivateUsage]
+                if host is not None:
+                    host.active = False
+                    try:
+                        await _complete_critical(self._retry_validation_cleanup(host.identity))
+                    except BaseException as cleanup_error:
+                        raise BaseExceptionGroup("验证准备与资源关闭均失败", [error, cleanup_error]) from None
+                raise
 
     async def _build_validation_host(
         self, lease: RuntimeSnapshotLease,
     ) -> ValidationHost:
-        """先固定声明数据，再保存完整消息库；验证只打开独立副本。"""
-        if self._message_log is None:
-            raise RuntimeError("业务验证缺少正式 MessageLog")
+        """建立独立消息 owner 与固定代码；不扫描或复制插件业务数据。"""
         identity = secrets.token_hex(16)
         workspace = self._workspace / "runtime" / "plugin-update-validation" / identity / "workspace"
         workspace.mkdir(parents=True)
         archive = PluginArchive(workspace / "runtime" / "plugin-archives")
-        try:
-            await self._copy_validation_components(lease.snapshot, workspace, archive)
-            # 图与 receipt 先复制；正常只追加的消息库随后覆盖它们已有的历史引用。
-            await _copy_in_thread(self._message_log.backup, workspace / "sessions.db")
-        except BaseException:
-            await _copy_in_thread(_remove_validation_data_dir, workspace.parent)
-            raise
-        messages = MessageLog(workspace / "sessions.db")
-        try:
-            artifacts = ArtifactStore(workspace / "sessions.db")
-        except BaseException:
-            messages.close()
-            raise
-        physical = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=artifacts)
-        bus = EventBus()
-        try:
-            child = PluginManager(
-                [], event_bus=bus, workspace=workspace, message_log=messages,
-                installed_cache_root=workspace.parent / "plugins" / "cache",
-                channel_attachment_store=physical, workload_controller=self._workload_controller,
-            )
-        except BaseException:
-            artifacts.close()
-            messages.close()
-            raise
-        child._python_environments = self._python_environments
-        child._validation_only = True
-        task = asyncio.current_task()
-        assert task is not None
-        return ValidationHost(identity, workspace, child, messages, artifacts, bus, ExitStack(), task, lease.fork())
-
-    async def _copy_validation_components(
-        self, snapshot: RuntimeSnapshot, workspace: Path, archive: PluginArchive,
-    ) -> None:
-        """逐项保存声明数据；每个 SQLite 自身一致，不承诺跨文件的共同切点。"""
-        for generation in snapshot.generations.values():
-            if generation.archive_ref is None:
-                raise RuntimeError(f"验证组件缺少归档: {generation.plugin_id}")
-            record = self._archive.read_descriptor(generation.archive_ref)
-            code = cast(str, record["code"])
-            if archive.save(self._archive.open(code)) != code:
-                raise RuntimeError("验证代码副本身份不一致")
-            if archive.save_descriptor(record) != generation.archive_ref:
-                raise RuntimeError("验证组件描述身份不一致")
-            data_dir = workspace / cast(str, record["data_dir"])
-            validate_workspace_plugin_data_path(data_dir, workspace)
-            # 日志副本形成后才能知道历史绑定；凭据文件先不进入验证目录。
-            excluded = (*_candidate_data_exclude_paths(generation.static_manifest), "config.local.toml")
-            _ = await _copy_in_thread(_copy_validation_tree, generation.data_dir, data_dir, excluded)
-        plugins = tuple(cast(ComposablePlugin, item.instance) for item in snapshot.generations.values())
-        await self._project_candidate_workspace_roots(plugins, workspace)
-        await self._project_candidate_workspace_files(plugins, workspace)
-
-    async def _copy_validation_bindings(self, host: ValidationHost) -> None:
-        """按消息副本的实际绑定保存历史代码与数据，不从当前安装补齐旧实现。"""
-        archive = host.manager._archive
-        current = {item.archive_ref for item in host.parent_lease.snapshot.generations.values()}
-        refs = dict.fromkeys(cast(str, ref) for ref in current)
-        for binding in host.messages.read_bindings():
-            if binding["version"] != 1:
-                raise ValueError("验证副本包含不支持的 binding 版本")
-            root_ref = cast(str, binding["root_ref"])
-            root = self._archive.read_descriptor(root_ref)
-            if archive.save_descriptor(root) != root_ref:
-                raise RuntimeError("验证 binding 闭包身份不一致")
-            refs.update(dict.fromkeys(cast(tuple[str, ...], root["components"])))
-
-        # 1. 以实际日志副本的绑定合并同目录的历史声明，不让新版本放宽旧凭据边界。
-        records = {ref: self._archive.read_descriptor(ref) for ref in refs}
-        exclusions: dict[str, set[str]] = {}
-        for record in records.values():
-            plugin_dir = self._archive.open(cast(str, record["code"]))
-            manifest = (load_static_plugin_manifest(plugin_dir)
-                        if (plugin_dir / "akashic.plugin.toml").exists() else None)
-            exclusions.setdefault(cast(str, record["data_dir"]), set()).update(
-                _candidate_data_exclude_paths(manifest))
-
-        # 2. 已固定的候选数据优先；补齐历史独有目录和允许复制的普通配置。
-        for ref, record in records.items():
+        for generation in lease.snapshot.generations.values():
+            ref = self._generation_archive_ref(generation)
+            record = self._archive.read_descriptor(ref)
             code = cast(str, record["code"])
             if archive.save(self._archive.open(code)) != code or archive.save_descriptor(record) != ref:
-                raise RuntimeError("验证历史组件身份不一致")
-            data = cast(str, record["data_dir"])
-            source, target = self._workspace / data, host.workspace / data
-            validate_workspace_plugin_data_path(source, self._workspace)
-            validate_workspace_plugin_data_path(target, host.workspace)
-            excluded = tuple(sorted(exclusions[data]))
-            if not target.exists():
-                _ = await _copy_in_thread(_copy_validation_tree, source, target, excluded)
-            elif not _candidate_data_path_is_excluded(Path("config.local.toml"), excluded):
-                old_config, new_config = source / "config.local.toml", target / "config.local.toml"
-                if old_config.exists() and not new_config.exists():
-                    if old_config.is_symlink() or not old_config.is_file():
-                        raise RuntimeError(f"candidate 配置只能复制普通文件: {old_config}")
-                    _ = await _copy_in_thread(shutil.copy2, old_config, new_config)
-            if ref not in current:
-                # 只读取旧模块声明，不 apply，也不覆盖当前候选已固定的共享数据。
-                with self._archived_generations((ref,), secrets.token_hex(16)) as generations:
-                    plugin = cast(ComposablePlugin, next(iter(generations.values())).instance)
-                    for name in plugin.workspace_roots:
-                        old_root = resolve_declared_workspace_root(self._workspace, name)
-                        if old_root.exists():
-                            _ = await _copy_in_thread(_copy_validation_tree, old_root, host.workspace / name, (), keep_existing=True)
-                    for name in plugin.workspace_files:
-                        old_file = resolve_declared_workspace_file(self._workspace, name)
-                        new_file = host.workspace / name
-                        if old_file.exists() and not new_file.exists():
-                            new_file.parent.mkdir(parents=True, exist_ok=True)
-                            if _is_sqlite_database(old_file):
-                                await _copy_in_thread(_copy_sqlite_snapshot, old_file, new_file)
-                            else:
-                                _ = await _copy_in_thread(shutil.copy2, old_file, new_file)
+                raise RuntimeError("隔离候选固定制品身份不一致")
+        from contextlib import ExitStack
+        from bus.queue import MessageBus
+        from session.admissions import SessionAdmissions
+        from session.inbound_store import InboundHandoffStore
 
-    async def _copy_validation_artifacts(self, host: ValidationHost) -> None:
-        """复制消息副本已引用的不可变文件，读取仍经过正式 Artifact owner 校验。"""
-        for record in host.artifacts.list_attachments():
-            if self._artifact_read is None:
-                raise RuntimeError("验证历史 Artifact 缺少读取能力")
-            lease = await self._artifact_read.acquire(record.ref)
-            try:
-                payload = await lease.read_bytes(max_bytes=record.ref.size_bytes)
-                path = host.workspace / record.storage_key
-                path.parent.mkdir(parents=True, exist_ok=True)
-                def write_payload() -> None:
-                    with path.open("xb") as output:
-                        _ = output.write(payload)
-                await _copy_in_thread(write_payload)
-            finally:
-                await lease.aclose()
+        # 1. 只创建验证库的连接；构造尚未取得异步资源时可直接关闭。
+        with ExitStack() as cleanup:
+            messages = MessageLog(workspace / "sessions.db")
+            cleanup.callback(messages.close)
+            artifacts = ArtifactStore(workspace / "sessions.db")
+            cleanup.callback(artifacts.close)
+            admissions = SessionAdmissions(workspace / "sessions.db")
+            cleanup.callback(admissions.close)
+            identities = ChannelIdentities(workspace / "sessions.db")
+            cleanup.callback(identities.close)
+            inbound_store = InboundHandoffStore(workspace / "sessions.db")
+            cleanup.callback(inbound_store.close)
+            physical = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=artifacts)
+            event_bus = EventBus()
+            message_bus = MessageBus()
+            message_bus.bind_session_admission_owner(admissions)
+            message_bus.bind_durable_inbound_store(inbound_store)
+            task = asyncio.current_task()
+            assert task is not None
+            # 2. 宿主只持有实际资源；没有第二份安装、更新或 stable 控制面。
+            host = ValidationHost(
+                identity, workspace, messages, artifacts, event_bus, task, lease.fork(),
+                message_bus=message_bus, admissions=admissions,
+                identities=identities, inbound_store=inbound_store,
+                archive=archive, attachments=physical,
+            )
+            message_bus.bind_durable_inbound_recoverer(host.recover_input)
+            cleanup.pop_all()
+            return host
 
-    async def stop_validation_resources(self) -> None:
-        """验证数据关闭前逐项核对实际资源；失败不先退役 Root 或释放恢复材料。"""
-        # 1. 先撤销业务任务，再排空它们打开的普通进程与短命 MCP。
-        await self._plugin_tasks.close()
-        await self._plugin_processes.close()
-        await self._composition_generation_host.close_scoped()
-        # 2. 未决 runtime 清理沿原 owner 重试，成功后才释放 Root。
-        for generation in tuple(self._composition_runtime_generations.values()):
-            failure = self._composition_generation_host.failure(generation.generation_id)
-            if failure is not None:
-                _ = await self._composition_generation_host.retry_runtime_recovery(generation.generation_id)
-                _ = self._composition_runtime_generations.pop(generation.generation_id)
-            else:
-                await self._stop_composition_generation_runtime(generation)
-        await self.terminate_all()
 
     async def retry_validation_cleanup(self, identity: str) -> None:
+        await self._run_operation(
+            lambda: self._retry_validation_cleanup(identity), allow_stable_lease=True,
+        )
+
+    async def _retry_validation_cleanup(self, identity: str) -> None:
         """只重试现存验证资源的清理；不重跑验证或建立候选。"""
         host = self._validation_hosts[identity]
         if host.active:
             raise RuntimeError("验证程序尚未退出")
-        await host.close()
+        _, cancelled = await _complete_critical(host.close())
         _ = self._validation_hosts.pop(identity, None)
+        if cancelled:
+            raise asyncio.CancelledError
 
-    @contextmanager
     def _archived_generations(
-        self, components: tuple[str, ...], namespace: str,
-    ) -> Generator[dict[str, PluginGeneration]]:
-        """验证并导入固定组件；调用者先关闭 Root 和资源，再释放模块。"""
-        modules: list[str] = []
+        self,
+        components: tuple[str, ...],
+        root: CompositionRoot,
+        *,
+        workspace: Path,
+        sources: Mapping[str, PluginGeneration],
+        validation_host: ValidationHost | None = None,
+    ) -> dict[str, PluginGeneration]:
+        """从固定输入创建只属于当前 Root 的模块、Scope 和 generation。"""
+
+        archive = self._archive if validation_host is None else validation_host.archive
+        records = tuple(archive.read_descriptor(ref) for ref in components)
+        for record in records:
+            if record["version"] != 4 or record["runtime"] != {
+                "python_tag": sys.implementation.cache_tag,
+                "binding_api": PLUGIN_ARCHIVE_BINDING_API,
+            }:
+                raise RuntimeError("插件归档运行合同不兼容；保留原归档并使用原 Core 恢复")
         generations: dict[str, PluginGeneration] = {}
-        try:
-            for index, ref in enumerate(components):
-                record = self._archive.read_descriptor(ref)
-                if record["version"] != 2 or record["runtime"] != {
-                    "python_tag": sys.implementation.cache_tag, "binding_api": 1,
-                }:
-                    raise RuntimeError("插件归档运行合同不兼容")
-                plugin_dir = self._archive.open(cast(str, record["code"]))
-                revision = cast(str, record["source_revision"])
-                if _source_revision(plugin_dir) != revision:
-                    raise RuntimeError("插件归档源码身份不一致")
-                plugin_id = cast(str, record["plugin_id"])
-                if plugin_id in generations:
-                    raise ValueError(f"归档重复包含插件: {plugin_id}")
-                data_dir = self._workspace / cast(str, record["data_dir"])
-                validate_workspace_plugin_data_path(data_dir, self._workspace)
-                entrypoint = cast(str, record["entrypoint"])
-                _require_plugin_path(plugin_dir, (plugin_dir / entrypoint).resolve(), "归档入口")
-                module_path = f"_akashic_archive_{namespace}_{index}"
-                self._import_plugin(module_path, plugin_dir / entrypoint)
-                modules.append(module_path)
-                module = sys.modules[module_path]
-                manifest = (
-                    load_static_plugin_manifest(plugin_dir)
-                    if (plugin_dir / "akashic.plugin.toml").exists() else None
-                )
-                if manifest is not None:
-                    validate_module_exports(manifest, module, plugin_root=plugin_dir)
-                plugin = ComposablePlugin.from_module(module)
-                if plugin.name != plugin_id.split("@", 1)[0]:
-                    raise ValueError("归档插件身份不一致")
-                plugin.bind_archived_active(cast(bool, record["static_active"]))
-                projection = decode_config(record["config"])
-                if not isinstance(projection, dict):
-                    raise ValueError("归档插件配置必须是对象")
-                config = _validate_plugin_config_projection(
-                    cast(dict[str, object], projection), cast(type[BaseModel] | None, plugin.ConfigModel),
-                )
-                gate = self._validate_candidate(instance=plugin, plugin_id=plugin_id, revision=revision)
-                if gate.status != "passed":
-                    raise RuntimeError(f"归档插件检查失败: {gate.failure_reason}")
-                generation_id = f"archive:{namespace}:{index}"
-                generations[plugin_id] = PluginGeneration(
-                    plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
-                    source_revision=revision, config_revision=cast(str, record["config_revision"]),
-                    plugin_dir=plugin_dir, data_dir=data_dir, config=config,
-                    config_projection=cast(dict[str, object], projection), instance=plugin,
-                    scope=PluginScope(plugin_id, generation_id=generation_id),
-                    contributions=self._collect_candidate_contributions(
-                        instance=plugin, plugin_id=plugin_id, plugin_dir=plugin_dir,
-                    ),
-                    gate_result=gate, static_manifest=manifest, entrypoint=entrypoint,
-                    source_type=cast(Literal["builtin", "installed"], record["source_type"]),
-                    archive_ref=ref,
-                )
+        namespace = secrets.token_hex(12)
+        for index, (ref, record) in enumerate(zip(components, records, strict=True)):
+            code_dir = archive.open(cast(str, record["code"]))
+            revision = cast(str, record["source_revision"])
+            if _source_revision(code_dir) != revision:
+                raise RuntimeError("插件归档源码身份不一致")
+            plugin_id = cast(str, record["plugin_id"])
+            if plugin_id in generations:
+                raise ValueError(f"归档重复包含插件: {plugin_id}")
+            source = sources.get(plugin_id)
+            data_dir = workspace / cast(str, record["data_dir"])
+            validate_workspace_plugin_data_path(data_dir, workspace)
+            module_path = f"_akashic_archive_{namespace}_{index}"
+            generation_id = f"{plugin_id}:{namespace}:{index}"
+            # 导入也会取得 sys.modules；必须先把整个 namespace 交给 Root。
+            root._defer_internal_cleanup(
+                f"module:{module_path}",
+                lambda module_path=module_path: self._remove_module_tree(module_path),
+            )
+            scope = PluginScope(plugin_id, generation_id=generation_id)
+            root._defer_internal_cleanup(
+                f"scope:{module_path}",
+                lambda scope=scope, module_path=module_path: self._close_root_scope(scope, module_path),
+            )
+            manifest = load_static_plugin_manifest(code_dir)
+            self._import_plugin(module_path, code_dir)
+            plugin = ComposablePlugin.from_module(sys.modules[module_path], manifest)
+            if plugin.name != plugin_id.split("@", 1)[0]:
+                raise ValueError("归档插件身份不一致")
+            projection = decode_config(record["config"])
+            if not isinstance(projection, dict):
+                raise ValueError("归档插件配置必须是对象")
+            generation = PluginGeneration(
+                plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
+                source_revision=revision, config_revision=cast(str, record["config_revision"]),
+                plugin_dir=code_dir if source is None else source.plugin_dir,
+                data_dir=data_dir, config_projection=cast(dict[str, object], projection),
+                instance=plugin, scope=scope,
+                static_manifest=manifest,
+                source_type=cast(Literal["builtin", "installed"], record["source_type"]),
+                archive_ref=ref,
+                reload_tx_id=None,
+                validation_workspace=workspace if workspace != self._workspace else None,
+                state="prepared",
+            )
+            generations[plugin_id] = generation
+            if validation_host is None:
+                self._building_roots[root] = tuple(generations.values())
+            else:
+                validation_host.generations = tuple(generations.values())
+        return generations
 
-            yield generations
-        finally:
-            for module_path in modules:
-                self._remove_module_tree(module_path)
-
-    def _read_existing_session_compaction(self, session_key: str):
-        """读取同一 Session 的消息与 active compaction 语义。"""
-
-        session_manager = self._session_manager
-        if session_manager is None:
-            raise RuntimeError("Session Read Service 缺少 SessionManager")
-        session = session_manager.get_existing(session_key)
-        compaction = session_manager.control_store.get_active_compaction(session_key)
-        return session, compaction
+    async def _close_root_scope(self, scope: PluginScope, module_path: str) -> None:
+        """Root 只在 Scope 关闭成功后释放句柄，失败时继续持有依赖。"""
+        failures = await scope.aclose()
+        self._cleanup_failures.extend(failures)
+        if failures:
+            raise RuntimeError(
+                f"Root scope cleanup 未完成，必须显式 retry: {module_path}: "
+                + "; ".join(f"{item.resource}: {item.error}" for item in failures)
+            )
 
     async def _resolve_composition_root(
         self,
         generations: dict[str, PluginGeneration],
         *,
-        allow_pending: bool = False,
         candidate_owner: PluginGeneration | None = None,
-        force_fresh: bool = False,
-    ) -> tuple[CompositionSnapshotRoot | None, bool]:
-        """复用 stable Root，或为 candidate 挂载一个增量拓扑。"""
+        components: tuple[str, ...] | None = None,
+        validation_host: ValidationHost | None = None,
+    ) -> CompositionRoot:
+        """同一归档组合在每个环境重新实例化，返回实际挂载的 generation 表。"""
 
-        # 1. 只有 stable-to-stable 的纯 payload 变化可以复用 Root。
-        ordered = tuple(
-            generation
-            for generation in sorted(
-                generations.values(), key=lambda item: item.plugin_id
-            )
+        sources = dict(sorted(generations.items()))
+        if components is None:
+            components = tuple(self._generation_archive_ref(item) for item in sources.values())
+        root = CompositionRoot(
+            "plugins:" + secrets.token_hex(16),
+            candidate_incident_limit=1024 if candidate_owner is not None else None,
         )
-        current = self.current_snapshot
-        current_ordered = (
-            tuple(
-                generation
-                for generation in sorted(
-                    current.generations.values(), key=lambda item: item.plugin_id
-                )
-            )
-            if current is not None
-            else ()
+        if validation_host is None:
+            self._building_roots[root] = ()
+        else:
+            validation_host.root = root
+        store = self._snapshot_store if validation_host is None else validation_host.snapshot_store
+        root._bind_runtime_scope_acquirer(
+            lambda: store.acquire_composition_root(root)
         )
-        stable_root = None if current is None else current.composition_root
-        candidate_plugin_ids: frozenset[str] = (
-            frozenset()
-            if candidate_owner is None
-            else self._candidate_dependency_closure(
-                ordered,
-                stable_root,
-                candidate_owner.plugin_id,
-            )
-        )
-        if (
-            candidate_owner is None
-            and not force_fresh
-            and current is not None
-            and len(ordered) == len(current_ordered)
-            and all(
-                left is right
-                for left, right in zip(ordered, current_ordered, strict=True)
-            )
-        ):
-            return current.composition_root, False
-        if not ordered and not self._core_channel_definitions:
-            return None, False
-
-        # 2. stable 拓扑变化创建完整 Root；candidate Root 挂载闭包。
-        identity = "|".join(
-            f"{item.plugin_id}:{item.generation_id}" for item in ordered
-        )
-        if not identity:
-            identity = "core-channels:" + "|".join(
-                f"{item.name}:{item.generation_id}:{item.source_revision}:{item.config_revision}"
-                for item in self._core_channel_definitions
-            )
-        root: CompositionRoot | None = None
+        workspace = self._workspace if validation_host is None else validation_host.workspace
+        if candidate_owner is not None:
+            workspace = self._workspace / "runtime" / "plugin-validation" / secrets.token_hex(16) / "workspace"
         try:
-            while True:
-                mount_order = (
-                    ordered
-                    if candidate_owner is None
-                    else tuple(
-                        item
-                        for item in ordered
-                        if item.plugin_id in candidate_plugin_ids
-                    )
-                )
-                root = CompositionRoot(
-                    "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16],
-                    candidate_incident_limit=(
-                        1024 if candidate_owner is not None else None
-                    ),
-                )
-                root._bind_runtime_scope_acquirer(
-                    lambda root=root: self._snapshot_store.acquire_composition_root(root)
-                )
-                await self._provide_composition_services(
-                    root, mount_order, candidate=candidate_owner is not None,
-                )
-                if candidate_owner is None:
-                    for item in ordered:
-                        await self._mount_generation_composition(root, item)
-                    resolved_root: CompositionSnapshotRoot = root
-                else:
-                    await self._mount_candidate_composition(
-                        root,
-                        mount_order,
-                        candidate_owner=candidate_owner,
-                    )
-                    if stable_root is None and len(generations) == 1:
-                        resolved_root = root
-                    elif isinstance(stable_root, CompositionRoot):
-                        additional = self._candidate_composition_frontier(
-                            root,
-                            stable_root,
-                            generations,
-                            candidate_plugin_ids,
-                        )
-                        if additional:
-                            await root.dispose()
-                            candidate_plugin_ids = self._candidate_dependency_closure(
-                                ordered,
-                                stable_root,
-                                candidate_owner.plugin_id,
-                                seed_plugin_ids=(
-                                    candidate_plugin_ids | additional
-                                ),
-                            )
-                            continue
-                        resolved_root = CompositionOverlay(
-                            stable_root,
-                            root,
-                            plugin_ids=frozenset(generations),
-                            replaced_plugin_ids=candidate_plugin_ids,
-                        )
-                    else:
-                        raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
-                break
-            receipt = resolved_root.receipt()
+            actual = self._archived_generations(
+                components, root, workspace=workspace, sources=sources, validation_host=validation_host,
+            )
+            generations.clear()
+            generations.update(actual)
+            ordered = tuple(actual.values())
+            # 数据初始化由实际插件完成；每个实例只获得自己环境的数据目录。
+            for item in ordered:
+                ensure_workspace_plugin_data_dir(item.data_dir, workspace)
+            await self._provide_composition_services(
+                root, ordered, candidate=candidate_owner is not None, validation_host=validation_host,
+            )
+            for item in ordered:
+                await self._mount_generation_composition(root, item)
+            receipt = root.receipt()
             if not receipt.ready:
-                missing_services = tuple(
-                    sorted(
-                        {
-                            service
-                            for fiber in receipt.fibers
-                            if fiber.name in receipt.required_pending
-                            for service in fiber.missing_services
-                        }
-                    )
-                )
-                if (
-                    allow_pending
-                    and receipt.required_pending
-                    and all(
-                        fiber.state == FiberState.PENDING
-                        for fiber in receipt.fibers
-                        if fiber.name in receipt.required_pending
-                    )
-                    and not receipt.required_degraded
-                    and not receipt.incident_overflowed
-                    and not receipt.external_effects
-                ):
-                    self._composition_pending = missing_services
-                    await root.dispose()
-                    return None, False
                 raise RuntimeError(
                     "v3 插件组合拓扑未就绪: "
                     f"required_pending={receipt.required_pending}, "
-                    f"missing_services={missing_services}, "
                     f"required_degraded={receipt.required_degraded}, "
-                    f"incidents={receipt.incidents}, "
-                    f"incident_overflowed={receipt.incident_overflowed}, "
-                    f"external_effects={receipt.external_effects}"
+                    f"incidents={receipt.incidents}"
                 )
-            self._composition_pending = ()
-            sealing_result = await resolved_root.context.serial(
-                SNAPSHOT_SEALING,
-                SnapshotSealing(),
-            )
-            if sealing_result is not None:
+            result = await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
+            if result is not None:
                 raise CompositionError(
                     "SNAPSHOT_SEALING_BAIL_NOT_ALLOWED",
                     "snapshot.sealing 接入点不接受 Bail",
                 )
-        except BaseException:
-            if root is not None:
-                await root.dispose()
+        except BaseException as error:
+            # 验证构建从分配 Root 起就归 host；由外层同一次失败路径清理。
+            if validation_host is None:
+                await self._discard_building_root(root, error)
             raise
-        return resolved_root, True
+        return root
 
-    async def _provide_root_registries(
-        self, root: CompositionRoot, mount_order: tuple[PluginGeneration, ...],
-        *, resource_mode: Literal["candidate", "formal"] = "formal",
+    @staticmethod
+    def _generation_archive_ref(generation: PluginGeneration) -> str:
+        if generation.archive_ref is None:
+            raise RuntimeError(f"插件缺少固定归档: {generation.plugin_id}")
+        return generation.archive_ref
+
+    def _building_root_uses(self, generation: PluginGeneration) -> bool:
+        return any(
+            item is generation
+            for generations in self._building_roots.values()
+            for item in generations
+        )
+
+    async def _close_building_root(self, root: CompositionRoot) -> None:
+        """关闭成功才解除构建 owner，调用者取消仍等待真实清理结束。"""
+
+        async def close() -> None:
+            await root.dispose()
+            # Root.dispose 自己合并并发关闭；各等待者确认同一成功结果。
+            self._building_roots.pop(root, None)
+
+        try:
+            _, cancelled = await _complete_critical(close())
+        except BaseException as error:
+            _ = self._pause_source_admission()
+            operation = current_operation.get()
+            if operation is not None and operation.revoked and isinstance(error, Exception):
+                raise BaseExceptionGroup(
+                    "Root 清理期间调用者取消且清理失败",
+                    [asyncio.CancelledError(), error],
+                ) from None
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _discard_building_root(
+        self, root: CompositionRoot, error: BaseException,
     ) -> None:
-        """注册表只属于当前 Root，不接入正式执行 owner。"""
-        _ = await root.context.provide(COMMANDS, PluginCommands())
-        if any(
-            CHANNELS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
+        """异常回退只尝试一次；Root 已在关闭时保留原句柄供显式重试。"""
+
+        # 1. Fiber 挂载回退或 Root 关闭已经失败时，不重放同一次清理。
+        if root.root_fiber.state == FiberState.UNLOADING or any(
+            fiber.state == FiberState.UNLOADING for fiber in root.receipt().fibers
         ):
-            _ = await root.context.provide(
-                CHANNELS,
-                PluginChannels(root.instance_token),
-            )
-        if any(
-            MCP_SERVERS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                MCP_SERVERS,
-                PluginMcpServers(
-                    root.instance_token,
-                    lambda snapshot, name, digest: self._composition_generation_host.open_mcp(
-                        snapshot, name, expected_catalog_digest=digest, mode=resource_mode,
-                    ),
-                ),
-            )
-        if any(
-            MANAGED_PROCESSES in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                MANAGED_PROCESSES,
-                PluginManagedProcesses(root.instance_token),
-            )
-        if any(
-            WORKLOADS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                WORKLOADS,
-                PluginWorkloads(root.instance_token),
-            )
-        if any(
-            TOOL_CATALOG in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                TOOL_CATALOG,
-                PluginTools(root.instance_token),
-            )
-        if any(
-            UI_SLOTS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(UI_SLOTS, PluginUiSlots())
+            _ = self._pause_source_admission()
+            raise error
+        # 2. 首次回收保留初始化与清理的两份真实错误。
+        try:
+            await self._close_building_root(root)
+        except BaseException as cleanup_error:
+            if root not in self._building_roots and isinstance(cleanup_error, asyncio.CancelledError):
+                if isinstance(error, asyncio.CancelledError):
+                    raise error
+                raise BaseExceptionGroup(
+                    "Root 构建失败且回收期间取消", [error, cleanup_error],
+                ) from None
+            raise BaseExceptionGroup(
+                "Root 构建和清理均失败", [error, cleanup_error],
+            ) from None
 
     async def _provide_composition_services(
         self,
@@ -5730,38 +3067,102 @@ class PluginManager:
         mount_order: tuple[PluginGeneration, ...],
         *,
         candidate: bool,
-        archive: bool = False,
+        validation_host: ValidationHost | None = None,
     ) -> None:
-        """向独立 Root 提供宿主能力；归档只取得明确声明的窄端口。"""
+        """向当前 stable 或 candidate Root 提供宿主能力。"""
 
-        await self._provide_root_registries(
-            root, mount_order, resource_mode="candidate" if candidate or self._validation_only else "formal",
-        )
+        host = validation_host
+        isolated = host is not None
+        store = self._snapshot_store if host is None else host.snapshot_store
+        boot_id = self._host_boot_id if host is None else host.identity
+        archive = self._archive if host is None else host.archive
+        message_log = self._message_log if host is None else host.messages
+        tasks = self._plugin_tasks if host is None else host.tasks
+        processes = self._plugin_processes if host is None else host.processes
+        channel_store = self._channel_attachment_store if host is None else host.attachments
+        artifact_read = self._artifact_read if host is None else host.artifact_read
+        artifact_import = self._artifact_import if host is None else host.artifact_import
+        restart_gate = self._restart_gate if host is None else host.restart_gate
+        control_frames = self._control_frames if host is None else host.control_frames
+        workspace_id = self._workload_workspace_id if host is None else host.workspace_id
+        interaction_owner = self._interaction_undo if host is None else None
+
+        await root.context.provide(SOURCE_ADMISSION, SourceAdmission(
+            root.context, store, boot_id=boot_id,
+            candidate=candidate or isolated,
+        ))
+        # 隔离装配保留能力形状，但所有 I/O 都显式拒绝，不取得正式对象。
+        custody = None if candidate else (self._input_custody if host is None else host.input_custody)
+        await root.context.provide(INPUT_CUSTODY,
+            unavailable_input_custody() if custody is None else custody)
+        if candidate:
+            identity = ChannelIdentity(unavailable, unavailable, unavailable)
+        elif host is not None:
+            identity = host.channel_identity
+        elif self._channel_identities is None:
+            identity = ChannelIdentity(unavailable, unavailable, unavailable)
+        else:
+            identity = ChannelIdentity(
+                self._resolve_channel_identity, self._remember_channel_identity,
+                self._rollback_channel_identity,
+            )
+        await root.context.provide(CHANNEL_IDENTITY, identity)
+        attachments = None if candidate else channel_store
+        await root.context.provide(CHANNEL_ATTACHMENT_IMPORT, ChannelAttachmentImport(
+            unavailable if attachments is None else attachments.import_bytes,
+        ))
+        await root.context.provide(CHANNEL_ATTACHMENT_READ, ChannelAttachmentRead(
+            unavailable if attachments is None else attachments.resolve_refs,
+            unavailable if attachments is None else attachments.acquire,
+        ))
+        execution = ExecutionAccess(root.instance_token, {
+            item.plugin_id: CodeOwner(item.generation_id, item.code_dir,
+                lambda command, cwd, item=item: self._resolve_runtime_command(item, command, cwd, archive=archive))
+            for item in mount_order
+        }, candidate=candidate or isolated)
+        await root.context.provide(EXECUTION, execution)
+        await root.context.provide(WORKLOAD_CONTROLLER,
+            ControllerAccess(execution, self._workload_controller, workspace_id))
         requested = {
             key
             for generation in mount_order
             for key in cast(ComposablePlugin, generation.instance).inject
         }
+        if RUNTIME_CATALOG in requested:
+            def read_runtime_catalog() -> dict[str, object]:
+                """Read neutral runtime facts from the exact task-bound snapshot."""
+
+                snapshot = get_current_runtime_snapshot()
+                if snapshot is None:
+                    raise RuntimeError("读取 runtime catalog 需要当前任务的 runtime scope")
+                current = snapshot.composition_root
+                if (
+                    current is None
+                    or current.context.require(RUNTIME_CATALOG) is not read_runtime_catalog
+                ):
+                    raise RuntimeError("runtime catalog 不属于当前 runtime scope")
+                return build_runtime_catalog(snapshot)
+
+            _ = await root.context.provide(RUNTIME_CATALOG, read_runtime_catalog)
         if CREDENTIALS in requested:
-            clients = CredentialClients(None if candidate or self._validation_only else {
+            clients = CredentialClients(None if candidate or isolated else {
                 generation.plugin_id: CoreProviderClientFactory(
-                    generation.data_dir / "config.local.toml",
-                    generation.static_manifest.credential_paths, generation.config_revision,
+                    generation.data_dir,
+                    generation.config_projection, generation.config_revision,
                 )
                 for generation in mount_order
-                if generation.static_manifest is not None and generation.static_manifest.credential_paths
             })
             _ = await root.context.provide(CREDENTIALS, clients)
             root._defer_internal_cleanup("credential_clients", clients.aclose)  # pyright: ignore[reportPrivateUsage]
         if PLUGIN_UPDATES in requested:
             _ = await root.context.provide(
-                PLUGIN_UPDATES, PluginUpdates(None if candidate or self._validation_only else self),
+                PLUGIN_UPDATES, PluginUpdates(None if candidate or isolated else self),
             )
         message_services: set[ServiceKey[object]] = {
             MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION, BINDINGS
         }
         if RESTART_GATE in requested:
-            gate = self._restart_gate
+            gate = restart_gate
             if candidate:
                 gate = RestartGate(
                     boot_id="candidate",
@@ -5771,50 +3172,43 @@ class PluginManager:
             elif gate is None:
                 # 直接使用 PluginManager 的测试/嵌入式运行没有 Supervisor；仍提供
                 # 一个允许正常 work 的 unmanaged gate，不伪造可提交的重启通道。
-                gate = RestartGate(boot_id="unmanaged", supervised=False)
+                gate = RestartGate(boot_id=boot_id, supervised=False)
                 self._restart_gate = gate
             _ = await root.context.provide(RESTART_GATE, gate)
         if CONTROL_FRAMES in requested:
             # 候选与独立验证只读取副本；它们不能取得正式连接的发送 owner。
-            isolated = candidate
-            frames = FrameBook() if candidate else self._control_frames
+            frames = FrameBook() if candidate else control_frames
             _ = await root.context.provide(CONTROL_FRAMES, frames)
-            if isolated:
+            if candidate:
                 root._defer_internal_cleanup("control_frames.close", frames.close)  # pyright: ignore[reportPrivateUsage]
         # 正式能力归宿主所有，不计入历史 provider 的依赖拓扑。
-        log = None if candidate else self._message_log
-        if requested & message_services and self._message_log is None:
+        log = None if candidate else message_log
+        if requested & message_services and message_log is None:
             raise RuntimeError("消息能力需要 bootstrap 提供已迁移的 MessageLog")
-        if self._message_log is not None:
-            if not archive or MESSAGE_CATALOG in requested:
-                _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
-            if not archive or MESSAGE_EMBEDDINGS in requested:
-                _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
-            if not archive or MESSAGE_WRITERS in requested:
-                _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
-            if not archive or OWNER_STATE in requested:
-                _ = await root.context.provide(OWNER_STATE, OwnerState(log))
-            if not archive or SESSION_ADMISSION in requested:
-                _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
-            if not archive or BINDINGS in requested:
-                _ = await root.context.provide(
-                    BINDINGS, Bindings(log, self._archive, self.open_binding)
-                )
-        if TASKS in requested or not archive and self._message_log is not None:
+        if message_log is not None:
+            _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
+            _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
+            _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
+            _ = await root.context.provide(OWNER_STATE, OwnerState(log))
+            _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
             _ = await root.context.provide(
-                TASKS, PluginTasks(formal=False) if candidate else self._plugin_tasks
+                BINDINGS, Bindings(log, archive, root)
+            )
+        if TASKS in requested or message_log is not None:
+            _ = await root.context.provide(
+                TASKS, PluginTasks(formal=False) if candidate else tasks
             )
         if PROCESSES in requested:
             _ = await root.context.provide(
-                PROCESSES, PluginProcesses(formal=False) if candidate else self._plugin_processes
+                PROCESSES, PluginProcesses(formal=False) if candidate else processes
             )
-        if (not archive or ARTIFACT_READ in requested) and self._artifact_read is not None:
+        if artifact_read is not None:
             _ = await root.context.provide(
-                ARTIFACT_READ, ArtifactRead(None) if candidate else self._artifact_read
+                ARTIFACT_READ, ArtifactRead(None) if candidate else artifact_read
             )
-        if ARTIFACT_IMPORT in requested and self._artifact_import is not None:
+        if ARTIFACT_IMPORT in requested and artifact_import is not None:
             _ = await root.context.provide(
-                ARTIFACT_IMPORT, ArtifactImport(None) if candidate else self._artifact_import
+                ARTIFACT_IMPORT, ArtifactImport(None) if candidate else artifact_import
             )
         if TIMERS in requested:
             timers = (
@@ -5822,241 +3216,59 @@ class PluginManager:
                 if not candidate else PluginTimers.candidate_validation()
             )
             _ = await root.context.provide(TIMERS, timers)
-        if archive:
-            return
-        if self._session_manager is not None and any(
-            SESSION_READ in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            session_read = (
-                SessionReadService(self._read_existing_session_compaction)
-                if not candidate
-                else SessionReadService.candidate_validation()
-            )
-            _ = await root.context.provide(SESSION_READ, session_read)
-        if self._session_manager is not None and any(
-            SESSION_COMPACTION_STORAGE
-            in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            compaction_storage = (
-                SessionCompactionStorage(self._session_manager)
-                if not candidate
-                else SessionCompactionStorage.candidate_validation()
-            )
+
+        # Client UI and message display are neutral snapshot projections.  The
+        # host publishes them under stable names; each client request resolves
+        # the provider again inside its exact RuntimeSnapshot scope.
+        host_ui_requested = {
+            key.name
+            for key in requested
+            if key.name in {
+                "core.message_display.v1",
+                "core.mobile_ui.v1",
+            }
+        }
+        if "core.message_display.v1" in host_ui_requested:
+            from agent.plugins.snapshot import project_message_rows
+
+            async def display_message_page(
+                page: object,
+                *,
+                display_only: bool,
+            ) -> list[dict[str, object]]:
+                return await project_message_rows(
+                    store,
+                    page,
+                    display_only=display_only,
+                )
+
             _ = await root.context.provide(
-                SESSION_COMPACTION_STORAGE,
-                compaction_storage,
+                ServiceKey[object]("core.message_display.v1"),
+                display_message_page,
             )
-        if any(
-            DELIVERIES in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            deliveries = (
-                PluginDeliveries(self._delivery_sender)
-                if not candidate
-                else PluginDeliveries.candidate_validation()
+        if "core.mobile_ui.v1" in host_ui_requested:
+            from agent.plugins.mobile_ui import PluginMobileUiProvider
+
+            mobile_ui = PluginMobileUiProvider(store)
+            _ = await root.context.provide(
+                ServiceKey[object]("core.mobile_ui.v1"),
+                mobile_ui,
             )
-            _ = await root.context.provide(DELIVERIES, deliveries)
-        if any(
-            DURABLE_DELIVERIES in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            durable_deliveries = (
-                self._formal_durable_deliveries()
-                if not candidate
-                else PluginDurableDeliveries.candidate_validation()
+            root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
+                "mobile_ui_provider.close",
+                mobile_ui.aclose,
             )
-            _ = await root.context.provide(DURABLE_DELIVERIES, durable_deliveries)
         if any(
             INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
         ):
-            if not candidate and self._interaction_undo is None:
-                raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
-            interaction_undo = (
-                InteractionUndoService(self._interaction_undo.undo_latest)
-                if not candidate and self._interaction_undo is not None
-                else InteractionUndoService.candidate_validation()
-            )
+            if candidate or isolated:
+                interaction_undo = InteractionUndoService.candidate_validation()
+            else:
+                if interaction_owner is None:
+                    raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
+                interaction_undo = InteractionUndoService(interaction_owner.undo_latest)
             _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
-
-    def _candidate_dependency_closure(
-        self,
-        ordered: tuple[PluginGeneration, ...],
-        stable_root: CompositionSnapshotRoot | None,
-        candidate_plugin_id: str,
-        *,
-        seed_plugin_ids: frozenset[str] | None = None,
-    ) -> frozenset[str]:
-        """Find the explicit Service component that must rebuild together."""
-
-        if stable_root is None:
-            return frozenset({candidate_plugin_id})
-        if not isinstance(stable_root, CompositionRoot):
-            raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
-        owners_by_name = {
-            key.name: owner
-            for key, owner in stable_root.plugin_service_owners().items()
-        }
-        generations = {item.plugin_id: item for item in ordered}
-        stable_dependencies = stable_root.plugin_dependencies()
-        adjacency: dict[str, set[str]] = {
-            plugin_id: set() for plugin_id in generations
-        }
-        for plugin_id, generation in generations.items():
-            plugin = cast(ComposablePlugin, generation.instance)
-            dependency_names = {
-                key.name
-                for key in (
-                    plugin.inject
-                    if plugin_id == candidate_plugin_id
-                    else stable_dependencies.get(plugin_id, ())
-                )
-            }
-            for dependency_name in dependency_names:
-                owner = owners_by_name.get(dependency_name)
-                if owner is None or owner == plugin_id or owner not in generations:
-                    continue
-                adjacency[plugin_id].add(owner)
-                adjacency[owner].add(plugin_id)
-        selected = set(seed_plugin_ids or {candidate_plugin_id})
-        selected.add(candidate_plugin_id)
-        pending: list[str] = [candidate_plugin_id]
-        pending.extend(item for item in selected if item != candidate_plugin_id)
-        while pending:
-            plugin_id = pending.pop()
-            for neighbor in adjacency[plugin_id]:
-                if neighbor in selected:
-                    continue
-                selected.add(neighbor)
-                pending.append(neighbor)
-        return frozenset(selected)
-
-    def _candidate_composition_frontier(
-        self,
-        candidate: CompositionRoot,
-        stable: CompositionRoot,
-        generations: Mapping[str, PluginGeneration],
-        selected_plugin_ids: frozenset[str],
-    ) -> frozenset[str]:
-        """找出真实候选组合需要的 stable owner。"""
-
-        available = frozenset(generations)
-        additional: set[str] = set()
-
-        # 1. 候选声明可能新增 stable Root 没有的 provider 或依赖，先看实际 Root。
-        stable_services = stable.plugin_service_owners()
-        candidate_services = candidate.plugin_service_owners()
-        stable_dependencies = stable.plugin_dependencies()
-        for owner, dependencies in candidate.plugin_dependencies().items():
-            _ = owner
-            for dependency in dependencies:
-                provider = candidate_services.get(dependency)
-                if provider is None:
-                    provider = stable_services.get(dependency)
-                if provider in available and provider not in selected_plugin_ids:
-                    additional.add(provider)
-        for service in candidate_services:
-            if service in stable_services:
-                continue
-            for owner, dependencies in stable_dependencies.items():
-                if owner in available and owner not in selected_plugin_ids:
-                    if service in dependencies:
-                        additional.add(owner)
-
-        # 2. 有序事件属于一个 Root；候选触及时，把 stable participant 一并纳入重建。
-        candidate_events = candidate._events.registration_event_groups()  # pyright: ignore[reportPrivateUsage]
-        stable_events = stable._events.registration_event_groups()  # pyright: ignore[reportPrivateUsage]
-        candidate_names = {
-            key.name
-            for key, owners in candidate_events
-            if owners
-        }
-        for key, owners in stable_events:
-            if key.name not in candidate_names:
-                continue
-            additional.update(
-                owner
-                for owner in owners
-                if owner in available and owner not in selected_plugin_ids
-            )
-        return frozenset(additional)
-
-    def _formal_durable_deliveries(self) -> PluginDurableDeliveries:
-        """Build one Root-local port over the process-owned delivery ledger."""
-
-        sender = self._durable_delivery_sender
-        session_manager = self._session_manager
-        projector: DurableProjector | None = None
-        if session_manager is not None:
-
-            async def project(request: DurableDeliveryRequest) -> str:
-                return await session_manager.append_durable_delivery(
-                    session_key=request.projection_session_id,
-                    content=request.body,
-                    delivery_id=request.logical_delivery_id,
-                    control_turn_id=request.accepted_turn.turn_id,
-                    metadata=request.metadata,
-                )
-
-            projector = project
-
-        service = PluginDurableDeliveries(
-            DurableDeliveryStore(
-                self._workspace / "runtime" / "deliveries" / "settlements.sqlite"
-            ),
-            sender,
-            projector,
-            recover_started=not self._durable_delivery_recovered,
-        )
-        self._durable_delivery_recovered = True
-        return service
-
-    def _preflight_durable_delivery_targets(self, snapshot: RuntimeSnapshot) -> None:
-        """Fence forward-completable rows whose target vanished from candidate."""
-
-        store = DurableDeliveryStore(
-            self._workspace / "runtime" / "deliveries" / "settlements.sqlite",
-            read_only=True,
-        )
-        forward_targets = store.forward_targets()
-        if not forward_targets:
-            return
-        topology = snapshot.composition_topology
-        if topology is None:
-            raise RuntimeError("durable delivery candidate 缺少 composition topology")
-        missing = tuple(sorted(forward_targets.difference(topology.services)))
-        if missing:
-            raise RuntimeError(
-                "durable delivery forward target service 不可解析: "
-                + ", ".join(missing)
-            )
-
-    def _composition_service_view(self) -> ServiceView:
-        """冻结静态 v3 声明可读取的 Core service 输入。"""
-
-        values: dict[Any, object] = {}
-        values[TIMERS] = PluginTimers(AsyncioOneShotTimer())
-        values[DELIVERIES] = (
-            PluginDeliveries(self._delivery_sender)
-            if self._delivery_sender is not None
-            else PluginDeliveries.candidate_validation()
-        )
-        values[DURABLE_DELIVERIES] = PluginDurableDeliveries.candidate_validation()
-        return ServiceView.freeze(values)
-
-    @staticmethod
-    def _static_active_generations(
-        generations: list[PluginGeneration],
-    ) -> list[PluginGeneration]:
-        """用 snapshot 相同的 active 合同过滤静态 catalog。"""
-
-        return [
-            generation
-            for generation in generations
-            if cast(ComposablePlugin, generation.instance).static_active
-        ]
 
     async def _mount_generation_composition(
         self,
@@ -6066,487 +3278,85 @@ class PluginManager:
         """用 generation 自己的正式 runtime 挂载一个 v3 插件。"""
 
         plugin = cast(ComposablePlugin, generation.instance)
+        workspace = generation.validation_workspace or self._workspace
         for name in plugin.workspace_roots:
-            _ = resolve_declared_workspace_root(self._workspace, name)
+            _ = resolve_declared_workspace_root(workspace, name)
         for name in plugin.workspace_files:
-            _ = resolve_declared_workspace_file(self._workspace, name)
+            _ = resolve_declared_workspace_file(workspace, name)
         _ = await root._mount_module(  # pyright: ignore[reportPrivateUsage]
             plugin.apply,
             name=generation.plugin_id,
             inject=plugin.inject,
             plugin_module=plugin.module,
-            static_active=plugin.static_active,
             runtime=PluginRuntime(
                 plugin_id=generation.plugin_id,
                 generation_id=generation.generation_id,
                 plugin_dir=generation.code_dir,
                 data_dir=generation.data_dir,
-                workspace=self._workspace,
-                config=generation.config,
+                workspace=workspace,
+                config=copy.deepcopy(generation.config_projection),
                 workspace_roots=plugin.workspace_roots,
                 workspace_files=plugin.workspace_files,
             ),
         )
 
-    async def _mount_candidate_composition(
-        self,
-        root: CompositionRoot,
-        selected: tuple[PluginGeneration, ...],
-        *,
-        candidate_owner: PluginGeneration,
-    ) -> None:
-        """挂载候选插件及其 Service、事件闭包。"""
 
-        validation_workspace = candidate_owner.validation_workspace
-        if validation_workspace is None:
-            raise RuntimeError(f"候选缺少隔离 workspace: {candidate_owner.plugin_id}")
-        attempt_root = (
-            validation_workspace.parent / "composition" / secrets.token_hex(8)
-        )
-        attempt_workspace = attempt_root / "workspace"
-        root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
-            "candidate_attempt_data",
-            lambda: _copy_in_thread(_remove_validation_data_dir, attempt_root),
-        )
-        clones: list[tuple[PluginGeneration, ComposablePlugin, Path, object]] = []
-        for generation in selected:
-            clone, module_path, data_dir, config = await self._clone_candidate_composable(
-                generation,
-                candidate_owner=candidate_owner,
-                attempt_workspace=attempt_workspace,
-            )
-            root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
-                f"candidate_module:{module_path}",
-                lambda module_path=module_path: self._remove_module_tree(module_path),
-            )
-            original = cast(ComposablePlugin, generation.instance)
-            if clone.workspace_roots != original.workspace_roots:
-                raise RuntimeError(
-                    "candidate workspace_roots 与 generation 冻结声明不一致: "
-                    f"{generation.plugin_id}"
-                )
-            if clone.workspace_files != original.workspace_files:
-                raise RuntimeError(
-                    "candidate workspace_files 与 generation 冻结声明不一致: "
-                    f"{generation.plugin_id}"
-                )
-            clones.append((generation, clone, data_dir, config))
-        await self._project_candidate_workspace_roots(
-            tuple(item[1] for item in clones),
-            attempt_workspace,
-        )
-        await self._project_candidate_workspace_files(
-            tuple(item[1] for item in clones),
-            attempt_workspace,
-        )
-        for generation, clone, data_dir, config in clones:
-            _ = await root._mount_module(  # pyright: ignore[reportPrivateUsage]
-                clone.apply,
-                name=generation.plugin_id,
-                inject=clone.inject,
-                plugin_module=clone.module,
-                static_active=clone.static_active,
-                runtime=PluginRuntime(
-                    plugin_id=generation.plugin_id,
-                    generation_id=generation.generation_id,
-                    plugin_dir=generation.code_dir,
-                    data_dir=data_dir,
-                    workspace=attempt_workspace,
-                    config=config,
-                    workspace_roots=clone.workspace_roots,
-                    workspace_files=clone.workspace_files,
-                ),
-            )
 
-    async def _project_candidate_workspace_roots(
-        self,
-        plugins: tuple[ComposablePlugin, ...],
-        attempt_workspace: Path,
-    ) -> None:
-        """把声明式共享目录复制到一次 candidate attempt。"""
-
-        # 1. 全部 generation 由同一个 Manager workspace 发布。
-        names: set[str] = set()
-        for plugin in plugins:
-            names.update(plugin.workspace_roots)
-
-        # 2. 缺失目录保持缺失；已有目录获得独立副本。
-        for name in sorted(names):
-            source = resolve_declared_workspace_root(self._workspace, name)
-            if not source.exists():
-                continue
-            _ = await _copy_in_thread(_copy_validation_tree, source, attempt_workspace / name, ())
-
-    async def _project_candidate_workspace_files(
-        self,
-        plugins: tuple[ComposablePlugin, ...],
-        attempt_workspace: Path,
-    ) -> None:
-        """Copy declared product files into the isolated candidate workspace."""
-
-        names = {name for plugin in plugins for name in plugin.workspace_files}
-        for name in sorted(names):
-            source = resolve_declared_workspace_file(self._workspace, name)
-            if not source.exists():
-                continue
-            target = attempt_workspace / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if _is_sqlite_database(source):
-                await _copy_in_thread(_copy_sqlite_snapshot, source, target)
-            else:
-                _ = await _copy_in_thread(shutil.copy2, source, target)
-
-    async def _clone_candidate_composable(
-        self,
-        generation: PluginGeneration,
-        *,
-        candidate_owner: PluginGeneration,
-        attempt_workspace: Path,
-    ) -> tuple[ComposablePlugin, str, Path, object]:
-        """重新导入一个 stable v3 插件并绑定 candidate 临时数据。"""
-
-        if generation.archive_ref is None:
-            raise RuntimeError(f"插件缺少加载时归档: {generation.plugin_id}")
-        record = self._archive.read_descriptor(generation.archive_ref)
-        plugin_dir = self._archive.open(cast(str, record["code"]))
-        data_dir = attempt_workspace / "plugin-data" / generation.data_dir.name
-        _ = data_dir.parent.mkdir(parents=True, exist_ok=True)
-        inventory = await _copy_in_thread(_copy_validation_tree,
-            generation.data_dir,
-            data_dir,
-            _candidate_data_exclude_paths(generation.static_manifest),
-        )
-        if generation is candidate_owner:
-            generation.validation_data_inventory = inventory
-        module_path = (
-            f"{generation.module_path}__candidate_"
-            f"{candidate_owner.generation_id.replace(':', '_')}_"
-            f"{secrets.token_hex(4)}"
-        )
-        entrypoint = generation.entrypoint
-        self._import_plugin(module_path, plugin_dir / entrypoint)
-        try:
-            module = sys.modules[module_path]
-            if generation.static_manifest is not None:
-                validate_module_exports(
-                    generation.static_manifest,
-                    module,
-                    plugin_root=plugin_dir,
-                )
-            clone = ComposablePlugin.from_module(module)
-            credential_paths = (
-                generation.static_manifest.all_credential_paths
-                if generation.static_manifest is not None
-                else ()
-            )
-            _validate_credential_schema(
-                cast(type[BaseModel] | None, clone.ConfigModel),
-                credential_paths=credential_paths,
-            )
-            config = _validate_plugin_config_projection(
-                generation.config_projection,
-                cast(type[BaseModel] | None, clone.ConfigModel),
-            )
-            clone.bind_archived_active(cast(bool, record["static_active"]))
-            return clone, module_path, data_dir, config
-        except BaseException:
-            self._remove_module_tree(module_path)
-            raise
 
     def _resolve_runtime_command(
         self,
         generation: PluginGeneration,
-        kind: str,
-        name: str,
+        command: tuple[str, ...],
+        cwd: str,
+        *,
+        archive: PluginArchive | None = None,
     ) -> tuple[str, ...]:
         """仅在实际打开目标前校验其环境，不阻挡同组件的纯读取能力。"""
         manifest = generation.static_manifest
-        if manifest is None:
-            raise RuntimeError("外部 runtime 需要静态 manifest")
-        targets: dict[
-            str, tuple[StaticMcpDeclaration | StaticManagedProcessDeclaration, ...]
-        ] = {
-            "mcp": manifest.mcp_servers,
-            "process": manifest.managed_processes,
-        }
-        declaration = next(item for item in targets[kind] if item.name == name)
+        runtimes = () if manifest is None else manifest.python
+        runtime_root = command_python_runtime(generation.code_dir, command, cwd, runtimes)
         environment = None
-        if declaration.python_runtime is not None:
+        if runtime_root is not None:
             if generation.archive_ref is None:
                 raise RuntimeError("外部 runtime 缺少代码归档")
-            record = self._archive.read_descriptor(generation.archive_ref)
+            record = (self._archive if archive is None else archive).read_descriptor(generation.archive_ref)
             refs = cast(Mapping[str, str], record["python_environments"])
+            if runtime_root not in refs:
+                raise RuntimeError("插件命令缺少固定 Python 环境；请通过安装流程准备")
             runtime = next(
                 item
-                for item in manifest.python
-                if item.runtime_root == declaration.python_runtime
+                for item in runtimes
+                if item.runtime_root == runtime_root
             )
             environment = self._python_environments.open(
                 refs[runtime.runtime_root], generation.code_dir, runtime
             )
-        return materialize_static_command(
-            generation.code_dir, manifest, declaration, environment_root=environment
+        return materialize_command(
+            generation.code_dir, runtimes, command, cwd, environment_root=environment
         )
 
-    async def _start_composition_generation_runtime(
-        self,
-        generation: PluginGeneration,
-        snapshot: RuntimeSnapshot,
-        *,
-        mode: Literal["candidate", "formal"],
-        expected_mcp_catalog_digests: Mapping[str, str] | None = None,
-    ) -> CompositionRuntimeGeneration | None:
-        """Start one exact Root runtime and refresh snapshot Tool routes."""
-
-        if generation.reload_tx_id is not None and self._composition_runtime_declared(
-            snapshot, generation.plugin_id
-        ):
-            boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
-            if boot_id:
-                self._reload_journal.mark_runtime_owner(
-                    generation.reload_tx_id,
-                    boot_id,
-                )
-        self._composition_runtime_generations[generation.generation_id] = generation
-        try:
-            runtime = await self._composition_generation_host.start(
-                generation,
-                snapshot,
-                mode=mode,
-                expected_mcp_catalog_digests=expected_mcp_catalog_digests,
-            )
-        except BaseException:
-            if (
-                self._composition_generation_host.failure(generation.generation_id)
-                is None
-            ):
-                _ = self._composition_runtime_generations.pop(
-                    generation.generation_id,
-                    None,
-                )
-            raise
-        if runtime is None:
-            _ = self._composition_runtime_generations.pop(
-                generation.generation_id,
-                None,
-            )
-        self._refresh_composition_runtime_tools(snapshot)
-        return runtime
-
-    async def _start_snapshot_composition_runtimes(
-        self,
-        snapshot: RuntimeSnapshot,
-        *,
-        candidate: PluginGeneration | None = None,
-        expected_mcp_catalog_digests: Mapping[str, str] | None = None,
-    ) -> None:
-        """Start every managed runtime owned by one formal Root."""
-
-        started: list[PluginGeneration] = []
-        try:
-            for item in snapshot.generations.values():
-                await self._start_composition_generation_runtime(
-                    item,
-                    snapshot,
-                    mode="formal",
-                    expected_mcp_catalog_digests=(
-                        expected_mcp_catalog_digests if item is candidate else None
-                    ),
-                )
-                started.append(item)
-        except BaseException:
-            for item in reversed(started):
-                await self._stop_composition_generation_runtime(item)
-            raise
-
-    async def _stop_snapshot_composition_runtimes(
-        self,
-        snapshot: RuntimeSnapshot,
-    ) -> None:
-        """Stop every managed runtime before its formal Root is disposed."""
-
-        for item in reversed(tuple(snapshot.generations.values())):
-            await self._stop_composition_generation_runtime(item)
-
-    async def _stop_composition_generation_runtime(
-        self,
-        generation: PluginGeneration,
-    ) -> None:
-        """Stop one generation before its exact Root is disposed."""
-
-        await self._composition_generation_host.stop(generation.generation_id)
-        _ = self._composition_runtime_generations.pop(
-            generation.generation_id,
-            None,
-        )
-
-    async def _stop_stable_root(
-        self,
-        generation: PluginGeneration,
-        stable_snapshot: RuntimeSnapshot | None,
-    ) -> None:
-        """Stop and dispose the old formal Root before mounting its replacement."""
-
-        if stable_snapshot is None or stable_snapshot.composition_root is None:
-            return
-        previous = self._active_generations.get(generation.plugin_id)
-        recovery_anchor = previous or next(
-            iter(stable_snapshot.generations.values()),
-            None,
-        )
-        generation.replaced_composition_runtime_generation = recovery_anchor
-        generation.formal_root_stopped = True
-        generation.formal_root_released = False
-
-        # 1. Lifecycle handlers close and join plugin-owned writers.
-        await self._stop_runtime_snapshot(stable_snapshot)
-
-        # 2. Exact managed runtimes and Root effects release every formal owner.
-        await self._stop_snapshot_composition_runtimes(stable_snapshot)
-        await stable_snapshot.composition_root.dispose()
-        generation.formal_root_released = True
-
-    async def _recover_stable_root(
-        self,
-        generation: PluginGeneration,
-        stable_snapshot: RuntimeSnapshot,
-    ) -> None:
-        """Rebuild a stopped stable generation on a fresh formal Root."""
-
-        previous = generation.replaced_composition_runtime_generation
-        if not generation.formal_root_stopped:
-            raise RuntimeError("formal Root recovery 缺少 stopped stable Root")
-
-        # 1. Remove any unpublished new owner before rebuilding stable.
-        candidate_snapshot = generation.runtime_snapshot
-        if candidate_snapshot is not None:
-            await self._stop_runtime_snapshot(candidate_snapshot)
-            await self._stop_snapshot_composition_runtimes(candidate_snapshot)
-        else:
-            await self._stop_composition_generation_runtime(generation)
-        if not generation.formal_root_released:
-            await self._stop_runtime_snapshot(stable_snapshot)
-            await self._stop_snapshot_composition_runtimes(stable_snapshot)
-            old_root = stable_snapshot.composition_root
-            if old_root is not None:
-                await old_root.dispose()
-            generation.formal_root_released = True
-        await self._rebuild_stable_root(previous, stable_snapshot)
-        generation.replaced_composition_runtime_generation = None
-        generation.formal_root_stopped = False
-        generation.formal_root_released = False
-
-    async def _rebuild_stable_root(
-        self,
-        stable: PluginGeneration | None,
-        stable_snapshot: RuntimeSnapshot,
-    ) -> None:
-        """Replace a terminal stable Root with a fresh formal owner."""
-
-        if stable_snapshot is not self.current_snapshot or stable_snapshot.accepting_leases or stable_snapshot.lease_count:
-            raise RuntimeError("重建 Root 前必须关闭并排空 current snapshot")
-        old_root = stable_snapshot.composition_root
-        replacement: RuntimeSnapshot | None = None
-        if old_root is not None:
-            await old_root.dispose()
-        try:
-            # 1. Recompile formal generations without reusing the terminal old Root.
-            if stable is None:
-                composition_root, _ = await self._resolve_composition_root(
-                    {},
-                    force_fresh=True,
-                )
-                replacement = self._snapshot_compiler.compile(
-                    {},
-                    composition_root=composition_root,
-                    core_channel_definitions=self._core_channel_definitions,
-                    require_composition_ready=True,
-                )
-                replacement.tool_registry = self._compile_snapshot_tools(
-                    {},
-                    replacement.plugin_tool_catalog,
-                )
-            else:
-                replacement = await self._compile_generation_snapshot(
-                    stable,
-                    force_fresh_composition=True,
-                )
-            await self._start_snapshot_composition_runtimes(
-                replacement,
-            )
-            # 2. 新资源完成后替换关闭的载荷，在任何 resume 之前准备插件活动。
-            _replace_snapshot_payload(stable_snapshot, replacement)
-            await self._prepare_closed_runtime_snapshot(stable_snapshot)
-        except BaseException:
-            if replacement is not None:
-                await self._stop_snapshot_composition_runtimes(replacement)
-            if replacement is not None:
-                await self._dispose_unreferenced_composition_root(replacement)
-            raise
-
-    async def _restore_replaced_composition_runtime(
-        self,
-        generation: PluginGeneration,
-    ) -> None:
-        """Restore an old stable runtime before reopening its snapshot."""
-
-        previous = generation.replaced_composition_runtime_generation
-        if previous is None:
-            return
-        snapshot = self.current_snapshot
-        if (
-            snapshot is None
-            or snapshot.generations.get(previous.plugin_id) is not previous
-        ):
-            raise RuntimeError("旧 stable runtime snapshot 身份已失效")
-        await self._start_composition_generation_runtime(
-            previous,
-            snapshot,
-            mode="formal",
-        )
-        generation.replaced_composition_runtime_generation = None
-
-    async def _rollback_composition_runtime_replacement(
-        self,
-        generation: PluginGeneration,
-    ) -> None:
-        """Stop an unpublished formal runtime and restore the prior stable owner."""
-
-        await self._stop_composition_generation_runtime(generation)
-        await self._restore_replaced_composition_runtime(generation)
-
-    def _record_composition_runtime_failure(
+    def _record_root_failure(
         self,
         generation: PluginGeneration,
         error: BaseException,
         *,
-        resource: str = "composition-runtime",
+        resource: str = "root",
         formal_effects: tuple[str, ...],
         recovery_target: RecoveryTarget | None = None,
     ) -> None:
         """Persist one executable runtime failure without releasing its owner."""
 
         tx_id = self._ensure_runtime_recovery_transaction(generation)
-        failure = self._composition_generation_host.failure(generation.generation_id)
-        if failure is None:
-            action: RecoveryActionName = (
-                "retry_generation_cleanup"
-                if resource == "runtime-snapshot-drain"
-                else "retry_runtime_recovery"
-            )
-        else:
-            action = failure.action
-        phase: ReloadPhase = (
-            "degraded" if action == "retry_runtime_recovery" else "cleanup_failed"
+        self._reload_journal.annotate(tx_id, {
+            "event": "runtime_failure_owner",
+            "runtime_generation_id": generation.generation_id,
+        })
+        action: RecoveryActionName = (
+            "retry_generation_cleanup" if resource == "runtime-snapshot-drain" else "retry_runtime_recovery"
         )
-        failure_resource = (
-            f"{resource}:{generation.generation_id}"
-            if failure is None
-            else ",".join((*failure.resource_names, resource))
-        )
-        failure_error = (
-            str(error) or type(error).__name__ if failure is None else failure.error
-        )
+        phase: ReloadPhase = "degraded" if action == "retry_runtime_recovery" else "cleanup_failed"
+        failure_resource = f"{resource}:{generation.generation_id}"
+        failure_error = str(error) or type(error).__name__
         self._reload_journal.advance(
             tx_id,
             phase,
@@ -6570,30 +3380,6 @@ class PluginManager:
             and self._snapshot_store.unpromoted_candidate is ready.snapshot
         ):
             _ = self._snapshot_store.pause_candidate_admission(ready.snapshot)
-
-    def _on_composition_runtime_failure(
-        self,
-        failure: CompositionRuntimeFailure,
-    ) -> None:
-        """Persist a watchdog failure for the exact generation owner."""
-
-        if self._validation_only or self._composition_generation_host.scoped(failure.generation_id):
-            logger.error(
-                "调用资源清理待恢复: scope=%s action=%s error=%s",
-                failure.generation_id, failure.action, failure.error,
-            )
-            return
-        generation = self._composition_runtime_generations.get(failure.generation_id)
-        if generation is None:
-            raise RuntimeError(
-                "v3 runtime failure 缺少 Manager generation owner: "
-                f"{failure.generation_id}"
-            )
-        self._record_composition_runtime_failure(
-            generation,
-            RuntimeError(failure.error),
-            formal_effects=("runtime_watchdog_failure",),
-        )
 
     def _ensure_runtime_recovery_transaction(
         self,
@@ -6628,27 +3414,9 @@ class PluginManager:
                     )
                 return candidate.reload_tx_id
 
-        # 2. Freeze the exact stable artifact identity before exposing recovery.
+        # 2. 运行恢复记录只引用完整 stable，不从归档路径反推安装目录。
         base_snapshot = self.current_snapshot
-        base_generation = (
-            None
-            if base_snapshot is None
-            else base_snapshot.generations.get(generation.plugin_id)
-        )
-        base_pointer: str | None = None
-        candidate_pointer: str | None = None
-        plugin_base = _installed_artifact_base(generation)
-        if plugin_base is not None:
-            pointers = read_pointers(plugin_base)
-            if pointers is None:
-                raise RuntimeError(
-                    f"runtime cleanup recovery 缺少 artifact pointer: {plugin_base}"
-                )
-            base_pointer = pointers.stable.path
-            if base_snapshot is not None and base_generation is generation:
-                candidate_pointer = generation.plugin_dir.relative_to(
-                    plugin_base
-                ).as_posix()
+        base_generation = None if base_snapshot is None else base_snapshot.generations.get(generation.plugin_id)
 
         # 3. Persist the process boot owner before returning the cleanup failure.
         tx_id = self._reload_journal.begin(
@@ -6662,8 +3430,7 @@ class PluginManager:
             generation_id=generation.generation_id,
             source_revision=generation.source_revision,
             config_revision=generation.config_revision,
-            base_artifact_pointer=base_pointer,
-            candidate_artifact_pointer=candidate_pointer,
+            details={"base_selection_ref": self._selection.read()},
         )
         generation.reload_tx_id = tx_id
         boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
@@ -6671,324 +3438,35 @@ class PluginManager:
             self._reload_journal.mark_runtime_owner(tx_id, boot_id)
         return tx_id
 
-    def _record_drained_composition_runtime_failure(
-        self,
-        snapshot: RuntimeSnapshot,
-        generation: PluginGeneration,
-        error: BaseException,
-    ) -> None:
-        """Persist one retained Host owner while allowing Root and module drain."""
-
-        drain_tx_id = self._drain_transactions.get(snapshot.snapshot_id)
-        tx_id = drain_tx_id or generation.reload_tx_id
-        if tx_id is None:
-            return
-        record = self._reload_journal.get(tx_id)
-        if record.phase in {"complete", "aborted", "recovered"}:
-            return
-        failure = self._composition_generation_host.failure(generation.generation_id)
-        action: RecoveryActionName = (
-            "retry_generation_cleanup" if failure is None else failure.action
-        )
-        phase: ReloadPhase = (
-            "degraded" if action == "retry_runtime_recovery" else "cleanup_failed"
-        )
-        self._reload_journal.advance(
-            tx_id,
-            phase,
-            error=(
-                str(error) or type(error).__name__ if failure is None else failure.error
-            ),
-            resource=(
-                f"composition-runtime:{generation.generation_id}"
-                if failure is None
-                else ",".join(failure.resource_names)
-            ),
-            formal_effects=(
-                (
-                    "committed_generation_retained",
-                    "old_runtime_cleanup_pending",
-                )
-                if drain_tx_id is not None
-                else (
-                    "candidate_pointer_restored",
-                    "candidate_runtime_cleanup_pending",
-                )
-            ),
-            recovery_action=action,
-            recovery_target=(
-                record.recovery_target
-                or (
-                    "candidate"
-                    if drain_tx_id is not None
-                    else self._composition_recovery_target(
-                        generation,
-                        tx_id=tx_id,
-                    )
-                )
-            ),
-        )
-
     def _composition_recovery_target(
-        self,
-        generation: PluginGeneration,
-        *,
-        tx_id: str | None = None,
+        self, generation: PluginGeneration, *, tx_id: str | None = None,
     ) -> RecoveryTarget:
-        """Resolve the exact durable artifact selected at failure time."""
-
-        if tx_id is None:
-            tx_id = generation.reload_tx_id
-        if tx_id is None:
-            return "base"
-        record = self._reload_journal.get(tx_id)
-        if record.generation_id != generation.generation_id:
-            if record.base_generation_id == generation.generation_id:
-                return "base"
-            raise RuntimeError("runtime failure generation 不属于 recovery transaction")
-        if (
-            record.phase in {"cleanup_failed", "degraded"}
-            and record.recovery_target is not None
-        ):
-            return record.recovery_target
-        base_pointer = record.base_artifact_pointer
-        candidate_pointer = record.candidate_artifact_pointer
-        plugin_base = _installed_artifact_base(generation)
-        if plugin_base is None or candidate_pointer is None:
-            current = self.current_snapshot
-            if (
-                current is not None
-                and current.generations.get(generation.plugin_id) is generation
-            ):
-                return "candidate"
-            return "base"
-        pointers = read_pointers(plugin_base)
-        if pointers is None:
-            raise RuntimeError(
-                f"runtime failure 缺少 durable artifact pointer: {plugin_base}"
-            )
-        if pointers.stable.path == candidate_pointer:
+        """仅用于故障诊断；恢复输入始终从唯一完整 selection 读取。"""
+        publication = self._publication
+        if publication is not None and publication.must_retain:
+            return "candidate" if publication.candidate.generations.get(generation.plugin_id) is generation else "base"
+        ref = self._selection.read()
+        if ref is not None and generation.archive_ref in self._selection_components(ref):
             return "candidate"
-        if pointers.stable.path == base_pointer:
-            return "base"
-        raise RuntimeError(
-            "runtime failure artifact pointer 超出 reload transaction: "
-            f"stable={pointers.stable.path} base={base_pointer} "
-            f"candidate={candidate_pointer}"
-        )
+        return "base"
 
-    def _refresh_composition_runtime_tools(
-        self,
-        snapshot: RuntimeSnapshot,
-    ) -> None:
-        """Rebuild ToolRegistry and attach every exact live v3 MCP facade."""
 
-        snapshot.tool_registry = self._compile_snapshot_tools(
-            dict(snapshot.generations),
-            snapshot.plugin_tool_catalog,
-        )
-        for generation in sorted(
-            snapshot.generations.values(),
-            key=lambda item: item.plugin_id,
-        ):
-            runtime = self._composition_generation_host.get(generation.generation_id)
-            snapshot.tool_registry = self._composition_generation_host.attach_tools(
-                snapshot.tool_registry,
-                runtime,
-            )
-
-    @staticmethod
-    def _composition_runtime_declared(
-        snapshot: RuntimeSnapshot,
-        plugin_id: str,
-    ) -> bool:
-        """Return whether one plugin owns runtime declarations in a snapshot."""
-
-        return any(
-            binding.descriptor.owner == plugin_id
-            for registry in (
-                snapshot.managed_process_registry,
-                snapshot.mcp_server_registry,
-                snapshot.workload_registry,
-            )
-            if registry is not None
-            for binding in registry.values()
-        )
-
-    def _compile_snapshot_tools(
-        self,
-        generations: dict[str, PluginGeneration],
-        plugin_tools: PluginToolCatalog | None = None,
-    ) -> Any:
-        if self._tool_registry is None:
-            return None
-        registry = self._tool_registry.fork(
-            excluded_source_types={"plugin", "mcp"},
-        )
-        if plugin_tools is not None:
-            for binding in plugin_tools.values():
-                if registry.has_tool(binding.descriptor.name):
-                    raise RuntimeError(f"插件工具名称重复: {binding.descriptor.name}")
-                registry.register(
-                    _build_v3_plugin_tool(
-                        generations,
-                        plugin_tools,
-                        binding,
-                    ),
-                    risk=(
-                        "write"
-                        if binding.descriptor.risk == "read-write"
-                        else binding.descriptor.risk
-                    ),
-                    always_on=binding.descriptor.always_on,
-                    preloadable=binding.descriptor.preloadable,
-                    requires_turn_search=binding.descriptor.requires_turn_search,
-                    search_hint=binding.descriptor.search_hint,
-                    source_type="plugin",
-                    source_name=binding.plugin_id,
-                )
-        return registry
-
-    async def _publish_committed_snapshot(
-        self,
-        snapshot: RuntimeSnapshot,
-    ) -> None:
-        transaction = self._snapshot_store.begin_publish(snapshot)
-        _ = await self._commit_snapshot_with_publication_participants(
-            transaction,
-            old_commands=(),
-            new_commands=(),
-            promote_latest=False,
-        )
-
-    def _collect_candidate_contributions(
-        self,
-        *,
-        instance: ComposablePlugin,
-        plugin_id: str,
-        plugin_dir: Path,
-    ) -> PluginContributions:
-        return PluginContributions(
-            manifest={
-                "name": instance.name,
-                "version": instance.version,
-                "desc": instance.desc,
-                "author": instance.author,
-            },
-            skill_roots=_resolve_declared_roots(
-                plugin_dir,
-                instance.skill_roots,
-            ),
-            drift_skill_roots=_resolve_declared_roots(
-                plugin_dir,
-                instance.drift_skill_roots,
-            ),
-            dashboard_module=_resolve_dashboard_module(
-                plugin_dir,
-                instance.dashboard_module,
-            ),
-            web_module=resolve_web_module(
-                plugin_dir,
-                instance.web_module,
-                requires=instance.web_requires,
-                provides=instance.web_provides,
-                contract_digests=instance.web_contract_digests,
-            ),
-        )
-
-    def _validate_candidate(
-        self,
-        *,
-        instance: ComposablePlugin,
-        plugin_id: str,
-        revision: str,
-    ) -> GateResult:
-        """Validate the remaining module-level v3 semantic checks."""
-
-        checks = [
-            GateCheckResult(
-                check_id="api_version",
-                status="passed",
-                evidence=3,
-            ),
-            GateCheckResult(
-                check_id="lifecycle_api",
-                status="passed",
-                evidence={"contract": "apply(ctx, config)"},
-            ),
-        ]
-        try:
-            semantic_checks = instance.static_semantic_checks()
-        except Exception as error:
-            checks.append(
-                GateCheckResult(
-                    check_id="semantic_checks",
-                    status="failed",
-                    evidence=str(error) or type(error).__name__,
-                )
-            )
-        else:
-            invalid_semantic = [
-                semantic
-                for semantic in semantic_checks
-                if not isinstance(semantic, PluginSemanticCheck) or not semantic.passed
-            ]
-            checks.append(
-                GateCheckResult(
-                    check_id="semantic_checks",
-                    status="failed" if invalid_semantic else "passed",
-                    evidence=[
-                        getattr(semantic, "evidence", repr(semantic))
-                        for semantic in invalid_semantic
-                    ],
-                )
-            )
-        failed = [item for item in checks if item.status == "failed"]
-        return GateResult(
-            gate_id="G1/G3-static",
-            plugin_id=plugin_id,
-            candidate_revision=revision,
-            status="failed" if failed else "passed",
-            checks=tuple(checks),
-            failure_reason="; ".join(item.check_id for item in failed),
-        )
-
-    def _record_failed_gate(
-        self,
-        *,
-        plugin_id: str,
-        revision: str,
-        check_id: str,
-        reason: str,
-    ) -> None:
-        self._gate_results[plugin_id] = GateResult(
-            gate_id="G1/G3-static",
-            plugin_id=plugin_id,
-            candidate_revision=revision,
-            status="failed",
-            checks=(
-                GateCheckResult(
-                    check_id=check_id,
-                    status="failed",
-                    evidence=reason,
-                ),
-            ),
-            failure_reason=reason,
-        )
-
-    def _import_plugin(self, module_name: str, path: Path) -> None:
-        self._fresh_importer.register(module_name, path.parent)
+    def _import_plugin(self, module_name: str, plugin_root: Path) -> None:
+        """只从固定制品根导入普通 plugin.py，不接受入口别名。"""
+        path = plugin_root / "plugin.py"
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"插件 plugin.py 必须是普通文件: {path}")
+        self._fresh_importer.register(module_name, plugin_root)
         spec = self._fresh_importer.root_spec(module_name, path)
         if spec is None or spec.loader is None:
             self._fresh_importer.unregister(module_name)
             raise ImportError(f"无法加载插件文件: {path}")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        try:
-            spec.loader.exec_module(module)  # type: ignore[union-attr]
-        except BaseException:
-            self._remove_module_tree(module_name)
-            raise
+        # 调用者已在导入前登记 Root cleanup；异常时不能越过 Scope 卸载模块。
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        if module.__file__ is None or Path(module.__file__).resolve(strict=True) != path.resolve(strict=True):
+            raise RuntimeError("插件 module 文件与固定制品 plugin.py 不一致")
 
     def _remove_module_tree(self, module_name: str) -> None:
         self._fresh_importer.unregister(module_name)
@@ -6999,16 +3477,56 @@ class PluginManager:
                 _ = sys.modules.pop(imported_name, None)
 
     async def terminate_all(self) -> None:
+        """同步撤销当前操作，再有限等待同一次全量关闭；超时仍保留任务。"""
+        deadline = asyncio.get_running_loop().time() + self.POST_PUBLISH_TIMEOUT_SECONDS
+        operation = self._begin_termination(deadline=deadline)
+        await observe_operation(operation, deadline=deadline, cancel=False)
+
+    def _begin_termination(self, *, deadline: float | None = None) -> ManagerOperation:
+        """停止接纳并交接唯一 owner；重复调用返回同一关闭任务。"""
+        self._reject_operation_lease()
+        previous = self._operation
+        if previous is not None and current_operation.get() is previous and not previous.task.done():
+            raise RuntimeError("cleanup 不能等待其所属 PluginManager 操作")
+        current = asyncio.current_task()
+        if any(host.active and host.task is current for host in self._validation_hosts.values()):
+            raise RuntimeError("请先退出验证 scope，再关闭其插件宿主")
+        if self._stopping and previous is not None and previous.task.done():
+            if not previous.task.cancelled() and previous.task.exception() is None:
+                return previous
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + self.POST_PUBLISH_TIMEOUT_SECONDS
+        if not self._stopping or previous is None or previous.task.done():
+            # 停止标记与撤销之间没有 await；旧操作从此不能提交或重开接纳。
+            self._stopping = True
+            self._pause_source_admission()
+            if previous is not None:
+                previous.revoke()
+            operation = ManagerOperation(deadline)
+            self._operation = operation
+            operation.task = asyncio.create_task(
+                run_operation(operation, lambda: self._finish_termination(previous)),
+                name="plugin-manager-terminate",
+            )
+            operation.task.add_done_callback(self._operation_finished)
+        else:
+            operation = previous
+        return operation
+
+    async def _finish_termination(self, previous: ManagerOperation | None) -> None:
+        """关闭任务持有原操作，等实际工作结束后才接管资源。"""
+        if previous is not None and not previous.task.done():
+            # 不再次 cancel；此前的关闭或不可取消线程仍沿原调用栈结束。
+            await asyncio.wait((previous.task,))
+        await self._terminate_all()
+
+    async def _terminate_all(self) -> None:
         """完成快照、插件生命周期和作用域资源的全量关闭。"""
 
-        # 1. 先停止尚未提交的发布等待，原 owner 负责已开始切换的结算。
-        publication = self._update_publication
-        if publication is not None and not publication[1].done():
-            _ = publication[1].cancel()
-            try:
-                await publication[1]
-            except asyncio.CancelledError:
-                pass
+        _ = self._pause_source_admission()
+        if self._endpoint_quiescer is not None:
+            await self._endpoint_quiescer()
+        # 1. 当前操作已退出；关闭任务独占剩余实际资源。
         # 验证必须先归还候选租约，正式 generation 才能退出。
         current = asyncio.current_task()
         validations = tuple(self._validation_hosts.values())
@@ -7018,12 +3536,13 @@ class PluginManager:
         for task in running:
             _ = task.cancel()
         if running:
-            _ = await asyncio.gather(*running, return_exceptions=True)
+            await asyncio.wait(running)
         for identity in tuple(self._validation_hosts):
-            await self.retry_validation_cleanup(identity)
+            self._validation_hosts[identity].active = False
+            await self._retry_validation_cleanup(identity)
 
         # 2. 停止接纳和插件生产者，再关闭它们仍需排空的 Task 与资源。
-        snapshot = self._snapshot_store.pause_admission()
+        snapshot = self._pause_source_admission()
         externally_cancelled = False
         if snapshot is not None:
             _, externally_cancelled = await _complete_critical(
@@ -7033,34 +3552,12 @@ class PluginManager:
         externally_cancelled = externally_cancelled or cancelled
         _, cancelled = await _complete_critical(self._plugin_processes.close())
         externally_cancelled = externally_cancelled or cancelled
-        _, cancelled = await _complete_critical(
-            self._composition_generation_host.close_scoped()
-        )
-        externally_cancelled = externally_cancelled or cancelled
-        channel_runtime = self._active_channel_generation
-        if channel_runtime is not None:
-            _ = self._snapshot_store.pause_admission()
-            channel_runtime.close_admission()
-            try:
-                _, cancelled = await _complete_critical(channel_runtime.stop())
-                externally_cancelled = externally_cancelled or cancelled
-            except BaseException as error:
-                current = asyncio.current_task()
-                externally_cancelled = externally_cancelled or (
-                    current is not None and current.cancelling() > 0
-                )
-                self._cleanup_failures.append(
-                    CleanupFailure(
-                        resource=f"channel-generation:{channel_runtime.snapshot_id}",
-                        error=str(error) or type(error).__name__,
-                    )
-                )
-                raise RuntimeError(
-                    "Channel runtime cleanup 未完成，generation owner 已保留"
-                ) from error
-            else:
-                self._active_channel_generation = None
-                self._active_channel_catalog_identity = None
+        # 未交接 Root 先释放；SnapshotStore 和 generation 随后才能移除其依赖。
+        for root in tuple(self._building_roots):
+            await self._close_building_root(root)
+        pending = self._snapshot_store.pending_transaction
+        if pending is not None:
+            await self._snapshot_store.abort(pending, reopen_previous=False)
         # 2. 关闭当前 generation admission，再完成快照回收。
         for generation in self._active_generations.values():
             self._retire_generation(generation)
@@ -7068,336 +3565,20 @@ class PluginManager:
         externally_cancelled = externally_cancelled or snapshot_cancelled
         self._ready_candidate = None
         for plugin_id in tuple(self._prepared_generations):
-            _, cancelled = await _complete_critical(self.discard_prepared(plugin_id))
+            _, cancelled = await _complete_critical(self._discard_prepared(plugin_id))
             externally_cancelled = externally_cancelled or cancelled
-        # 3. 逐插件关闭 generation scope 并消费全部 cleanup failures。
-        for mp in list(self._loaded):
-            active_info = self._active_plugins.get(mp)
-            scope = self._scopes.pop(mp, None)
-            if scope is not None:
-                generation = (
-                    None
-                    if active_info is None
-                    else self._active_generations.get(active_info.plugin_id)
+        # 3. 快照之外的失败 generation 仍由排空集合持有，显式关闭时重试。
+        for tracked in tuple(self._draining_generations.values()):
+            for generation in tuple(tracked):
+                _, cancelled = await _complete_critical(
+                    self._dispose_generation(generation, state="retired")
                 )
-                cleanup_failures, cancelled = await _complete_critical(scope.aclose())
-                self._cleanup_failures.extend(cleanup_failures)
                 externally_cancelled = externally_cancelled or cancelled
-
-            # 4. 注销模块和运行时注册。
-            self._remove_module_tree(mp)
-            stable_alias = self._stable_aliases.pop(mp, None)
-            if stable_alias is not None:
-                self._remove_module_tree(stable_alias)
-            if active_info is not None:
-                generation = self._active_generations.get(active_info.plugin_id)
-                if generation is not None and generation.module_path == mp:
-                    _ = self._active_generations.pop(active_info.plugin_id)
-                    generation.state = "retired"
-            _ = self._active_plugins.pop(mp, None)
-        self._loaded.clear()
-        self._active_plugins.clear()
-        self._scopes.clear()
-        self._active_generations.clear()
-        self._draining_generations.clear()
-        self._prepared_generations.clear()
-        self._stable_aliases.clear()
+        # 4. 导入前的 Scope 也由前面的 building Root 关闭，不绕过 Root 扫尾。
         if self._owns_control_frames:
             self._control_frames.close()
         if externally_cancelled:
             raise asyncio.CancelledError
-
-
-class _PluginConfigError(Exception):
-    pass
-
-
-class _CandidateRejected(Exception):
-    def __init__(self, gate: GateResult) -> None:
-        super().__init__(gate.failure_reason)
-        self.gate = gate
-
-
-class _StablePluginFailed(Exception):
-    """标识一个可以排除后重试的 stable boot 参与者。"""
-
-    def __init__(
-        self,
-        generation: PluginGeneration,
-        phase: str,
-        cause: Exception,
-    ) -> None:
-        super().__init__(str(cause))
-        self.generation = generation
-        self.phase = phase
-        self.cause = cause
-
-
-def _gate_failure_details(gate: GateResult) -> str:
-    """把失败 Gate 的 check 与证据压成可持久诊断文本。"""
-    return (
-        "; ".join(
-            f"{check.check_id}: {check.evidence}"
-            for check in gate.checks
-            if check.status == "failed"
-        )
-        or gate.failure_reason
-    )
-
-
-def _with_gate_check(
-    gate: GateResult,
-    *,
-    check_id: str,
-    passed: bool,
-    evidence: object,
-    gate_id: str | None = None,
-) -> GateResult:
-    check = GateCheckResult(
-        check_id=check_id,
-        status="passed" if passed else "failed",
-        evidence=evidence,
-    )
-    checks = (*gate.checks, check)
-    failed = [item.check_id for item in checks if item.status == "failed"]
-    return GateResult(
-        gate_id=gate_id or gate.gate_id,
-        plugin_id=gate.plugin_id,
-        candidate_revision=gate.candidate_revision,
-        status="failed" if failed else "passed",
-        checks=checks,
-        failure_reason="; ".join(failed),
-    )
-
-
-def _read_plugin_config_projection(
-    config_source: bytes | None,
-    *,
-    credential_paths: tuple[str, ...] = (),
-    credential_alias_groups: tuple[tuple[str, ...], ...] = (),
-) -> dict[str, object]:
-    """Read plugin config and replace declared secret values with opaque refs."""
-
-    # 1. Core alone reads the formal file before plugin config validation.
-    raw_config: dict[str, Any] = {}
-    if config_source is not None:
-        try:
-            raw_config = tomllib.loads(config_source.decode("utf-8"))
-        except (UnicodeError, tomllib.TOMLDecodeError) as e:
-            raise _PluginConfigError(str(e)) from e
-    for aliases in credential_alias_groups:
-        present = tuple(
-            path for path in aliases if _config_path_exists(raw_config, path)
-        )
-        if len(present) > 1:
-            raise _PluginConfigError(
-                "同一 channel credential 不得同时声明多个 physical alias: "
-                + ", ".join(present)
-            )
-    projected = cast(dict[str, object], copy.deepcopy(raw_config))
-    for path in credential_paths:
-        _redact_plugin_config_path(projected, path)
-    return projected
-
-
-def _validate_credential_schema(
-    config_model: type[BaseModel] | None,
-    *,
-    credential_paths: tuple[str, ...],
-) -> tuple[tuple[str, ...], ...]:
-    """Bind every opaque credential field to its complete physical alias set."""
-
-    # 1. Discover opaque credential fields from the validated Pydantic schema.
-    groups = _collect_credential_aliases(config_model)
-    schema_paths = tuple(sorted(path for group in groups for path in group))
-
-    # 2. Static admission owns the complete raw-path declaration.
-    expected = tuple(sorted(credential_paths))
-    if schema_paths != expected:
-        raise _PluginConfigError(
-            "ConfigModel credential aliases 与静态 manifest 不一致: "
-            f"schema={schema_paths} manifest={expected}"
-        )
-    return groups
-
-
-def _collect_credential_aliases(
-    config_model: type[BaseModel] | None,
-    *,
-    prefix: tuple[str, ...] = (),
-    seen: frozenset[type[BaseModel]] = frozenset(),
-) -> tuple[tuple[str, ...], ...]:
-    """Collect physical input paths for direct CredentialRef fields."""
-
-    if config_model is None:
-        return ()
-    if not isinstance(config_model, type) or not issubclass(config_model, BaseModel):
-        raise _PluginConfigError("ConfigModel 必须继承 pydantic.BaseModel")
-    if config_model in seen:
-        return ()
-
-    groups: list[tuple[str, ...]] = []
-    next_seen = seen | {config_model}
-    validate_by_name = bool(
-        config_model.model_config.get("validate_by_name")
-        or config_model.model_config.get("populate_by_name")
-    )
-    validate_by_alias = config_model.model_config.get("validate_by_alias") is not False
-    for name, field_info in config_model.model_fields.items():
-        aliases = _pydantic_input_aliases(
-            name,
-            field_info.validation_alias,
-            field_info.alias,
-            validate_by_name=validate_by_name,
-            validate_by_alias=validate_by_alias,
-        )
-        annotation = field_info.annotation
-        if _annotation_contains_credential_ref(annotation):
-            if not _is_opaque_credential_annotation(annotation):
-                raise _PluginConfigError(
-                    f"channel credential 字段只能是 CredentialRef 或 None: {name}"
-                )
-            groups.append(
-                tuple(sorted(".".join((*prefix, *alias)) for alias in aliases))
-            )
-            continue
-        nested_model = _optional_basemodel_type(annotation)
-        if nested_model is None:
-            continue
-        for alias in aliases:
-            groups.extend(
-                _collect_credential_aliases(
-                    nested_model,
-                    prefix=(*prefix, *alias),
-                    seen=next_seen,
-                )
-            )
-
-    paths = [path for group in groups for path in group]
-    if len(paths) != len(set(paths)):
-        raise _PluginConfigError("ConfigModel credential physical alias 重复")
-    return tuple(sorted(groups))
-
-
-def _pydantic_input_aliases(
-    field_name: str,
-    validation_alias: str | AliasPath | AliasChoices | None,
-    alias: str | None,
-    *,
-    validate_by_name: bool,
-    validate_by_alias: bool,
-) -> tuple[tuple[str, ...], ...]:
-    """Normalize one Pydantic field's accepted mapping paths."""
-
-    configured_alias = validation_alias or alias
-    if configured_alias is None:
-        choices: tuple[str | AliasPath, ...] = (field_name,)
-    elif validate_by_alias:
-        choices = (
-            tuple(configured_alias.choices)
-            if isinstance(configured_alias, AliasChoices)
-            else (configured_alias,)
-        )
-        if validate_by_name:
-            choices = (*choices, field_name)
-    else:
-        choices = (field_name,)
-    paths: list[tuple[str, ...]] = []
-    for choice in choices:
-        raw_path = choice.path if isinstance(choice, AliasPath) else (choice,)
-        if not raw_path or any(
-            not isinstance(part, str) or not part for part in raw_path
-        ):
-            raise _PluginConfigError(
-                f"channel credential alias 只支持对象字符串路径: {field_name}"
-            )
-        paths.append(tuple(cast(tuple[str, ...], raw_path)))
-    return tuple(sorted(set(paths)))
-
-
-def _annotation_contains_credential_ref(annotation: object) -> bool:
-    if annotation is CredentialRef:
-        return True
-    return any(
-        _annotation_contains_credential_ref(item) for item in get_args(annotation)
-    )
-
-
-def _is_opaque_credential_annotation(annotation: object) -> bool:
-    if annotation is CredentialRef:
-        return True
-    origin = get_origin(annotation)
-    return origin in {Union, UnionType} and all(
-        item is CredentialRef or item is type(None) for item in get_args(annotation)
-    )
-
-
-def _optional_basemodel_type(annotation: object) -> type[BaseModel] | None:
-    candidates = tuple(item for item in get_args(annotation) if item is not type(None))
-    value = candidates[0] if len(candidates) == 1 else annotation
-    if isinstance(value, type) and issubclass(value, BaseModel):
-        return value
-    return None
-
-
-def _config_path_exists(config: Mapping[str, object], path: str) -> bool:
-    current: object = config
-    for part in path.split("."):
-        if not isinstance(current, Mapping) or part not in current:
-            return False
-        current = current[part]
-    return True
-
-
-def _validate_plugin_config_projection(
-    projection: Mapping[str, object],
-    config_model: type[BaseModel] | None,
-) -> Any:
-    """Validate an already redacted config projection through plugin schema."""
-
-    # 1. Each candidate clone receives a fresh value owned by its module class.
-    raw_config = cast(dict[str, Any], copy.deepcopy(dict(projection)))
-    if config_model is not None:
-        if not isinstance(config_model, type) or not issubclass(
-            config_model, BaseModel
-        ):
-            raise _PluginConfigError("ConfigModel 必须继承 pydantic.BaseModel")
-        try:
-            return config_model.model_validate(raw_config)
-        except ValidationError as e:
-            raise _PluginConfigError(_format_validation_error(e)) from e
-    from agent.plugins.config import PluginConfig
-
-    return PluginConfig(raw_config) if raw_config else None
-
-
-def _redact_plugin_config_path(config: dict[str, object], path: str) -> None:
-    """Replace one present non-empty config leaf with an opaque credential ref."""
-
-    parts = tuple(path.split("."))
-    current: dict[str, object] = config
-    for part in parts[:-1]:
-        value = current.get(part)
-        if value is None:
-            return
-        if not isinstance(value, dict):
-            raise _PluginConfigError(f"channel credential path 不是对象路径: {path}")
-        current = cast(dict[str, object], value)
-    leaf = parts[-1]
-    if leaf not in current:
-        return
-    value = current[leaf]
-    if value is None or value == "":
-        return
-    current[leaf] = CredentialRef(parts)
-
-
-def _format_validation_error(error: ValidationError) -> str:
-    parts: list[str] = []
-    for item in error.errors():
-        path = ".".join(str(part) for part in item.get("loc", ())) or "<root>"
-        parts.append(f"{path}: {item.get('msg', 'invalid')}")
-    return "; ".join(parts)
 
 
 def _resolve_plugin_id(mod: dict[str, str]) -> str:
@@ -7427,21 +3608,6 @@ def _plugins_home(installed_cache_root: Path | None) -> Path:
     return plugins_root()
 
 
-def _installed_artifact_base(generation: PluginGeneration) -> Path | None:
-    if generation.source_type != "installed":
-        return None
-    plugin_dir = generation.plugin_dir
-    plugin_base = (
-        plugin_dir.parent.parent
-        if plugin_dir.parent.name == ".artifacts"
-        else plugin_dir.parent
-    )
-    state_path = pointer_state_path(plugin_base)
-    if not state_path.exists() and not state_path.is_symlink():
-        return None
-    return plugin_base
-
-
 def _installed_generation_is_candidate(generation: PluginGeneration) -> bool:
     """Return whether this installed generation is the explicit latest pointer."""
 
@@ -7449,19 +3615,6 @@ def _installed_generation_is_candidate(generation: PluginGeneration) -> bool:
         return False
     plugin_dir = generation.plugin_dir
     return _installed_candidate_base_from_root(plugin_dir) is not None
-
-
-def _installed_candidate_base(generation: PluginGeneration) -> Path | None:
-    if generation.source_type != "installed":
-        return None
-    plugin_dir = generation.plugin_dir
-    return _installed_candidate_base_from_root(plugin_dir)
-
-
-def _discard_generation_candidate_pointer(generation: PluginGeneration) -> None:
-    plugin_base = _installed_candidate_base(generation)
-    if plugin_base is not None:
-        _ = discard_latest_pointer(plugin_base)
 
 
 def _installed_candidate_base_from_root(plugin_dir: Path) -> Path | None:
@@ -7485,81 +3638,6 @@ def _installed_candidate_base_from_root(plugin_dir: Path) -> Path | None:
     return plugin_base
 
 
-def _switch_ready_pointer(
-    ready: _ReadyPluginCandidate,
-    plugin_base: Path,
-) -> None:
-    """在候选仍拥有磁盘 pointer 时原子提升它。"""
-
-    previous, candidate = _ready_artifact_pointers(ready, plugin_base)
-    pointers = read_pointers(plugin_base)
-    if pointers is None or (pointers.stable, pointers.latest) not in {
-        (previous, candidate),
-        (candidate, candidate),
-    }:
-        raise RuntimeError(f"插件 artifact pointer 已被其他发布改变: {plugin_base}")
-    _ = write_pointers(plugin_base, stable=candidate, latest=candidate)
-
-
-def _restore_ready_pointer(
-    ready: _ReadyPluginCandidate,
-    plugin_base: Path,
-) -> None:
-    """把 ready candidate 的完整指针对恢复到先前 stable。"""
-
-    previous, candidate = _ready_artifact_pointers(ready, plugin_base)
-    pointers = read_pointers(plugin_base)
-    if pointers is None or (pointers.stable, pointers.latest) not in {
-        (previous, candidate),
-        (candidate, candidate),
-        (previous, previous),
-    }:
-        raise RuntimeError(f"插件 artifact pointer 已被其他发布改变: {plugin_base}")
-    _ = write_pointers(plugin_base, stable=previous, latest=previous)
-
-
-def _preserve_ready_pointer(
-    ready: _ReadyPluginCandidate,
-    plugin_base: Path,
-) -> None:
-    """Restore stable while retaining the validated candidate as latest."""
-
-    previous, candidate = _ready_artifact_pointers(ready, plugin_base)
-    pointers = read_pointers(plugin_base)
-    if pointers is None or (pointers.stable, pointers.latest) not in {
-        (previous, candidate),
-        (candidate, candidate),
-        (previous, previous),
-    }:
-        raise RuntimeError(f"插件 artifact pointer 已被其他发布改变: {plugin_base}")
-    _ = write_pointers(plugin_base, stable=previous, latest=candidate)
-
-
-def _ready_artifact_pointers(
-    ready: _ReadyPluginCandidate,
-    plugin_base: Path,
-) -> tuple[ArtifactPointer, ArtifactPointer]:
-    """解析 ready candidate 事务拥有的前后 artifact pointer。"""
-
-    candidate_root = ready.candidate.plugin_dir
-    candidate = relative_artifact_pointer(plugin_base, candidate_root)
-    if ready.previous is None:
-        return ArtifactPointer(None), candidate
-    previous_root = ready.previous.plugin_dir
-    previous_base = _installed_artifact_base_from_root(previous_root)
-    if previous_base.resolve() != plugin_base.resolve():
-        raise RuntimeError("latest candidate 与 stable 不属于同一插件 artifact")
-    return relative_artifact_pointer(plugin_base, previous_root), candidate
-
-
-def _discard_installed_candidate_mod(mod: dict[str, str]) -> None:
-    if mod.get("source_type") != "installed":
-        return
-    plugin_base = _installed_candidate_base_from_root(Path(mod["plugin_root"]))
-    if plugin_base is not None:
-        _ = discard_latest_pointer(plugin_base)
-
-
 def _installed_artifact_base_from_root(plugin_dir: Path) -> Path:
     return (
         plugin_dir.parent.parent
@@ -7568,71 +3646,25 @@ def _installed_artifact_base_from_root(plugin_dir: Path) -> Path:
     )
 
 
-def _mod_source_revision(mod: dict[str, str] | None) -> str | None:
-    if mod is None:
-        return None
-    return _source_revision(Path(mod["plugin_root"]))
-
-
-def _resolve_declared_roots(
-    plugin_dir: Path,
-    declared: tuple[str, ...],
-) -> tuple[Path, ...]:
-    plugin_root = plugin_dir.resolve(strict=False)
-    roots: list[Path] = []
-    seen: set[Path] = set()
-    for raw_path in declared:
-        path = (plugin_dir / raw_path).resolve(strict=False)
-        _require_plugin_path(plugin_root, path, "能力目录")
-        if not path.is_dir():
-            raise RuntimeError(f"插件能力目录不存在: {path}")
-        if path in seen:
-            raise RuntimeError(f"插件能力目录重复: {path}")
-        seen.add(path)
-        roots.append(path)
-    return tuple(roots)
-
-
-def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | None:
-    if declared is None:
-        return None
-    path = (plugin_dir / declared).resolve(strict=False)
-    root = plugin_dir.resolve(strict=False)
-    if not path.is_relative_to(root) or path.suffix != ".py" or not path.is_file():
-        raise RuntimeError(f"插件 dashboard module 无效: {declared}")
-    return path
-
-
-def _remove_validation_data_dir(path: Path) -> None:
-    if path.exists():
-        shutil.rmtree(path)
-
-
-def _candidate_data_exclude_paths(
-    manifest: StaticPluginManifest | None,
-) -> tuple[str, ...]:
-    """按静态声明排除验证副本中的凭据和私有数据。"""
-    if manifest is None:
-        return ()
-    excluded = set(manifest.exclude_data_paths)
-    if manifest.all_credential_paths:
-        excluded.add("config.local.toml")
-    return tuple(sorted(excluded))
 
 
 def _validate_candidate_formal_snapshot_identity(
-    generation: PluginGeneration,
     *,
     candidate: RuntimeSnapshot,
     formal: RuntimeSnapshot,
 ) -> None:
-    """Require the formal Root to preserve the validated candidate identity."""
+    """比较固定制品与配置输入；运行 snapshot 和 generation 身份必须独立。"""
 
-    if candidate.snapshot_id != formal.snapshot_id:
-        raise RuntimeError(
-            "候选隔离资源恢复后 snapshot identity 发生变化: "
-            f"{candidate.snapshot_id} -> {formal.snapshot_id}"
-        )
+    candidate_inputs = tuple(
+        (key, PluginManager._generation_archive_ref(item))
+        for key, item in sorted(candidate.generations.items())
+    )
+    formal_inputs = tuple(
+        (key, PluginManager._generation_archive_ref(item))
+        for key, item in sorted(formal.generations.items())
+    )
+    if candidate_inputs != formal_inputs:
+        raise RuntimeError("候选与正式 Root 的固定归档输入不一致")
 
 
 async def _copy_in_thread(copy_files: Callable[..., U], *args: Any, **kwargs: Any) -> U:
@@ -7643,333 +3675,6 @@ async def _copy_in_thread(copy_files: Callable[..., U], *args: Any, **kwargs: An
     return result
 
 
-def _copy_validation_tree(
-    source: Path,
-    target: Path,
-    exclude_paths: tuple[str, ...],
-    *, keep_existing: bool = False,
-) -> tuple[str, ...]:
-    """复制已核对的数据树；历史补全可保留已经固定的候选文件。"""
-    excluded = tuple(PurePosixPath(item).as_posix() for item in exclude_paths)
-
-    # 1. A new plugin has no formal bytes; candidate starts from an empty tree.
-    if not source.exists():
-        target.mkdir(parents=True, exist_ok=keep_existing)
-        return ()
-    source_root = source.resolve(strict=True)
-
-    # 2. Candidate data must never retain an edge back into formal storage.
-    for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
-        root = Path(directory)
-        relative_dir = root.relative_to(source_root)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
-        ]
-        retained_files = [
-            name
-            for name in filenames
-            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
-        ]
-        for name in (*dirnames, *retained_files):
-            path = root / name
-            if path.is_symlink():
-                raise RuntimeError(f"candidate 数据不允许复制符号链接: {path}")
-            if not path.is_file() and not path.is_dir():
-                raise RuntimeError(f"candidate 数据只能复制普通文件或目录: {path}")
-
-    # 3. Copy SQLite through its snapshot API; never race WAL/SHM companion files.
-    target.mkdir(parents=True, exist_ok=keep_existing)
-    for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
-        root = Path(directory)
-        relative_dir = root.relative_to(source_root)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
-        ]
-        for name in dirnames:
-            relative = relative_dir / name
-            (target / relative).mkdir(exist_ok=keep_existing)
-        retained = [name for name in filenames
-                    if not _candidate_data_path_is_excluded(relative_dir / name, excluded)]
-        databases = {name for name in retained if _is_sqlite_database(root / name)}
-        sidecars = {name + suffix for name in databases for suffix in ("-wal", "-shm")}
-        for name in retained:
-            if name in sidecars:
-                continue
-            relative = relative_dir / name
-            source_file = root / name
-            target_file = target / relative
-            if keep_existing and target_file.exists():
-                continue
-            if name in databases:
-                _copy_sqlite_snapshot(source_file, target_file)
-            else:
-                _ = shutil.copy2(source_file, target_file)
-
-    # 4. Freeze a relative file inventory for review and Gate evidence.
-    inventory: list[str] = []
-    for directory, _dirnames, filenames in os.walk(target):
-        root = Path(directory)
-        for filename in filenames:
-            inventory.append(root.joinpath(filename).relative_to(target).as_posix())
-    return tuple(sorted(inventory))
-
-
-def _is_sqlite_database(path: Path) -> bool:
-    with path.open("rb") as stream:
-        return stream.read(16) == b"SQLite format 3\x00"
-
-
-_SQLITE_BACKUP_LOCK_TIMEOUT_SECONDS = 5.0
-
-
-def _copy_sqlite_snapshot(source: Path, target: Path) -> None:
-    """Copy one transactionally consistent SQLite snapshot."""
-
-    deadline = time.monotonic() + _SQLITE_BACKUP_LOCK_TIMEOUT_SECONDS
-
-    def check_progress(status: int, remaining: int, total: int) -> None:
-        # Chromium 等外部进程可持有独占锁；失败由候选 owner 撤销临时副本。
-        if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) and time.monotonic() >= deadline:
-            raise TimeoutError(f"候选 SQLite 备份等待锁超时: {source}")
-
-    reader = sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)
-    writer = sqlite3.connect(target, timeout=0.0)
-    try:
-        reader.backup(writer, pages=256, progress=check_progress, sleep=0.05)
-    finally:
-        writer.close()
-        reader.close()
-    _ = shutil.copymode(source, target)
-
-
-def _candidate_data_path_is_excluded(
-    relative_path: Path,
-    excluded: tuple[str, ...],
-) -> bool:
-    relative = relative_path.as_posix()
-    return any(relative == item or relative.startswith(item + "/") for item in excluded)
-
-
-def _replace_snapshot_payload(
-    target: RuntimeSnapshot,
-    source: RuntimeSnapshot,
-) -> None:
-    """刷新无 lease 候选载荷，并保留 store 拥有的生命周期字段。"""
-
-    if target.lease_count or target.state not in {"validating", "committed"}:
-        raise RuntimeError("只能刷新无 lease 的 candidate snapshot")
-    for name in (
-        "generations",
-        "skill_catalog_generation_id",
-        "dashboard_bindings",
-        "web_ui_catalog",
-        "web_ui_catalog_identity",
-        "mobile_ui_registry",
-        "mobile_ui_registry_identity",
-        "channel_registry",
-        "channel_registry_identity",
-        "channel_catalog",
-        "mcp_server_registry",
-        "mcp_server_registry_identity",
-        "managed_process_registry",
-        "managed_process_registry_identity",
-        "workload_registry",
-        "workload_registry_identity",
-        "tool_registry",
-        "plugin_skill_index",
-        "command_registry",
-        "plugin_tool_catalog",
-        "plugin_tool_catalog_identity",
-        "composition_root",
-        "composition_topology",
-        "composition_active_plugin_ids",
-    ):
-        setattr(target, name, getattr(source, name))
-
-
-def _validate_static_manifest_runtime(
-    snapshot: RuntimeSnapshot,
-    generations: Mapping[str, PluginGeneration],
-) -> None:
-    """Reconcile static runtime policy with the frozen Root projection."""
-
-    all_manifests = {
-        plugin_id: generation.static_manifest
-        for plugin_id, generation in generations.items()
-        if generation.static_manifest is not None
-    }
-    if not all_manifests:
-        return
-
-    # 2. Compare every static owner's import-free declarations with the exact
-    # Root-frozen descriptors.  Missing, extra, and field drift all fail closed.
-    if snapshot.composition_active_plugin_ids is None:
-        raise RuntimeError("静态 v3 manifest snapshot 缺少 active plugin projection")
-    active_plugin_ids = set(snapshot.composition_active_plugin_ids)
-    manifests = {
-        plugin_id: manifest
-        for plugin_id, manifest in all_manifests.items()
-        if plugin_id in active_plugin_ids
-    }
-    expected: set[tuple[object, ...]] = set()
-    for plugin_id, manifest in manifests.items():
-        assert manifest is not None
-        expected.update(
-            (
-                plugin_id,
-                declaration.name,
-                declaration.command,
-                declaration.cwd,
-                declaration.env,
-                declaration.required_tools,
-                declaration.candidate_read_only_tools,
-                declaration.endpoint_env,
-                declaration.workload_env,
-                declaration.candidate_env,
-            )
-            for declaration in manifest.mcp_servers
-        )
-    registry = snapshot.mcp_server_registry
-    actual: set[tuple[object, ...]] = set()
-    if registry is not None:
-        static_owners = set(all_manifests)
-        actual.update(
-            (
-                descriptor.owner,
-                descriptor.name,
-                descriptor.command,
-                descriptor.cwd,
-                descriptor.env,
-                descriptor.required_tools,
-                descriptor.candidate_read_only_tools,
-                tuple(
-                    (endpoint.env, endpoint.process)
-                    for endpoint in descriptor.endpoint_env
-                ),
-                tuple(
-                    (endpoint.env, endpoint.workload, endpoint.port)
-                    for endpoint in descriptor.workload_env
-                ),
-                descriptor.candidate_env,
-            )
-            for descriptor in registry.descriptors
-            if descriptor.owner in static_owners
-        )
-    if actual != expected:
-        missing = sorted(expected - actual, key=repr)
-        extra = sorted(actual - expected, key=repr)
-        raise RuntimeError(
-            "静态 manifest MCP 声明与 Root frozen registry 不一致: "
-            f"missing={missing!r} extra={extra!r}"
-        )
-
-    expected_processes: set[tuple[object, ...]] = set()
-    for plugin_id, manifest in manifests.items():
-        assert manifest is not None
-        expected_processes.update(
-            (
-                plugin_id,
-                declaration.name,
-                declaration.command,
-                declaration.cwd,
-                declaration.env,
-                declaration.port_env,
-                declaration.formal_port,
-                declaration.readiness_path,
-                declaration.startup_timeout_seconds,
-            )
-            for declaration in manifest.managed_processes
-        )
-    process_registry = snapshot.managed_process_registry
-    actual_processes: set[tuple[object, ...]] = set()
-    if process_registry is not None:
-        static_owners = set(all_manifests)
-        actual_processes.update(
-            (
-                descriptor.owner,
-                descriptor.name,
-                descriptor.command,
-                descriptor.cwd,
-                descriptor.env,
-                descriptor.port_env,
-                descriptor.formal_port,
-                descriptor.readiness_path,
-                descriptor.startup_timeout_seconds,
-            )
-            for descriptor in process_registry.descriptors
-            if descriptor.owner in static_owners
-        )
-    if actual_processes != expected_processes:
-        missing = sorted(expected_processes - actual_processes, key=repr)
-        extra = sorted(actual_processes - expected_processes, key=repr)
-        raise RuntimeError(
-            "静态 manifest managed process 声明与 Root frozen registry 不一致: "
-            f"missing={missing!r} extra={extra!r}"
-        )
-
-    expected_workloads: set[tuple[object, ...]] = set()
-    for plugin_id, manifest in manifests.items():
-        assert manifest is not None
-        expected_workloads.update(
-            (
-                plugin_id,
-                declaration.name,
-                declaration.image,
-                declaration.command,
-                declaration.ports,
-                declaration.loopback_ports,
-                declaration.data,
-                declaration.health,
-                declaration.limits,
-                declaration.user_namespaces,
-            )
-            for declaration in manifest.workloads
-        )
-    workload_registry = snapshot.workload_registry
-    actual_workloads: set[tuple[object, ...]] = set()
-    if workload_registry is not None:
-        static_owners = set(all_manifests)
-        actual_workloads.update(
-            (
-                descriptor.owner,
-                descriptor.name,
-                descriptor.image,
-                descriptor.command,
-                tuple((item.name, item.number) for item in descriptor.ports),
-                tuple(
-                    (item.name, item.loopback)
-                    for item in descriptor.ports
-                    if item.loopback is not None
-                ),
-                tuple(
-                    (item.name, item.target, item.writable) for item in descriptor.data
-                ),
-                (
-                    descriptor.health.port,
-                    descriptor.health.path,
-                    descriptor.health.timeout_seconds,
-                ),
-                (
-                    descriptor.limits.memory_mb,
-                    descriptor.limits.cpu_count,
-                    descriptor.limits.pids,
-                ),
-                descriptor.user_namespaces,
-            )
-            for descriptor in workload_registry.descriptors
-            if descriptor.owner in static_owners
-        )
-    if actual_workloads != expected_workloads:
-        missing = sorted(expected_workloads - actual_workloads, key=repr)
-        extra = sorted(actual_workloads - expected_workloads, key=repr)
-        raise RuntimeError(
-            "静态 manifest Workload 声明与 Root frozen registry 不一致: "
-            f"missing={missing!r} extra={extra!r}"
-        )
 
 
 def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
@@ -7977,106 +3682,6 @@ def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
         _ = path.relative_to(plugin_dir)
     except ValueError as error:
         raise RuntimeError(f"插件 {label} 越界: {path}") from error
-
-
-def _build_v3_plugin_tool(
-    generations: Mapping[str, PluginGeneration],
-    catalog: PluginToolCatalog,
-    binding: PluginToolBinding,
-) -> Any:
-    """Build one Tool adapter fenced to its exact committed snapshot catalog."""
-
-    from agent.plugin_composition.tool_catalog import _thaw_json
-    from agent.tools.base import (
-        Tool as AgentTool,
-        ToolExecutionContext,
-        ToolResult,
-        get_current_tool_context,
-    )
-
-    # 1. Resolve and validate the handler at snapshot compilation time.
-    generation = generations.get(binding.plugin_id)
-    if generation is None or generation.generation_id != binding.generation_id:
-        raise RuntimeError(
-            "plugin Tool handler 不属于 exact generation: "
-            f"{binding.plugin_id}:{binding.generation_id}"
-        )
-    handler: object = binding.handler
-    if handler is None:
-        handler = binding.module
-        for segment in binding.descriptor.handler_export.replace(":", ".").split("."):
-            handler = getattr(handler, segment, None)
-            if handler is None:
-                break
-    if not inspect.iscoroutinefunction(handler):
-        raise RuntimeError(
-            f"plugin Tool handler 必须是 async function: {binding.descriptor.name}"
-        )
-    signature = inspect.signature(handler)
-    parameters = tuple(signature.parameters.values())
-    positional = {
-        inspect.Parameter.POSITIONAL_ONLY,
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-    }
-    if (
-        len(parameters) != 2
-        or tuple(item.name for item in parameters) != ("context", "arguments")
-        or any(item.kind not in positional for item in parameters)
-        or any(item.default is not inspect.Parameter.empty for item in parameters)
-    ):
-        raise RuntimeError(
-            "plugin Tool handler 签名必须是 async (context, arguments): "
-            f"{binding.descriptor.name}"
-        )
-
-    # 2. Execute only through the exact live catalog bound by ToolRegistry.
-    async def execute(self: Any, **kwargs: Any) -> str | ToolResult:
-        from agent.plugin_composition.diagnostics import plugin_entrypoint
-
-        snapshot = get_current_runtime_snapshot()
-        if snapshot is None or snapshot.plugin_tool_catalog is not catalog:
-            raise RuntimeError(
-                f"plugin Tool 缺少 exact RuntimeSnapshot: {binding.descriptor.name}"
-            )
-        current = catalog.get(binding.descriptor.name)
-        if current is not binding or not binding.is_live():
-            raise RuntimeError(f"plugin Tool binding 已失效: {binding.descriptor.name}")
-        context = get_current_tool_context()
-        if not isinstance(context, ToolExecutionContext):
-            raise RuntimeError(
-                f"plugin Tool 缺少 ToolExecutionContext: {binding.descriptor.name}"
-            )
-        with plugin_entrypoint(
-            plugin_id=binding.plugin_id,
-            generation_id=binding.generation_id,
-            fiber=binding.plugin_id,
-            operation="tool.call",
-            entrypoint=binding.descriptor.name,
-        ):
-            result = await handler(
-                context,
-                MappingProxyType(dict(kwargs)),
-            )
-            if not isinstance(result, (str, ToolResult)):
-                raise RuntimeError(
-                    f"plugin Tool handler 返回值无效: {binding.descriptor.name}"
-                )
-        return result
-
-    tool_class = type(
-        f"V3PluginTool_{binding.descriptor.name}",
-        (AgentTool,),
-        {
-            "name": binding.descriptor.name,
-            "description": binding.descriptor.description,
-            "parameters": cast(
-                dict[str, Any],
-                _thaw_json(binding.descriptor.parameters),
-            ),
-            "execute": execute,
-        },
-    )
-    return tool_class()
 
 
 def _source_revision(plugin_dir: Path) -> str:
@@ -8157,72 +3762,15 @@ def _path_metadata(path: Path) -> bytes:
     return f"{path}:{stat.st_mtime_ns}:{stat.st_size}".encode()
 
 
-def _skill_descriptions(generation: PluginGeneration) -> dict[str, str]:
-    catalog = generation.skill_catalog
-    if catalog is None:
-        return {}
-    return {
-        name: record.description
-        for name, record in sorted(catalog.normal.records.items())
-    }
-
-
-def _drift_skill_descriptions(generation: PluginGeneration) -> dict[str, str]:
-    catalog = generation.skill_catalog
-    if catalog is None:
-        return {}
-    return {
-        name: record.description
-        for name, record in sorted(catalog.drift.records.items())
-    }
-
-
-def _skill_body_hashes(
-    generation: PluginGeneration,
-    *,
-    drift: bool,
-) -> dict[str, str]:
-    catalog = generation.skill_catalog
-    if catalog is None:
-        return {}
-    records = catalog.drift.records if drift else catalog.normal.records
-    return {
-        name: hashlib.sha256(record.content.encode()).hexdigest()
-        for name, record in sorted(records.items())
-    }
-
-
-def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
-    snapshot = generation.runtime_snapshot
-    if snapshot is None or snapshot.tool_registry is None:
-        return []
-    registry = snapshot.mcp_server_registry
-    if registry is None:
-        return []
-    names: set[str] = set()
-    for descriptor in registry.descriptors:
-        if descriptor.owner == generation.plugin_id:
-            names.update(
-                snapshot.tool_registry.get_source_tool_names(
-                    "mcp",
-                    descriptor.name,
-                )
-            )
-    return sorted(names)
-
-
 def _log_candidate_status(result: dict[str, object]) -> None:
     logger.info(
-        "plugin_candidate_status plugin=%s gate=%s active=%s prepared=%s "
-        "revision=%s counts=skills:%d,drift_skills:%d,mcp:%d",
+        "plugin_candidate_status plugin=%s preparation=%s active=%s prepared=%s "
+        "revision=%s",
         result["plugin_id"],
-        result["gate_status"],
+        result["preparation_state"],
         result["active_generation"],
         result["prepared_generation"] or "-",
         str(result["candidate_revision"])[:12],
-        len(cast(list[object], result["skills"])),
-        len(cast(dict[object, object], result["drift_skill_descriptions"])),
-        len(cast(list[object], result["mcp_tools"])),
     )
     logger.debug(
         "plugin_candidate_status_detail %s",

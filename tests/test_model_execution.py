@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import shutil
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 import pytest
@@ -12,21 +14,25 @@ from aiohttp import web
 
 from agent.config_models import Config
 from agent.plugin_composition import (
-    AddConnection,
-    AddModel,
-    CapabilitySources,
     CHAT_MODELS,
-    ModelCapabilities,
-    ModelKind,
-    ModelRole,
     ModelRequest,
-    SetDefaultModel,
 )
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bootstrap import tools as bootstrap
 from bootstrap.init_workspace import init_workspace
 from core.net.http import SharedHttpResources
+
+
+async def _model_command(control: RuntimeModelControl, payload: dict[str, object]) -> dict[str, object]:
+    """Configure the installed Models owner through its public RPC boundary."""
+
+    result = await control.invoke_rpc("models/command", payload)
+    assert isinstance(result, dict)
+    assert result.get("status") == 200, result
+    body = result.get("body")
+    assert isinstance(body, dict)
+    return body
 
 
 @pytest.mark.asyncio
@@ -73,35 +79,55 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
     init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(), workspace, http)
+    sources = tmp_path / "plugins"
+    for name in ("ui", "models", "openai_compatible"):
+        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[sources])
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
         control = RuntimeModelControl(core.plugin_manager.snapshot_store)
-        await control.apply(
-            AddConnection(
-                0, "local", "Local", "openai-compatible",
-                f"http://127.0.0.1:{port}/v1", "fixture", {"api_key": "fixture"},
-            )
-        )
-        capabilities = ModelCapabilities(
-            context_window=32000,
-            max_output_tokens=1024,
-            supports_tool_calls=True,
-            supported_reasoning_efforts=("low", "high"),
-        )
-        await control.apply(
-            AddModel(1, "first", "local", ModelKind.CHAT, "first", capabilities, CapabilitySources())
-        )
-        await control.apply(SetDefaultModel(2, ModelRole.DEFAULT, "first"))
+        await _model_command(control, {
+            "type": "add_connection",
+            "expected_revision": 0,
+            "connection_id": "local",
+            "name": "Local",
+            "driver_id": "openai-compatible",
+            "endpoint": f"http://127.0.0.1:{port}/v1",
+            "auth_identity": "fixture",
+            "credential": {"api_key": "fixture"},
+        })
+        capabilities = {
+            "context_window": 32000,
+            "max_output_tokens": 1024,
+            "supports_tool_calls": True,
+            "supported_reasoning_efforts": ["low", "high"],
+        }
+        await _model_command(control, {
+            "type": "add_model",
+            "expected_revision": 1,
+            "model_id": "first",
+            "connection_id": "local",
+            "kind": "chat",
+            "model": "first",
+            "capabilities": capabilities,
+            "capability_sources": {},
+        })
+        await _model_command(control, {
+            "type": "set_default",
+            "expected_revision": 2,
+            "role": "default",
+            "model_id": "first",
+        })
 
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
             context = snapshot.composition_root.context
             models_service = context.require(CHAT_MODELS)
             async with models_service.execution() as first_execution:
-                first_descriptor = first_execution.chat(ModelRole.AGENT).descriptor
+                first_descriptor = first_execution.chat("agent").descriptor
                 assert first_descriptor.model_id == "first"
-                response = await first_execution.chat(ModelRole.AGENT).complete(
+                response = await first_execution.chat("agent").complete(
                     ModelRequest(
                         messages=({"role": "user", "content": "first"},),
                         on_delta=lambda _delta: _noop_delta(),
@@ -112,25 +138,37 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
 
                 async with models_service.execution() as nested:
                     assert nested is first_execution
-                    assert nested.chat(ModelRole.AGENT).descriptor == first_descriptor
+                    assert nested.chat("agent").descriptor == first_descriptor
 
-                await control.apply(
-                    AddModel(3, "second", "local", ModelKind.CHAT, "second", capabilities, CapabilitySources())
-                )
-                await control.apply(SetDefaultModel(4, ModelRole.DEFAULT, "second"))
+                await _model_command(control, {
+                    "type": "add_model",
+                    "expected_revision": 3,
+                    "model_id": "second",
+                    "connection_id": "local",
+                    "kind": "chat",
+                    "model": "second",
+                    "capabilities": capabilities,
+                    "capability_sources": {},
+                })
+                await _model_command(control, {
+                    "type": "set_default",
+                    "expected_revision": 4,
+                    "role": "default",
+                    "model_id": "second",
+                })
 
                 # 已打开的 execution 固定旧 descriptor；默认切换只影响下一次 execution。
                 async with models_service.execution() as still_first:
                     assert still_first is first_execution
-                    assert still_first.chat(ModelRole.AGENT).descriptor == first_descriptor
-                await first_execution.chat(ModelRole.AGENT).complete(
+                    assert still_first.chat("agent").descriptor == first_descriptor
+                await first_execution.chat("agent").complete(
                     ModelRequest(
                         messages=({"role": "user", "content": "retry"},),
                         on_delta=lambda _delta: _noop_delta(),
                     )
                 )
                 assert calls[-1]["model"] == "first"
-                assert first_execution.chat(ModelRole.AGENT).descriptor == first_descriptor
+                assert first_execution.chat("agent").descriptor == first_descriptor
 
                 lease_count = snapshot.lease_count
 
@@ -145,15 +183,15 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
                 assert transports[0] is transports[1]
 
             with pytest.raises(RuntimeError, match="连接已关闭"):
-                await first_execution.chat(ModelRole.AGENT).complete(
+                await first_execution.chat("agent").complete(
                     ModelRequest(messages=({"role": "user", "content": "closed"},))
                 )
 
             async with models_service.execution() as second_execution:
-                second_descriptor = second_execution.chat(ModelRole.AGENT).descriptor
+                second_descriptor = second_execution.chat("agent").descriptor
                 assert second_descriptor.model_id == "second"
                 assert second_descriptor.binding_id != first_descriptor.binding_id
-                await second_execution.chat(ModelRole.AGENT).complete(
+                await second_execution.chat("agent").complete(
                     ModelRequest(
                         messages=({"role": "user", "content": "second"},),
                         on_delta=lambda _delta: _noop_delta(),

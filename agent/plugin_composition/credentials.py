@@ -14,14 +14,18 @@ class CredentialClients:
     def __init__(self, factories: Mapping[str, ProviderClientFactory] | None):
         self._factories = None if factories is None else dict(factories)
 
-    @asynccontextmanager
-    async def open(self, ctx: Context, refs: Mapping[str, CredentialRef]) -> AsyncGenerator[ProviderClient]:
+    async def create(self, ctx: Context, refs: Mapping[str, CredentialRef]) -> ProviderClient:
+        """为实际贡献 Context 创建凭据句柄；调用方负责确认释放。"""
         owner = ctx.require_runtime_owner(CREDENTIALS, self)
         if self._factories is None:
             raise RuntimeError("candidate 验证期禁止读取正式凭据")
         if owner not in self._factories:
-            raise PermissionError("插件没有声明凭据读取范围")
-        client = await self._factories[owner].create(refs)
+            raise PermissionError("插件没有当前固定输入的凭据授权")
+        return await self._factories[owner].create(refs)
+
+    @asynccontextmanager
+    async def open(self, ctx: Context, refs: Mapping[str, CredentialRef]) -> AsyncGenerator[ProviderClient]:
+        client = await self.create(ctx, refs)
         try:
             yield client
         finally:

@@ -9,7 +9,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -26,21 +25,6 @@ LOCK_SCHEMA_VERSION = 1
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(
     r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?"
-)
-STATIC_MANIFEST_FILENAME = "akashic.plugin.toml"
-MANIFEST_ALLOWED_KEYS = frozenset(
-    {
-        "schema_version",
-        "name",
-        "version",
-        "api_version",
-        "entrypoint",
-        "python",
-        "validation",
-        "mcp",
-        "processes",
-        "channel_credentials",
-    }
 )
 EXPECTED_PLUGIN_IDS: tuple[str, ...] = (
     "citation",
@@ -341,12 +325,11 @@ def _matching_refs(output: str, sha: str) -> tuple[str, ...]:
 def _inspect_static_plugin(root: Path, plugin_id: str) -> dict[str, object]:
     """Inspect manifest, v3 namespace, and declared Core imports."""
 
-    # 1. Parse the import-free manifest and choose its declared entrypoint.
+    # 1. 读取静态身份，入口固定为制品根 plugin.py。
     manifest, manifest_errors = _inspect_manifest(root)
-    entrypoint_name = str(manifest.get("entrypoint", "plugin.py"))
-    entrypoint = root / entrypoint_name
+    entrypoint = root / "plugin.py"
 
-    # 2. Parse the namespace AST and enforce api_version=3/apply(ctx, config).
+    # 2. Parse the namespace AST and enforce api_version=3/apply(ctx).
     namespace = _inspect_namespace(root, entrypoint)
 
     # 3. Scan production Python sources for generic v2 import and class edges.
@@ -354,18 +337,6 @@ def _inspect_static_plugin(root: Path, plugin_id: str) -> dict[str, object]:
     forbidden_classes = _find_forbidden_v2_classes(root)
     missing_core_imports = _find_missing_core_imports(root)
     errors = [*manifest_errors, *cast(list[str], namespace["errors"])]
-    manifest_name = manifest.get("name")
-    namespace_name = namespace.get("name")
-    if (
-        isinstance(manifest_name, str)
-        and isinstance(namespace_name, str)
-        and manifest_name != namespace_name
-    ):
-        errors.append(
-            f"manifest/module name 不一致: {manifest_name!r} != {namespace_name!r}"
-        )
-    if manifest.get("api_version") == 3 and namespace.get("api_version") != 3:
-        errors.append("manifest/module api_version 不一致")
     if forbidden:
         errors.append("发现 generic v2 import")
     if forbidden_classes:
@@ -439,55 +410,21 @@ def _find_missing_core_imports(root: Path) -> list[dict[str, object]]:
 
 
 def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:
-    manifest_path = root / STATIC_MANIFEST_FILENAME
-    evidence: dict[str, object] = {
-        "path": STATIC_MANIFEST_FILENAME,
-        "status": "missing",
-    }
-    if not manifest_path.is_file() or manifest_path.is_symlink():
-        return evidence, [f"缺少静态 manifest: {manifest_path}"]
+    """复用安装 loader，身份只从 plugin.py 读取。"""
+    from agent.plugins.static_manifest import load_static_plugin_manifest
+
     try:
-        raw = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        return evidence, [f"静态 manifest 无法解析: {error}"]
-    errors: list[str] = []
-    if not isinstance(raw, dict):
-        return evidence, ["静态 manifest 根必须是对象"]
-    unknown = sorted(set(raw) - MANIFEST_ALLOWED_KEYS)
-    if unknown:
-        errors.append(f"静态 manifest 包含未知字段: {unknown}")
-    for field in ("schema_version", "name", "version", "api_version", "entrypoint"):
-        if field not in raw:
-            errors.append(f"静态 manifest 缺少字段: {field}")
-    if raw.get("schema_version") != 1:
-        errors.append("静态 manifest schema_version 必须为 1")
-    if raw.get("api_version") != 3:
-        errors.append("静态 manifest api_version 必须为 3")
-    if not isinstance(raw.get("name"), str) or not str(raw.get("name", "")).strip():
-        errors.append("静态 manifest name 必须是非空字符串")
-    if (
-        not isinstance(raw.get("version"), str)
-        or not str(raw.get("version", "")).strip()
-    ):
-        errors.append("静态 manifest version 必须是非空字符串")
-    entrypoint = raw.get("entrypoint")
-    if not isinstance(entrypoint, str) or not entrypoint.strip():
-        errors.append("静态 manifest entrypoint 必须是非空字符串")
-    elif not _safe_relative_path(entrypoint):
-        errors.append(f"静态 manifest entrypoint 必须位于 artifact 内: {entrypoint}")
-    elif (root / entrypoint).is_symlink() or not (root / entrypoint).is_file():
-        errors.append(f"静态 manifest entrypoint 不存在或是 symlink: {entrypoint}")
-    evidence.update(
-        {
-            "status": "passed" if not errors else "failed",
-            "name": raw.get("name"),
-            "version": raw.get("version"),
-            "api_version": raw.get("api_version"),
-            "entrypoint": entrypoint,
-            "sha256": _sha256(manifest_path),
-        }
-    )
-    return evidence, errors
+        identity = load_static_plugin_manifest(root)
+    except (OSError, ValueError) as error:
+        return {"path": "plugin.py", "status": "failed"}, [str(error)]
+    return {
+        "path": "plugin.py",
+        "status": "passed",
+        "name": identity.name,
+        "version": identity.version,
+        "api_version": identity.api_version,
+        "sha256": _sha256(root / "plugin.py"),
+    }, []
 
 
 def _inspect_namespace(root: Path, entrypoint: Path) -> dict[str, object]:
@@ -507,64 +444,23 @@ def _inspect_namespace(root: Path, entrypoint: Path) -> dict[str, object]:
     except (OSError, SyntaxError) as error:
         errors.append(f"v3 entrypoint 无法解析: {error}")
         return evidence
-    api_version = _top_level_literal(tree, "api_version")
-    name = _top_level_literal(tree, "name")
     apply_nodes = [
         node
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == "apply"
     ]
-    apply_ok = False
-    if len(apply_nodes) == 1:
-        args = apply_nodes[0].args
-        positional = [*args.posonlyargs, *args.args]
-        apply_ok = (
-            [item.arg for item in positional] == ["ctx", "config"]
-            and args.vararg is None
-            and args.kwarg is None
-            and not args.kwonlyargs
-            and not args.defaults
-            and not args.kw_defaults
-        )
-    if api_version != 3:
-        errors.append(f"namespace api_version 必须为 3: {api_version!r}")
-    if not isinstance(name, str) or not name.strip():
-        errors.append("namespace name 必须是非空字符串")
+    # 实际装配负责调用合法性；静态扫描不另建参数命名协议。
+    apply_ok = len(apply_nodes) == 1
     if not apply_ok:
-        errors.append("namespace 必须提供精确 apply(ctx, config)")
+        errors.append("namespace 必须提供唯一 apply 入口")
     evidence.update(
         {
             "status": "passed" if not errors else "failed",
-            "api_version": api_version,
-            "name": name,
-            "apply_signature": "apply(ctx, config)" if apply_ok else None,
+            "apply_entrypoint": "module-level apply" if apply_ok else None,
         }
     )
     return evidence
-
-
-def _top_level_literal(tree: ast.Module, name: str) -> object:
-    for node in tree.body:
-        value: ast.AST | None = None
-        if isinstance(node, ast.Assign):
-            if any(
-                isinstance(target, ast.Name) and target.id == name
-                for target in node.targets
-            ):
-                value = node.value
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == name
-        ):
-            value = node.value
-        if value is not None:
-            try:
-                return ast.literal_eval(value)
-            except (ValueError, TypeError):
-                return None
-    return None
 
 
 def _find_forbidden_v2_imports(root: Path) -> list[dict[str, object]]:

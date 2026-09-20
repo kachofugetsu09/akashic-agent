@@ -1,3 +1,4 @@
+from plugins.content.plugin import CONTENT
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -6,24 +7,24 @@ import shutil
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.snapshot import lease_runtime_snapshot
-from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.akasha.plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
-from plugins.wake.api import DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
+from plugins.wake.api import Config, DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
 from plugins.wake.request import (
     Request,
     TOOLS as WAKE_TOOLS,
     WAKE_PROGRAM,
     WAKE_TOOLS_VIEW,
 )
-from plugins.tools.plugin import ToolView
 from plugins.wake.source import Source
 from plugins.wake.state import WakeState
 from session.message import Input, Output, ToolResult
@@ -35,24 +36,23 @@ CONTROLS = {}
 
 @asynccontextmanager
 async def application(tmp_path, *, wake_delivery=False):
-    host, store, log, artifacts, sources = environment(tmp_path, reply=True)
-    for name in ("sources", "conversation", "react", "wake", "delivery", "eventmail", "drift"):
+    host, store, log, artifacts, sources = environment(tmp_path, reply=True, models=False)
+    for name in ("commands", "ui", "conversation", "react", "reply_program", "wake", "delivery", "eventmail", "drift"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
-    (sources / "wake/akashic.plugin.toml").write_text(
-        'schema_version = 1\nname = "wake"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
-    module = sources / "wake/message_plugin.py"
+    module = sources / "wake/plugin.py"
     module.write_text(module.read_text() + '''
 from agent.plugin_composition import ServiceKey
 _original_apply = apply
-async def apply(ctx, config):
-    await _original_apply(ctx, config)
+async def apply(ctx):
+    await _original_apply(ctx)
     await ctx.provide(ServiceKey("fixture.wake"), ctx)
 ''')
     text = module.read_text()
     if wake_delivery:
-        text = text.replace("await _original_apply(ctx, config)",
-            'await _original_apply(ctx, Config.model_validate({"delivery": {"channel": "test", "recipient": "room", "session_id": "test:room"}}))')
+        config_path = tmp_path / "workspace/plugin-data/wake-builtin"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        save_config(config_path, {"delivery": {"channel": "test", "recipient": "room", "session_id": "test:room"}})
     text += "\nfrom tests.test_wake_messages import CONTROLS\n_original_runtime = Runtime\ndef Runtime(ctx, config):\n    runtime = _original_runtime(ctx, config)\n    control = CONTROLS[" + repr(str(tmp_path)) + "]\n    control['runtime'] = runtime\n    deadline = runtime.duties.deadline\n    def observe(now):\n        value = deadline(now)\n        control.setdefault('deadlines', []).append(value)\n        control['due_read'].set()\n        return value\n    runtime.duties.deadline = observe\n    finish_attempt = runtime.state.finish_attempt\n    def observe_attempt(**kwargs):\n        finish_attempt(**kwargs)\n        control['attempts'].put_nowait(kwargs)\n    runtime.state.finish_attempt = observe_attempt\n    return runtime\n"
     module.write_text(text)
     provider = sources / "models_fixture"
@@ -61,14 +61,17 @@ async def apply(ctx, config):
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall
-from plugins.models.projection import MODEL_CALLS
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
+from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
+from plugins.content.plugin import CONTENT
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 from plugins.tools.plugin import TOOLS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.akasha.plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS
 from plugins.akasha.interest import SEMANTIC_INTEREST, SemanticInterest
@@ -79,11 +82,11 @@ api_version = 3
 name = "models_fixture"
 version = "1.0.0"
 inject = (DELIVERY_SENDERS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, TURN_PROJECTION, TOOLS)
-async def apply(ctx, config):
+async def apply(ctx):
     control = CONTROLS[CONTROL_PATH]
     async def embed(texts):
         return [[1.0, 0.0] for _ in texts]
-    await ctx.provide(SEMANTIC_INTEREST, SemanticInterest(Learning(ctx.require(TURN_PROJECTION), owner="akasha"),
+    await ctx.provide(SEMANTIC_INTEREST, SemanticInterest(Learning(ctx.require(TURN_PROJECTION), owner="akasha", post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect),
         ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS),
         lambda: (LearningConfig(embedding_model="fixture", dimension=2, sources=("conversation",)), embed)))
     @asynccontextmanager
@@ -124,7 +127,7 @@ async def apply(ctx, config):
             return LLMResponse(None, [ToolCall("decision", name, args)])
     descriptor = BoundModelDescriptor(binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture", driver_contract_version="1",
-        auth_identity="fixture", model="fixture", role=ModelRole.AGENT, reasoning_effort=None,
+        auth_identity="fixture", model="fixture", role="agent", reasoning_effort=None,
         capabilities=ModelCapabilities(context_window=10000), capability_sources=CapabilitySources(), capability_digest="fixture")
     model = _BoundChat(descriptor, Driver(), store)
     class Models:
@@ -134,6 +137,10 @@ async def apply(ctx, config):
             yield SimpleNamespace(chat=lambda role: model)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
     class Sender:
         idempotent = True
         async def send(self, key, address, message):
@@ -172,18 +179,23 @@ async def apply(ctx, config):
 
 def request(ctx, owner, now, *, proposals=(), alert_ref=None):
     bindings = ctx.require(BINDINGS)
-    view = ToolView.combine(
-        ctx.require(WAKE_TOOLS_VIEW),
-        ctx.require(AKASHA_TOOLS),
-        ctx.require(STANDARD_WEB_TOOLS),
-    )
+    catalog = ctx.require(TOOLS)
+    view = catalog.view(*(
+        ref
+        for source_view in (
+            ctx.require(WAKE_TOOLS_VIEW),
+            ctx.require(AKASHA_TOOLS),
+            ctx.require(STANDARD_WEB_TOOLS),
+        )
+        for ref in source_view.refs
+    ))
     return Request(
         flow_id="a" * 32,
         owner=owner,
         now=now,
         timezone="UTC",
         target=DeliveryTarget(channel="test", recipient="room", session_id="test:room"),
-        sink=Sink(name="test", binding_id=ctx.require(DELIVERY_SENDERS).bind("test", bindings), address="room"),
+        sink={"name": "test", "binding_id": ctx.require(DELIVERY_SENDERS).bind("test", bindings), "address": "room"},
         program_binding=bindings.bind(WAKE_PROGRAM, {}),
         tools={
             name: ctx.require(TOOLS).bind(view.select(name), bindings)
@@ -397,7 +409,6 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
 
 @pytest.mark.asyncio
 async def test_runtime_timer_captures_original_drift_and_records_real_completion(tmp_path, monkeypatch):
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         now = datetime.now(timezone.utc)
@@ -425,13 +436,51 @@ async def test_runtime_timer_captures_original_drift_and_records_real_completion
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("can_retry", [False, True])
-async def test_model_failure_keeps_real_control_and_original_retry_classification(tmp_path, can_retry):
+async def test_runtime_rebuilds_cross_generation_config_values(tmp_path):
+    from pydantic import BaseModel, ConfigDict
+    from typing import cast
+    from plugins.wake.runtime import Runtime
+    from plugins.wake.api import Config as CurrentConfig, DeliveryTarget as CurrentTarget
+
+    class PreviousDeliveryTarget(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        channel: str
+        recipient: str
+        session_id: str
+
+    class PreviousConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        delivery: PreviousDeliveryTarget | None = None
+        timezone: str = "Asia/Shanghai"
+
+    async with application(tmp_path) as (host, log, ctx, source, control):
+        now = datetime.now(timezone.utc)
+        ctx.require(DRIFT_PROPOSALS).propose("duty", "1", {"summary": "old generation"}, now)
+        previous = PreviousConfig(
+            delivery=PreviousDeliveryTarget(
+                channel="test", recipient="room", session_id="test:room"
+            )
+        )
+        runtime = Runtime(ctx, cast(Config, previous))
+        original = runtime.capture("d" * 32, await runtime.duties.check(now), now)
+        assert original is not None
+        assert type(runtime.config) is CurrentConfig
+        assert type(runtime.config.delivery) is CurrentTarget
+        assert original.target == runtime.config.delivery
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["authentication", "rate_limit", "budget"])
+async def test_model_failure_keeps_real_control_and_original_retry_classification(tmp_path, failure):
     from agent.plugin_composition.models import AuthenticationError, RateLimitError
     from plugins.wake.request import retryable
     from session.message import Control
     async with application(tmp_path) as (host, log, ctx, source, control):
-        control["failure"] = (RateLimitError if can_retry else AuthenticationError)("provider refused")
+        can_retry = failure == "rate_limit"
+        if failure == "budget":
+            control["tool"] = "unavailable_tool"
+        else:
+            control["failure"] = (RateLimitError if can_retry else AuthenticationError)("provider refused")
         now = datetime.now(timezone.utc)
         ctx.require(DRIFT_PROPOSALS).propose("duty", "1", {"summary": "try once"}, now, next_due=now + timedelta(minutes=5))
         original = request(ctx, "drift", now, proposals=ctx.require(DRIFT_WAKE).snapshot(now)["proposals"])
@@ -441,7 +490,7 @@ async def test_model_failure_keeps_real_control_and_original_retry_classificatio
         rows = log.reader(original.session_id).snapshot()
         assert isinstance(rows[-1].body, Control) and retryable(rows[-1]) is can_retry
         assert bool(ctx.require(DRIFT_WAKE).snapshot(now)["proposals"]) is can_retry
-        assert not control["sent"] and len(control["calls"]) == 1
+        assert not control["sent"] and len(control["calls"]) == (40 if failure == "budget" else 1)
         assert await source.start(original.flow_id) is None
 
 
@@ -482,8 +531,7 @@ async def test_reasoning_only_response_defers_one_flow_and_runtime_handles_the_n
 async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory_cue(tmp_path):
     from plugins.content.plugin import check_text
     from plugins.conversation.source import update_selection
-    from plugins.models.selection import check_selection
-    from plugins.wake.api import Config
+    from plugins.models.selection import MODEL_SELECTION, check_selection
     from plugins.wake.runtime import Runtime
     from plugins.akasha.learning import Learning
     from plugins.turn_projection.plugin import TURN_PROJECTION
@@ -492,7 +540,10 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         now = datetime.now(timezone.utc)
         writer = log.writer("test:room", author="user", source="fixture", body_types=(Input,),
             content={"text": check_text, "model.selection": check_selection},
-            metadata_keys=frozenset({"model_selection", "model_runtime_override"}), update_metadata=update_selection)
+            metadata_keys=frozenset({"model_selection", "model_runtime_override"}),
+            update_metadata=lambda body: update_selection(
+                body, write_saved=ctx.require(MODEL_SELECTION).write_saved,
+            ))
         def select(identity, model):
             writer.append(identity, Input((ContentPart("model.selection", {"model_id": model, "reasoning_effort": "high"}),)))
         select("old", "chosen-original")
@@ -508,14 +559,14 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         assert control["models"] == [("chosen-original", "high")]
         phase = log.reader(original.session_id).get(original.phase_id("drift"))
         assert phase is not None
-        cue = Learning(ctx.require(TURN_PROJECTION), owner="akasha").text(phase)
+        cue = Learning(ctx.require(TURN_PROJECTION), owner="akasha", post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect).text(phase)
         assert "my interests" in cue
         assert str(control["calls"][0].messages).count("my interests") == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", ["input", "ready", "delivered"])
-async def test_reopen_uses_original_program_sender_and_input_after_source_changes(tmp_path, monkeypatch, fault):
+async def test_reopen_current_plugins_handle_original_facts_after_source_changes(tmp_path, monkeypatch, fault):
     from agent.plugins.manager import PluginManager
     from bus.event_bus import EventBus
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
@@ -539,11 +590,16 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
             with pytest.raises(OSError, match="interrupt before"):
                 await asyncio.wait_for(task.join(), 10)
         saved = log.reader(original.session_id).snapshot()
+        stable_model = host.current_snapshot.generations["models_fixture"].archive_ref
     module = tmp_path / "plugins/models_fixture/plugin.py"
-    module.write_text(module.read_text().replace("async def complete(self, request):",
-        'async def complete(self, request):\n            raise RuntimeError("changed model must not run")').replace(
-        "async def send(self, key, address, message):",
-        'async def send(self, key, address, message):\n            raise RuntimeError("changed sender must not run")'))
+    changed = module.read_text()
+    if fault == "input":
+        # 只有阶段 Input 的未启动请求可以使用新 stable；让新 provider 留下可观察的新正文。
+        changed = changed.replace('"useful notification"', '"new provider notification"')
+    else:
+        changed = changed.replace("async def complete(self, request):",
+            'async def complete(self, request):\n            raise RuntimeError("completed model work must not run again")')
+    module.write_text(changed)
     workspace = tmp_path / "workspace"
     log = MessageLog(workspace / "sessions.db")
     metadata = ArtifactStore(workspace / "sessions.db")
@@ -552,6 +608,12 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
         installed_cache_root=tmp_path / "cache", message_log=log, channel_attachment_store=artifacts)
     try:
         await host.load_all()
+        assert host.current_snapshot.generations["models_fixture"].archive_ref == stable_model
+        # 源码变化不改变 stable；由测试调用者显式发布，再接纳原 Wake 工作。
+        assert await host.prepare_candidate("models_fixture") is not None
+        publication = await host.publish_prepared("models_fixture")
+        assert publication["publication_state"] == "committed"
+        assert host.current_snapshot.generations["models_fixture"].archive_ref != stable_model
         await host.start_runtime()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context.require(ServiceKey("fixture.wake"))
@@ -562,8 +624,22 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
                     await asyncio.wait_for(task.join(), 10)
                 assert source.pending() == ()
                 assert await source.start(original.flow_id) is None
-                assert ctx.require(DRIFT_DELIVERY).lookup(original.accepted)["status"] == "settled"
-        assert len(control["calls"]) == 1 and len(control["sent"]) == 1
+                delivery = ctx.require(DRIFT_DELIVERY).lookup(original.accepted)
+                if fault == "input":
+                    delivery_execution = ctx.require(DELIVERY).open(ctx)
+                    receipt = delivery_execution.receipt(original.notification_id, "test")
+                    persisted_binding = delivery_execution.destination(
+                        original.notification_id, "test"
+                    ).binding_id
+        if fault == "input":
+            # 未启动的 Wake 程序可以在当前 stable 运行，但投递仍固定使用原 Sink。
+            assert delivery is not None and delivery["status"] == "settled"
+            assert receipt is not None and receipt.status == "delivered"
+            assert persisted_binding == original.sink["binding_id"]
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 1
+        else:
+            assert delivery is not None and delivery["status"] == "settled"
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 1
         assert log.reader(original.session_id).snapshot()[:len(saved)] == saved
         assert len(log.reader(original.session_id).snapshot()) == 5
     finally:
@@ -575,7 +651,6 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
 @pytest.mark.asyncio
 @pytest.mark.parametrize("where", ["admission", "source", "maintenance"])
 async def test_runtime_failure_closes_timer_audit_before_stopping_both_loops(tmp_path, monkeypatch, where):
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         now = datetime.now(timezone.utc)
@@ -601,7 +676,6 @@ async def test_runtime_failure_closes_timer_audit_before_stopping_both_loops(tmp
 
 @pytest.mark.asyncio
 async def test_runtime_stop_drains_its_active_source_before_returning(tmp_path, monkeypatch):
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         control["release"].clear()
@@ -660,7 +734,6 @@ async def test_new_drift_wakes_idle_runtime_and_replaces_later_deadline(tmp_path
 
 @pytest.mark.asyncio
 async def test_missing_target_only_maintains_pool_then_reload_can_admit_original_duty(tmp_path, monkeypatch):
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         now = datetime.now(timezone.utc)
@@ -703,7 +776,6 @@ async def test_missing_target_only_maintains_pool_then_reload_can_admit_original
 async def test_cancel_during_timer_cleanup_closes_fired_audit_and_drains_handle(tmp_path, monkeypatch):
     from agent.control.timer import TimerReceipt, TimerStatus
     from agent.plugin_composition.timers import TIMERS
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         runtime = Runtime(ctx, Config())

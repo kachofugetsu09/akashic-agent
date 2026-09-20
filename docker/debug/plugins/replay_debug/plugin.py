@@ -18,7 +18,6 @@ from agent.plugin_composition import (
     DeliveryStatus,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
-    ServiceView,
     StopReceipt,
 )
 from core.clock import clock_from_env
@@ -37,14 +36,9 @@ class Config(BaseModel):
     replay_token: CredentialRef | None = None
 
 
-def is_active(_services: ServiceView) -> bool:
-    """Enable replay declarations only when the debug replay profile is mounted."""
-
-    return _replay_source_enabled()
-
-
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Register typed replay source, MCP, and optional outbound capture effects."""
+    config = Config.model_validate(ctx.config)
 
     # 1. The replay profile owns all declarations; a normal debug runtime stays inert.
     if not _replay_source_enabled():
@@ -57,9 +51,9 @@ async def apply(ctx: Context, config: object) -> None:
             ChannelDefinition(
                 name="replay",
                 capabilities=frozenset({ChannelCapability.OUTBOUND}),
-                factory_export="build_channel",
+                factory=build_channel,
+            config=ctx.config,
                 inbound_identity=None,
-                credential_paths=("replay_token",),
             ),
         )
 
@@ -127,8 +121,8 @@ def _replay_source_enabled() -> bool:
     )
 
 
-def _capture_channel_enabled(config: object) -> bool:
-    token = getattr(config, "replay_token", None)
+def _capture_channel_enabled(config: Config) -> bool:
+    token = config.replay_token
     return bool(
         os.environ.get("AKASHIC_REPLAY_OUTBOX_FILE", "").strip()
         and isinstance(token, CredentialRef)

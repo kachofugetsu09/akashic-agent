@@ -1,43 +1,51 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING
-from plugins.content.plugin import CONTENT
-from plugins.context.plugin import CONTEXT
-from plugins.context.materials import MATERIALS
-from plugins.conversation.plugin import CONVERSATION
-from plugins.conversation.program import run_reply
-from plugins.models.projection import MODEL_CALLS
-from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.reply.api import REPLY_PROGRAM
-from plugins.react.plugin import REACT
-from plugins.tools.api import Denied
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
+
+
+
+from .inputs import CONTENT, CHECK_ORIGIN, CONVERSATION, TOOL_BIND_SAVED
+
+from .inputs import DELIVERY
+from .inputs import DELIVERY_SENDERS
+from .inputs import REPLY_PROGRAM
+
+from .inputs import ALL_TOOLS, TOOLS
+
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.bindings import BINDINGS
-from session.log import MessageReader
-from session.message import Message
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import Message
 
 from .prompts import build_spawn_subagent_prompt
 from .request import PROFILE_TOOLS, Request, SpawnInput
 from .runtime import SUBAGENT_PROGRAM, Subagents
 from .tools import Manage, ManageInput, Spawn
 
+REPLY_EXECUTE = ServiceKey[Callable[..., Awaitable[Message]]]("reply.execute.v1")
+
+
 api_version = 3
 name = "subagent"
 version = "4.0.0"
 desc = "独立内部消息任务，固定工具权限并向父会话回传"
+
+
+
+
 inject = (
+    CONTENT,
+    CHECK_ORIGIN,
+    TOOL_BIND_SAVED,
     BINDINGS,
     TASKS,
     MESSAGE_CATALOG,
@@ -46,17 +54,11 @@ inject = (
     SESSION_ADMISSION,
     TOOLS,
     ALL_TOOLS,
-    CHAT_MODELS,
-    CONTENT,
-    CONTEXT,
-    MATERIALS,
-    REACT,
-    MODEL_CALLS,
-    TURN_PROJECTION,
     CONVERSATION,
     DELIVERY,
     DELIVERY_SENDERS,
     REPLY_PROGRAM,
+    REPLY_EXECUTE,
 )
 workspace_roots = ("subagent-runs",)
 workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
@@ -68,8 +70,9 @@ class Config(BaseModel):
     max_output_tokens: int = Field(default=4096, gt=0)
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """工具提交请求，正式订阅者启动工作；归档只提供原程序和工具入口。"""
+    config = Config.model_validate(ctx.config)
     watcher: asyncio.Task[None] | None = None
     jobs = Subagents(ctx)
     catalog = ctx.require(TOOLS)
@@ -129,31 +132,21 @@ async def apply(ctx: Context, config: Config) -> None:
     async def program(task: Task, reader: MessageReader, request: Request) -> Message:
         task_dir = ctx.workspace_root("subagent-runs") / request.job_id
         task_dir.mkdir(parents=True, exist_ok=True)
-        async def authorize(binding_id: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
+        async def authorize(binding_id: str, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
             if binding_id not in request.tools.values():
-                raise Denied("工具不属于子任务原 profile")
+                return '工具不属于子任务原 profile'
             return {"source": "subagent", "session_id": reader.session_id}
 
-        return await run_reply(
-            ctx,
-            task,
-            reader,
-            "subagent",
-            models=ctx.require(CHAT_MODELS),
-            content=ctx.require(CONTENT),
-            context=ctx.require(CONTEXT),
-            tools=ctx.require(TOOLS),
-            react=ctx.require(REACT),
-            materials=ctx.require(MATERIALS),
-            turn_projection=ctx.require(TURN_PROJECTION),
-            read_call=ctx.require(MODEL_CALLS),
-            authorize=authorize,
-            tool_view=None,
-            fixed_bindings=request.tools,
-            max_output_tokens=config.max_output_tokens,
-            max_steps=config.max_steps,
-            exclude_materials=frozenset({"akasha"}),
-            prompt_hints=(build_spawn_subagent_prompt(task_dir.parent.parent, task_dir, request.profile),))
+        return await ctx.require(REPLY_EXECUTE)(
+                         ctx, task, reader, 'subagent',
+                         authorize=authorize,
+                         tool_view=None,
+                         fixed_bindings=request.tools,
+                         max_output_tokens=config.max_output_tokens,
+                         max_steps=config.max_steps,
+                         exclude_materials=frozenset({'akasha'}),
+                         prompt_hints=(build_spawn_subagent_prompt(task_dir.parent.parent, task_dir, request.profile),),
+                     )
 
     _ = await ctx.provide(SUBAGENT_PROGRAM, program)
 

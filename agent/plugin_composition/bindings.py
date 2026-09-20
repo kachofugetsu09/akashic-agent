@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.context import CompositionRoot, Context
+from agent.plugin_composition.context import CompositionRoot, Context, RuntimeScope
 from session.log import MessageLog
 from session.message_codec import json_value
 
 if TYPE_CHECKING:
-    from agent.plugins.archive import PluginArchive
+    from agent.plugin_composition.archive import PluginArchive
 
 _T = TypeVar("_T")
 
@@ -37,19 +37,17 @@ class BindingScope:
 
 
 class Bindings:
-    """固定服务闭包与调用者的不可变选择；不保存业务执行状态。"""
+    """保存 binding 事实，并在调用者选定的 runtime scope 中打开服务。"""
 
     def __init__(
         self,
         log: MessageLog | None,
         archive: PluginArchive,
-        open_components: Callable[
-            [tuple[str, ...]], AbstractAsyncContextManager[BindingScope]
-        ],
+        root: CompositionRoot,
     ):
         self._storage = log
         self._archive = archive
-        self._open_components = open_components
+        self._root = root
 
     @property
     def _log(self) -> MessageLog:
@@ -71,6 +69,8 @@ class Bindings:
         lease = get_current_runtime_lease()
         if lease is None or lease.snapshot.composition_root is None:
             raise RuntimeError("固定 binding 需要实际 runtime scope")
+        if lease.snapshot.composition_root is not self._root:
+            raise RuntimeError("固定 binding 的所属 Root 不属于当前 runtime scope")
         if lease.snapshot.composition_root.context.get(service) is None:
             raise RuntimeError(f"当前 scope 不提供服务: {service.name}")
         # 1. 服务 provider 与目标注册 owner 是闭包入口，依赖只向上展开。
@@ -139,29 +139,45 @@ class Bindings:
 
     def describe(self, identity: str, service: ServiceKey[object]) -> Mapping[str, object]:
         """只读绑定的业务选择；展示或请求投影无需启动归档目标。"""
+        return cast(Mapping[str, object], self._read_descriptor(identity, service)["metadata"])
+
+    @asynccontextmanager
+    async def open(
+        self, identity: str, service: ServiceKey[_T]
+    ) -> AsyncIterator[tuple[_T, Mapping[str, object]]]:
+        """在调用者已选的 Root 中打开服务；缺 scope 时只从所属 Root 获取一次。"""
+        metadata = self.describe(identity, service)
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        current = get_current_runtime_lease()
+        if current is None:
+            lease = await self._root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
+        else:
+            lease = current.fork()
+
+        async with RuntimeScope(lease):
+            root = lease.snapshot.composition_root
+            if root is None:
+                raise RuntimeError("打开 binding 需要实际 runtime scope")
+            if root is not self._root:
+                raise RuntimeError("打开 binding 的所属 Root 不属于当前 runtime scope")
+            value = root.context.get(service)
+            if value is None:
+                raise RuntimeError(f"当前 runtime scope 不提供服务: {service.name}")
+            yield cast(_T, value), cast(Mapping[str, object], metadata)
+
+    def _read_descriptor(
+        self, identity: str, service: ServiceKey[object]
+    ) -> Mapping[str, object]:
+        """读取并校验 binding descriptor 的共同结构。"""
         descriptor = self._log.read_binding(identity)
         if descriptor["version"] != 1 or descriptor["service"] != service.name:
             raise ValueError("binding 版本或服务不匹配")
         metadata = descriptor["metadata"]
         if not isinstance(metadata, Mapping):
             raise ValueError("binding metadata 必须是对象")
-        return cast(Mapping[str, object], metadata)
+        return descriptor
 
-    @asynccontextmanager
-    async def open(
-        self, identity: str, service: ServiceKey[_T]
-    ) -> AsyncIterator[tuple[_T, Mapping[str, object]]]:
-        """只打开记录中的闭包；当前安装或默认 provider 不参与选择。"""
-        descriptor = self._log.read_binding(identity)
-        if descriptor["version"] != 1 or descriptor["service"] != service.name:
-            raise ValueError("binding 版本或服务不匹配")
-        root = self._archive.read_descriptor(cast(str, descriptor["root_ref"]))
-        components = root["components"]
-        metadata = descriptor["metadata"]
-        if not isinstance(components, tuple) or not isinstance(metadata, Mapping):
-            raise ValueError("binding descriptor 结构无效")
-        async with self._open_components(cast(tuple[str, ...], components)) as scope:
-            yield scope.require(service), cast(Mapping[str, object], metadata)
 
 
 BINDINGS = ServiceKey[Bindings]("core.bindings")

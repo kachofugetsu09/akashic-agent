@@ -11,8 +11,6 @@ name = "wake_drift_gate"
 version = "3.0.0"
 desc = "Deterministic external Content and Drift proposal boundary"
 author = "Akashic Core"
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 
@@ -44,10 +42,9 @@ DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
 inject = (EVENTMAIL_CONTENT_SOURCE, DRIFT_PROPOSALS)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Submit deterministic external facts only after formal runtime start."""
 
-    _ = config
     content = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("wake-drift-fixture")
     drift = ctx.require(DRIFT_PROPOSALS)
 

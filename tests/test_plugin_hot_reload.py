@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent.plugin_composition.ui import UI, DashboardBinding
+
 import asyncio
 import importlib
 import os
@@ -13,29 +15,32 @@ from typing import Any, cast
 from urllib.parse import urlencode
 
 import pytest
+
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+from agent.plugin_composition.config_input import save_config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 from starlette.websockets import WebSocketDisconnect
 
+from agent.plugin_composition import CompositionError, CompositionRoot
+from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
-from agent.plugins.dashboard_host import (
-    DashboardBinding,
+from plugins.ui.dashboard import (
     _plugin_routes,
     _require_routes_available,
 )
 from agent.plugins.manager import PluginManager, _source_revision
 from agent.plugins.manifest import write_plugin_manifest
-from agent.plugins.skill_host import SkillSnapshot
-from agent.plugins.skill_links import PluginSkillLinker
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
+    lease_runtime_snapshot,
 )
 from agent.plugins.watcher import PluginWatcher
-from agent.skills import SkillsLoader
-from agent.tools.registry import ToolRegistry
+from plugins.standard_tools.skill_catalog import SkillCatalogParser
 from bootstrap.dashboard_api import create_dashboard_app
 from bus.event_bus import EventBus
 
@@ -54,9 +59,41 @@ def _v3_source(
         f"name = {name!r}\n"
         f"version = {version!r}\n"
         f"{exports}"
-        "async def apply(ctx, config):\n"
+        "async def apply(ctx):\n"
         f"{body}"
     )
+
+
+def _ui_source(name: str, *, dashboard: bool = True, body: str = "") -> str:
+    return _v3_source(
+        name,
+        exports="from importlib import import_module\nfrom agent.plugin_composition import ServiceKey\nfrom agent.plugin_composition.ui import UI\ninject = (UI,)\n",
+        body="    await ctx.require(UI).register(ctx, web='web_module.js'"
+             + (", dashboard=lambda: import_module('.dashboard', __package__)" if dashboard else "") + ")\n" + body,
+    )
+
+
+def _copy_ui_provider(tmp_path: Path) -> None:
+    shutil.copytree(Path(__file__).parents[1] / "plugins/ui", tmp_path / "plugins/ui",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
+
+def _asset_source(name: str, relative_path: str = "skills", *, version: str = "1.0.0") -> str:
+    return _v3_source(
+        name, version=version,
+        exports="from agent.plugin_composition.assets import INSTALLED_ASSETS\ninject = (INSTALLED_ASSETS,)\n",
+        body=f"    await ctx.require(INSTALLED_ASSETS).register(ctx, 'skills', {relative_path!r})\n",
+    )
+
+
+def _copy_assets_provider(tmp_path: Path) -> None:
+    shutil.copytree(Path(__file__).parents[1] / "plugins/assets", tmp_path / "plugins/assets",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
+
+async def _read_assets(manager: PluginManager) -> tuple[InstalledAsset, ...]:
+    async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
+        return snapshot.composition_root.context.require(INSTALLED_ASSETS)()
 
 
 def _write_plugin(root: Path, name: str, source: str) -> Path:
@@ -69,44 +106,65 @@ def _write_plugin(root: Path, name: str, source: str) -> Path:
 def _manager(
     tmp_path: Path,
     *,
-    tools: ToolRegistry | None = None,
     workspace: Path | None = None,
 ) -> PluginManager:
     return PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=EventBus(),
-        tool_registry=tools,
         workspace=workspace or tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
 
 
-def _write_static_manifest(
-    root: Path,
-    *,
-    name: str,
-    version: str,
-    entrypoint: str = "plugin.py",
-    python_runtime: str | None = None,
-) -> None:
-    lines = [
-        "schema_version = 1",
-        f"name = {name!r}",
-        f"version = {version!r}",
-        "api_version = 3",
-        f"entrypoint = {entrypoint!r}",
-        "",
-    ]
-    if python_runtime is not None:
-        lines.extend(
-            [
-                "[[python]]",
-                'requirements = "requirements.txt"',
-                f"runtime_root = {python_runtime!r}",
-                "",
-            ]
+@pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
+def test_import_boundary_rejects_invalid_plugin_file(tmp_path: Path, kind: str) -> None:
+    """直接加载固定制品时也拒绝坏入口，不能执行别名文件。"""
+    root = tmp_path / "artifact"
+    root.mkdir()
+    (root / "custom.py").write_text("raise AssertionError('must not import')\n")
+    if kind == "symlink":
+        (root / "plugin.py").symlink_to(root / "custom.py")
+    elif kind == "directory":
+        (root / "plugin.py").mkdir()
+    owner = _manager(tmp_path)
+    with pytest.raises(ValueError, match="plugin.py 必须是普通文件"):
+        owner._import_plugin("_invalid_entrypoint_probe", root)
+    assert "_invalid_entrypoint_probe" not in sys.modules
+
+
+def test_import_boundary_keeps_exact_root_file_without_calling_apply(tmp_path: Path) -> None:
+    """导入固定文件保留来源路径，但不替组合层调用 apply。"""
+    root = tmp_path / "artifact"
+    root.mkdir()
+    (root / "plugin.py").write_text(_v3_source("probe", body="    raise AssertionError('not yet')\n"))
+    (root / "custom.py").write_text("raise AssertionError('wrong file')\n")
+    owner = _manager(tmp_path)
+    module_name = "_fixed_entrypoint_probe"
+    try:
+        owner._import_plugin(module_name, root)
+        module = sys.modules[module_name]
+        assert Path(module.__file__) == root / "plugin.py"
+        assert callable(module.apply)
+    finally:
+        owner._remove_module_tree(module_name)
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_archived_custom_entrypoint_contract_is_rejected_before_import(tmp_path: Path, monkeypatch, version: int) -> None:
+    """旧归档不被重新解释为新入口，也不改写其恢复材料。"""
+    owner = _manager(tmp_path)
+    record = {"version": version, "entrypoint": "custom.py"}
+    monkeypatch.setattr(owner._archive, "read_descriptor", lambda ref: record)
+
+    def forbidden(*args):
+        raise AssertionError("old archive must not import")
+
+    monkeypatch.setattr(owner, "_import_plugin", forbidden)
+    with pytest.raises(RuntimeError, match="归档运行合同不兼容"):
+        owner._archived_generations(
+            ("old-component",), CompositionRoot("probe"), workspace=tmp_path, sources={},
         )
-    (root / "akashic.plugin.toml").write_text("\n".join(lines), encoding="utf-8")
+    assert record == {"version": version, "entrypoint": "custom.py"}
 
 
 def _write_installed_artifact(
@@ -122,15 +180,16 @@ def _write_installed_artifact(
     artifact = plugin_base / ".artifacts" / artifact_id
     artifact.mkdir(parents=True)
     (artifact / "plugin.py").write_text(source, encoding="utf-8")
-    marker = "name = "
-    name_line = next(line for line in source.splitlines() if line.startswith(marker))
-    name = name_line.split("=", 1)[1].strip().strip("'\"")
-    version_line = next(
-        line for line in source.splitlines() if line.startswith("version = ")
-    )
-    version = version_line.split("=", 1)[1].strip().strip("'\"")
-    _write_static_manifest(artifact, name=name, version=version)
     return plugin_base, artifact
+
+
+def _install_assets_provider(tmp_path: Path) -> None:
+    source = (Path(__file__).parents[1] / "plugins/assets/plugin.py").read_text()
+    base, _ = _write_installed_artifact(tmp_path, "1.0.0-assets", source, plugin_name="assets")
+    pointer = ArtifactPointer(".artifacts/1.0.0-assets")
+    write_pointers(base, stable=pointer, latest=pointer)
+    write_plugin_manifest({"assets@lab": True, "installed_snapshot@lab": True},
+                          plugins_home=tmp_path / "home")
 
 
 def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
@@ -140,74 +199,109 @@ def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
     return skill_dir
 
 
-def test_skill_snapshot_cleanup_removes_readonly_image_copies() -> None:
-    snapshot = SkillSnapshot()
-    nested = snapshot.root / "selected" / "skill"
-    nested.mkdir(parents=True)
-    skill_file = nested / "SKILL.md"
-    skill_file.write_text("# test\n", encoding="utf-8")
-    skill_file.chmod(0o444)
-    nested.chmod(0o555)
-
-    snapshot.cleanup()
-
-    assert not snapshot.root.exists()
-
-
 @pytest.mark.asyncio
-async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
+async def test_candidate_publishes_unique_generation(tmp_path: Path):
     _write_plugin(tmp_path / "plugins", "candidate", _v3_source("candidate"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
     await manager.load_all()
 
     generation = manager.generation("candidate")
-    gate = manager.latest_gate("candidate")
     assert generation is not None
-    assert gate is not None and gate.status == "passed"
-    assert generation.module_path.startswith("akasic_plugin_plugins_candidate__g")
+    assert sys.modules[generation.module_path] is generation.instance.module
     assert generation.instance.module.__name__ == generation.module_path
     assert generation.instance.version == "1.0.0"
     await manager.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_static_semantic_failure_never_prepares_candidate(tmp_path: Path):
-    source = _v3_source(
-        "bad_semantic",
-        exports=(
-            "from agent.plugins.generation import PluginSemanticCheck\n"
-            "def static_semantic_checks():\n"
-            "    return [PluginSemanticCheck('model', False, 'missing')]\n"
-        ),
+@pytest.mark.parametrize("signature, accepted", [
+    ("host", True), ("host, settings=None", True), ("*args", True),
+    ("host, settings", False), ("*, host", False),
+])
+async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature: str, accepted: bool):
+    """可用一个位置参数调用的入口不受参数命名限制。"""
+    source = (
+        'api_version = 3\nname = "ordinary"\nversion = "1.0.0"\n'
+        f'async def apply({signature}):\n    return None\n'
     )
-    _write_plugin(tmp_path / "plugins", "bad_semantic", source)
+    _write_plugin(tmp_path / "plugins", "ordinary", source)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
-
-    await manager.load_all()
-
-    gate = manager.latest_gate("bad_semantic")
-    assert manager.loaded_count == 0
-    assert manager.generation("bad_semantic") is None
-    assert gate is not None and gate.status == "failed"
-    assert any(
-        check.check_id == "semantic_checks" and check.status == "failed"
-        for check in gate.checks
-    )
+    try:
+        if accepted:
+            await manager.load_all()
+        else:
+            with pytest.raises(RuntimeError):
+                await manager.load_all()
+        assert (manager.generation("ordinary") is not None) is accepted
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_import_failure_returns_failed_gate_without_generation(tmp_path: Path):
-    _write_plugin(tmp_path / "plugins", "broken", "this is not python !!!\n")
+async def test_invalid_source_does_not_block_next_load_attempt(tmp_path: Path):
+    """坏源码直接报告加载错误；修复后可重新加载完整组合。"""
+    plugin = _write_plugin(tmp_path / "plugins", "broken", "this is not python !!!\n")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
-    with pytest.raises(RuntimeError, match="插件 broken 导入失败"):
-        await manager.load_all()
+    try:
+        with pytest.raises(ValueError, match="插件身份源码无法解析"):
+            await manager.load_all()
+        assert manager.generation("broken") is None
+        assert manager.current_snapshot is None
 
-    gate = manager.latest_gate("broken")
-    assert gate is not None and gate.status == "failed"
-    assert gate.checks[0].check_id == "import"
-    assert manager.generation("broken") is None
+        (plugin / "plugin.py").write_text(_v3_source("broken"), encoding="utf-8")
+        await manager.load_all()
+        assert manager.generation("broken") is not None
+    finally:
+        await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_compile_error_keeps_original_error_and_stable(tmp_path: Path, monkeypatch):
+    """编译失败清理候选，原错误直接交给调用者，正式选择不变。"""
+    plugin = _write_plugin(tmp_path / "plugins", "ordinary", _v3_source("ordinary"))
+    initialize_plugin_workspace(tmp_path / "workspace")
+    manager = _manager(tmp_path)
+    try:
+        await manager.load_all()
+        stable = manager.current_snapshot
+        (plugin / "plugin.py").write_text(_v3_source("ordinary", version="2.0.0"))
+        failure = ValueError("fixture compilation failed")
+
+        def fail_compile(*args, **kwargs):
+            raise failure
+
+        monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_compile)
+        with pytest.raises(ValueError, match="fixture compilation failed") as caught:
+            await manager.prepare_candidate("ordinary")
+        assert caught.value is failure
+        assert manager.current_snapshot is stable
+        assert manager.prepared_generation("ordinary") is None
+    finally:
+        await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_boot_failure_never_publishes_a_smaller_plugin_selection(tmp_path: Path):
+    """不能删除失败插件后把剩余插件伪装成选中的 stable 组合。"""
+    _write_plugin(tmp_path / "plugins", "good", _v3_source("good"))
+    _write_plugin(tmp_path / "plugins", "broken", _v3_source(
+        "broken", body="    raise ValueError('cannot initialize')\n",
+    ))
+    initialize_plugin_workspace(tmp_path / "workspace")
+    manager = _manager(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="拓扑未就绪"):
+            await manager.load_all()
+        assert manager.current_snapshot is None
+        assert manager.generation("good") is None
+        assert manager.generation("broken") is None
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -215,6 +309,7 @@ async def test_candidate_failure_is_bound_to_requested_plugin(tmp_path: Path):
     root = tmp_path / "plugins"
     _write_plugin(root, "first", _v3_source("first"))
     _write_plugin(root, "second", _v3_source("second"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
 
@@ -239,12 +334,14 @@ async def test_candidate_failure_is_bound_to_requested_plugin(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_same_source_gets_new_generation_namespace_after_restart(tmp_path: Path):
     _write_plugin(tmp_path / "plugins", "repeat", _v3_source("repeat"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     first = manager.generation("repeat")
     assert first is not None
 
     await manager.terminate_all()
+    manager = _manager(tmp_path)
     await manager.load_all()
 
     second = manager.generation("repeat")
@@ -264,6 +361,7 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
         "module_tree",
         _v3_source(
             "module_tree",
+            body="    Config.model_validate(ctx.config)\n",
             exports=(
                 "from pydantic import BaseModel\n"
                 "from . import child\n"
@@ -275,24 +373,28 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
     (plugin_dir / "child.py").write_text("value = 1\n", encoding="utf-8")
     config_dir = tmp_path / "workspace" / "plugin-data" / "module_tree-builtin"
     config_dir.mkdir(parents=True)
-    (config_dir / "config.local.toml").write_text("", encoding="utf-8")
+    save_config(config_dir, {})
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
-    await manager.load_all()
-    assert manager.latest_gate("module_tree").status == "failed"  # type: ignore[union-attr]
-    assert not any("plugins_module_tree__g" in name for name in sys.modules)
+    modules_before = set(sys.modules)
+    with pytest.raises(RuntimeError, match="拓扑未就绪"):
+        await manager.load_all()
+    assert manager.current_snapshot is None
+    assert not any(name.startswith("_akashic_") for name in set(sys.modules) - modules_before)
 
-    (config_dir / "config.local.toml").write_text("required = 'ok'\n", encoding="utf-8")
+    save_config(config_dir, {"required": "ok"})
     await manager.load_all()
     generation = manager.generation("module_tree")
     assert generation is not None
     assert f"{generation.module_path}.child" in sys.modules
-    stable_child = importlib.import_module("akasic_plugin_plugins_module_tree.child")
-    assert stable_child.value == 1
+    child = importlib.import_module(generation.module_path + ".child")
+    assert child.value == 1
+    assert child is generation.instance.module.child
 
     await manager.terminate_all()
-    assert not any("plugins_module_tree__g" in name for name in sys.modules)
-    assert "akasic_plugin_plugins_module_tree.child" not in sys.modules
+    assert generation.module_path not in sys.modules
+    assert not any(name.startswith(generation.module_path + ".") for name in sys.modules)
 
 
 @pytest.mark.asyncio
@@ -304,6 +406,7 @@ async def test_source_revision_includes_helper_changes(tmp_path: Path):
     )
     helper = plugin_dir / "helper.py"
     helper.write_text("value = 1\n", encoding="utf-8")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("revision")
@@ -320,21 +423,22 @@ async def test_source_revision_includes_helper_changes(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
+    _copy_assets_provider(tmp_path)
     outside = tmp_path / "plugins" / "outside" / "skill"
     outside.mkdir(parents=True)
     (outside / "SKILL.md").write_text("# outside\n", encoding="utf-8")
     _write_plugin(
         tmp_path / "plugins",
         "escaped",
-        _v3_source("escaped", exports="skill_roots = ('../outside',)\n"),
+        _asset_source("escaped", "../outside"),
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
-    await manager.load_all()
+    with pytest.raises(RuntimeError, match="插件组合拓扑未就绪"):
+        await manager.load_all()
 
-    gate = manager.latest_gate("escaped")
-    assert gate is not None and gate.status == "failed"
-    assert gate.checks[0].check_id in {"declarations", "identity"}
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -347,13 +451,15 @@ async def test_source_symlink_cannot_escape_plugin_root(tmp_path: Path):
         _v3_source("linked_source", exports="from . import helper\n"),
     )
     (plugin_dir / "helper.py").symlink_to(outside)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
-    await manager.load_all()
-
-    gate = manager.latest_gate("linked_source")
-    assert gate is not None and gate.status == "failed"
-    assert gate.checks[0].check_id == "source_boundary"
+    try:
+        with pytest.raises(RuntimeError, match="源码符号链接.*越界"):
+            await manager.load_all()
+        assert manager.current_snapshot is None
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -374,6 +480,7 @@ async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Pa
     helper_stat = helper_file.stat()
     py_compile.compile(str(plugin_file), doraise=True)
     py_compile.compile(str(helper_file), doraise=True)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
 
@@ -395,27 +502,34 @@ async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
+async def test_assets_provider_leaves_skill_duplicates_to_standard_tools(tmp_path: Path):
+    _copy_assets_provider(tmp_path)
     first_dir = _write_plugin(
         tmp_path / "plugins",
         "first_skills",
-        _v3_source("first_skills", exports="skill_roots = ('skills',)\n"),
+        _asset_source("first_skills", "skills"),
     )
     first_skill = first_dir / "skills" / "shared"
     first_skill.mkdir(parents=True)
     (first_skill / "SKILL.md").write_text(
         "---\ndescription: first\n---\nfirst\n", encoding="utf-8"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path, workspace=tmp_path / "workspace")
     await manager.load_all()
     first = manager.generation("first_skills")
-    assert first is not None and first.skill_catalog is not None
-    assert first.skill_catalog.normal.get("shared").source_id == "first_skills"  # type: ignore[union-attr]
+    assert first is not None
+    first_asset = next(
+        asset
+        for asset in await _read_assets(manager)
+        if asset.category == "skills" and asset.owner_id == "first_skills"
+    )
+    assert (first_asset.root_dir / "shared" / "SKILL.md").is_file()
 
     second_dir = _write_plugin(
         tmp_path / "plugins",
         "second_skills",
-        _v3_source("second_skills", exports="skill_roots = ('skills',)\n"),
+        _asset_source("second_skills", "skills"),
     )
     second_skill = second_dir / "skills" / "shared"
     second_skill.mkdir(parents=True)
@@ -423,12 +537,25 @@ async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
         "---\ndescription: second\n---\nsecond\n", encoding="utf-8"
     )
 
-    await manager.load_all()
+    assert await manager.prepare_candidate("second_skills") is not None
+    publication = await manager.publish_prepared("second_skills")
+    assert publication["publication_state"] == "committed"
 
-    gate = manager.latest_gate("second_skills")
-    assert gate is not None and gate.status == "failed"
-    assert gate.checks[-1].check_id == "skill_catalog"
-    assert manager.generation("second_skills") is None
+    second = manager.generation("second_skills")
+    assert second is not None
+    second_asset = next(
+        asset
+        for asset in await _read_assets(manager)
+        if asset.category == "skills" and asset.owner_id == "second_skills"
+    )
+    with pytest.raises(RuntimeError, match="Skill 名称重复"):
+        SkillCatalogParser(capability_checker=None).parse(
+            (
+                InstalledAsset("first_skills", "skills", first_dir / "skills"),
+                InstalledAsset("second_skills", "skills", second_dir / "skills"),
+            )
+        )
+    assert (second_asset.root_dir / "shared" / "SKILL.md").is_file()
     await manager.terminate_all()
 
 
@@ -436,10 +563,11 @@ async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
 async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
     tmp_path: Path,
 ):
+    _copy_assets_provider(tmp_path)
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "skill_reload",
-        _v3_source("skill_reload", exports="skill_roots = ('skills-a',)\n"),
+        _asset_source("skill_reload", "skills-a"),
     )
     v1_skill = plugin_dir / "skills-a" / "shared"
     v1_skill.mkdir(parents=True)
@@ -452,12 +580,21 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
     (workspace_skill / "SKILL.md").write_text(
         "---\ndescription: workspace one\n---\nworkspace body a\n", encoding="utf-8"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path, workspace=workspace)
     await manager.load_all()
     active = manager.generation("skill_reload")
-    assert active is not None and active.skill_catalog is not None
-    active_record = active.skill_catalog.normal.get("shared")
-    assert active_record is not None
+    assert active is not None
+    active_asset = next(
+        asset
+        for asset in await _read_assets(manager)
+        if asset.category == "skills"
+    )
+    active_root = active_asset.root_dir / "shared"
+    assert active_root.is_dir()
+    assert active_root.joinpath("SKILL.md").read_text(encoding="utf-8").endswith(
+        "body a\n"
+    )
 
     release_b_skill = plugin_dir / "skills-b" / "shared"
     release_b_skill.mkdir(parents=True)
@@ -465,53 +602,24 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
         "---\ndescription: release b\n---\nbody b\n", encoding="utf-8"
     )
     (plugin_dir / "plugin.py").write_text(
-        _v3_source("skill_reload", exports="skill_roots = ('skills-b',)\n"),
+        _asset_source("skill_reload", "skills-b"),
         encoding="utf-8",
     )
 
     prepared = await manager.prepare_candidate("skill_reload")
 
-    assert prepared is not None and prepared.skill_catalog is not None
-    prepared_record = prepared.skill_catalog.normal.get("shared")
-    assert prepared_record is not None
-    assert active_record.description == "release a"
-    assert prepared_record.description == "release b"
-    assert active_record.root_dir != prepared_record.root_dir
-    await manager.discard_prepared("skill_reload")
-    await manager.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_skill_catalog_cleanup_failure_is_reported(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_plugin(
-        tmp_path / "plugins",
-        "skill_cleanup",
-        _v3_source("skill_cleanup", exports="skill_roots = ('skills',)\n"),
+    assert prepared is not None
+    await manager.publish_prepared("skill_reload")
+    prepared_asset = next(
+        asset for asset in await _read_assets(manager) if asset.category == "skills"
     )
-    (tmp_path / "plugins" / "skill_cleanup" / "skills").mkdir()
-    manager = _manager(tmp_path)
-    await manager.load_all()
-    generation = manager.generation("skill_cleanup")
-    assert generation is not None and generation.skill_catalog is not None
-    snapshot_root = generation.skill_catalog.snapshot.root
-    real_rmtree = shutil.rmtree
-
-    def fail_snapshot_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
-        if Path(path) == snapshot_root and not args and not kwargs:
-            raise OSError("snapshot cleanup failed")
-        real_rmtree(path, *args, **kwargs)
-
-    monkeypatch.setattr(shutil, "rmtree", fail_snapshot_cleanup)
-    await manager.terminate_all()
-
-    assert any(
-        failure.resource == "skill_catalog"
-        and failure.error == "snapshot cleanup failed"
-        for failure in manager.cleanup_failures
+    prepared_root = prepared_asset.root_dir / "shared"
+    assert prepared_root.joinpath("SKILL.md").read_text(encoding="utf-8").endswith(
+        "body b\n"
     )
+    assert active_root != prepared_root
+    assert (active_root / "SKILL.md").read_text().endswith("body a\n")
+    await manager.terminate_all()
 
 
 def _installed_snapshot_source(
@@ -519,8 +627,34 @@ def _installed_snapshot_source(
     *,
     skills: bool = False,
 ) -> str:
-    exports = "skill_roots = ('skills',)\n" if skills else ""
-    return _v3_source("installed_snapshot", version=version, exports=exports)
+    if skills:
+        return _asset_source("installed_snapshot", version=version)
+    return _v3_source("installed_snapshot", version=version)
+
+
+@pytest.mark.asyncio
+async def test_disabled_installed_plugin_is_not_part_of_boot_selection(tmp_path: Path) -> None:
+    """禁用插件不进入装配；另一个选中的插件仍完整启动。"""
+    plugin_base, _ = _write_installed_artifact(
+        tmp_path, "1.0.0-disabled",
+        _v3_source("installed_snapshot", body="    raise RuntimeError('must not start')\n"),
+    )
+    pointer = ArtifactPointer(".artifacts/1.0.0-disabled")
+    write_pointers(plugin_base, stable=pointer, latest=pointer)
+    write_plugin_manifest(
+        {"installed_snapshot@lab": False}, plugins_home=tmp_path / "home",
+    )
+    _write_plugin(tmp_path / "plugins", "selected", _v3_source("selected"))
+    initialize_plugin_workspace(tmp_path / "workspace")
+    manager = _manager(tmp_path)
+    try:
+        await manager.load_all()
+        assert manager.current_snapshot is not None
+        assert set(manager.current_snapshot.generations) == {"selected"}
+        assert manager.generation("installed_snapshot@lab") is None
+        assert read_pointer(plugin_base, "stable") == pointer
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -543,6 +677,7 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
     write_plugin_manifest(
         {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -596,66 +731,57 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
 
 
 @pytest.mark.asyncio
-async def test_installed_candidate_promotion_syncs_stable_skill_projection(
-    tmp_path: Path,
-) -> None:
+async def test_installed_promotion_uses_fixed_assets_without_touching_workspace_skills(tmp_path: Path) -> None:
+    _install_assets_provider(tmp_path)
     plugin_base, stable_root = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a", skills=True)
     )
     _, candidate_root = _write_installed_artifact(
         tmp_path, "2.0.0-bbbb", _installed_snapshot_source("release-b", skills=True)
     )
-    _write_installed_skill(stable_root, "stable-skill", "stable body\n")
-    _write_installed_skill(candidate_root, "candidate-skill", "candidate body\n")
+    _write_installed_skill(stable_root, "shared", "stable body\n")
+    _write_installed_skill(candidate_root, "shared", "candidate body\n")
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
     write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
     workspace = tmp_path / "workspace"
-    manager = PluginManager(
-        plugin_dirs=[],
-        event_bus=EventBus(),
-        workspace=workspace,
-        installed_cache_root=tmp_path / "home" / "cache",
-    )
-    await manager.load_all()
-    PluginSkillLinker(
-        workspace=workspace,
-        plugin_roots=manager.skill_projection_roots,
-    ).sync(manager.active_plugins())
-    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
-    stable_link = workspace / "skills" / "stable-skill"
-    assert stable_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "stable-skill"
-    assert loader.load_skill_body("stable-skill") == "stable body\n"
+    personal = workspace / "skills" / "shared"
+    personal.mkdir(parents=True)
+    (personal / "SKILL.md").write_bytes(b"user-owned bytes")
+    legacy = workspace / "skills" / "old-link"
+    legacy.symlink_to(stable_root / "skills" / "shared")
+    initialize_plugin_workspace(tmp_path / "workspace")
+    manager = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                            installed_cache_root=tmp_path / "home" / "cache")
 
-    write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
-    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-    assert stable_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "stable-skill"
-    assert not (workspace / "skills" / "candidate-skill").exists()
-    await manager.drop_candidate("installed_snapshot@lab")
+    async def content():
+        asset = next(item for item in await _read_assets(manager) if item.category == "skills")
+        return (asset.root_dir / "shared" / "SKILL.md").read_text()
 
-    write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
-    promoted = (
-        await manager.switch_ready("installed_snapshot@lab")
-        if manager.ready_candidate
-        else None
-    )
-    if promoted is None:
-        assert (await manager.reconcile_changed())[0][
-            "publication_state"
-        ] == "latest_ready"
-        promoted = await manager.switch_ready("installed_snapshot@lab")
-    candidate_link = workspace / "skills" / "candidate-skill"
-    assert promoted["publication_state"] == "promoted"
-    assert not stable_link.exists()
-    assert candidate_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "candidate-skill"
-    assert loader.load_skill_body("candidate-skill") == "candidate body\n"
-    await manager.terminate_all()
+    try:
+        await manager.load_all()
+        assert await content() == "stable body\n"
+        write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
+        assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+        assert await content() == "stable body\n"
+        await manager.drop_candidate("installed_snapshot@lab")
+        assert await content() == "stable body\n"
+        write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
+        assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+        assert (await manager.switch_ready("installed_snapshot@lab"))["publication_state"] == "promoted"
+        assert await content() == "candidate body\n"
+    finally:
+        await manager.terminate_all()
+    assert (personal / "SKILL.md").read_bytes() == b"user-owned bytes"
+    assert legacy.readlink() == stable_root / "skills" / "shared"
+    assert not (workspace / "runtime" / "plugin-skill-links.json").exists()
 
 
 @pytest.mark.asyncio
-async def test_skill_projection_conflict_fails_before_stable_promotion(
+async def test_workspace_skill_name_does_not_block_plugin_promotion(
     tmp_path: Path,
 ) -> None:
+    _install_assets_provider(tmp_path)
     plugin_base, _ = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a")
     )
@@ -670,6 +796,7 @@ async def test_skill_projection_conflict_fails_before_stable_promotion(
     personal = workspace / "skills" / "personal"
     personal.mkdir(parents=True)
     (personal / "SKILL.md").write_text("user body\n", encoding="utf-8")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -681,14 +808,12 @@ async def test_skill_projection_conflict_fails_before_stable_promotion(
     stable_snapshot = manager.current_snapshot
     write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
     assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-    with pytest.raises(RuntimeError, match="用户文件或目录冲突"):
-        await manager.switch_ready("installed_snapshot@lab")
-    assert manager.current_snapshot is stable_snapshot
-    assert manager.generation("installed_snapshot@lab") is stable_generation
-    assert read_pointer(plugin_base, "stable") == stable_pointer
+    await manager.switch_ready("installed_snapshot@lab")
+    assert manager.current_snapshot is not stable_snapshot
+    assert manager.generation("installed_snapshot@lab") is not stable_generation
+    assert read_pointer(plugin_base, "stable") == candidate_pointer
     assert personal.is_dir() and not personal.is_symlink()
     assert (personal / "SKILL.md").read_text(encoding="utf-8") == "user body\n"
-    await manager.drop_candidate("installed_snapshot@lab")
     await manager.terminate_all()
 
 
@@ -705,11 +830,7 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
         _v3_source(
             "installed_snapshot",
             version="release-b",
-            exports=(
-                "from agent.plugins.generation import PluginSemanticCheck\n"
-                "def static_semantic_checks():\n"
-                "    return [PluginSemanticCheck('candidate', False, 'rejected')]\n"
-            ),
+            body="    raise ValueError('candidate rejected during apply')\n",
         ),
     )
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
@@ -718,6 +839,7 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
     write_plugin_manifest(
         {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -735,7 +857,7 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("promoted_on_disk", [False, True])
-async def test_startup_recovers_installed_candidate_from_durable_pointers(
+async def test_restart_keeps_stable_when_legacy_candidate_pointers_drift(
     tmp_path: Path,
     promoted_on_disk: bool,
 ) -> None:
@@ -747,18 +869,27 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
     )
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
+    write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
+    write_plugin_manifest(
+        {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
+    )
+    initialize_plugin_workspace(tmp_path / "workspace")
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    await manager.terminate_all()
+    # 安装指针不再决定重启选择；旧 journal 也不能自动晋升候选。
     write_pointers(
         plugin_base,
         stable=latest_pointer if promoted_on_disk else stable_pointer,
         latest=latest_pointer,
     )
-    write_plugin_manifest(
-        {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
-    )
     manager = PluginManager(
-        plugin_dirs=[],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
+        plugin_dirs=[], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
     tx_id = manager.reload_journal.begin(
@@ -776,15 +907,12 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
 
     await manager.load_all()
 
-    assert manager.reload_journal.get(tx_id).phase == (
-        "recovered" if promoted_on_disk else "aborted"
-    )
-    expected = "release-b" if promoted_on_disk else "release-a"
-    assert manager.generation("installed_snapshot@lab").instance.version == expected  # type: ignore[union-attr]
+    # 旧记录没有完整 selection 转换证据，保持未知，不伪造 recovered/aborted。
+    assert manager.reload_journal.get(tx_id).phase == "promoting"
+    assert manager.generation("installed_snapshot@lab").instance.version == "release-a"  # type: ignore[union-attr]
     assert manager.ready_candidate is None
-    if not promoted_on_disk:
-        assert stable_root.exists()
-        assert read_pointer(plugin_base, "latest") == stable_pointer
+    assert stable_root.exists()
+    assert read_pointer(plugin_base, "latest") == latest_pointer
     await manager.terminate_all()
 
 
@@ -825,6 +953,7 @@ async def test_latest_candidate_staging_waits_for_runtime_service_start(
     write_plugin_manifest(
         {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -857,6 +986,7 @@ async def test_snapshot_admission_waits_while_current_is_quiesced(
     _write_plugin(
         tmp_path / "plugins", "snapshot_admission", _v3_source("snapshot_admission")
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     snapshot = manager.current_snapshot
@@ -879,8 +1009,57 @@ async def test_snapshot_admission_waits_while_current_is_quiesced(
 
 
 @pytest.mark.asyncio
+async def test_snapshot_cleanup_failure_requires_another_explicit_close() -> None:
+    """失败资源留在原快照，不在同次关闭中自动重放。"""
+    attempts = 0
+
+    async def drain(snapshot):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("still open")
+
+    store = RuntimeSnapshotStore(drain)
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    with pytest.raises(RuntimeError, match="drain 失败"):
+        await store.close()
+    assert attempts == 1
+    assert snapshot.snapshot_id in store.retained_snapshot_ids
+    await store.close()
+    assert attempts == 2
+    assert store.retained_snapshot_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cleanup_join_survives_repeated_caller_cancel() -> None:
+    """取消等待者不能取消实际 snapshot 资源回收。"""
+    entered, release = asyncio.Event(), asyncio.Event()
+    closed = []
+
+    async def drain(snapshot):
+        entered.set()
+        await release.wait()
+        closed.append(snapshot.snapshot_id)
+
+    store = RuntimeSnapshotStore(drain)
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    closing = asyncio.create_task(store.close())
+    await entered.wait()
+    closing.cancel()
+    asyncio.get_running_loop().call_soon(closing.cancel)
+    asyncio.get_running_loop().call_soon(release.set)
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert closed == [snapshot.snapshot_id]
+    assert store.retained_snapshot_ids == ()
+
+
+@pytest.mark.asyncio
 async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     _write_plugin(tmp_path / "plugins", "snapshot", _v3_source("snapshot"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("snapshot")
@@ -888,9 +1067,9 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     installed = manager.current_snapshot
     assert active is not None and prepared is not None and installed is not None
     compiler = RuntimeSnapshotCompiler()
-    v1 = compiler.compile({"snapshot": active}, catalog_generation=active)
+    v1 = compiler.compile({"snapshot": active})
     next_snapshot = compiler.compile(
-        {"snapshot": prepared}, catalog_generation=prepared
+        {"snapshot": prepared}
     )
     drained: list[str] = []
 
@@ -908,7 +1087,7 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     assert drained == [next_snapshot.snapshot_id]
     await v1_lease.release()
     next_snapshot = compiler.compile(
-        {"snapshot": prepared}, catalog_generation=prepared
+        {"snapshot": prepared}
     )
     held_v1 = store.lease()
     await store.commit(store.begin_publish(next_snapshot))
@@ -924,50 +1103,77 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
+async def test_runtime_snapshot_latest_closes_before_fresh_formal_publication(
     tmp_path: Path,
 ) -> None:
-    _write_plugin(
-        tmp_path / "plugins", "snapshot_selector", _v3_source("snapshot_selector")
-    )
-    manager = _manager(tmp_path)
-    await manager.load_all()
-    active = manager.generation("snapshot_selector")
-    prepared = await manager.prepare_candidate("snapshot_selector")
-    assert active is not None and prepared is not None
+    from agent.plugin_composition import CompositionRoot
+
     compiler = RuntimeSnapshotCompiler()
-    stable = compiler.compile({"snapshot_selector": active}, snapshot_revision="stable")
-    latest = compiler.compile(
-        {"snapshot_selector": prepared}, snapshot_revision="latest"
-    )
     drained: list[str] = []
+    closed: list[str] = []
+
+    async def build(revision: str) -> RuntimeSnapshot:
+        root = CompositionRoot(revision)
+        async def apply(ctx):
+            await ctx.effect(lambda: lambda: closed.append(revision))
+        await root.mount(apply, name="snapshot_selector")
+        return compiler.compile({}, snapshot_revision=revision, composition_root=root)
+
+    stable = await build("stable")
+    latest = await build("latest")
 
     async def on_drained(snapshot: RuntimeSnapshot) -> None:
+        await snapshot.composition_root.dispose()
         drained.append(snapshot.snapshot_id)
 
     store = RuntimeSnapshotStore(on_drained)
     store.install(stable)
-    await store.commit_latest(store.begin_publish(latest))
+    latest_transaction = store.begin_publish(latest)
+    await store.commit_latest(latest_transaction)
     stable_lease = store.lease()
     latest_lease = store.lease(selector="latest")
     assert stable_lease.snapshot is stable
     assert latest_lease.snapshot is latest
     with pytest.raises(RuntimeError, match="等待 promote/discard"):
         store.begin_publish(
-            compiler.compile({"snapshot_selector": prepared}, snapshot_revision="next")
+            compiler.compile({}, snapshot_revision="next")
         )
     store.pause_candidate_admission(latest)
     await latest_lease.release()
     await store.wait_for_no_leases(latest)
-    promoted = await store.promote_latest()
-    assert promoted.previous is stable
-    assert store.current is latest
+    store.seal_candidate_validation(latest)
+    with pytest.raises(RuntimeError, match="publication target 已失效"):
+        store.retain_publication_target(latest_transaction)
+    assert latest.lease_count == 0
+    await store.discard_latest(latest)
+    assert drained == [latest.snapshot_id]
+    assert closed == ["latest"]
+    assert store.current is stable
+    assert stable_lease.snapshot is stable
+    formal = await build("fresh-formal")
+    transaction = store.begin_publish(formal)
+    publication_lease = store.retain_publication_target(transaction)
+    assert publication_lease.snapshot is formal
+    await store.commit_provisional(transaction)
+    assert store.current is stable
+    provisional_lease = store.retain_publication_target(transaction)
+    assert provisional_lease.snapshot is formal
+    await provisional_lease.release()
+    await publication_lease.release()
+    await store.finalize_provisional(transaction)
+    with pytest.raises(RuntimeError, match="publication target 已失效"):
+        store.retain_publication_target(transaction)
+    assert formal.lease_count == 0
+    assert transaction.previous is stable
+    assert store.current is formal
+    assert formal is not latest
+    assert formal.composition_root is not latest.composition_root
+    assert drained == [latest.snapshot_id]
     await stable_lease.release()
     await store.retry_drains()
-    assert drained == [stable.snapshot_id]
+    assert drained == [latest.snapshot_id, stable.snapshot_id]
     await store.close()
-    await manager.discard_prepared("snapshot_selector")
-    await manager.terminate_all()
+    assert closed == ["latest", "stable", "fresh-formal"]
 
 
 @pytest.mark.asyncio
@@ -977,6 +1183,7 @@ async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(
     _write_plugin(
         tmp_path / "plugins", "snapshot_discard", _v3_source("snapshot_discard")
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("snapshot_discard")
@@ -1016,6 +1223,7 @@ async def test_reconcile_changed_adds_and_removes_discovered_plugin(
 ) -> None:
     plugins = tmp_path / "plugins"
     _write_plugin(plugins, "anchor", _v3_source("anchor"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     added_dir = _write_plugin(plugins, "added", _v3_source("added"))
@@ -1033,11 +1241,11 @@ async def test_reconcile_changed_adds_and_removes_discovered_plugin(
 
 
 @pytest.mark.asyncio
-async def test_runtime_runner_holds_publication_until_started_scope_finishes(
+async def test_runtime_start_owner_rejects_publication_until_started_scope_finishes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Publication cannot retire a Root between runner admission and startup."""
+    """启动尚未结束时更新立即 busy，不排队退休正在启动的 Root。"""
 
     source = _v3_source(
         "runner_race",
@@ -1060,63 +1268,47 @@ async def test_runtime_runner_holds_publication_until_started_scope_finishes(
         ),
     )
     plugin_dir = _write_plugin(tmp_path / "plugins", "runner_race", source)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
-    await manager.load_all()
-    generation = manager.generation("runner_race")
-    old_snapshot = manager.current_snapshot
-    assert generation is not None and old_snapshot is not None
-    module = generation.instance.module
-    runner_acquired = asyncio.Event()
-    allow_acquire_return = asyncio.Event()
+    from agent.plugins._operation import OperationBusyError
+    entered, allow_start = asyncio.Event(), asyncio.Event()
     deactivate_entered = asyncio.Event()
-    real_acquire = manager.snapshot_store.acquire
-    real_deactivate = cast(Any, manager)._deactivate_plugin
+    real_start = manager._start_runtime
+    real_deactivate = manager._deactivate_plugin
 
-    async def blocked_acquire(*args: object, **kwargs: object):
-        assert len(args) <= 1
-        snapshot_id = args[0] if args else None
-        assert snapshot_id is None or isinstance(snapshot_id, str)
-        selector = kwargs.get("selector", "stable")
-        if selector == "stable":
-            lease = await real_acquire(snapshot_id, selector="stable")
-        elif selector == "latest":
-            lease = await real_acquire(snapshot_id, selector="latest")
-        else:
-            raise AssertionError(f"unexpected selector: {selector!r}")
-        runner_acquired.set()
-        await allow_acquire_return.wait()
-        return lease
+    async def blocked_start():
+        entered.set()
+        await allow_start.wait()
+        await real_start()
 
     async def observed_deactivate(plugin_id: str):
         deactivate_entered.set()
         return await real_deactivate(plugin_id)
 
-    monkeypatch.setattr(manager.snapshot_store, "acquire", blocked_acquire)
+    monkeypatch.setattr(manager, "_start_runtime", blocked_start)
     monkeypatch.setattr(manager, "_deactivate_plugin", observed_deactivate)
-    runner = asyncio.create_task(manager.run_runtime_services())
-    await asyncio.wait_for(runner_acquired.wait(), timeout=1)
-    assert cast(Any, manager)._candidate_prepare_lock.locked()
-
+    load = asyncio.create_task(manager.load_all())
+    await entered.wait()
+    generation = manager.generation("runner_race")
+    old_snapshot = manager.current_snapshot
+    assert generation is not None and old_snapshot is not None
+    module = generation.instance.module
     shutil.rmtree(plugin_dir)
-    reconcile = asyncio.create_task(manager.reconcile_changed())
+    with pytest.raises(OperationBusyError):
+        await manager.reconcile_changed()
     assert not deactivate_entered.is_set()
     assert manager.current_snapshot is old_snapshot
-
-    allow_acquire_return.set()
-    await asyncio.wait_for(module.started.wait(), timeout=1)
-    assert not deactivate_entered.is_set()
-    assert manager.current_snapshot is old_snapshot
-
+    allow_start.set()
+    await module.started.wait()
+    with pytest.raises(OperationBusyError):
+        await manager.reconcile_changed()
     module.allow_finish.set()
-    await asyncio.wait_for(deactivate_entered.wait(), timeout=1)
-    result = await reconcile
+    await load
+    result = await manager.reconcile_changed()
     assert result[0]["publication_state"] == "disabled"
-    await asyncio.wait_for(module.stopped.wait(), timeout=1)
+    await module.stopped.wait()
     await manager.snapshot_store.wait_for_snapshot_drained(old_snapshot)
     assert old_snapshot.lease_count == 0
-
-    runner.cancel()
-    _ = await asyncio.gather(runner, return_exceptions=True)
     await manager.terminate_all()
 
 
@@ -1127,6 +1319,7 @@ async def test_plugin_watcher_reloads_v3_source_without_signal(tmp_path: Path) -
         "watched",
         _v3_source("watched", version="release-a"),
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     baseline_revision = await asyncio.to_thread(manager.watch_revision)
@@ -1151,55 +1344,30 @@ async def test_plugin_watcher_reloads_v3_source_without_signal(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_plugin_watcher_updates_skill_links_when_plugin_is_toggled(
-    tmp_path: Path,
-) -> None:
-    plugin_dir = _write_plugin(
-        tmp_path / "plugins",
+async def test_plugin_toggle_changes_assets_without_creating_workspace_projections(tmp_path: Path) -> None:
+    _copy_assets_provider(tmp_path)
+    plugin_dir = _write_plugin(tmp_path / "plugins", "computer", _asset_source(
         "computer",
-        _v3_source(
-            "computer",
-            exports="skill_roots = ('skills',)\n",
-        ),
-    )
+    ))
     skill_dir = plugin_dir / "skills" / "opencli"
     skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# OpenCLI\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("# OpenCLI\n")
     write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
-    await manager.load_all()
-    PluginSkillLinker(
-        workspace=tmp_path / "workspace",
-        plugin_roots=manager.skill_projection_roots,
-    ).sync(manager.active_plugins())
-    link = tmp_path / "workspace" / "skills" / "opencli"
-    assert link.resolve() == manager.generation("computer").code_dir / "skills" / "opencli"
-
-    watcher = PluginWatcher(
-        manager,
-        baseline_revision=manager.watch_revision(),
-        interval_seconds=0.01,
-    )
-    task = asyncio.create_task(watcher.run())
-    write_plugin_manifest({"computer": False}, plugins_home=tmp_path / "home")
-    for _ in range(100):
-        if manager.generation("computer") is None and not link.is_symlink():
-            break
-        await asyncio.sleep(0.01)
-    assert manager.generation("computer") is None
-    assert not link.is_symlink()
-
-    write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
-    for _ in range(100):
-        if manager.generation("computer") is not None and link.is_symlink():
-            break
-        await asyncio.sleep(0.01)
-    assert manager.generation("computer") is not None
-    assert link.resolve() == manager.generation("computer").code_dir / "skills" / "opencli"
-
-    watcher.stop()
-    await task
-    await manager.terminate_all()
+    try:
+        await manager.load_all()
+        assert manager.generation("computer") is not None
+        write_plugin_manifest({"computer": False}, plugins_home=tmp_path / "home")
+        await manager.reconcile_changed()
+        assert manager.generation("computer") is None
+        write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
+        await manager.reconcile_changed()
+        assert manager.generation("computer") is not None
+        assert not (tmp_path / "workspace" / "skills").exists()
+        assert not (tmp_path / "workspace" / "drift" / "skills").exists()
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -1310,27 +1478,40 @@ async def test_dashboard_routes_follow_snapshot_generation(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    _copy_ui_provider(tmp_path)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "snapshot_dashboard",
-        _v3_source(
-            "snapshot_dashboard",
-            exports=(
-                "dashboard_module = 'dashboard.py'\n" "web_module = 'web_module.js'\n"
-            ),
-        ),
+        _ui_source("snapshot_dashboard"),
     )
     (plugin_dir / "web_module.js").write_text(
         "export function activate() { return () => {}; }\n",
         encoding="utf-8",
     )
 
+    (plugin_dir / "values.py").write_text(
+        "class Value:\n    def __init__(self, text): self.text = text\n"
+    )
+
     def write_dashboard(version: str) -> None:
+        (plugin_dir / "plugin.py").write_text(_ui_source(
+            "snapshot_dashboard",
+            body=f"    from .values import Value\n    await ctx.provide(ServiceKey('fixture.dashboard-value'), Value('{version}'))\n",
+        ))
         (plugin_dir / "dashboard.py").write_text(
+            "from agent.plugin_composition import ServiceKey\n"
+            "from .values import Value\n"
+            "VALUE = ServiceKey('fixture.dashboard-value')\n"
+            "inject = (VALUE,)\n"
             "def register(app, context):\n"
+            "    @app.get('/api/dashboard/undeclared')\n"
+            "    async def undeclared(): return context.require(ServiceKey('core.message-writers'))\n"
             "    @app.get('/api/dashboard/snapshot-version')\n"
-            f"    def version(): return {{'version': '{version}'}}\n"
+            "    async def version():\n"
+            "        value = context.require(VALUE)\n"
+            "        assert isinstance(value, Value)\n"
+            "        return {'version': value.text}\n"
             "    class Closeable:\n"
             "        def close(self):\n"
             f"            (context.data_root / 'dashboard-{version}-closed').write_text('closed')\n"
@@ -1339,12 +1520,13 @@ async def test_dashboard_routes_follow_snapshot_generation(
         )
 
     write_dashboard("release-a")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     old_snapshot = manager.current_snapshot
     assert old_snapshot is not None
     old_generation = old_snapshot.generations["snapshot_dashboard"]
-    old_catalog = old_snapshot.web_ui_catalog
+    old_catalog = old_snapshot.composition_root.context.require(UI).catalog()
     assert old_catalog is not None
     old_headers = {
         "X-Akashic-Web-Snapshot": old_snapshot.snapshot_id,
@@ -1358,6 +1540,7 @@ async def test_dashboard_routes_follow_snapshot_generation(
         plugin_manager=manager,
     )
     client = TestClient(app)
+    old_binding = old_snapshot.composition_root.context.require(UI).bindings()[0]
     assert client.get("/api/dashboard/snapshot-version").json() == {
         "code": "forbidden_contract"
     }
@@ -1395,11 +1578,11 @@ async def test_dashboard_routes_follow_snapshot_generation(
     assert old_catalog.identity not in caplog.text
     assert old_generation.generation_id not in caplog.text
     new_snapshot = manager.current_snapshot
-    assert new_snapshot is not None and new_snapshot.web_ui_catalog is not None
+    assert new_snapshot is not None and new_snapshot.composition_root.context.require(UI).catalog() is not None
     new_generation = new_snapshot.generations["snapshot_dashboard"]
     new_headers = {
         "X-Akashic-Web-Snapshot": new_snapshot.snapshot_id,
-        "X-Akashic-Web-Catalog": new_snapshot.web_ui_catalog.identity,
+        "X-Akashic-Web-Catalog": new_snapshot.composition_root.context.require(UI).catalog().identity,
         "X-Akashic-Web-Module": "snapshot_dashboard",
         "X-Akashic-Web-Generation": new_generation.generation_id,
     }
@@ -1407,8 +1590,15 @@ async def test_dashboard_routes_follow_snapshot_generation(
         "/api/dashboard/snapshot-version",
         headers=new_headers,
     ).json() == {"version": "release-b"}
-    old_binding = old_snapshot.dashboard_bindings[0]
-    assert TestClient(old_binding.app).get("/api/dashboard/snapshot-version").json() == {"version": "release-a"}  # type: ignore[attr-defined]
+    with pytest.raises(CompositionError, match="未声明能力"):
+        client.get("/api/dashboard/undeclared", headers=new_headers)
+    with pytest.raises(RuntimeError, match="实际 runtime scope"):
+        TestClient(old_binding.app).get("/api/dashboard/snapshot-version")
+    import httpx
+    async with lease_runtime_snapshot(manager.snapshot_store):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=old_binding.app), base_url="http://fixture") as old_client:
+            with pytest.raises(RuntimeError, match="当前 runtime scope"):
+                await old_client.get("/api/dashboard/snapshot-version")
     await manager.snapshot_store.retry_drains()
     assert (old_generation.data_dir / "dashboard-release-a-closed").exists()
     assert old_generation.scope.closed
@@ -1421,14 +1611,12 @@ async def test_initial_web_module_is_not_served_without_its_dashboard_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _copy_ui_provider(tmp_path)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "paired_web",
-        _v3_source(
-            "paired_web",
-            exports="dashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
-        ),
+        _ui_source("paired_web"),
     )
     (plugin_dir / "web_module.js").write_text(
         "export function activate() { return () => {}; }\n",
@@ -1438,6 +1626,7 @@ async def test_initial_web_module_is_not_served_without_its_dashboard_api(
         "raise RuntimeError('paired API broken')\n",
         encoding="utf-8",
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
 
@@ -1538,14 +1727,12 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    _copy_ui_provider(tmp_path)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "snapshot_socket",
-        _v3_source(
-            "snapshot_socket",
-            exports="dashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
-        ),
+        _ui_source("snapshot_socket"),
     )
     (plugin_dir / "web_module.js").write_text(
         "export function activate() { return () => {}; }\n",
@@ -1554,7 +1741,7 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
     sibling_dir = _write_plugin(
         tmp_path / "plugins",
         "socket_sibling",
-        _v3_source("socket_sibling", exports="web_module = 'web_module.js'\n"),
+        _ui_source("socket_sibling", dashboard=False),
     )
     (sibling_dir / "web_module.js").write_text(
         "export function activate() { return () => {}; }\n",
@@ -1581,7 +1768,7 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
         snapshot: RuntimeSnapshot,
         module: str = "snapshot_socket",
     ) -> str:
-        catalog = snapshot.web_ui_catalog
+        catalog = snapshot.composition_root.context.require(UI).catalog()
         assert catalog is not None
         generation = snapshot.generations[module]
         query = urlencode(
@@ -1595,6 +1782,7 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
         return f"/api/dashboard/snapshot-socket?{query}"
 
     write_dashboard("release-a")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     old_snapshot = manager.current_snapshot
@@ -1604,7 +1792,7 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
     def assert_web_identity_not_logged(snapshot: RuntimeSnapshot) -> None:
         """Keep exact Web identity values out of rejection diagnostics."""
 
-        catalog = snapshot.web_ui_catalog
+        catalog = snapshot.composition_root.context.require(UI).catalog()
         assert catalog is not None
         identities = (
             snapshot.snapshot_id,

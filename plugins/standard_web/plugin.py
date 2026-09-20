@@ -1,5 +1,6 @@
 from agent.plugin_composition import Context, ServiceKey
-from plugins.tools.plugin import TOOLS, ToolView
+
+from ._tool_boundary import TOOLS, ToolView
 
 from .web import register_web
 
@@ -12,8 +13,7 @@ inject = (TOOLS,)
 STANDARD_WEB_TOOLS = ServiceKey[ToolView]("standard-web.tools.v1")
 
 
-async def apply(ctx: Context, config: object) -> None:
-    _ = config
+async def apply(ctx: Context) -> None:
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
     refs = await register_web(ctx)

@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from infra.channels.base import AttachmentStore
-from infra.mobile_realtime.attachments import (
+from plugins.akashic_clients.attachments import AttachmentStore
+from plugins.akashic_clients.mobile_realtime.attachments import (
     AttachmentChunk,
     AttachmentRequestError,
     AttachmentTransferService,
@@ -18,7 +18,7 @@ from infra.mobile_realtime.attachments import (
     decode_attachment_chunk,
     encode_attachment_chunk,
 )
-from infra.mobile_realtime.storage import (
+from plugins.akashic_clients.mobile_realtime.storage import (
     AttachmentRecord,
     AttachmentStateError,
     DeviceRecord,
@@ -670,9 +670,13 @@ def test_outbound_rejects_symlink_and_persistent_root_failure(
 
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("block", encoding="utf-8")
+    strict_root = tmp_path / "outbound-blocked"
+    strict_store = AttachmentStore(strict_root)
+    strict_root.rmdir()
+    blocker.rename(strict_root)
     strict_service = AttachmentTransferService(
         storage,
-        AttachmentStore(blocker / "outbound"),
+        strict_store,
         max_attachment_bytes=1024,
     )
     with pytest.raises(NotADirectoryError):

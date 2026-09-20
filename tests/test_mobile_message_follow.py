@@ -11,25 +11,26 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
-from agent.config_models import MobileRealtimeConfig
+from plugins.akashic_clients.config import MobileRealtimeConfig
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.snapshot import RuntimeSnapshotStore
 from bootstrap.reply_status import RuntimeReplyStatus
-from infra.channels.message_view import message_rows
-from infra.mobile_realtime.auth import DeviceAuthenticator, device_proof_signing_bytes
-from infra.mobile_realtime.channel import MobileRealtimeChannel
-from infra.mobile_realtime.gateway import MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
-from infra.mobile_realtime.inbox import DurableInboxManager
-from infra.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
-from infra.mobile_realtime.message_view import bounded_reply_status, message_json
-from infra.mobile_realtime.pairing import PairingService
-from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from agent.plugin_composition.message_view import message_rows
+from plugins.akashic_clients.mobile_realtime.auth import DeviceAuthenticator, device_proof_signing_bytes
+from plugins.akashic_clients.mobile_realtime.channel import MobileRealtimeChannel
+from plugins.akashic_clients.mobile_realtime.gateway import MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
+from plugins.akashic_clients.mobile_realtime.inbox import DurableInboxManager
+from plugins.akashic_clients.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
+from plugins.akashic_clients.mobile_realtime.message_view import bounded_reply_status, message_json
+from plugins.akashic_clients.mobile_realtime.pairing import PairingService
+from plugins.akashic_clients.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from plugins.akashic_clients.services import MessageCatalogPort
 from plugins.reply.status import ReplyState
 from session.log import MessageLog
 from session.message import ContentPart, Input, Output, Control
 from tests.test_message_follow import status_root
 from tests.test_mobile_message_log import append
-from tests.test_message_log_migration import snapshot
+from tests.sqlite_helpers import snapshot
 
 
 @pytest.fixture
@@ -46,7 +47,7 @@ def gateway(tmp_path):
             authenticator=DeviceAuthenticator(storage, keyset), inbox=DurableInboxManager(storage),
             approvals=PairingApprovalRegistry(loop), keyset=keyset)
         channel = MobileRealtimeChannel(runtime)
-        channel.bind_messages(log.catalog())
+        channel.bind_messages(cast(MessageCatalogPort, log.catalog()))
         runtime.bind_channel(channel)
         with TestClient(create_mobile_gateway_app(runtime)) as client:
             yield log, runtime, client, device, private

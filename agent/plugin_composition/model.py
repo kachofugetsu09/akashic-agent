@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from collections.abc import Mapping
-from types import MappingProxyType
-from typing import Generic, TypeVar, cast
+from typing import Generic, TypeVar
 
 T = TypeVar("T", covariant=True)
 
@@ -32,26 +31,6 @@ class ServiceKey(Generic[T]):
     def __post_init__(self) -> None:
         if not self.name or self.name.strip() != self.name:
             raise ValueError("ServiceKey.name 必须是非空且无首尾空白的字符串")
-
-
-@dataclass(frozen=True, slots=True)
-class ServiceView:
-    """暴露一组由 Core 冻结的 composition service。"""
-
-    _values: Mapping[ServiceKey[object], object]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "_values", MappingProxyType(dict(self._values)))
-
-    @classmethod
-    def freeze(
-        cls,
-        values: Mapping[ServiceKey[object], object],
-    ) -> ServiceView:
-        return cls(values)
-
-    def get(self, key: ServiceKey[T]) -> T | None:
-        return cast(T | None, self._values.get(key))
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +67,6 @@ class TopologyFiberView:
     parent: str | None
     required_for_readiness: bool
     dependencies: tuple[str, ...]
-    static_active: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +89,7 @@ class PluginRuntime:
     plugin_dir: Path
     data_dir: Path
     workspace: Path
-    config: object
+    config: Mapping[str, object]
     workspace_roots: tuple[str, ...] = ()
     workspace_files: tuple[str, ...] = ()
 
@@ -141,6 +119,8 @@ def resolve_declared_workspace_root(workspace: Path, name: str) -> Path:
 
     root = workspace.resolve(strict=False)
     declared = root / name
+    if ".plugin-credentials" in Path(name).parts:
+        raise CompositionError("CREDENTIAL_STORE_PRIVATE", "私有凭据只能通过授权 broker 访问")
     if declared.is_symlink():
         raise CompositionError(
             "WORKSPACE_ROOT_SYMLINK",
@@ -165,6 +145,8 @@ def resolve_declared_workspace_file(workspace: Path, name: str) -> Path:
 
     root = workspace.resolve(strict=False)
     declared = root / name
+    if ".plugin-credentials" in Path(name).parts:
+        raise CompositionError("CREDENTIAL_STORE_PRIVATE", "私有凭据只能通过授权 broker 访问")
     try:
         relative = declared.relative_to(root)
     except ValueError as error:

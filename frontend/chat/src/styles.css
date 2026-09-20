@@ -112,7 +112,7 @@ input {
   --chat-group-gap: 16px;
   --chat-band-inline: 16px;
   --chat-rail-inline: 12px;
-  --chat-rail-width: 16rem;
+  --chat-rail-width: 14rem;
   --chat-type-control: 0.875rem;
   --chat-type-caption: 0.75rem;
   --chat-type-body: 0.875rem;
@@ -360,9 +360,9 @@ input {
 }
 
 .chat-sidebar--entry .conversation-session {
-  min-height: 48px;
+  min-height: 34px;
   border-radius: 7px;
-  padding-block: 7px;
+  padding-block: 4px;
   padding-inline: 10px;
 }
 
@@ -776,7 +776,11 @@ input {
   gap: 2px;
 }
 
-.chat-sidebar--entry .conversation-session small,
+/* 单行会话行：消息数预览收进 title 悬浮提示。 */
+.chat-sidebar--entry .conversation-session__copy small {
+  display: none;
+}
+
 .chat-sidebar--entry .conversation-session__title time {
   font-size: var(--chat-type-caption);
 }
@@ -974,6 +978,22 @@ input {
   flex-direction: column;
   gap: var(--composer-dock-gap);
   overflow: visible;
+}
+
+/* 底部淡出带：滚动内容在 composer 上方 32px 内渐隐入纸色，以下实心。
+   附在 wrap 上而非滚动区，draft 变高时淡入带随 composer 顶缘一起上移。 */
+.composer-wrap::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block: -32px calc(0px - var(--composer-dock-end));
+  background: linear-gradient(
+    180deg,
+    transparent 0px,
+    var(--ak-paper-canvas) 32px
+  );
+  pointer-events: none;
+  z-index: -1;
 }
 
 .composer-wrap.home {
@@ -2466,17 +2486,8 @@ form.composer:focus-within [data-slot="input-group"] {
   font-size: var(--chat-type-control);
   line-height: 1.5;
 }
-.chat-sidebar--entry .conversation-session {
-  padding-block: 10px;
-}
-.chat-sidebar--entry .conversation-session__title {
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
-.chat-sidebar--entry .conversation-session__title strong {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
+
+
 .chat-sidebar--entry .conversation-session__title time {
   margin-inline-start: auto;
   font-variant-numeric: tabular-nums;

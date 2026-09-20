@@ -12,20 +12,25 @@ import httpx
 from PIL import Image
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+from agent.plugin_composition.config_input import save_config
+
 from agent.media import encode_image_data_uri
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.context import CompositionRoot
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from plugins.standard_tools.shell import SHELL_OWNERS, shell_cleanup
+from plugins.standard_tools.shell import SHELL_OWNERS, TOOL_CLEANUP, shell_cleanup
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
-from plugins.conversation.program import run_reply
+from plugins.reply_program.program import run_reply
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.api import MessageReply
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
@@ -33,6 +38,8 @@ from plugins.standard_web.web import WebTool
 from plugins.tools.execution import ToolExecution
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 from plugins.standard_web.search import WebSearchTool
+
+
 from tests.test_message_push_plugin import storage
 from tests.model_plugin_fakes import build_test_chat_models
 
@@ -56,14 +63,16 @@ def _unexpected_call_read(identity: str) -> Mapping[str, object]:
     raise AssertionError(f"controlled reply unexpectedly read model call {identity}")
 
 
-def environment(tmp_path, *, reply=False):
+def environment(tmp_path, *, reply=False, models=True):
     source = tmp_path / "plugins"
     for name in (
         "tools",
         "content",
         "context",
+        "assets",
         "standard_tools",
-        *(("turn_projection",) if reply else ()),
+        *(("turn_projection", "sources") if reply else ()),
+        *(("ui", "models") if reply and models else ()),
     ):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
@@ -76,18 +85,19 @@ def environment(tmp_path, *, reply=False):
 api_version = 3
 name = "probe"
 version = "1.0.0"
-inject = (ServiceKey("core.bindings"),)
-async def apply(ctx, config):
+inject = (ServiceKey("core.bindings"), *REPLY_INJECT)
+async def apply(ctx):
     await ctx.provide(ServiceKey("standard-tools-probe"), ctx)
-''')
+'''.replace('REPLY_INJECT', '(ServiceKey("source.check.v1"), ServiceKey("models.selection.v1"))' if reply else '()'))
     workspace = tmp_path / "workspace"
     store, log = storage(workspace)
-    context_config = workspace / "plugin-data/context-builtin/config.local.toml"
+    context_config = workspace / "plugin-data/context-builtin"
     context_config.parent.mkdir(parents=True, exist_ok=True)
-    context_config.write_text('prompt_sources = {skills = "standard_tools"}\n')
+    save_config(context_config, {"prompt_sources": {"skills": "standard_tools"}})
     artifacts = ChannelAttachmentArtifactStore(
         workspace=workspace, metadata_store=store
     )
+    initialize_plugin_workspace(workspace)
     host = PluginManager(
         [source],
         event_bus=EventBus(),
@@ -111,8 +121,9 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
 
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             ctx = snapshot.composition_root.context
             tools = ctx.require(TOOLS)
             view = ctx.require(ALL_TOOLS)()
@@ -128,10 +139,14 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
                 configuration={"allowed_dir": str(tmp_path / "job")},
             )
         shutil.rmtree(source)
-        execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize, task_key="effects")
+        execution = ToolExecution(
+            log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
+            task_key="effects",
+        )
         missing = await execution.execute("missing", read, {"path": str(tmp_path / "missing")})
         assert missing.outcome == "error" and "不存在" in cast(str, missing.parts[0].value)
-        assert await execution.execute("missing", read, {"path": str(tmp_path / "missing")}) == missing
+        replayed = await execution.execute("missing", read, {"path": str(tmp_path / "missing")})
+        assert (replayed.outcome, replayed.parts) == (missing.outcome, missing.parts)
         escaped = await execution.execute("escape", write, {"path": "../outside", "content": "bad"})
         assert escaped.outcome == "error" and not (tmp_path / "outside").exists()
         written = await execution.execute("write", write, {"path": "record.txt", "content": "alpha\nalpha\n"})
@@ -172,8 +187,9 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
 
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             ctx = snapshot.composition_root.context
             catalog = ctx.require(TOOLS)
             view = ctx.require(ALL_TOOLS)()
@@ -195,7 +211,10 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
             )
             cleanup = bindings.bind(SHELL_OWNERS, {})
         shutil.rmtree(source)
-        execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize, task_key="effects")
+        execution = ToolExecution(
+            log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
+            task_key="effects",
+        )
         blocked = await execution.execute("network", command, {"command": "curl https://example.com", "description": "network"})
         assert blocked.outcome == "error" and permissions == []
         started = await execution.execute("start", command, {
@@ -237,7 +256,9 @@ async def test_web_search_only_reports_empty_success_from_confirmed_response(mon
     transport = httpx.MockTransport(lambda request: httpx.Response(200, text=reply, headers={"content-type": media}))
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs))
     tool = WebTool(WebSearchTool())
-    result = await tool.invoke("request", await tool.prepare({"query": "test"}))
+    prepared = await tool.prepare({"query": "test"})
+    assert isinstance(prepared, Mapping)
+    result = await tool.invoke("request", prepared)
     assert result.outcome == ("error" if error else "success")
     if not error:
         assert json.loads(cast(str, result.parts[0].value))["result"] == ""
@@ -261,7 +282,10 @@ async def start_shell_call(log, bindings, tasks, binding, source, identity):
     async def allow(identity, arguments):
         return {"allowed": True}
 
-    execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), allow, task_key="effects")
+    execution = ToolExecution(
+        log.owner("plugin:tools"), tasks, partial(open_tool, bindings), allow,
+        task_key="effects",
+    )
     result = await execution.execute_call(reply)
     assert result.outcome == "success"
     return cast(str, json.loads(cast(str, result.parts[0].value))["execution_id"])
@@ -271,22 +295,26 @@ async def start_shell_call(log, bindings, tasks, binding, source, identity):
 async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_running(tmp_path):
     host, store, log, _artifacts, source = environment(tmp_path)
     tasks = Tasks()
-    probe = ServiceKey("standard-tools-probe")
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             root = snapshot.composition_root.context
             tool = root.require(TOOLS).bind(
                 root.require(ALL_TOOLS)().select("shell"), bindings
             )
-            probe_binding = bindings.bind(probe, {})
         first = await start_shell_call(log, bindings, tasks, tool, "conversation", "first")
         second = await start_shell_call(log, bindings, tasks, tool, "wake", "second")
+        binding_ids = tuple(row[0] for row in log._connection.execute(
+            "SELECT binding_id FROM bindings ORDER BY binding_id"
+        ))
         shutil.rmtree(source)
-        # 当前 Root 只有 probe；清理必须从实际 ToolCall 归档找回 Shell owner。
-        async with bindings.open(probe_binding, probe) as (ctx, _):
-            assert ctx.get(SHELL_OWNERS) is None
+        # 清理使用稳定 owner key；不因源码目录变化跳过同一进程集合的终止。
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert isinstance(snapshot.composition_root, CompositionRoot)
+            ctx = snapshot.composition_root.context
+            assert ctx.get(SHELL_OWNERS) is not None
             async with shell_cleanup(ctx, log.reader("shared"), "conversation", 0):
                 pass
             backend = host._plugin_processes._manager
@@ -295,6 +323,9 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
             async with shell_cleanup(ctx, log.reader("shared"), "wake", 0):
                 pass
             assert await backend.active_execution_ids() == []
+        assert tuple(row[0] for row in log._connection.execute(
+            "SELECT binding_id FROM bindings ORDER BY binding_id"
+        )) == binding_ids
     finally:
         await tasks.close()
         await host.terminate_all()
@@ -312,8 +343,9 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
     execution_id = None
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             root = snapshot.composition_root.context
             ctx = root.require(ServiceKey("standard-tools-probe"))
             catalog = root.require(TOOLS)
@@ -384,6 +416,7 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
                     content=root.require(CONTENT),
                     context=root.require(CONTEXT),
                     tools=catalog,
+                    cleanup=root.require(TOOL_CLEANUP),
                     react=controlled_react,
                     materials=root.require(MATERIALS),
                     turn_projection=root.require(TURN_PROJECTION),

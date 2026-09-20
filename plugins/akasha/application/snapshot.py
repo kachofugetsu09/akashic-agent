@@ -8,8 +8,7 @@ import sqlite3
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition.bindings import Bindings
-from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 
 from ..domain.model import MemoryConfig
 from ..infrastructure.consumption import Consumption
@@ -28,7 +27,7 @@ def _copy_published(source: Path, target: Path) -> None:
 
 @asynccontextmanager
 async def read_memory(
-    path: Path, *, legacy_index: Path | None, catalog: MessageCatalog,
+    path: Path, *, catalog: MessageCatalog,
     embeddings: MessageEmbeddings, bindings: Bindings, config: MemoryConfig,
     embedding_space: tuple[str, int] | None = None,
     allow_initial: bool = False,
@@ -41,7 +40,7 @@ async def read_memory(
             await run_memory_job(lambda: _copy_published(path, snapshot))
         # 2. 复用完整恢复校验；恢复器的本地 lease 只保护临时副本。
         restored = await MessageConsumer.load(
-            snapshot, legacy_index=legacy_index, catalog=catalog,
+            snapshot, catalog=catalog,
             embeddings=embeddings, bindings=bindings, config=config,
         )
         try:

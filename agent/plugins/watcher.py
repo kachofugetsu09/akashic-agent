@@ -16,7 +16,7 @@ class PluginWatcher:
         self,
         manager: PluginManager,
         *,
-        baseline_revision: str,
+        baseline_revision: str | None = None,
         interval_seconds: float = 1.0,
         after_reconcile: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
@@ -66,11 +66,17 @@ class PluginWatcher:
                     current_revision = await asyncio.to_thread(
                         self._manager.watch_revision
                     )
-                except OSError:
+                except (OSError, ValueError, RuntimeError):
                     self._forced = self._forced or forced or manual_wake
                     self._manual_wake_pending = self._manual_wake_pending or manual_wake
                     logger.exception("插件热重载状态扫描失败")
                     continue
+                # 启动只记下磁盘基线，不把关机期间留下的候选重新当成更新。
+                # 明确的手动唤醒仍可请求处理当前输入。
+                if revision is None:
+                    revision = current_revision
+                    if not forced:
+                        continue
                 if manual_wake:
                     failed_revision = None
                     failed_attempts = 0

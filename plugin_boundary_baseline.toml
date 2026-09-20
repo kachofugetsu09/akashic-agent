@@ -1,0 +1,11 @@
+# 插件边界门债务账本：既有违规的精确清单。
+# 由 `python scripts/plugin_boundary.py baseline` 输出，人工评审后更新。
+# 只允许减少：新增违规会使门失败，条目还清后必须删除。
+
+[baseline]
+R1 = [
+]
+R2 = [
+]
+R3 = [
+]

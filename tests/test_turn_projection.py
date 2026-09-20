@@ -186,7 +186,7 @@ async def test_public_service_loads_under_arbitrary_plugin_identity():
     results = []
 
     async def provider(ctx):
-        await apply(ctx, None)
+        await apply(ctx)
 
     async def consumer(ctx):
         projection = ctx.require(key)

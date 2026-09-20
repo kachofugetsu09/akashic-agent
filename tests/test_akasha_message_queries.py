@@ -1,9 +1,12 @@
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, closing
 import threading
+from typing import cast
 
 import pytest
+
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -20,20 +23,31 @@ from session.message import ContentPart, ContentReferences, Control, Input, Mess
 from tests.test_akasha_learning_binding import manager, sources
 
 
+def material_rows(material: Mapping[str, object], name: str) -> tuple[Mapping[str, object], ...]:
+    """把结构材料的已发布对象数组收窄给行为断言。"""
+    value = material.get(name, ())
+    if not isinstance(value, tuple) or any(not isinstance(row, Mapping) for row in value):
+        raise TypeError(f"{name} must be an object tuple")
+    return tuple(cast(Mapping[str, object], row) for row in value)
+
+
 @asynccontextmanager
 async def memory_runtime(tmp_path, *, max_chars=12000):
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     runtime = None
     consumer = None
     calls = []
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
-        consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None,
+        consumer = await MessageConsumer.load(tmp_path / "memory.db", 
             catalog=log.catalog(), embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         async with lease_runtime_snapshot(host.snapshot_store):
             rule = LearningConfig(embedding_model="fixed", dimension=2, sources=("chat",))
@@ -86,18 +100,20 @@ async def test_context_query_uses_latest_real_input_and_published_references(tmp
         snapshot = log.reader("s").snapshot()
         write("later", "later input must stay out")
         material = await runtime.prepare(snapshot, "chat")
-        assert material.system_prompt == ""
+        assert material.get("system_prompt", "") == ""
         assert calls[-1] == ["and the correction"]
-        assert [ref.ref for ref in material.references] == ["old-u1", "old-u2", "old-a"]
-        assert isinstance(material.reminders[0].text, str)
-        assert "learned answer" in material.reminders[0].text
-        identity = material.references[0].retrieval_ref
-        assert identity is not None
+        references = material_rows(material, "references")
+        reminders = material_rows(material, "reminders")
+        assert [ref["ref"] for ref in references] == ["old-u1", "old-u2", "old-a"]
+        assert isinstance(reminders[0]["text"], str)
+        assert "learned answer" in reminders[0]["text"]
+        identity = references[0]["retrieval_ref"]
+        assert isinstance(identity, str)
         record = records.read(identity)
         assert record.source.through_seq == snapshot[-1].seq
         assert record.graph_version == 1
         assert record.hits[0].message_ids == ("old-u1", "old-u2", "old-a")
-        assert record.presented_message_ids == tuple(ref.ref for ref in material.references)
+        assert record.presented_message_ids == tuple(ref["ref"] for ref in references)
         assert logical_state_sha256(tmp_path / "memory.db") == graph
         assert len(consumer.state.applied) == 1
         write("new-a", "new answer", Output)
@@ -132,7 +148,7 @@ async def test_failed_query_record_cannot_return_materials_and_empty_hit_is_reco
             return result
         monkeypatch.setattr(records, "save", capture)
         material = await runtime.prepare(snapshot, "chat")
-        assert material.reminders == material.references == ()
+        assert material.get("reminders", ()) == material.get("references", ()) == ()
         assert len(observed) == 1 and observed[0].hits == ()
         assert calls == [["no old memories"]]
 
@@ -187,7 +203,7 @@ async def test_context_rejects_truncated_prefix_and_does_not_use_abandoned_input
         first = write("abandoned", "discarded query")
         log.writer("s", author="user", source="chat", body_types=(Control,), content={}).append(
             "abandon", Control("abandon", first.seq))
-        assert (await runtime.prepare(log.reader("s").snapshot(), "chat")).reminders == ()
+        assert (await runtime.prepare(log.reader("s").snapshot(), "chat")).get("reminders", ()) == ()
         assert calls == []
         write("current", "actual query")
         snapshot = log.reader("s").snapshot()
@@ -206,14 +222,16 @@ async def test_budget_records_exact_presented_members_without_losing_learning_me
             assert await runtime.consume() == 1
         write("q", "recall")
         material = await runtime.prepare(log.reader("s").snapshot(), "chat")
-        assert isinstance(material.reminders[0].text, str)
-        assert len(material.reminders[0].text) <= 100
-        assert len(material.references) == 1
-        retrieval_ref = material.references[0].retrieval_ref
-        assert retrieval_ref is not None
+        reminders = material_rows(material, "reminders")
+        references = material_rows(material, "references")
+        assert isinstance(reminders[0]["text"], str)
+        assert len(reminders[0]["text"]) <= 100
+        assert len(references) == 1
+        retrieval_ref = references[0]["retrieval_ref"]
+        assert isinstance(retrieval_ref, str)
         record = records.read(retrieval_ref)
         assert [hit.message_ids for hit in record.hits] == [("u2", "a2"), ("u1", "a1")]
-        assert record.presented_message_ids == tuple(ref.ref for ref in material.references)
+        assert record.presented_message_ids == tuple(ref["ref"] for ref in references)
         assert record.presented_message_ids == ("u2",)
 
 
@@ -255,5 +273,5 @@ async def test_background_input_never_triggers_automatic_recall(tmp_path):
                    content={"text": lambda part: ContentReferences()}).append(
             "reminder", Input((ContentPart("text", "background task"),)))
         material = await runtime.prepare(log.reader("s").snapshot(), "chat")
-        assert material.references == material.reminders == ()
+        assert material.get("references", ()) == material.get("reminders", ()) == ()
         assert calls == [] and records.list() == ()

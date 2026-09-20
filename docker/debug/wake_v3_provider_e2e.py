@@ -22,24 +22,20 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 import agent.plugins.manager as plugin_manager_module
-import plugins.wake.message_plugin as wake_plugin_module
+import plugins.wake.plugin as wake_plugin_module
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition import (
-    AddConnection,
-    AddModel,
     CHAT_MODELS,
-    CapabilitySources,
     LLMResponse,
-    ModelCapabilities,
-    ModelKind,
-    ModelRole,
-    SetDefaultModel,
     ToolCall,
 )
 from agent.plugins.manager import PluginManager
+from agent.plugins.selection import PluginSelection
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
+from infra.channels.artifacts import ChannelAttachmentArtifactStore
+from session.artifact_store import ArtifactStore
 from session.log import MessageLog
 from plugins.wake.request import Request, read_request
 from plugins.wake.source import Pointer
@@ -340,11 +336,16 @@ class RuntimeStack:
     event_bus: EventBus
     message_log: MessageLog
     manager: PluginManager
+    artifact_metadata: ArtifactStore
     after_load: Callable[[], Awaitable[None]] | None = None
     uses_test_model: bool = True
 
     async def start(self) -> None:
+        selection = PluginSelection(self.workspace)
+        stable = selection.read()
         await self.manager.load_all()
+        if stable is not None and selection.read() != stable:
+            raise GateFailure("RESTART_CHANGED_STABLE_SELECTION")
         if self.after_load is not None:
             await self.after_load()
         await self.manager.start_runtime()
@@ -359,6 +360,7 @@ class RuntimeStack:
                 await self.event_bus.aclose()
             finally:
                 self.message_log.close()
+                self.artifact_metadata.close()
                 if self.uses_test_model:
                     unregister_test_model_provider(self.workspace)
 
@@ -377,6 +379,7 @@ async def run_suite(
     # 1. Seed only the fixture-owned external source and plugin configuration.
     workspace = root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
+    PluginSelection(workspace).initialize()
     receipt_db = workspace / "recording-receipts.sqlite3"
     _write_plugin_configs(workspace, receipt_db)
     source_store = FixtureSourceStore(
@@ -406,11 +409,9 @@ async def run_suite(
     try:
         # 2. Install through the formal manager and run the ordinary source Timer.
         if model_plugin_dirs:
-            # Model settings are durable, while a running Root keeps the exact
-            # plugin generation that was loaded before the settings write.  Seed
-            # the registry in a short bootstrap Root, then run the chain against
-            # a fresh Root that loads the committed binding and its driver
-            # together.
+            # Model settings belong to the model owner. Seed them once, then
+            # reopen the same stable archives against that owner's saved state.
+            # Restart does not recapture code or select another driver plugin.
             bootstrap = _build_stack(
                 workspace,
                 root,
@@ -497,6 +498,7 @@ async def run_suite(
                 timer,
                 counted,
                 model_plugin_dirs=model_plugin_dirs,
+                configure_selected_model=False,
             )
             await restarted.start()
             await _eventually(
@@ -549,7 +551,7 @@ async def run_suite(
                     raise GateFailure("MODEL_SNAPSHOT_ROOT_MISSING")
                 chat_models = composition_root.context.require(CHAT_MODELS)
                 async with chat_models.execution() as execution:
-                    selected_model = execution.chat(ModelRole.DEFAULT)
+                    selected_model = execution.chat("default")
                     model_evidence = {
                         "revision": catalog.revision,
                         "model_id": selected_model.descriptor.model_id,
@@ -602,6 +604,10 @@ def _build_stack(
 
     event_bus = EventBus()
     message_log = MessageLog(workspace / "sessions.db")
+    artifact_metadata = ArtifactStore(workspace / "sessions.db")
+    artifacts = ChannelAttachmentArtifactStore(
+        workspace=workspace, metadata_store=artifact_metadata
+    )
 
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
@@ -609,9 +615,13 @@ def _build_stack(
             "content",
             "context",
             "delivery",
+            "delivery_policy",
             "drift",
             "eventmail",
             "react",
+            "reply_program",
+            "sources",
+            "standard_tools",
             "tools",
             "turn_projection",
             "wake",
@@ -632,6 +642,7 @@ def _build_stack(
         event_bus=event_bus,
         workspace=workspace,
         message_log=message_log,
+        channel_attachment_store=artifacts,
         installed_cache_root=root / "plugin-home" / "cache",
     )
     if not model_plugin_dirs:
@@ -644,6 +655,7 @@ def _build_stack(
         event_bus,
         message_log,
         manager,
+        artifact_metadata,
         after_load=(
             (
                 (lambda: _configure_selected_model(manager))
@@ -667,8 +679,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelRole
-from plugins.models.projection import MODEL_CALLS
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.projection import (
+    MODEL_CALLS,
+    MODEL_MESSAGE_CHECKS,
+    MODEL_PROJECTION,
+    MessageChecksOwner,
+    ProjectionOwner,
+)
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from tests.model_plugin_fakes import _MODEL_PROVIDERS
@@ -702,7 +722,7 @@ from tests.model_plugin_fakes import _MODEL_PROVIDERS
         binding_id="wake-e2e-fixture-model", plugin_snapshot_id="wake-e2e-fixture",
         model_revision=1, model_id="wake-e2e-fixture", connection_id="fixture",
         driver_id="fixture", driver_contract_version="1", auth_identity="fixture",
-        model=getattr(provider, "model", "wake-e2e-fixture"), role=ModelRole.AGENT,
+        model=getattr(provider, "model", "wake-e2e-fixture"), role="agent",
         reasoning_effort=None, capabilities=ModelCapabilities(context_window=64_000),
         capability_sources=CapabilitySources(), capability_digest="wake-e2e-fixture",
     )
@@ -714,11 +734,16 @@ from tests.model_plugin_fakes import _MODEL_PROVIDERS
             yield SimpleNamespace(chat=lambda role: model)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
 """ if include_models else ""
     text = f'''from contextlib import asynccontextmanager, closing
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, ServiceKey
+from plugins.conversation.plugin import check_origin
 from plugins.akasha.interest import SEMANTIC_INTEREST
-from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.akasha.plugin import AKASHA_TOOLS
 from plugins.delivery.api import Receipt
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
@@ -749,8 +774,10 @@ class NoopTool:
         del key
         return None
 
-async def apply(ctx: Context, config: object):
-    del config
+async def apply(ctx: Context):
+    # The isolated fixture does not mount the full conversation source, but
+    # Delivery Policy still consumes the real conversation-owned origin check.
+    await ctx.provide(ServiceKey("conversation.check_origin.v1"), check_origin)
     await ctx.provide(SEMANTIC_INTEREST, ZeroSemanticInterest())
     @asynccontextmanager
     async def open_tool(state):
@@ -842,62 +869,71 @@ async def _configure_selected_model(manager: PluginManager) -> None:
     """Configure the real endpoint through the ordinary models service."""
 
     control = RuntimeModelControl(manager.snapshot_store)
-    receipt = await control.apply(
-        AddConnection(
-            expected_revision=0,
-            connection_id="wake-e2e",
-            name="Wake E2E",
-            driver_id="openai-compatible",
-            endpoint=os.environ["PR_G_DEEPSEEK_BASE_URL"].strip(),
-            auth_identity="wake-e2e",
-            credential={
-                "driver": "api_key",
-                "access_token": os.environ["PR_G_DEEPSEEK_API_KEY"],
-            },
-            driver_config={"format_version": 1, "max_retries": 3},
-        )
-    )
-    receipt = await control.apply(
-        AddModel(
-            expected_revision=receipt.revision,
-            model_id="wake-e2e-model",
-            connection_id="wake-e2e",
-            kind=ModelKind.CHAT,
-            model=MODEL,
-            default_reasoning_effort=_SELECTED_REASONING_EFFORT,
-            capabilities=ModelCapabilities(
-                context_window=_SELECTED_CONTEXT_WINDOW,
-                input_modalities=("text",),
-                supports_tool_calls=True,
-                supported_reasoning_efforts=(_SELECTED_REASONING_EFFORT,),
-            ),
-            capability_sources=CapabilitySources(context_window="e2e-profile"),
-        )
-    )
-    for role in (ModelRole.DEFAULT, ModelRole.FAST, ModelRole.AGENT):
-        receipt = await control.apply(
-            SetDefaultModel(receipt.revision, role, "wake-e2e-model")
-        )
+    async def command(payload: dict[str, object]) -> dict[str, object]:
+        result = await control.invoke_rpc("models/command", payload)
+        if not isinstance(result, dict) or result.get("status") != 200:
+            raise RuntimeError(f"models command failed: {result!r}")
+        body = result.get("body")
+        if not isinstance(body, dict):
+            raise RuntimeError(f"models command returned invalid body: {result!r}")
+        return body
+
+    receipt = await command({
+        "type": "add_connection",
+        "expected_revision": 0,
+        "connection_id": "wake-e2e",
+        "name": "Wake E2E",
+        "driver_id": "openai-compatible",
+        "endpoint": os.environ["PR_G_DEEPSEEK_BASE_URL"].strip(),
+        "auth_identity": "wake-e2e",
+        "credential": {
+            "driver": "api_key",
+            "access_token": os.environ["PR_G_DEEPSEEK_API_KEY"],
+        },
+        "driver_config": {"format_version": 1, "max_retries": 3},
+    })
+    receipt = await command({
+        "type": "add_model",
+        "expected_revision": receipt["revision"],
+        "model_id": "wake-e2e-model",
+        "connection_id": "wake-e2e",
+        "kind": "chat",
+        "model": MODEL,
+        "default_reasoning_effort": _SELECTED_REASONING_EFFORT,
+        "capabilities": {
+            "context_window": _SELECTED_CONTEXT_WINDOW,
+            "input_modalities": ["text"],
+            "supports_tool_calls": True,
+            "supported_reasoning_efforts": [_SELECTED_REASONING_EFFORT],
+        },
+        "capability_sources": {"context_window": "e2e-profile"},
+    })
+    for role in ("default", "fast", "agent"):
+        receipt = await command({
+            "type": "set_default",
+            "expected_revision": receipt["revision"],
+            "role": role,
+            "model_id": "wake-e2e-model",
+        })
 
 
 def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
     """Write only isolated plugin-local configuration needed by the fixture chain."""
 
+    from agent.plugin_composition.config_input import save_config, save_credential
+
     wake = workspace / "plugin-data" / "wake-builtin"
+    context = workspace / "plugin-data" / "context-builtin"
     recording = workspace / "plugin-data" / "recording_channel-builtin"
     wake.mkdir(parents=True)
+    context.mkdir(parents=True)
     recording.mkdir(parents=True)
-    _ = (wake / "config.local.toml").write_text(
-        '[delivery]\nchannel = "recording"\n'
-        'recipient = "fixture-recipient"\n'
-        'session_id = "wake-provider-e2e"\n',
-        encoding="utf-8",
-    )
-    escaped = str(receipt_db).replace("\\", "\\\\").replace('"', '\\"')
-    _ = (recording / "config.local.toml").write_text(
-        f'receipt_db = "{escaped}"\ntoken = "isolated-fixture-token"\n',
-        encoding="utf-8",
-    )
+    save_config(context, {"prompt_sources": {"skills": "standard_tools"}})
+    save_config(wake, {"delivery": {"channel": "recording", "recipient": "fixture-recipient",
+                                    "session_id": "wake-provider-e2e"}})
+    save_config(recording, {"receipt_db": str(receipt_db),
+                            "token": save_credential(recording, "isolated-fixture-token")})
+
 
 
 async def _eventually(
@@ -917,6 +953,7 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
     # 1. Install the same formal chain with a declined source fact.
     workspace = root / "workspace"
     workspace.mkdir(parents=True)
+    PluginSelection(workspace).initialize()
     _write_plugin_configs(workspace, workspace / "recording-receipts.sqlite3")
     source_store = FixtureSourceStore(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"

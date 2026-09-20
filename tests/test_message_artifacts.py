@@ -1,17 +1,15 @@
 from session.message import ContentReferences
 from contextlib import closing
 from dataclasses import replace
-from pathlib import Path
 import sqlite3
 
 import pytest
-from yoyo import get_backend, read_migrations
 
-from agent.migrations.context import bind_migration_context
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from session.artifacts import AttachmentKind, AttachmentRef
 from session.log import MessageLog, MessageConflict
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
-from session.store import SessionStore
 from session.artifact_store import ArtifactStore
 
 
@@ -78,57 +76,6 @@ def test_bad_ref_or_late_binding_failure_rolls_back_message_and_pins_but_keeps_a
         assert connection.execute("SELECT COUNT(*) FROM attachments").fetchone() == (1,)
 
 
-def migration(tmp_path):
-    directory = tmp_path / "migrations"
-    directory.mkdir()
-    (directory / "20260905_05_message_embeddings.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
-    source = Path(__file__).parents[1] / "migrations/yoyo/20260905_06_message_artifacts.py"
-    (directory / source.name).write_bytes(source.read_bytes())
-    return read_migrations(str(directory))
-
-
-@pytest.mark.parametrize("bad_direction", [False, True])
-def test_yoyo_removes_only_proven_redundant_direction_and_keeps_every_reference(storage, tmp_path, bad_direction):
-    path, log, ref = storage
-    writer(log, Input, checks={"history.provenance": lambda part: ContentReferences()}).append(
-        "old", Input((ContentPart("history.provenance", {"schema": "sessions.messages.v0", "role": "user"}),)))
-    # 真实旧 owner 提供 schema；消息已处于前置 01 的不可变表示。
-    old_path = tmp_path / "legacy-schema.db"
-    old = SessionStore(old_path)
-    old.close()
-    with closing(sqlite3.connect(old_path)) as old_db:
-        old_sql = old_db.execute("SELECT sql FROM sqlite_master WHERE name='message_attachments'").fetchone()[0]
-        index_sql = old_db.execute("SELECT sql FROM sqlite_master WHERE name='idx_message_attachments_artifact'").fetchone()[0]
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute("DROP TABLE message_attachments")
-        connection.execute(old_sql)
-        connection.execute(index_sql)
-        connection.execute("INSERT INTO message_attachments VALUES (?,?,?,?)", ("old", 0, ref.artifact_id, "outbound" if bad_direction else "inbound"))
-        before = connection.execute("SELECT * FROM messages").fetchall()
-        artifacts = connection.execute("SELECT * FROM attachments").fetchall()
-    steps = migration(tmp_path)
-    backend = get_backend(f'sqlite:///{tmp_path / "ledger.db"}')
-    with backend, bind_migration_context(config_path=tmp_path / "config.toml", workspace=tmp_path):
-        if bad_direction:
-            with pytest.raises(RuntimeError, match="角色不一致"):
-                backend.apply_migrations(backend.to_apply(steps))
-            assert not (tmp_path / "backups/message-artifacts-v1").exists()
-            return
-        backend.apply_migrations(backend.to_apply(steps))
-        steps[-1].module.migrate_message_artifacts(None)
-    assert log.reader("s").attachments("old") == (ref,)
-    writer(log, Output).append("new", Output((ContentPart("image", ref.artifact_id),), "complete"))
-    backups = list((tmp_path / "backups/message-artifacts-v1").glob("*/sessions.db"))
-    assert len(backups) == 1
-    with closing(sqlite3.connect(backups[0])) as backup:
-        assert backup.execute("SELECT * FROM message_attachments").fetchall() == [("old", 0, ref.artifact_id, "inbound")]
-    with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("SELECT * FROM messages WHERE id='old'").fetchall() == before
-        assert connection.execute("SELECT * FROM attachments").fetchall() == artifacts
-        assert [row[1] for row in connection.execute("PRAGMA table_info(message_attachments)")] == ["message_id", "ordinal", "artifact_id"]
-        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-
-
 @pytest.mark.asyncio
 async def test_host_exposes_only_bounded_artifact_read_and_candidate_cannot_open(tmp_path):
     from agent.plugin_composition.artifacts import ARTIFACT_READ, ArtifactRead
@@ -139,6 +86,7 @@ async def test_host_exposes_only_bounded_artifact_read_and_candidate_cannot_open
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     store = ArtifactStore(workspace / "sessions.db")
     artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
     ref = await artifacts.import_bytes(b"fixed bytes", kind=AttachmentKind.FILE,
@@ -151,7 +99,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("probe"), ctx)
 ''')
     host = PluginManager([sources], event_bus=EventBus(), workspace=workspace,

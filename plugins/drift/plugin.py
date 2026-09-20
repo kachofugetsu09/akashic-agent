@@ -13,8 +13,6 @@ version = "3.0.0"
 desc = "Durable Drift proposal state"
 author = "Akashic Core"
 inject = ()
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 
@@ -141,10 +139,9 @@ class _DeliveryServices:
         return self._store.settle_delivery(selection_token, settlement_ref)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Publish the narrow Drift view over one generation-scoped store."""
 
-    _ = config
     store = DriftStore(ctx.data_root / "drift.sqlite3")
     store.initialize()
     _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store, lambda: ctx.emit(DRIFT_CHANGED, None)))

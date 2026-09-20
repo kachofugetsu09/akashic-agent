@@ -1,3 +1,4 @@
+from plugins.content.api import legacy_post_commit_effect
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -13,7 +14,7 @@ from session.message import ContentPart, ContentReferences, Input, Output
 @pytest.mark.asyncio
 async def test_interest_uses_completed_eligible_cached_inputs_and_cutoff(tmp_path):
     log = MessageLog(tmp_path / "messages.db")
-    learning = Learning(TurnProjection(), owner="akasha")
+    learning = Learning(TurnProjection(), owner="akasha", post_commit_effect=legacy_post_commit_effect)
     embeddings = MessageEmbeddings(log)
     records = embeddings.bind(learning.text)
     rule = LearningConfig(embedding_model="fixed", dimension=2, sources=("conversation",))

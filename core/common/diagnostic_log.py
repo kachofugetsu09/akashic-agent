@@ -193,7 +193,11 @@ def configure_logging() -> None:
             )
         )
     root = logging.getLogger()
+    previous_handlers = tuple(root.handlers)
     root.handlers[:] = [handler]
+    for previous_handler in previous_handlers:
+        if previous_handler is not handler:
+            previous_handler.close()
     root.setLevel(level)
 
 

@@ -10,7 +10,7 @@ import pytest
 
 from plugins.akasha.application.cycle import MemoryCycle
 from plugins.akasha.domain.model import MemoryConfig, Turn
-from plugins.akasha.infrastructure.consumption import Consumption, LegacyPrefix, turns_digest
+from plugins.akasha.infrastructure.consumption import Consumption
 from plugins.akasha.infrastructure.persistence import (
     load_consumption, load_memory_state, logical_state_sha256, write_memory_database,
 )
@@ -97,8 +97,7 @@ def test_interrupted_inputs_learn_one_real_graph_node_and_restore_without_replay
     assert turn.assistant_text == "full answer"
     assert turn.user_dense is not None
     np.testing.assert_allclose(turn.user_dense, [0.6, 0.8])
-    state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256="0" * 64,
-                                                  turns_digest=turns_digest([])), cutover_heads=())
+    state = Consumption(cutover_heads=())
     state = state.append(applied_source(sample, learning_binding="exact-projection"))
     cycle = MemoryCycle()
     cycle.commit(turn, None)
@@ -149,18 +148,18 @@ def test_cutover_preserves_old_graph_and_publish_failure_keeps_old_snapshot(conv
     path = tmp_path / "akasha.db"
     publish(path, cycle, None)
     old_graph = logical_state_sha256(path)
-    state = Consumption(legacy_prefix=LegacyPrefix(count=1, index_state_sha256="1" * 64,
-                                                  turns_digest=turns_digest([turn])),
-                        cutover_heads=tuple(sorted(log.catalog().snapshot_heads().items())))
+    # 切换上界固定后，切换前的闭段不能再被追认为新的学习出处。
+    cutover = Consumption(cutover_heads=tuple(sorted(log.catalog().snapshot_heads().items())))
+    with pytest.raises(ValueError, match="切换前"):
+        cutover.append(applied_source(old, learning_binding="new"))
+    state = Consumption(cutover_heads=()).append(applied_source(old, learning_binding="legacy"))
     publish(path, restore(path, [turn]), state)
-    assert load_consumption(path).legacy_prefix.count == 1
+    assert len(load_consumption(path).applied) == 1
     assert restore(path, [turn]).state_version == 1
     with pytest.raises(ValueError, match="旧 writer"):
         publish(path, cycle, None)
-    with pytest.raises(ValueError, match="切换前"):
-        state.append(applied_source(old, learning_binding="new"))
-    with pytest.raises(ValueError, match="旧学习前缀"):
-        restore(path, [replace(turn, user_text="changed")])
+    with pytest.raises(ValueError, match="学习节点与消费出处不一致"):
+        state.check_turns([replace(turn, assistant_message_id="other")])
     assert old_graph != logical_state_sha256(path)  # graph plus new provenance
     add("u2", "new question")
     add("a2", "new answer", Output)
@@ -182,6 +181,47 @@ def test_cutover_preserves_old_graph_and_publish_failure_keeps_old_snapshot(conv
     assert list(tmp_path.glob("akasha.db.*.tmp"))  # named recovery material
 
 
+def test_deferred_publish_rebuild_produces_the_same_graph(conversation, tmp_path):
+    """重建的延迟发布必须与逐轮发布得到同一份学习图。"""
+
+    from plugins.akasha.application.consumer import MessageConsumer
+    log, append, add, text, records = conversation
+    add('u1', 'question one')
+    add('a1', 'answer one', Output)
+    add('u2', 'question two')
+    add('a2', 'answer two', Output)
+    samples = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)
+    entries = [applied_source(sample, learning_binding='fixed') for sample in samples]
+    typed: list[Turn] = []
+    previous: datetime | None = None
+    for index, sample in enumerate(samples):
+        turn = dialogue_turn(sample, node_id=index, previous=previous, text=text,
+                             embeddings=records, embedding_model='fixed', dimension=2)
+        assert turn is not None
+        typed.append(turn)
+        previous = datetime.fromisoformat(turn.committed_at)
+
+    states: list[str] = []
+    for deferred in (False, True):
+        path = tmp_path / f'consumer-{deferred}.db'
+        consumer = MessageConsumer(path, turns=[], state=Consumption(cutover_heads=()),
+                                   config=MemoryConfig(), deferred_publish=deferred)
+        try:
+            for index, turn in enumerate(typed):
+                assert consumer.apply(turn, entries[index])
+            if deferred:
+                _ = consumer.publish_snapshot()
+        finally:
+            consumer.close()
+        states.append(logical_state_sha256(path))
+        with closing(sqlite3.connect(path)) as connection:
+            endings = [row[0] for row in connection.execute(
+                'SELECT assistant_message_id FROM turn_nodes ORDER BY node_id')]
+        assert endings == ['a1', 'a2']
+
+    assert states[0] == states[1]
+
+
 def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_publish(conversation, tmp_path, monkeypatch):
     from plugins.akasha.application.consumer import MessageConsumer
     from plugins.akasha.projection import restore_sample
@@ -196,8 +236,7 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
     add('a1', 'answer one', Output)
     first = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)[0]
     entry = applied_source(first, learning_binding='fixed')
-    state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256='0' * 64,
-                                                  turns_digest=turns_digest([])), cutover_heads=())
+    state = Consumption(cutover_heads=())
     path = tmp_path / 'consumer.db'
     consumer = MessageConsumer(path, turns=[], state=state, config=MemoryConfig())
     try:
@@ -210,7 +249,7 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
         consumer.close()
     state = load_consumption(path)
     assert state is not None
-    restored_sample = restore_sample(log.catalog(), TurnProjection(), state.applied[0])
+    restored_sample = restore_sample(log.catalog(), state.applied[0])
     restored_turn = build(restored_sample)
     consumer = MessageConsumer(path, turns=[restored_turn], state=state, config=MemoryConfig())
     assert not consumer.apply(restored_turn, entry)
@@ -244,24 +283,44 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
         consumer.apply(second_turn, second_entry)
 
 
-def test_reprojection_rejects_changed_members_and_unknown_consumer_version(conversation):
+def test_restore_reads_only_recorded_refs_and_rejects_changed_provenance(conversation):
+    """恢复只按出处引用读取；出处被改写必须 fail-loud，且不得重投影整段历史。"""
+
     from plugins.akasha.infrastructure.consumption import Consumption
-    from plugins.akasha.projection import restore_sample
     from pydantic import ValidationError
+    from plugins.akasha.projection import applied_source, restore_sample
     log, append, add, text, records = conversation
     add('u1', 'one')
     add('u2', 'two')
     add('a', 'answer', Output)
     sample = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)[0]
     entry = applied_source(sample, learning_binding='fixed')
-    class WrongProjection(TurnProjection):
-        def project(self, messages, source):
-            return tuple(replace(turn, message_ids=turn.message_ids[1:])
-                         for turn in TurnProjection().project(messages, source))
+
+    # 1. 只读引用：恢复过程中的任何 snapshot 都会让这条断言失败。
+    class NoSnapshotCatalog:
+        def __init__(self, inner):
+            self._inner = inner
+        def reader(self, session_id):
+            inner = self._inner.reader(session_id)
+            class Reader:
+                def get(self, message_id):
+                    return inner.get(message_id)
+                def snapshot(self, **kwargs):
+                    raise AssertionError('恢复不得重投影 Session 前缀')
+            return Reader()
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    restored = restore_sample(NoSnapshotCatalog(log.catalog()), entry)
+    assert [message.message_id for message in restored.messages] == ['u1', 'u2', 'a']
+
+    # 2. 出处被改写（digest 不匹配）必须失败。
+    tampered = entry.model_copy(update={'source_digest': '0' * 64})
     with pytest.raises(ValueError, match='出处发生改变'):
-        restore_sample(log.catalog(), WrongProjection(), entry)
-    state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256='0' * 64,
-                                                  turns_digest=turns_digest([])), cutover_heads=())
-    payload = state.model_dump_json().replace('"version":1', '"version":2')
+        restore_sample(log.catalog(), tampered)
+
+    # 3. 未知消费版本仍然被拒绝。
+    state = Consumption(cutover_heads=())
+    payload = state.model_dump_json().replace('"version":2', '"version":1')
     with pytest.raises(ValidationError):
         Consumption.model_validate_json(payload)

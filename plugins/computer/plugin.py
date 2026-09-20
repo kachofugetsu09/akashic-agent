@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from importlib import import_module
+from agent.plugin_composition.ui import UI
+
 import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping
@@ -21,13 +24,12 @@ from agent.plugin_composition import (
     WorkloadLimits,
     WorkloadPort,
 )
+from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
-from plugins.tools.api import BoundTool, CallSource, Result
-from plugins.tools.plugin import TOOLS
-from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
-from session.log import MessageCatalog, OwnerRecord, OwnerStore
-from session.message import ContentPart, Input, Message, Output, ToolCall
+from .inputs import CallSource, Result, TOOLS, TURN_PROJECTION, TurnProjection
+from agent.plugin_composition.messages import MessageCatalog, OwnerRecord, OwnerStore
+from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
 
 from .control import ComputerDriverError, endpoint_name, request
 
@@ -137,7 +139,8 @@ name = "computer"
 version = "2.0.0"
 desc = "Persistent Linux desktop, browser, and visual control"
 author = "Akashic Core"
-inject = (
+inject = (UI,
+    INSTALLED_ASSETS,
     MCP_SERVERS,
     WORKLOADS,
     TOOLS,
@@ -146,17 +149,8 @@ inject = (
     OWNER_STATE,
     TURN_PROJECTION,
 )
-skill_roots = ("skills",)
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
-dashboard_module = "dashboard.py"
-web_module = "web_module.js"
-web_requires = ("conversation.tools.v1",)
-web_provides = ()
-web_contract_digests = {
-    "conversation.tools.v1": "ed47d69b84e946e27a2e297634e96bcc6afc72a3d3089caac1a14632703efb54",
-}
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
@@ -245,7 +239,7 @@ def _capture(ctx: Context, configuration: Mapping[str, object]) -> Mapping[str, 
 
 
 @asynccontextmanager
-async def _open_target(ctx: Context, state: Mapping[str, object]) -> AsyncIterator[BoundTool]:
+async def _open_target(ctx: Context, state: Mapping[str, object]) -> AsyncIterator[_ComputerTool]:
     if set(state) != {"control_binding"} or not isinstance(state["control_binding"], str):
         raise ValueError("Computer binding state 无效")
     bindings = ctx.require(BINDINGS)
@@ -253,9 +247,18 @@ async def _open_target(ctx: Context, state: Mapping[str, object]) -> AsyncIterat
         yield _ComputerTool(control, state["control_binding"], ctx.require(TURN_PROJECTION))
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """注册唯一 Computer Tool、专属 control binding 与资源声明。"""
-    _ = config
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        dashboard=lambda: import_module(".dashboard", __package__),
+        requires=("conversation.tools.v1",),
+        provides=(),
+        contract_digests={
+            "conversation.tools.v1": "ed47d69b84e946e27a2e297634e96bcc6afc72a3d3089caac1a14632703efb54",
+        },
+    )
+    await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)
     control = ComputerControl(ctx)
     _ = await ctx.provide(COMPUTER_CONTROL, control)
@@ -292,24 +295,24 @@ async def apply(ctx: Context, config: object) -> None:
         idempotent=False,
         risk="external-side-effect",
     )
+    workload = await _register_workload(ctx)
     await ctx.require(MCP_SERVERS).register(
         ctx,
         McpServerDefinition(
             name="computer",
             command=("mcp_server.py",),
-            workload_env=(WorkloadEnv("COMPUTER_URL", "computer", "gateway"),),
+            workload_env=(WorkloadEnv("COMPUTER_URL", workload, "gateway"),),
         ),
     )
-    await _register_workload(ctx)
     async def start_follower(_event: object) -> None:
         _ = await ctx.spawn(_start_follower(ctx), name="computer-turn-follower")
 
     _ = await ctx.on(RUNTIME_STARTED, start_follower)
 
 
-async def _register_workload(ctx: Context) -> None:
-    """注册持久 source-driver workload。"""
-    await ctx.require(WORKLOADS).register(
+async def _register_workload(ctx: Context):
+    """取得持久 source-driver Workload 句柄，再供 MCP 借用。"""
+    return await ctx.require(WORKLOADS).register(
         ctx,
         Workload(
             name="computer",
@@ -352,9 +355,7 @@ async def _start_follower(ctx: Context) -> None:
             )
             groups.setdefault(group, []).append((key, record))
         for records in groups.values():
-            # `follow()` wakes without a runtime lease.  Re-open the exact
-            # generation for each effect group so the archived binding and
-            # MCP endpoint cannot fall back to a different Root.
+            # follow 唤醒时没有 scope；每组效果取得当前选定的运行时。
             async with ctx.runtime_scope():
                 await _try_end(ctx, catalog, projection, records)
 
@@ -384,7 +385,10 @@ async def _try_end(
             for field in ("control_binding", "session_id", "source", "turn_input_id")
         )
     ):
-        raise ValueError("Computer owner record 字段无效")
+        # 字段无效的记录永远无法完成收尾：终态标记，避免每次唤醒都撞同一组。
+        _fail_group(ctx, records, "Computer owner record 字段无效")
+        ctx.report_incident("computer-end-turn", f"{key}: Computer owner record 字段无效")
+        return
     reader = catalog.reader(cast(str, value["session_id"]))
     turns = projection.project(reader.snapshot(), cast(str, value["source"]))
     if not any(
@@ -403,11 +407,17 @@ async def _try_end(
     )
     end_id = "end:" + hashlib.sha256(group.encode()).hexdigest()
     binding = cast(str, value["control_binding"])
+    bindings = ctx.require(BINDINGS)
     try:
-        bindings = ctx.require(BINDINGS)
         async with bindings.open(binding, COMPUTER_CONTROL) as (bound, _):
             await bound.end_turn(identity, end_id)
+    except (KeyError, ValueError) as error:
+        # 不可变 binding 缺失或结构不匹配是终态；标记 failed 后不再重试。
+        _fail_group(ctx, records, f"computer control binding 不可用: {error}")
+        ctx.report_incident("computer-end-turn", f"{key}: {error}")
+        return
     except Exception as error:
+        # scope/效果失败可能自愈：保留 started，下次唤醒或重启重试。
         ctx.report_incident("computer-end-turn", f"{key}: {error}")
         return
     state = ctx.require(OWNER_STATE).open(ctx)
@@ -427,3 +437,29 @@ async def _try_end(
             )
 
     state.transact(commit)
+
+
+def _fail_group(
+    ctx: Context,
+    records: list[tuple[str, OwnerRecord]],
+    reason: str,
+) -> None:
+    """把整组记录收敛到终态 failed；失败原因随记录保存供恢复判断。"""
+    state = ctx.require(OWNER_STATE).open(ctx)
+
+    def stop(tx) -> None:
+        for item_key, item_record in records:
+            current = tx.read(item_key)
+            if (
+                current is None
+                or current.version != item_record.version
+                or current.value != item_record.value
+            ):
+                continue
+            _ = tx.save(
+                item_key,
+                {**item_record.value, "phase": "failed", "error": reason},
+                expected_version=item_record.version,
+            )
+
+    state.transact(stop)

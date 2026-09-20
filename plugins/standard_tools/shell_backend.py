@@ -8,20 +8,25 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from agent.control.context import mint_plugin_child_capability, running_turn_id
-from agent.host_bridge.factory import ShellProcessManagerProtocol
-from agent.tools.base import Tool
-from agent.tools.shell_security import validate_command
-from agent.tools.shell_security import validate_network_command
-from agent.tools.shell_command import resolve_shell
-from agent.tools.unified_exec import DEFAULT_HARD_TIMEOUT_S
-from agent.tools.unified_exec import DEFAULT_INITIAL_YIELD_TIME_MS
-from agent.tools.unified_exec import DEFAULT_MAX_OUTPUT_TOKENS
-from agent.tools.unified_exec import ExecutionCleanupReport
-from agent.tools.unified_exec import ExecutionResult
-from agent.tools.unified_exec import MAX_HARD_TIMEOUT_S
-from agent.tools.unified_exec import ShellProcessManager
-from agent.tools.unified_exec import format_execution_result
+from agent.control.context import running_turn_id
+from agent.plugin_composition.process_runtime import (
+    DEFAULT_HARD_TIMEOUT_S,
+    DEFAULT_INITIAL_YIELD_TIME_MS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_HARD_TIMEOUT_S,
+    ExecutionCleanupReport,
+    ExecutionResult,
+    ShellProcessManager,
+    ShellProcessManagerProtocol,
+    format_execution_result,
+)
+from agent.plugin_composition.shell_runtime import resolve_shell
+from agent.tool_catalog import (
+    normalize_tool_parameters,
+    validate_tool_parameters,
+)
+from .shell_security import validate_command
+from .shell_security import validate_network_command
 from core.common.diagnostic_log import diagnostic_line
 from core.common.diagnostic_log import log_event
 from core.error_context import current_session_key
@@ -70,7 +75,30 @@ def _cleanup_diagnostic(
     )
 
 
-class ShellTool(Tool):
+class _LegacyTool:
+    """Keep the legacy direct-tool schema shape inside this plugin."""
+
+    def validate_params(
+        self,
+        params: dict[str, Any],
+        *,
+        schema: dict[str, Any] | None = None,
+    ) -> list[str]:
+        return validate_tool_parameters(
+            params,
+            schema=schema if schema is not None else self.parameters,
+        )
+
+    def to_schema(self) -> dict[str, Any]:
+        function = {
+            "name": self.name,
+            "description": self.description,
+            "parameters": normalize_tool_parameters(self.parameters),
+        }
+        return {"type": "function", "function": function}
+
+
+class ShellTool(_LegacyTool):
     """启动命令，并返回终态或可续接的 execution_id。"""
 
     name = "shell"
@@ -297,7 +325,7 @@ class ShellTool(Tool):
         return await self.manager.terminate_owner(owner_session_key)
 
 
-class ShellWriteStdinTool(Tool):
+class ShellWriteStdinTool(_LegacyTool):
     """续接一次 shell execution 并消费新增输出。"""
 
     name = "write_stdin"
@@ -357,7 +385,7 @@ class ShellWriteStdinTool(Tool):
         return format_execution_result(result)
 
 
-class ShellTaskStopTool(Tool):
+class ShellTaskStopTool(_LegacyTool):
     """确认终止一次 shell execution 的进程组。"""
 
     name = "task_stop"
@@ -464,17 +492,12 @@ def _log_shell_execution(
 
 def _shell_env() -> dict[str, str]:
     env = os.environ.copy()
+    env.pop(_PLUGIN_ROLLOUT_CAPABILITY_ENV, None)
     turn_id = running_turn_id.get()
     if turn_id:
         env[_PLUGIN_ROLLOUT_OWNER_TURN_ENV] = turn_id
-        capability = mint_plugin_child_capability(turn_id)
-        if capability:
-            env[_PLUGIN_ROLLOUT_CAPABILITY_ENV] = capability
-        else:
-            env.pop(_PLUGIN_ROLLOUT_CAPABILITY_ENV, None)
     else:
         env.pop(_PLUGIN_ROLLOUT_OWNER_TURN_ENV, None)
-        env.pop(_PLUGIN_ROLLOUT_CAPABILITY_ENV, None)
     _prepend_existing_path_entries(env, _discover_user_path_entries(env))
     env.update(_UNIFIED_EXEC_ENV)
     return env

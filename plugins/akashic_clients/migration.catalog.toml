@@ -1,0 +1,28 @@
+schema_version = 1
+bundle_id = "akashic_clients_config"
+version = "1.0.0"
+migration_root = "migrations/akashic_clients_migrations"
+package_name = "akashic_clients_migrations"
+
+[[files]]
+path = "20260913_01_akashic_clients_config.py"
+sha256 = "fe1247c4a0a223e68e5122fd89551e4f96012f7f5144edf3a9f15ff1ead0b08b"
+
+[[files]]
+path = "__init__.py"
+sha256 = "5b5f2d4849fd7ec1760a14b6325bb9550148600123ff0ce2b60c069014e53b80"
+
+[[files]]
+path = "helpers/__init__.py"
+sha256 = "d80374ef0155921e27826311d43c0d1ee6afb9b8fde097605a4d0a7dfe22b339"
+
+[[files]]
+path = "helpers/config.py"
+sha256 = "bdb741a1c6088404f8a41e31d3352f4a4f40301e335a5e3225f3eaccd7f6b986"
+
+[[migrations]]
+id = "20260913_01_akashic_clients_config"
+path = "20260913_01_akashic_clients_config.py"
+depends = []
+transactional = false
+sha256 = "fe1247c4a0a223e68e5122fd89551e4f96012f7f5144edf3a9f15ff1ead0b08b"

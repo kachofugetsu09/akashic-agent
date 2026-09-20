@@ -1,6 +1,0 @@
-schema_version = 1
-name = "telegram_sender"
-version = "1.0.0"
-api_version = 3
-entrypoint = "plugin.py"
-credential_paths = ["token"]

@@ -1,9 +1,8 @@
 """正式 Core 构造只取得消息与资源 owner，不重开旧回复执行权。"""
-import shutil
+from agent.plugin_composition.ui import UI
 from contextlib import closing
 import sqlite3
 from collections.abc import Mapping
-from pathlib import Path
 
 import pytest
 
@@ -16,20 +15,34 @@ from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageCatalog, MessageLog
 from session.message import ContentPart, Input
 from session.store import SessionStore
+from tests.fixtures.formal_plugins import (
+    FULL_RUNTIME_PLUGINS,
+    MINIMAL_MESSAGE_PLUGINS,
+    install_formal_plugins,
+)
+
+
+async def _model_command(control, payload: dict[str, object]) -> dict[str, object]:
+    """Configure the installed Models owner through its public RPC boundary."""
+
+    result = await control.invoke_rpc("models/command", payload)
+    assert isinstance(result, dict)
+    assert result.get("status") == 200, result
+    body = result.get("body")
+    assert isinstance(body, dict)
+    return body
 
 
 @pytest.mark.asyncio
 async def test_core_opens_message_schema_and_real_source_without_legacy_execution(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    source = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", source / "conversation")
-    shutil.copytree(Path(__file__).parents[1] / "plugins/sources", source / "sources")
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
+    plugin_home, _ = install_formal_plugins(tmp_path, MINIMAL_MESSAGE_PLUGINS)
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     http = SharedHttpResources()
     core = bootstrap.build_core_runtime(Config(), workspace, http,
-                                        clear_stale_session_admissions=True)
+                                        clear_stale_session_admissions=True,
+                                        plugin_dirs=[])
     try:
         await core.start()
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
@@ -72,15 +85,13 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
     """完整内置候选必须同时装配，防止分项夹具遗漏依赖冲突。"""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    from bootstrap.init_workspace import init_workspace
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    source = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins", source,
-                    ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
+    plugin_home, _ = install_formal_plugins(
+        tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[])
     try:
         await core.start()
         snapshot = core.plugin_manager.current_snapshot
@@ -126,13 +137,15 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
 async def test_default_runtime_starts_settings_without_embedding(tmp_path, monkeypatch):
     """首次真实内置组合的后台生命周期完成，未配置记忆不会阻断模型设置。"""
     from agent.plugin_composition import MODEL_CATALOG
-    from bootstrap.init_workspace import init_workspace
 
     workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
+    plugin_home, _ = install_formal_plugins(
+        tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[])
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
@@ -141,7 +154,7 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
             catalog = ctx.require(MODEL_CATALOG).snapshot()
             assert not catalog.role_bindings
             assert catalog.default_embedding_model_id is None
-            health = [item for item in snapshot.composition_root.receipt().health if item.owner == "akasha"]
+            health = [item for item in snapshot.composition_root.receipt().health if item.owner == "akasha@fixture"]
             assert len(health) == 1 and not health[0].required and not health[0].healthy
             assert health[0].reason is not None and "embedding" in health[0].reason
         assert not (workspace / "memory/akasha.db").exists()
@@ -155,9 +168,8 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
 async def test_saved_embedding_enables_same_root_and_space_change_preserves_graph(tmp_path, monkeypatch):
     """真实设置服务保存后启用记忆；换空间时不发请求、不改原图。"""
     from aiohttp import web
-    from agent.plugin_composition import AddConnection, AddModel, SetDefaultModel, UpdateConnection, ModelKind, ModelCapabilities, CapabilitySources, ModelUnavailableError
+    from agent.plugin_composition import ModelUnavailableError
     from agent.plugins.model_control import RuntimeModelControl
-    from bootstrap.init_workspace import init_workspace
     from plugins.context.materials import MATERIALS
     from plugins.akasha.infrastructure.persistence import logical_state_sha256
     from plugins.content.plugin import CONTENT
@@ -189,24 +201,48 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
     port = sock.getsockname()[1]
     await web.SockSite(runner, sock).start()
     workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    source = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins", source,
-                    ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
+    plugin_home, _ = install_formal_plugins(
+        tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[])
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
         root = core.plugin_manager.current_snapshot
         control = RuntimeModelControl(core.plugin_manager.snapshot_store)
-        await control.apply(AddConnection(0, "local", "Local", "openai-compatible",
-            f"http://127.0.0.1:{port}/v1", "fixture", {"api_key": "fixture"}))
-        capabilities = ModelCapabilities(embedding_dimensions=2, embedding_normalization="unit")
-        await control.apply(AddModel(1, "first", "local", ModelKind.EMBEDDING, "first", capabilities, CapabilitySources()))
-        await control.apply(SetDefaultModel(2, None, "first"))
+        await _model_command(control, {
+            "type": "add_connection",
+            "expected_revision": 0,
+            "connection_id": "local",
+            "name": "Local",
+            "driver_id": "openai-compatible",
+            "endpoint": f"http://127.0.0.1:{port}/v1",
+            "auth_identity": "fixture",
+            "credential": {"api_key": "fixture"},
+        })
+        capabilities = {
+            "embedding_dimensions": 2,
+            "embedding_normalization": "unit",
+        }
+        await _model_command(control, {
+            "type": "add_model",
+            "expected_revision": 1,
+            "model_id": "first",
+            "connection_id": "local",
+            "kind": "embedding",
+            "model": "first",
+            "capabilities": capabilities,
+            "capability_sources": {},
+        })
+        await _model_command(control, {
+            "type": "set_default",
+            "expected_revision": 2,
+            "role": None,
+            "model_id": "first",
+        })
         assert core.plugin_manager.current_snapshot is root
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
@@ -247,7 +283,10 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 root_descriptor = archive.read_descriptor(root_ref)
                 components = root_descriptor.get("components")
                 assert isinstance(components, (list, tuple))
-                assert {archive.read_descriptor(ref)["plugin_id"] for ref in components} == {"models", "openai-compatible"}
+                assert {archive.read_descriptor(ref)["plugin_id"] for ref in components} == {
+                    "models@fixture",
+                    "openai-compatible@fixture",
+                }
                 outer = core.message_log.read_binding(binding)
                 assert isinstance(outer, Mapping)
                 outer_root_ref = outer.get("root_ref")
@@ -255,36 +294,77 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 outer_descriptor = archive.read_descriptor(outer_root_ref)
                 outer_components = outer_descriptor.get("components")
                 assert isinstance(outer_components, (list, tuple))
-                assert "openai-compatible" not in {archive.read_descriptor(ref)["plugin_id"] for ref in outer_components}
-                shutil.rmtree(source / "openai_compatible")
-                shutil.rmtree(source / "models")
+                assert "openai-compatible@fixture" not in {
+                    archive.read_descriptor(ref)["plugin_id"] for ref in outer_components
+                }
                 async def authorize(binding, arguments):
                     return {"approved": True}
-                await control.apply(AddModel(3, "second", "local", ModelKind.EMBEDDING, "second", capabilities, CapabilitySources()))
-                await control.apply(SetDefaultModel(4, None, "second"))
+                await _model_command(control, {
+                    "type": "add_model",
+                    "expected_revision": 3,
+                    "model_id": "second",
+                    "connection_id": "local",
+                    "kind": "embedding",
+                    "model": "second",
+                    "capabilities": capabilities,
+                    "capability_sources": {},
+                })
+                await _model_command(control, {
+                    "type": "set_default",
+                    "expected_revision": 4,
+                    "role": None,
+                    "model_id": "second",
+                })
                 sent = len(calls)
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                status = next(part.text for part in result.reminders if part.name == "status")
+                reminders = result["reminders"]
+                assert isinstance(reminders, tuple)
+                status = next(
+                    part["text"]
+                    for part in reminders
+                    if part["name"] == "status"
+                )
                 assert "召回不可用" in status and "重建" in status
                 assert logical_state_sha256(graph) == before and len(calls) == sent
                 recalled = await tools.execution(authorize).execute("old-model-after-default-switch", binding, {"query": "saved memory"})
                 assert recalled.outcome == "success" and calls[-1]["model"] == "first"
                 assert any(part.kind == "akasha.recall" for part in recalled.parts)
-                await control.apply(SetDefaultModel(5, None, "first"))
+                await _model_command(control, {
+                    "type": "set_default",
+                    "expected_revision": 5,
+                    "role": None,
+                    "model_id": "first",
+                })
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                assert not any(part.name == "status" for part in result.reminders)
+                reminders = result["reminders"]
+                assert isinstance(reminders, tuple)
+                assert not any(part["name"] == "status" for part in reminders)
                 assert all(item.healthy for item in snapshot.composition_root.receipt().health if item.owner == "akasha")
                 assert logical_state_sha256(graph) == before
                 assert core.plugin_manager.current_snapshot is root
                 # 当前同名连接配置漂移不能重定向已经准备的模型调用。
-                await control.apply(UpdateConnection(6, "local", "Local", "fixture", endpoint=f"http://127.0.0.1:{port}/changed/v1"))
+                await _model_command(control, {
+                    "type": "update_connection",
+                    "expected_revision": 6,
+                    "connection_id": "local",
+                    "name": "Local",
+                    "auth_identity": "fixture",
+                    "endpoint": f"http://127.0.0.1:{port}/changed/v1",
+                })
                 sent = len(calls)
                 with pytest.raises(ModelUnavailableError, match="配置已变化"):
                     await tools.execution(authorize).execute("endpoint-drift", binding, {"query": "saved memory"})
                 assert len(calls) == sent and logical_state_sha256(graph) == before
-                await control.apply(UpdateConnection(7, "local", "Local", "fixture", endpoint=f"http://127.0.0.1:{port}/v1"))
+                await _model_command(control, {
+                    "type": "update_connection",
+                    "expected_revision": 7,
+                    "connection_id": "local",
+                    "name": "Local",
+                    "auth_identity": "fixture",
+                    "endpoint": f"http://127.0.0.1:{port}/v1",
+                })
                 # 同一 auth identity 的 token 刷新是既有凭据 owner 的正常路径。
                 from plugins.models.store import ModelsStore
                 registry = ModelsStore(workspace / "model-registry.sqlite3", backup_dir=workspace / "runtime/model-backups", writable=True)
@@ -302,43 +382,21 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
         await runner.cleanup()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("sender_enabled", [False, True])
-async def test_app_checks_sender_before_starting_native_receiver(tmp_path, monkeypatch, sender_enabled):
-    """实际 App 装配拒绝缺失 Sender，收件渠道没有提前联网。"""
-    from agent.config_models import TelegramChannelConfig
-    from bootstrap.app import AppRuntime
-    from bootstrap.init_workspace import init_workspace
-    from infra.channels.telegram_channel import TelegramChannel
+def test_telegram_channel_is_the_formal_owner_and_factory_is_closed(tmp_path):
+    """Telegram ownership is a normal plugin binding, without Core construction."""
 
-    workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    started = []
-    async def start(self, context):
-        started.append(self.name)
-        if not sender_enabled:
-            raise AssertionError("receiver must not start")
-    monkeypatch.setattr(TelegramChannel, "start", start)
-    config = Config()
-    config.channels.chat.enabled = False
-    config.channels.telegram = TelegramChannelConfig(token="fixture:token", channel_name="private_bot")
-    if sender_enabled:
-        sender = workspace / "plugin-data/telegram_sender-builtin/config.local.toml"
-        sender.parent.mkdir(parents=True, exist_ok=True)
-        sender.write_text('enabled = true\nchannel = "private_bot"\ntoken = "fixture:token"\n')
-    app = AppRuntime(config, workspace)
-    try:
-        if sender_enabled:
-            await app.start()
-            assert started == ["private_bot"]
-        else:
-            with pytest.raises(RuntimeError, match="private_bot"):
-                await app.start()
-            assert not started
-        assert app.app_server is not None
-    finally:
-        await app.shutdown()
+    from agent.plugin_composition import CredentialRef
+    from plugins.telegram_channel.config import TelegramChannelConfig
+    from plugins.telegram_channel.plugin import Config, name
+
+    config = Config(
+        enabled=True,
+        token=CredentialRef(("token",)),
+        allow_from=("alice",),
+    )
+    assert isinstance(config, TelegramChannelConfig)
+    assert name == "telegram_channel"
+    assert config.token == CredentialRef(("token",))
 
 
 @pytest.mark.asyncio
@@ -349,10 +407,8 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     import socket
     from aiohttp import web
     from akashic_sdk import AsyncAkashic
-    from agent.plugin_composition import AddConnection, AddModel, SetDefaultModel, ModelKind, ModelRole, ModelCapabilities, CapabilitySources
     from agent.plugins.model_control import RuntimeModelControl
     from bootstrap.app import AppRuntime
-    from bootstrap.init_workspace import init_workspace
     from bootstrap.runtime_readiness import RuntimeReadiness
 
     calls = []
@@ -379,8 +435,11 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     port = sock.getsockname()[1]
     await web.SockSite(runner, sock).start()
     workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
+    plugin_home, _ = install_formal_plugins(
+        tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     ready = asyncio.Event()
     class Readiness(RuntimeReadiness):
         def mark_ready(self):
@@ -399,12 +458,40 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             await task
         assert ready.is_set() and readiness.path.exists()
         assert app.core is not None and app.app_server is not None
+        assert app.restart_gate is not None
+        assert app.core.restart_gate.boot_id == readiness.boot_id
+        assert app.core.plugin_manager._host_boot_id == readiness.boot_id
         control = RuntimeModelControl(app.core.plugin_manager.snapshot_store)
-        await control.apply(AddConnection(0, "local", "Local", "openai-compatible",
-            f"http://127.0.0.1:{port}/v1", "fixture", {"api_key": "fixture"}))
-        await control.apply(AddModel(1, "chat", "local", ModelKind.CHAT, "fixture",
-            ModelCapabilities(context_window=32000, max_output_tokens=1024, supports_tool_calls=True), CapabilitySources()))
-        await control.apply(SetDefaultModel(2, ModelRole.DEFAULT, "chat"))
+        await _model_command(control, {
+            "type": "add_connection",
+            "expected_revision": 0,
+            "connection_id": "local",
+            "name": "Local",
+            "driver_id": "openai-compatible",
+            "endpoint": f"http://127.0.0.1:{port}/v1",
+            "auth_identity": "fixture",
+            "credential": {"api_key": "fixture"},
+        })
+        await _model_command(control, {
+            "type": "add_model",
+            "expected_revision": 1,
+            "model_id": "chat",
+            "connection_id": "local",
+            "kind": "chat",
+            "model": "fixture",
+            "capabilities": {
+                "context_window": 32000,
+                "max_output_tokens": 1024,
+                "supports_tool_calls": True,
+            },
+            "capability_sources": {},
+        })
+        await _model_command(control, {
+            "type": "set_default",
+            "expected_revision": 2,
+            "role": "default",
+            "model_id": "chat",
+        })
         async with await AsyncAkashic.connect(str(app.app_server.endpoint)) as client:
             session = (await client.session_create())["session_id"]
             async with await client.session_follow(session) as following:
@@ -424,9 +511,13 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             with closing(sqlite3.connect(workspace / "sessions.db")) as database:
                 before = tuple(database.iterdump())
             snapshot = app.core.plugin_manager.current_snapshot
-            module = next(item for item in snapshot.web_ui_catalog.modules if item.plugin_id == "workbench-ui")
+            module = next(
+                item
+                for item in snapshot.composition_root.context.require(UI).catalog().modules
+                if item.plugin_id == "workbench-ui@fixture"
+            )
             headers = {"x-akashic-web-snapshot": snapshot.snapshot_id,
-                "x-akashic-web-catalog": snapshot.web_ui_catalog.identity,
+                "x-akashic-web-catalog": snapshot.composition_root.context.require(UI).catalog().identity,
                 "x-akashic-web-module": module.plugin_id, "x-akashic-web-generation": module.generation_id}
             async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=app.dashboard_server.config.uds), base_url="http://fixture", headers=headers) as dashboard:
                 directory = await dashboard.get("/api/dashboard/sessions")

@@ -29,7 +29,7 @@ from bus.events_lifecycle import (
     ToolCallStarted,
     TurnStarted,
 )
-from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
+from plugins.akashic_clients.config import MobileKeyEncryptionConfig, MobileRealtimeConfig
 from agent.plugin_composition.channels import (
     ChannelFactoryContext,
     ChannelInboundMessage,
@@ -37,12 +37,12 @@ from agent.plugin_composition.channels import (
     RawInbound,
 )
 from infra.channels.base import AttachmentStore
-from infra.mobile_realtime.gateway import (
+from plugins.akashic_clients.mobile_realtime.gateway import (
     MobileGatewayRuntime,
     build_mobile_gateway_runtime,
     build_mobile_gateway_server,
 )
-from infra.mobile_realtime.key_protection import KeyProtectionError
+from plugins.akashic_clients.mobile_realtime.key_protection import KeyProtectionError
 from session.manager import SessionManager
 
 _FIXED_GIF = bytes.fromhex(
@@ -914,10 +914,9 @@ async def attach_open_mobile_v3(channel: Any, ingress: Any) -> Any:
     context = ChannelFactoryContext(
         snapshot_id="device-perf-snapshot",
         generation_id="device-perf-generation",
+        boot_id="test-boot",
         binding_token="device-perf-binding",
         config={},
-        credentials={},
-        provider_client_factory=cast(Any, object()),
         ingress=ingress,
         identity=None,
     )

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from agent.host_bridge.plugin_execution import spawn_process
 from utils.process_group import (
     OwnedProcessGroup,
     owned_process_env,
@@ -143,9 +144,11 @@ class McpClient:
 
     async def _connect_impl(self) -> list[McpToolInfo]:
         """启动子进程，完成握手，获取工具列表。"""
-        proc_env = owned_process_env(self.env, scrub_keys=self.env_scrub_keys)
+        # 环境由绑定 Context 的宿主授权提供；不再次继承整个 agent 环境。
+        # 仍使用公共 helper 固定 Supervisor 身份，保留进程归属与清理链。
+        proc_env = owned_process_env(self.env, scrub_keys=frozenset(os.environ) | self.env_scrub_keys)
         logger.debug("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
-        self._process = await asyncio.create_subprocess_exec(
+        self._process, spawn_cancelled = await spawn_process(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -156,6 +159,8 @@ class McpClient:
             **process_group_spawn_kwargs(),
         )
         self._process_group = OwnedProcessGroup.from_process(self._process)
+        if spawn_cancelled:
+            raise asyncio.CancelledError
         self._stderr_task = asyncio.create_task(
             self._drain_stderr(self._process),
             name=f"mcp_stderr:{self.name}",

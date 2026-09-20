@@ -1,49 +1,18 @@
-"""Static identity and runtime policy for external v3 plugin artifacts."""
+"""从固定插件制品读取代码身份和 Python 安装输入。"""
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
-import math
 import os
 import re
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import cast
-from urllib.parse import urlsplit
-
-STATIC_MANIFEST_FILENAME = "akashic.plugin.toml"
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-_CONFIG_KEY = re.compile(r"^[a-z][A-Za-z0-9_-]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
-_RESERVED_ENV = frozenset(
-    {
-        "AKA_PLUGIN_DATA_DIR",
-        "AKASHIC_PLUGIN_DATA_DIR",
-        "AKASHIC_WORKSPACE",
-        "AKASHIC_MCP_SCOPE_ID",
-    }
-)
-_TOP_LEVEL_KEYS = frozenset(
-    {
-        "schema_version",
-        "name",
-        "version",
-        "api_version",
-        "entrypoint",
-        "python",
-        "validation",
-        "mcp",
-        "processes",
-        "workload",
-        "channel_credentials",
-        "credential_paths",
-    }
-)
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?")
 
 
@@ -56,134 +25,100 @@ class StaticPythonRuntime:
 
 
 @dataclass(frozen=True, slots=True)
-class StaticMcpDeclaration:
-    """The import-free MCP declaration projection from an artifact manifest."""
-
-    name: str
-    command: tuple[str, ...]
-    cwd: str
-    env: tuple[tuple[str, str], ...]
-    required_tools: tuple[str, ...]
-    candidate_read_only_tools: tuple[str, ...]
-    endpoint_env: tuple[tuple[str, str], ...]
-    workload_env: tuple[tuple[str, str, str], ...]
-    candidate_env: tuple[tuple[str, str], ...]
-    python_runtime: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class StaticManagedProcessDeclaration:
-    """The import-free managed-process declaration projection."""
-
-    name: str
-    command: tuple[str, ...]
-    cwd: str
-    env: tuple[tuple[str, str], ...]
-    port_env: str
-    formal_port: int
-    readiness_path: str
-    startup_timeout_seconds: float
-    python_runtime: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class StaticWorkloadDeclaration:
-    """The import-free Workload declaration projection."""
-
-    name: str
-    image: str
-    command: tuple[str, ...]
-    ports: tuple[tuple[str, int], ...]
-    loopback_ports: tuple[tuple[str, int], ...]
-    data: tuple[tuple[str, str, bool], ...]
-    health: tuple[str, str, float]
-    limits: tuple[int, float, int]
-    user_namespaces: bool
-
-
-@dataclass(frozen=True, slots=True)
 class StaticPluginManifest:
-    """Validated immutable identity, runtime and validation policy."""
+    """plugin.py 身份和制品内 requirements 安装输入。"""
 
-    schema_version: int
     name: str
     version: str
     api_version: int
-    entrypoint: str
     python: tuple[StaticPythonRuntime, ...]
-    exclude_data_paths: tuple[str, ...]
-    mcp_servers: tuple[StaticMcpDeclaration, ...]
-    managed_processes: tuple[StaticManagedProcessDeclaration, ...]
-    workloads: tuple[StaticWorkloadDeclaration, ...]
-    channel_credentials: tuple[tuple[str, tuple[str, ...]], ...]
     identity_digest: str
-    credential_paths: tuple[str, ...] = ()
-
-    @property
-    def all_credential_paths(self) -> tuple[str, ...]:
-        """完整脱敏范围；渠道仍保留各自更窄的凭据授权。"""
-        return tuple(sorted(set(self.credential_paths) | {
-            path for _channel, paths in self.channel_credentials for path in paths
-        }))
 
     @property
     def requirements(self) -> tuple[str, ...]:
-        """Return all declared requirements paths in manifest order."""
+        """返回按路径排序的制品 requirements 文件。"""
 
         return tuple(runtime.requirements for runtime in self.python)
 
 
 def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
-    """Parse and validate one artifact manifest without importing plugin code."""
+    """不导入插件，只读取 plugin.py 身份和实际 requirements 文件。"""
 
     # 1. Resolve the artifact root without accepting a symlink as its owner.
     root = plugin_root.resolve(strict=True)
     if plugin_root.is_symlink() or not root.is_dir():
         raise ValueError(f"插件 artifact 根必须是普通目录: {plugin_root}")
-    path = root / STATIC_MANIFEST_FILENAME
+    # 2. 身份与 requirements 都来自固定代码制品，不读取数据复制策略。
+    name, version, api_version = load_plugin_identity(root)
+    python = _python_runtimes(root)
+    identity: dict[str, object] = {
+        "name": name,
+        "version": version,
+        "api_version": api_version,
+        "python": [
+            {
+                "requirements": item.requirements,
+                "runtime_root": item.runtime_root,
+            }
+            for item in python
+        ],
+    }
+    identity_digest = hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return StaticPluginManifest(
+        name=name,
+        version=version,
+        api_version=api_version,
+        python=python,
+        identity_digest=identity_digest,
+    )
+
+
+def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:
+    """只读取三个顶层字面量身份，不执行模块或解释其他声明。"""
+    # 1. plugin.py 是唯一身份来源，链接和缺失入口不能参与安装。
+    path = plugin_root / "plugin.py"
     if path.is_symlink() or not path.is_file():
-        raise ValueError(f"v3 插件缺少静态 manifest: {path}")
-
-    # 2. Parse only data; no module, callable or process is touched here.
+        raise ValueError(f"插件 plugin.py 必须是普通文件: {path}")
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise ValueError(f"插件静态 manifest 无法解析: {path}") from error
-    return _validate_manifest(root, raw)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeError) as error:
+        raise ValueError(f"插件身份源码无法解析: {path}") from error
 
-
-def validate_module_exports(
-    manifest: StaticPluginManifest,
-    module: object,
-    *,
-    plugin_root: Path | None = None,
-) -> None:
-    """Verify imported module identity matches its already validated manifest."""
-
-    for field_name, expected in (
-        ("api_version", manifest.api_version),
-        ("name", manifest.name),
-        ("version", manifest.version),
-    ):
-        actual = getattr(module, field_name, None)
-        if actual != expected:
-            raise ValueError(
-                f"v3 插件 module.{field_name} 与静态 manifest 不一致: "
-                f"expected={expected!r}, actual={actual!r}"
-            )
-    entrypoint = getattr(module, "__file__", None)
-    if not isinstance(entrypoint, str):
-        raise ValueError("v3 插件 module 缺少 __file__")
-    imported_path = Path(entrypoint).resolve(strict=False)
-    if plugin_root is not None:
-        expected_path = (plugin_root / manifest.entrypoint).resolve(strict=False)
-        if imported_path != expected_path:
-            raise ValueError(
-                "v3 插件 module entrypoint 与静态 manifest 不一致: "
-                f"expected={expected_path}, actual={imported_path}"
-            )
-    elif imported_path.name != Path(manifest.entrypoint).name:
-        raise ValueError("v3 插件 module entrypoint 无法核对")
+    # 2. 只接受单次、直接赋值；表达式、导入和条件分支都不提供身份。
+    fields = {"name", "version", "api_version"}
+    values: dict[str, object] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        else:
+            continue
+        names = [target.id for target in targets if isinstance(target, ast.Name) and target.id in fields]
+        if not names:
+            continue
+        if len(targets) != 1 or len(names) != 1 or not isinstance(value, ast.Constant):
+            raise ValueError(f"插件身份必须直接赋字面量: {path}:{statement.lineno}")
+        name = names[0]
+        if name in values:
+            raise ValueError(f"插件身份重复赋值: {name}")
+        values[name] = value.value
+    missing = sorted(fields - values.keys())
+    if missing:
+        raise ValueError(f"plugin.py 缺少顶层字面量身份: {missing}")
+    api_version = _integer(values, "api_version")
+    if api_version != 3:
+        raise ValueError("plugin.py 只接受 api_version = 3")
+    return _name(values["name"], "name"), _version(values["version"], "version"), api_version
 
 
 def staged_python_interpreter(
@@ -193,6 +128,7 @@ def staged_python_interpreter(
     """Return the executable staged for one manifest Python runtime."""
 
     root = plugin_root.resolve(strict=True)
+    _reject_symlink_ancestors(root, root / runtime.runtime_root, "Python runtime")
     runtime_root = (root / runtime.runtime_root).resolve(strict=True)
     if not runtime_root.is_relative_to(root):
         raise ValueError("插件 Python runtime 越过 artifact")
@@ -205,529 +141,75 @@ def staged_python_interpreter(
     return interpreter
 
 
-def materialize_static_command(
+def materialize_command(
     plugin_root: Path,
-    manifest: StaticPluginManifest,
-    declaration: StaticMcpDeclaration | StaticManagedProcessDeclaration,
+    python: tuple[StaticPythonRuntime, ...],
+    command: tuple[str, ...],
+    cwd: str = ".",
     *,
     environment_root: Path | None = None,
 ) -> tuple[str, ...]:
-    """Bind a static Python command to its staged artifact interpreter."""
+    """把实际注册命令绑定到固定制品及其 Python 环境。"""
 
-    runtime_root = declaration.python_runtime
+    runtime_root = command_python_runtime(plugin_root, command, cwd, python)
     if runtime_root is None:
-        head = declaration.command[0]
+        head = command[0]
         if _looks_like_artifact_path(head):
             executable = plugin_root.joinpath(
                 *PurePosixPath(head).parts
             ).resolve(strict=True)
             if not executable.is_relative_to(plugin_root.resolve(strict=True)):
-                raise RuntimeError("静态 command executable 越过 artifact")
-            return (str(executable), *declaration.command[1:])
-        return declaration.command
-    runtime = next(
-        (item for item in manifest.python if item.runtime_root == runtime_root),
-        None,
-    )
-    if runtime is None:
-        raise RuntimeError(f"静态 command 引用了未知 Python runtime: {runtime_root}")
+                raise RuntimeError("command executable 越过 artifact")
+            return (str(executable), *command[1:])
+        return command
+    runtime = next(item for item in python if item.runtime_root == runtime_root)
     if environment_root is None:
-        raise RuntimeError("静态 Python command 缺少显式运行环境")
+        raise RuntimeError("Python command 缺少显式运行环境")
     interpreter = staged_python_interpreter(environment_root, runtime)
-    return (str(interpreter), "-E", "-s", "-B", *declaration.command[1:])
+    return (str(interpreter), "-E", "-s", "-B", *command[1:])
 
 
-def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginManifest:
-    """Validate manifest identity, declarations and artifact-relative paths."""
-
-    # 1. Reject fields for which Core has no static contract.
-    unknown = sorted(set(raw) - _TOP_LEVEL_KEYS)
-    if unknown:
-        raise ValueError(f"插件静态 manifest 包含未知字段: {unknown}")
-    schema_version = _integer(raw, "schema_version")
-    if schema_version != 1:
-        raise ValueError("插件静态 manifest schema_version 必须为 1")
-    name = _name(raw.get("name"), "name")
-    version = _version(raw.get("version"), "version")
-    api_version = _integer(raw, "api_version")
-    if api_version != 3:
-        raise ValueError("静态 artifact manifest 只接受 api_version = 3")
-    entrypoint = _relative_artifact_path(
-        root,
-        raw.get("entrypoint"),
-        label="entrypoint",
-        must_exist=True,
-        require_file=True,
-    )
-    if not entrypoint.endswith(".py"):
-        raise ValueError("插件静态 manifest entrypoint 必须指向 Python 文件")
-    # 2. Requirements are complete before the artifact is published.
-    python = _python_runtimes(root, raw.get("python", []))
-    exclude_data_paths = _validation_paths(root, raw.get("validation", {}))
-
-    # 3. Optional declarations are checked statically and kept immutable.
-    mcp_servers = _mcp_declarations(root, raw, python)
-    managed_processes = _process_declarations(root, raw, python)
-    workloads = _workload_declarations(raw)
-    channel_credentials = _channel_credentials(raw.get("channel_credentials", {}))
-    credential_paths = _credential_paths(raw.get("credential_paths", []), "credential_paths")
-    _check_credential_overlap(set(credential_paths) | {
-        path for _channel, paths in channel_credentials for path in paths
-    }, "credential_paths/channel_credentials")
-    _validate_endpoint_process_refs(mcp_servers, managed_processes)
-    _validate_endpoint_workload_refs(mcp_servers, workloads)
-    identity: dict[str, object] = {
-        "schema_version": schema_version,
-        "name": name,
-        "version": version,
-        "api_version": api_version,
-        "entrypoint": entrypoint,
-        "python": [
-            {
-                "requirements": item.requirements,
-                "runtime_root": item.runtime_root,
-            }
-            for item in python
-        ],
-        "exclude_data_paths": list(exclude_data_paths),
-        "mcp_servers": [_mcp_identity(item) for item in mcp_servers],
-        "managed_processes": [_process_identity(item) for item in managed_processes],
-        "workloads": [_workload_identity(item) for item in workloads],
-        "channel_credentials": [
-            {"channel": channel, "paths": list(paths)}
-            for channel, paths in channel_credentials
-        ],
+def _python_runtimes(root: Path) -> tuple[StaticPythonRuntime, ...]:
+    """从固定制品发现 requirements.txt；不读取运行数据或准备环境。"""
+    excluded = {
+        ".git", ".venv", "venv", "node_modules", "cache", ".cache",
+        "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
     }
-    # 原渠道 manifest 的身份保持不变；通用声明参与自身不可变身份。
-    if credential_paths:
-        identity["credential_paths"] = list(credential_paths)
-    identity_digest = hashlib.sha256(
-        json.dumps(
-            identity,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    return StaticPluginManifest(
-        schema_version=schema_version,
-        name=name,
-        version=version,
-        api_version=api_version,
-        entrypoint=entrypoint,
-        python=python,
-        exclude_data_paths=exclude_data_paths,
-        mcp_servers=mcp_servers,
-        managed_processes=managed_processes,
-        workloads=workloads,
-        channel_credentials=channel_credentials,
-        identity_digest=identity_digest,
-        credential_paths=credential_paths,
-    )
-
-
-def _channel_credentials(
-    raw: object,
-) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Validate import-free channel credential paths from the artifact manifest."""
-
-    # 1. Each channel owns one sorted set of dotted config paths.
-    table = _table(raw, "channel_credentials")
-    result: list[tuple[str, tuple[str, ...]]] = []
-    for channel, paths in sorted(table.items()):
-        name = _name(channel, f"channel_credentials.{channel}")
-        result.append((name, _credential_paths(paths, f"channel_credentials.{name}")))
-
-    # 3. Two channels may reuse one exact credential, but not overlapping paths.
-    all_paths = {path for _channel, paths in result for path in paths}
-    _check_credential_overlap(all_paths, "channel_credentials 跨 channel")
-    return tuple(result)
-
-
-def _credential_paths(raw: object, label: str) -> tuple[str, ...]:
-    """在静态文件边界校验凭据路径，防止脱敏依赖处理顺序。"""
-    values = _string_list(raw, label)
-    for value in values:
-        if any(_CONFIG_KEY.fullmatch(part) is None for part in value.split(".")):
-            raise ValueError(f"{label} 包含无效 config path: {value}")
-    _check_credential_overlap(set(values), label)
-    return tuple(sorted(values))
-
-
-def _check_credential_overlap(paths: set[str], label: str) -> None:
-    for value in paths:
-        parts = value.split(".")
-        if any(".".join(parts[:index]) in paths for index in range(1, len(parts))):
-            raise ValueError(f"{label} 路径重叠: {value}")
-
-
-def _python_runtimes(
-    root: Path,
-    raw: object,
-) -> tuple[StaticPythonRuntime, ...]:
-    if not isinstance(raw, list):
-        raise ValueError("插件静态 manifest python 必须是表数组")
     result: list[StaticPythonRuntime] = []
-    seen: set[str] = set()
-    runtime_roots: set[str] = set()
-    for index, item in enumerate(raw):
-        mapping = _table(item, f"python[{index}]")
-        _exact_keys(mapping, {"requirements"}, f"python[{index}]")
-        requirements = _relative_artifact_path(
-            root,
-            mapping.get("requirements"),
-            label=f"python[{index}].requirements",
-            must_exist=True,
-            require_file=True,
-        )
-        if requirements in seen:
-            raise ValueError(f"插件 requirements 重复: {requirements}")
-        seen.add(requirements)
-        runtime_root = str(PurePosixPath(requirements).parent)
-        if runtime_root in runtime_roots:
-            raise ValueError(f"插件 Python runtime root 重复: {runtime_root}")
-        runtime_roots.add(runtime_root)
-        result.append(
-            StaticPythonRuntime(
-                requirements=requirements,
-                runtime_root=runtime_root,
-            )
-        )
-    return tuple(result)
 
-
-def _validation_paths(root: Path, raw: object) -> tuple[str, ...]:
-    if raw == {}:
-        return ()
-    table = _table(raw, "validation")
-    _exact_keys(table, {"exclude_data_paths"}, "validation")
-    paths = table.get("exclude_data_paths", [])
-    if not isinstance(paths, list):
-        raise ValueError("validation.exclude_data_paths 必须是字符串数组")
-    result: list[str] = []
-    seen: set[str] = set()
-    for index, item in enumerate(paths):
-        normalized = _relative_policy_path(
-            root,
-            item,
-            label=f"validation.exclude_data_paths[{index}]",
-        )
-        if normalized in seen:
-            raise ValueError(f"validation.exclude_data_paths 重复: {normalized}")
-        seen.add(normalized)
-        result.append(normalized)
-    return tuple(result)
-
-
-def _mcp_declarations(
-    root: Path,
-    raw: Mapping[str, object],
-    python: tuple[StaticPythonRuntime, ...],
-) -> tuple[StaticMcpDeclaration, ...]:
-    raw_items = raw.get("mcp", [])
-    if not isinstance(raw_items, list):
-        raise ValueError("MCP 声明必须是表数组")
-    items = cast(list[object], raw_items)
-    result: list[StaticMcpDeclaration] = []
-    seen: set[str] = set()
-    for index, item in enumerate(items):
-        table = _table(item, f"mcp[{index}]")
-        allowed = {
-            "name",
-            "command",
-            "cwd",
-            "env",
-            "required_tools",
-            "candidate_read_only_tools",
-            "endpoint_env",
-            "workload_env",
-            "candidate_env",
-        }
-        _exact_keys(table, allowed, f"mcp[{index}]")
-        name = _name(table.get("name"), f"mcp[{index}].name")
-        if name in seen:
-            raise ValueError(f"MCP server 名称重复: {name}")
-        seen.add(name)
-        command = _command(root, table.get("command"), f"mcp[{index}].command")
-        cwd = _relative_artifact_path(
-            root,
-            table.get("cwd", "."),
-            label=f"mcp[{index}].cwd",
-            must_exist=True,
-            require_file=False,
-        )
-        env = _environment(table.get("env", {}), f"mcp[{index}].env")
-        candidate_env = _environment(
-            table.get("candidate_env", {}),
-            f"mcp[{index}].candidate_env",
-        )
-        required_tools = _string_list(
-            table.get("required_tools", []), f"mcp[{index}].required_tools"
-        )
-        candidate_tools = _string_list(
-            table.get("candidate_read_only_tools", []),
-            f"mcp[{index}].candidate_read_only_tools",
-        )
-        endpoint_env = _endpoint_env(
-            table.get("endpoint_env", []), f"mcp[{index}].endpoint_env"
-        )
-        workload_env = _workload_env(
-            table.get("workload_env", []), f"mcp[{index}].workload_env"
-        )
-        occupied = set(env) | set(candidate_env)
-        endpoint_names = [item[0] for item in endpoint_env]
-        endpoint_names.extend(item[0] for item in workload_env)
-        if occupied.intersection(endpoint_names) or len(endpoint_names) != len(
-            set(endpoint_names)
-        ):
-            raise ValueError(f"MCP endpoint env 与声明 env 冲突: {name}")
-        python_runtime = _python_runtime_binding(
-            root,
-            command,
-            cwd,
-            python,
-            label=f"mcp[{index}].command",
-        )
-        result.append(
-            StaticMcpDeclaration(
-                name=name,
-                command=command,
-                cwd=cwd,
-                env=env,
-                required_tools=required_tools,
-                candidate_read_only_tools=candidate_tools,
-                endpoint_env=endpoint_env,
-                workload_env=workload_env,
-                candidate_env=candidate_env,
-                python_runtime=python_runtime,
-            )
-        )
-    return tuple(result)
-
-
-def _process_declarations(
-    root: Path,
-    raw: Mapping[str, object],
-    python: tuple[StaticPythonRuntime, ...],
-) -> tuple[StaticManagedProcessDeclaration, ...]:
-    raw_items = raw.get("processes", [])
-    if not isinstance(raw_items, list):
-        raise ValueError("managed process 声明必须是表数组")
-    items = cast(list[object], raw_items)
-    result: list[StaticManagedProcessDeclaration] = []
-    seen: set[str] = set()
-    for index, item in enumerate(items):
-        table = _table(item, f"process[{index}]")
-        allowed = {
-            "name",
-            "command",
-            "cwd",
-            "env",
-            "port_env",
-            "formal_port",
-            "readiness_path",
-            "startup_timeout_seconds",
-        }
-        _exact_keys(table, allowed, f"process[{index}]")
-        name = _name(table.get("name"), f"process[{index}].name")
-        if name in seen:
-            raise ValueError(f"managed process 名称重复: {name}")
-        seen.add(name)
-        command = _command(
-            root,
-            table.get("command"),
-            f"process[{index}].command",
-        )
-        cwd = _relative_artifact_path(
-            root,
-            table.get("cwd", "."),
-            label=f"process[{index}].cwd",
-            must_exist=True,
-            require_file=False,
-        )
-        env = _environment(table.get("env", {}), f"process[{index}].env")
-        port_env = table.get("port_env")
-        if (
-            not isinstance(port_env, str)
-            or not _ENV_NAME.fullmatch(port_env)
-            or port_env in _RESERVED_ENV
-        ):
-            raise ValueError(f"process[{index}].port_env 无效")
-        formal_port = table.get("formal_port")
-        if (
-            isinstance(formal_port, bool)
-            or not isinstance(formal_port, int)
-            or not 1 <= formal_port <= 65535
-        ):
-            raise ValueError(f"process[{index}].formal_port 无效")
-        if port_env in dict(env):
-            raise ValueError(f"process[{index}].env 不得覆盖 port_env: {port_env}")
-        readiness_path = table.get("readiness_path", "/health")
-        if (
-            not isinstance(readiness_path, str)
-            or not readiness_path.startswith("/")
-            or readiness_path.startswith("//")
-            or readiness_path != readiness_path.strip()
-            or "\\" in readiness_path
-            or any(part in {".", ".."} for part in readiness_path.split("/"))
-        ):
-            raise ValueError(f"process[{index}].readiness_path 无效")
-        parsed_readiness = urlsplit(readiness_path)
-        if (
-            parsed_readiness.scheme
-            or parsed_readiness.netloc
-            or parsed_readiness.query
-            or parsed_readiness.fragment
-        ):
-            raise ValueError(f"process[{index}].readiness_path 无效")
-        timeout = table.get("startup_timeout_seconds", 15.0)
-        if (
-            isinstance(timeout, bool)
-            or not isinstance(timeout, (int, float))
-            or not math.isfinite(float(timeout))
-            or not 0 < float(timeout) <= 300
-        ):
-            raise ValueError(f"process[{index}].startup_timeout_seconds 无效")
-        python_runtime = _python_runtime_binding(
-            root,
-            command,
-            cwd,
-            python,
-            label=f"process[{index}].command",
-        )
-        result.append(
-            StaticManagedProcessDeclaration(
-                name=name,
-                command=command,
-                cwd=cwd,
-                env=env,
-                port_env=port_env,
-                formal_port=formal_port,
-                readiness_path=readiness_path,
-                startup_timeout_seconds=float(timeout),
-                python_runtime=python_runtime,
-            )
-        )
-    return tuple(result)
-
-
-def _validate_endpoint_process_refs(
-    servers: tuple[StaticMcpDeclaration, ...],
-    processes: tuple[StaticManagedProcessDeclaration, ...],
-) -> None:
-    names = {item.name for item in processes}
-    for server in servers:
-        for _, process in server.endpoint_env:
-            if process not in names:
-                raise ValueError(
-                    f"MCP endpoint_env 引用了未声明的 managed process: {process}"
+    def visit(directory: Path) -> None:
+        # 1. 不进入依赖和缓存；其余目录链接可能隐藏 runtime，直接拒绝。
+        for path in sorted(directory.iterdir()):
+            if path.name in excluded:
+                continue
+            if path.is_symlink():
+                if path.name == "requirements.txt" or path.is_dir() or not path.exists():
+                    raise ValueError(f"插件 Python runtime 不能经过符号链接: {path}")
+                continue
+            if path.is_dir():
+                if path.name == "requirements.txt":
+                    raise ValueError(f"插件 requirements.txt 必须是文件: {path}")
+                visit(path)
+            elif path.name == "requirements.txt":
+                # 2. 精确文件名是 runtime 标记，其他 requirements 文件不独立安装。
+                requirements = _relative_artifact_path(
+                    root, path.relative_to(root).as_posix(),
+                    label="requirements", must_exist=True, require_file=True,
                 )
+                result.append(StaticPythonRuntime(
+                    requirements=requirements,
+                    runtime_root=str(PurePosixPath(requirements).parent),
+                ))
+
+    visit(root)
+    return tuple(sorted(result, key=lambda item: item.requirements))
 
 
-def _workload_declarations(
-    raw: Mapping[str, object],
-) -> tuple[StaticWorkloadDeclaration, ...]:
-    """Validate fixed Workload data without importing plugin code."""
-
-    raw_items = raw.get("workload", [])
-    if not isinstance(raw_items, list):
-        raise ValueError("Workload 声明必须是表数组")
-    items = cast(list[object], raw_items)
-    result: list[StaticWorkloadDeclaration] = []
-    seen: set[str] = set()
-    image_pattern = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
-    for index, item in enumerate(items):
-        table = _table(item, f"workload[{index}]")
-        _exact_keys(
-            table,
-            {
-                "name",
-                "image",
-                "command",
-                "ports",
-                "data",
-                "health",
-                "limits",
-                "user_namespaces",
-            },
-            f"workload[{index}]",
-        )
-        name = _name(table.get("name"), f"workload[{index}].name")
-        if name in seen:
-            raise ValueError(f"Workload 名称重复: {name}")
-        seen.add(name)
-        image = table.get("image")
-        if not isinstance(image, str) or image_pattern.fullmatch(image) is None:
-            raise ValueError(f"workload[{index}].image 必须使用 sha256 digest")
-        command = _string_list(table.get("command", []), f"workload[{index}].command")
-        if not command:
-            raise ValueError(f"workload[{index}].command 不能为空")
-        ports, loopback_ports = _workload_ports(
-            table.get("ports"), f"workload[{index}].ports"
-        )
-        data = _workload_data(table.get("data", []), f"workload[{index}].data")
-        health = _workload_health(
-            table.get("health"), ports, f"workload[{index}].health"
-        )
-        limits = _workload_limits(table.get("limits"), f"workload[{index}].limits")
-        user_namespaces = table.get("user_namespaces", False)
-        if not isinstance(user_namespaces, bool):
-            raise ValueError(f"workload[{index}].user_namespaces 必须是 bool")
-        result.append(
-            StaticWorkloadDeclaration(
-                name,
-                image,
-                command,
-                ports,
-                loopback_ports,
-                data,
-                health,
-                limits,
-                user_namespaces,
-            )
-        )
-    return tuple(result)
-
-
-def _validate_endpoint_workload_refs(
-    servers: tuple[StaticMcpDeclaration, ...],
-    workloads: tuple[StaticWorkloadDeclaration, ...],
-) -> None:
-    ports = {item.name: {name for name, _ in item.ports} for item in workloads}
-    for server in servers:
-        for _, workload, port in server.workload_env:
-            if workload not in ports or port not in ports[workload]:
-                raise ValueError(
-                    "MCP workload_env 引用了未声明的 Workload 端口: "
-                    f"{workload}:{port}"
-                )
-
-
-def _command(root: Path, raw: object, label: str) -> tuple[str, ...]:
-    if not isinstance(raw, list) or not raw:
-        raise ValueError(f"{label} 必须是非空字符串数组")
-    values = _string_list(raw, label)
-    for index, value in enumerate(values):
-        if _is_absolute_path(value):
-            raise ValueError(f"{label}[{index}] 不得是 artifact 外绝对路径")
-        if _looks_like_artifact_path(value):
-            _ = _relative_artifact_path(
-                root,
-                value,
-                label=f"{label}[{index}] path",
-                must_exist=True,
-                require_file=True,
-            )
-    return values
-
-
-def _python_runtime_binding(
+def command_python_runtime(
     root: Path,
     command: tuple[str, ...],
     cwd: str,
     runtimes: tuple[StaticPythonRuntime, ...],
-    *,
-    label: str,
 ) -> str | None:
     """Resolve a Python command to exactly one staged runtime root."""
 
@@ -749,234 +231,21 @@ def _python_runtime_binding(
             )
         )
     )
-    if len(matches) != 1:
+    if not matches:
         raise ValueError(
-            f"{label} 必须唯一绑定已声明 Python runtime: "
+            "command 必须绑定制品 Python runtime: "
             f"matches={[item.runtime_root for item in matches]}"
         )
-    return matches[0].runtime_root
+    # 嵌套 runtime 拥有自己的命令，根 runtime 只承接其余路径。
+    return max(
+        matches, key=lambda item: len(PurePosixPath(item.runtime_root).parts)
+    ).runtime_root
 
 
 def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
-
-
-def _endpoint_env(raw: object, label: str) -> tuple[tuple[str, str], ...]:
-    if not isinstance(raw, list):
-        raise ValueError(f"{label} 必须是表数组")
-    result: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(raw):
-        table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"env", "process"}, f"{label}[{index}]")
-        env = table.get("env")
-        process = table.get("process")
-        if (
-            not isinstance(env, str)
-            or not _ENV_NAME.fullmatch(env)
-            or env in _RESERVED_ENV
-            or not isinstance(process, str)
-            or not _NAME.fullmatch(process)
-        ):
-            raise ValueError(f"{label}[{index}] 无效")
-        if env in seen:
-            raise ValueError(f"{label} 环境变量重复: {env}")
-        seen.add(env)
-        result.append((env, process))
-    return tuple(result)
-
-
-def _workload_env(
-    raw: object,
-    label: str,
-) -> tuple[tuple[str, str, str], ...]:
-    if not isinstance(raw, list):
-        raise ValueError(f"{label} 必须是表数组")
-    result: list[tuple[str, str, str]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(raw):
-        table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"env", "workload", "port"}, f"{label}[{index}]")
-        env = table.get("env")
-        workload = table.get("workload")
-        port = table.get("port")
-        if (
-            not isinstance(env, str)
-            or not _ENV_NAME.fullmatch(env)
-            or env in _RESERVED_ENV
-            or not isinstance(workload, str)
-            or not _NAME.fullmatch(workload)
-            or not isinstance(port, str)
-            or not _NAME.fullmatch(port)
-        ):
-            raise ValueError(f"{label}[{index}] 无效")
-        if env in seen:
-            raise ValueError(f"{label} 环境变量重复: {env}")
-        seen.add(env)
-        result.append((env, workload, port))
-    return tuple(result)
-
-
-def _workload_ports(
-    raw: object,
-    label: str,
-) -> tuple[tuple[tuple[str, int], ...], tuple[tuple[str, int], ...]]:
-    if not isinstance(raw, list) or not raw:
-        raise ValueError(f"{label} 必须是非空表数组")
-    result: list[tuple[str, int]] = []
-    names: set[str] = set()
-    numbers: set[int] = set()
-    loopback_numbers: set[int] = set()
-    loopback_ports: list[tuple[str, int]] = []
-    for index, item in enumerate(raw):
-        table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"name", "number", "loopback"}, f"{label}[{index}]")
-        name = _name(table.get("name"), f"{label}[{index}].name")
-        number = table.get("number")
-        loopback = table.get("loopback")
-        if (
-            isinstance(number, bool)
-            or not isinstance(number, int)
-            or not 1 <= number <= 65535
-            or name in names
-            or number in numbers
-            or (
-                loopback is not None
-                and (
-                    isinstance(loopback, bool)
-                    or not isinstance(loopback, int)
-                    or not 1024 <= loopback <= 65535
-                    or loopback in loopback_numbers
-                )
-            )
-        ):
-            raise ValueError(f"{label}[{index}] 无效")
-        names.add(name)
-        numbers.add(number)
-        result.append((name, number))
-        if loopback is not None:
-            loopback_numbers.add(loopback)
-            loopback_ports.append((name, loopback))
-    return tuple(result), tuple(loopback_ports)
-
-
-def _workload_data(
-    raw: object,
-    label: str,
-) -> tuple[tuple[str, str, bool], ...]:
-    if not isinstance(raw, list):
-        raise ValueError(f"{label} 必须是表数组")
-    result: list[tuple[str, str, bool]] = []
-    names: set[str] = set()
-    targets: set[str] = set()
-    for index, item in enumerate(raw):
-        table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"name", "target", "writable"}, f"{label}[{index}]")
-        name = _name(table.get("name"), f"{label}[{index}].name")
-        target = table.get("target")
-        writable = table.get("writable", True)
-        if not isinstance(target, str) or target != target.strip():
-            raise ValueError(f"{label}[{index}].target 无效")
-        path = PurePosixPath(target)
-        if (
-            not path.is_absolute()
-            or path == PurePosixPath("/")
-            or ".." in path.parts
-            or not isinstance(writable, bool)
-            or name in names
-            or str(path) in targets
-        ):
-            raise ValueError(f"{label}[{index}] 无效")
-        names.add(name)
-        targets.add(str(path))
-        result.append((name, str(path), writable))
-    return tuple(result)
-
-
-def _workload_health(
-    raw: object,
-    ports: tuple[tuple[str, int], ...],
-    label: str,
-) -> tuple[str, str, float]:
-    table = _table(raw, label)
-    _exact_keys(table, {"port", "path", "timeout_seconds"}, label)
-    port = table.get("port")
-    path = table.get("path", "/health")
-    timeout = table.get("timeout_seconds", 60.0)
-    if not isinstance(port, str) or port not in {name for name, _ in ports}:
-        raise ValueError(f"{label}.port 无效")
-    if (
-        not isinstance(path, str)
-        or not path.startswith("/")
-        or path.startswith("//")
-        or path != path.strip()
-        or "\\" in path
-        or any(part in {".", ".."} for part in path.split("/"))
-    ):
-        raise ValueError(f"{label}.path 无效")
-    parsed = urlsplit(path)
-    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-        raise ValueError(f"{label}.path 无效")
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or not math.isfinite(float(timeout))
-        or not 0 < float(timeout) <= 300
-    ):
-        raise ValueError(f"{label}.timeout_seconds 无效")
-    return port, path, float(timeout)
-
-
-def _workload_limits(raw: object, label: str) -> tuple[int, float, int]:
-    table = _table(raw, label)
-    _exact_keys(table, {"memory_mb", "cpu_count", "pids"}, label)
-    memory = table.get("memory_mb")
-    cpu = table.get("cpu_count")
-    pids = table.get("pids")
-    if (
-        isinstance(memory, bool)
-        or not isinstance(memory, int)
-        or not (memory == 0 or 64 <= memory <= 262_144)
-        or isinstance(cpu, bool)
-        or not isinstance(cpu, (int, float))
-        or not math.isfinite(float(cpu))
-        or not (float(cpu) == 0 or 0.1 <= float(cpu) <= 256)
-        or isinstance(pids, bool)
-        or not isinstance(pids, int)
-        or not (pids == 0 or 16 <= pids <= 1_048_576)
-    ):
-        raise ValueError(f"{label} 无效")
-    return memory, float(cpu), pids
-
-
-def _environment(raw: object, label: str) -> tuple[tuple[str, str], ...]:
-    if not isinstance(raw, dict):
-        raise ValueError(f"{label} 必须是字符串映射")
-    values: dict[str, str] = {}
-    for key, value in cast(dict[object, object], raw).items():
-        if (
-            not isinstance(key, str)
-            or not _ENV_NAME.fullmatch(key)
-            or not isinstance(value, str)
-        ):
-            raise ValueError(f"{label} 包含无效环境变量")
-        if key in _RESERVED_ENV:
-            raise ValueError(f"{label} 不得覆盖 Core 保留环境变量: {key}")
-        values[key] = value
-    return tuple(sorted(values.items()))
-
-
-def _string_list(raw: object, label: str) -> tuple[str, ...]:
-    if not isinstance(raw, list) or not all(
-        isinstance(item, str) and item and item == item.strip() for item in raw
-    ):
-        raise ValueError(f"{label} 必须是非空字符串数组")
-    values = tuple(cast(str, item) for item in raw)
-    if len(set(values)) != len(values):
-        raise ValueError(f"{label} 不得重复")
-    return values
 
 
 def _relative_artifact_path(
@@ -1004,21 +273,6 @@ def _relative_artifact_path(
     return "/".join(path.parts) or "."
 
 
-def _relative_policy_path(root: Path, raw: object, *, label: str) -> str:
-    if not isinstance(raw, str) or not raw or raw != raw.strip():
-        raise ValueError(f"{label} 必须是非空相对路径")
-    path = PurePosixPath(raw.replace("\\", "/"))
-    if (
-        not path.parts
-        or _is_absolute_path(raw)
-        or any(part in {"", ".", ".."} for part in path.parts)
-    ):
-        raise ValueError(f"{label} 必须是 artifact/data 内的相对路径")
-    resolved = root.joinpath(*path.parts)
-    _reject_symlink_ancestors(root, resolved, label)
-    return "/".join(path.parts)
-
-
 def _reject_symlink_ancestors(root: Path, path: Path, label: str) -> None:
     current = root
     try:
@@ -1043,18 +297,6 @@ def _is_absolute_path(value: str) -> bool:
     return Path(value).is_absolute() or bool(re.match(r"^[A-Za-z]:[/\\]", value))
 
 
-def _table(raw: object, label: str) -> dict[str, object]:
-    if not isinstance(raw, dict):
-        raise ValueError(f"{label} 必须是表")
-    return cast(dict[str, object], raw)
-
-
-def _exact_keys(raw: Mapping[str, object], allowed: set[str], label: str) -> None:
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        raise ValueError(f"{label} 包含未知字段: {unknown}")
-
-
 def _integer(raw: Mapping[str, object], key: str) -> int:
     value = raw.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -1072,46 +314,3 @@ def _version(raw: object, label: str) -> str:
     if not isinstance(raw, str) or not _VERSION.fullmatch(raw):
         raise ValueError(f"插件静态 manifest {label} 无效")
     return raw
-
-
-def _mcp_identity(item: StaticMcpDeclaration) -> dict[str, object]:
-    return {
-        "name": item.name,
-        "command": list(item.command),
-        "cwd": item.cwd,
-        "env": list(item.env),
-        "required_tools": list(item.required_tools),
-        "candidate_read_only_tools": list(item.candidate_read_only_tools),
-        "endpoint_env": [list(value) for value in item.endpoint_env],
-        "workload_env": [list(value) for value in item.workload_env],
-        "candidate_env": list(item.candidate_env),
-        "python_runtime": item.python_runtime,
-    }
-
-
-def _process_identity(item: StaticManagedProcessDeclaration) -> dict[str, object]:
-    return {
-        "name": item.name,
-        "command": list(item.command),
-        "cwd": item.cwd,
-        "env": list(item.env),
-        "port_env": item.port_env,
-        "formal_port": item.formal_port,
-        "readiness_path": item.readiness_path,
-        "startup_timeout_seconds": item.startup_timeout_seconds,
-        "python_runtime": item.python_runtime,
-    }
-
-
-def _workload_identity(item: StaticWorkloadDeclaration) -> dict[str, object]:
-    return {
-        "name": item.name,
-        "image": item.image,
-        "command": list(item.command),
-        "ports": [list(value) for value in item.ports],
-        "loopback_ports": [list(value) for value in item.loopback_ports],
-        "data": [list(value) for value in item.data],
-        "health": list(item.health),
-        "limits": list(item.limits),
-        "user_namespaces": item.user_namespaces,
-    }

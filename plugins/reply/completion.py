@@ -3,8 +3,8 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from typing import Protocol
 
 from agent.plugin_composition import ServiceKey
-from agent.restart import ExternalRootPermit
-from session.log import MessageReader
+from agent.plugin_composition.tasks import ExternalRootPermit
+from agent.plugin_composition.messages import MessageReader
 
 
 class Completion(Protocol):

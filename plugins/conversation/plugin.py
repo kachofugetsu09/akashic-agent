@@ -1,45 +1,90 @@
-from collections.abc import Callable, Mapping
-from typing import cast
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping
+from typing import Protocol, cast
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
+from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
-from agent.plugin_composition.tasks import TASKS, Task
-from agent.restart import RESTART_GATE
-from session.log import MessageConflict, MessageReader
-from plugins.content.plugin import check_text
-from plugins.content.api import check_artifact
-from plugins.models.selection import check_selection
-from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
-from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
+from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGate, RESTART_GATE
+from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter
+from agent.plugin_contracts import Body, ContentPart, ContentReferences, Control, Input, Message, Output
 
-from .source import Conversation, update_selection
-from .commands import CONVERSATION_COMMANDS, run_commands
+from .source import update_selection
+from .commands import CONTENT, SOURCE_CHECK, CONVERSATION_COMMANDS, run_commands
+
+
+
+class ModelSelection(Protocol):
+    def check(self, part: ContentPart) -> ContentReferences: ...
+
+    def write_saved(
+        self, metadata: MutableMapping[str, object], selection: ChatModelSelection,
+    ) -> None: ...
+
+
+MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
+
+
+class SourceSession(Protocol):
+    async def accept(self, message_id: str, body: Input) -> Message: ...
+    async def pause(self, message_id: str) -> Message: ...
+    async def resume(self, message_id: str, input_id: str) -> Message: ...
+    async def start(self, program: Callable[[Task, MessageReader, str], Awaitable[object]]) -> Task | None: ...
+
+
+class SessionFactory(Protocol):
+    def __call__(
+        self, *, reader: MessageReader, inputs: MessageWriter, controls: MessageWriter,
+        tasks: TaskAdmission, changed: Callable[[MessageReader, str], None] | None = None,
+        restart_gate: RestartGate | None = None,
+    ) -> SourceSession: ...
+
+    def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
+
+
+class SourceRegistry(Protocol):
+    async def register(
+        self, ctx: Context, *, name: str, open: Callable[[str], SourceSession],
+        needs_reply: Callable[[MessageReader], bool],
+        accept: Callable[[str, str, ChannelInboundMessage], Awaitable[Message]] | None = None,
+        channels: tuple[str, ...] | None = (),
+    ) -> Effect: ...
+
+
+SOURCES = ServiceKey[SourceRegistry]("sources.v2")
+SOURCE_SESSION = ServiceKey[SessionFactory]("source.session.v1")
+SOURCE_CHANGED = ServiceKey[Callable[[MessageReader, str], None]]("source.changed.v1")
+
 
 api_version = 3
 name = "conversation"
 version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
-inject = (MESSAGE_WRITERS, SOURCES, RESTART_GATE)
+inject = (COMMANDS, CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTART_GATE, MODEL_SELECTION)
 
-CONVERSATION = ServiceKey[Callable[[str], Conversation]]("conversation.v1")
+CONVERSATION = ServiceKey[Callable[[str], SourceSession]]("conversation.v1")
 
 
-async def apply(ctx: Context, config: object) -> None:
-    """来源能力不依赖模型或自动回复，正式调用时才取得宿主读写权。"""
+async def apply(ctx: Context) -> None:
+    """来源只使用模型选择校验与持久化能力，不持有模型执行权。"""
+    model_selection = ctx.require(MODEL_SELECTION)
+
+    def update_metadata(body: Body) -> Mapping[str, object | None]:
+        return update_selection(body, write_saved=model_selection.write_saved)
+
     _ = await ctx.require(MESSAGE_WRITERS).register_metadata(
-        ctx, keys=frozenset({"model_selection", "model_runtime_override"}), update=update_selection,
+        ctx, keys=frozenset({"model_selection", "model_runtime_override"}), update=update_metadata,
     )
     def changed(reader: MessageReader, source: str) -> None:
         listener = ctx.get(SOURCE_CHANGED)
         if listener is not None:
             listener(reader, source)
 
-    def open(session_id: str) -> Conversation:
+    def open(session_id: str) -> SourceSession:
         def check_model(part: ContentPart) -> ContentReferences:
-            references = check_selection(part)
+            references = ctx.require(MODEL_SELECTION).check(part)
             value = cast(Mapping[str, str | None], part.value)
             _ = ctx.require(MODEL_CATALOG).validate_chat_selection(
                 ChatModelSelection(value["model_id"], value["reasoning_effort"]),
@@ -56,14 +101,14 @@ async def apply(ctx: Context, config: object) -> None:
         writers = ctx.require(MESSAGE_WRITERS)
         inputs = writers.bind(
             ctx, author="user", source="conversation", body_types=(Input,),
-            content={"text": check_text, "artifact_ref": check_artifact, "channel.origin": check_origin,
+            content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
                      "reply_ref": check_reply_target, "model.selection": check_model},
-            update_metadata=update_selection,
+            update_metadata=update_metadata,
         )
         controls = writers.bind(
             ctx, author="app", source="conversation", body_types=(Control,), content={},
         )
-        return Conversation(
+        return ctx.require(SOURCE_SESSION)(
             reader=ctx.require(MESSAGE_CATALOG).reader(session_id),
             inputs=inputs(session_id), controls=controls(session_id),
             tasks=ctx.require(TASKS).open(ctx), changed=changed,
@@ -110,9 +155,11 @@ async def apply(ctx: Context, config: object) -> None:
     async def command(task: Task, reader: MessageReader, source: str) -> Message | None:
         return await run_commands(ctx, task, reader, source)
 
+    _ = await ctx.provide(ServiceKey("conversation.check_origin.v1"), check_origin)
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION, open)
-    _ = await ctx.require(SOURCES).register(ctx, Source("conversation", open, accept, None))
+    _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
+        needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
 
 
 def check_origin(part: ContentPart) -> ContentReferences:

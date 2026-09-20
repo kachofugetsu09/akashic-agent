@@ -2871,3 +2871,36 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 
 - MCP 环境清理移入 `owned_process_env`，该 owner 最后固定 Supervisor 身份；MCP 注册边界拒绝配置这两个字段。删除 client 在 owner 处理之后再次擦除变量的路径。调用 scope 的清理失败不再误入正式插件发布恢复，查询/重试从实际资源 tombstone 计算；没有新增故障账本。
 - Docker Gate 的 pytest 临时运行数据移到各场景独立的 `/sandbox/pytest`，保留 `/tmp` 的 noexec 挂载。新环境需要执行复制的 interpreter；失败来自实际挂载能力，不通过恢复 cache symlink 或跳过测试绕开。
+
+## 2026-09-10 插件边界第 2 步：删除 11 个无消费者的 `agent/tools` 遗留模块
+
+- 基线：stacked base `f8532b19580eb339f431f3fb7252c92903bafbd1`（PR #593 head），分支 `feature/plugin-boundary-step2-dead-code-20260910`。恢复点为本 PR 单提交 revert；正式 workspace 未改写。
+- 删除 `agent/tools/` 下 11 个插件化之前的 Core 工具副本：`forget_memory.py`、`memorize.py`、`message_lookup.py`、`message_push.py`、`recall_memory.py`、`skill_loader.py`、`tool_search.py`、`vision.py`、`web_fetch.py`、`web_search.py`、`shell.py`。
+- 可达性：逐个用 AST import 扫描（`from agent.tools import X`、`import agent.tools.X`、`from agent.tools.X import`）与全库字符串扫描确认 production importer、test importer、动态 import/getattr、manifest/config/impact 字符串入口全部为零。`agent/config.py` 命中的 `agent.tools.search_enabled` 是配置键，不是模块路径。
+- 能力不变：`memorize`、`recall_memory`、`message_push`、`web_fetch`、`web_search`、`tool_search`、`shell` 等工具名由 `plugins/akasha`、`plugins/standard_web`、`plugins/standard_tools`、`plugins/scheduler`、`plugins/message_push` 等插件继续提供；参数 schema、错误语义、外部发送、持久化与插件生命周期均不变。
+- 登记联动：`tests_scenarios/contracts/impact.toml` 把 7 个组（`model_owner`、`recursive_plugin_validation`、`memory`、`shell_finality`、`companion_tool_context`、`companion_external_io`、`companion_shell`）里的对应路径从 `paths` 移入 `deleted_paths`；`coverage-baseline.json` 的 `catalogDigest` 由 `fd714884` 更新为 `506d9885`。
+- 边界账本：`plugin_boundary_baseline.toml` 删除 3 条已还清的 R1 条目（`agent/tools/shell.py`、`web_fetch.py`、`web_search.py` → 插件），R1 由 28 降到 25；`python scripts/plugin_boundary.py check` 通过并打印 `R1=25/25 R2=244/244 R3=238/238`。
+- 保留项：`agent/tools/executor.py` 与 `agent/tools/events.py` 是 R10 Tool 组合事件流水的 reviewed 公开 seam，`events.py` 由合同文档声明 owner，`executor.py` 由 `tests/test_tool_executor.py` 的 11 项合同测试覆盖，符合第 2 步「有任一消费者即保留」规则，故不删除。其归属（R2 不允许插件 import `agent.tools.events`，seam 若被插件消费须先迁入 `agent/plugin_contracts/`）留给第 3 步。
+- Gate：`docker/debug/gate.py` 的 `audit_catalog` 为 `passed/current`，无 unmapped executable、无 catalog issue；公开 change-impact Gate 以 stacked base 运行，`sourceDigest`/`planDigest` 由交付报告记录。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。
+- 残余风险：历史 checkpoint 或工作 checkout 可能保留旧模块文本；外部消费者范围按下方复核修正。
+
+### 2026-09-12 删除范围复核
+
+- 本次继续保留 11 个删除，不扩大删除范围。新版 AST 扫描覆盖包入口及相对导入，
+  #593 源码内指向这些模块的 production/test import 均为零；存活工具由普通插件提供。
+- 旧记录的“全部消费者为零”和“seam 必须迁入 plugin_contracts”均过强。
+  后续归属以 [0065](../decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 为准，
+  不能因多人共享就将业务合同移入 Core。
+- 本地外部源码与 cache 搜索发现三个**旧测试**消费者：qqbot 的
+  `agent/fix-message-push-delivery@d72c4e9a`、feishu 同名分支 `4e99e2c2` 的测试
+  引用 `agent.tools.message_push`；两者插件仍继承已退役的 `agent.plugins.Plugin`。
+  shell_restore cache artifact `2.0.0-d9b9e17c7e783463-restaged-f9d6e86f61d74035`
+  的测试引用 `agent.tools.shell`，同时依赖 #593 基线已不存在的 `agent.tool_hooks`。
+  它们不是当前可运行的兼容测试；不因保留这两份遗留模块就能恢复旧 API。
+- 上述 cache 的 shell_restore **运行代码**实际依赖 `agent.tools.events`，
+  支持本次继续保留 events；executor 仍有本仓库合同测试消费者。
+- 没有修改外部源码、cache、manifest 或运行数据。检查只覆盖本地可见快照，
+  不是正式运行 fleet/远端所有版本无消费者的证明；发布仍须正式组合验收。
+- 新门将历史迁移、自身绝对导入纳入欠账并消除标准库误报；本层只比更新后的 #593
+  少三条 R1，不通过放宽规则获得降低。精确数量和验证结果记录在 PR 交付中。

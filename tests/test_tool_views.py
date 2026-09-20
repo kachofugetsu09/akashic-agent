@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugins.manager import PluginManager
@@ -13,7 +15,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.tools.api import MessageReply
-from plugins.tools.menu import InvalidToolCall, ToolMenu
+from plugins.tools.menu import ToolMenu
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView, open_tool
 from session.log import MessageLog
 from session.message import CallRef
@@ -38,11 +40,11 @@ def _sources(tmp_path):
         target.read_text()
         .replace(
             "from plugins.tools.execution import Result",
-            "from plugins.tools.execution import Result\nfrom plugins.tools.api import InvalidArguments",
+            "from plugins.tools.execution import Result",
         )
         .replace(
             'raise ValueError("value must be text")',
-            'raise InvalidArguments("value must be text")',
+            'return "value must be text"',
         )
     )
     prepare = sources / "prepare/plugin.py"
@@ -85,6 +87,7 @@ def _unexpected_reply(call_ref: CallRef) -> MessageReply:
 async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(tmp_path):
     sources = _sources(tmp_path)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()
@@ -93,7 +96,7 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
             catalog = ctx.require(TOOLS)
             bindings = ctx.require(BINDINGS)
             view = ToolView.combine(
-                ctx.require(ALL_TOOLS)(), ctx.require(TOOL_SEARCH_TOOLS)
+                ctx.require(ALL_TOOLS)(), cast(ToolView, ctx.require(TOOL_SEARCH_TOOLS))
             )
             presentation = ctx.require(TOOL_SEARCH_PRESENTATION)(view)
             menu = ToolMenu(
@@ -109,13 +112,15 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
                 "tool_call",
             ]
 
-            search_binding, search_arguments = menu.decode(
-                ModelToolCall("search", "tool_search", {"query": "example"})
-            )
+            decoded = menu.decode(ModelToolCall('search', 'tool_search', {'query': 'example'}))
+            (search_binding, search_arguments) = decoded.binding_id, decoded.arguments
+            assert search_binding is not None
             async with open_tool(bindings, search_binding) as search:
+                prepared = await search.prepare(search_arguments)
+                assert isinstance(prepared, Mapping)
                 result = await search.invoke(
                     "search",
-                    await search.prepare(search_arguments),
+                    prepared,
                 )
             value = result.parts[0].value
             assert isinstance(value, str)
@@ -136,13 +141,9 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
                 "tool_call",
             ]
 
-            binding, arguments = menu.decode(
-                ModelToolCall(
-                    "call",
-                    "tool_call",
-                    {"name": "example", "arguments": {"value": " ok "}},
-                )
-            )
+            decoded = menu.decode(ModelToolCall('call', 'tool_call', {'name': 'example', 'arguments': {'value': ' ok '}}))
+            (binding, arguments) = decoded.binding_id, decoded.arguments
+            assert binding is not None
             executed = await catalog.execution(
                 lambda identity, final: _allow()
             ).execute("valid", binding, arguments)
@@ -152,17 +153,22 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
             ).execute("invalid", binding, {"value": 7})
             assert invalid.outcome == "error"
             assert invalid.parts[0].value == "value must be text"
-            with pytest.raises(InvalidToolCall, match="获授 view"):
-                menu.decode(
-                    ModelToolCall(
-                        "unknown",
-                        "tool_call",
-                        {"name": "missing", "arguments": {}},
-                    )
+            rejected = menu.decode(
+                ModelToolCall(
+                    "unknown",
+                    "tool_call",
+                    {"name": "missing", "arguments": {}},
                 )
+            )
+            assert not rejected.accepted
+            assert rejected.rejection is not None
+            assert rejected.rejection["name"] == "tool_call"
+            rejection_error = rejected.rejection["error"]
+            assert isinstance(rejection_error, str)
+            assert "获授 view" in rejection_error
             narrow = ToolView.combine(
                 catalog.view(view.select("example")),
-                ctx.require(TOOL_SEARCH_TOOLS),
+                cast(ToolView, ctx.require(TOOL_SEARCH_TOOLS)),
             )
             narrow_menu = ToolMenu(
                 catalog,
@@ -172,14 +178,19 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
                 view=narrow,
                 presentation=ctx.require(TOOL_SEARCH_PRESENTATION)(narrow),
             )
-            with pytest.raises(InvalidToolCall, match="获授 view"):
-                narrow_menu.decode(
-                    ModelToolCall(
-                        "not-awarded",
-                        "tool_call",
-                        {"name": "example_status", "arguments": {"value": "ok"}},
-                    )
+            rejected = narrow_menu.decode(
+                ModelToolCall(
+                    "not-awarded",
+                    "tool_call",
+                    {"name": "example_status", "arguments": {"value": "ok"}},
                 )
+            )
+            assert not rejected.accepted
+            assert rejected.rejection is not None
+            assert rejected.rejection["name"] == "tool_call"
+            rejection_error = rejected.rejection["error"]
+            assert isinstance(rejection_error, str)
+            assert "获授 view" in rejection_error
     finally:
         await host.terminate_all()
         log.close()
@@ -192,13 +203,16 @@ async def test_standard_web_is_directly_callable_without_search(tmp_path):
     shutil.copytree(Path(__file__).parents[1] / "plugins/standard_web", sources / "standard_web",
                     ignore=shutil.ignore_patterns("__pycache__"))
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
             catalog = ctx.require(TOOLS)
-            view = ToolView.combine(ctx.require(ALL_TOOLS)(), ctx.require(TOOL_SEARCH_TOOLS))
+            view = ToolView.combine(
+                ctx.require(ALL_TOOLS)(), cast(ToolView, ctx.require(TOOL_SEARCH_TOOLS)),
+            )
             menu = ToolMenu(catalog, ctx.require(BINDINGS),
                            catalog.execution(lambda binding, arguments: _allow()), _unexpected_reply,
                            view=view, presentation=ctx.require(TOOL_SEARCH_PRESENTATION)(view))
@@ -207,7 +221,9 @@ async def test_standard_web_is_directly_callable_without_search(tmp_path):
             assert "example" not in names
             for name, arguments in (("web_fetch", {"url": "https://example.com"}),
                                     ("web_search", {"query": "weather"})):
-                binding, _ = menu.decode(ModelToolCall("direct", name, arguments))
+                decoded = menu.decode(ModelToolCall('direct', name, arguments))
+                (binding, _) = decoded.binding_id, decoded.arguments
+                assert binding is not None
                 async with open_tool(ctx.require(BINDINGS), binding) as tool:
                     assert await tool.prepare(arguments) == arguments
     finally:
@@ -221,17 +237,19 @@ async def _allow() -> Mapping[str, object]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replacement", ["removed", "changed"])
-async def test_fixed_bindings_use_archived_schema_without_rebinding_current_provider(
+async def test_fixed_bindings_keep_display_schema_but_do_not_reopen_history(
     tmp_path, replacement
 ):
     sources = _sources(tmp_path)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            bindings = Bindings(log, host._archive, host.open_binding)
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             catalog = ctx.require(TOOLS)
             old = catalog.bind(ctx.require(ALL_TOOLS)().select("example"), bindings)
         await host.terminate_all()
@@ -250,7 +268,8 @@ async def test_fixed_bindings_use_archived_schema_without_rebinding_current_prov
         await restored.load_all()
         async with lease_runtime_snapshot(restored.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            bindings = Bindings(log, restored._archive, restored.open_binding)
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, restored._archive, snapshot.composition_root)
             menu = ToolMenu(
                 ctx.require(TOOLS),
                 bindings,
@@ -270,14 +289,19 @@ async def test_fixed_bindings_use_archived_schema_without_rebinding_current_prov
                 parameters = current.description["parameters"]
                 assert isinstance(parameters, Mapping)
                 assert parameters["required"] == ()
-            identity, arguments = menu.decode(
-                ModelToolCall("old", "example", {"value": "old"})
-            )
+            decoded = menu.decode(ModelToolCall('old', 'example', {'value': 'old'}))
+            (identity, arguments) = decoded.binding_id, decoded.arguments
+            assert identity is not None
             assert identity == old
-            result = await ctx.require(TOOLS).execution(
+            execution = ctx.require(TOOLS).execution(
                 lambda binding, final: _allow()
-            ).execute("archived", identity, arguments)
-            assert result.parts[0].value == "A:restore:old"
+            )
+            if replacement == "removed":
+                with pytest.raises(KeyError):
+                    await execution.execute("history", identity, arguments)
+            else:
+                with pytest.raises(ValueError, match="归档工具描述或参数准备"):
+                    await execution.execute("history", identity, arguments)
         await restored.terminate_all()
     finally:
         await host.terminate_all()

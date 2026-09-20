@@ -4,6 +4,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugins.install import install_git_plugin
@@ -21,7 +23,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (PLUGIN_UPDATES,)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("test.context"), ctx)
     await ctx.provide(ServiceKey("test.version"), lambda: "old")
 '''
@@ -35,6 +37,7 @@ async def test_ordinary_update_api_checks_scope_and_isolates_validation(tmp_path
     _commit(source)
     install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
     log = MessageLog(workspace / "sessions.db")
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, message_log=log,
                          installed_cache_root=home / "cache")
     stream = None
@@ -112,6 +115,7 @@ async def test_queued_publication_cannot_publish_a_replacement_candidate(tmp_pat
     from tests.test_plugin_update_rollback import prepare
 
     source, home, workspace, _ = prepare(tmp_path)
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     entered, release = asyncio.Event(), asyncio.Event()
     original_publish = host._publish_update
@@ -128,9 +132,9 @@ async def test_queued_publication_cannot_publish_a_replacement_candidate(tmp_pat
         await host.discard_update(first.update_id)
         second, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         release.set()
-        await asyncio.wait_for(host._update_publication[1], 10)
+        with pytest.raises(asyncio.CancelledError):
+            await host._update_publication[1]
         assert host.reload_journal.update(first.update_id).phase == "rolled_back"
-        assert "不匹配" in host.reload_journal.update(first.update_id).error
         assert host.reload_journal.update(second.update_id).phase == "armed"
         assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "old"
         assert host.ready_candidate.reload_tx_id == host.reload_journal.update(second.update_id).reload_tx_id

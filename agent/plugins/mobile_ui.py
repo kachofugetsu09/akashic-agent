@@ -14,11 +14,18 @@ from agent.control.context import running_turn_id
 from agent.plugin_composition import (
     MobileUiBinding,
     MobileUiRpcInvalidRequest,
+    RuntimeScope,
 )
 from agent.plugin_composition.diagnostics import plugin_entrypoint
-from agent.plugins.generation import MobileUiAsset, PluginGeneration
-from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import RuntimeSnapshot
+from agent.plugins.generation import PluginGeneration
+from agent.plugin_composition.ui_slots import UI_SLOTS, MobileUiAsset
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    RuntimeSnapshotLease,
+    RuntimeSnapshotStore,
+    get_current_runtime_lease,
+    get_current_runtime_snapshot,
+)
 from core.error_context import current_session_key
 
 MOBILE_UI_QUERY_TIMEOUT_SECONDS = 20.0
@@ -53,8 +60,8 @@ class MobileUiProvider(Protocol):
 class PluginMobileUiProvider:
     """从插件快照提供版本化移动资源和只读查询。"""
 
-    def __init__(self, manager: PluginManager) -> None:
-        self._manager = manager
+    def __init__(self, snapshot_store: RuntimeSnapshotStore) -> None:
+        self._snapshot_store = snapshot_store
         self._executor = ThreadPoolExecutor(
             max_workers=MOBILE_UI_QUERY_WORKERS,
             thread_name_prefix="mobile-plugin-ui",
@@ -63,11 +70,19 @@ class PluginMobileUiProvider:
         self._admission_lock = asyncio.Lock()
         self._admitted_queries = 0
 
+    async def aclose(self) -> None:
+        """Wait for bounded UI workers before this snapshot provider is retired."""
+
+        await asyncio.to_thread(
+            self._executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+
     def catalog(self) -> dict[str, object]:
         """返回当前 generation 的轻量目录与内容摘要。"""
 
-        snapshot = self._manager.current_snapshot
-        items = [] if snapshot is None else self._catalog_items(snapshot)
+        items = self._catalog_items(self._require_snapshot())
         encoded = json.dumps(
             items,
             ensure_ascii=False,
@@ -120,17 +135,25 @@ class PluginMobileUiProvider:
         """在线程池执行只读 handler，并在超时后继续持有快照到线程退出。"""
 
         await self._reserve_query_slot()
-        task = asyncio.create_task(
-            self._run_query(
-                plugin_id,
-                plugin_revision,
-                method,
-                payload,
-                session_id=session_id,
-                turn_id=turn_id,
+        query_lease = await self._capture_query_lease()
+        try:
+            task = asyncio.create_task(
+                self._run_query(
+                    plugin_id,
+                    plugin_revision,
+                    method,
+                    payload,
+                    query_lease=query_lease,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                )
             )
+        except BaseException:
+            await query_lease.release()
+            raise
+        task.add_done_callback(
+            lambda completed: self._query_done(completed, query_lease)
         )
-        task.add_done_callback(self._query_done)
         try:
             async with asyncio.timeout(MOBILE_UI_QUERY_TIMEOUT_SECONDS):
                 return await asyncio.shield(task)
@@ -143,6 +166,14 @@ class PluginMobileUiProvider:
             self._drain_query(task)
             raise
 
+    async def _capture_query_lease(self) -> RuntimeSnapshotLease:
+        """Fork the caller's exact request snapshot before creating a child task."""
+
+        current = get_current_runtime_lease()
+        if current is not None:
+            return current.fork()
+        return await self._snapshot_store.acquire()
+
     async def _reserve_query_slot(self) -> None:
         """在提交线程池前拒绝超过有界 worker+queue 容量的查询。"""
 
@@ -154,11 +185,19 @@ class PluginMobileUiProvider:
                 )
             self._admitted_queries += 1
 
-    def _query_done(self, completed: asyncio.Task[dict[str, object]]) -> None:
+    def _query_done(
+        self,
+        completed: asyncio.Task[dict[str, object]],
+        query_lease: RuntimeSnapshotLease,
+    ) -> None:
         self._admitted_queries -= 1
         if self._admitted_queries < 0:
             raise RuntimeError("插件 mobile UI query admission 计数失衡")
         self._draining_queries.discard(completed)
+        if query_lease.active:
+            # A task may be cancelled before its coroutine reaches RuntimeScope.
+            # The callback is the last owner of that exact lease in this case.
+            asyncio.create_task(query_lease.release())
         if not completed.cancelled():
             _ = completed.exception()
 
@@ -169,12 +208,14 @@ class PluginMobileUiProvider:
         method: str,
         payload: dict[str, object],
         *,
+        query_lease: RuntimeSnapshotLease,
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
         """让一次线程查询完整占有对应插件 generation。"""
 
-        async with await self._manager.snapshot_store.acquire() as snapshot:
+        async with RuntimeScope(query_lease):
+            snapshot = self._require_snapshot()
             generation = self._active_generation(snapshot, plugin_id)
             if generation.source_revision != plugin_revision:
                 raise MobileUiStaleRevision(plugin_id)
@@ -230,9 +271,11 @@ class PluginMobileUiProvider:
         self._draining_queries.add(task)
 
     def _require_snapshot(self) -> RuntimeSnapshot:
-        snapshot = self._manager.current_snapshot
+        snapshot = get_current_runtime_snapshot()
         if snapshot is None:
-            raise MobileUiPluginUnavailable("runtime snapshot unavailable")
+            raise MobileUiPluginUnavailable(
+                "mobile UI provider 必须在当前 request scope 内读取"
+            )
         return snapshot
 
     @staticmethod
@@ -253,9 +296,16 @@ class PluginMobileUiProvider:
         """Resolve a live Mobile UI handler from this snapshot's exact Root registry."""
 
         # 1. Only the immutable registry from this exact snapshot Root owns handlers.
-        registry = snapshot.mobile_ui_registry
-        if registry is None:
+        root = snapshot.composition_root
+        slots = None if root is None else root.context.get(UI_SLOTS)
+        if slots is None:
             return None
+        assert root is not None
+        if slots.root_instance_token is not root.instance_token:
+            raise MobileUiPluginUnavailable("Mobile UI provider 不属于所选 Root")
+        registry = slots.catalog()
+        if registry.root_instance_token is not root.instance_token:
+            raise MobileUiPluginUnavailable("Mobile UI 目录不属于所选 Root")
         binding = registry.binding(generation.plugin_id)
         if binding is None or not binding.is_live():
             return None

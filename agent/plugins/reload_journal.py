@@ -230,6 +230,7 @@ class ReloadJournal:
         config_revision: str,
         base_artifact_pointer: str | None = None,
         candidate_artifact_pointer: str | None = None,
+        details: dict[str, object] | None = None,
     ) -> str:
         now = _now()
         tx_id = uuid.uuid4().hex
@@ -258,7 +259,7 @@ class ReloadJournal:
                     candidate_artifact_pointer,
                 ),
             )
-            self._append_event(conn, tx_id, "preparing", {}, now)
+            self._append_event(conn, tx_id, "preparing", details or {}, now)
             update_rollback.link(conn, tx_id=tx_id, plugin_id=plugin_id, candidate_pointer=candidate_artifact_pointer)
         return tx_id
 
@@ -501,8 +502,7 @@ class ReloadJournal:
             self._append_event(conn, tx_id, phase, details_for_event, now)
             if phase == "committed":
                 update_rollback.commit(conn, tx_id, now)
-            elif phase == "aborted":
-                update_rollback.rollback_linked(conn, tx_id, now=now, error=next_error)
+            # 安装回退属于安装 owner；运行候选失败不能回写 manifest/pointers。
 
     def get(self, tx_id: str) -> ReloadTransactionRecord:
         with self._connect() as conn:
@@ -571,6 +571,21 @@ class ReloadJournal:
             )
             for row in rows
         )
+
+    def runtime_generation_ids(self, tx_id: str) -> tuple[str, ...]:
+        """从实际取得资源的事件读取身份，候选 ID 不代替正式 owner。"""
+        record = self.get(tx_id)
+        identities = {record.generation_id}
+        if record.base_generation_id is not None:
+            identities.add(record.base_generation_id)
+        for event in self.events(tx_id):
+            owner = event.details.get("runtime_generation_id")
+            if isinstance(owner, str):
+                identities.add(owner)
+            owners = event.details.get("runtime_generations")
+            if isinstance(owners, dict):
+                identities.update(cast(dict[str, str], owners).values())
+        return tuple(sorted(identities))
 
     def annotate(self, tx_id: str, details: dict[str, object]) -> None:
         """Append evidence without inventing another public rollout phase."""
@@ -672,11 +687,6 @@ class ReloadJournal:
                 """,
                 tuple(sorted(_TERMINAL_PHASES)),
             ).fetchall()
-            rolled_back: set[str] = set()
-            if update_rollback.check_schema(conn):
-                rolled_back = {row[0] for row in conn.execute(
-                    "SELECT reload_tx_id FROM plugin_updates WHERE phase='rolled_back' AND reload_tx_id IS NOT NULL"
-                )}
         actions: list[ReloadRecoveryAction] = []
         for row in rows:
             phase = cast(ReloadPhase, str(row[7]))
@@ -684,10 +694,6 @@ class ReloadJournal:
             if action is None:
                 raise RuntimeError(f"ReloadTransaction 无法恢复状态: {phase}")
             target = _optional_recovery_target(row[16])
-            if row[0] in rolled_back:
-                target = "base"
-                if action not in {"retry_generation_cleanup", "retry_runtime_recovery"}:
-                    action = "discard_candidate"
             actions.append(
                 ReloadRecoveryAction(
                     tx_id=str(row[0]),
@@ -719,113 +725,53 @@ class ReloadJournal:
             )
         )
 
-    def finish_recovery(
-        self,
-        action: ReloadRecoveryAction,
-        *,
-        retry_receipt: str | None = None,
+    def selection_candidate(self, tx_id: str) -> tuple[str | None, tuple[str, ...]] | None:
+        """读取一次候选的完整转换证据；历史记录不猜成新格式。"""
+        events = self.events(tx_id)
+        candidates = [event.details for event in events if event.details.get("event") == "selection_candidate"]
+        if not candidates:
+            return None
+        if len(candidates) != 1 or not events or "base_selection_ref" not in events[0].details:
+            raise RuntimeError("候选 selection 证据不完整或重复")
+        base = events[0].details["base_selection_ref"]
+        components = candidates[0]["components"]
+        if (base is not None and not isinstance(base, str)) or not isinstance(components, list):
+            raise RuntimeError("候选 selection 证据格式损坏")
+        if any(not isinstance(ref, str) for ref in components):
+            raise RuntimeError("候选 component ref 格式损坏")
+        return base, tuple(components)
+
+    def settle_boot(
+        self, action: ReloadRecoveryAction, *, committed: bool | None,
+        cleanup_receipt: str | None,
     ) -> None:
-        """Finish one recovery only after its owner supplied required evidence."""
-
-        current = self.get(action.tx_id)
-        expected_action = _recovery_action(current.phase, current.recovery_action)
-        pointer_reset_discard = (
-            action.action == "discard_candidate"
-            and expected_action == "restore_committed"
-            and current.phase in {"commit_started", "promoting"}
-        )
-        if current.phase != action.phase or (
-            expected_action != action.action and not pointer_reset_discard
-        ) or action.generation_id != current.generation_id or (
-            action.source_revision != current.source_revision
-        ) or action.attempt_count != current.attempt_count:
-            raise RuntimeError(
-                "ReloadTransaction recovery action 已失效: "
-                f"phase={current.phase}, action={expected_action}"
-            )
-        if action.action in {
-            "retry_generation_cleanup",
-            "retry_runtime_recovery",
-        }:
-            if not retry_receipt:
-                raise RuntimeError(
-                    f"ReloadTransaction {action.action} 缺少 Host retry receipt"
-                )
-            self._finish_host_retry(action, retry_receipt=retry_receipt)
-            return
-        phase: ReloadPhase = (
-            "aborted" if action.action == "discard_candidate" else "recovered"
-        )
-        self.advance(
-            action.tx_id,
-            phase,
-            details={
-                "recovery_action": action.action,
-                "attempt_count": action.attempt_count,
-            },
-            error=None if current.phase in _FAILURE_PHASES else "startup recovery",
-            recovery_action=expected_action,
-        )
-
-    def _finish_host_retry(
-        self,
-        action: ReloadRecoveryAction,
-        *,
-        retry_receipt: str,
-    ) -> None:
-        """Atomically persist a successful Host retry without reopening advance()."""
-
-        terminal: ReloadPhase = (
-            "aborted"
-            if action.action == "retry_generation_cleanup"
-            and action.recovery_target == "base"
-            else "recovered"
-        )
-        details: dict[str, object] = {"retry_receipt": retry_receipt}
-        _add_failure_evidence(
-            details,
-            base_snapshot_id=action.base_snapshot_id,
-            candidate_snapshot_id=action.candidate_snapshot_id,
-            base_generation_id=action.base_generation_id,
-            generation_id=action.generation_id,
-            formal_effects=action.formal_effects,
-            resource=action.failure_resource,
-            error=action.error,
-            action=action.action,
-            attempt_count=action.attempt_count,
-            runtime_owner_boot_id=action.runtime_owner_boot_id,
-            base_artifact_pointer=action.base_artifact_pointer,
-            candidate_artifact_pointer=action.candidate_artifact_pointer,
-            recovery_target=action.recovery_target,
-        )
+        """旧进程 owner 清理后只结算有证据的转换；未知保留原状态。"""
+        if (action.runtime_owner_boot_id is not None or action.action in {
+            "retry_generation_cleanup", "retry_runtime_recovery",
+        }) and not cleanup_receipt:
+            raise RuntimeError("旧 runtime owner 缺少清理回执")
         now = _now()
+        phase = action.phase if committed is None else ("recovered" if committed else "aborted")
+        detail = {"event": "boot_selection_observed", "selection_committed": committed,
+                  "cleanup_receipt": cleanup_receipt, "candidate_resumed": False}
         with self._connect() as conn:
             cursor = conn.execute(
-                """
-                UPDATE reload_transactions
-                SET phase = ?, updated_at = ?
-                WHERE tx_id = ? AND phase = ? AND recovery_action = ?
-                      AND attempt_count = ?
-                """,
-                (
-                    terminal,
-                    now,
-                    action.tx_id,
-                    action.phase,
-                    action.action,
-                    action.attempt_count,
-                ),
+                "UPDATE reload_transactions SET phase=?,updated_at=? WHERE tx_id=? AND phase=? AND attempt_count=?",
+                (phase, now, action.tx_id, action.phase, action.attempt_count),
             )
             if cursor.rowcount != 1:
-                raise RuntimeError(
-                    "ReloadTransaction Host retry receipt 已失效: "
-                    f"{action.tx_id}"
-                )
-            self._append_event(conn, action.tx_id, terminal, details, now)
-            if action.recovery_target == "candidate":
+                raise RuntimeError("旧 boot recovery 证据已失效")
+            self._append_event(conn, action.tx_id, cast(ReloadPhase, phase), detail, now)
+            if committed is True:
                 update_rollback.commit(conn, action.tx_id, now)
-            else:
-                update_rollback.rollback_linked(conn, action.tx_id, now=now, error="update rolled back")
+            elif update_rollback.check_schema(conn):
+                # armed 是尚待安装 owner 结算，不谎称已经回退安装文件。
+                conn.execute(
+                    "UPDATE plugin_updates SET updated_at=?,error=? WHERE reload_tx_id=? AND phase='armed'",
+                    (now, "runtime selection not committed; installation needs explicit settlement"
+                     if committed is False else "runtime selection evidence unknown; explicit settlement required",
+                     action.tx_id),
+                )
 
     def _initialize(self) -> None:
         with self._connect() as conn:

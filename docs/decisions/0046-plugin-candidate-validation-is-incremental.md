@@ -4,7 +4,7 @@
 - 日期：2026-08-27
 - 关联条款：PLG-001～PLG-004、PLG-008～PLG-010、PLG-014
 - supersedes：`plugin-candidate-root-isolation-task-contract.md` 中“候选重建全部 v3 participants”
-- superseded by：无
+- superseded by：[0071](0071-plugin-composition-and-whole-runtime-updates.md)（整体换代实施中）；本文件保留历史实现与数据一致性理由，不再规定目标架构。
 
 ## 背景
 

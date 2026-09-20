@@ -13,7 +13,8 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
-from plugins.conversation.program import run_reply
+from plugins.reply_program.program import run_reply
+from plugins.standard_tools.shell import TOOL_CLEANUP
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
@@ -27,10 +28,11 @@ async def test_real_tools_watcher_restarts_and_settles_offline_abandon_once(tmp_
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
             ctx = snapshot.composition_root.context
             binding = ctx.require(TOOLS).bind(
                 ctx.require(ALL_TOOLS)().select("shell"),
-                Bindings(log, host._archive, host.open_binding),
+                Bindings(log, host._archive, snapshot.composition_root),
             )
         inputs = log.writer(
             "s", author="user", source="conversation", body_types=(Input,), content={}
@@ -93,7 +95,9 @@ async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tm
     try:
         await host.load_all()
         await host.start_runtime()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             root = snapshot.composition_root.context
             ctx = root.require(ServiceKey("standard-tools-probe"))
@@ -131,6 +135,7 @@ async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tm
                 return await run_reply(
                     ctx, task, reader, "conversation", models=models, content=root.require(CONTENT),
                     context=root.require(CONTEXT), tools=catalog, react=controlled_react,
+                    cleanup=root.require(TOOL_CLEANUP),
                     materials=root.require(MATERIALS), turn_projection=root.require(TURN_PROJECTION),
                     read_call=_unexpected_call_read, authorize=allow, tool_names=("shell",),
                     fixed_bindings={"shell": binding}, max_output_tokens=100, max_steps=4,

@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import pytest
@@ -7,7 +8,6 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.models import ContextLengthError, LLMResponse
 from agent.plugins.snapshot import lease_runtime_snapshot
-from plugins.context.api import Summary
 from plugins.reply.status import REPLY_STATUS, ReplyState
 from session.message import ContentPart, ContentReferences, Input, Output
 from session.log import WriterExpired
@@ -35,14 +35,15 @@ async def test_preview_commit_uses_allocated_id_and_slow_readers_get_current_sna
         task = await conversation.start(run)
         await asyncio.wait_for(entered.wait(), 3)
         items = await asyncio.wait_for(anext(follower), 3)
-        assert len(items) == 1 and items[0].handle == task.handle and items[0].active
-        draft = items[0].preview
-        assert draft.text == '第一段第二段' and draft.thinking == '思考'
-        assert log.reader('s').get(draft.message_id) is None
+        assert len(items) == 1 and items[0]['handle'] == task.handle and items[0]['active']
+        draft = items[0]['preview']
+        assert isinstance(draft, Mapping)
+        assert draft['text'] == '第一段第二段' and draft['thinking'] == '思考'
+        assert log.reader('s').get(draft['message_id']) is None
         assert state.read.snapshot('another-session') == ()
         release.set()
         saved = await task.join()
-        assert saved.message_id == draft.message_id and isinstance(saved.body, Output)
+        assert saved.message_id == draft['message_id'] and isinstance(saved.body, Output)
         assert state.read.snapshot('s') == ()
         assert await asyncio.wait_for(anext(follower), 3) == ()
         await follower.aclose()
@@ -96,9 +97,9 @@ async def test_provider_capacity_retry_retires_old_draft_and_preserves_final_id(
         return LLMResponse('新')
     async def reduce(snapshot, prepared, request, model, projection, *, source, force):
         if not force:
-            return prepared.summary
+            return prepared["summary"]
         assert state.read.snapshot('s')[0].preview is None
-        return Summary('summary', ('old-user', 'old-reply'), 'preserved')
+        return {'reference': 'summary', 'source_message_ids': ('old-user', 'old-reply'), 'content': 'preserved'}
     async def invoke(key, arguments):
         pytest.fail('no tool call')
     async with runtime(tmp_path, complete, invoke, reducer=reduce, preview_state=state) as (conversation, log, store, run):

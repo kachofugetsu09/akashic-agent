@@ -1,7 +1,9 @@
 import asyncio
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import pytest
+from typing import cast
 
 from agent.plugin_composition.tasks import Tasks
 from plugins.react.plugin import _settle
@@ -23,6 +25,7 @@ async def test_cancel_self_commits_then_lets_original_fire_drain_its_tool(tmp_pa
     tasks = Tasks()
     target = ScheduleTool(store, tasks, "cancel")
     prepared = await target.prepare({"id": job.id})
+    assert isinstance(prepared, Mapping)
     results = []
 
     class Menu(ToolMenu):
@@ -32,7 +35,7 @@ async def test_cancel_self_commits_then_lets_original_fire_drain_its_tool(tmp_pa
         async def execute(self, call: CallRef) -> Result:
             result = await target.invoke("cancel-self", prepared)
             results.append(result)
-            return result
+            return cast(Result, result)
 
     async def run(task):
         await _settle(Menu(), CallRef("call", 0))
@@ -60,11 +63,14 @@ async def test_prepared_schedule_and_cancel_replay_the_original_ids_and_times(tm
     try:
         prepared = await schedule.prepare({"tier": "instant", "trigger": "after", "when": "1h",
             "channel": "test", "chat_id": "room", "timezone": "UTC", "message": "one", "name": "same"})
+        assert isinstance(prepared, Mapping)
         result = await schedule.invoke("create-one", prepared)
         original = store.load()[0]
         cancellation = await cancel.prepare({"name": "same"})
+        assert isinstance(cancellation, Mapping)
         later = await schedule.prepare({"tier": "instant", "trigger": "after", "when": "2h",
             "channel": "test", "chat_id": "room", "timezone": "UTC", "message": "two", "name": "same"})
+        assert isinstance(later, Mapping)
         await schedule.invoke("create-two", later)
         cancelled = await cancel.invoke("cancel-one", cancellation)
         assert await cancel.query("cancel-one") == cancelled

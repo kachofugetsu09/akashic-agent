@@ -10,7 +10,6 @@ import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
 
-from agent.tools.base import Tool
 from core.net.http import (
     HttpRequester,
     RequestBudget,
@@ -31,7 +30,7 @@ _ACCEPT = {
 }
 
 
-class WebFetchTool(Tool):
+class WebFetchTool:
     """抓取 URL 内容，支持 text / markdown / html 三种格式输出"""
 
     name = "web_fetch"

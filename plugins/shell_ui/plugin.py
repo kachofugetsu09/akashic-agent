@@ -1,10 +1,14 @@
+from agent.plugin_composition.ui import UI
 api_version = 3
 name = "shell-ui"
 version = "1.0.0"
-web_module = "web_module.js"
-web_requires = ("web.root.v1",)
-web_provides = ("shell.pages.v1",)
+
+inject = (UI,)
 
 
-def apply(ctx, config):
-    pass
+async def apply(ctx):
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        requires=("web.root.v1",),
+        provides=("shell.pages.v1",),
+    )

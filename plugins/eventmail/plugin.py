@@ -13,8 +13,6 @@ version = "4.1.0"
 desc = "Immutable Content, Alert, and Context mailbox"
 author = "Akashic Core"
 inject = ()
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 
@@ -427,10 +425,9 @@ class _DeliveryServices:
         return self._store.settle_delivery(selection_token, settlement_ref)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Publish typed source and consumer views over one EventMail store."""
 
-    _ = config
     store = EventMailStore(ctx.data_root / "eventmail.sqlite3")
     store.initialize()
     _ = await ctx.provide(

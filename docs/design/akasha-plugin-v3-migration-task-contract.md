@@ -1,5 +1,7 @@
 # Akasha 插件 v3 迁移任务合同
 
+> 2026-09-15 勘误：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 已取代本文的两参数入口、精确参数名和 Core 配置模型校验。现行入口为 `apply(ctx)`，插件自行解析 `ctx.config`；下文相关描述仅保留历史背景。凭据脱敏及正式解析授权边界不因此取消。
+
 - 状态：implementation candidate
 - 日期：2026-08-17
 - 关联条款：PLG-001～PLG-004、PLG-008～PLG-010、PLG-014、MEM-009～MEM-010

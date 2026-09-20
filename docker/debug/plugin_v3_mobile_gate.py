@@ -66,7 +66,6 @@ class PluginContract:
     id: str
     source: str
     path: str
-    entrypoint: str
     module: str
     stylesheet: str
     navigation: bool
@@ -256,7 +255,6 @@ def _parse_plugin(raw: object) -> PluginContract:
     required = {
         "id",
         "source",
-        "entrypoint",
         "module",
         "stylesheet",
         "navigation",
@@ -274,7 +272,7 @@ def _parse_plugin(raw: object) -> PluginContract:
     item = cast(dict[str, object], raw)
     strings = {
         field: _required_string(item, field)
-        for field in ("id", "entrypoint", "module", "stylesheet", "node_test")
+        for field in ("id", "module", "stylesheet", "node_test")
     }
     if source not in {"in-tree", "external"}:
         raise ValueError(f"v3 Mobile source 无效: {source!r}")
@@ -293,7 +291,6 @@ def _parse_plugin(raw: object) -> PluginContract:
         if len(set(revisions)) != 1:
             raise ValueError(f"插件 revision 必须固定到同一 SHA: {strings['id']}")
     _require_relative_path(path)
-    _require_relative_path(strings["entrypoint"])
     _require_relative_path(strings["module"])
     _require_relative_path(strings["stylesheet"])
     _require_relative_path(strings["node_test"])
@@ -310,7 +307,6 @@ def _parse_plugin(raw: object) -> PluginContract:
         id=strings["id"],
         source=cast(str, source),
         path=path,
-        entrypoint=strings["entrypoint"],
         module=strings["module"],
         stylesheet=strings["stylesheet"],
         navigation=navigation,
@@ -461,7 +457,7 @@ def _verify_plugin(contract: PluginContract, root: Path) -> dict[str, object]:
     """静态验证一个 pure-v3 Mobile source，并执行 Core runner 与真实 Node test。"""
 
     # 1. Manifest/namespace 与 AST UI seam 必须先闭合。
-    entrypoint = _inside(root, contract.entrypoint)
+    entrypoint = root / "plugin.py"
     static = _inspect_static_source(contract, root, entrypoint)
     if static["status"] != "passed":
         raise GateError(f"Mobile static contract failed: {contract.id}: {static['errors']}")
@@ -491,7 +487,7 @@ def _verify_plugin(contract: PluginContract, root: Path) -> dict[str, object]:
         "static": static,
         "assets": assets,
         "test_commands": commands,
-        "entrypoint": contract.entrypoint,
+        "entrypoint": str(entrypoint),
     }
 
 
@@ -504,23 +500,18 @@ def _inspect_static_source(
 
     errors: list[str] = []
     manifest: dict[str, object]
-    if contract.source == "external":
-        manifest, manifest_errors = _inspect_manifest(root)
-        errors.extend(manifest_errors)
-        if manifest.get("entrypoint") != contract.entrypoint:
-            errors.append(
-                "manifest entrypoint 与 lock 不一致: "
-                f"{manifest.get('entrypoint')!r} != {contract.entrypoint!r}"
-            )
-    else:
-        manifest = {"status": "in-tree", "path": None}
+    manifest, manifest_errors = _inspect_manifest(root)
+    errors.extend(manifest_errors)
+    if entrypoint.is_symlink() or not entrypoint.is_file():
+        errors.append(f"plugin.py 不存在或是 symlink: {entrypoint}")
+        return {"status": "failed", "manifest": manifest, "errors": errors}
     try:
         tree = ast.parse(entrypoint.read_text(encoding="utf-8"), filename=str(entrypoint))
     except (OSError, SyntaxError) as error:
         errors.append(f"entrypoint 无法解析: {error}")
         return {"status": "failed", "manifest": manifest, "errors": errors}
     errors.extend(_find_forbidden_v2_imports(root))
-    namespace = _inspect_namespace(tree, contract)
+    namespace = _inspect_namespace(tree, contract, manifest)
     errors.extend(cast(list[str], namespace["errors"]))
     return {
         "status": "passed" if not errors else "failed",
@@ -532,54 +523,28 @@ def _inspect_static_source(
 
 
 def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:
-    path = root / "akashic.plugin.toml"
-    if not path.is_file() or path.is_symlink():
-        return {"status": "missing", "path": "akashic.plugin.toml"}, [
-            f"缺少静态 manifest: {path}"
-        ]
-    errors: list[str] = []
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        return {"status": "failed", "path": path.name}, ["manifest 根必须是对象"]
-    allowed = {
-        "schema_version", "name", "version", "api_version", "entrypoint",
-        "python", "validation", "mcp", "processes", "channel_credentials",
-    }
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        errors.append(f"manifest 包含未知字段: {unknown}")
-    for field in ("schema_version", "name", "version", "api_version", "entrypoint"):
-        if field not in raw:
-            errors.append(f"manifest 缺少字段: {field}")
-    if raw.get("schema_version") != 1:
-        errors.append("manifest schema_version 必须为 1")
-    if raw.get("api_version") != 3:
-        errors.append("manifest api_version 必须为 3")
-    entrypoint = raw.get("entrypoint")
-    if not isinstance(entrypoint, str) or not entrypoint.strip() or not _safe_relative_path(entrypoint):
-        errors.append(f"manifest entrypoint 必须是 artifact 内相对路径: {entrypoint!r}")
-    elif not (root / entrypoint).is_file() or (root / entrypoint).is_symlink():
-        errors.append(f"manifest entrypoint 不存在或是 symlink: {entrypoint}")
+    """复用安装 loader，身份只从 plugin.py 读取。"""
+    from agent.plugins.static_manifest import load_static_plugin_manifest
+
+    try:
+        identity = load_static_plugin_manifest(root)
+    except (OSError, ValueError) as error:
+        return {"path": "plugin.py", "status": "failed"}, [str(error)]
     return {
-        "status": "passed" if not errors else "failed",
-        "path": path.name,
-        "name": raw.get("name"),
-        "version": raw.get("version"),
-        "api_version": raw.get("api_version"),
-        "entrypoint": entrypoint,
-        "sha256": _sha256(path),
-    }, errors
+        "path": "plugin.py",
+        "status": "passed",
+        "name": identity.name,
+        "version": identity.version,
+        "api_version": identity.api_version,
+        "sha256": _sha256(root / "plugin.py"),
+    }, []
 
 
-def _inspect_namespace(tree: ast.Module, contract: PluginContract) -> dict[str, object]:
+def _inspect_namespace(tree: ast.Module, contract: PluginContract, identity: dict[str, object]) -> dict[str, object]:
     errors: list[str] = []
-    api_version = _top_level_literal(tree, "api_version")
-    name = _top_level_literal(tree, "name")
+    api_version = identity.get("api_version")
+    name = identity.get("name")
     inject = _top_level_name_tuple(tree, "inject")
-    if api_version != 3:
-        errors.append(f"api_version 必须为 3: {api_version!r}")
-    if not isinstance(name, str) or not name.strip():
-        errors.append("name 必须是非空字符串")
     if inject is None or inject.count("UI_SLOTS") != 1:
         errors.append("inject 必须恰好包含 UI_SLOTS")
     apply_nodes = [
@@ -587,19 +552,9 @@ def _inspect_namespace(tree: ast.Module, contract: PluginContract) -> dict[str, 
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "apply"
     ]
     if len(apply_nodes) != 1:
-        errors.append("必须提供唯一 async apply(ctx, config)")
+        errors.append("必须提供唯一 async apply(ctx)")
         return _namespace_result(api_version, name, inject, errors)
     apply = apply_nodes[0]
-    positional = [*apply.args.posonlyargs, *apply.args.args]
-    if (
-        [item.arg for item in positional] != ["ctx", "config"]
-        or apply.args.vararg is not None
-        or apply.args.kwarg is not None
-        or apply.args.kwonlyargs
-        or apply.args.defaults
-        or apply.args.kw_defaults
-    ):
-        errors.append("apply 签名必须是 apply(ctx, config)")
     errors.extend(_inspect_mobile_registration(apply, contract))
     return _namespace_result(api_version, name, inject, errors)
 
@@ -691,7 +646,7 @@ def _run_python_contract(
 
     contract_root = temporary_root / "plugin-contracts"
     source = _checkout_contract_source(contract_root)
-    paths = tuple(str(_inside(roots[item.id], item.entrypoint)) for item in contracts)
+    paths = tuple(str(_inside(roots[item.id], "plugin.py")) for item in contracts)
     command = (
         sys.executable,
         "-m",
@@ -842,7 +797,7 @@ def _namespace_result(
         "api_version": api_version,
         "name": name,
         "inject": list(inject or ()),
-        "apply_signature": "apply(ctx, config)" if not errors else None,
+        "apply_entrypoint": "module-level apply" if not errors else None,
         "errors": errors,
     }
 

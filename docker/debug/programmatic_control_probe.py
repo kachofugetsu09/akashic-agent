@@ -4559,12 +4559,10 @@ bot_uin = ""
 
 """
     (sandbox / "config.toml").write_text(config, encoding="utf-8")
-    reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
-    reply_config.parent.mkdir(parents=True, exist_ok=True)
-    reply_config.write_text(f"max_steps = {max_iterations}\n", encoding="utf-8")
-    compaction_config = sandbox / "workspace/plugin-data/compaction-builtin/config.local.toml"
-    compaction_config.parent.mkdir(parents=True, exist_ok=True)
-    compaction_config.write_text("keep_recent_tokens = 20000\n", encoding="utf-8")
+    from agent.plugin_composition.config_input import save_config
+
+    save_config(sandbox / "workspace/plugin-data/reply-builtin", {"max_steps": max_iterations})
+    save_config(sandbox / "workspace/plugin-data/compaction-builtin", {"keep_recent_tokens": 20000})
 
 
 def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:
@@ -4686,21 +4684,13 @@ def _install_control_failure_plugin(sandbox: Path) -> None:
         "@asynccontextmanager\n"
         "async def open(_state):\n"
         "    yield FailureTool()\n"
-        "async def apply(ctx, config):\n"
+        "async def apply(ctx):\n"
         "    await ctx.require(TOOLS).register(\n"
         "        ctx, name='pc10_failure_probe',\n"
         "        description='Fail inside the PC10 tool handler.',\n"
         "        parameters={'type': 'object', 'properties': {'probe': {'type': 'boolean'}},\n"
         "                     'required': ['probe'], 'additionalProperties': False},\n"
         "        open=open, risk='read-only', always_on=True, preloadable=True)\n",
-        encoding="utf-8",
-    )
-    _ = (cache / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        "name = 'control_failure'\n"
-        "version = '1.0.0'\n"
-        "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n",
         encoding="utf-8",
     )
     _ = (plugin_base / ".pointers.json").write_text(

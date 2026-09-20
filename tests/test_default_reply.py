@@ -1,3 +1,4 @@
+from plugins.context.api import check_summary as _model_summary_check
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -7,6 +8,10 @@ from collections.abc import Mapping
 from typing import cast
 
 import pytest
+
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+from agent.plugin_composition.config_input import save_config
 
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
@@ -22,7 +27,9 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
                       updates=False, validation_passed=True, extra_sources=None):
     sources = tmp_path / "plugins"
     workspace = tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
     for name in (
+        "commands",
         "sources",
         "content",
         "context",
@@ -30,6 +37,7 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         "conversation",
         "react",
         "turn_projection",
+        "reply_program",
         *(("reply", "tool_search") if replying else ()),
     ):
         shutil.copytree(
@@ -40,46 +48,56 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
     if updates:
         from tests.test_delivery_bindings import sources as delivery_sources
         delivery_sources(sources)
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins/delivery_policy",
+            sources / "delivery_policy",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
         shutil.copytree(Path(__file__).parents[1] / "plugins/plugin_update", sources / "plugin_update",
                         ignore=shutil.ignore_patterns("__pycache__"))
     if compaction:
         shutil.copytree(Path(__file__).parents[1] / "plugins/compaction", sources / "compaction",
                         ignore=shutil.ignore_patterns("__pycache__"))
-        (sources / "compaction/akashic.plugin.toml").write_text(
-            'schema_version = 1\nname = "compaction"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
-        settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+        settings = tmp_path / "workspace/plugin-data/context-builtin"
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text('summary_source = ["compaction", "compaction"]\n')
-        module = sources / "compaction/message_plugin.py"
+        save_config(settings, {"summary_source": ["compaction", "compaction"]})
+        module = sources / "compaction/plugin.py"
         module.write_text(module.read_text().replace('Field(default=20_000,', f'Field(default={keep_recent_tokens},'))
         reply = sources / 'reply/plugin.py'
         reply.write_text(reply.read_text().replace('Field(default=4096,', f'Field(default={output_tokens},'))
     if missing_tool:
-        settings = tmp_path / "workspace/plugin-data/reply-builtin/config.local.toml"
+        settings = tmp_path / "workspace/plugin-data/reply-builtin"
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text('tools = ["gone"]\n')
+        save_config(settings, {"tools": ["gone"]})
     provider = sources / "test_provider"
     provider.mkdir()
     (provider / "plugin.py").write_text('''
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from pathlib import Path
-from agent.plugin_composition import CHAT_MODELS, ServiceKey
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall
-from plugins.models.projection import MODEL_CALLS
-from plugins.models.state import _BoundChat
+from agent.plugin_composition import CHAT_MODELS, SNAPSHOT_SEALING, ServiceKey
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
+from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
+from plugins.models.state import _BoundChat, ModelsState
+from plugins.models.settings import MODEL_SETTINGS
 from plugins.models.store import ModelsStore
 from plugins.tools.api import Result
+from plugins.standard_tools.shell import shell_cleanup
 from plugins.tools.plugin import TOOLS
 from session.message import ContentPart
 api_version = 3
 name = "test_provider"
 version = "1.0.0"
 inject = (TOOLS,)
-async def apply(ctx, config):
+async def apply(ctx):
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
+    settings = ModelsState(store, root_instance_token=ctx.root_instance_token, context=ctx)
+    await ctx.provide(MODEL_SETTINGS, settings.settings)
+    await ctx.on(SNAPSHOT_SEALING, settings.seal)
     class Driver:
         max_tool_schemas = None
         def estimate_context_tokens(self, messages, tools):
@@ -92,7 +110,7 @@ async def apply(ctx, config):
     descriptor = BoundModelDescriptor(
         binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture",
-        driver_contract_version="1", auth_identity="fixture", model="fixture", role=ModelRole.AGENT,
+        driver_contract_version="1", auth_identity="fixture", model="fixture", role="agent",
         reasoning_effort=None, capabilities=ModelCapabilities(context_window=10000),
         capability_sources=CapabilitySources(), capability_digest="fixture",
     )
@@ -117,19 +135,23 @@ async def apply(ctx, config):
     await ctx.require(TOOLS).declare_group(ctx, always_on=True)
     await ctx.require(TOOLS).register(ctx, name="write_evidence", description="record local test evidence",
         parameters={"type":"object"}, open=open)
+    await ctx.provide(ServiceKey("tools.cleanup.v1"), shell_cleanup)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
     await ctx.provide(ServiceKey("fixture.calls"), calls)
 '''.replace("EFFECT_PATH", repr(str(tmp_path / "effect.txt"))))
     if provider_effect_data:
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
             repr(str(tmp_path / "effect.txt")), 'ctx.runtime.data_dir / "effect.txt"'))
-    if updates:
-        import json
+    if updates and not validation_passed:
         module = provider / "plugin.py"
-        verdict = json.dumps({"passed": validation_passed, "reason": "tool evidence checked"})
-        module.write_text(module.read_text().replace('return LLMResponse("finished")', f'return LLMResponse({verdict!r})'))
+        module.write_text(module.read_text().replace(
+            'return LLMResponse("finished")', 'raise RuntimeError("candidate execution failed")'))
     if discovery:
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
@@ -206,15 +228,14 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_bad_reply_tool_configuration_fails_before_consuming_any_input(tmp_path):
-    async with application(tmp_path, replying=True, start=False, missing_tool=True) as (
-        log,
-        host,
-    ):
-        assert host.generation("reply") is None
-        gate = host.latest_gate("reply")
-        assert gate is not None and gate.status == "failed"
-        assert gate.failure_reason == "tools: Extra inputs are not permitted"
+    with pytest.raises(RuntimeError, match="插件组合拓扑未就绪"):
+        async with application(tmp_path, replying=True, start=False, missing_tool=True):
+            pytest.fail("坏配置不得启动完整组合")
+    log = MessageLog(tmp_path / "sessions.db")
+    try:
         assert log.catalog().snapshot_heads() == {}
+    finally:
+        log.close()
 
 
 @pytest.mark.asyncio
@@ -229,16 +250,15 @@ async def test_reply_commits_plugin_metadata_and_history_reads_it_without_the_pl
         plugin.mkdir()
         (plugin / "plugin.py").write_text('''
 from plugins.content.plugin import CONTENT
-from plugins.content.api import TextProtocol
 api_version = 3
 name = "citation"
 version = "1.0.0"
 inject = (CONTENT,)
-async def apply(ctx, config):
+async def apply(ctx):
     async def decode(source, references):
         return (), {"version": 1, "references": [{"ref": "remembered", "declared": True}]} if source.text else {}
-    await ctx.require(CONTENT).register(ctx, TextProtocol(
-        name="citation", prompt="", content={}, decode=decode))
+    await ctx.require(CONTENT).register(ctx, {
+        "name": "citation", "prompt": "", "content": {}, "decode": decode})
 ''')
 
     async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):
@@ -296,7 +316,6 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             import json
             from agent.plugin_composition import CHAT_MODELS
             from agent.plugin_composition.bindings import BINDINGS
-            from agent.plugin_composition.models import ModelRole
             from plugins.models.content import render_content
             from plugins.models.projection import MODEL_CALLS, MessageProjection
             from plugins.tools.plugin import TOOLS
@@ -306,11 +325,11 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             ctx = snapshot.composition_root.context
             # 新投影从持久日志重建；摘要覆盖搜索结果时，只有请求视图失去 schema。
             async with ctx.require(CHAT_MODELS).execution() as execution:
-                model = execution.chat(ModelRole.AGENT)
+                model = execution.chat("agent")
                 bindings = ctx.require(BINDINGS)
                 def tool_name(binding):
                     return cast(str, cast(Mapping[str, object], bindings.describe(binding, TOOLS)["tool"])["name"])
-                projection = MessageProjection(model, source="conversation", render_content=lambda part: render_content(part, artifacts={}),
+                projection = MessageProjection(model, check_summary=_model_summary_check, source="conversation", render_content=lambda part: render_content(part, artifacts={}),
                                                tool_name=tool_name, read_call=ctx.require(MODEL_CALLS))
                 before = log.reader("s").snapshot()
                 retained = projection.render(before, after_seq=-1)

@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0071](0071-plugin-composition-and-whole-runtime-updates.md) | accepted / implementing | 插件底座只解释组合与整体换代 | PLG-001～PLG-018 |
 | [0001](0001-project-workbook-is-shared-reality.md) | superseded | 项目工作手册是协作共享现实 | WBK-001～WBK-006、COM-001～COM-004 |
 | [0002](0002-context-reduction-is-a-nondestructive-projection.md) | accepted | 上下文缩减是非破坏性投影 | CTX-001～CTX-005、SES-003 |
 | [0003](0003-core-capability-ownership-is-semantic.md) | accepted | 核心能力归属由权威语义决定 | MOB-001、GOV-001～GOV-005 |
@@ -70,6 +71,17 @@
 | [0062](0062-tools-flow-through-provider-views.md) | accepted / implemented | 工具通过 provider view 流向消费者 | CTX-004、CTX-007、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016、PLG-018 |
 
 | [0063](0063-execution-failures-have-terminal-results.md) | accepted | 执行失败明确收尾，恢复依据原回执 | Tools、Delivery、Wake、Mobile、Models |
+| [0064](0064-plugin-boundary-is-machine-enforced.md) | superseded by 0065 | 插件边界静态门的初始设计 | PLG-001～PLG-017、GOV-001～GOV-005、TST-001～TST-008 |
+| [0065](0065-plugin-boundary-checks-do-not-grant-core-ownership.md) | accepted | 边界检查不授予 Core 归属，按外置与替换验收 | PLG-014、PLG-016、STA-001、CAP-001、TST-003 |
+
+| [0066](0066-yoyo-current-baseline.md) | accepted | 保留 Yoyo，以当前基线退役历史兼容脚本 | MIG-001、MIG-002、WSP-003 |
+
+| [0067](0067-clients-are-ordinary-plugin.md) | accepted | Web/Mobile 由普通插件拥有，Core 只提供中立原子能力 | AKC-001、AKC-002、PLG-001、WSP-003 |
+
+| [0068](0068-compaction-uses-one-recent-window.md) | accepted | Compaction 每代只摘要一个近期窗口 | CTX-001～CTX-007、MEM-011～MEM-012、SES-003～SES-005 |
+| [0069](0069-bindings-follow-selected-runtime-scope.md) | accepted / implementing | Binding 跟随调用已选的 runtime scope | PLG-003、PLG-004、PLG-009、PLG-013、PLG-018、RUN-008～RUN-009、ERR-001 |
+
+| [0070](0070-plugins-own-persisted-data.md) | accepted | 插件系统负责依赖与切换，插件负责自己的持久化数据 | PLG-018、RUN-008～RUN-009、ERR-001 |
 
 ## 新增规则
 

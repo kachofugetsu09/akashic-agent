@@ -1,0 +1,208 @@
+"""候选 Message 摘要入口；正式 manifest 在完整迁移验收后切换。"""
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPPING, Context
+from agent.plugin_composition.models import BoundChatModel, ModelRequest
+from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
+from agent.plugin_contracts import Message
+
+from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
+from .message_summary import SummaryError, closed_groups, source_text, summarize, summary_groups, window_starts
+from ._boundaries import (
+    COMPACTION_READER, COMPACTION_SUMMARIES, CONTEXT, MATERIALS, TURN_PROJECTION,
+    ContextModel, MaterialData, TurnProjection,
+)
+
+api_version = 3
+name = "compaction"
+version = "4.1.0"
+desc = "按不可变消息前缀发布摘要，并为已使用的摘要保留原始读取口"
+inject = (MATERIALS, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
+
+
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    keep_recent_tokens: int = Field(default=20_000, gt=0, strict=True)
+
+
+class _CompactionReader:
+    """Markdown 只取得 compaction 的纯读取算法，不取得发布或模型权限。"""
+
+    def __init__(self, *, settled_prefixes: Callable[[tuple[Message, ...]], tuple[int, ...]]):
+        self._settled_prefixes = settled_prefixes
+
+    def source_text(self, messages: Sequence[Message]) -> str:
+        return source_text(messages)
+
+    def window_starts(
+        self, messages: tuple[Message, ...], projection: TurnProjection,
+    ) -> tuple[int, ...]:
+        return window_starts(messages, projection, settled_prefixes=self._settled_prefixes)
+
+    def summary_groups(
+        self, groups: tuple[tuple[Message, ...], ...], snapshot: tuple[Message, ...],
+    ) -> tuple[tuple[Message, ...], ...]:
+        return summary_groups(groups, snapshot)
+
+
+async def apply(ctx: Context) -> None:
+    """注册只读材料和归档解析；apply 不打开 writer 或调用模型。"""
+    config = Config.model_validate(ctx.config)
+    context = ctx.require(CONTEXT)
+
+    def records() -> SummaryRecords:
+        return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
+
+    def read(reference: str) -> StoredSummary | None:
+        return records().read(reference)
+
+    # 状态查询在线程执行；启动时取得窄读取口，不在线程中重新申请 owner 写权限。
+    read_current: Callable[[str], StoredSummary | None] | None = None
+
+    def head(session_id: str) -> StoredSummary | None:
+        if read_current is None:
+            raise RuntimeError("摘要状态读取口尚未启动")
+        return read_current(session_id)
+
+    async def start(_event: object) -> None:
+        nonlocal read_current
+        read_current = records().head
+
+    async def stop(_event: object) -> None:
+        nonlocal read_current
+        read_current = None
+
+    _ = await ctx.on(RUNTIME_STARTED, start)
+    _ = await ctx.on(RUNTIME_STOPPING, stop)
+    lookup = SummaryLookup(read, head)
+    _ = await ctx.provide(COMPACTION_SUMMARIES, lookup)
+    _ = await ctx.provide(COMPACTION_READER, _CompactionReader(
+        settled_prefixes=context.settled_prefixes,
+    ))
+
+    def material(record: StoredSummary) -> MaterialData:
+        reference = ctx.require(BINDINGS).bind(COMPACTION_SUMMARIES, {
+            "record_ref": record.reference, "session_id": record.session_id,
+        })
+        return {
+            "reference": reference,
+            "source_message_ids": record.source_message_ids,
+            "content": record.content,
+        }
+
+    async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
+        if not snapshot:
+            return {}
+        record = records().head(snapshot[0].session_id)
+        if record is None:
+            return {}
+        return {"summary": material(record)}
+
+    async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
+                     model: BoundChatModel, projection: ContextModel, *, source: str, force: bool) -> MaterialData | None:
+        """选完整旧前缀、生成摘要，再把不可变记录与 head 一起发布。"""
+        # 1. 容量与近期保留均按当前已固定的业务模型判断。
+        window = projection.context_window
+        before = projection.estimate(request)
+        if window is None or not snapshot or (not force and before < int(window * 0.74)):
+            return None
+        parent = records().head(snapshot[0].session_id)
+        current_summary = materials.get("summary")
+        if current_summary is not None and not isinstance(current_summary, Mapping):
+            raise TypeError("Context 材料摘要必须是对象")
+        if (None if parent is None else material(parent)) != current_summary:
+            raise ValueError("本次已取得摘要与当前 Session head 不一致")
+        turns = ctx.require(TURN_PROJECTION)
+        if parent is None:
+            origin: int | None = None
+            # 首次窗口从最近完整单元累加；完整业务输入不得越过软水位或硬边界。
+            for index in reversed(window_starts(
+                snapshot, turns, settled_prefixes=context.settled_prefixes,
+            )):
+                candidate, error = ctx.require(CONTEXT).build_attempt(
+                    snapshot, materials=materials, model=projection,
+                    tools=request.tools, max_output_tokens=request.max_output_tokens,
+                    window_start=snapshot[index].message_id,
+                )
+                if error is not None:
+                    break
+                if projection.estimate(candidate) > int(window * 0.74):
+                    break
+                origin = index
+            if origin is None:
+                raise SummaryError("当前完整工作与固定材料超过首次窗口容量")
+            start = origin
+        else:
+            covered = context.summary_range(snapshot, parent.source_message_ids)
+            origin, start = covered.start, covered.stop
+        groups = closed_groups(
+            snapshot, turns, settled_prefixes=context.settled_prefixes, after=start,
+        )
+        selected: tuple[tuple[Message, ...], ...] = ()
+        # 原文保留量来自实际 Model 投影，包含尚未闭合的尾部与当前输入。
+        for size in range(len(groups), 0, -1):
+            after_seq = groups[size - 1][-1].seq
+            tail = projection.render(snapshot, after_seq=after_seq, fresh=True)
+            if projection.estimate(tail) >= config.keep_recent_tokens:
+                selected = groups[:size]
+                break
+        if not selected:
+            raise SummaryError("近期原文保留量内没有合法摘要切点")
+        inputs = summary_groups(selected, snapshot)
+        if not inputs:
+            raise SummaryError("可选范围没有可用于摘要的资料")
+        # 2. 嵌套 execution 复用调用者已经固定的角色，不重读模型配置。
+        async with ctx.require(CHAT_MODELS).execution() as execution:
+            text, calls, summarized = await summarize(
+                inputs, previous="" if parent is None else parent.content,
+                model=model, fallback=execution.chat("default"),
+            )
+        count = start + sum(len(group) for group in selected)
+        summary_message_ids = tuple(
+            message.message_id for group in summarized for message in group
+        )
+        summary_id_set = set(summary_message_ids)
+        added = snapshot[start:count]
+        record = SummaryRecord(
+            reference=uuid4().hex, session_id=snapshot[0].session_id,
+            generation=1 if parent is None else parent.generation + 1,
+            parent=None if parent is None else parent.reference,
+            source_message_ids=tuple(message.message_id for message in snapshot[origin:count]),
+            summary_message_ids=summary_message_ids,
+            omitted_message_ids=tuple(
+                message.message_id for message in added
+                if message.message_id not in summary_id_set
+            ),
+            content=text, model_call_ids=calls, trigger="context_overflow" if force else "soft_limit",
+            context_window=window, max_output_tokens=request.max_output_tokens,
+            keep_recent_tokens=config.keep_recent_tokens, tokens_before=before, tokens_after=0,
+        )
+        summary = material(record)
+        after_materials = dict(materials)
+        after_materials["summary"] = summary
+        after_request, error = ctx.require(CONTEXT).build_attempt(
+            snapshot, materials=after_materials, model=projection,
+            tools=request.tools, max_output_tokens=request.max_output_tokens,
+        )
+        if error is not None:
+            raise SummaryError(error)
+        after = projection.estimate(after_request)
+        if after >= before:
+            raise SummaryError("摘要没有降低本次完整请求容量")
+        if after > int(window * 0.74) or after + request.max_output_tokens > window:
+            raise SummaryError("摘要后的完整请求仍超过模型软水位或硬边界")
+        record = record.model_copy(update={"tokens_after": after})
+        # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
+        reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)
+        _ = records().publish(
+            record, reader, parent=parent, summary_range=context.summary_range,
+        )
+        return summary
+
+    _ = await ctx.require(MATERIALS).register(ctx, name="compaction", prepare=prepare, reduce=reduce, priority=500)

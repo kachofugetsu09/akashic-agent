@@ -1,16 +1,19 @@
 import asyncio
+from functools import partial
 from collections.abc import AsyncIterator
 import shutil
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 
 import pytest
+
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
-    ModelExecution, ModelRole, ToolCall as ModelToolCall,
+    ModelExecution, ToolCall as ModelToolCall,
 )
 from agent.plugin_composition.tasks import TASKS
 from agent.plugins.manager import PluginManager
@@ -19,8 +22,8 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
-from plugins.conversation.program import run_reply
-from plugins.conversation.source import Conversation
+from plugins.reply_program.program import run_reply
+from plugins.sources.session import SourceSession as Conversation
 from plugins.models.content import render_content
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
@@ -35,7 +38,7 @@ from session.message import ContentPart, Control, Input, Output, ToolResult
 @pytest.mark.parametrize("case", ["complete", "interrupt", "input_before_effect", "input_during_reduction", "summarized_input"])
 async def test_ordinary_program_keeps_content_live_until_real_tool_settlement(tmp_path, case, monkeypatch):
     sources = tmp_path / "plugins"
-    for name in ("content", "context", "tools", "turn_projection"):
+    for name in ("ui", "content", "context", "tools", "turn_projection", "models", "sources"):
         shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     path = sources / "probe"
@@ -50,7 +53,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (ServiceKey("tools.v1"),)
-async def apply(ctx, config):
+async def apply(ctx):
     class Target:
         idempotent = False
         async def prepare(self, args, source=None):
@@ -75,32 +78,12 @@ async def apply(ctx, config):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     requests = []
     entered, release = asyncio.Event(), asyncio.Event()
     authorizing, authorized = asyncio.Event(), asyncio.Event()
-    if case == "summarized_input":
-        from dataclasses import replace
-        from plugins.context.api import Summary
-        from plugins.context.materials import MaterialView
-        original_prepare = MaterialView.prepare
-        async def summarized_prepare(self, messages, source, **kwargs):
-            prepared = await original_prepare(self, messages, source, **kwargs)
-            if any(isinstance(message.body, ToolResult) for message in messages):
-                return replace(prepared, summary=Summary(
-                    "published", tuple(message.message_id for message in messages[2:]), "tool work summary"))
-            return prepared
-        monkeypatch.setattr(MaterialView, "prepare", summarized_prepare)
-    if case == "input_during_reduction":
-        from plugins.context.materials import MaterialView
-        original_reduce = MaterialView.reduce
-        async def delayed_reduce(self, *args, **kwargs):
-            if not authorizing.is_set():
-                authorizing.set()
-                await authorized.wait()
-            return await original_reduce(self, *args, **kwargs)
-        monkeypatch.setattr(MaterialView, "reduce", delayed_reduce)
     async def serve(reader, writer):
         entered.set()
         await release.wait()
@@ -132,14 +115,14 @@ async def apply(ctx, config):
     descriptor = BoundModelDescriptor(
         binding_id="model", plugin_snapshot_id="snapshot", model_revision=0,
         model_id="model", connection_id="connection", driver_id="driver",
-        driver_contract_version="1", auth_identity="test", model="test", role=ModelRole.AGENT,
+        driver_contract_version="1", auth_identity="test", model="test", role="agent",
         reasoning_effort=None, capabilities=ModelCapabilities(context_window=10000),
         capability_sources=CapabilitySources(), capability_digest="test",
     )
     model = _BoundChat(descriptor, Driver(), store)
     class Execution:
-        def chat(self, role: ModelRole) -> _BoundChat:
-            assert role in ModelRole
+        def chat(self, role: str) -> _BoundChat:
+            assert role in {"default", "fast", "agent", "vision"}
             return model
 
     class Models:
@@ -158,6 +141,25 @@ async def apply(ctx, config):
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             root = snapshot.composition_root.context
+            async with root.require(MATERIALS).bind() as material_view:
+                MaterialView = type(material_view)
+            if case == "summarized_input":
+                original_prepare = MaterialView.prepare
+                async def summarized_prepare(self, messages, source, **kwargs):
+                    prepared = await original_prepare(self, messages, source, **kwargs)
+                    if any(isinstance(message.body, ToolResult) for message in messages):
+                        return {**prepared, "summary": {"reference": "published",
+                            "source_message_ids": tuple(message.message_id for message in messages[2:]), "content": "tool work summary"}}
+                    return prepared
+                monkeypatch.setattr(MaterialView, "prepare", summarized_prepare)
+            if case == "input_during_reduction":
+                original_reduce = MaterialView.reduce
+                async def delayed_reduce(self, *args, **kwargs):
+                    if not authorizing.is_set():
+                        authorizing.set()
+                        await authorized.wait()
+                    return await original_reduce(self, *args, **kwargs)
+                monkeypatch.setattr(MaterialView, "reduce", delayed_reduce)
             ctx = root.require(ServiceKey("probe"))
             def writer(body):
                 return root.require(MESSAGE_WRITERS).bind(
@@ -167,7 +169,8 @@ async def apply(ctx, config):
             async def run(task, reader, source):
                 return await run_reply(
                     ctx, task, reader, source, models=Models(), content=root.require(CONTENT),
-                    context=root.require(CONTEXT), tools=root.require(TOOLS), react=react,
+                    context=root.require(CONTEXT), tools=root.require(TOOLS), react=partial(react, capture_scope=ctx.capture_runtime_scope),
+                    cleanup=lambda *_args, **_kwargs: nullcontext(),
                     materials=root.require(MATERIALS), render_content=lambda part: render_content(part, artifacts={}),
                     turn_projection=root.require(TURN_PROJECTION),
                     read_call=store.read_call,

@@ -15,9 +15,10 @@ from agent.plugin_composition.workload_slots import (
     WorkloadHealth,
     WorkloadLimits,
     WorkloadPort,
-    _WorkloadDeclarations,
 )
-from agent.plugins.workload_generation_host import WorkloadGenerationHost, _http_health
+from plugins.workloads.definitions import WorkloadBinding, _descriptor
+from plugins.workloads.host import WorkloadGenerationHost, _http_health
+from agent.workloads.client import WorkloadEffectUnknown
 from agent.workloads.model import (
     WorkloadEndpoint,
     WorkloadLease,
@@ -89,12 +90,10 @@ async def test_health_probe_does_not_mistake_busy_loop_for_unhealthy_workload(st
 @pytest_asyncio.fixture(loop_scope="session")
 async def workload(tmp_path):
     root = CompositionRoot("test")
-    declarations = _WorkloadDeclarations()
+    bindings = []
 
     async def apply(ctx):
-        await declarations.register(
-            ctx,
-            Workload(
+        value = Workload(
                 name="desktop",
                 image="example/desktop@sha256:" + "a" * 64,
                 command=("/start",),
@@ -102,8 +101,10 @@ async def workload(tmp_path):
                 data=(WorkloadData("profile", "/data"),),
                 health=WorkloadHealth("gateway"),
                 limits=WorkloadLimits(0, 0, 0),
-            ),
-        )
+            )
+        health = await ctx.health("desktop")
+        bindings.append(WorkloadBinding(_descriptor("desktop", value), health,
+            ctx.fiber, ctx.fiber.activation_token, ctx.report_incident))
 
     await root.mount(
         apply,
@@ -117,8 +118,7 @@ async def workload(tmp_path):
             {},
         ),
     )
-    registry = declarations.freeze(root.instance_token)
-    binding = next(iter(registry.values()))
+    binding = bindings[0]
     controller = Controller()
 
     async def healthy(url, timeout):
@@ -231,3 +231,41 @@ async def test_replacement_cannot_reuse_endpoint_until_borrow_is_closed(workload
         ]
     finally:
         await host.stop_generation("formal-B")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["unknown", "ordinary", "cancelled", "invalid_receipt"])
+async def test_unconfirmed_start_retains_request_without_replaying_cleanup(workload, failure):
+    """启动结果未知时保留原请求；关闭和显式重试都不能再次启动容器。"""
+    _, _, binding = workload
+
+    class UnconfirmedController(Controller):
+        async def start(self, request):
+            receipt = await super().start(request)
+            if failure == "unknown":
+                raise WorkloadEffectUnknown("reply lost after container creation")
+            if failure == "ordinary":
+                raise RuntimeError("invalid controller reply after container creation")
+            if failure == "cancelled":
+                raise asyncio.CancelledError
+            return replace(receipt, lease=replace(receipt.lease, plugin_id="another-owner"))
+
+    controller = UnconfirmedController()
+    host = WorkloadGenerationHost(controller, workspace_id="workspace")
+    with pytest.raises(RuntimeError, match="cleanup 未完成"):
+        await host.start_generation(
+            "unconfirmed", "desktop", {"desktop": binding}, mode="candidate"
+        )
+    request = controller.started[0]
+    assert len(controller.started) == 1
+    assert controller.stopped == []
+    assert host.tombstone("unconfirmed").resource_names == ("desktop",)
+
+    for cleanup in (host.stop_generation, host.retry_generation_cleanup):
+        with pytest.raises(BaseExceptionGroup, match="Workload cleanup"):
+            await cleanup("unconfirmed")
+        assert controller.started == [request]
+        assert controller.stopped == []
+        assert host.get("unconfirmed") is not None
+        pending = host._generations["unconfirmed"].pending
+        assert pending["desktop"][1] is request

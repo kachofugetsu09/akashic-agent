@@ -14,7 +14,7 @@ from agent.tools.events import (
 )
 
 if TYPE_CHECKING:
-    from agent.plugin_composition import CompositionSnapshotRoot
+    from agent.plugin_composition import CompositionRoot
 
 ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
@@ -57,7 +57,7 @@ class ToolExecutor:
 
     async def _admit(
         self,
-        root: CompositionSnapshotRoot | None,
+        root: CompositionRoot | None,
         request: ToolExecutionRequest,
     ) -> ToolExecutionResult:
         """Own the single grant, prepare, and authorize state machine."""
@@ -112,7 +112,7 @@ class ToolExecutor:
         )
 
     @staticmethod
-    def _runtime_composition_root() -> CompositionSnapshotRoot | None:
+    def _runtime_composition_root() -> CompositionRoot | None:
         from agent.plugins.snapshot import get_current_runtime_snapshot
 
         snapshot = get_current_runtime_snapshot()
@@ -120,7 +120,7 @@ class ToolExecutor:
 
     async def _run_input_prepare(
         self,
-        root: CompositionSnapshotRoot | None,
+        root: CompositionRoot | None,
         request: ToolExecutionRequest,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
@@ -137,7 +137,7 @@ class ToolExecutor:
 
     async def _run_execution_authorize(
         self,
-        root: CompositionSnapshotRoot | None,
+        root: CompositionRoot | None,
         request: ToolExecutionRequest,
         arguments: dict[str, Any],
     ) -> str:
@@ -154,7 +154,7 @@ class ToolExecutor:
 
     async def _settle(
         self,
-        root: CompositionSnapshotRoot | None,
+        root: CompositionRoot | None,
         request: ToolExecutionRequest,
         result: ToolExecutionResult,
     ) -> ToolExecutionResult:

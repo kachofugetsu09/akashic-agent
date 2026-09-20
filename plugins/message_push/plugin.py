@@ -6,14 +6,17 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
-from agent.control.frame_book import CONTROL_FRAMES
-from agent.restart import RESTART_GATE
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.tools.plugin import TOOLS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_composition.control_frames import CONTROL_FRAMES
+from agent.plugin_composition.tasks import RESTART_GATE
 
+from .boundary import (
+    CONTENT,
+    DELIVERY,
+    DELIVERY_SENDERS,
+    FINAL_OUTPUT_DELIVERY,
+    TOOLS,
+    TURN_PROJECTION,
+)
 from .tool import MessagePush, PushInput
 from .restart import register_restart
 
@@ -29,6 +32,7 @@ inject = (
     MESSAGE_WRITERS,
     ARTIFACT_IMPORT,
     MESSAGE_CATALOG,
+    CONTENT,
     RESTART_GATE,
     CONTROL_FRAMES,
 )
@@ -43,7 +47,7 @@ _RESTART_DEPS = (
 )
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """普通工具注册不取得附件、Message writer 或发送资源。"""
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)

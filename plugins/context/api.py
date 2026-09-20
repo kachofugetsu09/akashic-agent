@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Protocol, cast
 
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
-from plugins.content.api import Reference
-from session.message import CallRef, ContentPart, ContentReferences, Control, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Message, Output, ToolCall, ToolResult
+
+
+MaterialData = Mapping[str, object]
+SummaryData = Mapping[str, object]
 
 
 def settled_prefixes(messages: tuple[Message, ...]) -> tuple[int, ...]:
@@ -96,7 +100,7 @@ class Materials:
     system_prompt: str
     reminders: tuple[Reminder, ...] = ()
     summary: Summary | None = None
-    references: tuple[Reference, ...] = ()
+    references: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.system_prompt, str):
@@ -107,10 +111,97 @@ class Materials:
         if self.summary is not None and not isinstance(self.summary, Summary):
             raise TypeError("摘要必须来自已发布的 Summary")
         references = tuple(self.references)
-        if any(not isinstance(ref, Reference) for ref in references):
-            raise TypeError("引用必须是材料 owner 已取得的 Reference")
+        normalized_references: list[Mapping[str, object]] = []
+        for reference in references:
+            if not isinstance(reference, Mapping) or any(
+                not isinstance(key, str) for key in reference
+            ):
+                raise TypeError("引用必须是结构化映射")
+            normalized_references.append(MappingProxyType(dict(reference)))
         object.__setattr__(self, "reminders", parts)
-        object.__setattr__(self, "references", references)
+        object.__setattr__(self, "references", tuple(normalized_references))
+
+
+def _object(value: object, label: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} 必须是字符串键对象")
+    data = cast(Mapping[str, object], value)
+    if any(not isinstance(key, str) for key in data):
+        raise TypeError(f"{label} 必须是字符串键对象")
+    return data
+
+
+def _sequence(value: object, label: str) -> tuple[object, ...]:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise TypeError(f"{label} 必须是数组")
+    return tuple(cast(Sequence[object], value))
+
+
+def _reference(value: object) -> Mapping[str, object]:
+    """保留引用的结构数据；引用字段的领域校验由 Content owner 完成。"""
+    data = _object(value, "reference")
+    return MappingProxyType(dict(data))
+
+
+def _summary(value: object) -> Summary | None:
+    if value is None:
+        return None
+    data = _object(value, "summary")
+    if set(data) != {"reference", "source_message_ids", "content"}:
+        raise ValueError("summary 字段无效")
+    reference = data["reference"]
+    content = data["content"]
+    if not isinstance(reference, str) or not isinstance(content, str):
+        raise TypeError("summary 的 reference/content 必须是字符串")
+    source_ids = _sequence(data["source_message_ids"], "summary.source_message_ids")
+    if any(not isinstance(item, str) for item in source_ids):
+        raise TypeError("summary.source_message_ids 必须是字符串数组")
+    return Summary(reference, cast(tuple[str, ...], source_ids), content)
+
+
+def _reminder(value: object) -> Reminder:
+    data = _object(value, "reminder")
+    if set(data) != {"name", "text", "priority"}:
+        raise ValueError("reminder 字段无效")
+    name, text, priority = data["name"], data["text"], data["priority"]
+    if not isinstance(name, str) or not isinstance(text, str) or type(priority) is not int:
+        raise TypeError("reminder 的 name/text/priority 类型无效")
+    return Reminder(name, text, priority)
+
+
+def decode_material(value: object) -> Materials:
+    """在 Context 边界把 provider 的普通映射转换为内部材料值。"""
+    data = _object(value, "materials")
+    unknown = set(data) - {"system_prompt", "reminders", "summary", "references"}
+    if unknown:
+        raise ValueError(f"materials 包含未知字段: {sorted(unknown)}")
+    prompt = data.get("system_prompt", "")
+    if not isinstance(prompt, str):
+        raise TypeError("materials.system_prompt 必须是字符串")
+    reminders = tuple(_reminder(item) for item in _sequence(data.get("reminders", ()), "materials.reminders"))
+    summary = _summary(data.get("summary"))
+    references = tuple(_reference(item) for item in _sequence(data.get("references", ()), "materials.references"))
+    return Materials(prompt, reminders, summary, references)
+
+
+def material_data(materials: Materials) -> MaterialData:
+    """把内部材料投影成 reducer 能消费的普通映射。"""
+    summary: Mapping[str, object] | None = None if materials.summary is None else {
+        "reference": materials.summary.reference,
+        "source_message_ids": materials.summary.source_message_ids,
+        "content": materials.summary.content,
+    }
+    return {
+        "system_prompt": materials.system_prompt,
+        "reminders": tuple({"name": item.name, "text": item.text, "priority": item.priority} for item in materials.reminders),
+        "summary": summary,
+        "references": tuple(dict(item) for item in materials.references),
+    }
+
+
+def decode_summary(value: object) -> Summary | None:
+    """在摘要 owner 返回边界创建并校验内部 Summary。"""
+    return _summary(value)
 
 
 class ContextModel(Protocol):
@@ -139,10 +230,10 @@ class SummaryReducer(Protocol):
     """摘要 owner 先持久发布再返回；None 表示保留已有摘要，不做缩减。"""
 
     async def __call__(
-        self, snapshot: tuple[Message, ...], materials: Materials,
+        self, snapshot: tuple[Message, ...], materials: MaterialData,
         request: ModelRequest, model: BoundChatModel, projection: ContextModel,
         *, source: str, force: bool,
-    ) -> Summary | None: ...
+    ) -> SummaryData | None: ...
 
 
 class ContextOverflow(ValueError):

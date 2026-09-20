@@ -4,7 +4,7 @@
 - 日期：2026-08-18
 - 关联条款：PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-008
 - supersedes：[0008](0008-plugin-runtime-publishes-only-committed-snapshots.md) 的 API v2 与 legacy host 选择
-- superseded by：无
+- superseded by：[0071](0071-plugin-composition-and-whole-runtime-updates.md) 调整加载合同并删除插件 TOML；保留普通插件组合边界，不恢复 V2 适配器。
 
 > 2026-09-02 对账：本决策的 pure-v3 runtime 结论仍有效；下文 E1～E4 是当时的迁移验收计划，已被当前 fleet、Mobile、公共 WebUI 候选 Gate 和发布流程拥有的真实环境验收取代。E1/E2 固定的 API 已随 v2 compatibility 删除，E4 又依赖不存在的 E3 runner，不能继续作为当前合并条件。
 

@@ -9,6 +9,7 @@ import pytest
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugins.manager import PluginManager
+from agent.plugins.selection import PluginSelection
 from bus.event_bus import EventBus
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
@@ -35,6 +36,7 @@ async def test_update_source_validates_and_reports_without_parent_terminal(tmp_p
         tmp_path, replying=False, updates=True, validation_passed=passed is not False,
         provider_effect_data=True, start=passed is not None,
     ) as (log, host):
+        stable = PluginSelection(tmp_path / "workspace").read()
         source = tmp_path / "new-plugin"
         _write_v3_plugin(source, name="probe", module_source='''
 from agent.plugin_composition import ServiceKey
@@ -42,7 +44,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("test.updated"), "candidate")
 ''')
         _commit(source)
@@ -77,6 +79,29 @@ async def apply(ctx, config):
             identity = receipt.get("update_id")
             assert isinstance(identity, str)
             assert receipt.get("phase") == "armed"
+            assert not host._validation_hosts
+            assert host._update_publication is None
+            if passed is not None:
+                latest_binding = tools.bind(
+                    root.require(ALL_TOOLS)().select("plugin_latest"), root.require(BINDINGS),
+                )
+                output.append("latest-call", Output((ToolCall(
+                    latest_binding, {"update_id": identity, "action": "run"},
+                ),), "continue"))
+                latest_writer = log.writer(
+                    "test:room", author="tool", source="conversation", body_types=(ToolResult,),
+                    content={"text": check_text}, call_ref=CallRef("latest-call", 0),
+                )
+                latest_reply = MessageReply(
+                    "latest-result", CallRef("latest-call", 0), reader, latest_writer, lambda: None,
+                )
+                latest_result = await tools.execution(authorize).execute_call(latest_reply)
+                assert latest_result.outcome == "success"
+                accepted = json.loads(latest_result.parts[0].value)
+                assert accepted["update_id"] == identity
+                assert accepted["candidate_id"] == host.read_update(identity).candidate_id
+                assert accepted["handle"]
+                assert PluginSelection(tmp_path / "workspace").read() == stable
         async def restart():
             nonlocal log, host, reader
             await host.terminate_all()
@@ -92,16 +117,27 @@ async def apply(ctx, config):
         if passed is None:
             (source / "plugin.py").unlink()
             await restart()
+            assert PluginSelection(tmp_path / "workspace").read() == stable
+            assert host.ready_candidate is None
+            assert host.generation("probe@lab") is None
+        report_id = identity + (":complete" if passed else ":problem")
         # 只等待真实追加通知；原 conversation 保持 open，没有 terminal 来驱动发布。
         async with asyncio.timeout(20):
             async for _ in log.catalog().follow():
                 rows = reader.snapshot()
-                reports = [row for row in rows if row.message_id == identity + ":complete"]
+                reports = [row for row in rows if row.message_id == report_id]
                 if reports:
                     break
         assert len(reports) == 1 and reports[0].source == "plugin_update"
         update = host.reload_journal.update(identity)
-        assert update.phase == ("committed" if passed else "rolled_back")
+        if passed is None:
+            # 启动不续跑候选，也不能把未结算安装冒充已回退。
+            assert update.phase == "armed"
+            assert update.error and "explicit settlement" in update.error
+        else:
+            assert update.phase == ("committed" if passed else "armed")
+            if not passed:
+                assert update.error
         assert not any(isinstance(row.body, Output) and row.body.finish == "complete"
                        for row in rows if row.source == "conversation")
         databases = list((tmp_path / "workspace/runtime/plugin-update-validation").glob("*/workspace/sessions.db"))
@@ -109,8 +145,12 @@ async def apply(ctx, config):
         if databases:
             with closing(MessageLog(databases[0])) as validation:
                 validation_rows = validation.reader("plugin-validation:" + identity).snapshot()
-                assert tuple(type(row.body) for row in validation_rows) == (Input, Output, ToolResult, Output)
+                assert tuple(type(row.body) for row in validation_rows[:3]) == (Input, Output, ToolResult)
+                if passed:
+                    assert isinstance(validation_rows[-1].body, Output)
+                    assert validation_rows[-1].body.finish == "complete"
                 assert validation.reader("plugin-validation:" + identity).attributes.learning == "excluded"
+            assert host.read_validation_messages(identity, "plugin-validation:" + identity) == validation_rows
             assert (next(databases[0].parent.rglob("effect.txt"))).read_text() == "once\n"
         for generation in host.current_snapshot.generations.values():
             assert not (generation.data_dir / "effect.txt").exists()
@@ -119,20 +159,22 @@ async def apply(ctx, config):
         delivery = DeliveryRecords(log.owner("plugin:delivery"), "plugin_update")
         await asyncio.wait_for(delivered.wait(), 10)
         await host.terminate_all()
-        assert delivery.read(identity + ":complete", "test")[1].phase == "delivered"
+        assert delivery.read(report_id, "test")[1].phase == "delivered"
         sent = [json.loads(line) for line in next((tmp_path / "workspace/plugin-data").rglob("sent.jsonl")).read_text().splitlines()]
-        assert len(sent) == 1 and sent[0][1:3] == ["room", identity + ":complete"]
+        assert len(sent) == 1 and sent[0][1:3] == ["room", report_id]
         recovered_report = asyncio.Event()
         append = OwnerTransaction.append
         def append_report(self, writer, message_id, body, **kwargs):
             message = append(self, writer, message_id, body, **kwargs)
-            if message_id == identity + ":complete":
+            if message_id == report_id:
                 recovered_report.set()
             return message
         monkeypatch.setattr(OwnerTransaction, "append", append_report)
         await restart()
         await asyncio.wait_for(recovered_report.wait(), 10)
         await host.terminate_all()
+        if databases:
+            assert host.read_validation_messages(identity, "plugin-validation:" + identity) == validation_rows
         assert len(reader.snapshot()) == len(rows)
         assert list((tmp_path / "workspace/runtime/plugin-update-validation").glob("*/workspace/sessions.db")) == databases
         sent_again = [json.loads(line) for line in next((tmp_path / "workspace/plugin-data").rglob("sent.jsonl")).read_text().splitlines()]

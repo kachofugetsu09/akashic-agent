@@ -44,18 +44,22 @@ http://127.0.0.1:2236
 
 ## 3. 启用移动实时网关
 
-修改配置前先保留恢复点：
+客户端配置属于已安装的 `akashic_clients` 插件。修改前先保留恢复点：
 
 ```bash
-cp --preserve=all --no-clobber config.toml config.toml.before-mobile
+WORKSPACE="${AKASHIC_WORKSPACE:-$HOME/.akashic/workspace}"
+CLIENT_CONFIG="$WORKSPACE/plugin-data/akashic_clients-release/config.local.toml"
+cp --preserve=all --no-clobber "$CLIENT_CONFIG" "$CLIENT_CONFIG.before-mobile"
 ```
 
-在 `config.toml` 中保留 loopback Web Chat，并加入移动网关配置。把示例域名换成自己的 Cloudflare 域名。
+在 `CLIENT_CONFIG` 中保留 Web Chat，并加入移动网关配置。把示例域名换成自己的 Cloudflare 域名。
+若安装市场身份不是 `release`，使用安装清单对应的 `plugin-data/<name>-<marketplace>/config.local.toml`。
 
 ```toml
-[channels.chat]
 enabled = true
-channel_name = "web"
+
+[web]
+enabled = true
 
 [mobile_realtime]
 enabled = true
@@ -237,7 +241,7 @@ Cloudflare Tunnel 是否 Healthy
 | 现象 | 检查 |
 |---|---|
 | 启动时报 Secret Service 不可用或已锁定 | 解锁当前用户的 Secret Service，再启动 Akashic。不要改成明文密钥或删除 keyset 绕过错误。 |
-| `6323` 没有监听 | 检查 `[mobile_realtime].enabled`、启动日志和配置校验错误。 |
+| `6323` 没有监听 | 检查 `CLIENT_CONFIG` 中 `[mobile_realtime].enabled`、启动日志和配置校验错误。 |
 | Tunnel 显示 `Inactive` 或 `Down` | 检查 `cloudflared` 进程、用户服务和 token 文件权限。 |
 | 公开地址返回 `502` | 核对 Service URL 是 `https://127.0.0.1:6323`，端口已监听，并已为自签名 origin 打开 `No TLS Verify`。 |
 | 根路径返回 `404` | 这是移动网关的正常 HTTP 结果；继续运行真实 WSS challenge 检查。 |

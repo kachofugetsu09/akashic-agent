@@ -1,5 +1,9 @@
 # 插件 v3 MCP / managed process capability 任务合同
 
+> 2026-09-15 资源归属勘误：中央 registry 与 generation host 已由[普通资源 provider](plugin-resource-providers.md)取代。本文的 Core materialize、双份 descriptor 与原端口字符串接口只保留历史背景，不是当前 SDK 用法。
+
+> 2026-09-15 勘误：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 已取代本文的两参数入口、精确参数名和 Core 配置模型校验。现行入口为 `apply(ctx)`，插件自行解析 `ctx.config`；下文相关描述仅保留历史背景。凭据脱敏及正式解析授权边界不因此取消。
+
 - 状态：Core capability complete / workspace MCP compatibility removed / Calendar consumer Gate pending
 - 日期：2026-08-16
 - 实现提交：`8653bab0`
@@ -209,28 +213,21 @@ Health/Incident/inspection，不进入 immutable identity。
    - Root/Scope 开始 dispose 时，Composition Host 必须先 detach 该 generation 的 Health/Incident observation bridge；
      后续 Core-only stop/retry 仍清理 retained process/MCP owner 并上报 durable failure，但不得再次调用已失效 Fiber binding。
      一个 child Host 已有 tombstone 时不得隐式 retry 它，同时仍要停止同 generation 中没有 tombstone 的 sibling。
-10. v3 artifact 根使用静态 `akashic.plugin.toml`，installer 在任何 Python import 前解析：
+10. v3 artifact 根使用普通 `plugin.py`；身份由 loader 在任何 Python import 前读取顶层字面量。
+    可选 `akashic.plugin.toml` 只暂存策略：
 
     ```toml
-    schema_version = 1
-    name = "calendar"
-    version = "3.0.0"
-    api_version = 3
-    entrypoint = "plugin.py"
-
-    [[python]]
-    requirements = "mcp/requirements.txt"
-
     [validation]
     exclude_data_paths = [".env", ".gcp-saved-tokens.json", "token.json", "oauth.json"]
     ```
 
-    installer 用 `tomllib` 校验静态 name/version/api/entrypoint、requirements 与 validation paths，拒绝绝对路径、
-    symlink、重复和 artifact/data 越界，在 requirements 父目录构建 `.venv`。MCP/process Python command 若落在
-    该 root 下，static admission 必须唯一绑定 runtime，Manager 将 `mcp:<name>` / `process:<name>` 的 argv[0]
+    Python 输入已按 0071 改为制品内 `requirements.txt` 文件约定，详见[能力手册](plugin-v3-capabilities.md#python-安装输入0071-过渡层)。
+    installer 从 `plugin.py` 读取 name/version/api，用 `tomllib` 校验剩余 validation paths，并发现 requirements，拒绝绝对路径、
+    symlink 和 artifact/data 越界，由安装器在固定环境目录保留 requirements 的父目录布局并构建 `.venv`。MCP/process Python command 若落在
+    该 root 下，命令绑定选择最近的父 runtime，Manager 将 `mcp:<name>` / `process:<name>` 的 argv[0]
     冻结为该 artifact 已 staging interpreter；C12b/C13b Host 只能消费这份 generation 投影，禁止再按 PATH 解析
     manifest 中的 `python*` token。安装事务不 import/执行 `plugin.py`，不执行
-    `apply()`、不启动进程；真实 runtime 从 immutable artifact 首次导入并再次核对 module export 与 manifest。
+    `apply()`、不启动进程；真实 runtime 从 immutable artifact 首次导入并核对实际模块文件来源。
     迁移期旧 v2 installer 仍走 class import，但 pure-v3 删除 Gate 要求所有 v3 artifact 都有静态 manifest，届时删除
     v3 install-import fallback。
 11. register 时 Core 为每个 MCP/process 建立 required Health handle，host adapter 在 exact Root 的
@@ -292,14 +289,14 @@ Calendar 旧 `activate()` 会把 workspace `mcp/calendar-mcp` 的 token、`.env`
 - concurrent candidate：prepared/latest-ready candidate 存在时杀掉 old stable process，journal 只能保留 candidate tx 一条
   `degraded(target=base)`；candidate admission/promotion 被拒，retry 后 candidate 临时端口、Root、scope 与 latest pointer
   全部回收，stable formal endpoint/tool 恢复；
-- install：静态 manifest 在 Python import 前给出 identity/runtime；v3 Calendar immutable artifact 的 MCP/server
+- install：loader 在 Python import 前从 `plugin.py` 读取身份并发现 requirements；v3 Calendar immutable artifact 的 MCP/server
   runtime 已 staging，candidate 不在首次启动临时装依赖；validation inventory 明确不含 `.env`、
   `.gcp-saved-tokens.json` 或其他 token/OAuth 文件。
 
 ### 首个 consumer Gate
 
-Calendar exact source + exact Core：真实 Manager install（`akashic.plugin.toml` 在任何 Python import 前完成
-identity/runtime/validation staging）→ publish candidate 为 `latest_ready/committed` → acquire exact latest snapshot lease
+Calendar exact source + exact Core：真实 Manager install（从 `plugin.py` 读取身份，结合 requirements 和可选策略，
+在任何 Python import 前完成 runtime/validation staging）→ publish candidate 为 `latest_ready/committed` → acquire exact latest snapshot lease
 → controlled MCP route call（route 绑定 candidate generation，MCP `PORT` 命中 candidate `calendar_api`）→ route/fork
 lease 释放 → pause/drain/seal → promote → formal local
 readiness → reload/discard。Gate 使用一次性 workspace、loopback 端口和 fake/controlled Calendar data；不读取正式

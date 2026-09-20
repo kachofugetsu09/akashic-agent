@@ -2,10 +2,36 @@
 
 这份文件只保存 Akashic Agent 当前仍未完成的工作。事项完成后删除，不保留“已完成”记录。
 
+## P1 · Akasha 学习图一次性重放
+
+`plugins/akasha` 已收口为单一学习实现（重建 = 空图 + 无切换上界重放同一个
+`MessageConsumer`），旧的稀疏索引、`legacy_prefix`、frozen history、离线 CLI 与 repair
+通道退役。待完成：
+
+- 用插件自有 migration bundle 登记的一次性重放完成线上切换，并按
+  `docker/debug/akasha_replay_compare.py` 核对历史前缀（本机副本实测：legacy 复现
+  5549/5581、相对顺序无逆序、交集身份与时间瞬间零差异）。
+- 重放会丢掉旧图里 26 条早期 `remember` 事件。维护者已确认它们不是 Akasha 现行反馈
+  通道的产物（属于很早期的 tool result），接受该偏差，不另立 carry-over 迁移。
+- `memory/akasha-v2-index.db`（约 511MB）退役后的物理删除单独授权。
+
+## P0 · 插件正交化实施与最终验收
+
+按 [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 与
+[阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 完成已授权的 stacked PR 实施。
+当前优先完成全部本地插件的行为回归、默认组合与无 checkout 的分发产物验收。
+维护者已明确将第三方外部插件的进一步迁移与验收后置；已提交改动保留，
+不将第三方迁移完成作为本地插件阶段的退出条件。
+当前维护者要求只交付 stacked Draft PR；仅做静态检查和独立只读评审，
+不运行测试、Gate 或 CI。真实运行验收须另行获得授权，不因实现完成自动开始。
+验收必须覆盖 Core-only CLI/AppRuntime、独立子集和异名 provider、generation/归档生命周期、
+实际 Message 与持久送达闭环；不能以 import 数量清零代替这些证据。
+
 ## P0 · Akashic Channel 与 Web/Mobile Adapter 实现
 
 [Akashic Channel 与 Web/Mobile Adapter 规格](design/akashic-channel-client-adapters.md) 已确认
-一个 Core `akashic` Channel、两个薄 adapter 和一次 breaking rekey。实现已获授权，当前核对
+一个 `akashic` Channel、两个薄 adapter 和一次 breaking rekey。渠道归属按
+[0067](decisions/0067-clients-are-ordinary-plugin.md) 修订为普通插件。实现已获授权，当前核对
 Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步；不得直接迁正式 workspace。
 
 ## P1 · 移动端主题 token 边界
@@ -14,10 +40,13 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 - 移动端用户 checkout 存在未提交 Theme diff（Theme.kt 等 5 个文件）；D2 决策（原生壳与 WebUI token 边界）完成前不得合入。
 
-## P0 · 插件递归自验证
+## P0 · 插件普通调用与晋升
 
-- 在独立 Fitbit canonical source 变更中让 monitor 与 MCP 读取同一个 `validation_port_env`，再以一次性 workspace 验收真实隔离 listener、child tool trace、正式切换和旧 listener 恢复；不得在 Core 中添加 Fitbit 特判。
-- 补充 turn-boundary rollout 的进程崩溃注入矩阵，覆盖 terminal 封口后、候选服务停止后、正式 endpoint 切换后和 pointer 提交前；恢复失败必须保持 degraded 可见，不能只恢复 pointer。
+- 按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 调整为调用程序拥有验证、provider 拥有隔离资源、底座拥有整体 stable 提交。旧 `validation_port_env`、双指针与 attached child 的 Core 特例不再是目标合同。
+- 按 [latest 普通调用](design/plugin-latest-programmatic.md) 完成非阻塞调用的过程/最终结果可见性、发起者撤销和原 owner 清理；正常完成默认请求晋升，不引入后台裁判或批准 JSON。继续核对隔离宿主的最小职责与累计消费者。
+- 普通 latest 仍需后续运行证据；模型 owner 接续现有设置和凭据、新组合使用自己的 driver、调用账写在本次调用环境的源码已通过独立静态审查。真实插件链的测试已写未跑，不能据此声明实际模型请求与晋升验收通过。
+- 独立 Fitbit source 的候选 listener 与正式资源隔离仍待该仓库交付，本轮不修改外部插件。
+- 提交前后崩溃、排空失败和真实恢复的行为证据尚缺；本轮用户要求只提 PR，不执行 Gate/CI，不能将代码交付视作这些验收已完成。
 
 ## P0 · 独立语义验收
 

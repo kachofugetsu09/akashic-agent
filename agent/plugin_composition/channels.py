@@ -5,12 +5,15 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
+from contextlib import AbstractAsyncContextManager
+from pathlib import Path
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Literal, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias, cast
+from contextvars import ContextVar, Token
 
 from session.message import Message
 from session.artifacts import (
@@ -18,12 +21,12 @@ from session.artifacts import (
     AttachmentReadPort as ChannelAttachmentReadPort,
 )
 
-from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
-from agent.plugin_composition.model import CompositionError, IncidentView, ServiceKey
+from agent.plugin_composition.context import Context
+from agent.plugin_composition.requests import RequestContext
+from agent.plugin_composition.model import ServiceKey
 
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-_FACTORY_EXPORT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:]*$")
 
 
 def channel_config_revision(projection: Mapping[str, object]) -> str:
@@ -74,6 +77,7 @@ def _canonical_channel_config_value(value: object) -> object:
 
 class ChannelCapability(StrEnum):
     INBOUND = "inbound"
+    DURABLE_INBOUND = "durable_inbound"
     OUTBOUND = "outbound"
     CONTROL = "control"
     TURN_STREAM = "turn_stream"
@@ -110,6 +114,13 @@ JsonValue: TypeAlias = (
     | tuple["JsonValue", ...]
     | Mapping[str, "JsonValue"]
 )
+
+# These keys describe the transport handoff itself.  A provider message ID
+# remains the identity source; metadata only carries the durable reservation.
+DURABLE_INBOUND_MARKER = "durable_inbound"
+DURABLE_HANDOFF_ID = "durable_handoff_id"
+DURABLE_PROVIDER_MESSAGE_ID = "provider_message_id"
+DURABLE_ATTACHMENT_REFS = "durable_attachment_refs"
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,14 +193,88 @@ class ChannelBindingLease(Protocol):
     @property
     def active(self) -> bool: ...
 
+    async def deliver(self, envelope: OutboundEnvelope) -> ChannelDeliveryReceipt: ...
+
     async def aclose(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _ChannelTurnBinding:
+    lease: ChannelBindingLease
+    owner_task: asyncio.Task[object] | None
+
+
+_current_channel_binding: ContextVar[_ChannelTurnBinding | None] = ContextVar(
+    "current_channel_binding",
+    default=None,
+)
+
+
+def bind_channel_turn_binding(
+    binding: object,
+) -> Token[_ChannelTurnBinding | None]:
+    """Bind the exact inbound Channel owner for one ConversationRuntime task."""
+
+    active = getattr(binding, "active", None)
+    if active is not True:
+        raise RuntimeError("turn Channel binding 必须是当前 Host 的 active lease")
+    return _current_channel_binding.set(
+        _ChannelTurnBinding(
+            cast(ChannelBindingLease, binding),
+            asyncio.current_task(),
+        )
+    )
+
+
+def reset_channel_turn_binding(
+    token: Token[_ChannelTurnBinding | None],
+) -> None:
+    _current_channel_binding.reset(token)
+
+
+def get_current_channel_turn_binding() -> ChannelBindingLease | None:
+    binding = _current_channel_binding.get()
+    if (
+        binding is None
+        or binding.owner_task is not asyncio.current_task()
+        or not binding.lease.active
+    ):
+        return None
+    return binding.lease
 
 
 class ChannelIngressPort(Protocol):
     async def admit(self, raw: RawInbound) -> bool: ...
 
 
-class ChannelRecoveryIngressPort(Protocol):
+class ChannelDurableInboundPort(Protocol):
+    """Expose the one durable handoff owner to a declared channel binding."""
+
+    async def reserve(self, raw: RawInbound) -> bool: ...
+
+    async def defer(self, handoff_id: str) -> None: ...
+
+    async def settle_rejected(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> None: ...
+
+    def has_pending(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> bool: ...
+
+    def pending_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> tuple[AttachmentRef, ...] | None: ...
+
     async def recover(self, raw: RawInbound) -> bool: ...
 
 
@@ -637,7 +722,7 @@ class ChannelRuntimePorts:
     ingress: ChannelIngressPort | None
     identity: ChannelIdentityPort | None
     attachment_import: ChannelAttachmentImportPort | None
-    recovery_ingress: ChannelRecoveryIngressPort | None = None
+    durable_inbound: ChannelDurableInboundPort | None = None
 
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")
@@ -647,10 +732,23 @@ class ChannelRuntimePorts:
             ("ingress", self.ingress, "admit"),
             ("identity", self.identity, "resolve"),
             ("attachment_import", self.attachment_import, "import_bytes"),
-            ("recovery_ingress", self.recovery_ingress, "recover"),
+            ("durable_inbound", self.durable_inbound, "recover"),
         ):
             if value is not None and not callable(getattr(value, method, None)):
                 raise TypeError(f"channel runtime {name} 必须提供 {method}(...)")
+        if self.durable_inbound is not None:
+            for method in (
+                "reserve",
+                "defer",
+                "settle_rejected",
+                "has_pending",
+                "pending_attachment_refs",
+                "recover",
+            ):
+                if not callable(getattr(self.durable_inbound, method, None)):
+                    raise TypeError(
+                        f"channel runtime durable_inbound 必须提供 {method}(...)"
+                    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -725,29 +823,37 @@ class ProviderClientFactory(Protocol):
     async def aclose(self) -> None: ...
 
 
+class ChannelTaskSpawner(Protocol):
+    """仅在 adapter.start 内登记所属 Fiber 的后台任务。"""
+
+    async def __call__[T](self, coroutine: Coroutine[Any, Any, T], *, name: str) -> asyncio.Task[T]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ChannelFactoryContext:
     snapshot_id: str
     generation_id: str
+    boot_id: str
     binding_token: str
     config: Mapping[str, object]
-    credentials: Mapping[str, CredentialRef]
-    provider_client_factory: ProviderClientFactory
     ingress: ChannelIngressPort | None
     identity: ChannelIdentityPort | None
     attachment_import: ChannelAttachmentImportPort | None = None
     attachment_read: ChannelAttachmentReadPort | None = None
     control: ChannelControlPort | None = None
     turn_stream: TurnStreamPort | None = None
+    data_root: Path | None = None
+    open_scope: Callable[[], AbstractAsyncContextManager[RequestContext]] | None = None
+    spawn_owned: ChannelTaskSpawner | None = None
 
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")
         _text(self.generation_id, "generation_id")
+        _text(self.boot_id, "boot_id")
         _text(self.binding_token, "binding_token")
         config = _freeze_channel_config(self.config)
         if not isinstance(config, Mapping):
             raise TypeError("channel factory config 必须是 mapping")
-        credentials = _credential_refs(self.credentials)
         if self.ingress is not None and not callable(
             getattr(self.ingress, "admit", None)
         ):
@@ -777,7 +883,6 @@ class ChannelFactoryContext:
         ):
             raise TypeError("channel factory turn_stream 必须提供 subscribe(callback)")
         object.__setattr__(self, "config", config)
-        object.__setattr__(self, "credentials", credentials)
 
 
 @dataclass(frozen=True, slots=True)
@@ -920,9 +1025,10 @@ class ChannelDefinition:
 
     name: str
     capabilities: frozenset[ChannelCapability]
-    factory_export: str
+    factory: Callable[[ChannelFactoryContext], ChannelAdapter]
     inbound_identity: InboundIdentity | None
-    credential_paths: tuple[str, ...]
+    config: Mapping[str, object] = field(default_factory=dict)
+    interrupt: Callable[[RawInbound], Awaitable[bool]] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or _NAME.fullmatch(self.name) is None:
@@ -931,622 +1037,40 @@ class ChannelDefinition:
             raise ValueError("channel capabilities 必须是非空 frozenset")
         if any(not isinstance(item, ChannelCapability) for item in self.capabilities):
             raise ValueError("channel capabilities 必须只包含 ChannelCapability")
-        if (
-            not isinstance(self.factory_export, str)
-            or _FACTORY_EXPORT.fullmatch(self.factory_export) is None
-            or ".." in self.factory_export
-            or self.factory_export.endswith((".", ":"))
-        ):
-            raise ValueError(f"channel factory_export 无效: {self.factory_export}")
+        if not callable(self.factory):
+            raise TypeError("channel factory 必须可调用")
+        object.__setattr__(self, "config", _freeze_channel_config(self.config))
+        if ChannelCapability.CONTROL in self.capabilities and not callable(self.interrupt):
+            raise TypeError("CONTROL channel 必须提供自己的 interrupt 回调")
         has_inbound = ChannelCapability.INBOUND in self.capabilities
         if has_inbound and not isinstance(self.inbound_identity, InboundIdentity):
             raise ValueError("inbound channel 必须声明 inbound_identity")
         if not has_inbound and self.inbound_identity is not None:
             raise ValueError("非 inbound channel 不得声明 inbound_identity")
-        object.__setattr__(self, "credential_paths", _credential_paths(self.credential_paths))
-
-
-@dataclass(frozen=True, slots=True)
-class CoreChannelDefinition:
-    """Describe one Core-owned channel projection without opening provider state."""
-
-    name: str
-    capabilities: frozenset[ChannelCapability]
-    factory: Callable[[ChannelFactoryContext], ChannelAdapter]
-    inbound_identity: InboundIdentity | None
-    source_revision: str
-    config_revision: str
-    generation_id: str
-    credential_paths: tuple[str, ...] = ()
-    factory_export: str = ""
-    config: Mapping[str, object] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or _NAME.fullmatch(self.name) is None:
-            raise ValueError(f"core channel name 无效: {self.name}")
-        if not isinstance(self.capabilities, frozenset) or not self.capabilities:
-            raise ValueError("core channel capabilities 必须是非空 frozenset")
-        if any(not isinstance(item, ChannelCapability) for item in self.capabilities):
-            raise ValueError("core channel capabilities 必须只包含 ChannelCapability")
-        if not callable(self.factory):
-            raise TypeError("core channel factory 必须可调用")
-        has_inbound = ChannelCapability.INBOUND in self.capabilities
-        if has_inbound and not isinstance(self.inbound_identity, InboundIdentity):
-            raise ValueError("inbound core channel 必须声明 inbound_identity")
-        if not has_inbound and self.inbound_identity is not None:
-            raise ValueError("非 inbound core channel 不得声明 inbound_identity")
-        factory_export = self.factory_export or (
-            "core."
-            + self.name.replace("-", "_")
-            + ".factory"
-        )
-        if (
-            not isinstance(factory_export, str)
-            or _FACTORY_EXPORT.fullmatch(factory_export) is None
-            or ".." in factory_export
-            or factory_export.endswith((".", ":"))
+        if ChannelCapability.DURABLE_INBOUND in self.capabilities and (
+            not has_inbound
+            or self.inbound_identity is not InboundIdentity.PROVIDER_MESSAGE_ID
         ):
-            raise ValueError(f"core channel factory_export 无效: {factory_export}")
-        for field_name in ("source_revision", "config_revision", "generation_id"):
-            if not isinstance(getattr(self, field_name), str) or not getattr(
-                self, field_name
-            ):
-                raise ValueError(f"core channel {field_name} 必须是非空字符串")
-        if not isinstance(self.config, Mapping):
-            raise TypeError("core channel config 必须是 mapping")
-        object.__setattr__(
-            self,
-            "credential_paths",
-            _credential_paths(self.credential_paths, allow_empty=True),
-        )
-        frozen_config = _freeze_channel_config(self.config)
-        if not isinstance(frozen_config, Mapping):
-            raise TypeError("core channel config 必须是 mapping")
-        object.__setattr__(self, "config", frozen_config)
-        object.__setattr__(self, "factory_export", factory_export)
-
-    @property
-    def descriptor(self) -> "ChannelDescriptor":
-        """Project this Core definition into the common immutable descriptor."""
-
-        return ChannelDescriptor(
-            owner="core",
-            name=self.name,
-            capabilities=tuple(
-                sorted(self.capabilities, key=lambda item: item.value)
-            ),
-            factory_export=self.factory_export,
-            inbound_identity=self.inbound_identity,
-            credential_paths=self.credential_paths,
-        )
-
-    @property
-    def provenance(self) -> "ChannelFactoryProvenance":
-        """Return the stable provenance identity used by a committed catalog."""
-
-        return ChannelFactoryProvenance(
-            plugin_id="core",
-            generation_id=self.generation_id,
-            channel_name=self.name,
-            source_revision=self.source_revision,
-            config_revision=(
-                f"{self.config_revision}:{channel_config_revision(self.config)}"
-            ),
-            factory_export=self.factory_export,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelDescriptor:
-    owner: str
-    name: str
-    capabilities: tuple[ChannelCapability, ...]
-    factory_export: str
-    inbound_identity: InboundIdentity | None
-    credential_paths: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        _text(self.owner, "owner")
-        if not isinstance(self.name, str) or _NAME.fullmatch(self.name) is None:
-            raise ValueError(f"channel descriptor name 无效: {self.name}")
-        if not self.capabilities or any(
-            not isinstance(item, ChannelCapability) for item in self.capabilities
-        ):
-            raise ValueError("channel descriptor capabilities 类型无效")
-        if tuple(sorted(self.capabilities, key=lambda item: item.value)) != self.capabilities:
-            raise ValueError("channel descriptor capabilities 顺序必须 canonical")
-        if (
-            not isinstance(self.factory_export, str)
-            or _FACTORY_EXPORT.fullmatch(self.factory_export) is None
-            or ".." in self.factory_export
-            or self.factory_export.endswith((".", ":"))
-        ):
-            raise ValueError("channel descriptor factory_export 无效")
-        has_inbound = ChannelCapability.INBOUND in self.capabilities
-        if has_inbound and not isinstance(self.inbound_identity, InboundIdentity):
-            raise ValueError("inbound channel descriptor 必须声明 inbound_identity")
-        if not has_inbound and self.inbound_identity is not None:
-            raise ValueError("非 inbound channel descriptor 不得声明 inbound_identity")
-        object.__setattr__(
-            self,
-            "credential_paths",
-            _credential_paths(
-                self.credential_paths,
-                allow_empty=self.owner == "core",
-            ),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelFactoryProvenance:
-    plugin_id: str
-    generation_id: str
-    channel_name: str
-    source_revision: str
-    config_revision: str
-    factory_export: str
-
-    def __post_init__(self) -> None:
-        _text(self.plugin_id, "plugin_id")
-        _text(self.generation_id, "generation_id")
-        if not isinstance(self.channel_name, str) or _NAME.fullmatch(self.channel_name) is None:
-            raise ValueError(f"factory provenance channel_name 无效: {self.channel_name}")
-        if not isinstance(self.source_revision, str):
-            raise ValueError("source_revision 必须是字符串")
-        if not isinstance(self.config_revision, str):
-            raise ValueError("config_revision 必须是字符串")
-        if not isinstance(self.factory_export, str) or _FACTORY_EXPORT.fullmatch(self.factory_export) is None:
-            raise ValueError("factory provenance factory_export 无效")
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelFactoryFreezeInput:
-    """Core-only input carrying source/config provenance into a freeze."""
-
-    generation_id: str
-    source_revision: str = ""
-    config_revision: str = ""
-
-    def __post_init__(self) -> None:
-        _text(self.generation_id, "generation_id")
-        if not isinstance(self.source_revision, str):
-            raise ValueError("source_revision 必须是字符串")
-        if not isinstance(self.config_revision, str):
-            raise ValueError("config_revision 必须是字符串")
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelRegistrySnapshot:
-    descriptors: tuple[ChannelDescriptor, ...]
-    factories: tuple[ChannelFactoryProvenance, ...]
-    identity: str
-    root_instance_token: object = field(repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        descriptors = tuple(self.descriptors)
-        factories = tuple(self.factories)
-        if any(not isinstance(item, ChannelDescriptor) for item in descriptors):
-            raise TypeError("channel registry descriptor 类型无效")
-        if any(not isinstance(item, ChannelFactoryProvenance) for item in factories):
-            raise TypeError("channel registry factory provenance 类型无效")
-        if len({item.name for item in descriptors}) != len(descriptors):
-            raise ValueError("channel registry descriptor 名称重复")
-        factory_keys = tuple(_factory_sort_key(item) for item in factories)
-        if len(set(factory_keys)) != len(factory_keys):
-            raise ValueError("channel registry factory provenance 重复")
-        if tuple(sorted(descriptors, key=lambda item: item.name)) != descriptors:
-            raise ValueError("channel registry descriptors 必须按 name 排序")
-        if tuple(sorted(factories, key=_factory_sort_key)) != factories:
-            raise ValueError("channel registry factories 必须按 provenance 排序")
-        if self.identity != _registry_identity(descriptors, factories):
-            raise ValueError("channel registry identity 与内容不匹配")
-        object.__setattr__(self, "descriptors", descriptors)
-        object.__setattr__(self, "factories", factories)
-
-
-@dataclass(frozen=True, slots=True)
-class CommittedChannelCatalog:
-    """Own the immutable merge of Core definitions and the plugin registry."""
-
-    plugin_registry: ChannelRegistrySnapshot | None = None
-    core_definitions: tuple[CoreChannelDefinition, ...] = ()
-    root_instance_token: object | None = field(default=None, repr=False, compare=False)
-    registry: ChannelRegistrySnapshot = field(init=False)
-
-    def __post_init__(self) -> None:
-        raw_definitions = tuple(self.core_definitions)
-        if any(not isinstance(item, CoreChannelDefinition) for item in raw_definitions):
-            raise TypeError("core_definitions 必须只包含 CoreChannelDefinition")
-        definitions = tuple(sorted(raw_definitions, key=lambda item: item.name))
-        core_names = tuple(item.name for item in definitions)
-        if len(set(core_names)) != len(core_names):
-            raise ValueError("Core channel 名称重复")
-
-        plugin_registry = self.plugin_registry
-        root_token = self.root_instance_token
-        if plugin_registry is not None:
-            if not isinstance(plugin_registry, ChannelRegistrySnapshot):
-                raise TypeError("plugin_registry 类型无效")
-            if root_token is not None and root_token is not plugin_registry.root_instance_token:
-                raise ValueError("CommittedChannelCatalog root token 与 plugin registry 不一致")
-            root_token = plugin_registry.root_instance_token
-            plugin_names = {item.name for item in plugin_registry.descriptors}
-            collisions = sorted(plugin_names.intersection(core_names))
-            if collisions:
-                raise ValueError(
-                    "Core channel 与 v3 plugin channel 名称冲突: "
-                    + ", ".join(collisions)
-                )
-            plugin_descriptors = plugin_registry.descriptors
-            plugin_factories = plugin_registry.factories
-        else:
-            if root_token is None:
-                root_token = object()
-            plugin_descriptors = ()
-            plugin_factories = ()
-
-        descriptors = tuple(
-            sorted(
-                tuple(item.descriptor for item in definitions) + plugin_descriptors,
-                key=lambda item: item.name,
+            raise ValueError(
+                "durable inbound channel 必须同时声明 INBOUND/PROVIDER_MESSAGE_ID"
             )
-        )
-        factories = tuple(
-            sorted(
-                tuple(item.provenance for item in definitions) + plugin_factories,
-                key=_factory_sort_key,
-            )
-        )
-        registry = ChannelRegistrySnapshot(
-            descriptors=descriptors,
-            factories=factories,
-            identity=_registry_identity(descriptors, factories),
-            root_instance_token=root_token,
-        )
-        object.__setattr__(self, "core_definitions", definitions)
-        object.__setattr__(self, "root_instance_token", root_token)
-        object.__setattr__(self, "registry", registry)
-
-    @property
-    def identity(self) -> str:
-        """Return the content identity of the merged committed registry."""
-
-        return self.registry.identity
-
-    @property
-    def descriptors(self) -> tuple[ChannelDescriptor, ...]:
-        """Expose the merged descriptor projection without a mutable registry."""
-
-        return self.registry.descriptors
-
-    def definition(self, channel_name: str) -> CoreChannelDefinition | None:
-        """Resolve one Core definition by exact channel name."""
-
-        for definition in self.core_definitions:
-            if definition.name == channel_name:
-                return definition
-        return None
 
 
-CHANNELS = ServiceKey["PluginChannels"]("core.channels")
+class Channels(Protocol):
+    """普通 provider 的贡献与原连接租约；目录不复制到 Snapshot。"""
+
+    async def register(self, ctx: Context, definition: ChannelDefinition) -> None: ...
+
+    def acquire_binding(self, snapshot_lease: Any, channel_name: str) -> ChannelBindingLease: ...
+
+    async def dispatch_outbound(
+        self, envelope: OutboundEnvelope, binding: ChannelBindingLease,
+    ) -> ChannelDeliveryReceipt: ...
+
+    async def recover_inbound(self, raw: RawInbound) -> bool: ...
 
 
-@dataclass(slots=True)
-class _ChannelRegistration:
-    owner: str
-    definition: ChannelDefinition
-    descriptor: ChannelDescriptor
-    owner_fiber: FiberHandle
-    activation_token: object
-    generation_id: str
-    incident_reporter: Callable[[str, str], IncidentView]
-    health: HealthHandle | None = None
-
-
-class _ChannelDeclarations:
-    """Own one Root-local declaration set until Core freezes it."""
-
-    def __init__(self) -> None:
-        self._registrations: dict[str, _ChannelRegistration] = {}
-        self._frozen: ChannelRegistrySnapshot | None = None
-
-    async def register(self, ctx: Context, definition: ChannelDefinition) -> None:
-        """Validate and register one blueprint as Fiber-owned Effects."""
-
-        normalized = _normalize_definition(definition)
-        owner_fiber = ctx.fiber
-        activation_token = owner_fiber.activation_token
-        if activation_token is None:
-            raise CompositionError(
-                "INACTIVE_FIBER",
-                f"{ctx.runtime.plugin_id} 当前 Fiber 没有 active activation",
-            )
-        registration: _ChannelRegistration | None = None
-
-        def setup() -> Callable[[], None]:
-            nonlocal registration
-            registration, cleanup = self._register(
-                ctx.runtime.plugin_id,
-                normalized,
-                owner_fiber,
-                activation_token,
-                ctx.generation_id,
-                ctx.report_incident,
-            )
-            return cleanup
-
-        registration_effect = await ctx.effect(
-            setup,
-            label=f"channel:{normalized.name}",
-        )
-        try:
-            health = await ctx.health(f"channel:{normalized.name}", required=True)
-        except BaseException:
-            await registration_effect.aclose()
-            raise
-        assert registration is not None
-        registration.health = health
-
-    def freeze(
-        self,
-        root_instance_token: object,
-        *,
-        factory_provenance_by_owner: Mapping[
-            str,
-            ChannelFactoryFreezeInput | tuple[str, str, str],
-        ]
-        | None = None,
-    ) -> ChannelRegistrySnapshot:
-        """Freeze declarations with Core-supplied factory provenance."""
-
-        if self._frozen is not None:
-            if self._frozen.root_instance_token is not root_instance_token:
-                raise RuntimeError("channel declaration registry 属于另一棵 Root")
-            return self._frozen
-        provenance = factory_provenance_by_owner or {}
-        registrations = tuple(
-            sorted(self._registrations.values(), key=lambda item: item.definition.name)
-        )
-        descriptors = tuple(item.descriptor for item in registrations)
-        factories = tuple(
-            sorted(
-                (
-                    _make_provenance(item, provenance.get(item.owner))
-                    for item in registrations
-                ),
-                key=_factory_sort_key,
-            )
-        )
-        snapshot = ChannelRegistrySnapshot(
-            descriptors=descriptors,
-            factories=factories,
-            identity=_registry_identity(descriptors, factories),
-            root_instance_token=root_instance_token,
-        )
-        self._frozen = snapshot
-        return snapshot
-
-    def _register(
-        self,
-        owner: str,
-        definition: ChannelDefinition,
-        owner_fiber: FiberHandle,
-        activation_token: object,
-        generation_id: str,
-        incident_reporter: Callable[[str, str], IncidentView],
-    ) -> tuple[_ChannelRegistration, Callable[[], None]]:
-        if self._frozen is not None:
-            raise CompositionError(
-                "PLUGIN_CHANNELS_FROZEN",
-                "插件 channel 声明已冻结，不能新增",
-            )
-        if definition.name in self._registrations:
-            raise CompositionError(
-                "DUPLICATE_PLUGIN_CHANNEL",
-                f"插件 channel 名称重复: {definition.name}",
-            )
-        descriptor = ChannelDescriptor(
-            owner=owner,
-            name=definition.name,
-            capabilities=tuple(sorted(definition.capabilities, key=lambda item: item.value)),
-            factory_export=definition.factory_export,
-            inbound_identity=definition.inbound_identity,
-            credential_paths=definition.credential_paths,
-        )
-        registration = _ChannelRegistration(
-            owner=owner,
-            definition=definition,
-            descriptor=descriptor,
-            owner_fiber=owner_fiber,
-            activation_token=activation_token,
-            generation_id=generation_id,
-            incident_reporter=incident_reporter,
-        )
-        self._registrations[definition.name] = registration
-
-        def cleanup() -> None:
-            if self._registrations.get(definition.name) is registration:
-                del self._registrations[definition.name]
-
-        return registration, cleanup
-
-
-class PluginChannels:
-    """Expose only Fiber-owned channel blueprint registration to plugins."""
-
-    def __init__(self, root_instance_token: object) -> None:
-        self._root_instance_token = root_instance_token
-        self._declarations = _ChannelDeclarations()
-
-    async def register(self, ctx: Context, definition: ChannelDefinition) -> None:
-        """Register one channel blueprint through the Core-owned collector."""
-
-        if (
-            ctx._root_instance_token() is not self._root_instance_token
-            or ctx.require(CHANNELS) is not self
-        ):
-            raise CompositionError(
-                "CHANNEL_SERVICE_ROOT_MISMATCH",
-                "插件 channel Service 不属于当前 Root",
-            )
-        await self._declarations.register(ctx, definition)
-
-
-def _freeze_plugin_channels(
-    value: object,
-    root_instance_token: object,
-    *,
-    factory_provenance_by_owner: Mapping[
-        str,
-        ChannelFactoryFreezeInput | tuple[str, str, str],
-    ]
-    | None = None,
-) -> ChannelRegistrySnapshot:
-    """Freeze the exact Core-created channel declaration facade."""
-
-    if not isinstance(value, PluginChannels):
-        raise RuntimeError("RuntimeSnapshot channel Service 类型无效")
-    if value._root_instance_token is not root_instance_token:
-        raise RuntimeError("RuntimeSnapshot channel Service 不属于 exact Root")
-    return value._declarations.freeze(
-        root_instance_token,
-        factory_provenance_by_owner=factory_provenance_by_owner,
-    )
-
-
-def _normalize_definition(definition: ChannelDefinition) -> ChannelDefinition:
-    if not isinstance(definition, ChannelDefinition):
-        raise TypeError("PluginChannels.register 只接受 ChannelDefinition")
-    return ChannelDefinition(
-        name=definition.name,
-        capabilities=frozenset(definition.capabilities),
-        factory_export=definition.factory_export,
-        inbound_identity=definition.inbound_identity,
-        credential_paths=tuple(definition.credential_paths),
-    )
-
-
-def _make_provenance(
-    registration: _ChannelRegistration,
-    supplied: ChannelFactoryFreezeInput | tuple[str, str, str] | None,
-) -> ChannelFactoryProvenance:
-    if supplied is None:
-        source = ChannelFactoryFreezeInput(registration.generation_id)
-        return ChannelFactoryProvenance(
-            plugin_id=registration.owner,
-            generation_id=source.generation_id,
-            channel_name=registration.definition.name,
-            source_revision=source.source_revision,
-            config_revision=source.config_revision,
-            factory_export=registration.definition.factory_export,
-        )
-    if isinstance(supplied, ChannelFactoryFreezeInput):
-        result = ChannelFactoryProvenance(
-            plugin_id=registration.owner,
-            generation_id=supplied.generation_id,
-            channel_name=registration.definition.name,
-            source_revision=supplied.source_revision,
-            config_revision=supplied.config_revision,
-            factory_export=registration.definition.factory_export,
-        )
-    elif isinstance(supplied, tuple) and len(supplied) == 3:
-        result = ChannelFactoryProvenance(
-            plugin_id=registration.owner,
-            generation_id=supplied[0],
-            channel_name=registration.definition.name,
-            source_revision=supplied[1],
-            config_revision=supplied[2],
-            factory_export=registration.definition.factory_export,
-        )
-    else:
-        raise TypeError("channel factory provenance 输入类型无效")
-    return result
-
-
-def _factory_sort_key(item: ChannelFactoryProvenance) -> tuple[str, str, str, str, str, str]:
-    return (
-        item.plugin_id,
-        item.generation_id,
-        item.channel_name,
-        item.source_revision,
-        item.config_revision,
-        item.factory_export,
-    )
-
-
-def _registry_identity(
-    descriptors: tuple[ChannelDescriptor, ...],
-    factories: tuple[ChannelFactoryProvenance, ...],
-) -> str:
-    payload = {
-        "descriptors": [
-            {
-                "owner": item.owner,
-                "name": item.name,
-                "capabilities": [capability.value for capability in item.capabilities],
-                "factory_export": item.factory_export,
-                "inbound_identity": (
-                    None
-                    if item.inbound_identity is None
-                    else item.inbound_identity.value
-                ),
-                "credential_paths": list(item.credential_paths),
-            }
-            for item in descriptors
-        ],
-        "factories": [
-            {
-                "plugin_id": item.plugin_id,
-                "generation_id": item.generation_id,
-                "channel_name": item.channel_name,
-                "source_revision": item.source_revision,
-                "config_revision": item.config_revision,
-                "factory_export": item.factory_export,
-            }
-            for item in factories
-        ],
-    }
-    return hashlib.sha256(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-
-
-def _credential_paths(value: object, *, allow_empty: bool = False) -> tuple[str, ...]:
-    if not isinstance(value, tuple) or (not allow_empty and not value):
-        raise ValueError("credential_paths 必须是非空 tuple")
-    if not value:
-        return ()
-    result: list[str] = []
-    for path in value:
-        if not isinstance(path, str) or not path or path.strip() != path:
-            raise ValueError("credential_paths 必须是非空字符串")
-        if any(not part or part in {".", ".."} for part in path.split(".")):
-            raise ValueError(f"credential path 无效: {path}")
-        if path in result:
-            raise ValueError(f"credential_paths 重复: {path}")
-        result.append(path)
-    return tuple(result)
-
-
-def _credential_refs(
-    value: Mapping[str, CredentialRef],
-) -> Mapping[str, CredentialRef]:
-    if not isinstance(value, Mapping):
-        raise TypeError("credentials 必须是 mapping")
-    result: dict[str, CredentialRef] = {}
-    for path in sorted(value):
-        ref = value[path]
-        if not isinstance(path, str) or not isinstance(ref, CredentialRef):
-            raise TypeError("credentials 必须映射到 CredentialRef")
-        if path != ".".join(ref.path):
-            raise ValueError(f"credential path 与 ref 不一致: {path}")
-        result[path] = ref
-    return MappingProxyType(result)
+CHANNELS = ServiceKey[Channels]("plugin.channels")
 
 
 def _freeze_channel_config(value: object, *, seen: frozenset[int] = frozenset()) -> object:
@@ -1738,6 +1262,7 @@ def _optional_string(value: object, field_name: str) -> str | None:
 
 __all__ = [
     "CHANNELS",
+    "Channels",
     "ChannelAdapter",
     "ChannelCapability",
     "ChannelCommitRole",
@@ -1747,7 +1272,12 @@ __all__ = [
     "ChannelControlPort",
     "ChannelDeliveryReceipt",
     "ChannelFactoryContext",
+    "ChannelDurableInboundPort",
     "ChannelIngressPort",
+    "DURABLE_ATTACHMENT_REFS",
+    "DURABLE_HANDOFF_ID",
+    "DURABLE_INBOUND_MARKER",
+    "DURABLE_PROVIDER_MESSAGE_ID",
     "ChannelIdentityPort",
     "ChannelReady",
     "ChannelTerminalStatus",
@@ -1761,19 +1291,12 @@ __all__ = [
     "ControlReceipt",
     "ControlResponseBodies",
     "ChannelDefinition",
-    "ChannelDescriptor",
-    "CoreChannelDefinition",
-    "CommittedChannelCatalog",
-    "ChannelFactoryFreezeInput",
-    "ChannelFactoryProvenance",
-    "ChannelRegistrySnapshot",
     "InboundEnvelope",
     "InboundIdentity",
     "InboundOwner",
     "InboundState",
     "JsonValue",
     "OutboundEnvelope",
-    "PluginChannels",
     "ProviderClient",
     "ProviderClientFactory",
     "ProviderDeliveryReceipt",
@@ -1793,5 +1316,4 @@ __all__ = [
     "TurnStreamEventKind",
     "TurnStreamPayload",
     "TurnStreamPort",
-    "_freeze_plugin_channels",
 ]

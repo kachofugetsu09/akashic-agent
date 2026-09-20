@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.plugins.manager import PluginManager
+from agent.plugins.selection import PluginSelection
 from bus.event_bus import EventBus
 from plugins.eventmail.store import EventMailStore
 
@@ -341,7 +342,10 @@ def _verify_core(contract: InteropContract) -> dict[str, object]:
         raise GateError(
             f"当前 Core 不包含批准合同: {contract.core_contract} head={head}"
         )
-    missing = [case for case in contract.core_cases if not (ROOT / case).is_file()]
+    missing = [
+        case for case in contract.core_cases
+        if not (ROOT / case.split("::", 1)[0]).is_file()
+    ]
     if missing:
         raise GateError(f"Core fixture 缺失: {missing}")
     return {
@@ -423,14 +427,11 @@ def _verify_plugin(plugin: PluginContract, root: Path) -> dict[str, object]:
     dirty = tuple(_git(root, "status", "--porcelain").splitlines())
     if dirty:
         raise GateError(f"plugin checkout 非 clean: {plugin.id} {dirty}")
-    manifest_path = root / "akashic.plugin.toml"
-    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("api_version") != 3:
-        raise GateError(f"plugin 不是 pure v3: {plugin.id}")
-    if manifest.get("name") != plugin.id:
-        raise GateError(
-            f"plugin manifest identity 不匹配: {plugin.id} != {manifest.get('name')}"
-        )
+    from agent.plugins.static_manifest import load_static_plugin_manifest
+
+    identity = load_static_plugin_manifest(root)
+    if identity.name != plugin.id:
+        raise GateError(f"plugin source identity 不匹配: {plugin.id} != {identity.name}")
     missing_cases = [case for case in plugin.cases if not (root / case).is_file()]
     if missing_cases:
         raise GateError(f"plugin fixture 缺失: {plugin.id} {missing_cases}")
@@ -498,12 +499,13 @@ async def _run_coexistence_probe(
             ),
         )
         workspace = root / "workspace"
+        workspace.mkdir()
+        PluginSelection(workspace).initialize()
         data_root = workspace / "plugin-data" / f"{plugin_id}-builtin"
         data_root.mkdir(parents=True)
-        _ = (data_root / "config.local.toml").write_text(
-            config_toml,
-            encoding="utf-8",
-        )
+        from agent.plugin_composition.config_input import save_config
+
+        save_config(data_root, tomllib.loads(config_toml))
         content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         baseline = PluginManager(
             plugin_dirs=[content_dir],
@@ -526,6 +528,13 @@ async def _run_coexistence_probe(
         row_count = -1
         try:
             await manager.load_all()
+            # 同一 workspace 的重启保留基线；显式发布新增的普通插件。
+            candidate = await manager.prepare_candidate(plugin_id)
+            if candidate is None:
+                raise GateError(f"coexistence 插件未进入候选: {plugin_id}")
+            publication = await manager.publish_prepared(plugin_id)
+            if publication["publication_state"] != "committed":
+                raise GateError(f"coexistence 插件未提交: {plugin_id}")
             store = EventMailStore(content_path)
             row_count = sum(store.state_counts().values())
             if row_count != expected_rows:

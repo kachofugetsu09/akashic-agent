@@ -18,13 +18,6 @@ if TYPE_CHECKING:
     from agent.plugin_composition.bindings import Bindings
 
 
-class ModelRole(StrEnum):
-    DEFAULT = "default"
-    FAST = "fast"
-    AGENT = "agent"
-    VISION = "vision"
-
-
 class ModelKind(StrEnum):
     CHAT = "chat"
     EMBEDDING = "embedding"
@@ -162,7 +155,7 @@ class BoundModelDescriptor:
     driver_contract_version: str
     auth_identity: str
     model: str
-    role: ModelRole
+    role: str
     reasoning_effort: str | None
     capabilities: ModelCapabilities
     capability_sources: CapabilitySources
@@ -263,7 +256,7 @@ class DriverEmbeddingModel(Protocol):
 
 
 class ModelExecution(Protocol):
-    def chat(self, role: ModelRole) -> BoundChatModel: ...
+    def chat(self, role: str) -> BoundChatModel: ...
 
 
 class ChatModels(Protocol):
@@ -382,7 +375,7 @@ class ModelCatalogSnapshot:
     revision: int
     connections: tuple[ConnectionDescriptor, ...]
     models: tuple[ModelDescriptor, ...]
-    role_bindings: Mapping[ModelRole, str]
+    role_bindings: Mapping[str, str]
     default_embedding_model_id: str | None
 
     def __post_init__(self) -> None:
@@ -416,123 +409,6 @@ class ModelCatalog(Protocol):
         self,
         selection: ChatModelSelection,
     ) -> ChatModelSelection: ...
-
-
-@dataclass(frozen=True, slots=True)
-class AddConnection:
-    expected_revision: int
-    connection_id: str
-    name: str
-    driver_id: str
-    endpoint: str
-    auth_identity: str
-    credential: Mapping[str, str]
-    driver_config: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class UpdateConnection:
-    expected_revision: int
-    connection_id: str
-    name: str
-    auth_identity: str
-    endpoint: str | None = None
-    credential: Mapping[str, str] | None = None
-    driver_config: Mapping[str, Any] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class DisableConnection:
-    expected_revision: int
-    connection_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class AddModel:
-    expected_revision: int
-    model_id: str
-    connection_id: str
-    kind: ModelKind
-    model: str
-    capabilities: ModelCapabilities
-    capability_sources: CapabilitySources
-    default_reasoning_effort: str | None = None
-    driver_config: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class SetDefaultModel:
-    expected_revision: int
-    role: ModelRole | None
-    model_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class SyncModels:
-    expected_revision: int
-    connection_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class StartConnectionAuth:
-    driver_id: str
-    connection_id: str
-    input: Mapping[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class FinishConnectionAuth:
-    expected_revision: int
-    attempt_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class CancelConnectionAuth:
-    attempt_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class CreateConnectionWithModel:
-    """Probe and commit one new connection and its first model atomically."""
-
-    connection: AddConnection
-    model: AddModel
-
-
-ModelChange: TypeAlias = (
-    AddConnection
-    | UpdateConnection
-    | DisableConnection
-    | AddModel
-    | SetDefaultModel
-    | SyncModels
-    | StartConnectionAuth
-    | FinishConnectionAuth
-    | CancelConnectionAuth
-    | CreateConnectionWithModel
-)
-
-
-@dataclass(frozen=True, slots=True)
-class SettingsReceipt:
-    revision: int
-    status: str
-    attempt_id: str | None = None
-    challenge: Mapping[str, Any] | None = None
-
-    def __post_init__(self) -> None:
-        if self.challenge is not None:
-            object.__setattr__(
-                self,
-                "challenge",
-                _freeze_json_mapping(self.challenge),
-            )
-
-
-class ModelSettings(Protocol):
-    async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]: ...
-
-    async def apply(self, command: ModelChange) -> SettingsReceipt: ...
 
 
 class CredentialHandle(Protocol):
@@ -633,7 +509,6 @@ class ModelDrivers(Protocol):
 CHAT_MODELS = ServiceKey[ChatModels]("models.chat.v1")
 EMBEDDINGS = ServiceKey[Embeddings]("models.embeddings.v1")
 MODEL_CATALOG = ServiceKey[ModelCatalog]("models.catalog.v1")
-MODEL_SETTINGS = ServiceKey[ModelSettings]("models.settings.v1")
 MODEL_DRIVERS = ServiceKey[ModelDrivers]("models.drivers.v1")
 
 
@@ -744,13 +619,10 @@ def _freeze_json_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 __all__ = [
-    "AddConnection",
-    "AddModel",
     "AuthenticationError",
     "BoundChatModel",
     "BoundEmbeddingModel",
     "BoundModelDescriptor",
-    "CancelConnectionAuth",
     "CapabilitySources",
     "CHAT_MODELS",
     "ChatModels",
@@ -759,7 +631,6 @@ __all__ = [
     "ContentSafetyError",
     "ContextLengthError",
     "CredentialHandle",
-    "DisableConnection",
     "DiscoveredModel",
     "DriverConnection",
     "DriverConnectionDescriptor",
@@ -773,18 +644,15 @@ __all__ = [
     "open_embedding",
     "Embeddings",
     "EmbeddingSpaceDescriptor",
-    "FinishConnectionAuth",
     "LLMResponse",
     "MODEL_CATALOG",
     "MODEL_CALL_STATS",
     "ModelCallStats",
     "MODEL_DRIVERS",
-    "MODEL_SETTINGS",
     "ModelAvailability",
     "ModelCapabilities",
     "ModelCatalog",
     "ModelCatalogSnapshot",
-    "ModelChange",
     "ModelContinuation",
     "ModelDescriptor",
     "ModelDriverDefinition",
@@ -793,8 +661,6 @@ __all__ = [
     "ModelExecution",
     "ModelKind",
     "ModelRequest",
-    "ModelRole",
-    "ModelSettings",
     "ModelTimeoutError",
     "ModelUnavailableError",
     "ModelUsage",
@@ -802,13 +668,8 @@ __all__ = [
     "QuotaError",
     "RateLimitError",
     "RevisionConflictError",
-    "SetDefaultModel",
-    "SettingsReceipt",
-    "StartConnectionAuth",
-    "SyncModels",
     "StreamCallback",
     "ToolCall",
     "TransportError",
-    "UpdateConnection",
     "UsageCoverage",
 ]

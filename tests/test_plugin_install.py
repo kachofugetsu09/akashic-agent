@@ -14,6 +14,7 @@ from agent.plugins.artifacts import (
     ArtifactPointer,
     discard_latest_pointer,
     read_pointer,
+    resolve_pointer,
 )
 from agent.plugins.install import (
     finalize_uninstall_plugin,
@@ -25,9 +26,104 @@ from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
-    materialize_static_command,
+    materialize_command,
 )
 from agent.plugins.source_resolver import resolve_plugin_sources
+
+
+def test_installed_pointer_loads_code_identity_without_toml(tmp_path: Path) -> None:
+    """安装制品与源码采用同一入口规则，不额外要求空 TOML。"""
+    artifact = tmp_path / ".artifacts" / "probe-version"
+    artifact.mkdir(parents=True)
+    entry = artifact / "plugin.py"
+    entry.write_text('name = "probe"\nversion = "1.0"\napi_version = 3\n')
+    pointer = ArtifactPointer(".artifacts/probe-version")
+    assert resolve_pointer(tmp_path, pointer) == artifact
+    entry.unlink()
+    with pytest.raises(ValueError, match="plugin.py 必须是普通文件"):
+        resolve_pointer(tmp_path, pointer)
+
+
+def test_code_identity_is_read_without_execution_or_toml(tmp_path: Path) -> None:
+    """身份不依赖目录名或导入，也不要求空策略文件。"""
+    from types import ModuleType
+    from agent.plugins.composable import ComposablePlugin
+
+    (tmp_path / "plugin.py").write_text(
+        'name: str = "probe"\nversion = "1.2.3"\napi_version = 3\n'
+        'raise AssertionError("metadata discovery executed plugin")\n'
+    )
+    identity = load_static_plugin_manifest(tmp_path)
+    assert (identity.name, identity.version, identity.api_version) == ("probe", "1.2.3", 3)
+    assert not (tmp_path / "akashic.plugin.toml").exists()
+    module = ModuleType("loaded_probe")
+    module.apply = lambda ctx: None
+    plugin = ComposablePlugin.from_module(module, identity)
+    assert (plugin.name, plugin.version, plugin.api_version) == ("probe", "1.2.3", 3)
+
+
+@pytest.mark.parametrize("declaration", [
+    'name = "pro" + "be"',
+    'from elsewhere import name',
+    'if True:\n    name = "probe"',
+    'name = "probe"\nname = "again"',
+    'name = other = "probe"',
+])
+def test_code_identity_requires_one_direct_literal(tmp_path: Path, declaration: str) -> None:
+    (tmp_path / "plugin.py").write_text(
+        declaration + '\nversion = "1.0.0"\napi_version = 3\n'
+    )
+    with pytest.raises(ValueError, match="身份"):
+        load_static_plugin_manifest(tmp_path)
+
+
+@pytest.mark.parametrize("api", ["True", "2", '"3"'])
+def test_code_identity_rejects_unsupported_api_before_import(tmp_path: Path, api: str) -> None:
+    (tmp_path / "plugin.py").write_text(
+        f'name = "probe"\nversion = "1.0.0"\napi_version = {api}\n'
+        'raise AssertionError("must reject before import")\n'
+    )
+    with pytest.raises(ValueError, match="api_version"):
+        load_static_plugin_manifest(tmp_path)
+
+
+@pytest.mark.parametrize("declaration", [
+    'name = "other"',
+    'entrypoint = "nested/custom.py"',
+    '[validation]\nexclude_data_paths = ["secret.txt"]',
+    'invalid TOML [',
+])
+def test_plugin_identity_and_discovery_ignore_old_policy_file(tmp_path: Path, declaration: str) -> None:
+    """旧策略不改变代码身份、摘要或入口发现，也不会被解析。"""
+    _write_v3_plugin(tmp_path, name="probe")
+    identity = load_static_plugin_manifest(tmp_path)
+    (tmp_path / "akashic.plugin.toml").write_text(declaration + "\n")
+    assert load_static_plugin_manifest(tmp_path) == identity
+    [source] = resolve_plugin_sources([tmp_path])
+    assert source.plugin_root == tmp_path.resolve()
+    assert source.static_manifest == identity
+    (tmp_path / "plugin.py").unlink()
+    assert resolve_plugin_sources([tmp_path]) == []
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
+def test_manifest_requires_plain_root_plugin_file(tmp_path: Path, kind: str) -> None:
+    """安装和发现不能把其他 Python 文件猜作入口。"""
+    repo = tmp_path / "source"
+    _write_v3_plugin(repo, name="probe")
+    entry = repo / "plugin.py"
+    entry.rename(repo / "custom.py")
+    if kind == "symlink":
+        entry.symlink_to(repo / "custom.py")
+    elif kind == "directory":
+        entry.mkdir()
+    with pytest.raises(ValueError, match="plugin.py"):
+        load_static_plugin_manifest(repo)
+    if kind == "symlink":
+        with pytest.raises(ValueError, match="plugin.py"):
+            resolve_plugin_sources([repo])
+    else:
+        assert resolve_plugin_sources([repo]) == []
 
 
 def test_plugins_root_honors_explicit_environment(
@@ -78,11 +174,8 @@ def test_install_git_plugin_uses_static_v3_manifest(tmp_path: Path) -> None:
     assert not (pointer_state.parent / ".stable.json").exists()
     assert not (pointer_state.parent / ".latest.json").exists()
     assert (result.installed_path / "plugin.py").exists()
-    installed_manifest = result.installed_path / "akashic.plugin.toml"
-    assert installed_manifest.is_file()
-    assert (
-        tomllib.loads(installed_manifest.read_text(encoding="utf-8"))["name"] == "feed"
-    )
+    assert not (result.installed_path / "akashic.plugin.toml").exists()
+    assert load_static_plugin_manifest(result.installed_path).name == "feed"
     assert (result.data_path / "state.json").exists()
     manifest = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
     assert manifest == {"plugins": {"feed@lab": {"enabled": True}}}
@@ -94,7 +187,7 @@ def test_install_git_plugin_reads_static_v3_manifest(tmp_path: Path) -> None:
         repo,
         name="citation",
         version="2.0.0",
-        module_source="raise RuntimeError('must not import during install')\n",
+        module_source="name = 'citation'\nversion = '2.0.0'\napi_version = 3\nraise RuntimeError('must not import during install')\n",
     )
     _commit(repo)
 
@@ -108,10 +201,10 @@ def test_install_git_plugin_reads_static_v3_manifest(tmp_path: Path) -> None:
     assert result.plugin_name == "citation"
     assert result.plugin_version == "2.0.0"
     assert (result.installed_path / "plugin.py").is_file()
-    assert (result.installed_path / "akashic.plugin.toml").is_file()
+    assert not (result.installed_path / "akashic.plugin.toml").exists()
 
 
-def test_install_git_plugin_prepares_declared_mcp_runtime(
+def test_install_git_plugin_prepares_discovered_python_runtime(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -120,18 +213,6 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
     (repo / "mcp" / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
     (repo / "mcp" / "requirements.txt").write_text("", encoding="utf-8")
     _write_v3_plugin(repo, name="feed")
-    (repo / "akashic.plugin.toml").write_text(
-        (repo / "akashic.plugin.toml").read_text(encoding="utf-8")
-        + "\n"
-        + "[[python]]\n"
-        + 'requirements = "mcp/requirements.txt"\n'
-        + "\n"
-        + "[[mcp]]\n"
-        + 'name = "feed"\n'
-        + 'command = ["python", "mcp/run_mcp.py"]\n'
-        + 'cwd = "mcp"\n',
-        encoding="utf-8",
-    )
     _commit(repo)
     result = install_git_plugin(
         workspace=tmp_path / "workspace",
@@ -153,8 +234,9 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
     code = store.archive.open(code_ref)
     manifest = load_static_plugin_manifest(code)
     environment = store.open(ref, code, manifest.python[0])
-    command = materialize_static_command(
-        code, manifest, manifest.mcp_servers[0], environment_root=environment
+    command = materialize_command(
+        code, manifest.python, ("python", "mcp/run_mcp.py"),
+        environment_root=environment,
     )
     assert (
         subprocess.run(
@@ -208,11 +290,6 @@ def test_retry_reuses_artifact_and_fixed_python_environment(
     (repo / "mcp").mkdir(parents=True)
     (repo / "mcp" / "requirements.txt").write_text("", encoding="utf-8")
     _write_v3_plugin(repo, name="feed", marker="v1")
-    (repo / "akashic.plugin.toml").write_text(
-        (repo / "akashic.plugin.toml").read_text(encoding="utf-8")
-        + '\n[[python]]\nrequirements = "mcp/requirements.txt"\n',
-        encoding="utf-8",
-    )
     _commit(repo)
 
     home = tmp_path / "plugins-home"
@@ -740,15 +817,6 @@ def _write_v3_plugin(
         module_source = "\n".join(lines) + "\n"
     (root / "plugin.py").write_text(module_source, encoding="utf-8")
 
-    # 2. Write the immutable static identity consumed by the installer.
-    (root / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        f"name = {name!r}\n"
-        f"version = {version!r}\n"
-        "api_version = 3\n"
-        'entrypoint = "plugin.py"\n',
-        encoding="utf-8",
-    )
 
 
 def _commit(repo: Path) -> None:

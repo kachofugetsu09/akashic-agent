@@ -10,7 +10,7 @@ import re
 import sqlite3
 import threading
 from bisect import bisect_right
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Generator, Mapping
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from dataclasses import dataclass
@@ -244,6 +244,14 @@ class MessageConflict(ValueError):
 
 class WriterExpired(RuntimeError):
     """任务已释放写入权，不能再提交新的输出。"""
+
+
+def read_persisted_messages(path: str | Path, session_id: str) -> tuple[Message, ...]:
+    """只读已有库的原消息，不初始化 schema；缺失或损坏直接报错。"""
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT * FROM messages WHERE session_key = ? ORDER BY seq", (session_id,))
+        return tuple(_message(row) for row in rows)
 
 
 class MessageLog:
@@ -556,7 +564,7 @@ class MessageCatalog:
             rows = self._log._connection.execute("SELECT key, attributes FROM sessions ORDER BY key").fetchall()
         return MappingProxyType({row["key"]: decode_attributes(row["attributes"]) for row in rows})
 
-    async def follow(self) -> AsyncIterator[Mapping[str, int]]:
+    async def follow(self) -> AsyncGenerator[Mapping[str, int]]:
         """先订阅再取 heads；通知可合并，消费者始终按快照重读事实。"""
         event = asyncio.Event()
         with self._log._lock:

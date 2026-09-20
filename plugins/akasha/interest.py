@@ -6,9 +6,8 @@ from datetime import datetime
 import numpy as np
 
 from agent.plugin_composition import ServiceKey
-from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
-from session.message import Input, Output
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
+from agent.plugin_contracts import Input, Output
 
 from .learning import Learning, LearningConfig
 from .projection import input_features

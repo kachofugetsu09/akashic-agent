@@ -7,14 +7,18 @@ import shutil
 from typing import cast
 
 import pytest
+
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+from agent.plugin_composition.config_input import save_config
 from pydantic import ValidationError
 
-from agent.persona import VedaLoadError
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.assets import INSTALLED_ASSETS
+from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import get_current_runtime_snapshot, lease_runtime_snapshot
+from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.content.plugin import check_text
@@ -25,23 +29,43 @@ from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from session.log import MessageLog
 from session.artifact_store import ArtifactStore
 from session.message import ContentPart, Input, Output, ToolResult
-from tests.test_message_push_plugin import storage
+
+
+def _system_prompt(material: Mapping[str, object]) -> str:
+    """读取并窄化 prompt 材料中的系统提示。"""
+    value = material["system_prompt"]
+    if not isinstance(value, str):
+        raise AssertionError("system_prompt 必须是字符串")
+    return value
+
+
+def _environment_reminder(material: Mapping[str, object]) -> str:
+    """读取并窄化 prompt 材料中的 environment 提醒。"""
+    reminders = material["reminders"]
+    if not isinstance(reminders, (list, tuple)):
+        raise AssertionError("reminders 必须是列表")
+    for reminder in reminders:
+        if not isinstance(reminder, Mapping) or reminder.get("name") != "environment":
+            continue
+        value = reminder.get("text")
+        if not isinstance(value, str):
+            raise AssertionError("environment reminder 文本必须是字符串")
+        return value
+    raise AssertionError("缺少 environment reminder")
 
 
 def prompt_sources(sources):
-    for name in ("prompt", "standard_tools"):
+    for name in ("assets", "prompt", "standard_tools"):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
             sources / name,
             ignore=shutil.ignore_patterns("__pycache__"),
         )
     settings = (
-        sources.parent / "workspace/plugin-data/context-builtin/config.local.toml"
+        sources.parent / "workspace/plugin-data/context-builtin"
     )
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(
-        'summary_source = []\nprompt_sources = {default_prompt = "prompt", skills = "standard_tools"}\n'
-    )
+    save_config(settings, {"summary_source": [], "prompt_sources": {"default_prompt": "prompt", "skills": "standard_tools"}})
     veda = sources.parent / "workspace/memory/VEDA.md"
     veda.parent.mkdir(parents=True, exist_ok=True)
     veda.write_text("唯一人格甲")
@@ -52,9 +76,10 @@ def prompt_sources(sources):
     (sources / "fixture_skills/plugin.py").write_text('''api_version = 3
 name = "fixture_skills"
 version = "1.0.0"
-skill_roots = ("skills",)
-async def apply(ctx, config):
-    pass
+from agent.plugin_composition.assets import INSTALLED_ASSETS
+inject = (INSTALLED_ASSETS,)
+async def apply(ctx):
+    await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
 ''')
     personal = sources.parent / "workspace/skills/unmanaged"
     personal.mkdir(parents=True, exist_ok=True)
@@ -64,8 +89,12 @@ async def apply(ctx, config):
 @asynccontextmanager
 async def application(tmp_path):
     sources = tmp_path / "plugins"
-    store, log = storage(tmp_path / "workspace")
-    for name in ("context", "tools"):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    initialize_plugin_workspace(workspace)
+    log = MessageLog(workspace / "sessions.db")
+    store = ArtifactStore(workspace / "sessions.db")
+    for name in ("content", "context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     prompt_sources(sources)
@@ -108,24 +137,26 @@ async def test_prompt_reads_veda_and_fixed_input_time_without_rewriting_messages
                 first = await view.prepare(original, source)
                 second = await view.prepare(original, source)
                 assert first == second
-                assert "唯一人格甲" in first.system_prompt
-                assert "load_skill" not in first.system_prompt
-                assert ("Telegram 渲染限制" in first.system_prompt) == (channel == "telegram_bot")
-                environment = next(part.text for part in first.reminders if part.name == "environment")
+                first_prompt = _system_prompt(first)
+                assert "唯一人格甲" in first_prompt
+                assert "load_skill" not in first_prompt
+                assert ("Telegram 渲染限制" in first_prompt) == (channel == "telegram_bot")
+                environment = _environment_reminder(first)
                 assert accepted.recorded_at.astimezone().isoformat() in environment
                 assert "input_id: input" in environment
                 assert "time_basis" in environment
                 assert ("channel_origin" in environment) == (channel is not None)
                 assert "Client Surface" not in str(first)
-                assert "example" in first.system_prompt
+                assert "example" in first_prompt
                 assert "非插件技能" not in str(first)
-                base_directory = next(line.removeprefix("资源目录：") for line in first.system_prompt.splitlines()
+                base_directory = next(line.removeprefix("资源目录：") for line in first_prompt.splitlines()
                                       if line.startswith("资源目录："))
                 assert (Path(base_directory) / "resource.txt").read_text() == "resource-a"
-                assert "读取 resource.txt" in first.system_prompt
+                assert "读取 resource.txt" in first_prompt
                 (tmp_path / "workspace/memory/VEDA.md").write_text("唯一人格乙")
                 third = await view.prepare(original, source)
-                assert "唯一人格乙" in third.system_prompt and "唯一人格甲" in first.system_prompt
+                third_prompt = _system_prompt(third)
+                assert "唯一人格乙" in third_prompt and "唯一人格甲" in first_prompt
                 assert log.reader("s").snapshot() == original
 
 
@@ -140,14 +171,32 @@ async def test_prompt_fails_on_missing_or_corrupt_veda_without_reset(tmp_path, p
             veda.write_bytes(payload)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             async with snapshot.composition_root.context.require(MATERIALS).bind() as view:
-                with pytest.raises(VedaLoadError, match="veda-reset"):
+                with pytest.raises(RuntimeError, match=r"persona\.py --workspace"):
                     await view.prepare((), "conversation")
         assert not veda.exists() if payload is None else veda.read_bytes() == payload
         assert not (tmp_path / "workspace/memory/veda-backups").exists()
 
 
 @pytest.mark.asyncio
-async def test_load_skill_reopens_original_tree_after_source_removal_and_restart(tmp_path):
+async def test_skill_catalog_cache_still_requires_the_calling_task_lease(tmp_path):
+    async with application(tmp_path) as (_, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            service = snapshot.composition_root.context.require(
+                ServiceKey("standard_tools.skill_inspection.v1")
+            )
+            assert [item["name"] for item in service.list_skills()] == ["example"]
+
+            async def inherited_task():
+                return service.list_skills()
+
+            with pytest.raises(RuntimeError, match="当前任务的 runtime scope"):
+                await asyncio.create_task(inherited_task())
+        with pytest.raises(RuntimeError, match="当前任务的 runtime scope"):
+            service.list_skills()
+
+
+@pytest.mark.asyncio
+async def test_load_skill_uses_new_stable_tree_after_restart(tmp_path):
     async with application(tmp_path) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
@@ -157,11 +206,16 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
             metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
             state = cast(Mapping[str, object], metadata["state"])
             assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
-            original_root = snapshot.plugin_skill_index.records["example"].root_dir
-        # 原安装改变后，工具打开的是 capture 已归档的完整资源。
+            asset = next(
+                item
+                for item in ctx.require(INSTALLED_ASSETS)()
+                if item.owner_id == "fixture_skills" and item.category == "skills"
+            )
+            original_root = asset.root_dir / "example"
+        # 安装改变后，下一次 stable 只使用新生成的资源树。
         (tmp_path / "plugins/fixture_skills/skills/example/resource.txt").write_text("resource-b")
         (tmp_path / "plugins/fixture_skills/skills/example/SKILL.md").write_text("---\ndescription: updated\n---\n新版指令")
-    assert not original_root.exists()
+    assert (original_root / "resource.txt").read_text() == "resource-a"
     log = MessageLog(tmp_path / "workspace/sessions.db")
     store = ArtifactStore(tmp_path / "workspace/sessions.db")
     artifacts = ChannelAttachmentArtifactStore(
@@ -178,53 +232,21 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
             ctx = snapshot.composition_root.context
+            bindings = ctx.require(BINDINGS)
             replacement = ctx.require(TOOLS).bind(
-                ctx.require(ALL_TOOLS)().select("load_skill"), ctx.require(BINDINGS)
+                ctx.require(ALL_TOOLS)().select("load_skill"), bindings
             )
             assert replacement != reference
-    finally:
-        await host.terminate_all()
-        log.close()
-        store.close()
-    shutil.rmtree(tmp_path / "plugins")
-    log = MessageLog(tmp_path / "workspace/sessions.db")
-    store = ArtifactStore(tmp_path / "workspace/sessions.db")
-    artifacts = ChannelAttachmentArtifactStore(
-        workspace=tmp_path / "workspace", metadata_store=store
-    )
-    host = PluginManager(
-        [],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-        installed_cache_root=tmp_path / "home/cache",
-        message_log=log,
-        channel_attachment_store=artifacts,
-    )
-    try:
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with bindings.open(replacement, TOOLS) as (tools, metadata):
             async with tools.open(metadata) as tool:
-                newer = await tool.invoke("new", await tool.prepare({"skill": "example"}))
+                newer_arguments = await tool.prepare({"skill": "example"})
+                assert isinstance(newer_arguments, Mapping)
+                newer = await tool.invoke("new", newer_arguments)
                 current = cast(Mapping[str, object], json.loads(cast(str, newer.parts[0].value)))
                 assert current["instructions"] == "新版指令"
                 assert (Path(cast(str, current["base_directory"])) / "resource.txt").read_text() == "resource-b"
-        async with bindings.open(reference, TOOLS) as (tools, metadata):
-            assert "fixture_skills" not in get_current_runtime_snapshot().generations
-            async with tools.open(metadata) as tool:
-                arguments = await tool.prepare({"skill": "example"})
-                result = await tool.invoke("original", arguments)
-                assert result.outcome == "success"
-                value = cast(Mapping[str, object], json.loads(cast(str, result.parts[0].value)))
-                root = Path(cast(str, value["base_directory"]))
-                assert (root / "resource.txt").read_text() == "resource-a"
-                assert value["source_id"] == "fixture_skills"
-                assert (await tool.invoke("unknown", await tool.prepare({"skill": "unmanaged"}))).outcome == "error"
-                # 损坏已发布树必须报错；不能从安装路径补齐或伪造成功。
-                (root / "resource.txt").chmod(0o600)
-                (root / "resource.txt").write_text("tampered")
-                with pytest.raises(RuntimeError, match="文件树损坏"):
-                    await tool.invoke("retry", arguments)
     finally:
         await host.terminate_all()
         log.close()
@@ -253,7 +275,7 @@ async def test_default_reply_uses_prompt_and_real_skill_tool_with_provider_view(
         path.write_text(
             path.read_text().replace(
                 '"write_evidence", {})', '"load_skill", {"skill": "example"})'
-            )
+            ).replace('    await ctx.provide(ServiceKey("tools.cleanup.v1"), shell_cleanup)\n', '')
         )
 
     async with reply_application(tmp_path, replying=True, extra_sources=sources) as (log, host):

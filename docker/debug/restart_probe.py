@@ -583,16 +583,12 @@ def _write_mcp_plugin(
             "from collections.abc import AsyncIterator, Mapping\n"
             "from contextlib import asynccontextmanager\n"
             "from pathlib import Path\n"
-            "import tomllib\n"
             "from agent.plugin_composition import MCP_SERVERS, McpServerDefinition\n"
             "from plugins.tools.api import BoundTool, CallSource, ContentPart, Result\n"
             "from plugins.tools.plugin import TOOLS\n"
-            "_manifest = tomllib.loads(\n"
-            "    Path(__file__).with_name('akashic.plugin.toml').read_text(encoding='utf-8')\n"
-            ")\n"
             "api_version = 3\n"
             "name = 'restart_probe'\n"
-            "version = str(_manifest['version'])\n"
+            f"version = {version!r}\n"
             "inject = (MCP_SERVERS, TOOLS)\n"
             "\n"
             "class VersionTool:\n"
@@ -619,7 +615,7 @@ def _write_mcp_plugin(
             "    async def query(self, key: str) -> Result | None:\n"
             "        return None\n"
             "\n"
-            "async def apply(ctx, config):\n"
+            "async def apply(ctx):\n"
             "    @asynccontextmanager\n"
             "    async def open_version_for_context(_state: Mapping[str, object]) -> AsyncIterator[BoundTool]:\n"
             "        yield VersionTool(ctx)\n"
@@ -644,7 +640,14 @@ def _write_mcp_plugin(
             encoding="utf-8",
         )
 
-    # 2. 静态 manifest 冻结同一 MCP 合同，server 只写 disposable lifecycle。
+    else:
+        lines = module.read_text(encoding="utf-8").splitlines(keepends=True)
+        module.write_text("".join(
+            f"version = {version!r}\n" if line.startswith("version = ") else line
+            for line in lines
+        ), encoding="utf-8")
+
+    # 2. requirements 是安装输入，server 只写 disposable lifecycle。
     server_source = plugin_root / "restart_probe_server.py"
     if (
         not server_source.exists()
@@ -657,24 +660,7 @@ def _write_mcp_plugin(
     runtime = plugin_root / ".venv"
     if stage_runtime and not runtime.exists():
         venv.EnvBuilder(with_pip=False).create(runtime)
-    atomic_write_text(
-        plugin_root / "akashic.plugin.toml",
-        "schema_version = 1\n"
-        "name = 'restart_probe'\n"
-        f"version = {version!r}\n"
-        "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n\n"
-        "[[python]]\n"
-        "requirements = 'requirements.txt'\n\n"
-        "[[mcp]]\n"
-        "name = 'restart_probe'\n"
-        "command = ['python', 'restart_probe_server.py']\n"
-        f"env = {{VERSION = {version!r}, "
-        f"LIFECYCLE_LOG = {str(lifecycle)!r}}}\n"
-        "required_tools = ['version']\n"
-        "candidate_read_only_tools = ['version']\n",
-        domain="restart_gate_fixture",
-    )
+
 
 
 def _run_mcp_call(
@@ -1564,14 +1550,6 @@ def _install_startup_plugin(home: Path, name: str, source: str) -> Path:
         "api_version = 3\n" f"name = {name!r}\n" "version = '1.0.0'\n" f"{source}",
         encoding="utf-8",
     )
-    (plugin / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        f"name = {name!r}\n"
-        "version = '1.0.0'\n"
-        "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n",
-        encoding="utf-8",
-    )
     return root
 
 
@@ -1871,9 +1849,9 @@ def _inside_failures(report_dir: Path) -> int:
 
 
 def _configure_restart_gate(sandbox: Path) -> None:
-    reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
-    reply_config.parent.mkdir(parents=True, exist_ok=True)
-    reply_config.write_text("max_steps = 5\n", encoding="utf-8")
+    from agent.plugin_composition.config_input import save_config
+
+    save_config(sandbox / "workspace/plugin-data/reply-builtin", {"max_steps": 5})
     _write_mcp_plugin(
         "bootstrap",
         plugin_root=sandbox / "restart-plugins/restart_probe",

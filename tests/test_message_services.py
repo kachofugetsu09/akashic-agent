@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import CompositionError, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
@@ -12,6 +14,7 @@ from agent.plugins.snapshot import get_current_runtime_snapshot, lease_runtime_s
 from bus.event_bus import EventBus
 from session.log import MessageLog, WriterExpired
 from session.message import ContentPart, ContentReferences, Input
+from tests.fixtures.formal_plugins import MINIMAL_MESSAGE_PLUGINS, install_formal_plugins
 
 
 def write_plugins(root):
@@ -27,7 +30,7 @@ api_version = 3
 name = "{name}"
 version = "1.0.0"
 inject = (MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASKS, BINDINGS)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("probe.{name}"), ctx)
 ''')
 
@@ -37,6 +40,7 @@ async def test_formal_capabilities_use_real_owner_and_task_holds_exact_runtime(t
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -93,6 +97,7 @@ async def test_task_cancel_before_first_instruction_releases_admission_lease(tmp
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -131,6 +136,7 @@ async def test_candidate_caps_reject_formal_log_state_tasks_and_bindings(tmp_pat
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -139,10 +145,10 @@ async def test_candidate_caps_reject_formal_log_state_tasks_and_bindings(tmp_pat
         prepared = await host.prepare_candidate("one")
         assert prepared is not None
         generations = {**snapshot.generations, "one": prepared}
-        candidate, ready = await host._resolve_composition_root(
-            generations, candidate_owner=prepared, force_fresh=True,
+        candidate = await host._resolve_composition_root(
+            generations, candidate_owner=prepared,
         )
-        assert ready
+        assert candidate.receipt().ready
         try:
             ctx = candidate.context.require(ServiceKey("probe.one"))
             with pytest.raises(RuntimeError, match="candidate"):
@@ -178,7 +184,7 @@ api_version = 3
 name = "listener"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     async def start(event):
         async with ctx.runtime_scope():
             writer = ctx.require(MESSAGE_WRITERS).bind(
@@ -189,6 +195,7 @@ async def apply(ctx, config):
     await ctx.on(RUNTIME_STARTED, start)
 ''')
     log = MessageLog(tmp_path / "sessions.db") if formal_log else None
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -208,18 +215,13 @@ async def apply(ctx, config):
 
 @pytest.mark.asyncio
 async def test_actual_conversation_plugin_accepts_without_model_or_reply_and_shares_source_task(tmp_path):
-    import shutil
     from plugins.conversation.plugin import CONVERSATION
     from session.message import Control
 
-    sources = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / "conversation", sources / "conversation",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / "sources", sources / "sources",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    plugin_home, _ = install_formal_plugins(tmp_path, MINIMAL_MESSAGE_PLUGINS)
     log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home", message_log=log)
+    host = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
+                         installed_cache_root=plugin_home / "cache", message_log=log)
     entered = asyncio.Event()
     async def program(task, reader, source):
         assert source == "conversation"

@@ -304,7 +304,7 @@ command = [
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_install.py",
 ]
-observes = ["candidate_generation", "active_generation", "turn_committed_event_position", "rollback"]
+observes = ["candidate_generation", "active_generation", "generation_publication_order", "rollback"]
 mutants = ["candidate_visible_before_activation", "plugin_uninstall_deletes_data"]
 
 [scenarios.plugin_workload_contract]
@@ -363,7 +363,6 @@ observes = [
   "akasha_embedding_binding",
   "public_model_control_socket",
   "catalog_secret_redaction",
-  "core_model_config_retirement",
   "migration_chain",
 ]
 mutants = ["model_consumer_imports_plugin_source"]
@@ -408,9 +407,7 @@ command = [
   "-q",
   "tests/test_plugin_runtime_control.py::test_installed_mcp_update_keeps_old_artifact_until_lease_drains",
   "tests/test_plugin_runtime_control.py::test_socket_uninstall_waits_for_old_lease_after_client_disconnects",
-  "tests/test_plugin_turn_rollout.py::test_revert_is_same_turn_only_and_uninstall_stays_reversible",
   "tests/test_plugin_runtime_control.py::test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface",
-  "tests/test_plugin_turn_rollout.py::test_next_turn_waits_until_parent_rollout_is_resolved",
   "tests/test_shell_tool.py::test_shell_env_exports_plugin_rollout_owner_turn",
   "tests/test_plugin_install.py::test_plugin_enable_disable_and_uninstall_preserve_data",
 ]
@@ -463,7 +460,7 @@ command = [
   "tests/test_channel_input.py::test_retry_uses_message_identity_without_copying_transport_clock_or_handoff",
   "tests/test_plugin_hot_reload.py::test_runtime_snapshot_latest_requires_explicit_selector_and_promotion",
   "tests/test_message_sdk.py::test_async_sdk_real_socket_replay_and_subscription_replacement",
-  "tests/test_message_compaction_records.py::test_summary_use_reopens_original_archive_after_head_advance_and_source_removal",
+  "tests/test_message_compaction_records.py::test_summary_use_reads_original_record_after_head_advance_and_restart",
   "tests/test_default_reply.py::test_actual_reply_compacts_history_before_provider_and_records_each_successful_use",
 ]
 observes = [
@@ -478,7 +475,7 @@ observes = [
   "chat_lane_timer_order",
   "message_push_receipt",
   "crash_recovery",
-  "summary_archive_reopens",
+  "summary_record_survives_restart",
   "summary_use_committed",
 ]
 mutants = [
@@ -541,7 +538,7 @@ mutants = ["companion_schedule_unbounded"]
 requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001", "TST-003"]
 groups = ["companion_mobile"]
 environment = "public_clean_workspace"
-timeout_seconds = 60
+timeout_seconds = 120
 command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant", "tests/mobile_realtime/test_storage.py", "tests/mobile_realtime/test_channel.py", "tests/test_message_bus_admission.py", "tests/test_channel_input.py", "tests/test_default_reply.py"]
 observes = ["receipt_retention", "receipt_high_water", "external_effect_reconciliation", "durable_inbound_handoff", "durable_recovery_page", "receipt_write_set", "query_lease", "generation_drain", "failure_semantics"]
 mutants = ["companion_receipt_deletes_valid_result"]

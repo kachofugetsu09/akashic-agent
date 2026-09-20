@@ -526,6 +526,6 @@ parent stable T
 - snapshot 事务：`agent/plugins/snapshot.py::RuntimeSnapshotStore`
 - plugin 安装：`agent/plugins/install.py::install_git_plugin`
 - 消息投递 lane：`bus/queue.py::ChatLane`
-- `message_push`：`agent/tools/message_push.py::MessagePushTool`
+- `message_push`：`plugins/message_push/tool.py::MessagePush`
 - session 级记忆排除：[程序化调用的 session 级记忆排除](programmatic-session-memory-exclusion.md)
 - Shell 生命周期：[Unified Shell Execution](unified-shell-execution.md)

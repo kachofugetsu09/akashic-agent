@@ -1,12 +1,13 @@
 # Yoyo 迁移维护手册
 
 本手册只描述当前迁移合同。架构取舍见
-[0021 · Yoyo workspace 账本定义迁移原点](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)。
+[0021 · Yoyo workspace 账本定义迁移原点](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)
+和 [0066 · 当前基线](../decisions/0066-yoyo-current-baseline.md)。
 
 ## 1. 目录与所有权
 
 ```text
-源码 migrations/yoyo/*.py
+Core 自有脚本 / 已安装插件 migration bundle
           │ read_migrations
           ▼
 ┌──────────────────────┐       成功回执       ┌─────────────────────────────┐
@@ -18,7 +19,8 @@
    明确的持久状态变换
 ```
 
-- `migrations/yoyo/` 是唯一会被 runtime 加载的迁移目录。
+- `migrations/core/` 仅放 Core 自有迁移；业务迁移通过正式安装的插件 bundle 提供。
+- 当前历史迁移已退役；Core catalog 为空。旧 ledger 记录保留，新脚本不得依赖已退役 ID。
 - 其他 migration 子目录是旧 Git cursor 系统的历史源码，不注册、不执行。
 - `agent/migrations/runner.py` 只负责加锁、选择待执行项、调用 Yoyo 和报告失败。
 - migration step 拥有自己的变换、校验和恢复边界；它可通过
@@ -26,7 +28,7 @@
 
 ## 2. 新增迁移
 
-在 `migrations/yoyo/` 新增一个文件，文件名使用日期、同日序号和短职责，例如：
+在相应 owner 的 migration bundle 中新增文件，并更新其 catalog/digest；Core 自有中立状态使用 `migrations/core/`。文件名使用日期、同日序号和短职责，例如：
 
 ```text
 20260803_01_add_example_index.py

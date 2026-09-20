@@ -5,8 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from agent.plugin_composition.models import ModelContinuation, ModelRequest
-from plugins.compaction.message_summary import SummaryError, _request
-from plugins.context.api import ContextOverflow, Materials
+from plugins.compaction.message_summary import _request
 from plugins.context.plugin import ContextBuilder
 from session.message import ContentPart, Input, Message, Output
 from tests.model_plugin_fakes import BoundChatModelFake
@@ -14,6 +13,15 @@ from tests.model_plugin_fakes import BoundChatModelFake
 
 def message(seq: int, body) -> Message:
     return Message(str(seq), "s", seq, datetime(2026, 9, 5, tzinfo=UTC), "test", "conversation", body)
+
+
+def material(system_prompt="", *, reminders=(), summary=None, references=()):
+    return {
+        "system_prompt": system_prompt,
+        "reminders": tuple(reminders),
+        "summary": summary,
+        "references": tuple(references),
+    }
 
 
 class Projection:
@@ -42,28 +50,29 @@ class Projection:
 def test_context_overflow_keeps_real_messages_and_model_continuation() -> None:
     snapshot = (message(0, Input((ContentPart("text", "large"),))),)
     projection = Projection()
-    with pytest.raises(ContextOverflow) as caught:
-        ContextBuilder().build(
-            snapshot,
-            materials=Materials("trusted"),
-            model=projection,
-            max_output_tokens=200,
-        )
-    assert caught.value.request.continuation is projection.continuation
+    request, rejected = ContextBuilder().build_attempt(
+        snapshot,
+        materials=material("trusted"),
+        model=projection,
+        max_output_tokens=200,
+    )
+    assert rejected
+    assert request.continuation is projection.continuation
     assert projection.seen == snapshot
     assert snapshot[0].body.parts[0].value == "large"
-    request = ContextBuilder().build(
+    request, rejected = ContextBuilder().build_attempt(
         snapshot,
-        materials=Materials("trusted"),
+        materials=material("trusted"),
         model=projection,
         max_output_tokens=0,
     )
+    assert not rejected
     assert request.max_output_tokens == 0
     assert request.continuation is projection.continuation
     assert projection.seen == snapshot
 
 
-def test_summary_request_stops_at_current_soft_watermark() -> None:
+def test_summary_request_accepts_the_exact_soft_watermark() -> None:
     class SoftWatermarkProvider:
         context_window = 100
         max_tool_schemas = None
@@ -77,9 +86,9 @@ def test_summary_request_stops_at_current_soft_watermark() -> None:
         async def chat(self, **kwargs):
             raise AssertionError("soft-watermark request must not call provider")
 
-    with pytest.raises(SummaryError, match="软水位"):
-        _request(
-            BoundChatModelFake(SoftWatermarkProvider()),
-            "",
-            ((message(0, Output((ContentPart("text", "facts"),), "complete")),),),
-        )
+    request = _request(
+        BoundChatModelFake(SoftWatermarkProvider()),
+        "",
+        ((message(0, Output((ContentPart("text", "facts"),), "complete")),),),
+    )
+    assert request.max_output_tokens == 0

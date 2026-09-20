@@ -57,13 +57,14 @@ def mapping_part(part: ContentPart | ToolCall) -> Mapping[str, object]:
 
 @asynccontextmanager
 async def application(tmp_path, *, background=False, start=True, block=False, block_main=False, main_tool=False):
-    host, store, log, artifacts, sources = environment(tmp_path, reply=True)
+    host, store, log, artifacts, sources = environment(tmp_path, reply=True, models=False)
     for name in (
-        "sources",
+        "commands",
         "conversation",
         "react",
         "subagent",
         "reply",
+        "reply_program",
         "tool_search",
         "delivery",
         "delivery_policy",
@@ -80,15 +81,17 @@ from agent.plugin_composition import CHAT_MODELS
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 import json
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall
-from plugins.models.projection import MODEL_CALLS
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
+from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 api_version = 3
 name = "models_fixture"
 inject = (DELIVERY_SENDERS,)
 version = "1.0.0"
-async def apply(ctx, config):
+async def apply(ctx):
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
     class Driver:
@@ -102,7 +105,7 @@ async def apply(ctx, config):
     descriptor = BoundModelDescriptor(
         binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture", driver_contract_version="1",
-        auth_identity="fixture", model="fixture", role=ModelRole.AGENT, reasoning_effort=None,
+        auth_identity="fixture", model="fixture", role="agent", reasoning_effort=None,
         capabilities=ModelCapabilities(context_window=10000), capability_sources=CapabilitySources(), capability_digest="fixture")
     model = _BoundChat(descriptor, Driver(), store)
     class Models:
@@ -111,6 +114,10 @@ async def apply(ctx, config):
             yield SimpleNamespace(chat=lambda role: model)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
     class Sender:
         idempotent = True
         async def send(self, key, address, message):
@@ -135,7 +142,7 @@ async def apply(ctx, config):
         control.release.set()
     CONTROLS[str(tmp_path)] = control
     module = provider / "plugin.py"
-    text = module.read_text().replace("async def apply(ctx, config):", "from " + __name__ + " import CONTROLS\nasync def apply(ctx, config):")
+    text = module.read_text().replace("async def apply(ctx):", "from " + __name__ + " import CONTROLS\nasync def apply(ctx):")
     text = text.replace("CONTROL_PATH", repr(str(tmp_path)))
     text = text.replace("        async def complete(self, request):", "        async def complete(self, request):\n            control = CONTROLS[" + repr(str(tmp_path)) + "]\n            if '## 后台任务结果' in str(request.messages):\n                control.main_calls += 1\n                control.main_entered.put_nowait(request)\n                await control.main_release.wait()\n                if control.main_tool and 'main-report.txt' not in str(request.messages[:-1]):\n                    return LLMResponse(None, [ToolCall('main-write', 'write_file', {'path': CONTROL_REPORT_PATH, 'content': 'main result'})])\n                return LLMResponse('main summary: ' + ('cancelled' if 'cancelled' in str(request.messages[-1]) else 'child finished'))\n            if '[human followup]' in str(request.messages):\n                return LLMResponse('human answer')\n            control.calls += 1\n            control.entered.put_nowait(request)\n            await control.release.wait()")
     text = text.replace("CONTROL_REPORT_PATH", repr(str(tmp_path / "workspace/main-report.txt")))
@@ -167,7 +174,10 @@ async def apply(ctx, config):
         reply = MessageReply("parent-result", ref, reader, result_writer, lambda: None)
         async def authorize(binding, arguments):
             return {"allowed": True}
-        execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize, task_key="effects")
+        execution = ToolExecution(
+            log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
+            task_key="effects",
+        )
         yield host, log, execution, reply
     finally:
         await tasks.close()
@@ -202,7 +212,8 @@ async def test_sync_spawn_persists_internal_flow_and_replays_original_result(tmp
         path = tmp_path / "workspace/subagent-runs" / request["job_id"] / "answer.txt"
         assert path.read_text() == "once"
         stamp = path.stat().st_mtime_ns
-        assert await execution.execute_call(reply) == result
+        repeated = await execution.execute_call(reply)
+        assert (repeated.outcome, repeated.parts) == (result.outcome, result.parts)
         assert reader.snapshot() == rows and path.stat().st_mtime_ns == stamp
         assert len([row for row in log.reader("test:parent").snapshot() if isinstance(row.body, Input)]) == 1
         if broken_trace:
@@ -239,7 +250,8 @@ async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path
         await asyncio.wait_for(closed.wait(), 10)
         assert all(record.value["settled"] for _, record in log.owner("plugin:subagent").list())
         assert CONTROLS[str(tmp_path)].main_calls == 1
-        assert await execution.execute_call(reply) == result
+        repeated = await execution.execute_call(reply)
+        assert (repeated.outcome, repeated.parts) == (result.outcome, result.parts)
         assert len([row for row in log.reader("test:parent").snapshot() if isinstance(row.body, Input)]) == 1
 
 
@@ -324,9 +336,10 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
         original = log.reader(session_id).snapshot()
         assert len(original) == (1 if stage == "input" else 4)
         assert CONTROLS[str(tmp_path)].calls == (0 if stage == "input" else 2)
+        stable_model = host.current_snapshot.generations["models_fixture"].archive_ref
         await host.terminate_all()
         log.close()
-        # 原已接纳程序和工具来自归档；当前文件的行为变化不应改写原任务。
+        # 当前插件处理原已接纳事实；已完成结果不因源码变化重算。
         provider = tmp_path / "plugins/models_fixture/plugin.py"
         provider.write_text(provider.read_text().replace('LLMResponse("child finished")', 'LLMResponse("new provider result")')
                             .replace('control.sent.put_nowait((key, address, message))',
@@ -342,6 +355,15 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                                 channel_attachment_store=artifacts)
         try:
             await resumed.load_all()
+            assert resumed.current_snapshot.generations["models_fixture"].archive_ref == stable_model
+            # 重启只恢复归档；测试调用者显式发布新实现后才恢复业务工作。
+            for plugin_id in ("models_fixture", "standard_tools"):
+                assert await resumed.prepare_candidate(plugin_id) is not None
+                publication = await resumed.publish_prepared(plugin_id)
+                assert publication["publication_state"] == "committed"
+                # 下一次独立换代前明确等待原 snapshot owner 回收。
+                await resumed.snapshot_store.retry_drains()
+            assert resumed.current_snapshot.generations["models_fixture"].archive_ref != stable_model
             await resumed.start_runtime()
             async def completed():
                 async for _ in reopened.catalog().follow():
@@ -353,15 +375,15 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
             returned = await asyncio.wait_for(completed(), 10)
             assert returned is not None
             assert len(returned) == 1 and "main summary: child finished" in text_part(returned[0].body.parts[0])
-            _, address, sent = await asyncio.wait_for(CONTROLS[str(tmp_path)].sent.get(), 10)
-            assert address == "parent" and sent == returned[0]
+            # 当前 sender 报错时保留原任务事实，不伪造送达。
+            assert CONTROLS[str(tmp_path)].sent.empty()
             assert CONTROLS[str(tmp_path)].main_calls == (2 if stage == "finished" else 1)
             assert "new provider result" not in text_part(returned[0].body.parts[0])
             assert reopened.reader(session_id).snapshot()[0] == original[0]
             assert CONTROLS[str(tmp_path)].calls == 2
             request = next(mapping_part(part) for part in original[0].body.parts if isinstance(part, ContentPart) and part.kind == "subagent.request")
             task_dir = workspace / "subagent-runs" / request["job_id"]
-            assert (task_dir / "answer.txt").read_text() == "once"
+            assert (task_dir / "answer.txt").read_text() == ("new tool content" if stage == "input" else "once")
             async with lease_runtime_snapshot(resumed.snapshot_store) as snapshot:
                 bindings = snapshot.composition_root.context.require(BINDINGS)
                 tools_value = request.get("tools")

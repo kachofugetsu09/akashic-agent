@@ -72,12 +72,14 @@ def install(args: argparse.Namespace) -> dict[str, object]:
             origin=args.origin,
             mise=args.mise,
             run=_run,
+            runtime_env=args.runtime_env,
         )
         units_changed = install_units(
             checkout=paths.source(commit),
             backup_root=paths.backups,
             run=_run,
             unit_root=args.unit_root,
+            runtime_env=args.runtime_env,
         )
         cli_changed = install_operator_entrypoint(
             checkout=paths.source(commit),

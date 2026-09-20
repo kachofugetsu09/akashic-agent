@@ -1,5 +1,7 @@
 # 插件 v3 生产替代清单
 
+> 2026-09-15 勘误：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 已取代本文的两参数入口、精确参数名和 Core 配置模型校验。现行入口为 `apply(ctx)`，插件自行解析 `ctx.config`；下文相关描述仅保留历史背景。凭据脱敏及正式解析授权边界不因此取消。
+
 > 历史执行清单：其中 E1～E4 表格记录 2026-08 的迁移计划，不再是当前 CI 或发布命令。2026-09-02 的 Gate 去留与代码演进依据见[测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md)；当前候选入口以 [`docs/WORKFLOW.md`](../WORKFLOW.md) 为准。
 
 本文是 Issue [#394](https://github.com/kachofugetsu09/akashic-agent/issues/394) 的唯一执行清单。
@@ -224,7 +226,7 @@ GitHub Watcher 只以上述 canonical source exact head 进入最终 fleet lock�
 | B | legacy assistant metadata slots | `READY`（Core `695f35ac` 已删除 legacy assistant metadata slot 出口，待 E1/E4） |
 | C | legacy Dashboard ABI | `READY`（Core `92ac1713` 已删除 v2 backend/import 路径，待 E1/E3/E4） |
 | D | ToolHook ABI、catalog 与 traces | `READY`（Core `0940e9e7` 已把 execution contract/Executor 收归 typed Tool owner并物理删除 `agent.tool_hooks`；最终 Tool Gate 待跑） |
-| E | v2 static-active / stable-health exception | `READY`（stable-health exemption 已删除，正式 Root 始终必须 ready；`static_active/is_active` 是 Akasha/Default Memory 二选一所需的 v3 static projection，不属于删除对象） |
+| E | static-active / stable-health exception | `REMOVED`（0071：正式 Root 必须 ready；业务启用由 apply 内部分支决定，不维护 static_active/is_active 协议） |
 | F | `PluginContext` | `READY`（通用 `PluginContext` 文件与 production consumer 已物理删除；memory-engine factory 不是该 ABI） |
 | G | v2 doctor / class discovery | `READY`（doctor、Manager 与 installer 都只接受静态 manifest + v3 namespace，旧 class discovery 已删除） |
 | H | `Plugin` base、registry、Manager 固定能力方法 | `READY`（`Plugin` base/registry、fixed contribution consumer、workspace MCP owner与 Channel fallback 已物理删除；只保留 Default/Wake exact builtin 私有 proactive bridge） |

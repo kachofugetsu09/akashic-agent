@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 from agent.plugins.artifacts import ArtifactSelector, read_pointers, resolve_pointer
 from agent.plugins.static_manifest import (
@@ -18,12 +18,11 @@ class ResolvedPluginSource:
     source_type: Literal["builtin", "installed"]
     marketplace: str = ""
     plugin_name: str = ""
-    entrypoint: str = "plugin.py"
     static_manifest: StaticPluginManifest | None = None
 
 
 def resolve_plugin_sources(
-    plugin_dirs: list[Path],
+    plugin_dirs: Sequence[Path] = (),
     *,
     installed_cache_root: Path | None = None,
     installed_selector: ArtifactSelector = "stable",
@@ -46,19 +45,12 @@ def resolve_plugin_sources(
             if normalized in seen:
                 continue
             seen.add(normalized)
-            static_manifest = _load_optional_static_manifest(normalized)
+            static_manifest = load_static_plugin_manifest(normalized)
             discovered.append(
                 ResolvedPluginSource(
                     plugin_root=normalized,
                     source_type="builtin",
-                    plugin_name=(
-                        static_manifest.name if static_manifest is not None else ""
-                    ),
-                    entrypoint=(
-                        static_manifest.entrypoint
-                        if static_manifest is not None
-                        else "plugin.py"
-                    ),
+                    plugin_name=static_manifest.name,
                     static_manifest=static_manifest,
                 )
             )
@@ -102,7 +94,7 @@ def _iter_installed_plugin_roots(
             has_pointers, selected = _resolve_installed_pointer(plugin_dir, selector)
             if has_pointers:
                 if selected is not None:
-                    static_manifest = _require_installed_plugin_root(selected)
+                    static_manifest = load_static_plugin_manifest(selected)
                     _validate_installed_identity(
                         plugin_dir.name,
                         static_manifest,
@@ -113,7 +105,6 @@ def _iter_installed_plugin_roots(
                             source_type="installed",
                             marketplace=marketplace_dir.name,
                             plugin_name=plugin_dir.name,
-                            entrypoint=static_manifest.entrypoint,
                             static_manifest=static_manifest,
                         )
                     )
@@ -156,22 +147,6 @@ def _require_safe_cache_segment(path: Path, label: str) -> None:
         raise ValueError(f"installed cache {label} 路径段无效: {path}")
 
 
-def _require_installed_plugin_root(path: Path) -> StaticPluginManifest:
-    manifest_path = path / "akashic.plugin.toml"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        return load_static_plugin_manifest(path)
-    if not path.exists():
-        raise FileNotFoundError(f"installed cache 版本扫描期间已变化: {path}")
-    raise ValueError(f"installed cache 缺少静态 v3 manifest: {manifest_path}")
-
-
-def _load_optional_static_manifest(path: Path) -> StaticPluginManifest | None:
-    manifest_path = path / "akashic.plugin.toml"
-    if not manifest_path.exists() and not manifest_path.is_symlink():
-        return None
-    return load_static_plugin_manifest(path)
-
-
 def _validate_installed_identity(
     cache_name: str,
     manifest: StaticPluginManifest,
@@ -186,13 +161,10 @@ def _validate_installed_identity(
 def _is_plugin_root(path: Path) -> bool:
     if path.is_symlink() or not path.is_dir():
         return False
-    manifest_path = path / "akashic.plugin.toml"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        _ = load_static_plugin_manifest(path)
-        return True
-    # Built-ins may keep the conventional plugin.py entrypoint without an install manifest.
     plugin_file = path / "plugin.py"
-    return not plugin_file.is_symlink() and plugin_file.is_file()
+    if plugin_file.is_symlink():
+        raise ValueError(f"插件 plugin.py 不能是符号链接: {plugin_file}")
+    return plugin_file.is_file()
 
 
 def _is_safe_cache_segment(value: str) -> bool:

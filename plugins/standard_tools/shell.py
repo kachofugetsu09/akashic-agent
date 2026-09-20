@@ -2,31 +2,37 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from plugins.standard_tools.shell_backend import _log_shell_execution, _shell_env
-from agent.tools.shell_command import resolve_shell
-from agent.tools.shell_security import validate_command
-from agent.tools.unified_exec import (
-    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS,
-    MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError,
-    clamp_initial_yield_time, clamp_write_stdin_yield_time, format_execution_result,
+from agent.plugin_composition.process_runtime import (
+    DEFAULT_HARD_TIMEOUT_S,
+    DEFAULT_INITIAL_YIELD_TIME_MS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_HARD_TIMEOUT_S,
+    ExecutionCleanupReport,
+    UnknownExecutionError,
+    clamp_initial_yield_time,
+    clamp_write_stdin_yield_time,
+    format_execution_result,
 )
-from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS, ToolRef
-from session.log import MessageReader
-from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall
-from session.message_codec import json_value
+from agent.plugin_composition.shell_runtime import resolve_shell
+from .shell_backend import _log_shell_execution, _shell_env
+from .shell_security import validate_command
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall
+from agent.plugin_contracts import json_value
+
+from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 
 
 class ShellSettings(BaseModel):
@@ -131,6 +137,24 @@ class ShellOwners:
 SHELL_OWNERS = ServiceKey[ShellOwners]("shell.owners.v1")
 
 
+class ShellCleanup(Protocol):
+    """标准 Shell 提供给程序组合的真实收尾边界。"""
+
+    def __call__(
+        self,
+        ctx: Context,
+        reader: MessageReader,
+        source: str,
+        from_seq: int,
+        *,
+        task: Task | None = None,
+        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]] | None = None,
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
+TOOL_CLEANUP = ServiceKey[ShellCleanup]("tools.cleanup.v1")
+
+
 class ShellTool:
     idempotent = False
 
@@ -139,7 +163,7 @@ class ShellTool:
         self._name = name
         self._settings = settings
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """校验最终命令并固定进程 owner；恢复不重选目录、shell 或默认参数。"""
         owner = (
             self._settings.owner_key or "standalone" if source is None
@@ -161,14 +185,14 @@ class ShellTool:
                 return PreparedStdin(**args.model_dump(), owner_key=owner).model_dump()
             command = Command.model_validate(raw)
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         text = command.command.strip()
         if not text:
-            raise InvalidArguments("命令不能为空")
+            return '命令不能为空'
         try:
             shell = resolve_shell(command.shell)
         except ValueError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         cwd = command.cwd or self._settings.working_dir or self._settings.restricted_dir
         directory = None if cwd is None else Path(cwd).expanduser().absolute()
         denied = validate_command(
@@ -177,7 +201,7 @@ class ShellTool:
             cwd=directory,
         )
         if denied:
-            raise InvalidArguments(denied)
+            return denied
         return PreparedCommand(
             owner_key=owner, command=text, description=command.description,
             argv=shell.derive_argv(text, login=command.login), shell_kind=shell.kind.value,
@@ -186,7 +210,7 @@ class ShellTool:
             max_output_tokens=command.max_output_tokens, timeout=command.timeout,
         ).model_dump()
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
         """执行与续接只访问同一个物理进程 owner，失败不伪装为成功。"""
         processes = self._ctx.require(PROCESSES)
         raw = json_value(arguments)
@@ -194,7 +218,7 @@ class ShellTool:
         if self._name == "task_stop":
             stop = PreparedStop.model_validate(raw)
             stopped = await processes.terminate_execution(self._ctx, stop.owner_key, stop.execution_id)
-            return Result("success" if stopped else "error", (ContentPart("text", json.dumps({
+            return ToolResultValue("success" if stopped else "error", (ContentPart("text", json.dumps({
                 "execution_id": stop.execution_id, **({"process_status": "stopped"} if stopped else {}),
                 "status": "stopped" if stopped else "not_found",
             })),))
@@ -207,7 +231,7 @@ class ShellTool:
                     yield_time_ms=stdin.yield_time_ms, max_output_tokens=stdin.max_output_tokens,
                 )
             except UnknownExecutionError as error:
-                return Result("error", (ContentPart("text", str(error)),))
+                return ToolResultValue("error", (ContentPart("text", str(error)),))
         else:
             command = PreparedCommand.model_validate(raw)
             command_text = command.command
@@ -226,15 +250,16 @@ class ShellTool:
             )
             log("shell.execution_result", result=result)
         outcome = "success" if result.execution_id is not None or result.exit_code == 0 else "error"
-        return Result(outcome, (ContentPart("text", format_execution_result(result, command=command_text)),))
+        return ToolResultValue(outcome, (ContentPart("text", format_execution_result(result, command=command_text)),))
 
-    async def query(self, key: str) -> Result | None:
+    async def query(self, key: str) -> ToolResultValue | None:
         return None
 
 
 async def register_shell(ctx: Context) -> tuple[ToolRef, ...]:
     """配置由 Shell owner 校验，所有操作与作业释放共用此插件身份。"""
     _ = await ctx.provide(SHELL_OWNERS, ShellOwners(ctx))
+    _ = await ctx.provide(TOOL_CLEANUP, shell_cleanup)
     definitions: tuple[tuple[Literal["shell", "write_stdin", "task_stop"], type[BaseModel], str], ...] = (
         ("shell", Command, "执行 shell 命令；返回终态或可供 write_stdin/task_stop 使用的 execution_id。"),
         ("write_stdin", Stdin, "续接命令，等待新增输出或输入 PTY 字符；仅返回上次读取后的新增内容。"),
@@ -259,7 +284,7 @@ async def _register(
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[ShellTool]:
         yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)))
 
-    return await ctx.require(TOOLS).register(
+    return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx,
         name=name,
         description=description,
@@ -267,7 +292,7 @@ async def _register(
         open=open_tool,
         capture=capture,
         risk="external-side-effect",
-    )
+    ))
 
 
 @asynccontextmanager
@@ -305,10 +330,12 @@ async def shell_cleanup(
                             description = cast(Mapping[str, object], metadata["tool"])
                             if description["name"] not in {"shell", "write_stdin", "task_stop"}:
                                 continue
-                            # 2. 只装配原工具闭包，不打开或重跑工具；在其 scope 固定清理 provider。
+                            # 2. 清理按 PluginProcesses 的稳定 owner key 进行；它不是外部效果重试，
+                            # 不因插件换版跳过同一进程集合的终止。
                             async with bindings.open(identity, TOOLS):
-                                owners_binding = bindings.bind(SHELL_OWNERS, {})
-                            async with bindings.open(owners_binding, SHELL_OWNERS) as (owners, _):
+                                # Shell plugin 同时注册 TOOLS 与 SHELL_OWNERS；当前 scope
+                                # 已通过原工具 binding 校验，直接复用 owner，不再写临时 binding。
+                                owners = ctx.require(SHELL_OWNERS)
                                 state = cast(Mapping[str, object], metadata["state"])
                                 # 老归档没有此标记，仍按原 owner 释放；新归档固定放弃前的分区。
                                 if "owner_boundary" in state:

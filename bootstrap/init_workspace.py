@@ -7,27 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.config import Config
-from agent.persona import VEDA_RELATIVE_PATH, read_default_veda
-from infra.persistence.json_store import save_json
-
-_TEXT_FILES: dict[str, str] = {
-    VEDA_RELATIVE_PATH.as_posix(): read_default_veda() + "\n",
-    "plugin-data/context-builtin/config.local.toml": (
-        'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory", skills = "standard_tools"}\n'
-        'summary_source = ["compaction", "compaction"]\n'
-    ),
-}
-
-_JSON_FILES: dict[str, object] = {
-    "memes/manifest.json": {"categories": {}},
-}
-
-_DIRECTORIES: tuple[str, ...] = (
-    "observe",
-    "skills",
-    "drift/skills",
-)
-
+from agent.migrations.runner import initialize_empty_workspace
+from agent.plugins.selection import PluginSelection
+from bootstrap.workspace_lock import WorkspaceInstanceLock
 
 @dataclass
 class InitSummary:
@@ -36,35 +18,6 @@ class InitSummary:
     skipped: list[Path] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     next_steps: list[str] = field(default_factory=list)
-
-
-def _write_text_file(
-    path: Path, content: str, *, force: bool, summary: InitSummary
-) -> None:
-    existed = path.exists()
-    if existed and not force:
-        summary.skipped.append(path)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    if existed:
-        summary.overwritten.append(path)
-    else:
-        summary.created.append(path)
-
-
-def _write_json_file(
-    path: Path, payload: object, *, force: bool, summary: InitSummary
-) -> None:
-    existed = path.exists()
-    if existed and not force:
-        summary.skipped.append(path)
-        return
-    save_json(path, payload, domain="workspace.init")
-    if existed:
-        summary.overwritten.append(path)
-    else:
-        summary.created.append(path)
 
 
 def _ensure_config(config_path: Path, *, force: bool, summary: InitSummary) -> None:
@@ -92,47 +45,6 @@ def _ensure_config(config_path: Path, *, force: bool, summary: InitSummary) -> N
         summary.created.append(config_path)
 
 
-def _ensure_workspace_text_assets(
-    workspace: Path,
-    *,
-    force: bool,
-    summary: InitSummary,
-) -> None:
-    workspace.mkdir(parents=True, exist_ok=True)
-    for rel_path, content in _TEXT_FILES.items():
-        _write_text_file(
-            workspace / rel_path,
-            content,
-            force=False,
-            summary=summary,
-        )
-
-
-def _ensure_workspace_json_assets(
-    workspace: Path,
-    *,
-    force: bool,
-    summary: InitSummary,
-) -> None:
-    for rel_path, payload in _JSON_FILES.items():
-        _write_json_file(workspace / rel_path, payload, force=False, summary=summary)
-
-
-def _ensure_workspace_directories(
-    workspace: Path,
-    *,
-    summary: InitSummary,
-) -> None:
-    for rel_path in _DIRECTORIES:
-        path = workspace / rel_path
-        existed = path.exists()
-        path.mkdir(parents=True, exist_ok=True)
-        if existed:
-            summary.skipped.append(path)
-        else:
-            summary.created.append(path)
-
-
 def init_workspace(
     *,
     config_path: str | Path = "config.toml",
@@ -142,19 +54,38 @@ def init_workspace(
     summary = InitSummary()
     config_path = Path(config_path)
 
+    # 只有本次独占新建的目录可初始化选择；不扫描或猜测既有历史。
+    try:
+        workspace.mkdir(parents=True)
+    except FileExistsError:
+        created_workspace = False
+    else:
+        created_workspace = True
     _ensure_config(config_path, force=force, summary=summary)
 
     _ = Config.load(config_path, workspace=workspace)
-    _ensure_workspace_text_assets(workspace, force=force, summary=summary)
-    _ensure_workspace_json_assets(workspace, force=force, summary=summary)
-    _ensure_workspace_directories(workspace, summary=summary)
+    workspace.mkdir(parents=True, exist_ok=True)
+    initialize_empty_workspace(
+        repo_root=Path(__file__).resolve().parents[1], workspace=workspace,
+        config_path=config_path.resolve(),
+    )
+
+    if created_workspace:
+        # 先让既有空 workspace 协议建立起点，再写选择文件，避免干扰空状态判断。
+        lock = WorkspaceInstanceLock(workspace)
+        lock.acquire()
+        try:
+            selection = PluginSelection(workspace)
+            selection.initialize()
+            summary.created.append(selection.path)
+        finally:
+            lock.release()
+    else:
+        summary.notes.append("既有 workspace 的 stable 保持原样；缺失时需后续显式升级。")
 
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [
-        f"1. 默认可用 Web；启用 Telegram/QQ 时，编辑 {config_path} 并配置同名 Sender 插件。",
-        "2. 运行 uv run python main.py 启动。",
-        "3. 打开 http://127.0.0.1:2236，在模型页添加连接并选择默认聊天模型。",
-        "4. 需要语义记忆时，再选择默认 embedding 模型。",
-        "5. 返回对话页验证消息收发；Sender 配置路径与示例见 config.example.toml。",
+        "1. 通过正式安装链安装所选插件组合，并按各包说明初始化业务配置。",
+        "2. 运行 uv run python main.py 启动插件底座。",
     ]
     return summary

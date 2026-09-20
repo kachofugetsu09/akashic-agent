@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from typing import Literal, cast
 import shutil
 from pathlib import Path
@@ -6,34 +7,56 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
-from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
-from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryRecord, SummaryRecords
+from plugins.compaction.records import (
+    COMPACTION_SUMMARIES,
+    NativeSummaryRecordV1,
+    SummaryRecord,
+    SummaryRecords,
+)
+from plugins.content.api import is_user_input
 from plugins.content.plugin import check_text
 from plugins.context.api import check_summary
+from plugins.context.plugin import ContextBuilder
 from plugins.context.materials import MATERIALS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from plugins.markdown_memory._boundaries import (
+    COMPACTION_READER,
+    CONTENT,
+    CONTEXT,
+    CompactionReader as MarkdownCompactionReader,
+    TURN_PROJECTION,
+)
 from plugins.markdown_memory.store import MarkdownProfileStore
 from session.log import MessageLog, SessionAttributes
 from session.message import ContentPart, Input, Output
+
+
+def _system_prompt(material: Mapping[str, object]) -> str:
+    """读取并窄化 markdown 材料中的系统提示。"""
+    value = material["system_prompt"]
+    if not isinstance(value, str):
+        raise AssertionError("system_prompt 必须是字符串")
+    return value
 
 
 @asynccontextmanager
 async def application(tmp_path, *, start=False, transient_failure=False, draft_failures=0):
     sources = tmp_path / "plugins"
     if not sources.exists():
-        for name in ("context", "compaction", "markdown_memory", "turn_projection"):
+        for name in ("content", "context", "compaction", "markdown_memory", "turn_projection"):
             shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                             ignore=shutil.ignore_patterns("__pycache__"))
-        for name in ("compaction", "markdown_memory"):
-            (sources / name / "akashic.plugin.toml").write_text(
-                f'schema_version = 1\nname = "{name}"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
-        settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+        settings = tmp_path / "workspace/plugin-data/context-builtin"
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text('summary_source = ["compaction", "compaction"]\nprompt_sources = {markdown_memory = "markdown_memory"}\n')
+        save_config(settings, {"summary_source": ["compaction", "compaction"], "prompt_sources": {"markdown_memory": "markdown_memory"}})
         provider = sources / "fixture_models"
         provider.mkdir()
         (provider / "plugin.py").write_text('''
@@ -43,14 +66,14 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 api_version = 3
 name = "fixture_models"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     completed = asyncio.Event()
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
@@ -85,7 +108,7 @@ async def apply(ctx, config):
     descriptor = BoundModelDescriptor(
         binding_id="fixture", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture", driver_contract_version="1",
-        auth_identity="fixture", model="fixture", role=ModelRole.DEFAULT, reasoning_effort=None,
+        auth_identity="fixture", model="fixture", role="default", reasoning_effort=None,
         capabilities=ModelCapabilities(context_window=32000), capability_sources=CapabilitySources(), capability_digest="fixture")
     model = _BoundChat(descriptor, Driver(), store)
     class Models:
@@ -108,7 +131,7 @@ async def apply(ctx, config):
             f"            if attempts <= {draft_failures}:\n                evidence = {{line: [identity[:12] for identity in ids] for line, ids in evidence.items()}}\n            completed.set()"))
     if transient_failure or draft_failures > 1:
         # 仅测试副本用事件控制重试等待，不修改全局 asyncio 时序。
-        module = sources / "markdown_memory/message_plugin.py"
+        module = sources / "markdown_memory/plugin.py"
         module.write_text(module.read_text().replace("await asyncio.sleep(30)",
             'await ctx.require(ServiceKey("fixture.retry_release")).wait()').replace(
                 "    CHAT_MODELS,", "    CHAT_MODELS, ServiceKey,"))
@@ -133,6 +156,7 @@ async def apply(ctx, config):
         fixture.write_text(fixture.read_text().replace("            completed.set()",
             f"            if attempts > {draft_failures}:\n                completed.set()"))
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -160,7 +184,7 @@ def legacy_part(raw, *, digest=None):
 
 @pytest.mark.asyncio
 async def test_excluded_session_never_reaches_markdown_even_when_source_is_allowed(tmp_path):
-    from plugins.markdown_memory.message_plugin import project
+    from plugins.markdown_memory.plugin import project
     async with application(tmp_path) as (log, host):
         log.ensure_session("s", SessionAttributes("internal", "excluded"))
         writer = log.writer("s", author="app", source="conversation", body_types=(Input, Output),
@@ -174,7 +198,7 @@ async def test_excluded_session_never_reaches_markdown_even_when_source_is_allow
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
             assert not (tmp_path / "requests.jsonl").exists()
             assert not store.is_applied(summary.reference)
             assert log.reader("s").get("input").body.parts[0].value == "fact-one"
@@ -182,7 +206,7 @@ async def test_excluded_session_never_reaches_markdown_even_when_source_is_allow
 
 @pytest.mark.asyncio
 async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts(tmp_path):
-    from plugins.markdown_memory.message_plugin import Config, project
+    from plugins.markdown_memory.plugin import Config, project
     from session.message import ContentReferences
     async with application(tmp_path) as (log, host):
         writer = log.writer("s", author="legacy-attribution-unknown", source="legacy-unattributed", body_types=(Input, Output),
@@ -198,7 +222,7 @@ async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts
             async def consume(message):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
+                    sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
             await consume(use)
             assert not (tmp_path / "requests.jsonl").exists()
             assert not store.is_applied(suppressed.reference)
@@ -216,7 +240,7 @@ async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts
 
 @pytest.mark.asyncio
 async def test_markdown_does_not_reintroduce_abandoned_late_result_from_raw_range(tmp_path):
-    from plugins.markdown_memory.message_plugin import project
+    from plugins.markdown_memory.plugin import project
     from session.message import CallRef, Control, ToolCall, ToolResult
     async with application(tmp_path) as (log, host):
         # 这里只验证已有消息的读取；fixture 调用从未执行，也不测试工具授权。
@@ -239,7 +263,7 @@ async def test_markdown_does_not_reintroduce_abandoned_late_result_from_raw_rang
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
             assert "fact-two" not in (tmp_path / "requests.jsonl").read_text()
             assert "fact-three" in store.read_memory()
             assert store.is_applied(child.reference)
@@ -262,13 +286,20 @@ def test_legacy_effect_reader_rejects_unproven_or_ambiguous_metadata(raw, digest
         legacy_post_commit_effect(row)
 
 
-def publish(log, reference, parent=None):
+def publish(log, reference, parent=None, *, summarized=None, omitted=()):
+    source_message_ids = tuple(message.message_id for message in log.reader("s").snapshot())
+    parent_size = 0 if parent is None else len(parent.source_message_ids)
+    added = source_message_ids[parent_size:]
     record = SummaryRecord(reference=reference, session_id="s", generation=1 if parent is None else parent.generation + 1,
         parent=None if parent is None else parent.reference,
-        source_message_ids=tuple(message.message_id for message in log.reader("s").snapshot()),
+        source_message_ids=source_message_ids,
+        summary_message_ids=added if summarized is None else summarized,
+        omitted_message_ids=omitted,
         content="actual summary", model_call_ids=("summary-model:" + reference,), trigger="soft_limit",
         context_window=32000, max_output_tokens=4096, keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000)
-    return SummaryRecords(log.owner("plugin:compaction")).publish(record, log.reader("s"), parent=parent)
+    return SummaryRecords(log.owner("plugin:compaction")).publish(
+        record, log.reader("s"), parent=parent, summary_range=ContextBuilder.summary_range,
+    )
 
 
 async def record_use(
@@ -316,12 +347,12 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                 prepared = await materials.prepare(log.reader("s").snapshot(), "conversation")
-            assert "fact-two" in prepared.system_prompt
+                assert "fact-two" in _system_prompt(prepared)
         await record_use(log, host, used, "duplicate-use", "complete")
     async with application(tmp_path, start=True) as (log, host):
         await wait_applied(tmp_path, host, used.reference)
         # 直接消费重复 Output 确认幂等边界，避免只靠 watcher 时间猜测。
-        from plugins.markdown_memory.message_plugin import project
+        from plugins.markdown_memory.plugin import project
         from agent.plugin_composition import CHAT_MODELS
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
@@ -329,14 +360,102 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
             assert message is not None
             await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS),
                           store=profile_store(tmp_path), models=ctx.require(CHAT_MODELS),
-                          lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                          lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
+
+
+@pytest.mark.asyncio
+async def test_markdown_replays_v1_summary_through_current_lookup_without_opening_old_binding(tmp_path, monkeypatch):
+    """ABI1 parent and v2 child replay through metadata, without archived code."""
+    async with application(tmp_path) as (log, host):
+        writer = log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
+        writer.append("u1", Input((ContentPart("text", "fact-one"),)))
+        records = SummaryRecords(log.owner("plugin:compaction"))
+        parent = NativeSummaryRecordV1(
+            reference="abi1-parent", session_id="s", generation=1, parent=None,
+            source_message_ids=("u1",), content="old summary", model_call_ids=("old-call",),
+            trigger="soft_limit", context_window=32000, max_output_tokens=4096,
+            keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000,
+        )
+        records._state.transact(lambda tx: tx.save(
+            "summary:abi1-parent", parent.model_dump(mode="json"), expected_version=None,
+        ))
+        records._state.transact(lambda tx: tx.save(
+            "head:s", {"reference": parent.reference}, expected_version=None,
+        ))
+        writer.append("u2", Input((ContentPart("text", "fact-two"),)))
+        writer.append("u3", Input((ContentPart("text", "fact-omitted"),)))
+        child = SummaryRecord(
+            reference="v2-child", session_id="s", generation=2, parent=parent.reference,
+            source_message_ids=("u1", "u2", "u3"), summary_message_ids=("u2",),
+            omitted_message_ids=("u3",), content="new summary", model_call_ids=("new-call",),
+            trigger="soft_limit", context_window=32000, max_output_tokens=4096,
+            keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000,
+        )
+        records.publish(
+            child, log.reader("s"), parent=parent,
+            summary_range=ContextBuilder.summary_range,
+        )
+        used = await record_use(log, host, child, "abi1-v2-output")
+        original_messages = log.reader("s").snapshot()
+        original_parent = records.read(parent.reference)
+        original_child = records.read(child.reference)
+
+    def forbid_archived_open(*_args, **_kwargs):
+        raise AssertionError("历史 Markdown 回放不应打开旧 binding archive")
+
+    monkeypatch.setattr(Bindings, "open", forbid_archived_open)
+    async with application(tmp_path, start=True) as (log, host):
+        await wait_applied(tmp_path, host, child.reference)
+        store = profile_store(tmp_path)
+        memory = store.read_memory()
+        assert "fact-one" in memory and "fact-two" in memory
+        assert "fact-omitted" not in memory
+        assert log.reader("s").snapshot() == original_messages
+        records = SummaryRecords(log.owner("plugin:compaction"))
+        assert records.read(parent.reference) == original_parent
+        assert records.read(child.reference) == original_child
+
+
+@pytest.mark.asyncio
+async def test_markdown_does_not_learn_messages_omitted_by_single_window_compaction(tmp_path):
+    from agent.plugin_composition import CHAT_MODELS
+    from plugins.markdown_memory.plugin import project
+
+    async with application(tmp_path) as (log, host):
+        inputs = log.writer("s", author="user", source="conversation", body_types=(Input,),
+                            content={"text": check_text})
+        inputs.append("u1", Input((ContentPart("text", "fact-one"),)))
+        parent = publish(log, "parent")
+        inputs.append("u2", Input((ContentPart("text", "fact-two"),)))
+        inputs.append("u3", Input((ContentPart("text", "fact-three"),)))
+        child = publish(log, "child", parent, summarized=("u3",), omitted=("u2",))
+        used = await record_use(log, host, child, "used-child")
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            await project(
+                used,
+                reader=log.reader("s"),
+                bindings=ctx.require(BINDINGS),
+                store=profile_store(tmp_path),
+                models=ctx.require(CHAT_MODELS),
+                lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
+                sources=("conversation",),
+                projection=ctx.require(TURN_PROJECTION),
+                content=ctx.require(CONTENT),
+                context=ctx.require(CONTEXT),
+                summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER),
+            )
+        memory = profile_store(tmp_path).read_memory()
+        assert "fact-one" in memory
+        assert "fact-three" in memory
+        assert "fact-two" not in memory
 
 
 @pytest.mark.asyncio
 async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(tmp_path, monkeypatch):
     import fcntl
-    from plugins.markdown_memory.message_plugin import project
+    from plugins.markdown_memory.plugin import project
 
     async with application(tmp_path) as (log, host):
         log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text}).append(
@@ -360,7 +479,7 @@ async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(t
             with pytest.raises(OSError, match="second document failure"):
                 await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert not store.is_applied(record.reference)
         assert "fact-one" in store.read_memory()
         assert store.read_self() == before_self
@@ -391,7 +510,7 @@ async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(t
 
 @pytest.mark.asyncio
 async def test_delayed_parent_output_cannot_reapply_older_facts_after_child(tmp_path):
-    from plugins.markdown_memory.message_plugin import project
+    from plugins.markdown_memory.plugin import project
     async with application(tmp_path) as (log, host):
         writer = log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
         writer.append("u1", Input((ContentPart("text", "fact-one"),)))
@@ -406,7 +525,7 @@ async def test_delayed_parent_output_cannot_reapply_older_facts_after_child(tmp_
             for message in (first, late):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                               models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                              sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                              sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert store.latest_applied("s") == (child.reference, child.generation)
         assert store.is_applied(child.reference) and not store.is_applied(parent.reference)
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
@@ -415,7 +534,7 @@ async def test_delayed_parent_output_cannot_reapply_older_facts_after_child(tmp_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["markdown_projection_order_v1", "markdown_self_draft_v1"])
 async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_model(tmp_path, monkeypatch, kind):
-    from plugins.markdown_memory.message_plugin import project
+    from plugins.markdown_memory.plugin import project
     async with application(tmp_path) as (log, host):
         log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text}).append(
             "u", Input((ContentPart("text", "fact-one"),)))
@@ -432,7 +551,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
             ctx = snapshot.composition_root.context
             with pytest.raises(OSError, match="partial preparation"):
                 await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
-                    models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                    models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert store.read_draft(record.reference) is not None
         assert not store.is_applied(record.reference)
     async with application(tmp_path, start=True) as (log, host):
@@ -442,7 +561,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
             message = log.reader("s").get("used")
             assert message is not None
             await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
-                          models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                          models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert store.is_applied(record.reference)
         assert store.latest_applied("s") == (record.reference, record.generation)
         assert "fact-one" in store.read_memory()
@@ -453,7 +572,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
 @pytest.mark.parametrize("phase", ["waiting", "held"])
 async def test_profile_lock_cancellation_closes_its_handle_and_allows_next_writer(tmp_path, monkeypatch, phase):
     import fcntl
-    from plugins.markdown_memory.message_plugin import profile_lock
+    from plugins.markdown_memory.plugin import profile_lock
     path = tmp_path / "profile.lock"
     blocker = path.open("a+b")
     if phase == "waiting":
@@ -493,7 +612,7 @@ async def test_profile_lock_cancellation_closes_its_handle_and_allows_next_write
 @pytest.mark.parametrize("cancel_first", [False, True])
 async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tmp_path, monkeypatch, cancel_first):
     """模型停在确定性屏障时仍可读旧档案；另一次更新必须等待且可接替取消者。"""
-    from plugins.markdown_memory import message_plugin as plugin
+    from plugins.markdown_memory import plugin
 
     async with application(tmp_path) as (log, host):
         log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text}).append(
@@ -517,7 +636,7 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
                 ctx = snapshot.composition_root.context
                 await plugin.project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
 
         monkeypatch.setattr(plugin, "prepare_profile_draft", paused_prepare)
         first = asyncio.create_task(update())
@@ -540,8 +659,9 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                     prepared = await asyncio.wait_for(materials.prepare((), "conversation"), 1)
-            assert before[1].strip() in prepared.system_prompt
-            assert "fact-one" not in prepared.system_prompt
+                prompt = _system_prompt(prepared)
+                assert before[1].strip() in prompt
+                assert "fact-one" not in prompt
             assert (store.read_memory(), store.read_self(), store.read_writes(None, 100)) == before
             if cancel_first:
                 first.cancel()
@@ -587,14 +707,14 @@ async def test_an_update_lock_alone_does_not_create_a_partial_profile_state(tmp_
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                 prepared = await materials.prepare((), "conversation")
-        assert "# Akashic 的自我认知" in prepared.system_prompt
+        assert "# Akashic 的自我认知" in _system_prompt(prepared)
         assert tuple(path.parent.iterdir()) == (path,)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("learning", ["excluded", "eligible"])
 async def test_default_markdown_uses_programmatic_admission_for_real_summary_projection(tmp_path, learning):
-    from plugins.markdown_memory.message_plugin import Config, project
+    from plugins.markdown_memory.plugin import Config, project
 
     async with application(tmp_path) as (log, host):
         log.ensure_session("s", SessionAttributes("internal", learning))
@@ -609,7 +729,7 @@ async def test_default_markdown_uses_programmatic_admission_for_real_summary_pro
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
+                sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
             assert store.is_applied(summary.reference) is (learning == "eligible")
             assert (tmp_path / "requests.jsonl").exists() is (learning == "eligible")
         assert log.reader("s").get("input").body.parts[0].value == "fact-one"
@@ -618,7 +738,7 @@ async def test_default_markdown_uses_programmatic_admission_for_real_summary_pro
 @pytest.mark.parametrize("evidence_id", ["assistant", "background", "missing"])
 def test_new_user_fact_cannot_use_an_assistant_or_background_claim(tmp_path, evidence_id):
     """即使普通助手复述了后台结论，也不能独自把它升级成用户事实。"""
-    from plugins.markdown_memory.message_plugin import check_evidence
+    from plugins.markdown_memory.plugin import check_evidence
 
     log = MessageLog(tmp_path / "facts.db")
     try:
@@ -632,7 +752,7 @@ def test_new_user_fact_cannot_use_an_assistant_or_background_claim(tmp_path, evi
         draft = {"memory_before": before, "memory": before + "- 用户喜欢红色\n", "self_before": "", "self": "",
                  "evidence": {"memory": {"- 用户喜欢红色": [evidence_id]}, "self": {}}}
         with pytest.raises(ValueError, match="用户事实|实际消息"):
-            check_evidence(draft, log.reader("s").snapshot())
+            check_evidence(draft, log.reader("s").snapshot(), is_user_input=is_user_input)
         assert len(log.reader("s").snapshot()) == 3
     finally:
         log.close()
@@ -640,14 +760,14 @@ def test_new_user_fact_cannot_use_an_assistant_or_background_claim(tmp_path, evi
 
 def test_moving_an_operation_note_into_user_facts_requires_new_evidence():
     """相同文字换成用户资料也改变含义，不能沿用旧操作记录的资格。"""
-    from plugins.markdown_memory.message_plugin import check_evidence
+    from plugins.markdown_memory.plugin import check_evidence
 
     headings = "# 用户长期记忆\n## 用户事实\n## 用户偏好\n## 用户明确要求长期记住的关键内容\n"
     draft = {"memory_before": headings + "## 助手操作上下文\n- 红色主题\n",
              "memory": headings + "- 红色主题\n## 助手操作上下文\n",
              "self_before": "", "self": "", "evidence": {"memory": {}, "self": {}}}
     with pytest.raises(ValueError, match="实际消息"):
-        check_evidence(draft, ())
+        check_evidence(draft, (), is_user_input=is_user_input)
 
 
 @pytest.mark.asyncio
@@ -716,7 +836,7 @@ async def test_profile_input_omits_large_legacy_replay_but_preserves_user_eviden
     """历史回放大小不再放大档案请求；学习资格和完整原文仍由原 Message 证明。"""
     import json
     from session.message import CallRef, ContentReferences, ToolCall, ToolResult
-    from plugins.markdown_memory.message_plugin import project
+    from plugins.markdown_memory.plugin import project
 
     async with application(tmp_path) as (log, host):
         writer = log.writer("s", author="legacy-attribution-unknown", source="legacy-unattributed",
@@ -747,7 +867,7 @@ async def test_profile_input_omits_large_legacy_replay_but_preserves_user_eviden
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("legacy-unattributed",), projection=ctx.require(TURN_PROJECTION))
+                sources=("legacy-unattributed",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         prompts = (tmp_path / "requests.jsonl").read_text()
         request = json.loads(prompts.splitlines()[0])
         rows = json.loads(request.split("本次精确来源：\n", 1)[1])
@@ -766,7 +886,8 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
     """两批真实完整 Turn 的档案和证据合并；后批失败不写文件或收据。"""
     import json
     from types import SimpleNamespace
-    from plugins.markdown_memory.message_plugin import prepare_profile_draft
+    from plugins.markdown_memory.plugin import prepare_profile_draft
+    from plugins.compaction.plugin import _CompactionReader
     from plugins.compaction.message_summary import closed_groups
     from plugins.turn_projection.plugin import TurnProjection
     from agent.plugin_composition.models import ChatModels, LLMResponse, TransportError
@@ -779,7 +900,8 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
             writer.append(f"step-{index}", Output((ContentPart("text", "continue"),), "continue"))
             writer.append(f"answer-{index}", Output((ContentPart("text", "done"),), "complete"))
         original = log.reader("s").snapshot()
-        groups = closed_groups(original, TurnProjection())
+        groups = closed_groups(original, TurnProjection(), settled_prefixes=ContextBuilder.settled_prefixes)
+        compaction = _CompactionReader(settled_prefixes=ContextBuilder.settled_prefixes)
         store = profile_store(tmp_path)
         if large_profile:
             (tmp_path / "workspace/memory/MEMORY.md").write_text(
@@ -812,9 +934,15 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
         models = cast(ChatModels, SimpleNamespace(independent_execution=execution))
         if fail_second:
             with pytest.raises(TransportError, match="second batch"):
-                await prepare_profile_draft(groups, before[0], before[1], models)
+                await prepare_profile_draft(
+                    groups, before[0], before[1], models,
+                    compaction=cast(MarkdownCompactionReader, compaction), is_user_input=is_user_input,
+                )
         else:
-            draft = await prepare_profile_draft(groups, before[0], before[1], models)
+            draft = await prepare_profile_draft(
+                groups, before[0], before[1], models,
+                compaction=cast(MarkdownCompactionReader, compaction), is_user_input=is_user_input,
+            )
             assert draft["memory_before"] == before[0]
             assert isinstance(draft["memory"], str)
             assert "- fact-0" in draft["memory"] and "- fact-1" in draft["memory"]
@@ -831,7 +959,7 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
 @pytest.mark.asyncio
 async def test_profile_keeps_allowed_turn_inside_mixed_source_group(tmp_path):
     """交错来源共用批次切点，不把被抑制来源的资格传播给用户 Turn。"""
-    from plugins.markdown_memory.message_plugin import Config, project
+    from plugins.markdown_memory.plugin import Config, project
     from session.message import ContentReferences
 
     async with application(tmp_path) as (log, host):
@@ -853,7 +981,7 @@ async def test_profile_keeps_allowed_turn_inside_mixed_source_group(tmp_path):
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
+                sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         prompt = (tmp_path / "requests.jsonl").read_text()
         assert "fact-one" not in prompt and "fact-two" not in prompt
         assert "fact-three" in store.read_memory() and store.is_applied(summary.reference)
@@ -892,7 +1020,7 @@ def test_profile_additions_preserve_owner_files_and_enforce_evidence(tmp_path, c
     """模型无法用增量绕过旧事实保留、单行出处与真实用户证据边界。"""
     import json
     from agent.plugin_composition.models import LLMResponse
-    from plugins.markdown_memory.message_plugin import _check_profile_response
+    from plugins.markdown_memory.plugin import _check_profile_response
 
     log = MessageLog(tmp_path / "messages.db")
     try:
@@ -917,9 +1045,11 @@ def test_profile_additions_preserve_owner_files_and_enforce_evidence(tmp_path, c
         response = LLMResponse(json.dumps({"additions": additions}), finish_reason="length" if case == "truncated" else "stop")
         if case not in {"no_change", "new_fact", "empty_memory", "self"}:
             with pytest.raises(ValueError):
-                _check_profile_response(response, log.reader("s").snapshot(), memory, before_self)
+                _check_profile_response(response, log.reader("s").snapshot(), memory, before_self,
+                                         is_user_input=is_user_input)
         else:
-            draft = _check_profile_response(response, log.reader("s").snapshot(), memory, before_self)
+            draft = _check_profile_response(response, log.reader("s").snapshot(), memory, before_self,
+                                            is_user_input=is_user_input)
             assert draft["self_before"] == before_self
             assert draft["memory_before"] == memory
             if case == "no_change":
@@ -947,7 +1077,7 @@ def test_profile_rejects_invalid_model_additions_before_building_a_durable_draft
     """畸形外部增量只形成可重试错误，不能产生部分持久草稿。"""
     import json
     from agent.plugin_composition.models import LLMResponse
-    from plugins.markdown_memory.message_plugin import _check_profile_response, _InvalidDraft
+    from plugins.markdown_memory.plugin import _check_profile_response, _InvalidDraft
 
     store = profile_store(tmp_path)
     before = (store.read_memory(), store.read_self(), store.read_writes(None, 10))
@@ -965,5 +1095,6 @@ def test_profile_rejects_invalid_model_additions_before_building_a_durable_draft
     else:
         additions.append(entry)
     with pytest.raises(_InvalidDraft):
-        _check_profile_response(LLMResponse(json.dumps(payload)), (), before[0], before[1])
+        _check_profile_response(LLMResponse(json.dumps(payload)), (), before[0], before[1],
+                                   is_user_input=is_user_input)
     assert (store.read_memory(), store.read_self(), store.read_writes(None, 10)) == before

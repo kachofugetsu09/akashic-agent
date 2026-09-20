@@ -1,5 +1,9 @@
 # Akashic Channel 与 Web/Mobile Adapter 规格
 
+> 2026-09-13 归属修订：[0067](../decisions/0067-clients-are-ordinary-plugin.md) 将同一个
+> `akashic` Channel 与两端 adapter 交给普通插件。下文 Core 内建与 SessionStore 接线是历史设计，
+> 不再授权 Core 直接构造客户端。Session 身份和协议合同仍然有效；迁移实施尚须最终验收。
+
 - 状态：confirmed design；实现已授权
 - 日期：2026-08-26
 - 决策：[0044](../decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md)

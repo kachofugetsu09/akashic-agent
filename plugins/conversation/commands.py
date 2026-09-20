@@ -2,22 +2,27 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, Protocol, cast
 from collections.abc import Awaitable, Callable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import COMMANDS, CommandExecution, CommandRegistry
+from agent.plugin_composition.commands import COMMANDS, CommandExecution, CommandCatalog
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import Task
-from plugins.content.plugin import check_text
-from session.log import MessageReader
-from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
-from session.message_codec import json_value
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
+from agent.plugin_contracts import json_value
 
-from .program import check_source
+class ContentChecks(Protocol):
+    def check_text(self, part: ContentPart) -> ContentReferences: ...
+    def check_artifact(self, part: ContentPart) -> ContentReferences: ...
+
+
+CONTENT = ServiceKey[ContentChecks]("content.v2")
+SOURCE_CHECK = ServiceKey[Callable[[Task, MessageReader, str, int], None]]("source.check.v1")
 
 Text = Annotated[str, Field(min_length=1)]
 
@@ -62,6 +67,7 @@ def _input(reader: MessageReader, input_id: str, source: str) -> tuple[str, Mapp
 async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: str) -> Message | None:
     """无命令时交给默认程序；未提交结果按固定 handler 的领域回执恢复。"""
     # 1. 先恢复已有 intent，再决定最新 Input；结果正文没有第二份 owner 副本。
+    check_source = ctx.require(SOURCE_CHECK)
     bindings = ctx.require(BINDINGS)
     state = ctx.require(OWNER_STATE).open(ctx)
     registry = ctx.require(COMMANDS).freeze()
@@ -111,7 +117,7 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
     # 2. handler 执行前后核对来源权限；中断后的副作用只能由领域回执确认。
     writer = ctx.require(MESSAGE_WRITERS).bind(
         ctx, author="app", source=source, body_types=(Output,),
-        content={"text": check_text, "command.result": check_result},
+        content={"text": ctx.require(CONTENT).check_text, "command.result": check_result},
     )(reader.session_id)
     task.on_close(writer.expire)
     state.check_access(reader, writer)
@@ -120,7 +126,7 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
             head = reader.head(source=source)
             check_source(task, reader, source, head)
             line, origin = _input(reader, intent.input_id, source)
-            async def execute(commands: CommandRegistry) -> CommandExecution:
+            async def execute(commands: CommandCatalog) -> CommandExecution:
                 value = await commands.execute(
                     line, session_key=reader.session_id, channel=origin["channel"],
                     chat_id=origin["chat_id"], sender=origin["sender"],

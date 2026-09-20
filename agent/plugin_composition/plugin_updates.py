@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from agent.plugin_composition.bindings import BindingScope
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
+from agent.plugin_contracts import Message
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
@@ -23,6 +24,9 @@ class UpdateStatus:
     ready: bool
     publishing: bool
     error: str
+    candidate_id: str | None = None
+    candidate_phase: str | None = None
+    evidence: str | None = None
 
 
 class PluginUpdates:
@@ -50,6 +54,10 @@ class PluginUpdates:
         except KeyError:
             return None
 
+    def messages(self, ctx: Context, update_id: str, session_id: str) -> tuple[Message, ...]:
+        """只读取该更新原隔离调用的消息，不开放正式库、路径或 SQL。"""
+        return self._request(ctx, update_id).read_validation_messages(update_id, session_id)
+
     async def install(
         self, ctx: Context, update_id: str, *, source: str, marketplace: str,
         ref: str = "", sparse: tuple[str, ...] = (),
@@ -72,6 +80,20 @@ class PluginUpdates:
     def publish(self, ctx: Context, update_id: str) -> None:
         """同步提交发布请求；调用者退出 scope 后宿主才能排空并切换。"""
         self._request(ctx, update_id).start_update_publication(update_id)
+
+    def publication(self, ctx: Context, update_id: str) -> Callable[[], None]:
+        """在真实调用 scope 内固定请求；来源排空 Task 后才使用这个窄提交入口。"""
+        host = self._request(ctx, update_id)
+        candidate_id = host.read_update(update_id).candidate_id
+        if candidate_id is None:
+            raise RuntimeError("更新尚未固定候选")
+
+        def publish() -> None:
+            if host.read_update(update_id).candidate_id != candidate_id:
+                raise RuntimeError("调用授权不属于当前候选")
+            host.start_update_publication(update_id)
+
+        return publish
 
     async def discard(self, ctx: Context, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
         """验证拒绝后沿原 owner 清理候选并恢复旧安装状态。"""

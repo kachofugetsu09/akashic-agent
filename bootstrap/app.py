@@ -14,25 +14,16 @@ from agent.host_bridge.monitor import build_host_bridge_monitor
 from agent.host_bridge.monitor import claim_host_bridge_boot
 from agent.restart import RestartGate
 from agent.config_models import Config
-from bootstrap.channel_host import ChannelHost
-from bootstrap.channels import start_channels
-from bootstrap.chat_api import build_chat_server
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.dashboard_api import build_dashboard_server
-from bootstrap.web_runtime import (
-    chat_socket_path,
-    dashboard_socket_path,
-    prepare_runtime_socket,
-)
+from bootstrap.web_runtime import dashboard_socket_path, prepare_runtime_socket
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
-from agent.plugins.turn_rollout import TurnPluginRollout
 from agent.plugins.watcher import PluginWatcher
-from agent.plugin_composition.commands import command_discovery_catalog
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -46,9 +37,7 @@ logging.getLogger("agent.plugins.manager").setLevel(
     os.environ.get("AKASHIC_PLUGIN_LOG_LEVEL", "INFO").upper()
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -157,15 +146,6 @@ def _wait_server_task(
     return wait
 
 
-def _close_mobile_gateway(runtime: Any | None) -> Callable[[], Awaitable[None]]:
-    async def close() -> None:
-        if runtime is not None:
-            # Gateway 的 task 与 SQLite publication 都由当前 loop 线程创建。
-            runtime.close()
-
-    return close
-
-
 class AppRuntime:
     def __init__(
         self,
@@ -177,24 +157,23 @@ class AppRuntime:
     ) -> None:
         self.config = config
         self.workspace = workspace
+        if restart_gate is None and readiness is not None:
+            # fixture/嵌入式 host 没有 supervisor 时，readiness 仍是该 host
+            # 的启动边界；让 Core、Channel Host 和 readiness 使用同一身份。
+            restart_gate = RestartGate(
+                boot_id=readiness.boot_id,
+                supervised=False,
+            )
         self.restart_gate = restart_gate
         self.readiness = readiness
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
         self.control_service: ControlService | None = None
-        self.plugin_turn_rollout: TurnPluginRollout | None = None
-        self.channel_host: ChannelHost | None = None
         self.core: CoreRuntime | None = None
         self.bus = None
         self.event_bus: EventBus | None = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
-        self.chat_server = None
-        self.chat_task: asyncio.Task[None] | None = None
-        self.web_chat_channel = None
-        self.mobile_gateway_runtime = None
-        self.mobile_gateway_server = None
-        self.mobile_gateway_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
@@ -217,18 +196,18 @@ class AppRuntime:
             if claim is not None and self.readiness is not None:
                 self.readiness.mark_stage("host_bridge.owner")
             configure_default_shared_http_resources(self.http_resources)
-            core_kwargs = {"restart_gate": self.restart_gate} if self.restart_gate is not None else {}
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
                 self.http_resources,
-                **core_kwargs,
+                restart_gate=self.restart_gate,
                 clear_stale_session_admissions=True,
             )
             self.bus = self.core.bus
             event_bus = self.core.event_bus
             self.event_bus = event_bus
             manager = self.core.plugin_manager
+            manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
@@ -239,17 +218,12 @@ class AppRuntime:
                 if is_tcp_endpoint(app_server_endpoint):
                     workspace_token = ensure_workspace_token(self.workspace)
             from bootstrap.app_server import build_control_service
-            from bootstrap.reply_status import RuntimeReplyStatus
-            from session.log import MessageCatalog
 
             self.control_service = build_control_service(
                 self.core, workspace_token=workspace_token,
                 boot_id=self.readiness.boot_id if self.readiness else None,
                 ready=(lambda: self.readiness.ready) if self.readiness else None,
             )
-            channel_attachment_store = self.core.channel_attachment_store
-            messages = MessageCatalog(self.core.message_log)
-            reply_status = RuntimeReplyStatus(manager.snapshot_store).follow
             if self.config.app_server.enabled:
                 assert app_server_endpoint is not None
                 self.app_server = SocketAppServer(
@@ -265,130 +239,13 @@ class AppRuntime:
             plugin_manager = getattr(self.core, "plugin_manager", None)
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
-            from infra.mobile_realtime.runtime_inspection import (
-                RuntimeInspectionService,
-            )
 
-            runtime_inspection = RuntimeInspectionService(
-                workspace=self.workspace,
-                snapshot_store=(
-                    plugin_manager.snapshot_store
-                    if plugin_manager is not None
-                    else None
-                ),
-            )
-            plugin_ui_provider = None
-            web_ui_provider = None
-            model_catalog_reader = None
-            model_control = None
-            if plugin_manager is not None:
-                from agent.plugins.mobile_ui import PluginMobileUiProvider
-                from agent.plugins.model_control import RuntimeModelControl
-                from agent.plugins.web_ui import PluginWebUiProvider
-
-                plugin_ui_provider = PluginMobileUiProvider(plugin_manager)
-                web_ui_provider = PluginWebUiProvider(plugin_manager.snapshot_store)
-                model_control = RuntimeModelControl(plugin_manager.snapshot_store)
-                model_catalog_reader = model_control.catalog
-            if self.config.mobile_realtime.enabled:
-                from infra.mobile_realtime.gateway import (
-                    build_mobile_gateway_runtime,
-                )
-
-                self.mobile_gateway_runtime, _ = build_mobile_gateway_runtime(
-                    self.config.mobile_realtime,
-                    self.workspace,
-                )
-                self.mobile_gateway_runtime.channel.bind_messages(messages, reply_status)
-                self.mobile_gateway_runtime.channel.bind_runtime_inspection(
-                    runtime_inspection
-                )
-                self.mobile_gateway_runtime.channel.bind_channel_attachment_store(
-                    channel_attachment_store
-                )
-                if model_catalog_reader is None:
-                    raise RuntimeError("Mobile Gateway 启动需要模型目录")
-                self.mobile_gateway_runtime.channel.bind_model_catalog(
-                    model_catalog_reader
-                )
-                if model_control is None:
-                    raise RuntimeError("Mobile Gateway 启动需要模型调用统计")
-                self.mobile_gateway_runtime.channel.bind_model_stats(model_control.call_stats)
-                if plugin_ui_provider is not None:
-                    self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
-                        plugin_ui_provider
-                    )
-            extra_channels = []
-            if (
-                self.config.channels.chat.enabled
-                or self.mobile_gateway_runtime is not None
-            ):
-                from infra.channels.akashic_channel import AkashicChannel
-
-                if self.config.channels.chat.enabled:
-                    from infra.channels.web_chat_channel import WebChatChannel
-
-                    self.web_chat_channel = WebChatChannel()
-                    self.web_chat_channel.bind_artifact_store(channel_attachment_store)
-                    self.web_chat_channel.bind_message_readers(messages, reply_status)
-                extra_channels.append(
-                    AkashicChannel(
-                        web=self.web_chat_channel,
-                        mobile=(
-                            None
-                            if self.mobile_gateway_runtime is None
-                            else self.mobile_gateway_runtime.channel
-                        ),
-                    )
-                )
-            command_catalog_provider: Callable[
-                [], tuple[tuple[str, str], ...]
-            ] | None = None
-            if plugin_manager is not None:
-                def current_command_catalog() -> tuple[tuple[str, str], ...]:
-                    snapshot = plugin_manager.current_snapshot
-                    registry = None if snapshot is None else snapshot.command_registry
-                    return command_discovery_catalog(registry)
-
-                command_catalog_provider = current_command_catalog
-
-            self.channel_host = await start_channels(
-                self.config,
-                bus=self.bus,
-                workspace=self.workspace,
-                identities=self.core.identities,
-                http_resources=self.http_resources,
-                event_bus=event_bus,
-                command_catalog_provider=command_catalog_provider,
-                extra_channels=extra_channels,
-            )
-            if plugin_manager is not None:
-                from bootstrap.core_channel_adapter import build_core_channel_definition
-
-                await plugin_manager.bind_core_channel_definitions(
-                    tuple(
-                        build_core_channel_definition(channel)
-                        for channel in self.channel_host.channels
-                    )
-                )
-            # 对账只读取 exact 注册名；缺少出站时不能先启动外部收件。
-            if self.channel_host.required_delivery_senders:
-                from agent.plugins.snapshot import lease_runtime_snapshot
-                from plugins.delivery.senders import DELIVERY_SENDERS
-
-                async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
-                    available = snapshot.composition_root.context.require(DELIVERY_SENDERS).registered_names()
-                    missing = set(self.channel_host.required_delivery_senders) - set(available)
-                if missing:
-                    raise RuntimeError("收件渠道缺少已启用的同名 Sender：" + ", ".join(sorted(missing)))
-            await self.channel_host.start_all()
-            # 渠道已打开 exact ingress 后恢复 Input；不依赖回复 worker。
+            # provider 已开放实际 binding；这里只触发传输 owner 的 pending 恢复。
             await self.bus.recover_durable_inbounds()
             if self.readiness is not None:
                 self.readiness.mark_stage("channels.ready")
             if plugin_manager is None:
                 raise RuntimeError("插件 Runtime 不可用")
-            plugin_manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
             # 正式 lifecycle 完成后才公布 runtime ready；一次调度机会不等于启动完成。
             await plugin_manager.start_runtime()
 
@@ -408,59 +265,14 @@ class AppRuntime:
                 self.dashboard_server.serve(),
                 name="dashboard_server",
             )
-            if self.config.mobile_realtime.enabled:
-                from infra.mobile_realtime.gateway import (
-                    build_mobile_gateway_server,
-                )
-
-                assert self.mobile_gateway_runtime is not None
-                mobile_keyset = self.mobile_gateway_runtime.keyset
-                self.mobile_gateway_server = build_mobile_gateway_server(
-                    self.mobile_gateway_runtime,
-                    mobile_keyset,
-                )
-                self.mobile_gateway_task = asyncio.create_task(
-                    self.mobile_gateway_server.serve(),
-                    name="mobile_gateway_server",
-                )
-            if self.web_chat_channel is not None:
-                self.chat_server = build_chat_server(
-                    workspace=self.workspace,
-                    channel=self.web_chat_channel,
-                    uds=prepare_runtime_socket(chat_socket_path(self.workspace)),
-                    mobile_pairing_admin=(
-                        self.mobile_gateway_runtime.admin
-                        if self.mobile_gateway_runtime is not None
-                        else None
-                    ),
-                    runtime_inspection=runtime_inspection,
-                    plugin_ui_provider=plugin_ui_provider,
-                    web_ui_provider=web_ui_provider,
-                    model_catalog_reader=model_catalog_reader,
-                    model_control=model_control,
-                    messages=messages,
-                    reply_status=reply_status,
-                )
-                self.chat_task = asyncio.create_task(
-                    self.chat_server.serve(),
-                    name="chat_server",
-                )
             if plugin_manager is not None:
-                mobile_ui_refresh = (
-                    self.mobile_gateway_runtime.channel.refresh_mobile_ui_catalog
-                    if self.mobile_gateway_runtime is not None
-                    else None
-                )
                 self.plugin_watcher = PluginWatcher(
                     plugin_manager,
-                    baseline_revision="",
-                    after_reconcile=mobile_ui_refresh,
                 )
                 self.plugin_watcher_task = asyncio.create_task(
                     self.plugin_watcher.run(),
                     name="plugin_watcher",
                 )
-                self.plugin_watcher.wake()
 
             self._install_plugin_reload_signal()
             if self.readiness is not None:
@@ -487,8 +299,6 @@ class AppRuntime:
                 task
                 for task in (
                     self.dashboard_task,
-                    self.chat_task,
-                    self.mobile_gateway_task,
                     self.plugin_watcher_task,
                 )
                 if task is not None
@@ -510,15 +320,6 @@ class AppRuntime:
                 if self.dashboard_task is not None and self.dashboard_task in done:
                     watched_task = self.dashboard_task
                     self.dashboard_task = None
-                elif self.chat_task is not None and self.chat_task in done:
-                    watched_task = self.chat_task
-                    self.chat_task = None
-                elif (
-                    self.mobile_gateway_task is not None
-                    and self.mobile_gateway_task in done
-                ):
-                    watched_task = self.mobile_gateway_task
-                    self.mobile_gateway_task = None
                 elif (
                     self.plugin_watcher_task is not None
                     and self.plugin_watcher_task in done
@@ -606,10 +407,6 @@ class AppRuntime:
     async def _request_server_shutdown(self) -> None:
         if self.dashboard_server is not None:
             self.dashboard_server.should_exit = True
-        if self.chat_server is not None:
-            self.chat_server.should_exit = True
-        if self.mobile_gateway_server is not None:
-            self.mobile_gateway_server.should_exit = True
 
     async def shutdown(self) -> None:
         if self._shutdown:
@@ -624,14 +421,6 @@ class AppRuntime:
                 (
                     "dashboard_server.wait",
                     _wait_server_task(self.dashboard_task),
-                ),
-                (
-                    "chat_server.wait",
-                    _wait_server_task(self.chat_task),
-                ),
-                (
-                    "mobile_gateway_server.wait",
-                    _wait_server_task(self.mobile_gateway_task),
                 ),
                 ("message_bus.aclose", _close_message_bus(self.bus)),
                 (
@@ -652,22 +441,6 @@ class AppRuntime:
                         if self.control_service
                         else _noop_async
                     ),
-                ),
-                (
-                    "plugin_turn_rollout.shutdown",
-                    (
-                        self.plugin_turn_rollout.shutdown
-                        if self.plugin_turn_rollout
-                        else _noop_async
-                    ),
-                ),
-                (
-                    "channels.stop",
-                    self.channel_host.stop_all if self.channel_host else _noop_async,
-                ),
-                (
-                    "mobile_gateway.close",
-                    _close_mobile_gateway(self.mobile_gateway_runtime),
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 ("http_resources.aclose", self.http_resources.aclose),
@@ -722,88 +495,6 @@ class AppRuntime:
             raise RuntimeError("插件 Runtime 不可用")
         await manager.reconcile_disabled_and_drain(plugin_id)
         return f"插件已停用并排空: {plugin_id}"
-
-    async def _install_plugin(
-        self,
-        source: str,
-        marketplace: str,
-        ref: str,
-        sparse: list[str],
-        owner_turn_id: str = "",
-    ) -> dict[str, object]:
-        """安装 immutable artifact，并等待 runtime latest 已可租用。"""
-
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-
-        # 1. PluginManager 与 watcher 共用一个 candidate 发布 owner。
-        rollout = getattr(self, "plugin_turn_rollout", None)
-        if rollout is None:
-            result, status = await manager.install_candidate(
-                source=source,
-                marketplace=marketplace,
-                ref_name=ref,
-                sparse_paths=sparse,
-            )
-        elif not owner_turn_id:
-            raise ValueError("plugin-install 必须由当前 active turn 发起")
-        else:
-            result, status = await rollout.install(
-                owner_turn_id,
-                source=source,
-                marketplace=marketplace,
-                ref_name=ref,
-                sparse_paths=sparse,
-            )
-
-        # 2. 返回 manager 在 candidate owner 锁内冻结的发布结果。
-        plugin_id = f"{result.plugin_name}@{result.marketplace}"
-        publication = status["candidate_state"] if result.staged_candidate else "stable"
-        message = (
-            f"{plugin_id} 候选版本安装成功。当前 turn 仍使用原版本；"
-            "本 turn 启动的 attached programmatic 验证会自动使用新版本。"
-            "验证正确后请正常结束当前 turn，系统会在本轮结束后自动切换，"
-            "下一 turn 生效；如果结果或轨迹不正确，请先执行 plugin-revert。"
-            if result.staged_candidate
-            else f"{plugin_id} 已经是当前安装版本；没有创建候选，也不需要重启。"
-        )
-        return {
-            "pluginId": plugin_id,
-            "version": result.plugin_version,
-            "sourceRevision": result.source_revision,
-            "installedPath": str(result.installed_path),
-            "dataPath": str(result.data_path),
-            "publicationState": publication,
-            "candidate": self._plugin_status(status),
-            "message": message,
-        }
-
-    async def _register_plugin_uninstall(
-        self,
-        plugin_id: str,
-        owner_turn_id: str,
-    ) -> dict[str, object]:
-        rollout = self.plugin_turn_rollout
-        if rollout is None:
-            raise RuntimeError("插件 turn rollout owner 不可用")
-        result = await rollout.uninstall(owner_turn_id, plugin_id)
-        result["message"] = (
-            f"{plugin_id} 卸载已确认。当前 turn 的已有操作可以完成；"
-            "本轮结束后系统会自动停止插件并删除已安装代码，plugin-data 会保留。"
-            "下一 turn 不再加载该插件。如需取消，请在本轮结束前执行 plugin-revert。"
-        )
-        return result
-
-    async def _revert_plugin_operation(self, owner_turn_id: str) -> dict[str, object]:
-        rollout = self.plugin_turn_rollout
-        if rollout is None:
-            raise RuntimeError("插件 turn rollout owner 不可用")
-        result = await rollout.revert(owner_turn_id)
-        result["message"] = (
-            "已撤销当前 turn 最近一次插件操作；已发布版本和 plugin-data 均未改变。"
-        )
-        return result
 
     def _plugin_status(
         self,
@@ -886,12 +577,9 @@ class AppRuntime:
         old_commands: tuple[tuple[str, str], ...],
         new_commands: tuple[tuple[str, str], ...],
     ) -> None:
-        assert self.channel_host is not None
-        if old_commands != new_commands:
-            await self.channel_host.swap_command_catalog(
-                old_commands,
-                new_commands,
-            )
+        # Installed channel plugins resolve COMMANDS inside each exact
+        # request scope.  There is no Core endpoint registry to mutate.
+        _ = old_commands, new_commands
 
 
 def build_app_runtime(

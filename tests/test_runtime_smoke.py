@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import sqlite3
 import subprocess
 import sys
 import types
@@ -13,33 +12,19 @@ import pytest
 import main
 from bootstrap import app as bootstrap_app
 from bootstrap import init_workspace as workspace_init
-from bootstrap.channels import start_channels
 from agent.config import (
-    ChannelsConfig,
     Config,
     DEFAULT_SOCKET,
-    QQChannelConfig,
-    QQGroupConfig,
-    TelegramChannelConfig,
     load_config,
     resolve_app_server_endpoint,
 )
-from agent.persona import reset_veda
+from plugins.prompt.persona import reset_veda
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
-from infra.mobile_webui.store import MobileWebUiStore
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
 class _FakeDashboardServer:
-    def __init__(self) -> None:
-        self.should_exit = False
-
-    async def serve(self) -> None:
-        while not self.should_exit:
-            await asyncio.sleep(0)
-
-
-class _FakeChatServer:
     def __init__(self) -> None:
         self.should_exit = False
 
@@ -150,6 +135,7 @@ def _write_config(path: Path, socket_path: Path) -> None:
     }
     path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
     _ = workspace_init.init_workspace(config_path=path, workspace=path.parent)
+    initialize_plugin_workspace(path.parent)
 
 
 def test_load_config_has_no_legacy_agent_fields(tmp_path: Path):
@@ -167,24 +153,23 @@ def test_load_config_has_no_legacy_agent_fields(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("snippet", "owner"),
+    "snippet",
     [
-        ('[agent]\nsystem_prompt = "old"', "prompt plugin"),
-        ("[agent]\nmax_iterations = 1", "reply max_steps"),
-        ("[agent.tools]\nsearch_enabled = true", "tool discovery"),
-        ("[agent]\ndev_mode = false", "no runtime owner"),
-        ('[agent.wiring]\ntoolsets = ["meta_common"]', "no runtime owner"),
+        '[agent]\nsystem_prompt = "old"',
+        "[agent]\nmax_iterations = 1",
+        "[agent.tools]\nsearch_enabled = true",
+        "[agent]\ndev_mode = false",
+        '[agent.wiring]\ntoolsets = ["meta_common"]',
     ],
 )
 def test_load_config_rejects_retired_agent_fields(
     tmp_path: Path,
     snippet: str,
-    owner: str,
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(snippet + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match=owner):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         load_config(config_path, workspace=tmp_path)
 
 
@@ -212,7 +197,7 @@ def test_load_config_rejects_retired_pending_optimizer_keys(tmp_path: Path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="PENDING/MemoryOptimizer 已移除"):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         _ = load_config(config_path, workspace=tmp_path)
 
 
@@ -231,23 +216,28 @@ disabled_builtin = ["subagent", "scheduler"]
     assert cfg.disabled_builtin_plugins == frozenset({"subagent", "scheduler"})
 
 
-def test_runtime_accepts_all_real_builtin_entrypoints_and_rejects_unknown(
-    monkeypatch,
-) -> None:
+def test_runtime_validates_disabled_plugin_ids_only_for_explicit_roots(monkeypatch) -> None:
     from agent.config_models import Config
     from bootstrap.tools import _disabled_builtin_plugins_for_runtime
 
-    monkeypatch.setenv("AKASHIC_WORKLOAD_SOCKET", "/tmp/fixture.sock")
+    monkeypatch.delenv("AKASHIC_WORKLOAD_SOCKET", raising=False)
+    repo_plugins = Path(__file__).parents[1] / "plugins"
     existing = frozenset(
         {"akasha", "scheduler", "wake", "compaction", "markdown_memory"}
     )
     assert (
-        _disabled_builtin_plugins_for_runtime(Config(disabled_builtin_plugins=existing))
+        _disabled_builtin_plugins_for_runtime(
+            Config(disabled_builtin_plugins=existing), [repo_plugins]
+        )
         == existing
     )
+    assert _disabled_builtin_plugins_for_runtime(
+        Config(disabled_builtin_plugins=frozenset({"future-plugin"}))
+    ) == frozenset({"future-plugin"})
     with pytest.raises(ValueError, match="未知内置插件: agent_restart, skills"):
         _disabled_builtin_plugins_for_runtime(
-            Config(disabled_builtin_plugins=frozenset({"skills", "agent_restart"}))
+            Config(disabled_builtin_plugins=frozenset({"skills", "agent_restart"})),
+            [repo_plugins],
         )
 
 
@@ -261,7 +251,7 @@ spawn_enabled = false
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="spawn_enabled 已移除"):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         load_config(config_path, workspace=tmp_path)
 
 
@@ -275,48 +265,26 @@ def test_load_config_rejects_retired_proactive_before_workspace_access(
     workspace = tmp_path / "workspace"
     config_path.write_text(body, encoding="utf-8")
 
-    def reject_store_access(_: Path):
-        raise AssertionError("legacy config must fail before opening the model store")
-
-    monkeypatch.setattr(
-        "agent.model_runtime.store.ModelRegistryStore.for_workspace",
-        reject_store_access,
-    )
-
-    with pytest.raises(ValueError, match=r"\[proactive\] 已移除"):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         load_config(config_path, workspace=workspace)
 
     assert not workspace.exists()
 
 
-def test_config_load_resolves_channel_secret_from_explicit_workspace(
+def test_config_load_rejects_legacy_channel_owner_after_migration(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    first_workspace = tmp_path / "first"
-    second_workspace = tmp_path / "second"
-    for workspace, token in (
-        (first_workspace, "first-token"),
-        (second_workspace, "second-token"),
-    ):
-        memory = workspace / "memory"
-        memory.mkdir(parents=True)
-        (memory / "TG_TOKEN").write_text(token, encoding="utf-8")
     config_path.write_text(
         """
 [channels.telegram]
-token = "${TG_TOKEN}"
+token = "legacy-token"
 """.strip() + "\n",
         encoding="utf-8",
     )
 
-    first = load_config(config_path, workspace=first_workspace)
-    second = Config.load(config_path, workspace=second_workspace)
-
-    assert first.channels.telegram is not None
-    assert first.channels.telegram.token == "first-token"
-    assert second.channels.telegram is not None
-    assert second.channels.telegram.token == "second-token"
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
+        load_config(config_path, workspace=tmp_path / "workspace")
 
 
 def test_default_socket_is_derived_from_workspace(tmp_path: Path) -> None:
@@ -447,7 +415,7 @@ def test_load_config_rejects_non_table_sections(
     config_path = tmp_path / "config.toml"
     config_path.write_text(f"{snippet}\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="必须是 TOML table") as exc_info:
+    with pytest.raises(ValueError, match="Core 配置不支持字段|必须是 TOML table") as exc_info:
         load_config(config_path, workspace=tmp_path)
 
     assert field in str(exc_info.value)
@@ -457,7 +425,7 @@ def test_load_config_rejects_non_table_sections(
     ("field", "snippet"),
     [
         ("agent.dev_mode", '[agent]\ndev_mode = "false"'),
-        ("channels.chat.enabled", '[channels.chat]\nenabled = "false"'),
+        ("app_server.enabled", '[app_server]\nenabled = "false"'),
     ],
 )
 def test_load_config_rejects_string_booleans(
@@ -509,10 +477,6 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     monkeypatch.setattr(
         bootstrap_app, "build_dashboard_server", lambda **_: _FakeDashboardServer()
     )
-    monkeypatch.setattr(
-        bootstrap_app, "build_chat_server", lambda **_: _FakeChatServer()
-    )
-
     monkeypatch.setattr(main.Path, "home", lambda: tmp_path)
 
     await main.serve(str(config_path), tmp_path)
@@ -560,33 +524,6 @@ async def test_run_cleanup_steps_continues_after_cancellation():
         )
 
     assert calls == ["cancel", "cleanup"]
-
-
-@pytest.mark.asyncio
-async def test_shutdown_stops_mobile_channel_before_closing_gateway_storage(tmp_path):
-    events: list[str] = []
-
-    class Gateway:
-        closed = False
-
-        def close(self) -> None:
-            self.closed = True
-            events.append("gateway.close")
-
-    gateway = Gateway()
-
-    class ChannelHost:
-        async def stop_all(self) -> None:
-            assert gateway.closed is False
-            events.append("channels.stop")
-
-    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
-    runtime.mobile_gateway_runtime = gateway
-    runtime.channel_host = cast(Any, ChannelHost())
-
-    await runtime.shutdown()
-
-    assert events == ["channels.stop", "gateway.close"]
 
 
 @pytest.mark.asyncio
@@ -867,17 +804,6 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
 
 
 @pytest.mark.asyncio
-async def test_mobile_gateway_close_keeps_publication_owner_thread(tmp_path: Path):
-    store = MobileWebUiStore(tmp_path / "mobile-webui", server_id="shutdown-test")
-    try:
-        await bootstrap_app._close_mobile_gateway(store)()
-        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
-            store.get_release()
-    finally:
-        store.close()
-
-
-@pytest.mark.asyncio
 async def test_app_runtime_shutdown_cleans_up_after_server_failure(tmp_path):
     calls: list[str] = []
 
@@ -915,31 +841,30 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     config_text = config_path.read_text(encoding="utf-8")
     assert "[llm]" not in config_text
     assert "[memory]" not in config_text
-    assert "2236 的“模型”页" in config_text
-    assert "[channels.chat]" in config_text
+    assert "模型" not in config_text
+    assert "Telegram" not in config_text
+    assert "QQ" not in config_text
+    assert "plugin-data" in config_text
+    assert "[channels.chat]" not in config_text
+    assert "[mobile_realtime]" not in config_text
     assert "6322" not in config_text
     assert "[runtime]\n" in config_text
     assert 'workspace = "~/.akashic/workspace"' in config_text
-    assert any("http://127.0.0.1:2236" in step for step in summary.next_steps)
-    assert any("默认聊天模型" in step for step in summary.next_steps)
-    assert any("embedding 模型" in step for step in summary.next_steps)
-    assert not any("llm.main" in step for step in summary.next_steps)
-    assert not any("memory.embedding" in step for step in summary.next_steps)
     # 启动迁移完成后由 MessageLog owner 创建 canonical schema。
     assert not (workspace / "sessions.db").exists()
-    assert (workspace / "observe").is_dir()
+    assert not (workspace / "observe").exists()
     assert not (workspace / "memory" / "consolidation_writes.db").exists()
     assert not (workspace / "memory" / "journal").exists()
     assert not (workspace / "memory" / "memory2.db").exists()
-    assert "你是 Akashic" in (workspace / "memory" / "VEDA.md").read_text(
-        encoding="utf-8"
-    )
+    assert not (workspace / "memory" / "VEDA.md").exists()
+    assert not (workspace / "plugin-data").exists()
+    assert not (workspace / "memes").exists()
     assert not (workspace / "PROACTIVE_CONTEXT.md").exists()
     assert not (workspace / "mcp").exists()
     assert not (workspace / "proactive_sources.json").exists()
     assert not (workspace / "proactive.db").exists()
-    assert (workspace / "skills").is_dir()
-    assert (workspace / "drift" / "skills").is_dir()
+    assert not (workspace / "skills").exists()
+    assert not (workspace / "drift").exists()
     assert any(path == config_path for path in summary.created)
 
 
@@ -985,6 +910,7 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     self_path = workspace / "memory" / "SELF.md"
     veda_path = workspace / "memory" / "VEDA.md"
     assert not self_path.exists()
+    veda_path.parent.mkdir(parents=True, exist_ok=True)
     veda_path.write_text("custom veda\n", encoding="utf-8")
 
     summary_skip = workspace_init.init_workspace(
@@ -993,7 +919,7 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     )
     assert not self_path.exists()
     assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
-    assert any(path == veda_path for path in summary_skip.skipped)
+    assert veda_path not in summary_skip.created + summary_skip.overwritten
 
     summary_force = workspace_init.init_workspace(
         config_path=config_path,
@@ -1003,141 +929,4 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     assert not self_path.exists()
     assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
     assert self_path not in summary_force.created + summary_force.overwritten
-    assert any(path == veda_path for path in summary_force.skipped)
-
-
-@pytest.mark.asyncio
-async def test_start_channels_wires_telegram_qq_and_extra_channel(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    starts: list[str] = []
-    attachment_roots: list[Path] = []
-    mobile_catalogs: list[list[tuple[str, str]]] = []
-    fake_telegram = types.ModuleType("infra.channels.telegram_channel")
-    fake_qq = types.ModuleType("infra.channels.qq_channel")
-
-    class _TelegramChannel:
-        def __init__(self, **kwargs: object) -> None:
-            self.kwargs = kwargs
-            self.name = str(kwargs.get("channel_name") or "telegram")
-
-        async def start(self, ctx: Any) -> None:
-            starts.append("telegram")
-
-        async def stop(self) -> None:
-            starts.append("telegram.stop")
-
-        async def send(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_stream(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_file(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_image(self, *args: object, **kwargs: object) -> None:
-            return None
-
-    class _QQChannel:
-        name = "qq"
-
-        def __init__(self, **kwargs: object) -> None:
-            self.kwargs = kwargs
-
-        async def start(self, ctx: Any) -> None:
-            starts.append("qq")
-
-        async def stop(self) -> None:
-            starts.append("qq.stop")
-
-        async def send(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_file(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_image(self, *args: object, **kwargs: object) -> None:
-            return None
-
-    class _PluginChannel:
-        name = "plugin"
-
-        async def start(self, ctx: Any) -> None:
-            starts.append("plugin")
-            attachment_roots.append(ctx.attachment_store.root)
-            provider = ctx.command_catalog_provider
-            mobile_catalogs.append([] if provider is None else list(provider()))
-
-        async def stop(self) -> None:
-            starts.append("plugin.stop")
-
-        async def send(self, *args: object, **kwargs: object) -> None:
-            return None
-
-    fake_telegram.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
-    fake_qq.QQChannel = _QQChannel  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram)
-    monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq)
-
-    config = Config(
-        channels=ChannelsConfig(
-            telegram=TelegramChannelConfig(token="tg-token", allow_from=["1"]),
-            qq=QQChannelConfig(
-                bot_uin="10001",
-                allow_from=["2"],
-                groups=[QQGroupConfig(group_id="3")],
-            ),
-        ),
-    )
-    resources = SharedHttpResources()
-    event_bus = EventBus()
-    host = await start_channels(
-        config,
-        bus=cast(Any, object()),
-        workspace=tmp_path,
-        identities=cast(Any, object()),
-        http_resources=resources,
-        event_bus=event_bus,
-        command_catalog_provider=lambda: (("shared", "统一目录"),),
-        extra_channels=[cast(Any, _PluginChannel())],
-    )
-    try:
-        await host.start_all()
-
-        telegram, qq, plugin = host.channels
-        assert starts == ["telegram", "qq", "plugin"]
-        assert telegram.kwargs["event_bus"] is event_bus
-        assert "interrupt_controller" not in telegram.kwargs
-        assert telegram.kwargs["command_catalog_provider"]() == (
-            ("shared", "统一目录"),
-        )
-        assert "interrupt_controller" not in qq.kwargs
-        assert plugin.name == "plugin"
-        assert attachment_roots == [tmp_path / "uploads"]
-        assert mobile_catalogs == [[("shared", "统一目录")]]
-    finally:
-        await host.stop_all()
-        await resources.aclose()
-
-
-@pytest.mark.asyncio
-async def test_start_channels_skips_unfilled_optional_channels(tmp_path: Path) -> None:
-    config = Config(
-        channels=ChannelsConfig(telegram=None, qq=None),
-    )
-    resources = SharedHttpResources()
-    try:
-        host = await start_channels(
-            config,
-            bus=cast(Any, object()),
-            workspace=tmp_path,
-            identities=cast(Any, object()),
-            http_resources=resources,
-            event_bus=EventBus(),
-        )
-    finally:
-        await resources.aclose()
-
-    assert host.channels == []
+    assert veda_path not in summary_force.created + summary_force.overwritten

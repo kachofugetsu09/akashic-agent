@@ -1,5 +1,4 @@
 from contextlib import closing
-import json
 import sqlite3
 
 import pytest
@@ -8,11 +7,9 @@ from session.identities import ChannelIdentities
 from session.log import MessageLog, SessionAttributes
 
 
-def _history(tmp_path, *, legacy=False):
-    from session.store import SessionStore
-
+def _history(tmp_path):
     path = tmp_path / "sessions.db"
-    with closing(SessionStore(path) if legacy else MessageLog(path)):
+    with closing(MessageLog(path)):
         pass
     config = tmp_path / "config.toml"
     config.write_text('[channels.telegram]\nchannel_name="telegram_work"\n')
@@ -33,132 +30,52 @@ def _history(tmp_path, *, legacy=False):
     return path, config
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_yoyo_preserves_known_aliases_original_data_and_unknown_sources(tmp_path, monkeypatch, legacy):
-    import runpy
-    from pathlib import Path
-    import yoyo
-    from agent.migrations.context import bind_migration_context
+def test_legacy_channel_config_has_a_recoverable_plugin_migration(tmp_path):
+    from scripts.migrate_legacy_channels import migrate_legacy_channels
 
-    path, config = _history(tmp_path, legacy=legacy)
-    with closing(sqlite3.connect(path)) as db:
-        original = tuple(db.iterdump())
-        sessions = db.execute("SELECT * FROM sessions ORDER BY key").fetchall()
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    entry = runpy.run_path(str(Path(__file__).parents[1] / "migrations/yoyo/20260906_04_channel_identities.py"))
-    with bind_migration_context(config_path=config, workspace=tmp_path):
-        entry["steps"][0](None)
-    with closing(ChannelIdentities(path)) as identities:
-        assert identities.load("telegram_work") == {"alice": "z"}
-        assert identities.resolve("feishu", "ou_123") == "room"
-        assert identities.resolve("qq", "00123") == "room"
-        assert not identities.migration_completed("unknown")
-        assert not identities.migration_completed("telegramXwork")
-    backup = next((tmp_path / "backups/channel-identities").glob("*/sessions.db"))
-    with closing(sqlite3.connect(backup)) as db:
-        assert tuple(db.iterdump()) == original
-    manifest = json.loads(backup.with_name("manifest.json").read_text())
-    assert manifest["sqlite_integrity"] == "ok"
-    with closing(sqlite3.connect(path)) as db:
-        assert db.execute("SELECT * FROM sessions ORDER BY key").fetchall() == sessions
-        committed = tuple(db.iterdump())
-    with bind_migration_context(config_path=config, workspace=tmp_path):
-        entry["steps"][0](None)
-    with closing(sqlite3.connect(path)) as db:
-        assert tuple(db.iterdump()) == committed
-    assert len(tuple((tmp_path / "backups/channel-identities").glob("*/manifest.json"))) == 1
+    config = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    config.write_text(
+        """
+[channels.telegram]
+token = "123:token"
+allow_from = ["alice"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    assert migrate_legacy_channels(config, workspace, marketplace="installed") == ("telegram_channel",)
+    assert "channels.telegram" not in config.read_text(encoding="utf-8")
+    plugin = workspace / "plugin-data/telegram_channel-installed/config.local.toml"
+    assert 'token = "123:token"' in plugin.read_text(encoding="utf-8")
+    assert (tmp_path / "config.toml.before-channel-plugin-migration.bak").exists()
 
 
-def test_identity_migration_failure_rolls_back_all_channels_and_retries(tmp_path, monkeypatch):
-    from agent.migrations import channel_identities as migration
+def test_channel_migration_rejects_custom_telegram_identity_without_silent_rekey(tmp_path):
+    from scripts.migrate_legacy_channels import migrate_legacy_channels
 
-    path, config = _history(tmp_path)
-    with closing(sqlite3.connect(path)) as db:
-        original = tuple(db.iterdump())
-    seed = migration.seed_channel_identities
+    config = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    original = '[channels.telegram]\nchannel_name = "telegram_work"\ntoken = "secret"\n'
+    config.write_text(original, encoding="utf-8")
 
-    def fail_after_write(connection, channel, mapping):
-        seed(connection, channel, mapping)
-        raise OSError("migration interrupted")
+    with pytest.raises(ValueError, match="自定义 channels.telegram.channel_name"):
+        migrate_legacy_channels(config, workspace, marketplace="installed")
 
-    monkeypatch.setattr(migration, "seed_channel_identities", fail_after_write)
-    with pytest.raises(OSError, match="interrupted"):
-        migration.migrate(path, config, tmp_path / "backup1")
-    with closing(sqlite3.connect(path)) as db:
-        assert tuple(db.iterdump()) == original
-    monkeypatch.setattr(migration, "seed_channel_identities", seed)
-    migration.migrate(path, config, tmp_path / "backup2")
-    with closing(ChannelIdentities(path)) as identities:
-        assert identities.resolve("telegram_work", "alice") == "z"
+    assert config.read_text(encoding="utf-8") == original
+    assert not workspace.exists()
 
 
-def test_migrated_empty_routes_do_not_parse_obsolete_metadata(tmp_path):
-    from agent.migrations.channel_identities import migrate
+def test_channel_migration_preserves_legacy_empty_channel_as_disabled_plugin(tmp_path):
+    from scripts.migrate_legacy_channels import migrate_legacy_channels
 
-    path, config = _history(tmp_path)
-    with closing(ChannelIdentities(path)) as identities:
-        identities.seed("feishu", {})
-    with closing(sqlite3.connect(path)) as db, db:
-        db.execute("UPDATE sessions SET metadata='broken old metadata' WHERE key='feishu:room'")
-    migrate(path, config, tmp_path / "backup")
-    with closing(ChannelIdentities(path)) as identities:
-        assert identities.load("feishu") == {}
-        assert identities.migration_completed("feishu")
+    config = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    config.write_text("[channels.telegram]\n", encoding="utf-8")
 
-
-def test_migration_rejects_unmarked_routes_before_any_change(tmp_path):
-    from agent.migrations.channel_identities import migrate
-
-    path, config = _history(tmp_path)
-    with closing(ChannelIdentities(path)):
-        pass
-    with closing(sqlite3.connect(path)) as db, db:
-        db.execute("INSERT INTO channel_identities VALUES ('feishu','ou_old','old','time')")
-        original = tuple(db.iterdump())
-    with pytest.raises(ValueError, match="缺少迁移标记"):
-        migrate(path, config, tmp_path / "backup")
-    with closing(sqlite3.connect(path)) as db:
-        assert tuple(db.iterdump()) == original
-    assert not (tmp_path / "backup").exists()
-
-
-def test_native_telegram_resolves_migrated_alias_with_only_identity_owner(tmp_path):
-    import subprocess
-    import sys
-    from agent.migrations.channel_identities import migrate
-
-    path, config = _history(tmp_path)
-    migrate(path, config, tmp_path / "backup")
-    # 全局 conftest 为其他测试安装简化 telegram module；独立进程使用真实 SDK。
-    script = """
-import asyncio
-from contextlib import closing
-import sys
-from bus.queue import MessageBus
-from infra.channels.telegram_channel import TelegramChannel
-from session.identities import ChannelIdentities
-
-async def main():
-    bus = MessageBus()
-    with closing(ChannelIdentities(sys.argv[1])) as identities:
-        channel = TelegramChannel(
-            token="123456:local-test-token", bus=bus,
-            identities=identities, channel_name="telegram_work",
-        )
-        try:
-            assert channel._resolve_chat_id(" @ALICE ") == "z"
-            assert channel._resolve_chat_id("-123456") == "-123456"
-            identities.remember("telegram_work", "alice", "moved")
-            assert channel._resolve_chat_id("@Alice") == "moved"
-        finally:
-            for request in channel.bot._request:
-                await request.shutdown()
-            await bus.aclose()
-
-asyncio.run(main())
-"""
-    result = subprocess.run([sys.executable, "-c", script, str(path)], capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert migrate_legacy_channels(config, workspace, marketplace="installed") == ("telegram_channel",)
+    plugin = workspace / "plugin-data/telegram_channel-installed/config.local.toml"
+    assert plugin.read_text(encoding="utf-8") == "enabled = false\nallow_from = []\n"
 
 
 def test_explicit_session_delete_keeps_identity_in_same_audit_backup(tmp_path):

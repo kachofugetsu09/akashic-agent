@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -10,15 +11,17 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from akashic_sdk import ConnectionClosedError
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
+from agent.plugin_composition.context import RuntimeScope
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.install import finalize_uninstall_plugin, set_installed_plugin_enabled
 from agent.plugins.reload_journal import ReloadJournal
-from agent.tools.registry import ToolRegistry
 from agent.control.client import ControlClient
 from agent.control.service import ControlService
 from bootstrap.app import AppRuntime
@@ -32,9 +35,10 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
     builtin = tmp_path / "builtin" / "baseline"
     _write_v3_plugin(builtin, name="baseline")
     source = tmp_path / "candidate"
-    _write_v3_plugin(source, name="candidate", static_manifest=True)
+    _write_v3_plugin(source, name="candidate")
     _commit(source)
     bus = EventBus()
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[builtin.parent],
         event_bus=bus,
@@ -48,18 +52,14 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
     app.workspace = tmp_path / "workspace"
     app.core = SimpleNamespace(plugin_manager=manager)
 
-    result = await app._install_plugin(str(source), "lab", "", [])
+    result, candidate = await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
 
-    assert result["pluginId"] == "candidate@lab"
-    assert result["publicationState"] == "latest_ready"
-    candidate = result["candidate"]
-    assert isinstance(candidate, dict)
-    assert (
-        candidate["candidateRuntimeRevision"]
-        == manager.candidate_status()["candidate_source_revision"]
-    )
-    assert candidate["candidateReloadTransactionId"]
-    assert candidate["candidateError"] == ""
+    assert result.plugin_name == "candidate"
+    assert result.marketplace == "lab"
+    assert candidate["candidate_state"] == "latest_ready"
+    assert candidate["candidate_source_revision"] == manager.candidate_status()["candidate_source_revision"]
+    assert candidate["candidate_reload_tx_id"]
+    assert candidate["candidate_error"] == ""
     assert manager.current_snapshot is stable
     assert "candidate@lab" not in stable.generations
     assert manager.latest_snapshot is not None
@@ -68,13 +68,13 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
     await latest_lease.release()
 
     blocked_source = tmp_path / "blocked"
-    _write_v3_plugin(blocked_source, name="blocked", static_manifest=True)
+    _write_v3_plugin(blocked_source, name="blocked")
     _commit(blocked_source)
     with pytest.raises(
         RuntimeError,
         match="已有插件候选等待处理: plugin=candidate@lab phase=latest_ready",
     ):
-        await app._install_plugin(str(blocked_source), "lab", "", [])
+        await manager.install_candidate(source=str(blocked_source), marketplace="lab", ref_name="", sparse_paths=[])
     assert not (manager.installed_plugins_home / "cache" / "lab" / "blocked").exists()
 
     promoted = await app._promote_plugin("candidate@lab")
@@ -95,29 +95,30 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
     promoted_lease = None
     plugin_id = "runtime_mcp@lab"
     old_generation = old_lease.snapshot.generations[plugin_id]
-    old_runtime = _composition_runtime(manager, old_generation)
+    old_runtime = _mcp_registration(old_lease.snapshot)
     old_server = _mcp_server(old_runtime)
-    old_ca_bundle = _runtime_ca_bundle(old_generation)
+    old_ca_bundle = _runtime_ca_bundle(manager, old_generation)
 
     try:
         # 1. 同版本提交新 revision，并等待真实 latest MCP 可租用。
         _write_runtime_mcp_source(source, runtime_version="v2")
         _commit_all(source, "runtime-v2")
-        updated = await app._install_plugin(str(source), "lab", "", [])
-        new_artifact = Path(str(updated["installedPath"]))
-        assert updated["version"] == "1.0.0"
+        updated, _ = await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
+        new_artifact = updated.installed_path
+        assert updated.plugin_version == "1.0.0"
         assert new_artifact != old_artifact
         assert old_artifact.is_dir() and new_artifact.is_dir()
 
         latest_lease = manager.snapshot_store.lease(selector="latest")
         latest_generation = latest_lease.snapshot.generations[plugin_id]
-        latest_runtime = _composition_runtime(manager, latest_generation)
+        latest_runtime = _mcp_registration(latest_lease.snapshot)
         latest_server = _mcp_server(latest_runtime)
-        assert latest_runtime.generation_id != old_runtime.generation_id
+        assert latest_runtime.ctx.runtime.generation_id != old_runtime.ctx.runtime.generation_id
 
         # 2. 更新后旧 MCP 延迟读取自己的 CA bundle，新旧调用各自保持代际身份。
         old_probe = await _call_runtime_probe(old_server)
-        latest_probe = await _call_runtime_probe(latest_server)
+        async with RuntimeScope(latest_lease.fork()):
+            latest_probe = await _call_runtime_probe(latest_server)
         assert {
             key: old_probe[key]
             for key in (
@@ -158,17 +159,32 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         promoted = await asyncio.wait_for(promote_task, timeout=30)
         assert promoted["publication_state"] == "promoted"
         promoted_lease = manager.snapshot_store.lease()
-        assert promoted_lease.snapshot is candidate_snapshot
+        assert promoted_lease.snapshot is not candidate_snapshot
+        assert promoted_lease.snapshot.composition_root is not candidate_snapshot.composition_root
+        assert {
+            key: item.archive_ref for key, item in promoted_lease.snapshot.generations.items()
+        } == {key: item.archive_ref for key, item in candidate_snapshot.generations.items()}
+        for key, item in promoted_lease.snapshot.generations.items():
+            assert item is not candidate_snapshot.generations[key]
+            assert item.generation_id != candidate_snapshot.generations[key].generation_id
         promoted_generation = promoted_lease.snapshot.generations[plugin_id]
-        promoted_runtime = _composition_runtime(manager, promoted_generation)
+        promoted_runtime = _mcp_registration(promoted_lease.snapshot)
         assert promoted_runtime is not latest_runtime
-        assert promoted_runtime.generation_id == latest_runtime.generation_id
-        assert promoted_runtime.mode == "formal"
+        assert promoted_generation is not latest_generation
+        assert promoted_runtime.ctx.runtime.generation_id == promoted_generation.generation_id
+        assert promoted_runtime.ctx.runtime.generation_id != latest_runtime.ctx.runtime.generation_id
+        assert promoted_runtime.grant.mode == "formal"
+        promoted_probe = await _call_runtime_probe(_mcp_server(promoted_runtime))
+        assert promoted_probe["runtime_version"] == "v2"
+        assert promoted_probe["artifact"] == str(promoted_generation.code_dir)
+        assert promoted_probe["ca_bundle"] == latest_probe["ca_bundle"]
+        assert promoted_probe["data_dir"] == str(promoted_generation.data_dir)
+        assert promoted_probe["workspace"] == str(tmp_path / "workspace")
 
         await promoted_lease.release()
         promoted_lease = None
         await manager.snapshot_store.retry_drains()
-        assert manager._composition_generation_host.get(old_generation.generation_id) is None
+        assert old_runtime.ctx.fiber.activation_token is None
         assert old_artifact.is_dir()
 
         # 4. 已排空 artifact 仍保留，只有显式卸载才删除 cache。
@@ -296,37 +312,38 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
     try:
         _write_runtime_mcp_source(source, runtime_version="v2")
         _commit_all(source, "runtime-v2-isolated")
-        await app._install_plugin(str(source), "lab", "", [])
+        await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
 
         candidate = manager.ready_candidate
         assert candidate is not None
-        validation_root = (
-            tmp_path
-            / "workspace"
-            / "runtime"
-            / "plugin-validation"
-            / candidate.generation_id
-        )
-        validation_workspace = validation_root / "workspace"
+        validation_workspace = candidate.validation_workspace
+        assert validation_workspace is not None
+        validation_root = validation_workspace.parent
         validation_data = (
             validation_workspace / "plugin-data" / "runtime_mcp-lab"
         )
         assert candidate.data_dir == validation_data
-        assert candidate.production_data_dir == production_data
+        assert candidate.data_dir != production_data
         assert (validation_data / marker.name).read_bytes() == production_before
         assert not (tmp_path / "workspace" / "candidate-mcp-started.json").exists()
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
 
-        candidate_runtime = _composition_runtime(manager, candidate)
+        candidate_runtime = _mcp_registration(manager.latest_snapshot)
         candidate_server = _mcp_server(candidate_runtime)
-        probe = await _call_runtime_probe(
-            candidate_server,
-        )
+        async with RuntimeScope(manager.snapshot_store.lease(selector="latest")):
+            async with candidate_server() as server:
+                assert set(server.tools) == {"probe"}
+                async with server.route() as route:
+                    probe = json.loads((await route.call("probe", {})).output)
+                    with pytest.raises(PermissionError, match="allowlist"):
+                        await route.call("poll_feed", {})
+        assert not (validation_data / "feed-cursor.json").exists()
+        assert not (production_data / "feed-cursor.json").exists()
         runtime_workspace = Path(str(probe["workspace"]))
         runtime_data = Path(str(probe["data_dir"]))
         assert runtime_workspace.name == "workspace"
-        assert runtime_workspace.is_relative_to(validation_root / "composition")
+        assert runtime_workspace == validation_workspace
         assert runtime_data == (
             runtime_workspace / "plugin-data" / "runtime_mcp-lab"
         )
@@ -336,14 +353,6 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
 
-        registry = manager.latest_snapshot.tool_registry
-        assert registry is not None
-        assert registry.get_source_tool_names(
-            "mcp", "runtime_probe", risk="read-only"
-        ) == {"mcp_runtime_probe__probe"}
-        assert registry.get_non_read_only_source_tool_names(
-            "mcp", "runtime_probe"
-        ) == set()
         await app._promote_plugin(plugin_id)
 
         active = manager.generation(plugin_id)
@@ -351,6 +360,13 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
         assert not validation_root.exists()
+        async with _mcp_server(_mcp_registration(manager.current_snapshot))() as server:
+            assert set(server.tools) == {"probe", "poll_feed"}
+            async with server.route() as route:
+                result = await route.call("poll_feed", {})
+                assert not result.tool_error
+        assert (production_data / "feed-cursor.json").read_text() == "advanced\n"
+        assert marker.read_bytes() == production_before
     finally:
         if manager.ready_candidate is not None:
             await manager.drop_candidate(plugin_id)
@@ -367,26 +383,29 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
     latest_lease = None
     plugin_id = "runtime_mcp@lab"
     old_generation = old_lease.snapshot.generations[plugin_id]
-    old_runtime = _composition_runtime(manager, old_generation)
+    old_runtime = _mcp_registration(old_lease.snapshot)
     old_server = _mcp_server(old_runtime)
-    old_ca_bundle = _runtime_ca_bundle(old_generation)
+    old_ca_bundle = _runtime_ca_bundle(manager, old_generation)
 
     try:
         # 1. 建立新 latest 后模拟旧环境材料丢失。
         _write_runtime_mcp_source(source, runtime_version="v2")
         _commit_all(source, "runtime-v2")
-        _ = await app._install_plugin(str(source), "lab", "", [])
+        _ = await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         latest_lease = manager.snapshot_store.lease(selector="latest")
         old_ca_bundle.unlink()
 
         # 2. 旧 MCP 在调用时才读取路径，oracle 必须命中原事故而不是静默切新代。
-        error_result = await old_server.route().call("probe", {})
+        async with old_server() as opened:
+            async with opened.route() as route:
+                error_result = await route.call("probe", {})
         assert error_result.tool_error
         assert "cacert.pem" in error_result.output or "No such file" in error_result.output
         assert old_lease.snapshot is manager.current_snapshot
         latest_generation = latest_lease.snapshot.generations[plugin_id]
-        latest_runtime = _composition_runtime(manager, latest_generation)
-        latest_probe = await _call_runtime_probe(_mcp_server(latest_runtime))
+        latest_runtime = _mcp_registration(latest_lease.snapshot)
+        async with RuntimeScope(latest_lease.fork()):
+            latest_probe = await _call_runtime_probe(_mcp_server(latest_runtime))
         assert latest_probe["runtime_version"] == "v2"
         assert latest_probe["ca_bundle"] != str(old_ca_bundle)
     finally:
@@ -410,10 +429,11 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
     sources: dict[str, Path] = {}
     for name in ("alpha", "beta"):
         source = tmp_path / name
-        _write_v3_plugin(source, name=name, static_manifest=True)
+        _write_v3_plugin(source, name=name)
         _commit(source)
         sources[name] = source
     bus = EventBus()
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[builtin.parent],
         event_bus=bus,
@@ -434,7 +454,7 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
     app.core = SimpleNamespace(plugin_manager=manager)
 
     install, watcher = await asyncio.gather(
-        app._install_plugin(str(sources["beta"]), "lab", "", []),
+        manager.install_candidate(source=str(sources["beta"]), marketplace="lab", ref_name="", sparse_paths=[]),
         manager.reconcile_changed(),
         return_exceptions=True,
     )
@@ -463,7 +483,7 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
 
     monkeypatch.setattr("agent.plugins.manager.install_git_plugin", blocking_install)
     cancelled_install = asyncio.create_task(
-        app._install_plugin(str(sources["alpha"]), "lab", "", [])
+        manager.install_candidate(source=str(sources["alpha"]), marketplace="lab", ref_name="", sparse_paths=[])
     )
     assert await asyncio.to_thread(entered.wait, 5)
     cancelled_install.cancel()
@@ -493,11 +513,16 @@ async def _start_runtime_mcp(
     source = tmp_path / "runtime-mcp-source"
     _write_runtime_mcp_source(source, runtime_version="v1")
     _commit_all(source, "runtime-v1")
+    provider = tmp_path / "providers/assets"
+    shutil.copytree(Path(__file__).parents[1] / "plugins/assets", provider,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(Path(__file__).parents[1] / "plugins/mcp", provider.parent / "mcp",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     bus = EventBus()
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
-        plugin_dirs=[],
+        plugin_dirs=[provider.parent],
         event_bus=bus,
-        tool_registry=ToolRegistry(),
         workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "plugins-home" / "cache",
     )
@@ -507,10 +532,10 @@ async def _start_runtime_mcp(
     app.core = SimpleNamespace(plugin_manager=manager)
 
     # 2. 首次安装先成为 latest，显式 promote 后才提供 stable lease。
-    installed = await app._install_plugin(str(source), "lab", "", [])
-    assert installed["publicationState"] == "latest_ready"
+    installed, status = await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
+    assert status["candidate_state"] == "latest_ready"
     _ = await app._promote_plugin("runtime_mcp@lab")
-    return source, manager, app, bus, Path(str(installed["installedPath"]))
+    return source, manager, app, bus, installed.installed_path
 
 
 def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
@@ -523,9 +548,10 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "api_version = 3\n"
         "name = 'runtime_mcp'\n"
         "version = '1.0.0'\n"
-        "inject = (MCP_SERVERS,)\n"
-        "skill_roots = ('skills',)\n"
-        "async def apply(ctx, config):\n"
+        "from agent.plugin_composition.assets import INSTALLED_ASSETS\n"
+        "inject = (MCP_SERVERS, INSTALLED_ASSETS)\n"
+        "async def apply(ctx):\n"
+        "    await ctx.require(INSTALLED_ASSETS).register(ctx, 'skills', 'skills')\n"
         "    await ctx.require(MCP_SERVERS).register(\n"
         "        ctx, McpServerDefinition(\n"
         "            name='runtime_probe', command=('python', 'mcp/server.py'),\n"
@@ -579,6 +605,8 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "        elif method == 'tools/list':\n"
         "            result = {'tools': TOOLS}\n"
         "        elif method == 'tools/call':\n"
+        "            if message['params']['name'] == 'poll_feed':\n"
+        "                (DATA_DIR / 'feed-cursor.json').write_text('advanced\\n', encoding='utf-8')\n"
         "            ca_bundle = Path(certifi.where())\n"
         "            context = ssl.create_default_context(cafile=str(ca_bundle))\n"
         "            probe = {'artifact': str(ARTIFACT), 'ca_bundle': str(ca_bundle), "
@@ -594,26 +622,13 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "    print(json.dumps(response), flush=True)\n",
         encoding="utf-8",
     )
-    _ = (source / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        "name = \"runtime_mcp\"\n"
-        "version = \"1.0.0\"\n"
-        "api_version = 3\n"
-        "entrypoint = \"plugin.py\"\n\n"
-        "[[python]]\n"
-        "requirements = \"mcp/requirements.txt\"\n\n"
-        "[[mcp]]\n"
-        "name = \"runtime_probe\"\n"
-        "command = [\"python\", \"mcp/server.py\"]\n"
-        "required_tools = [\"probe\"]\n"
-        "candidate_read_only_tools = [\"probe\"]\n",
-        encoding="utf-8",
-    )
 
 
-def _runtime_ca_bundle(generation: PluginGeneration) -> Path:
+def _runtime_ca_bundle(manager: PluginManager, generation: PluginGeneration) -> Path:
     """从启动命令固定的 interpreter 取得真实环境 CA，不猜测安装目录。"""
-    interpreter = dict(generation.static_runtime_commands)["mcp:runtime_probe"][0]
+    interpreter = manager._resolve_runtime_command(
+        generation, ("python", "mcp/server.py"), "."
+    )[0]
     result = subprocess.run(
         [interpreter, "-I", "-B", "-c", "import certifi; print(certifi.where())"],
         capture_output=True,
@@ -638,7 +653,9 @@ def _directory_digest(root: Path) -> str:
 async def _call_runtime_probe(server: Any) -> dict[str, Any]:
     """调用 v3 MCP route，并严格解析结构化代际证据。"""
 
-    result = await server.route().call("probe", {})
+    async with server() as opened:
+        async with opened.route() as route:
+            result = await route.call("probe", {})
     if result.tool_error:
         raise AssertionError(f"MCP probe 调用失败: {result.output}")
     raw = result.output
@@ -648,19 +665,15 @@ async def _call_runtime_probe(server: Any) -> dict[str, Any]:
     return parsed
 
 
-def _composition_runtime(manager: PluginManager, generation: Any) -> Any:
-    """Return one exact v3 composition runtime for a generation."""
-
-    runtime = manager._composition_generation_host.get(generation.generation_id)
-    assert runtime is not None and runtime.mcp is not None
-    return runtime
+def _mcp_registration(snapshot):
+    """从被测快照的实际 provider 读取注册 owner，而非中央 generation host。"""
+    from agent.plugin_composition.mcp_slots import MCP_SERVERS
+    return snapshot.composition_root.context.require(MCP_SERVERS)._entries["runtime_probe"]
 
 
-def _mcp_server(runtime: Any) -> Any:
-    """Return the exact runtime MCP server view under test."""
-
-    assert runtime.mcp is not None
-    return runtime.mcp["runtime_probe"]
+def _mcp_server(entry):
+    from agent.plugin_composition.mcp_slots import MCP_SERVERS
+    return lambda: entry.ctx.require(MCP_SERVERS).open(entry.ctx, entry.definition.name)
 
 
 def _write_v3_plugin(
@@ -668,7 +681,6 @@ def _write_v3_plugin(
     *,
     name: str,
     version: str = "1.0.0",
-    static_manifest: bool = False,
 ) -> None:
     """Write a minimal module-level v3 plugin fixture."""
 
@@ -677,67 +689,8 @@ def _write_v3_plugin(
         "api_version = 3\n"
         f"name = {name!r}\n"
         f"version = {version!r}\n\n"
-        "async def apply(ctx, config):\n"
+        "async def apply(ctx):\n"
         "    return None\n",
-        encoding="utf-8",
-    )
-    if static_manifest:
-        (plugin_dir / "akashic.plugin.toml").write_text(
-            "schema_version = 1\n"
-            f"name = {json.dumps(name)}\n"
-            f"version = {json.dumps(version)}\n"
-            "api_version = 3\n"
-            "entrypoint = \"plugin.py\"\n",
-            encoding="utf-8",
-        )
-
-
-def _write_tool_skill_plugin(plugin_dir: Path) -> None:
-    """Write one ordinary v3 candidate that contributes both Tool and Skill."""
-
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-    (plugin_dir / "plugin.py").write_text(
-        "from agent.plugin_composition import TOOL_CATALOG, PluginToolDefinition\n\n"
-        "api_version = 3\n"
-        "name = 'candidate'\n"
-        "version = '1.0.0'\n"
-        "inject = (TOOL_CATALOG,)\n"
-        "skill_roots = ('skills',)\n\n"
-        "async def candidate_probe(context, arguments):\n"
-        "    del context, arguments\n"
-        "    return 'candidate-ready'\n\n"
-        "async def apply(ctx, config):\n"
-        "    del config\n"
-        "    await ctx.require(TOOL_CATALOG).register(ctx, PluginToolDefinition(\n"
-        "        name='candidate_probe',\n"
-        "        description='Check the candidate.',\n"
-        "        parameters={\n"
-        "            'type': 'object',\n"
-        "            'properties': {},\n"
-        "            'required': [],\n"
-        "            'additionalProperties': False,\n"
-        "        },\n"
-        "        handler_export='candidate_probe',\n"
-        "        risk='read-only',\n"
-        "    ))\n",
-        encoding="utf-8",
-    )
-    skill = plugin_dir / "skills" / "candidate-check"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text(
-        "---\n"
-        "name: candidate-check\n"
-        "description: Check the installed candidate.\n"
-        "---\n\n"
-        "# Candidate check\n",
-        encoding="utf-8",
-    )
-    (plugin_dir / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        'name = "candidate"\n'
-        'version = "1.0.0"\n'
-        "api_version = 3\n"
-        'entrypoint = "plugin.py"\n',
         encoding="utf-8",
     )
 

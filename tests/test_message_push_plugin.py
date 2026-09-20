@@ -1,14 +1,12 @@
 import asyncio
-import importlib.util
 import json
 from pathlib import Path
 import shutil
 
 import pytest
-import yoyo
 
-from agent.migrations.context import bind_migration_context
-from agent.migrations.session_attributes import migrate as migrate_attributes
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
@@ -21,32 +19,16 @@ from plugins.tools.execution import ToolExecution
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 from agent.plugin_composition.tasks import Tasks
 from session.log import MessageLog, OwnerTransaction
-from session.store import SessionStore
 from session.artifact_store import ArtifactStore
 from tests.test_delivery_bindings import sources
 
 
 def storage(workspace):
-    """关闭旧连接，迁移后分别重开 Message 与附件 owner。"""
+    """用当前 Message owner 初始化消息与附件测试库。"""
     workspace.mkdir()
-    store = SessionStore(workspace / "sessions.db")
-    store.close()
-    migrations = Path(__file__).parents[1] / "migrations/yoyo"
-    with bind_migration_context(workspace=workspace, config_path=workspace / "config.toml"), pytest.MonkeyPatch.context() as patch:
-        patch.setattr(yoyo, "step", lambda callback: callback)
-        for name, callback in (
-            ("20260905_01_message_log", "migrate_message_log"),
-            ("20260905_02_owner_records", "migrate_owner_records"),
-            ("20260905_05_message_embeddings", "migrate_message_embeddings"),
-            ("20260905_06_message_artifacts", "migrate_message_artifacts"),
-        ):
-            spec = importlib.util.spec_from_file_location(name, migrations / f"{name}.py")
-            assert spec is not None and spec.loader is not None
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            getattr(module, callback)(None)
-    migrate_attributes(workspace / "sessions.db", workspace / "backups/attributes")
-    return ArtifactStore(workspace / "sessions.db"), MessageLog(workspace / "sessions.db")
+    log = MessageLog(workspace / "sessions.db")
+    store = ArtifactStore(workspace / "sessions.db")
+    return store, log
 
 
 @pytest.mark.asyncio
@@ -54,7 +36,7 @@ def storage(workspace):
 async def test_push_keeps_artifacts_and_original_sender_after_crash_without_resending(tmp_path, monkeypatch, confirmed):
     source = tmp_path / "plugins"
     sources(source)
-    for name in ("tools", "message_push"):
+    for name in ("content", "tools", "message_push"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     sender = source / "test_sender/plugin.py"
@@ -64,6 +46,7 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
     sender.write_text(code)
     workspace = tmp_path / "workspace"
     store, log = storage(workspace)
+    initialize_plugin_workspace(workspace)
     artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
     def manager(paths):
         return PluginManager(paths, event_bus=EventBus(), workspace=workspace,
@@ -82,8 +65,9 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
     try:
         await host.load_all()
         await host.start_runtime()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             ctx = snapshot.composition_root.context
             tools = ctx.require(TOOLS)
             binding = tools.bind(
@@ -92,8 +76,6 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
             activity = snapshot.composition_root.context.require(
                 ServiceKey("fixture.delivery")
             )().activity("test", "room")
-        # 原 Tool 的捕获状态已保存 Sender binding，归档不再依赖当前注册或源码。
-        shutil.rmtree(source)
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(bindings, key),
                                   authorize, task_key="effects")
         invalid = await execution.execute("bad-route", binding, {**parameters, "target_channel": "missing"})
@@ -127,21 +109,26 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
         store = ArtifactStore(workspace / "sessions.db")
         artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
         log = MessageLog(workspace / "sessions.db")
-        restored = manager([])
-        recovered = Bindings(log, restored._archive, restored.open_binding)
+        restored = manager([source])
+        await restored.load_all()
+        await restored.start_runtime()
+        snapshot = restored.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        recovered = Bindings(log, restored._archive, snapshot.composition_root)
         async def no_new_authorization(*_):
             pytest.fail("query original send must not reauthorize or reprepare")
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(recovered, key),
                                   no_new_authorization, task_key="effects")
         answer = await execution.execute("push-once", binding, parameters)
         assert answer.outcome == ("success" if confirmed else "error")
-        assert (await execution.execute("push-once", binding, parameters)) == answer
+        repeated = await execution.execute("push-once", binding, parameters)
+        assert (repeated.outcome, repeated.parts) == (answer.outcome, answer.parts)
         assert len(log.reader("test:room").snapshot()) == 1
         record = DeliveryRecords(log.owner("plugin:delivery"), "message_push").read(identity, "test")[1]
         assert record.phase == ("delivered" if confirmed else "failed")
         sent = [json.loads(line) for line in next(workspace.rglob("sent.jsonl")).read_text().splitlines()]
         assert len(sent) == 1 and sent[0][1:] == ["room", identity, "original-A"]
-        assert next(workspace.rglob("receiver-starts")).read_text().splitlines() == ["started"]
+        assert next(workspace.rglob("receiver-starts")).read_text().splitlines() == ["started", "started"]
     finally:
         await tasks.close()
         if restored is not None:

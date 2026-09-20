@@ -14,20 +14,16 @@ from types import MappingProxyType
 from typing import Any, AsyncGenerator, AsyncIterator, Mapping, Protocol, Sequence, cast
 
 from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.tasks import register_task_bound_context
 
 from agent.plugin_composition import (
-    AddConnection,
-    AddModel,
     BoundChatModel,
     BoundEmbeddingModel,
     BoundModelDescriptor,
-    CancelConnectionAuth,
     CHAT_MODELS,
     ChatModelSelection,
     ConnectionDescriptor,
     Context,
-    CreateConnectionWithModel,
-    DisableConnection,
     DriverConnection,
     DriverConnectionDescriptor,
     DriverChatModel,
@@ -38,33 +34,44 @@ from agent.plugin_composition import (
     EMBEDDINGS,
     EmbeddingResult,
     EmbeddingSpaceDescriptor,
-    FinishConnectionAuth,
     LLMResponse,
     MODEL_DRIVERS,
-    MODEL_SETTINGS,
     ModelAvailability,
     ModelCatalogSnapshot,
-    ModelChange,
     ModelDescriptor,
     ModelDriverDefinition,
     ModelExecution,
     ModelKind,
     ModelRequest,
-    ModelRole,
     ModelUnavailableError,
+    SavedEmbedding,
+    ServiceKey,
+    SnapshotSealing,
+)
+
+from .settings import (
+    AddConnection,
+    AddModel,
+    CancelConnectionAuth,
+    CreateConnectionWithModel,
+    DisableConnection,
+    FinishConnectionAuth,
+    MODEL_SETTINGS,
+    ModelChange,
+    ModelSettingsSource,
     SetDefaultModel,
     SettingsReceipt,
-    SnapshotSealing,
     StartConnectionAuth,
     SyncModels,
     UpdateConnection,
 )
-from agent.plugins.snapshot import lease_current_runtime_snapshot
-
-from .store import ModelsStore, StoredConnection, StoredModel, StoredSnapshot
+from .store import MODEL_ROLES, ModelsStore, StoredConnection, StoredModel, StoredSnapshot
 
 logger = logging.getLogger(__name__)
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
+_DEFAULT_ROLE = "default"
+_AGENT_ROLE = "agent"
+_VISION_ROLE = "vision"
 
 
 class _CapabilityCatalog(Protocol):
@@ -211,7 +218,7 @@ class _Execution:
         snapshot: StoredSnapshot,
         model_id: str | None,
         reasoning_effort: str | None,
-        chat: Mapping[ModelRole, BoundChatModel],
+        chat: Mapping[str, BoundChatModel],
     ) -> None:
         self.owner_task = asyncio.current_task()
         self.state = state
@@ -221,23 +228,25 @@ class _Execution:
         self.reasoning_effort = reasoning_effort
         self._chat = MappingProxyType(dict(chat))
 
-    def chat(self, role: ModelRole) -> BoundChatModel:
+    def chat(self, role: str) -> BoundChatModel:
         try:
             return self._chat[role]
         except KeyError as exc:
-            raise ModelUnavailableError(f"模型角色不可用: {role.value}") from exc
+            raise ModelUnavailableError(f"模型角色不可用: {role}") from exc
 
 
 _CURRENT_EXECUTION: ContextVar[_Execution | None] = ContextVar(
     "models_current_execution",
     default=None,
 )
+# 独立 Task 不得继承父任务已绑定的 execution；由 Task 创建点统一清空。
+register_task_bound_context(_CURRENT_EXECUTION)
 
 
 def _check_vision_binding(snapshot: StoredSnapshot) -> None:
     """Reject a corrupt historical vision binding before any driver opens."""
 
-    model_id = snapshot.role_bindings.get(ModelRole.VISION.value)
+    model_id = snapshot.role_bindings.get(_VISION_ROLE)
     if model_id is None:
         return
     model = snapshot.models.get(model_id)
@@ -317,6 +326,12 @@ class _SettingsView:
     def __init__(self, state: ModelsState) -> None:
         self._state = state
 
+    def read_source(self) -> ModelSettingsSource:
+        return self._state.read_settings_source()
+
+    def use_source(self, source: ModelSettingsSource) -> None:
+        self._state.use_settings_source(source)
+
     async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]:
         return await self._state.discover_models(connection)
 
@@ -354,10 +369,13 @@ class ModelsState:
         store: ModelsStore,
         *,
         root_instance_token: object,
+        context: Context | None = None,
         capability_catalog: _CapabilityCatalog | None = None,
     ) -> None:
         self.store = store
+        self._settings_store = store
         self.root_instance_token = root_instance_token
+        self.context = context
         self.capability_catalog = capability_catalog
         self._driver_registrations: dict[str, ModelDriverDefinition] = {}
         self._driver_contexts: dict[str, Context] = {}
@@ -446,10 +464,7 @@ class ModelsState:
             revision=snapshot.revision,
             connections=connections,
             models=models,
-            role_bindings={
-                ModelRole(role): model_id
-                for role, model_id in snapshot.role_bindings.items()
-            },
+            role_bindings=dict(snapshot.role_bindings),
             default_embedding_model_id=snapshot.default_embedding_model_id,
         )
 
@@ -486,13 +501,9 @@ class ModelsState:
         inherited = _CURRENT_EXECUTION.get()
         if inherited is not None and inherited.owner_task is not asyncio.current_task():
             raise RuntimeError("model execution 不能由子 task 继承")
-        lease = lease_current_runtime_snapshot()
-        if lease is None:
-            raise RuntimeError(
-                "model execution 缺少当前 task 的 runtime snapshot lease"
-            )
-        try:
-            self._check_snapshot_service(lease.snapshot, CHAT_MODELS, self.chat_models)
+        scope = self._capture_runtime_scope("model execution")
+        async with scope:
+            self._check_snapshot_service(CHAT_MODELS, self.chat_models)
             existing = inherited
             if existing is not None:
                 if existing.state is not self:
@@ -513,7 +524,7 @@ class ModelsState:
             snapshot = self._snapshot_required()
             async with _driver_scope() as opened:
                 execution = await self._build_execution(
-                    lease.snapshot.snapshot_id,
+                    scope.snapshot_id,
                     snapshot,
                     selection.model_id,
                     selection.reasoning_effort,
@@ -524,8 +535,6 @@ class ModelsState:
                     yield execution
                 finally:
                     _CURRENT_EXECUTION.reset(token)
-        finally:
-            await lease.release()
 
     @asynccontextmanager
     async def independent_execution(
@@ -553,13 +562,9 @@ class ModelsState:
         inherited = _CURRENT_EXECUTION.get()
         if inherited is not None and inherited.owner_task is not asyncio.current_task():
             raise RuntimeError("model execution 不能由子 task 继承")
-        lease = lease_current_runtime_snapshot()
-        if lease is None:
-            raise RuntimeError(
-                "embedding execution 缺少当前 task 的 runtime snapshot lease"
-            )
-        try:
-            self._check_snapshot_service(lease.snapshot, EMBEDDINGS, self.embeddings)
+        scope = self._capture_runtime_scope("embedding execution")
+        async with scope:
+            self._check_snapshot_service(EMBEDDINGS, self.embeddings)
             async with _driver_scope() as opened:
                 existing = inherited
                 if existing is not None:
@@ -581,14 +586,12 @@ class ModelsState:
                 if selected is None:
                     raise ModelUnavailableError("尚未配置默认 embedding 模型")
                 bound = await self._bind_embedding(
-                    lease.snapshot.snapshot_id,
+                    scope.snapshot_id,
                     snapshot,
                     selected,
                     opened,
                 )
                 yield bound
-        finally:
-            await lease.release()
 
     def chat_contributors(self) -> tuple[Context, ...]:
         """只归档可选聊天模型所需的实际 driver，不夹带独立 embedding 或未配置的 driver。"""
@@ -599,11 +602,7 @@ class ModelsState:
 
     def save_embedding_binding(self, bindings: Bindings, model_id: str | None) -> str:
         """由实际注册表选择 driver owner，调用者不能自己拼归档闭包。"""
-        from agent.plugin_composition.models import SavedEmbedding
-        from agent.plugins.snapshot import get_current_runtime_snapshot
-
-        snapshot = get_current_runtime_snapshot()
-        self._check_snapshot_service(snapshot, EMBEDDINGS, self.embeddings)
+        self._check_snapshot_service(EMBEDDINGS, self.embeddings)
         descriptor = self.describe_embedding(model_id)
         saved = SavedEmbedding(model_id=descriptor.model_id, space_identity=descriptor.identity,
                                dimensions=descriptor.dimensions)
@@ -644,17 +643,17 @@ class ModelsState:
         opened: dict[str, DriverConnection],
     ) -> _Execution:
         _check_vision_binding(snapshot)
-        chat: dict[ModelRole, BoundChatModel] = {}
-        for role in ModelRole:
-            model_id = snapshot.role_bindings.get(role.value)
-            binding_role = role.value
-            if explicit_model_id is not None and role is ModelRole.AGENT:
+        chat: dict[str, BoundChatModel] = {}
+        for role in MODEL_ROLES:
+            model_id = snapshot.role_bindings.get(role)
+            binding_role = role
+            if explicit_model_id is not None and role == _AGENT_ROLE:
                 model_id = explicit_model_id
             if model_id is None:
-                if role is ModelRole.DEFAULT:
+                if role == _DEFAULT_ROLE:
                     raise ModelUnavailableError("尚未配置 default 聊天模型")
-                default_id = snapshot.role_bindings.get(ModelRole.DEFAULT.value)
-                if role is ModelRole.VISION:
+                default_id = snapshot.role_bindings.get(_DEFAULT_ROLE)
+                if role == _VISION_ROLE:
                     if (
                         default_id is None
                         or "image"
@@ -662,12 +661,12 @@ class ModelsState:
                     ):
                         continue
                 model_id = default_id
-                binding_role = ModelRole.DEFAULT.value
+                binding_role = _DEFAULT_ROLE
             if model_id is None:
                 continue
             effort = (
                 reasoning_effort
-                if explicit_model_id and role is ModelRole.AGENT
+                if explicit_model_id and role == _AGENT_ROLE
                 else snapshot.role_reasoning_efforts.get(binding_role)
                 or snapshot.models[model_id].default_reasoning_effort
             )
@@ -693,7 +692,7 @@ class ModelsState:
         plugin_snapshot_id: str,
         snapshot: StoredSnapshot,
         model_id: str,
-        role: ModelRole,
+        role: str,
         effort: str | None,
         opened: dict[str, DriverConnection],
     ) -> BoundChatModel:
@@ -774,24 +773,37 @@ class ModelsState:
         if driver is None:
             driver = await definition.open(
                 _driver_connection_descriptor(connection),
-                self.store.credential_handle(
+                self._settings_store.credential_handle(
                     connection.connection_id, connection.auth_identity
                 ),
             )
             opened[connection.connection_id] = driver
         return definition, driver
 
+    def read_settings_source(self) -> ModelSettingsSource:
+        """在来源真实 Scope 内交出设置位置；凭据仍由原 connection 持久化。"""
+        self._check_snapshot_service(MODEL_SETTINGS, self.settings)
+        return ModelSettingsSource(self._settings_store.path, self._settings_store.backup_dir)
+
+    def use_settings_source(self, source: ModelSettingsSource) -> None:
+        """空 Root 一次接续已有设置；新 models/driver 执行，调用账仍写本地 store。"""
+        self._check_snapshot_service(MODEL_SETTINGS, self.settings)
+        if not self.sealed:
+            raise RuntimeError("接续模型设置需要已发布的调用 Scope")
+        if self._settings_store is not self.store or self.store.read_snapshot() != StoredSnapshot.empty():
+            raise RuntimeError("只能为空模型 Root 接续一次设置，不能替换已有设置")
+        settings = ModelsStore(source.path, source.backup_dir)
+        if settings.read_snapshot() is None:
+            raise ModelUnavailableError("原模型设置库不存在")
+        self._settings_store = settings
+
     async def apply_change(self, command: ModelChange) -> SettingsReceipt:
         """Keep the exact driver generation alive across settings network I/O."""
 
-        lease = lease_current_runtime_snapshot()
-        if lease is None:
-            raise RuntimeError("model settings 缺少当前 task 的 runtime snapshot lease")
-        try:
-            self._check_snapshot_service(lease.snapshot, MODEL_SETTINGS, self.settings)
+        scope = self._capture_runtime_scope("model settings")
+        async with scope:
+            self._check_snapshot_service(MODEL_SETTINGS, self.settings)
             return await self._apply_change(command)
-        finally:
-            await lease.release()
 
     async def discover_models(
         self,
@@ -799,33 +811,40 @@ class ModelsState:
     ) -> tuple[DiscoveredModel, ...]:
         """Discover one unsaved connection without publishing durable state."""
 
-        lease = lease_current_runtime_snapshot()
-        if lease is None:
-            raise RuntimeError("model settings 缺少当前 task 的 runtime snapshot lease")
-        try:
-            self._check_snapshot_service(lease.snapshot, MODEL_SETTINGS, self.settings)
+        scope = self._capture_runtime_scope("model settings")
+        async with scope:
+            self._check_snapshot_service(MODEL_SETTINGS, self.settings)
             return await self._discover_new_connection(connection)
-        finally:
-            await lease.release()
 
     def _check_snapshot_service(
         self,
-        snapshot: object,
-        key: object,
+        key: ServiceKey[object],
         expected: object,
     ) -> None:
         """Reject a saved service used through another runtime snapshot."""
 
-        root = getattr(snapshot, "composition_root", None)
-        context = getattr(root, "context", None)
-        if (
-            context is None
-            or context.root_instance_token is not self.root_instance_token
-            or context.get(key) is not expected
-        ):
+        context = self.context
+        if context is None or context.root_instance_token is not self.root_instance_token:
             raise RuntimeError("models Service 不属于当前 runtime snapshot")
+        try:
+            context.require_runtime_owner(key, expected)
+        except (PermissionError, RuntimeError) as error:
+            raise RuntimeError("models Service 不属于当前 runtime snapshot") from error
+
+    def _capture_runtime_scope(self, operation: str):
+        context = self.context
+        if context is None:
+            raise RuntimeError(f"{operation} 缺少当前 task 的 runtime snapshot lease")
+        try:
+            return context.capture_runtime_scope()
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"{operation} 缺少当前 task 的 runtime snapshot lease"
+            ) from error
 
     async def _apply_change(self, command: ModelChange) -> SettingsReceipt:
+        if self._settings_store is not self.store:
+            raise RuntimeError("接续的模型设置只用于执行；请在原设置 owner 修改连接、模型或角色")
         if not self.sealed:
             raise RuntimeError("models settings 只能使用已发布 snapshot")
         if isinstance(command, AddConnection):
@@ -1219,13 +1238,13 @@ class ModelsState:
         return definition
 
     def _snapshot_required(self) -> StoredSnapshot:
-        snapshot = self.store.read_snapshot()
+        snapshot = self._settings_store.read_snapshot()
         if snapshot is None:
             raise ModelUnavailableError("尚未配置任何模型")
         return snapshot
 
     def _snapshot_or_empty(self) -> StoredSnapshot:
-        return self.store.read_snapshot() or StoredSnapshot.empty()
+        return self._settings_store.read_snapshot() or StoredSnapshot.empty()
 
     def _availability(self, connection: StoredConnection) -> ModelAvailability:
         if not connection.enabled:
@@ -1270,7 +1289,7 @@ class ModelsState:
             driver_contract_version=definition.contract_version,
             auth_identity=connection.auth_identity,
             model=model.model,
-            role=ModelRole.DEFAULT,
+            role=_DEFAULT_ROLE,
             reasoning_effort=None,
             capabilities=model.capabilities,
             capability_sources=model.capability_sources,

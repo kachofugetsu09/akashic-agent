@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from pydantic import ValidationError
 
 from .consumption import Consumption
 
@@ -25,6 +26,7 @@ from ..domain.graph import (
 )
 from ..domain.model import (
     Capture,
+    MemoryRebuildRequiredError,
     ContextState,
     MemoryConfig,
     PlasticityResult,
@@ -106,7 +108,7 @@ def load_memory_state(
     *,
     turns: list[Turn],
     config: MemoryConfig,
-    source_index_sha256: str | None,
+    source_index_sha256: str | None = None,
     source_index_state_sha256: str | None = None,
 ) -> tuple[
     DynamicMemoryGraph,
@@ -159,7 +161,8 @@ def load_memory_state(
 
 
 def load_consumption(memory_path: Path) -> Consumption | None:
-    """只读识别切换状态；缺省仅代表旧快照，不能作为新消费者的空进度。"""
+    """只读识别消费状态；旧版本快照 fail-loud，不能当作可继续的空进度。"""
+
     connection = sqlite3.connect(f"file:{memory_path}?mode=ro", uri=True)
     try:
         rows = dict(connection.execute(
@@ -167,7 +170,12 @@ def load_consumption(memory_path: Path) -> Consumption | None:
         ))
         if "consumer_state_json" not in rows:
             return None
-        state = Consumption.model_validate_json(rows["consumer_state_json"])
+        try:
+            state = Consumption.model_validate_json(rows["consumer_state_json"])
+        except ValidationError as error:
+            raise MemoryRebuildRequiredError(
+                "已发布学习图不是当前消费版本，需要显式重建"
+            ) from error
         state.check_count(int(rows["turn_count"]))
         return state
     finally:
@@ -791,21 +799,6 @@ def memory_turn_count(memory_path: Path) -> int:
         raise ValueError("memory snapshot turn_count must be positive")
     return count
 
-
-def memory_has_source_index_state(memory_path: Path) -> bool:
-    """Report whether a snapshot uses the logical sparse-index identity."""
-
-    connection = sqlite3.connect(
-        f"file:{memory_path}?mode=ro",
-        uri=True,
-    )
-    try:
-        row = connection.execute(
-            "SELECT 1 FROM metadata WHERE key='source_index_state_sha256'"
-        ).fetchone()
-    finally:
-        connection.close()
-    return row is not None
 
 
 def _load_graph(

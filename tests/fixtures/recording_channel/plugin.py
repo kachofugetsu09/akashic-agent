@@ -26,8 +26,6 @@ name = "recording_channel"
 version = "3.0.0"
 desc = "SQLite-backed ordinary outbound Channel for isolated E2E evidence"
 author = "Akashic Core"
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 inject = (CHANNELS,)
@@ -114,18 +112,17 @@ def build_channel(context: ChannelFactoryContext) -> RecordingChannel:
     return RecordingChannel(context)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Register one ordinary outbound Channel through the public v3 slot."""
+    Config.model_validate(ctx.config)
 
-    if not isinstance(config, Config):
-        raise TypeError("recording Channel config 必须通过 Config 校验")
     await ctx.require(CHANNELS).register(
         ctx,
         ChannelDefinition(
             name="recording",
             capabilities=frozenset({ChannelCapability.OUTBOUND}),
-            factory_export="build_channel",
+            factory=build_channel,
+            config=ctx.config,
             inbound_identity=None,
-            credential_paths=("token",),
         ),
     )

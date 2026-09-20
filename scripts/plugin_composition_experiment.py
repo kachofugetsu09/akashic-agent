@@ -120,7 +120,7 @@ async def _run(workspace: Path) -> dict[str, object]:
         plugin_dir=SOURCE_ROOT / "examples" / "plugin_composition",
         data_dir=provider_data_root,
         workspace=workspace,
-        config=None,
+        config={},
     )
 
     # 2. New plugins prove required waiting and optional nested injection.
@@ -149,13 +149,8 @@ async def _run(workspace: Path) -> dict[str, object]:
     ready_receipt = root.receipt()
     initial_signal = root.context.require(PROBE_SIGNAL)
 
-    # 3. Capture identity, then exercise dependency loss/recovery before publication.
+    # 3. 只在编译冻结前观察依赖退出和重新装配。
     compiler = RuntimeSnapshotCompiler()
-    original_snapshot = compiler.compile(
-        {},
-        snapshot_revision=f"candidate:{run_id}",
-        composition_root=root,
-    )
     await provider.dispose()
     removed_receipt = root.receipt()
     second_provider_plugin = ProbeProvider("second", trace)
@@ -179,11 +174,9 @@ async def _run(workspace: Path) -> dict[str, object]:
         removed_receipt=removed_receipt,
         restored_receipt=restored_receipt,
         external_effect_count=len(audit.external_effects),
-        original_snapshot_id=original_snapshot.snapshot_id,
-        restored_snapshot_id=candidate.snapshot_id,
     )
 
-    # 4. Publish only the fresh restored snapshot, validate, then promote it.
+    # 4. 候选只供显式验证，关闭后重新构造正式 Root。
     stable = compiler.compile({}, snapshot_revision=f"stable:{run_id}")
     store = RuntimeSnapshotStore(_drain_snapshot)
     store.install(stable)
@@ -193,19 +186,49 @@ async def _run(workspace: Path) -> dict[str, object]:
     leased_root = lease.snapshot.composition_root
     if leased_root is None:
         raise RuntimeError("latest snapshot 缺少 composition root")
-    promoted_signal = leased_root.context.require(PROBE_SIGNAL)
+    validated_signal = leased_root.context.require(PROBE_SIGNAL)
     await lease.release()
     _ = store.pause_candidate_admission(candidate)
     await store.wait_for_no_leases(candidate)
     store.seal_candidate_validation(candidate)
-    _ = await store.promote_latest()
+    await store.discard_latest(candidate)
+    formal_root = CompositionRoot(f"formal:{run_id}")
+    formal_trace = ProbeTrace()
+    formal_consumer = ProbeConsumer(formal_trace)
+    formal_provider = ProbeProvider("second", formal_trace)
+    formal_formatter = ProbeFormatterProvider()
+    formal_data_root = workspace / "formal-plugin-data" / "probe-provider"
+    formal_data_root.mkdir(parents=True)
+    formal_runtime = PluginRuntime(
+        plugin_id="probe-provider", generation_id="composition-experiment-formal",
+        plugin_dir=provider_runtime.plugin_dir, data_dir=formal_data_root,
+        workspace=workspace, config={},
+    )
+    try:
+        await formal_root.mount(formal_consumer.apply, name=formal_consumer.name,
+                                inject=formal_consumer.inject)
+        await formal_root.mount(formal_provider.apply, name=formal_provider.name,
+                                inject=formal_provider.inject, runtime=formal_runtime)
+        await formal_root.mount(formal_formatter.apply, name=formal_formatter.name,
+                                inject=formal_formatter.inject)
+        formal = compiler.compile({}, snapshot_revision=f"formal:{run_id}",
+                                  composition_root=formal_root)
+        transaction = store.begin_publish(formal)
+    except BaseException:
+        await formal_root.dispose()
+        raise
+    await store.commit_provisional(transaction)
+    await store.finalize_provisional(transaction)
     await store.retry_drains()
     stable_lease = store.lease(selector="stable")
     promoted_snapshot_id = stable_lease.snapshot.snapshot_id
     await stable_lease.release()
-    promoted_receipt = root.receipt()
+    promoted_signal = formal_root.context.require(PROBE_SIGNAL)
+    if promoted_signal is validated_signal or promoted_signal.value != validated_signal.value:
+        raise RuntimeError("正式 Root 必须从相同输入创建独立服务实例")
+    promoted_receipt = formal_root.receipt()
     await store.close()
-    disposed_receipt = root.receipt()
+    disposed_receipt = formal_root.receipt()
 
     return {
         "run_id": run_id,
@@ -214,6 +237,7 @@ async def _run(workspace: Path) -> dict[str, object]:
         "observed_signal": initial_signal.value,
         "promoted_signal": promoted_signal.value,
         "trace": trace.events,
+        "formal_trace": formal_trace.events,
         "receipts": {
             "pending": pending_receipt,
             "optional": optional_receipt,
@@ -248,8 +272,6 @@ def _validate_behavior(**evidence: object) -> None:
     optional = evidence["optional_receipt"]
     if getattr(optional, "optional_pending") != ("probe-formatter-consumer",):
         raise RuntimeError("实验未观察到 optional child pending")
-    if evidence["original_snapshot_id"] != evidence["restored_snapshot_id"]:
-        raise RuntimeError("逻辑等价恢复后 snapshot identity 发生漂移")
 
 
 def _workspace_files(workspace: Path) -> list[dict[str, str]]:

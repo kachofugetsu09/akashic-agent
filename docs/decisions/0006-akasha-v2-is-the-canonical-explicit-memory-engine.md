@@ -17,8 +17,13 @@
 
 ## 决定
 
-1. `akasha-v2-engine/src/akasha` 是 Akasha 算法的唯一源码。宿主只保存字节一致的镜像，
-   并在 `plugins/akasha/UPSTREAM.json` 固定 upstream commit、Git tree 和内容摘要。
+1. `akasha-v2-engine/src/akasha` 是 Akasha **图学习算法**的唯一源码。宿主保存其镜像并在
+   `plugins/akasha/UPSTREAM.json` 固定 upstream commit、Git tree 和内容摘要。
+   2026-09-18 勘误：宿主侧的持久化、消费进度与重建接线属于 Agent 自有职责，已按
+   [MEM-009](../projectneed.md) 收口为单一实现（删除 `infrastructure/sparse_index/`、
+   `infrastructure/loader.py`、`infrastructure/frozen_history.py`、`application/runtime.py`、
+   `cli.py`、`repair.py`），因此 `plugins/akasha` 不再与上游逐字节一致；`UPSTREAM.json`
+   继续固定算法源码的出处，算法本体未被改写。
 2. 在线提交与离线重放都调用同一个 `MemoryCycle.retrieve → MemoryCycle.commit`，
    不在宿主重写图学习或遗忘规则。
 3. 自动 `intent=context` 查询可以产生一次临时 retrieval ticket。只有对应

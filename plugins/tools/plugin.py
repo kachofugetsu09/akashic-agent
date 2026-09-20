@@ -5,18 +5,21 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 import re
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import Bindings
-from session.message import CallRef, ToolResult, freeze_json
-from session.log import MessageReader
-from agent.restart import ExternalRootPermit
-from plugins.content.plugin import check_text
+from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult, freeze_json
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_composition.tasks import ExternalRootPermit
 
-from plugins.tools.api import Authorize, BoundTool, CallSource, MessageReply, Result, display_name, result_message_id
-from plugins.tools.abandon import follow_abandon, reject_start
-from plugins.tools.execution import ToolExecution
+from .api import (
+    Authorize, BoundTool, CallSource, MessageReply, ProviderBoundTool, Result,
+    coerce_result, display_name, result_message_id,
+)
+from .abandon import follow_abandon, reject_start
+from .execution import ToolExecution
+from .program import TOOL_PROGRAM, ToolProgramFactory
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import TASKS
@@ -25,11 +28,27 @@ api_version = 3
 name = "tools"
 version = "1.0.0"
 desc = "声明工具并固定实际实现；一次调用的回执独立于会话"
-inject = ()
+
+
+ContentCheck = Callable[[ContentPart], ContentReferences]
+
+
+class ContentViewCapability(Protocol):
+    @property
+    def checks(self) -> Mapping[str, ContentCheck]: ...
+
+
+class ContentCapability(Protocol):
+    def bind(self) -> AbstractAsyncContextManager[ContentViewCapability]: ...
+
+
+# 与 content owner 共享名字，不共享其实现模块或 Python 类型身份。
+CONTENT = ServiceKey[ContentCapability]("content.v2")
+inject = (CONTENT,)
 
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
-BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[None]]
-OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[BoundTool]]
+BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[str | None]]
+OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[ProviderBoundTool]]
 Capture = Callable[[Mapping[str, object]], Mapping[str, object]]
 
 
@@ -95,7 +114,7 @@ class _Authorization:
 class _ToolView:
     """每次打开只访问固定目标，释放后不能保留入口再执行。"""
 
-    def __init__(self, target: BoundTool, preparation: _Preparation | None):
+    def __init__(self, target: ProviderBoundTool, preparation: _Preparation | None):
         self._target = target
         self._preparation = preparation
         self._active = True
@@ -109,7 +128,7 @@ class _ToolView:
         self._check_active()
         return self._target.idempotent
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """贡献先转换，实际工具一次接纳最终参数；授权在这之后执行。"""
         self._check_active()
         if self._preparation is not None:
@@ -121,11 +140,12 @@ class _ToolView:
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         self._check_active()
-        return await self._target.invoke(key, arguments)
+        return coerce_result(await self._target.invoke(key, arguments))
 
     async def query(self, key: str) -> Result | None:
         self._check_active()
-        return await self._target.query(key)
+        result = await self._target.query(key)
+        return None if result is None else coerce_result(result)
 
     def close(self) -> None:
         self._active = False
@@ -283,9 +303,11 @@ class ToolCatalog:
 
         async def authorize_binding(
             binding_id: str, arguments: Mapping[str, object]
-        ) -> Mapping[str, object]:
+        ) -> Mapping[str, object] | str:
             async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
-                await catalog.authorize(metadata, arguments)
+                refusal = await catalog.authorize(metadata, arguments)
+                if refusal is not None:
+                    return refusal
             return await authorize(binding_id, arguments)
 
         return ToolExecution(
@@ -317,7 +339,7 @@ class ToolCatalog:
 
     async def drain_calls(self, calls: tuple[CallRef, ...]) -> None:
         """清理 owner 等待原效果退出；终态结果不等于资源已经释放。"""
-        from plugins.tools.api import durable_call_key
+        from .api import durable_call_key
 
         tasks = self._ctx.require(TASKS).open(self._ctx)
         for ref in calls:
@@ -425,11 +447,16 @@ class ToolCatalog:
         ):
             raise ValueError("归档工具描述或参数准备与 binding 不一致")
         expected: set[str] = {"tool", "prepare"}
+        authorization = registration.authorization
         if "authorize" in metadata:
-            authorization = registration.authorization
-            if authorization is None or metadata["authorize"] != authorization.name:
+            saved_authorization = metadata["authorize"]
+            if not isinstance(saved_authorization, str):
+                raise ValueError("工具 binding 限制字段无效")
+            if authorization is None or saved_authorization != authorization.name:
                 raise ValueError("归档工具限制与 binding 不一致")
             expected.add("authorize")
+        elif authorization is not None:
+            raise ValueError("归档工具限制与 binding 不一致")
         if registration.capture is not None:
             expected.add("state")
         if set(metadata) != expected:
@@ -452,8 +479,8 @@ class ToolCatalog:
 
     async def authorize(
         self, metadata: Mapping[str, object], arguments: Mapping[str, object]
-    ) -> None:
-        """只执行 binding 固定的独立限制；旧无字段 binding 不追附当前限制。"""
+    ) -> str | None:
+        """只执行 binding 固定的独立限制；无独立限制时返回 None。"""
         if "authorize" not in metadata:
             return
         description = metadata.get("tool")
@@ -468,7 +495,7 @@ class ToolCatalog:
         if authorization is None or metadata["authorize"] != authorization.name:
             raise ValueError("归档工具限制与 binding 不一致")
         async with self._ctx.runtime_scope():
-            await authorization.authorize(arguments)
+            return await authorization.authorize(arguments)
 
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
@@ -498,9 +525,11 @@ async def bind_saved_tool(
         )
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     catalog = ToolCatalog(ctx)
+    _ = await ctx.provide(ServiceKey("tools.bind-saved.v1"), bind_saved_tool)
     _ = await ctx.provide(TOOLS, catalog)
+    _ = await ctx.provide(TOOL_PROGRAM, ToolProgramFactory(ctx, catalog))
     _ = await ctx.provide(ALL_TOOLS, catalog._all_view)
 
     def read_name(binding_id: str) -> str:
@@ -512,12 +541,19 @@ async def apply(ctx: Context, config: object) -> None:
 
     async def start(_event: object) -> None:
         nonlocal watcher
-        async def reply(reader: MessageReader, source: str, ref: CallRef) -> MessageReply:
+        @asynccontextmanager
+        async def reply(reader: MessageReader, source: str, ref: CallRef) -> AsyncIterator[MessageReply]:
+            """仅一次回执提交持有内容与组合租约，空闲监听不阻挡换代。"""
             async with ctx.runtime_scope():
-                writer = ctx.require(MESSAGE_WRITERS).bind(
-                    ctx, author="tool", source=source, body_types=(ToolResult,), content={"text": check_text},
-                )(reader.session_id, call_ref=ref)
-            return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+                async with ctx.require(CONTENT).bind() as view:
+                    writer = ctx.require(MESSAGE_WRITERS).bind(
+                        ctx, author="tool", source=source, body_types=(ToolResult,),
+                        content={"text": view.checks["text"]},
+                    )(reader.session_id, call_ref=ref)
+                    try:
+                        yield MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+                    finally:
+                        writer.expire()
 
         watcher = await ctx.spawn(follow_abandon(
             ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),

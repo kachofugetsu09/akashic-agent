@@ -27,7 +27,6 @@ from agent.tools.unified_exec import HeadTailBuffer
 from agent.tools.unified_exec import ShellProcessManager, UnknownExecutionError
 from agent.tools.unified_exec import clamp_initial_yield_time
 from agent.tools.unified_exec import clamp_write_stdin_yield_time
-from agent.tools.registry import ToolRegistry
 from core.error_context import current_session_key
 from session.manager import SessionManager
 
@@ -717,29 +716,13 @@ def test_shell_env_exports_plugin_rollout_owner_turn(
     assert "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN" not in _shell_env()
     assert "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY" not in _shell_env()
 
-    from agent.control.context import (
-        register_plugin_child_capability_minter,
-        unregister_plugin_child_capability_minter,
-    )
-
     token = running_turn_id.set("turn:context-pressure-uninstall")
-    minter = lambda owner: f"capability-for:{owner}"
-    register_plugin_child_capability_minter(
-        "turn:context-pressure-uninstall",
-        minter,
-    )
     try:
         assert _shell_env()["AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"] == (
             "turn:context-pressure-uninstall"
         )
-        assert _shell_env()["AKASHIC_PLUGIN_ROLLOUT_CAPABILITY"] == (
-            "capability-for:turn:context-pressure-uninstall"
-        )
+        assert "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY" not in _shell_env()
     finally:
-        unregister_plugin_child_capability_minter(
-            "turn:context-pressure-uninstall",
-            minter,
-        )
         running_turn_id.reset(token)
 
 

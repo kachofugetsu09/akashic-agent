@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Generator
-from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import asdict, dataclass, replace
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import Task
-from plugins.react.plugin import Preview
+Preview = Callable[[str], AbstractContextManager[StreamCallback]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,11 +37,11 @@ class ReplyRead:
     def snapshot(self, session_id: str) -> tuple[ReplyActivity, ...]:
         return self._state.snapshot(session_id)
 
-    async def follow(self, session_id: str) -> AsyncGenerator[tuple[ReplyActivity, ...], None]:
+    async def follow(self, session_id: str) -> AsyncGenerator[tuple[dict[str, object], ...], None]:
         """订阅当前快照；慢读者合并通知，重连不重放旧 token。"""
         while True:
             changed = self._state.changed
-            yield self._state.snapshot(session_id)
+            yield tuple(asdict(item) for item in self._state.snapshot(session_id))
             if self._state.closed:
                 return
             _ = await changed.wait()
@@ -130,4 +130,4 @@ class ReplyState:
             self._notify()
 
 
-REPLY_STATUS = ServiceKey[ReplyRead]("reply.status.v1")
+REPLY_STATUS = ServiceKey[ReplyRead]("reply.status.v2")

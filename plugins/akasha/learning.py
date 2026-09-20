@@ -8,13 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
-from agent.turn_effects import PostCommitEffect
-from plugins.content.api import legacy_post_commit_effect
-from plugins.tools.plugin import TOOLS
-from plugins.turn_projection.plugin import TurnProjection
-from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
-from session.message import ContentPart, Input, Message, Output, ToolCall, ToolResult
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
+from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall, ToolResult
+from ._boundaries import PostCommitReader, TOOLS, TurnProjection
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied, Consumption, message_nodes
 from .projection import Sample, dialogue_turn, project_samples, restore_sample
@@ -37,9 +33,13 @@ class Feedback(BaseModel):
 class Learning:
     """固定学习材料的纯规则；实际消息、向量和学习图由调用者提供。"""
 
-    def __init__(self, projection: TurnProjection, *, owner: str):
+    def __init__(
+        self, projection: TurnProjection, *, owner: str,
+        post_commit_effect: PostCommitReader,
+    ):
         self.projection = projection
         self.owner = owner
+        self._post_commit_effect = post_commit_effect
 
     def text(self, message: Message) -> str:
         """只连接可见正文；控制、工具协议和内部模型事实不成为问答文本。"""
@@ -61,17 +61,16 @@ class Learning:
 
     def accepts(self, sample: Sample) -> bool:
         """一条历史成员被禁止沉淀时，整个问答样本不成为学习材料。"""
-        effects = tuple(legacy_post_commit_effect(message)
+        effects = tuple(self._post_commit_effect(message)
                         for message in (*sample.messages, *sample.observations))
-        return PostCommitEffect.SUPPRESS not in effects
+        return "suppress" not in effects
 
     def feedback(
         self, sample: Sample, previous: Sequence[Turn], state: Consumption, bindings: Bindings,
     ) -> TurnFeedback:
         """从本样本实际成功的 Akasha 调用读取反馈，按完整成员映射学习节点。"""
         # 1. 旧前缀沿原索引身份；新节点包含所有输入，不只首个输入。
-        cutover = state.legacy_prefix.count
-        targets = message_nodes(previous[:cutover], state.applied[:len(previous) - cutover])
+        targets = message_nodes(state.applied[:len(previous)])
         current = {message.message_id for message in sample.messages if isinstance(message.body, Input)}
         return resolve_feedback(self.read_feedback(sample, bindings), targets, current, len(previous))
 
@@ -122,7 +121,7 @@ class Learning:
         """只还原已学习材料，不打开模型、写图或重放学习事件。"""
         if catalog.attributes(entry.session_id).learning != "eligible":
             raise ValueError("已学习样本属于禁止学习的 Session")
-        sample = restore_sample(catalog, self.projection, entry)
+        sample = restore_sample(catalog, entry)
         if not self.accepts(sample):
             raise ValueError("已学习样本包含禁止沉淀的历史成员")
         if sample.ending.source not in config.sources:

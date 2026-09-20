@@ -273,14 +273,13 @@ async def run(mode, count, full_history=False):
             model_store = model_descriptor = None
             if full_history:
                 from agent.plugin_composition import CHAT_MODELS
-                from agent.plugin_composition.models import ModelRole
 
                 async with lease_runtime_snapshot(host.snapshot_store) as runtime:
                     context = runtime.composition_root.context
                     assert len(created_stores) == 1
                     model_store = created_stores[0]
                     async with context.require(CHAT_MODELS).execution() as execution:
-                        model_descriptor = execution.chat(ModelRole.AGENT).descriptor
+                        model_descriptor = execution.chat("agent").descriptor
             seed(log, count, model_store, model_descriptor)
             await host.start_runtime()
             # 排空启动追赶，让订阅进入等待；启动耗时不计入本次请求。

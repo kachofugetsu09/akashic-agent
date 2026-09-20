@@ -1,5 +1,7 @@
 # 插件 v3 inbound/outbound channel capability 任务合同
 
+> 2026-09-15 勘误：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 已取代本文的两参数入口、精确参数名和 Core 配置模型校验。现行入口为 `apply(ctx)`，插件自行解析 `ctx.config`；下文相关描述仅保留历史背景。凭据脱敏及正式解析授权边界不因此取消。
+
 > 2026-09-09：本文历史执行状态 unknown/UNKNOWN/uncertain 已被 [0063](../decisions/0063-execution-failures-have-terminal-results.md) 的明确失败终态和收尾规则取代；其他合同不变。
 
 
@@ -473,8 +475,9 @@ candidate、factory 调用与 `start()` 之前的 credential resolution/client c
    同时出现在原始 config 时 admission fail-loud，formal resolver 不按 alias 顺序猜值。多个 channel 可以复用同一个
    exact path，但跨 channel 的父子 path overlap fail-loud。
    manifest 是 import-free admission；首次 formal module import 仍发生在 projection 前，因此这是一条 supported API
-   与 exact-source Gate，不是阻止同 UID 恶意 module-level 文件读取的安全沙箱。candidate data copy 会在 candidate
-   import 前排除 `config.local.toml`，candidate `apply` 只能收到已经核验的 opaque projection。
+   与 exact-source Gate，不是阻止同 UID 恶意 module-level 文件读取的安全沙箱。candidate data copy 只排除 manifest
+   显式声明的 `validation.exclude_data_paths`；含凭据的 `config.local.toml` 由声明该路径排除，candidate `apply`
+   只能收到已经核验的 opaque projection。
    这是 supported API 与 exact-source Gate，不是同 UID Python 安全沙箱：formal plugin 仍持有自己的 `ctx.data_root`，
    Core 不承诺阻止恶意反射或自行读取文件。首批 exact Feishu/QQBot source 必须证明 `apply/factory` 在 Host formal
    start 前没有 raw config read，credential 只经 Core resolver 进入 provider client factory。
@@ -651,7 +654,7 @@ provider network。promotion 本身只切 endpoint/registration，不发送业�
    路径必须一并迁移。正文成功但附件/后续 part 失败的 `PARTIAL` 一律映射 `UNKNOWN`。非用户关键 telemetry 若保留
    fire-and-forget，只能返回独立 `QueuedReceipt(delivery_id, queued=True)`；后台最终 receipt 由 Bus 写结构化
    delivery journal/Incident，不参与发起 Turn 的成功判定。
-   `MessagePushTool` 的 settled tool result 使用稳定 JSON 对象
+   `message_push` 工具的 settled tool result 使用稳定 JSON 对象
    `{delivery_id, status, retryable: false, provider_ids, error}`，不得把 `UNKNOWN` 压成“消息已发送”或无身份的
    “发送失败”；上层据此不得对同一 logical delivery 自动再次调用工具。
 10. inbound message id 是 1～256 字符的 provider boundary 必填字段，空白/缺失 fail-loud。Feishu 与 QQBot 在
@@ -860,13 +863,17 @@ inbound 丢失 exact lease、`UNKNOWN` 被盲重试、rollback 只改 pointer、
 6. exact pair E3 后删除两个 external v2 shell；Core adapter zero-consumer Gate 后才物理删除 v2 channel public ABI、
    fixed contribution 与 live snapshot path。
 
-Core 真实入口包括 `agent/plugins/manager.py`、`agent/plugins/snapshot.py`、`bootstrap/app.py`、
-`bootstrap/channel_host.py`、`bootstrap/channels.py`、`agent/tools/message_push.py`、`bus/queue.py`、`bus/events.py`、
-`infra/channels/contract.py`、`infra/channels/delivery.py`、`agent/looping/core.py`、`agent/turns/outbound.py` 与
-`bootstrap/passive_worker.py`；还必须迁移 `agent/core/passive_turn.py`、`agent/lifecycle/phases/after_turn.py`、
-`agent/turns/orchestrator.py` 的 normal/error/cancel/proactive outbound，以及
-`infra/channels/telegram_channel.py`、`qq_channel.py`、`web_chat_channel.py`、`infra/mobile_realtime/channel.py` 的
-Core adapter。zero-consumer scan 未覆盖这些入口前不得删除旧 channel/MessagePush callback。
+以下段落是 v2 adapter 删除清单的历史对照；客户端归属已由
+[0067](../decisions/0067-clients-are-ordinary-plugin.md) 修订为普通
+`plugins/akashic_clients` artifact，当前运行入口只应读取中立 channel registry、durable
+inbound port 和 exact snapshot lease。
+
+当前 Core 入口只保留 `agent/plugins/manager.py`、`agent/plugins/snapshot.py`、`bootstrap/app.py`、
+`agent/plugin_composition/channels.py`、`bus/queue.py`、`bus/events.py`、`infra/channels/` 中立原子以及
+`plugins/message_push/` 的通用接线。Web/Mobile/Telegram/QQ 业务 adapter 的现行 owner 是
+`plugins/akashic_clients/`，按已安装 artifact 的 channel registry 和 exact snapshot lease 启动；Core
+不再保留 `infra/mobile_realtime/` 或 `infra/channels/*_channel.py` 的业务副本，也不聚合旧的
+`telegram_bot_commands()`/`mobile_bot_commands()` 表。旧路径只在本节历史 inventory 中作对照，不是当前迁移入口。
 
 V2 删除 inventory 同时覆盖 `RuntimeSnapshot.channels`、Host `_plugin_channels/ChannelSwap`、app endpoint switcher、
 Manager endpoint signatures、bootstrap `plugin_channels`、旧 MessagePush channel registration、fire-and-forget

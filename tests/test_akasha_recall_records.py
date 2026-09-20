@@ -1,3 +1,4 @@
+from plugins.content.api import legacy_post_commit_effect
 from datetime import UTC, datetime
 from typing import cast
 from collections.abc import Mapping
@@ -80,7 +81,7 @@ def test_actual_retrieval_keeps_all_interrupted_members_after_graph_advances(tmp
     from dataclasses import replace
     from plugins.akasha.application.consumer import MessageConsumer
     from plugins.akasha.domain.model import MemoryConfig
-    from plugins.akasha.infrastructure.consumption import Consumption, LegacyPrefix, turns_digest
+    from plugins.akasha.infrastructure.consumption import Consumption
     from plugins.akasha.infrastructure.persistence import logical_state_sha256
     from plugins.akasha.learning import Learning
     from plugins.akasha.projection import applied_source, dialogue_turn, project_samples
@@ -91,7 +92,7 @@ def test_actual_retrieval_keeps_all_interrupted_members_after_graph_advances(tmp
     log = MessageLog(tmp_path / "sessions.db")
     consumer = None
     try:
-        rule = Learning(TurnProjection(), owner="akasha")
+        rule = Learning(TurnProjection(), owner="akasha", post_commit_effect=legacy_post_commit_effect)
         vectors = MessageEmbeddings(log).bind(rule.text)
         def add(
             identity: str,
@@ -111,8 +112,7 @@ def test_actual_retrieval_keeps_all_interrupted_members_after_graph_advances(tmp
                 ).append(identity, Output(parts, "complete"))
             vectors.save(message, model="fixed", embedding=[0.6, 0.8])
             return message
-        state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256="0" * 64,
-                                                       turns_digest=turns_digest([])), cutover_heads=())
+        state = Consumption(cutover_heads=())
         consumer = MessageConsumer(tmp_path / "memory.db", turns=[], state=state, config=MemoryConfig())
         add("u1", "first input")
         log.writer("s", author="user", source="chat", body_types=(Control,), content={}).append(

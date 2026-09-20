@@ -1,5 +1,9 @@
 # 插件 v3 包级 contribution 任务合同
 
+> UI 部分已由 ADR0071 和 [V3 能力手册](plugin-v3-capabilities.md#5-dashboard-与-web) 的普通
+> provider 注册替代。下文包级 UI 常量只记录旧迁移背景，不是当前接入合同。
+
+
 - 状态：implemented candidate
 - 日期：2026-08-15
 - 关联条款：PLG-001、PLG-004、PLG-009、PLG-014

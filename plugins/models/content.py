@@ -12,13 +12,14 @@ from agent.media import (
     encode_image_bytes,
     validate_image_attachment_budget,
 )
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
     ChannelAttachmentReadPort,
 )
-from session.message import ContentPart, Control, Message, ToolCall, freeze_json
-from session.message_codec import json_value
+from agent.plugin_contracts import ContentPart, Control, Message, ToolCall, freeze_json
+from agent.plugin_contracts import json_value
 
 
 async def load_artifacts(
@@ -92,3 +93,13 @@ def render_content(
             ),
         },
     )
+
+
+class ContentOwner:
+    """模型正文与附件解释使用原函数，权限由传入的只读端口限定。"""
+
+    load_artifacts = staticmethod(load_artifacts)
+    render = staticmethod(render_content)
+
+
+MODEL_CONTENT = ServiceKey[ContentOwner]("models.content.v1")

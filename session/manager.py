@@ -366,43 +366,6 @@ class Session:
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     last_consolidated: int = 0
-    _projection_grant_issuer: Callable[[str], object] | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    _projection_grant_revoker: Callable[[object], None] | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-
-    def issue_projection_grant(self, turn_id: str) -> object:
-        """Issue one opaque current-turn capability through the Session owner."""
-
-        issuer = self._projection_grant_issuer
-        if issuer is None:
-            raise RuntimeError("Session 缺少 projection grant issuer")
-        return issuer(turn_id)
-
-    def bind_projection_grant_issuer(self, issuer: Callable[[str], object]) -> None:
-        """Let the Session owner attach its opaque capability issuer."""
-
-        self._projection_grant_issuer = issuer
-
-    def bind_projection_grant_revoker(self, revoker: Callable[[object], None]) -> None:
-        """Let the Session owner revoke a previously issued capability."""
-
-        self._projection_grant_revoker = revoker
-
-    def revoke_projection_grant(self, grant: object) -> None:
-        """Revoke a request-projection capability at the Turn boundary."""
-
-        revoker = self._projection_grant_revoker
-        if revoker is None:
-            raise RuntimeError("Session 缺少 projection grant revoker")
-        revoker(grant)
-
     def add_message(
         self, role: str, content: str, media: list[str] | None = None, **kwargs: object
     ) -> dict[str, object]:
@@ -506,8 +469,6 @@ class SessionManager:
             self._stores = stores.pop_all()
         self._cache: dict[str, Session] = {}
         self._write_locks: dict[str, asyncio.Lock] = {}
-        self._projection_grant_key = object()
-        self._active_projection_grants: set[object] = set()
 
     def _lock(self, key: str) -> asyncio.Lock:
         if key not in self._write_locks:
@@ -526,7 +487,6 @@ class SessionManager:
             and meta is not None
             and self._cache_matches_meta(cached, meta)
         ):
-            self._bind_projection_access(cached)
             return cached
 
         session = self._load(key)
@@ -534,7 +494,6 @@ class SessionManager:
             self.invalidate(key)
             session = Session(key)
             self._ensure_session_meta(session)
-        self._bind_projection_access(session)
         self._cache[key] = session
         return session
 
@@ -550,61 +509,12 @@ class SessionManager:
         # 2. 只有 revision 一致时复用缓存，否则从 canonical rows 重载
         cached = self._cache.get(key)
         if cached is not None and self._cache_matches_meta(cached, meta):
-            self._bind_projection_access(cached)
             return cached
         session = self._load(key)
         if session is None:
             raise KeyError(f"session 不存在: {key}")
-        self._bind_projection_access(session)
         self._cache[key] = session
         return session
-
-    def _bind_projection_access(self, session: Session) -> None:
-        """Attach an issuer without exposing SessionStore or manager methods."""
-
-        from agent.plugin_composition.session_compaction import SessionProjectionGrant
-
-        def issue(turn_id: str) -> object:
-            grant = SessionProjectionGrant.issue(
-                self._projection_grant_key,
-                session_key=session.key,
-                session_created_at=session.created_at.isoformat(),
-                turn_id=turn_id,
-            )
-            self._active_projection_grants.add(grant._nonce)
-            return grant
-
-        session.bind_projection_grant_issuer(issue)
-        session.bind_projection_grant_revoker(self.revoke_projection_grant)
-
-    def revoke_projection_grant(self, grant: object) -> None:
-        """Revoke one owner-issued projection grant idempotently."""
-
-        from agent.plugin_composition.session_compaction import SessionProjectionGrant
-
-        if isinstance(grant, SessionProjectionGrant):
-            self._active_projection_grants.discard(grant._nonce)
-
-    def validate_projection_grant(
-        self,
-        grant: object,
-        *,
-        session_key: str,
-        session_created_at: str,
-    ) -> bool:
-        """Validate an opaque grant without exposing its issuer to plugins."""
-
-        from agent.plugin_composition.session_compaction import SessionProjectionGrant
-
-        return (
-            isinstance(grant, SessionProjectionGrant)
-            and grant._nonce in self._active_projection_grants
-            and grant.allows(
-            self._projection_grant_key,
-            session_key=session_key,
-            session_created_at=session_created_at,
-            )
-        )
 
     @staticmethod
     def _cache_matches_meta(session: Session, meta: dict[str, Any]) -> bool:

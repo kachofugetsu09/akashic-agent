@@ -26,17 +26,18 @@ class DeliveryAdmission:
     def open(self, consumer: Context) -> Deliveries:
         owner = consumer.require_runtime_owner(DELIVERY, self)
         ctx = self._ctx
+        bindings = ctx.require(BINDINGS)
         return Deliveries(
             DeliveryRecords(ctx.require(OWNER_STATE).open(ctx), owner),
             ctx.require(MESSAGE_CATALOG), ctx.require(TASKS).open(ctx),
-            partial(open_sender, ctx.require(BINDINGS)), task_key="delivery",
+            partial(open_sender, bindings), task_key="delivery",
         )
 
 
 DELIVERY = ServiceKey[DeliveryAdmission]("delivery.v1")
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """注册出站能力；只有正式调用才取得发送 owner 的状态和 Task。"""
     _ = await ctx.provide(DELIVERY_SENDERS, Senders(ctx))
     _ = await ctx.provide(DELIVERY, DeliveryAdmission(ctx))
