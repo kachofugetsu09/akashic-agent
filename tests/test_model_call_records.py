@@ -124,7 +124,7 @@ async def test_started_is_durable_before_io_and_usage_survives_without_message(
     assert record["state"] == "success"
     assert record["binding"]["binding_id"] == descriptor.binding_id
     assert record["usage"]["input_tokens"] == 4
-    assert "uncommitted output" not in str(record)
+    assert record["response"]["content"] == "uncommitted output"
     assert store.read_snapshot().revision == 0
     assert not store.backup_dir.exists()
     with pytest.raises(RuntimeError, match="已经结算"):

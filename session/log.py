@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import inspect
+import logging
 import re
 import sqlite3
 import threading
@@ -38,6 +39,7 @@ from session.message import (
 from session.message_codec import decode_body, encode_body, json_value
 
 _T = TypeVar("_T")
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,9 +380,27 @@ class MessageLog:
                     if inspect.iscoroutine(result):
                         result.close()
                     raise TypeError("存储事务回调必须同步，不能跨 await")
-            for event, loop in self._listeners.items():
-                _ = loop.call_soon_threadsafe(event.set)
+            self._notify()
             return result
+
+    def _notify(self) -> None:
+        """逐个通知已注册读者；无法唤醒的 listener 确认死亡即移除。
+
+        提交已经成功，通知失败不抹掉已提交事实；首个失败仍如实向写入方报告，
+        其余 listener 继续收到唤醒。
+        """
+        failure: BaseException | None = None
+        for event, loop in tuple(self._listeners.items()):
+            try:
+                _ = loop.call_soon_threadsafe(event.set)
+            except BaseException as error:
+                # 拒绝投递的 loop 永远无法再唤醒该 listener；按确认死亡驱逐。
+                _ = self._listeners.pop(event, None)
+                if failure is None:
+                    failure = error
+                _logger.warning("日志 listener 已死亡并移除: %r", error)
+        if failure is not None:
+            raise failure
 
     @contextmanager
     def _read(self) -> Generator[sqlite3.Connection]:
@@ -475,8 +495,12 @@ class MessageLog:
                 return
             self._closed = True
             self._connection.close()
-            for event, loop in self._listeners.items():
-                _ = loop.call_soon_threadsafe(event.set)
+            for event, loop in tuple(self._listeners.items()):
+                try:
+                    _ = loop.call_soon_threadsafe(event.set)
+                except BaseException as error:
+                    _ = self._listeners.pop(event, None)
+                    _logger.warning("日志 listener 已死亡并移除: %r", error)
 
 
 class MessageCatalog:
@@ -564,8 +588,12 @@ class MessageCatalog:
             rows = self._log._connection.execute("SELECT key, attributes FROM sessions ORDER BY key").fetchall()
         return MappingProxyType({row["key"]: decode_attributes(row["attributes"]) for row in rows})
 
-    async def follow(self) -> AsyncGenerator[Mapping[str, int]]:
-        """先订阅再取 heads；通知可合并，消费者始终按快照重读事实。"""
+    async def follow(self, *, poll_interval: float | None = None) -> AsyncGenerator[Mapping[str, int]]:
+        """先订阅再取 heads；通知只降低延迟，消费者始终按快照重读事实。
+
+        poll_interval 给出有界重扫节奏：进程内唤醒丢失时，已提交的持久变化
+        最多在一个周期后被重新发现。
+        """
         event = asyncio.Event()
         with self._log._lock:
             if self._log._closed:
@@ -582,11 +610,16 @@ class MessageCatalog:
                 if heads != previous:
                     previous = heads
                     yield heads
-                else:
+                elif poll_interval is None:
                     _ = await event.wait()
+                else:
+                    try:
+                        _ = await asyncio.wait_for(event.wait(), poll_interval)
+                    except TimeoutError:
+                        pass
         finally:
             with self._log._lock:
-                del self._log._listeners[event]
+                self._log._listeners.pop(event, None)
 
 
 class MessageReader:
@@ -767,7 +800,9 @@ class MessageReader:
         with self._log._lock:
             return self._log._connection.execute(sql, values).fetchone()[0]
 
-    async def follow(self, *, after_seq: int = -1) -> AsyncGenerator[Message, None]:
+    async def follow(
+        self, *, after_seq: int = -1, poll_interval: float | None = None
+    ) -> AsyncGenerator[Message, None]:
         """先订阅再从日志追赶；通知只唤醒，正文和进度始终来自 seq。"""
         event = asyncio.Event()
         with self._log._lock:
@@ -782,14 +817,20 @@ class MessageReader:
                         return
                     messages = self.read(after_seq=after_seq)
                 if not messages:
-                    _ = await event.wait()
+                    if poll_interval is None:
+                        _ = await event.wait()
+                    else:
+                        try:
+                            _ = await asyncio.wait_for(event.wait(), poll_interval)
+                        except TimeoutError:
+                            pass
                     continue
                 for message in messages:
                     after_seq = message.seq
                     yield message
         finally:
             with self._log._lock:
-                del self._log._listeners[event]
+                self._log._listeners.pop(event, None)
 
 
 class _IncrementalMessageReader(MessageReader):

@@ -38,6 +38,10 @@ class TaskBusy(RuntimeError):
     """相同 key 的旧任务尚未排空，不能开始新任务。"""
 
 
+class TaskCapacity(RuntimeError):
+    """残留任务数量达到准入额度；调用方按明确等待原因稍后重试。"""
+
+
 class StaleTask(RuntimeError):
     """短命 handle 已不属于当前活动任务。"""
 
@@ -193,8 +197,18 @@ class TaskSlot:
         child_permit: Callable[[], ExternalRootPermit] | None = None,
     ) -> Task:
         self._check_active()
-        if self.current is not None:
-            raise TaskBusy("旧任务尚未排空")
+        current = self.current
+        if current is not None:
+            if current.active:
+                raise TaskBusy("旧任务尚未排空")
+            # 已撤权的旧任务只保留物理清理；持久边界已经提交，lane 立即释放。
+            self._owner._residual.add(current)
+            _ = self._owner._tasks.pop(self._key, None)
+        if self._owner._max_resident is not None and (
+            len(self._owner._tasks) + len(self._owner._residual)
+            >= self._owner._max_resident
+        ):
+            raise TaskCapacity("Task 残留数量达到准入额度")
         task = Task(operation, self._admitted, child_permit)
         self._started = task
         self._owner._tasks[self._key] = task
@@ -219,8 +233,13 @@ class _Group:
 class Tasks:
     """按通用 key 串行准入，保护启动、控制接纳和 effect start 的同一顺序。"""
 
-    def __init__(self):
+    def __init__(self, max_resident: int | None = None):
+        if max_resident is not None and (type(max_resident) is not int or max_resident < 1):
+            raise ValueError("Task 准入额度必须是正整数或 None")
         self._tasks: dict[Hashable, Task] = {}
+        self._residual: set[Task] = set()
+        self._max_resident = max_resident
+        self._capacity = asyncio.Event()
         self._groups: dict[Hashable, _Group] = {}
         self._groups_drained = asyncio.Event()
         self._groups_drained.set()
@@ -229,11 +248,23 @@ class Tasks:
     def _release(self, key: Hashable, task: Task) -> None:
         if self._tasks.get(key) is task:
             del self._tasks[key]
+        self._residual.discard(task)
+        self._capacity.set()
         # 独立启动的工作也必须报告失败；join 仍会收到原异常。
         if not task._task.cancelled():
             error = task._task.exception()
             if error is not None:
                 logger.error("Task 失败 handle=%s", task.handle, exc_info=error)
+
+    async def wait_capacity(self) -> None:
+        """等待残留额度释放；Task 退出事件唤醒容量等待。"""
+        while True:
+            self._capacity.clear()
+            if self._max_resident is None or (
+                len(self._tasks) + len(self._residual) < self._max_resident
+            ):
+                return
+            _ = await self._capacity.wait()
 
     async def admit(self, key: Hashable, callback: Callable[[TaskSlot], _T]) -> _T:
         """回调只做同步准入；长操作在 Task 中运行，不能持锁跨 I/O。"""
@@ -357,7 +388,8 @@ class Tasks:
         self._closed = True
         for group in self._groups.values():
             group.notify()
-        tasks = tuple(self._tasks.values())
+        self._capacity.set()
+        tasks = (*self._tasks.values(), *self._residual)
         failures: list[Exception] = []
         for task in tasks:
             try:

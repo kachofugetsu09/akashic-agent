@@ -279,27 +279,20 @@ class SourceSession:
         raise RuntimeError("Session 订阅在回传完成前结束")
 
     async def start(
-        self, program: Callable[[Task, MessageReader, str], Awaitable[object]]
+        self,
+        program: Callable[[Task, MessageReader, str], Awaitable[object]],
     ) -> Task | None:
-        """等待旧工作真实排空后重读事实；多个唤醒共用同一个活动任务。"""
-        # 1. 已取消的任务仍持有资源；只有完成 join 才能接纳替代者。
+        """已提交边界的旧工作不阻塞新接纳；物理清理由 Task owner 独立排空。"""
+        # 1. 活动任务仍持有提交权；已撤权任务只保留资源，业务边界已在日志中关闭。
         current = await self._tasks.admit(self._key, lambda slot: slot.current)
-        if current is not None:
-            if current.active:
-                return current
-            try:
-                _ = await current.join()
-            except asyncio.CancelledError:
-                caller = asyncio.current_task()
-                if caller is not None and caller.cancelling():
-                    raise
-            except Exception:
-                logger.warning("已撤权的旧回复在排空时失败", exc_info=True)
+        if current is not None and current.active:
+            return current
 
         # 2. 日志判定与 Task 创建间没有 await，不增加持久 active/attempt 状态。
         def admit(slot: TaskSlot) -> Task | None:
-            if slot.current is not None:
-                return slot.current
+            residual = slot.current
+            if residual is not None and residual.active:
+                return residual
             if not needs_reply(self._reader, self._source):
                 return None
 
@@ -337,3 +330,17 @@ class SourceSession:
             return task
 
         return await self._tasks.admit(self._key, admit)
+
+    async def record_failure(self, error: BaseException) -> None:
+        """为无持久进展的失败补记 failure Control；只重试保存，不重新执行程序。"""
+        def admit(slot: TaskSlot) -> None:
+            if not needs_reply(self._reader, self._source):
+                return
+            head = self._reader.head(source=self._source)
+            _ = self._controls.append(
+                uuid4().hex,
+                Control("failure", head, str(error)),
+                expected_source_head=head,
+            )
+
+        await self._tasks.admit(self._key, admit)

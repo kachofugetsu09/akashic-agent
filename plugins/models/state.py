@@ -65,9 +65,14 @@ from .settings import (
     SyncModels,
     UpdateConnection,
 )
+from agent.plugin_composition.models import ModelContinuation, ModelUsage, ToolCall
 from .store import MODEL_ROLES, ModelsStore, StoredConnection, StoredModel, StoredSnapshot
 
 logger = logging.getLogger(__name__)
+_PROCESS_INSTANCE = secrets.token_hex(8)
+# 本进程存活的 attempt 登记先于 started 记录返回，Task 退出时注销；
+# 同 key 的 started 记录只有不属于任何活 attempt 才算孤儿。
+_LIVE_CALLS: set[str] = set()
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 _DEFAULT_ROLE = "default"
 _AGENT_ROLE = "agent"
@@ -81,6 +86,39 @@ class _CapabilityCatalog(Protocol):
         *,
         provider_id: str,
     ) -> tuple[DiscoveredModel, ...]: ...
+
+
+def _decode_response(payload: object) -> LLMResponse:
+    """从调用账重建可重放响应；损坏的持久正文在边界明确失败。"""
+    if not isinstance(payload, Mapping):
+        raise ValueError("Model 响应记录损坏")
+    data = cast(Mapping[str, Any], payload)
+    continuation = data.get("continuation")
+    if continuation is not None and not isinstance(continuation, Mapping):
+        raise ValueError("Model continuation 记录损坏")
+    calls = data.get("tool_calls") or ()
+    if not isinstance(calls, Sequence) or isinstance(calls, str):
+        raise ValueError("Model tool_calls 记录损坏")
+    return LLMResponse(
+        cast(str | None, data.get("content")),
+        tool_calls=[
+            ToolCall(
+                cast(str, item["id"]), cast(str, item["name"]),
+                cast(Mapping[str, Any], item["arguments"]),
+            )
+            for item in cast(Sequence[Mapping[str, Any]], calls)
+        ],
+        thinking=cast(str | None, data.get("thinking")),
+        finish_reason=cast(str | None, data.get("finish_reason")),
+        continuation=(
+            None
+            if continuation is None
+            else ModelContinuation(
+                cast(str, continuation["binding_id"]),
+                cast(Mapping[str, Any], continuation["payload"]),
+            )
+        ),
+    )
 
 
 class _BoundChat:
@@ -107,7 +145,52 @@ class _BoundChat:
             and continuation.binding_id != self._descriptor.binding_id
         ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
-        call_id = self._store.start_call(self._descriptor, request)
+        # 2. 稳定请求身份先查账：已成功响应直接重放，不确定的 started 孤儿先结算。
+        request_key = self._store.request_identity(self._descriptor, request)
+        keyed = True
+        try:
+            records = self._store.calls_for_key(request_key)
+        except RuntimeError:
+            # 旧库未迁移 attempt 记账列时退回逐次登记，不阻断既有调用。
+            records = ()
+            keyed = False
+        for record in records:
+            if record["state"] == "success" and record.get("response") is not None:
+                replayed = _decode_response(record["response"])
+                replayed.call_record_id = cast(str, record["id"])
+                replayed.usage = (
+                    None
+                    if record.get("usage") is None
+                    else ModelUsage(**record["usage"])
+                )
+                return replayed
+        orphans = [
+            record for record in records
+            if record["state"] == "started"
+            and cast(str, record["id"]) not in _LIVE_CALLS
+        ]
+        for orphan in orphans:
+            try:
+                self._store.finish_call(
+                    cast(str, orphan["id"]), usage=None,
+                    failure="orphaned: 结算确认丢失，真实结果不确定",
+                )
+            except Exception:
+                logger.warning("孤儿 Model 调用结算失败 call_id=%s", orphan["id"], exc_info=True)
+        if orphans:
+            raise ModelUnavailableError(
+                "同一请求的先前调用结果不确定；孤儿记录已结算，请显式重试"
+            )
+        call_id = (
+            self._store.resume_call(
+                self._descriptor, request,
+                request_key=request_key,
+                owner_id=f"{_PROCESS_INSTANCE}:{secrets.token_hex(8)}",
+            )
+            if keyed
+            else self._store.start_call(self._descriptor, request)
+        )
+        _LIVE_CALLS.add(call_id)
         started: int | None = None
         first_token = False
 
@@ -126,28 +209,32 @@ class _BoundChat:
 
         # 2. 通知调用身份后才开始计时，首段与总耗时使用同一单调时钟。
         try:
-            driver_request = request if request.on_delta is None else replace(request, on_delta=delta)
-            if request.on_delta is not None:
-                await request.on_delta({"call_record_id": call_id})
-            started = monotonic_ns()
-            response = await self._driver.complete(driver_request)
-        except BaseException as failure:
-            # 网络请求可能已经到达 provider；本地异常不证明没有计费。
             try:
-                self._store.finish_call(
-                    call_id, usage=None, failure=type(failure).__name__,
-                    duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
-                )
-            except Exception as record_failure:
-                raise failure from record_failure
-            raise
-        # 3. 结算失败继续向上传播，不能把未记账的响应交给 Message writer。
-        self._store.finish_call(
-            call_id, usage=response.usage, failure=None,
-            duration_ms=(monotonic_ns() - started) / 1_000_000,
-        )
-        response.call_record_id = call_id
-        return response
+                driver_request = request if request.on_delta is None else replace(request, on_delta=delta)
+                if request.on_delta is not None:
+                    await request.on_delta({"call_record_id": call_id})
+                started = monotonic_ns()
+                response = await self._driver.complete(driver_request)
+            except BaseException as failure:
+                # 网络请求可能已经到达 provider；本地异常不证明没有计费。
+                try:
+                    self._store.finish_call(
+                        call_id, usage=None, failure=type(failure).__name__,
+                        duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
+                    )
+                except Exception as record_failure:
+                    raise failure from record_failure
+                raise
+            # 3. 结算失败继续向上传播，不能把未记账的响应交给 Message writer。
+            self._store.finish_call(
+                call_id, usage=response.usage, failure=None,
+                duration_ms=(monotonic_ns() - started) / 1_000_000,
+                response=response,
+            )
+            response.call_record_id = call_id
+            return response
+        finally:
+            _LIVE_CALLS.discard(call_id)
 
     def estimate_context_tokens(
         self,

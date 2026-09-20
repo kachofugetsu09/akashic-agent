@@ -105,6 +105,7 @@ class ModelRequest:
     on_delta: StreamCallback | None = None
     continuation: ModelContinuation | None = None
     disable_reasoning: bool = False
+    request_key: str | None = None
 
     def __post_init__(self) -> None:
         """在唯一调用边界冻结请求，adapter 和并行调用不能改写彼此输入。"""

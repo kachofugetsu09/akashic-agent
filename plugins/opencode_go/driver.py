@@ -9,7 +9,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -101,9 +101,15 @@ class _BoundChat:
                 "OpenCode Go Chat Completions does not support continuation state"
             )
         body = _chat_body(self._descriptor, request)
+        # 计费的生成调用是一次真实 attempt；不确定失败的隐式重发由调用账禁止。
+        connection = (
+            self._connection
+            if request.request_key is None
+            else replace(self._connection, max_retries=0)
+        )
         if request.on_delta is None:
             payload = await _request_json(
-                self._connection,
+                connection,
                 self._credential,
                 "POST",
                 "/chat/completions",
@@ -114,7 +120,7 @@ class _BoundChat:
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
         return await _stream_chat(
-            self._connection,
+            connection,
             self._credential,
             body,
             request.on_delta,

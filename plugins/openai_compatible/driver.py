@@ -10,7 +10,7 @@ import zlib
 import math
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -113,10 +113,17 @@ class _BoundChat:
             raise InvalidRequestError(
                 "OpenAI-compatible Chat Completions does not support continuation state"
             )
-        body = _chat_body(self._descriptor, self._connection, self._config, request)
+        # 计费的生成调用是一次真实 attempt；请求可能已到达 provider 的失败不能隐式重发，
+        # 重试身份由调用账的 request key 显式决定；未记账的直调保留有界重试。
+        connection = (
+            self._connection
+            if request.request_key is None
+            else replace(self._connection, max_retries=0)
+        )
+        body = _chat_body(self._descriptor, connection, self._config, request)
         if request.on_delta is None and not _is_deepseek_v4(self._descriptor.model):
             payload = await _request_json(
-                self._connection,
+                connection,
                 self._credential,
                 "POST",
                 "/chat/completions",
@@ -128,7 +135,7 @@ class _BoundChat:
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
         return await _stream_chat(
-            self._connection,
+            connection,
             self._credential,
             body,
             request.on_delta,

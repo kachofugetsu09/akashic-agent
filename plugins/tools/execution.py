@@ -142,8 +142,14 @@ class ToolExecution:
             raise ValueError("同一工具 key 的 binding 或参数不一致")
         return result
 
+    async def settle_abandoned(self, reply: MessageReply) -> Result:
+        """放弃调用的窄幂等结算入口；ReAct 与后台 watcher 共用同一回执。"""
+        from .abandon import abandon_call
+
+        return await abandon_call(self._state, self._tasks, reply, task_key=self._task_key)
+
     async def _wait_result(self, task: Task, key: str, fingerprint: str, reply: MessageReply) -> Result:
-        """结果可先于物理清理提交；消息订阅只负责唤醒，回执仍是唯一结算事实。"""
+        """持久终态提交即释放等待者；物理清理由原 Task 独立排空。"""
         async def recorded() -> Result:
             call = reply.reader.get(reply.call_ref.message_id)
             if call is None:
@@ -152,24 +158,23 @@ class ToolExecution:
             async for _ in reply.reader.follow(after_seq=call.seq - 1):
                 record = self._record(key, fingerprint)
                 if record is not None and record.value["phase"] == "done":
-                    result = reply.read(record.value["result"])
-                    if reply.abandoned():
-                        return result
+                    return reply.read(record.value["result"])
             raise RuntimeError("工具结果订阅提前结束")
 
         joined = asyncio.create_task(task.join())
         terminal = asyncio.create_task(recorded())
         try:
             done, _ = await asyncio.wait((joined, terminal), return_when=asyncio.FIRST_COMPLETED)
-            if terminal in done:
-                return terminal.result()
-            # 同轮取消与结算竞争时，以已经提交的事实为准。
-            record = self._record(key, fingerprint)
-            if record is not None and record.value["phase"] == "done":
-                result = reply.read(record.value["result"])
-                if reply.abandoned():
-                    return result
-            return cast(Result, joined.result())
+            if joined in done:
+                failure = None if joined.cancelled() else joined.exception()
+                if failure is not None and not isinstance(failure, asyncio.CancelledError):
+                    raise failure
+                # 取消与结算竞争时以已提交的事实为准。
+                record = self._record(key, fingerprint)
+                if record is not None and record.value["phase"] == "done":
+                    return reply.read(record.value["result"])
+                return cast(Result, joined.result())
+            return terminal.result()
         finally:
             _ = joined.cancel()
             _ = terminal.cancel()
