@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from contextvars import ContextVar
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Protocol, TypeVar, cast
 
@@ -57,21 +56,11 @@ R = TypeVar("R")
 PluginApply = Callable[["Context"], object]
 
 
-class LeasedRuntimeSnapshot(Protocol):
-    """组合层读取被租约持有 snapshot 的最小身份视图；实现归 snapshot owner。"""
+class RuntimeLease(Protocol):
+    """Opaque scope 租约能力：身份可读、可 fork/release，不可遍历到 snapshot 或 Root。"""
 
     @property
     def snapshot_id(self) -> str: ...
-
-    @property
-    def composition_root(self) -> "CompositionRoot | None": ...
-
-
-class RuntimeLease(Protocol):
-    """组合层持有的 runtime 租约视图；不是第二个 lease 实体，具体实现归 snapshot owner。"""
-
-    @property
-    def snapshot(self) -> LeasedRuntimeSnapshot: ...
 
     @property
     def active(self) -> bool: ...
@@ -81,55 +70,44 @@ class RuntimeLease(Protocol):
     async def release(self) -> None: ...
 
 
-_current_runtime_scope: ContextVar["RuntimeScope | None"] = ContextVar(
-    "current_runtime_scope",
-    default=None,
-)
-
-
 class RuntimeScope:
     """Carry one exact snapshot from a source callback into one async operation."""
 
     def __init__(self, lease: RuntimeLease) -> None:
         self._lease = lease
         self._token: object | None = None
-        self._scope_token: object | None = None
-        self._owner_task: asyncio.Task[object] | None = None
         self._closed = False
 
-    @classmethod
-    def current(cls) -> "RuntimeScope | None":
-        """当前 Task 绑定且未关闭的组合 scope；继承或跨 Root 的 scope 不成立。"""
+    @property
+    def is_current(self) -> bool:
+        """本 scope 仍是当前 Task 绑定且未关闭的 lease owner。
 
-        scope = _current_runtime_scope.get()
-        if (
-            scope is None
-            or scope._closed
-            or scope._owner_task is not asyncio.current_task()
-        ):
-            return None
-        return scope
+        权威归 snapshot 层的 runtime binding：跨 Task 继承、lease 已释放或
+        被其他 scope 覆盖时都返回 False，不另建并行租约状态。
+        """
+
+        if self._closed:
+            return False
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        return get_current_runtime_lease() is self._lease
 
     @property
     def snapshot_id(self) -> str:
         """Expose only the immutable identity carried by this runtime scope."""
 
-        return self._lease.snapshot.snapshot_id
+        return self._lease.snapshot_id
 
     async def __aenter__(self) -> None:
         if self._closed or self._token is not None:
             raise RuntimeError("runtime scope 只能进入一次")
-        from agent.plugins.snapshot import bind_runtime_snapshot
+        from agent.plugins.snapshot import RuntimeSnapshotLease, bind_runtime_snapshot
 
-        self._scope_token = _current_runtime_scope.set(self)
-        self._owner_task = asyncio.current_task()
+        if not isinstance(self._lease, RuntimeSnapshotLease):
+            raise TypeError("runtime scope 只接受 snapshot owner 签发的 lease")
         try:
-            self._token = bind_runtime_snapshot(
-                cast("RuntimeSnapshotLease", self._lease)
-            )
+            self._token = bind_runtime_snapshot(self._lease)
         except BaseException:
-            _current_runtime_scope.reset(cast(Any, self._scope_token))
-            self._scope_token = None
             self._closed = True
             await self._lease.release()
             raise
@@ -141,7 +119,7 @@ class RuntimeScope:
         if self._closed:
             return
         self._closed = True
-        token, scope_token = self._token, self._scope_token
+        token = self._token
         try:
             if token is not None:
                 from agent.plugins.snapshot import reset_runtime_snapshot
@@ -149,9 +127,6 @@ class RuntimeScope:
                 reset_runtime_snapshot(cast(Any, token))
                 self._token = None
         finally:
-            if scope_token is not None:
-                _current_runtime_scope.reset(cast(Any, scope_token))
-                self._scope_token = None
             await self._lease.release()
 
 

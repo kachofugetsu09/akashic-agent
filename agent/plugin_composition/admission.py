@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
-from agent.plugin_composition.context import Context
+from agent.plugin_composition.context import Context, RuntimeLease
 from agent.plugin_composition.model import CompositionError, ServiceKey
 
 if TYPE_CHECKING:
-    from agent.plugins.snapshot import RuntimeSnapshotLease, RuntimeSnapshotStore
+    from agent.plugin_composition.context import CompositionRoot
+    from agent.plugins.snapshot import RuntimeSnapshotStore
+
+T = TypeVar("T")
 
 
 class SourceAdmission:
@@ -52,8 +55,8 @@ class SourceAdmission:
                 or lease.snapshot.accepting_leases):
             raise RuntimeError("来源初始化需要当前 Root 的 closed scope")
 
-    def current_lease(self) -> RuntimeSnapshotLease:
-        """返回当前 Task 绑定且属于本 Root 的 lease；缺席或跨 Root 时拒绝。"""
+    def current_lease(self) -> RuntimeLease:
+        """返回当前 Task 绑定且属于本 Root 的 opaque scope lease；缺席或跨 Root 时拒绝。"""
 
         from agent.plugins.snapshot import get_current_runtime_lease
 
@@ -63,14 +66,45 @@ class SourceAdmission:
             raise RuntimeError("当前 runtime scope lease 不属于本 Root")
         return lease
 
-    def lease(self, snapshot_id: str) -> RuntimeSnapshotLease:
-        """入口只能取得本 Root 的公开 lease，不能借用恢复特权。"""
+    def lease(self, snapshot_id: str) -> RuntimeLease:
+        """入口只能取得本 Root 的公开 opaque lease，不能借用恢复特权。"""
         current = self._store.current
         if (current is None or current.snapshot_id != snapshot_id
                 or current.composition_root is None
                 or current.composition_root.instance_token is not self._root_token):
             raise RuntimeError("来源 lease 不属于当前 Root")
         return self._store.lease(snapshot_id)
+
+    def _lease_root(self, lease: RuntimeLease) -> "CompositionRoot":
+        """lease/root/active 检查在 composition owner 内完成；插件看不到 snapshot。"""
+        from agent.plugins.snapshot import RuntimeSnapshotLease
+
+        if not isinstance(lease, RuntimeSnapshotLease):
+            raise TypeError("scope 能力必须是 snapshot owner 签发的 lease")
+        root = lease.snapshot.composition_root
+        if root is None or root.instance_token is not self._root_token:
+            raise RuntimeError("scope lease 不属于本 Root")
+        return root
+
+    def require_scope_service(self, lease: RuntimeLease, key: ServiceKey[T]) -> T:
+        """在 lease 所属 exact Root 上解析服务；跨 Root、无 Root 或缺服务时拒绝。"""
+        return self._lease_root(lease).context.require(key)
+
+    def require_binding_owner(
+        self,
+        lease: RuntimeLease,
+        ctx: Context,
+        key: ServiceKey[object],
+        service: object,
+    ) -> str:
+        """确认 ctx 是 lease 所属本 Root 的贡献 Context 且 service 仍是 key 的实现。"""
+        root = self._lease_root(lease)
+        if root.context.require(key) is not service:
+            raise RuntimeError("binding 服务不属于当前 runtime scope")
+        owner = root.context_owner(ctx)
+        if owner is None:
+            raise PermissionError("Context 不属于当前 runtime scope")
+        return owner
 
     def close(self) -> None:
         """全部来源都尝试关闭；失败保留回调及实际资源。"""

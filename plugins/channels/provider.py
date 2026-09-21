@@ -934,7 +934,7 @@ class PluginChannels:
             if key is not None:
                 raise RuntimeError("同一 Channel Context 不允许重新启动旧连接")
             lease = self._admission.current_lease()
-            key = (lease.snapshot.snapshot_id, definition.name)
+            key = (lease.snapshot_id, definition.name)
             self._bindings[key] = _ChannelBindingState(
                 snapshot_id=key[0], plugin_id=ctx.runtime.plugin_id,
                 generation_id=ctx.runtime.generation_id, channel_name=definition.name,
@@ -973,17 +973,16 @@ class PluginChannels:
     ) -> ChannelBindingLease:
         """Fork one exact stable lease and retain its live Channel binding."""
 
-        snapshot = snapshot_lease.snapshot
         if not snapshot_lease.active:
             raise RuntimeError("RuntimeSnapshot lease 已关闭")
-        snapshot_id = _text(snapshot.snapshot_id, "snapshot_id")
+        snapshot_id = _text(snapshot_lease.snapshot_id, "snapshot_id")
         key = (snapshot_id, _text(channel_name, "channel_name"))
         state = self._binding(key)
-        root = snapshot.composition_root
         context = state.plugin_context
-        if (root is None or root.instance_token is not self._root_token
-                or root.context.require(CHANNELS) is not self
-                or context is None or root.context_owner(context) != state.plugin_id
+        if context is None:
+            raise RuntimeError("Channel binding 不属于 exact Root/provider/贡献 Context")
+        owner = self._admission.require_binding_owner(snapshot_lease, context, CHANNELS, self)
+        if (owner != state.plugin_id
                 or context.fiber.activation_token is not state.activation_token):
             raise RuntimeError("Channel binding 不属于 exact Root/provider/贡献 Context")
         if state.stopped or (
@@ -1113,10 +1112,11 @@ class PluginChannels:
         binding: ChannelBindingLease | None = None
         try:
             binding = await self._acquire_control_binding(key)
-            root = binding.snapshot_lease.snapshot.composition_root
+            owner = self._admission.require_binding_owner(
+                binding.snapshot_lease, context, CHANNELS, self,
+            )
             if (
-                root is None
-                or root.context_owner(context) != state.plugin_id
+                owner != state.plugin_id
                 or context.fiber.state is not FiberState.ACTIVE
                 or context.fiber.activation_token is not state.activation_token
             ):
@@ -1129,7 +1129,7 @@ class PluginChannels:
             scope = RuntimeScope(binding.snapshot_lease.fork())
 
             def resolve(key: ServiceKey[object]) -> object:
-                if not active or RuntimeScope.current() is not scope:
+                if not active or not scope.is_current:
                     raise CompositionError("REQUEST_SCOPE_MISSING", "插件请求作用域已关闭")
                 if context.fiber.activation_token is not state.activation_token:
                     raise CompositionError("REQUEST_SCOPE_MISSING", "请求声明 activation 已失效")
@@ -1178,7 +1178,7 @@ class PluginChannels:
         binding: ChannelBindingLease | None = None
         try:
             try:
-                if source.snapshot.snapshot_id != state.snapshot_id:
+                if source.snapshot_id != state.snapshot_id:
                     raise RuntimeError("Channel control 与当前 stable snapshot 不一致")
                 binding = self.acquire_binding(
                     source,
@@ -1489,7 +1489,7 @@ class PluginChannels:
         try:
             source = acquirer(state.snapshot_id)
             try:
-                if source.snapshot.snapshot_id != key[0]:
+                if source.snapshot_id != key[0]:
                     raise RuntimeError("Channel ingress 与当前 stable snapshot 不一致")
                 binding = self.acquire_binding(
                     source,
@@ -1541,10 +1541,9 @@ class PluginChannels:
                 assert binding is not None and envelope is not None
                 lease = binding.snapshot_lease.fork()
                 async with RuntimeScope(lease):
-                    root = lease.snapshot.composition_root
-                    if root is None:
-                        raise RuntimeError("Channel input 缺少 composition Root")
-                    accept = root.context.require(CHANNEL_INPUT)
+                    # root/active/归属检查在 composition owner 内完成；
+                    # 插件侧只拿到已声明服务，不遍历 snapshot 或 Root。
+                    accept = self._admission.require_scope_service(lease, CHANNEL_INPUT)
                     _ = await accept(session_key, raw.message_id, raw.message)
                     accepted = True
                     # 此后失败只能保留 cleanup/recovery，不能回滚身份或去重记录。
