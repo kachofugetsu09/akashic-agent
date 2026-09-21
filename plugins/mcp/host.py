@@ -63,11 +63,13 @@ class IncidentReporter(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class McpMaterializedCommand:
-    """Host-authorized command, cwd and base environment for one server."""
+    """provider 持有的声明命令/cwd/env 与运行期额外键；授权在 spawn 边界内完成。"""
 
     command: tuple[str, ...]
     cwd: str
     env: Mapping[str, str] = field(default_factory=dict)
+    candidate_env: Mapping[str, str] = field(default_factory=dict)
+    extra_env: Mapping[str, str] = field(default_factory=dict)
 
 @dataclass(frozen=True, slots=True)
 class McpCleanupTombstone:
@@ -557,13 +559,31 @@ class McpGenerationHost:
         workload_endpoints: Mapping[tuple[str, str], str],
     ) -> _McpEntry:
         definition = binding.definition
+        # 授权校验与签发都在 spawner 边界内完成；host 只持有冻结制品。
+        prepared = self._spawner.prepare_process(
+            tuple(materialized.command), materialized.cwd,
+            dict(materialized.env), materialized.candidate_env,
+        )
+        argv0 = Path(prepared.command[0])
+        if (
+            not argv0.is_absolute()
+            or not argv0.is_file()
+            or not os.access(argv0, os.X_OK)
+        ):
+            raise ValueError(
+                f"MCP materialized argv[0] must be an absolute executable: {definition.name}"
+            )
+        if not Path(prepared.cwd).is_absolute():
+            raise ValueError(f"MCP materialized cwd invalid: {definition.name}")
         environment = self._materialize_env(
             binding.descriptor,
             materialized,
             generation.mode,
             endpoint_ports,
             workload_endpoints,
+            prepared.env,
         )
+        prepared = prepared.derive_env(environment)
         allowed_tools = frozenset(
             definition.candidate_read_only_tools
             if generation.mode == "candidate"
@@ -571,9 +591,7 @@ class McpGenerationHost:
         )
         client = McpClient(
             name=f"{definition.name}@{generation.generation_id}",
-            command=list(materialized.command),
-            env=environment,
-            cwd=materialized.cwd,
+            prepared=prepared,
             env_scrub_keys=frozenset(
                 key for key, _ in binding.descriptor.candidate_env
             ),
@@ -939,27 +957,20 @@ class McpGenerationHost:
                 )
                 or not isinstance(materialized.cwd, str)
                 or not materialized.cwd
-                or not materialized.cwd.startswith("/")
             ):
                 raise ValueError(f"MCP materialized command invalid: {name}")
-            argv0 = Path(materialized.command[0])
-            if (
-                not argv0.is_absolute()
-                or not argv0.is_file()
-                or not os.access(argv0, os.X_OK)
-            ):
-                raise ValueError(
-                    f"MCP materialized argv[0] must be an absolute executable: {name}"
-                )
-            if not isinstance(materialized.env, Mapping) or any(
-                not isinstance(key, str) or not isinstance(value, str)
-                for key, value in materialized.env.items()
-            ):
-                raise TypeError(f"MCP materialized environment invalid: {name}")
+            for source in (materialized.env, materialized.candidate_env, materialized.extra_env):
+                if not isinstance(source, Mapping) or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in source.items()
+                ):
+                    raise TypeError(f"MCP materialized environment invalid: {name}")
             result[name] = McpMaterializedCommand(
                 command=tuple(materialized.command),
                 cwd=materialized.cwd,
                 env=MappingProxyType(dict(materialized.env)),
+                candidate_env=MappingProxyType(dict(materialized.candidate_env)),
+                extra_env=MappingProxyType(dict(materialized.extra_env)),
             )
         return result
 
@@ -970,8 +981,10 @@ class McpGenerationHost:
         mode: McpMode,
         endpoint_ports: Mapping[str, int],
         workload_endpoints: Mapping[tuple[str, str], str],
+        authorized_env: Mapping[str, str],
     ) -> dict[str, str]:
-        environment = dict(materialized.env)
+        environment = dict(authorized_env)
+        environment.update(materialized.extra_env)
         candidate_keys = {key for key, _ in descriptor.candidate_env}
         materialized_candidate_keys = sorted(candidate_keys & set(environment))
         if materialized_candidate_keys:

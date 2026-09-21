@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from agent.plugin_composition.execution import ChildProcess, ProcessSpawner
+from agent.plugin_composition.execution import ChildProcess, PreparedProcess, ProcessSpawner
 
 logger = logging.getLogger(__name__)
 
@@ -73,20 +73,20 @@ class McpClient:
     def __init__(
         self,
         name: str,
-        command: list[str],
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-        env_scrub_keys: frozenset[str] | None = None,
         *,
+        prepared: PreparedProcess,
+        env_scrub_keys: frozenset[str] | None = None,
         spawner: ProcessSpawner,
     ) -> None:
+        if type(prepared) is not PreparedProcess:
+            raise TypeError("MCP client 只消费 spawner 签发的 PreparedProcess")
         self.name = name
-        self.command = command
-        self.env = env or {}
+        self.command = list(prepared.command)
+        self.env = dict(prepared.env)
+        self.cwd = prepared.cwd
+        self._prepared = prepared
         self.env_scrub_keys = env_scrub_keys or frozenset()
         self._spawner = spawner
-        # cwd 未指定时从 command 中推断，避免子进程继承 agent 工作目录
-        self.cwd = cwd or _infer_cwd(command)
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._call_lock = asyncio.Lock()
@@ -145,13 +145,11 @@ class McpClient:
         # 环境经宿主授权 scrub；进程组终止语义不出 ExecutionGrant 边界。
         logger.debug("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
         child, spawn_cancelled = await self._spawner.spawn(
-            tuple(self.command),
+            self._prepared,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=self.env,
             env_scrub_keys=frozenset(os.environ) | self.env_scrub_keys,
-            cwd=self.cwd,
             limit=_STREAM_LIMIT,
         )
         self._process = child.process

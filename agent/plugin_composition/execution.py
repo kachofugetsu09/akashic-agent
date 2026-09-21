@@ -7,6 +7,7 @@ import json
 from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal, Protocol
 
 from agent.plugin_composition.context import Context
@@ -116,15 +117,68 @@ class ChildProcess(Protocol):
     async def kill(self, *, timeout_s: float) -> None: ...
 
 
+class PreparedProcess:
+    """宿主签发的冻结执行制品：command/cwd/env 已经过授权校验。
+
+    归属校验靠签发者私有 token，而非可被随意拼造的公开字段；
+    `derive_env` 只追加 provider 运行期键，不放宽已授权的命令与 cwd。
+    """
+
+    __slots__ = ("_token", "_command", "_cwd", "_env")
+
+    def __init__(
+        self,
+        token: object,
+        *,
+        command: tuple[str, ...],
+        cwd: str,
+        env: Mapping[str, str],
+    ) -> None:
+        self._token = token
+        self._command = tuple(command)
+        self._cwd = cwd
+        self._env = MappingProxyType(dict(env))
+
+    @property
+    def command(self) -> tuple[str, ...]:
+        return self._command
+
+    @property
+    def cwd(self) -> str:
+        return self._cwd
+
+    @property
+    def env(self) -> Mapping[str, str]:
+        return self._env
+
+    def derive_env(self, values: Mapping[str, str]) -> "PreparedProcess":
+        """同一签发者下追加运行期环境键（端口、endpoint、scope 标识）。"""
+        merged = dict(self._env)
+        merged.update(values)
+        return PreparedProcess(
+            self._token, command=self._command, cwd=self._cwd, env=merged,
+        )
+
+    def _issued_by(self, token: object) -> bool:
+        return self._token is token
+
+
 class ProcessSpawner(Protocol):
     """受控子进程来源；ExecutionGrant 结构满足，不另立 ServiceKey。"""
 
-    async def spawn(
+    def prepare_process(
         self,
         command: tuple[str, ...],
+        cwd: str,
+        env: Mapping[str, str],
+        candidate_env: Mapping[str, str] = {},
+    ) -> PreparedProcess:
+        """在边界内执行授权校验并签发冻结的执行制品。"""
+        ...
+    async def spawn(
+        self,
+        prepared: PreparedProcess,
         *,
-        cwd: str | None = None,
-        env: Mapping[str, str] | None = None,
         env_scrub_keys: Collection[str] = frozenset(),
         stdin: object = None,
         stdout: object = None,
@@ -142,20 +196,18 @@ class ExecutionGrant(ProcessSpawner, Protocol):
     def environment(self, values: Mapping[str, str], candidate_values: Mapping[str, str]) -> dict[str, str]: ...
     async def spawn(
         self,
-        command: tuple[str, ...],
+        prepared: PreparedProcess,
         *,
-        cwd: str | None = None,
-        env: Mapping[str, str] | None = None,
         env_scrub_keys: Collection[str] = frozenset(),
         stdin: object = None,
         stdout: object = None,
         stderr: object = None,
         limit: int | None = None,
     ) -> tuple[ChildProcess, bool]:
-        """受控 spawn：环境经宿主 scrub，子进程为独立进程组并返回取消标记。"""
+        """受控 spawn：只消费本授权签发的 PreparedProcess，返回取消标记。"""
         ...
     def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
-        """把已存在的子进程接管为同一回收语义的句柄。"""
+        """只接管本授权登记且由它新 session 创建的子进程；外来进程一律拒绝。"""
         ...
 
 

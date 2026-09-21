@@ -12,7 +12,7 @@ from urllib.request import urlopen
 import pytest
 
 from agent.plugin_composition import ManagedProcessDefinition
-from agent.host_bridge.plugin_execution import LocalProcessSpawner
+from tests.process_spawner import LocalProcessSpawner
 import plugins.managed_processes.host as managed_process_host
 from plugins.managed_processes.host import (
     ManagedProcessGenerationHost,

@@ -14,6 +14,7 @@ from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
 from agent.workloads.client import WorkloadController
 from agent.plugin_composition.execution import (
     ChildProcess,
+    PreparedProcess,
     WorkloadLease,
     WorkloadStartRequest,
 )
@@ -79,6 +80,8 @@ class ExecutionGrant:
         self._owner = owner
         self._mode = mode
         self._environment = dict(environment)
+        self._issue_token = object()
+        self._children: dict[int, HostedChildProcess] = {}
 
     @property
     def mode(self) -> Literal["candidate", "formal"]:
@@ -111,26 +114,51 @@ class ExecutionGrant:
         })
         return result
 
-    async def spawn(
+    def prepare_process(
         self,
         command: tuple[str, ...],
+        cwd: str,
+        env: Mapping[str, str],
+        candidate_env: Mapping[str, str] = {},
+    ) -> PreparedProcess:
+        """一次完成 command/cwd/environment 三项校验并签发冻结制品。"""
+        return PreparedProcess(
+            self._issue_token,
+            command=self.command(command, cwd),
+            cwd=str(self.cwd(cwd)),
+            env=self.environment(env, candidate_env),
+        )
+
+    async def spawn(
+        self,
+        prepared: PreparedProcess,
         *,
-        cwd: str | None = None,
-        env: Mapping[str, str] | None = None,
         env_scrub_keys: Collection[str] = frozenset(),
         stdin: object = None,
         stdout: object = None,
         stderr: object = None,
         limit: int | None = None,
     ) -> tuple[ChildProcess, bool]:
-        """进程组终止语义不出授权边界；spawn 取消仍先接住实际回执。"""
-        return await _spawn_child(
-            command, cwd=cwd, env=env, env_scrub_keys=env_scrub_keys,
+        """只消费本授权签发的 PreparedProcess；取消仍先接住实际回执。"""
+        if type(prepared) is not PreparedProcess or not prepared._issued_by(self._issue_token):
+            raise PermissionError("spawn 只接受本授权签发的 PreparedProcess")
+        child, cancelled = await _spawn_child(
+            prepared.command, cwd=prepared.cwd, env=prepared.env,
+            env_scrub_keys=env_scrub_keys,
             stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
         )
+        pid = child.process.pid
+        if isinstance(pid, int):
+            self._children[pid] = child
+        return child, cancelled
 
     def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
-        return HostedChildProcess(OwnedProcessGroup.from_process(process))
+        """只接管本授权登记的子进程：未经 spawn 签发的进程不得假定进程组归属。"""
+        pid = getattr(process, "pid", None)
+        child = self._children.get(pid) if isinstance(pid, int) else None
+        if child is None or child.process is not process:
+            raise PermissionError("adopt 只接受本授权已登记的子进程")
+        return child
 
 
 async def _spawn_child(
@@ -159,30 +187,6 @@ async def _spawn_child(
         options["limit"] = limit
     process, spawn_cancelled = await spawn_process(*command, **options)
     return HostedChildProcess(OwnedProcessGroup.from_process(process)), spawn_cancelled
-
-
-class LocalProcessSpawner:
-    """不经 Context 授权的同一回收实现；测试与宿主自身装配使用。"""
-
-    async def spawn(
-        self,
-        command: tuple[str, ...],
-        *,
-        cwd: str | None = None,
-        env: Mapping[str, str] | None = None,
-        env_scrub_keys: Collection[str] = frozenset(),
-        stdin: object = None,
-        stdout: object = None,
-        stderr: object = None,
-        limit: int | None = None,
-    ) -> tuple[ChildProcess, bool]:
-        return await _spawn_child(
-            command, cwd=cwd, env=env, env_scrub_keys=env_scrub_keys,
-            stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
-        )
-
-    def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
-        return HostedChildProcess(OwnedProcessGroup.from_process(process))
 
 
 class HostedChildProcess:

@@ -459,8 +459,16 @@ class ManagedProcessGenerationHost:
         definition = entry.definition
         port = self._allocate_port(definition.formal_port if generation.mode == "formal" and generation.fixed_ports and definition.formal_port else None)
         command = self._resolve_command(definition.command, entry.artifact_root)
-        cwd = self._resolve_cwd(definition.cwd, entry.artifact_root)
-        env = self._process_env(definition.env, definition.port_env, port)
+        # 授权校验与签发都发生在 spawner 边界内：cwd 必须交声明值由 grant 在
+        # 固定代码制品内解析，不能先按 artifact_root/进程 cwd 改写。
+        # 端口是 provider 运行期键，在签发后通过 derive_env 追加，不经过
+        # candidate env 过滤。
+        prepared = self._spawner.prepare_process(
+            command, definition.cwd, definition.env, definition.candidate_env,
+        )
+        if definition.port_env in prepared.env:
+            raise ValueError(f"managed process port env collision: {definition.port_env}")
+        prepared = prepared.derive_env({definition.port_env: str(port)})
         if entry.stdout_ring is None:
             entry.stdout_ring = _LogRing(
                 max_bytes=self._log_max_bytes,
@@ -483,9 +491,7 @@ class ManagedProcessGenerationHost:
         )
         try:
             child, spawn_cancelled = await self._spawner.spawn(
-                command,
-                cwd=str(cwd),
-                env=env,
+                prepared,
                 env_scrub_keys=frozenset(os.environ),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -968,27 +974,6 @@ class ManagedProcessGenerationHost:
             else:
                 result.append(item)
         return tuple(result)
-
-    @staticmethod
-    def _resolve_cwd(cwd: str, artifact_root: Path | None) -> Path:
-        path = Path(cwd)
-        if path.is_absolute():
-            return path
-        if artifact_root is not None:
-            return (artifact_root / path).resolve()
-        return Path.cwd() / path
-
-    @staticmethod
-    def _process_env(
-        env: Mapping[str, str],
-        port_env: str,
-        port: int,
-    ) -> dict[str, str]:
-        values = dict(env)
-        if port_env in values:
-            raise ValueError(f"managed process port env collision: {port_env}")
-        values[port_env] = str(port)
-        return values
 
     @staticmethod
     def _allocate_port(formal_port: int | None) -> int:
