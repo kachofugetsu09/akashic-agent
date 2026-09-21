@@ -486,3 +486,231 @@ async def test_sigkill_after_response_stored_replays_without_repaying(tmp_path):
         assert message.message_id == output_id, "Output 身份必须沿用已固定的生成准备"
         assert message.body.finish == "complete"
         assert "final answer" in str(message.body.parts)
+
+
+def _fixture_descriptor() -> BoundModelDescriptor:
+    """与 react_fixtures.runtime 内部完全一致的 binding；digest 核对要求同一
+    binding_id。"""
+    return BoundModelDescriptor(
+        binding_id="model",
+        plugin_snapshot_id="snapshot",
+        model_revision=0,
+        model_id="model",
+        connection_id="connection",
+        driver_id="driver",
+        driver_contract_version="1",
+        auth_identity="test",
+        model="test",
+        role="agent",
+        reasoning_effort=None,
+        capabilities=ModelCapabilities(context_window=10000),
+        capability_sources=CapabilitySources(),
+        capability_digest="test",
+    )
+
+
+def _frozen_entry(request: ModelRequest) -> dict[str, object]:
+    """生成准备 attempts 条目：编码后经 decode 的种子记录与恢复路径的
+    request_digest 完全一致。"""
+    from plugins.react.plugin import _decode_request, _encode_request
+
+    return {
+        "request": _encode_request(_decode_request(_encode_request(request))),
+        "materials": {},
+    }
+
+
+def _seed_prep(log: MessageLog, key: str, value: dict[str, object]) -> None:
+    owner = log.owner("plugin:reply:generation")
+    owner.transact(
+        lambda transaction: transaction.save(key, value, expected_version=None)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget", [1, 3])
+async def test_resume_continues_at_last_frozen_attempt_without_repaying(
+    tmp_path, budget
+):
+    """key0 终结失败、key1 成功已耐久：恢复从最后冻结 attempt 续起——不回放
+    耗尽预算的旧请求、不重跑 reduce、不重付 provider，Output 身份固定。"""
+    from plugins.react.plugin import _decode_request
+
+    provider_calls = 0
+    reduce_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMResponse("must never be paid")
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async def reducer(*args, **kwargs):
+        nonlocal reduce_calls
+        reduce_calls += 1
+        return None
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+        reducer=reducer, model_max_attempts=budget,
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "long"},))
+        )["request"])
+        request1 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "short"},))
+        )["request"])
+        call0 = store.resume_call(
+            descriptor, request0, request_key="key-0", owner_id=None
+        )
+        store.finish_call(
+            call0, usage=None, failure="ContextLengthError: too long",
+            next_attempt_at=None,
+        )
+        call1 = store.resume_call(
+            descriptor, request1, request_key="key-1", owner_id=None
+        )
+        store.finish_call(
+            call1, usage=None, failure=None,
+            response=LLMResponse("final answer"),
+        )
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "fixed-output-id",
+            "request_keys": ["key-0", "key-1"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [
+                _frozen_entry(request0),
+                _frozen_entry(request1),
+            ],
+        })
+
+        message = await (await conversation.start(run)).join()
+        assert provider_calls == 0, "耐久成功响应必须重放，不得重付 provider"
+        assert reduce_calls == 0, "恢复不得重跑缩减"
+        assert message.message_id == "fixed-output-id"
+        assert message.body.finish == "complete"
+        assert "final answer" in str(message.body.parts)
+
+
+@pytest.mark.asyncio
+async def test_frozen_but_unclaimed_second_attempt_resumes_without_rebuild(
+    tmp_path,
+):
+    """崩溃于冻结第二请求与 claim 之间：request_keys 只有 key0（已终结失败），
+    attempts[1] 已冻结——恢复直接续用冻结字节、claim 新 key、只付一次。"""
+    from plugins.react.plugin import _decode_request
+
+    sent: list[ModelRequest] = []
+
+    async def complete(request):
+        sent.append(request)
+        return LLMResponse("recovered")
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "long"},))
+        )["request"])
+        request1 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "short"},))
+        )["request"])
+        call0 = store.resume_call(
+            descriptor, request0, request_key="key-0", owner_id=None
+        )
+        store.finish_call(
+            call0, usage=None, failure="ContextLengthError: too long",
+            next_attempt_at=None,
+        )
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "frozen-oid",
+            "request_keys": ["key-0"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [
+                _frozen_entry(request0),
+                _frozen_entry(request1),
+            ],
+        })
+
+        message = await (await conversation.start(run)).join()
+        assert len(sent) == 1, "已冻结的第二请求只真实付费一次"
+        assert sent[0].messages == request1.messages, (
+            "必须重放冻结请求字节而不是重建"
+        )
+        assert sent[0].request_key != "key-0", "claim 必须为第二 attempt 配新 key"
+        assert message.message_id == "frozen-oid"
+        assert message.body.finish == "complete"
+
+
+@pytest.mark.asyncio
+async def test_terminal_prep_stalls_without_budget_bypass(tmp_path):
+    """同一业务边界的终结失败如实停摆：重启/重调不得借 prep#N 或新随机 key
+    获得新预算；只有新来源事实才能开启新准备。"""
+    from plugins.react.plugin import _decode_request
+
+    provider_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMResponse("must never be paid")
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "long"},))
+        )["request"])
+        call0 = store.resume_call(
+            descriptor, request0, request_key="key-0", owner_id=None
+        )
+        store.finish_call(
+            call0, usage=None, failure="provider rejected request",
+            next_attempt_at=None,
+        )
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "stall-oid",
+            "request_keys": ["key-0"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [_frozen_entry(request0)],
+        })
+
+        with pytest.raises(ModelUnavailableError, match="终结失败"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0, "终结失败的 key 不得重新付费"
+        # 失败被耐久记录为 failure Control；同边界不再静默重试。
+        assert any(
+            isinstance(m.body, Control) and m.body.action == "failure"
+            for m in log.reader("s").snapshot()
+        )
+        assert await conversation.start(run) is None
+
+        # 新 Input 是真实来源事实：新边界产生新准备身份，正常恢复付费。
+        await conversation.accept("u2", Input((ContentPart("text", "again"),)))
+        message = await (await conversation.start(run)).join()
+        assert provider_calls == 1
+        assert message.body.finish == "complete"
+        assert store.calls_for_key("key-0")[-1]["state"] == "error"

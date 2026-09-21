@@ -771,3 +771,121 @@ def test_repeated_projection_keeps_dynamic_content_and_live_call_validation(stor
         connection.execute("UPDATE model_calls SET state='error' WHERE id=?", (call,))
     with pytest.raises(ValueError, match="成功结算"):
         projection.render((message,), after_seq=-1)
+
+
+def test_initialize_failure_releases_only_its_own_lease_share(tmp_path):
+    """初始化中途失败只回滚本 store 的租约份额：合法持有人不受影响，
+    账本不会被错误释放，全部关闭后新宿主才可接管换代。"""
+    from plugins.models import store as store_module
+
+    path = tmp_path / "model-registry.sqlite3"
+    first = ModelsStore(path, tmp_path / "backups")
+    first.initialize()
+    second = ModelsStore(path, tmp_path / "backups")
+    second.initialize()
+    epoch = first.host_epoch
+    assert second.host_epoch == epoch, "同进程收养租约不得换代"
+
+    third = ModelsStore(path, tmp_path / "backups")
+    third._create_database_file = lambda: (_ for _ in ()).throw(OSError("disk"))
+    with pytest.raises(OSError):
+        third.initialize()
+    assert not third.holds_host_lock
+    assert first.holds_host_lock and second.holds_host_lock
+    lock_path = path.with_name(f"{path.name}.hostlock")
+    assert store_module._PROCESS_HOST_LOCKS[lock_path][1] == 2
+
+    fourth = ModelsStore(path, tmp_path / "backups")
+    fourth.initialize()
+    assert fourth.host_epoch == epoch
+    for live in (first, second, fourth):
+        live.close()
+    assert lock_path not in store_module._PROCESS_HOST_LOCKS
+
+    fifth = ModelsStore(path, tmp_path / "backups")
+    fifth.initialize()
+    assert fifth.host_epoch == (epoch or 0) + 1, "全部持有人退出后新宿主才换代"
+    fifth.close()
+
+
+def test_close_releases_lock_and_allows_reacquisition(tmp_path):
+    """宿主锁在 close 后真实释放：epoch 不因重开凭空换代，旧 owner
+    也不因 epoch 相等被判死。"""
+    path = tmp_path / "model-registry.sqlite3"
+    store = ModelsStore(path, tmp_path / "backups")
+    store.initialize()
+    epoch = store.host_epoch
+    store.close()
+    assert not store.holds_host_lock
+
+    reopened = ModelsStore(path, tmp_path / "backups")
+    reopened.initialize()
+    assert reopened.host_epoch == (epoch or 0) + 1
+    assert reopened.holds_host_lock
+    reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_root_dispose_releases_host_lock_after_dependents(tmp_path):
+    """真实 Root 生命周期：models 插件的宿主租约注册为最先登记的 effect，
+    Root 退役时按逆序最后释放；退役后账本可被新宿主接管。"""
+    from agent.plugin_composition import CompositionRoot, ServiceKey
+    from agent.plugin_composition.model import PluginRuntime
+    from agent.plugin_composition.ui import UI
+    from plugins.models.plugin import apply as models_apply
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    class StubUi:
+        @property
+        def root_instance_token(self):
+            return None
+
+        async def register(self, ctx, **kwargs):
+            return None
+
+    async def ui_provider(ctx):
+        await ctx.provide(UI, StubUi())
+
+    root = CompositionRoot("models-lock")
+    await root.mount(ui_provider, name="ui-stub")
+    await root.mount(
+        models_apply,
+        name="models",
+        inject=(UI,),
+        runtime=PluginRuntime(
+            plugin_id="models@test",
+            generation_id="models-lock",
+            plugin_dir=tmp_path,
+            data_dir=data_dir,
+            workspace=workspace,
+            config={},
+            workspace_files=("model-registry.sqlite3",),
+        ),
+    )
+    from plugins.models import store as store_module
+
+    registry = workspace / "model-registry.sqlite3"
+    lock_path = registry.with_name("model-registry.sqlite3.hostlock")
+    assert lock_path in store_module._PROCESS_HOST_LOCKS
+
+    # 同进程探针收养同一租约；Root 持有的份额应可独立释放。
+    probe = ModelsStore(registry, tmp_path / "probe-backups")
+    probe.initialize()
+    epoch = probe.host_epoch
+    assert store_module._PROCESS_HOST_LOCKS[lock_path][1] == 2
+
+    await root.dispose()
+    assert store_module._PROCESS_HOST_LOCKS[lock_path][1] == 1, (
+        "Root 退役必须释放插件 store 的宿主租约份额"
+    )
+    probe.close()
+    assert lock_path not in store_module._PROCESS_HOST_LOCKS
+
+    successor = ModelsStore(registry, tmp_path / "b2")
+    successor.initialize()
+    assert successor.host_epoch == (epoch or 0) + 1
+    successor.close()

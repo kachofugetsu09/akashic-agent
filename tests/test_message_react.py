@@ -36,7 +36,7 @@ from session.message import (
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
                   reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset(),
-                  state_owner=None):
+                  state_owner=None, model_max_attempts=1):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
@@ -56,7 +56,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         def estimate_appended_message_tokens(self, messages):
             return 0
         max_tool_schemas = None
-    model = _BoundChat(descriptor, Driver(), store)
+    model = _BoundChat(descriptor, Driver(), store, max_attempts=model_max_attempts)
     log.save_binding("tool", {"target": "test-file-effect"})
     def writer(body, call_ref=None):
         return log.writer(

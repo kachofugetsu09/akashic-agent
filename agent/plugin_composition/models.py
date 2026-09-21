@@ -230,6 +230,14 @@ class BoundChatModel(Protocol):
         """该 request key 最近一条耐久调用记录的状态；无记录返回 None。"""
         ...
 
+    def key_interrupted(self, request_key: str) -> bool:
+        """该 request key 最近一条耐久记录是否为被中断（取消）的 attempt。"""
+        ...
+
+    def key_terminal(self, request_key: str) -> bool:
+        """该 request key 是否已终结失败（不可重试或预算耗尽）。"""
+        ...
+
 
 class BoundEmbeddingModel(Protocol):
     @property

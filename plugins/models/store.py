@@ -224,8 +224,8 @@ class ModelsStore:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         new_host = self._acquire_host_lock()
-        created = self._create_database_file()
         try:
+            created = self._create_database_file()
             with self._connect() as connection:
                 if created:
                     connection.executescript(_SCHEMA)
@@ -262,6 +262,11 @@ class ModelsStore:
                         "SELECT host_epoch FROM model_registry_meta WHERE singleton = 1"
                     ).fetchone()[0]
                 )
+        except BaseException:
+            # 初始化中途失败回滚本次取得的宿主租约份额；其他 store 的合法
+            # 持有（同进程收养或别的宿主）不受影响。
+            self.close()
+            raise
         finally:
             self._secure_files()
 

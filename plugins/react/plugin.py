@@ -295,6 +295,7 @@ async def _complete(
     fallback_key: str | None = None,
     freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None,
     resumed: Mapping[int, tuple[ModelRequest, Materials]] | None = None,
+    start_at: int = 0,
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。
 
@@ -307,8 +308,9 @@ async def _complete(
                                      tools=tools.schemas, max_output_tokens=max_output_tokens)
 
     prepared_attempt = prepared
-    if resumed is not None and 0 in resumed:
-        request, prepared_attempt = resumed[0]
+    if resumed is not None and start_at in resumed:
+        # 恢复直接命中已冻结的当前请求与材料，不重建、不重跑缩减。
+        request, prepared_attempt = resumed[start_at]
     else:
         request, rejection = build(prepared_attempt)
         if rejection is not None and reduce is None:
@@ -322,8 +324,8 @@ async def _complete(
             if rejection is not None:
                 raise ContextLengthError(rejection)
     if freeze is not None:
-        # 生成准备把首个真实请求与材料一并冻结；恢复后不再重建或漂移。
-        request, prepared_attempt = freeze(0, request, prepared_attempt)
+        # 生成准备把当前真实请求与材料一并冻结；恢复后不再重建或漂移。
+        request, prepared_attempt = freeze(start_at, request, prepared_attempt)
     prepared = prepared_attempt
     # 2. 每次 provider 调用使用生成准备中已耐久固定的 Output ID 与请求 key。
     with ExitStack() as previews:
@@ -339,7 +341,7 @@ async def _complete(
             callback = None if preview is None else previews.enter_context(preview(message_id))
             return message_id, request_key, callback
 
-        attempt = 0
+        attempt = start_at
         message_id, request_key, callback = begin(attempt)
         try:
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
@@ -459,6 +461,7 @@ async def react(
         claim: Callable[[int], tuple[str, str | None]] | None = None
         freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None
         resumed: dict[int, tuple[ModelRequest, Materials]] | None = None
+        start_at = 0
         if state is not None:
             # 输出前驱位置用该来源已有 Output 计数；与边界身份共同固定本代。
             prep_base = (
@@ -466,15 +469,56 @@ async def react(
                 f":{boundary_id}:{_steps(snapshot, writer.source)}"
             )
             base_seq = reader.head()
-            # 逐代核对：最近 request key 已终结失败的准备属于已结束生成；
-            # 显式恢复必须产生新准备身份（新 key），不能偷换同 key 重入。
-            generation = 0
+
+            def prep_attempts(
+                prep: Mapping[str, object]
+            ) -> list[Mapping[str, object] | None]:
+                entries: list[Mapping[str, object] | None] = list(
+                    cast(Sequence[Mapping[str, object] | None], prep.get("attempts") or ())
+                )
+                if not entries and "request" in prep:
+                    # v2 记录的首个请求/材料视为 attempt 0。
+                    entries = [{"request": prep["request"], "materials": prep["materials"]}]
+                return entries
+
+            # 逐代核对：最后冻结 attempt 的 key 已终结失败时，同一代不得借
+            # 重启/新随机 key 重获预算。只有真实耐久来源事实——该代冻结之后
+            # 本 lane 内提交的 Input 或 resume Control——才构成新业务边界，
+            # 允许开启新一代准备；否则如实停摆。冻结但未 claim 的后续
+            # attempt（崩溃于 freeze/claim 之间）不丢弃，直接续用。
             prep_key = prep_base
             existing = state.transact(lambda transaction: transaction.read(prep_key))
+            generation = 0
+            advance_interrupted = False
             while existing is not None:
                 keys = list(cast(Sequence[str], existing.value.get("request_keys", ())))
-                if not keys or model.key_state(keys[-1]) != "error":
+                current = len(prep_attempts(existing.value)) - 1
+                if not (0 <= current < len(keys) and keys):
                     break
+                key = keys[current]
+                if model.key_interrupted(key):
+                    # 被中断的 attempt 没有业务裁决：同一代内推进到新 attempt，
+                    # 沿用冻结请求与 Output 身份，由 claim 配发新 key 如实再付。
+                    advance_interrupted = True
+                    break
+                if not model.key_terminal(key):
+                    break
+                base = cast(int, existing.value["base_seq"])
+                qualified = any(
+                    message.seq > base
+                    and (
+                        isinstance(message.body, Input)
+                        or (
+                            isinstance(message.body, Control)
+                            and message.body.action == "resume"
+                        )
+                    )
+                    for message in reader.snapshot(after_seq=base)
+                )
+                if not qualified:
+                    raise ModelUnavailableError(
+                        "该来源边界的生成准备已终结失败；需要新的来源事实才能恢复"
+                    )
                 generation += 1
                 prep_key = f"{prep_base}#{generation}"
                 existing = state.transact(lambda transaction: transaction.read(prep_key))
@@ -483,18 +527,27 @@ async def react(
                 if prep.get("binding_id") != model.descriptor.binding_id:
                     raise ModelUnavailableError("生成准备记录的 binding 已失效")
                 frozen = reader.snapshot(through_seq=cast(int, prep["base_seq"]))
-                attempts = list(cast(Sequence[Mapping[str, object]], prep.get("attempts", ())))
-                if not attempts and "request" in prep:
-                    # v2 记录的首个请求/材料视为 attempt 0。
-                    attempts = [{"request": prep["request"], "materials": prep["materials"]}]
+                attempts = prep_attempts(prep)
                 resumed = {
                     index: (
                         _decode_request(entry["request"]),
                         cast(Materials, entry["materials"]),
                     )
                     for index, entry in enumerate(attempts)
+                    if entry is not None
                 }
-                prepared = cast(Materials, resumed[0][1]) if resumed else await materials(frozen)
+                # 恢复从最后冻结的 attempt 继续，不重放旧失败请求、不重跑 reduce。
+                start_at = max(resumed, default=0)
+                if advance_interrupted and resumed:
+                    # 同一代内把被中断的冻结请求推进到新 attempt；claim 配发
+                    # 新 key，原 error 记录不动、不重放也不重获预算。
+                    resumed[start_at + 1] = resumed[start_at]
+                    start_at += 1
+                prepared = (
+                    cast(Materials, resumed[start_at][1])
+                    if resumed
+                    else await materials(frozen)
+                )
             else:
                 prepared = await materials(frozen)
 
@@ -564,6 +617,7 @@ async def react(
             claim=claim,
             freeze=freeze,
             resumed=resumed,
+            start_at=start_at,
             fallback_key=(
                 f"reply:{reader.session_id}:{writer.source}"
                 f":{boundary_id}:{_steps(snapshot, writer.source)}"

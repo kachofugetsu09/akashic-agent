@@ -219,6 +219,30 @@ class _BoundChat:
             return None
         return cast(str, records[-1]["state"])
 
+    def key_interrupted(self, request_key: str) -> bool:
+        """同 key 最近记录是被中断的 attempt（取消按 error 结算、无业务裁决）。"""
+        records = self._store.calls_for_key(request_key)
+        if not records:
+            return False
+        last = records[-1]
+        return (
+            last["state"] == "error"
+            and isinstance(last.get("failure"), str)
+            and last["failure"].startswith("CancelledError")
+        )
+
+    def key_terminal(self, request_key: str) -> bool:
+        """同 key 的终结失败：最近记录为 error，且不可重试（无 next_attempt_at）
+        或耐久预算已耗尽。终结 key 不因重启/重调获得新预算；恢复只能走
+        新的来源边界事实（新 Input/resume 产生新准备身份）。"""
+        records = self._store.calls_for_key(request_key)
+        if not records:
+            return False
+        last = records[-1]
+        if last["state"] != "error":
+            return False
+        return last.get("next_attempt_at") is None or len(records) >= self._max_attempts
+
     def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
         """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
         records = self._store.calls_for_key(request_key)
