@@ -226,15 +226,17 @@ class BoundChatModel(Protocol):
     @property
     def max_tool_schemas(self) -> int | None: ...
 
-    def key_terminal(self, request_key: str) -> bool:
-        """该 request key 是否已终结失败：最近耐久记录为不可重试 error
-        （含取消/未知结算）或重试预算已耗尽；终结 key 不重获预算。"""
-        ...
+    def key_recovery(self, request_key: str) -> str:
+        """该 request key 最近耐久记录的恢复裁决（Models 独占分类）：
 
-    def key_context_rejected(self, request_key: str) -> bool:
-        """该 request key 最近记录是否为可证明的 provider 容量拒绝
-        （耐久 failure 恰为 ContextLengthError）。仅此种安全拒绝允许
-        调用方续跑本地缩减阶段；取消/未知错误不返回 True。"""
+        - "open"：无终结结算（无记录、成功、在途或仍有耐久退避额度）；
+        - "rejected"：provider 明确容量拒绝——本代可续跑有界缩减，
+          真实 resume 也可开新准备；
+        - "answered"：其他可证明失败——真实 resume 后允许新准备如实付费；
+        - "uncertain"：取消/孤儿/传输/超时/未知名目——远端效果不可证，
+          resume 不得据此重付，仅新 Input 作为真正新工作可运行。
+
+        非 "open" 即终结：终结 key 不因重启/重调获得新预算。"""
         ...
 
 

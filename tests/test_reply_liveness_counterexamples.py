@@ -690,7 +690,7 @@ async def test_terminal_prep_stalls_without_budget_bypass(tmp_path):
             descriptor, request0, request_key="key-0", owner_id=None
         )
         store.finish_call(
-            call0, usage=None, failure="provider rejected request",
+            call0, usage=None, failure="InvalidRequestError",
             next_attempt_at=None,
         )
         base_seq = log.reader("s").head()
@@ -761,16 +761,23 @@ async def test_cancelled_attempt_stalls_without_new_source_fact(tmp_path):
             "attempts": [_frozen_entry(request0)],
         })
 
-        with pytest.raises(ModelUnavailableError, match="终结失败"):
+        with pytest.raises(ModelUnavailableError, match="不确定"):
             await (await conversation.start(run)).join()
         assert provider_calls == 0, "取消不是免费重付理由"
 
-        # 显式 resume 是真实来源事实：回到同一准备核对旧回执后开新一代。
+        # 显式 resume 只证明来源要求重试，不证明 provider 未处理：
+        # 取消结算为远端效果未知，resume 不足以授权重付。
         await conversation.resume("resume-1", "u1")
+        with pytest.raises(ModelUnavailableError, match="不确定"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0, "未知远端效果不得借 resume 重付"
+
+        # 新 Input 是真正新工作：旧账保留为未知诊断，新准备如实付费一次。
+        await conversation.accept("u2", Input((ContentPart("text", "again"),)))
         message = await (await conversation.start(run)).join()
-        assert provider_calls == 1, "resume 之后的新一代如实付费一次"
+        assert provider_calls == 1, "新 Input 之后的新准备如实付费一次"
         assert store.calls_for_key("cancelled-key")[-1]["state"] == "error"
-        assert message.message_id != "fixed-output", "新一代有自己的 Output 身份"
+        assert message.message_id != "fixed-output", "新准备有自己的 Output 身份"
 
         # 同 key 直调同样被 Models 自身的终结裁决拒绝（预算仍有剩余也不行）。
         bound = _BoundChat(descriptor, type("D", (), {
@@ -828,8 +835,14 @@ async def test_explicit_resume_still_checks_started_records(tmp_path):
         orphan = store.calls_for_key("started-key")[-1]
         assert orphan["state"] == "error" and "orphaned" in orphan["failure"]
 
-        # 显式 resume 先回到同一准备完成孤儿结算，再由真实来源事实开新一代付费。
+        # 孤儿结算是远端效果未知：显式 resume 不得据此重付，只能如实停摆。
         await conversation.resume("resume-1", "u1")
+        with pytest.raises(ModelUnavailableError, match="不确定"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0, "resume 不得绕过未知结算重付"
+
+        # 新 Input 作为真正新工作开启新准备，如实付费一次，旧账保留。
+        await conversation.accept("u2", Input((ContentPart("text", "again"),)))
         message = await (await conversation.start(run)).join()
         assert provider_calls == 1
         assert message.body.finish == "complete"
@@ -904,12 +917,18 @@ async def test_unrelated_source_facts_do_not_authorize_terminal_prep(tmp_path):
         )
         result.expire()
 
-        with pytest.raises(ModelUnavailableError, match="终结失败"):
+        with pytest.raises(ModelUnavailableError, match="不确定"):
             await (await conversation.start(run)).join()
         assert provider_calls == 0, "别的来源事实不得给本来源终结准备换 key 重付"
 
-        # 本来源显式 resume 是真实来源事实：开新代如实付费一次。
+        # 本来源显式 resume 对取消结算同样不授权：远端效果未知不得重付。
         await conversation.resume("resume-1", "u1")
+        with pytest.raises(ModelUnavailableError, match="不确定"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0
+
+        # 本来源新 Input 才是真正新工作：开新准备如实付费一次。
+        await conversation.accept("u2", Input((ContentPart("text", "again"),)))
         message = await (await conversation.start(run)).join()
         assert provider_calls == 1
         assert message.body.finish == "complete"
@@ -979,3 +998,225 @@ async def test_context_rejected_first_attempt_resumes_local_reduction(tmp_path):
         )
         assert len(prep.value["attempts"]) == 2, "缩减后第二请求必须耐久冻结"
         assert len(prep.value["request_keys"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_context_rejected_second_attempt_is_terminal_across_restarts(
+    tmp_path,
+):
+    """同一代强制缩减至多一次跨重启保持：attempt0、attempt1 的 key 都已
+    耐久结算为 ContextLengthError 后，恢复不得再创建第三个 key、不得
+    再跑缩减、不得再向 provider 付费——如实停摆。"""
+    from plugins.react.plugin import _decode_request
+
+    provider_calls = 0
+    reduce_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMResponse("must never be paid")
+
+    async def reducer(*args, **kwargs):
+        nonlocal reduce_calls
+        reduce_calls += 1
+        return {
+            "reference": "summary-binding",
+            "source_message_ids": ("u1",),
+            "content": "short durable summary",
+        }
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+        reducer=reducer,
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "long"},))
+        )["request"])
+        request1 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "short"},))
+        )["request"])
+        for key, req in (("ctx-key-0", request0), ("ctx-key-1", request1)):
+            call = store.resume_call(
+                descriptor, req, request_key=key, owner_id=None
+            )
+            store.finish_call(
+                call, usage=None, failure="ContextLengthError",
+                next_attempt_at=None,
+            )
+        log.save_binding("summary-binding", {"target": "plugin:reply:generation"})
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "bound-oid",
+            "request_keys": ["ctx-key-0", "ctx-key-1"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [
+                _frozen_entry(request0),
+                _frozen_entry(request1),
+            ],
+        })
+
+        with pytest.raises(ModelUnavailableError, match="终结失败"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0, "第二拒绝已终结：恢复不得再付费"
+        assert reduce_calls == 0, "本代缩减额度已耗尽，不得再次缩减"
+        assert len(store.calls_for_key("ctx-key-1")) == 1
+        prep = log.owner("plugin:reply:generation").read(
+            "reply:s:conversation:u1:0"
+        )
+        assert len(prep.value["request_keys"]) == 2, "不得创建第三个 key"
+
+
+@pytest.mark.asyncio
+async def test_frozen_second_attempt_rejected_on_resume_stays_terminal(
+    tmp_path,
+):
+    """第二请求已冻结未发送：恢复首次真实发送它再遭 provider 容量拒绝时，
+    except 分支不得再次缩减/发送第三请求；终结结算跨重启保持。"""
+    from agent.plugin_composition.models import ContextLengthError
+    from plugins.react.plugin import _decode_request
+
+    provider_calls = 0
+    reduce_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            raise ContextLengthError("provider rejected actual payload")
+        return LLMResponse("recovered after resume")
+
+    async def reducer(*args, **kwargs):
+        nonlocal reduce_calls
+        reduce_calls += 1
+        return {
+            "reference": "summary-binding",
+            "source_message_ids": ("u1",),
+            "content": "short durable summary",
+        }
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+        reducer=reducer,
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "long"},))
+        )["request"])
+        request1 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "short"},))
+        )["request"])
+        call0 = store.resume_call(
+            descriptor, request0, request_key="ctx-key-0", owner_id=None
+        )
+        store.finish_call(
+            call0, usage=None, failure="ContextLengthError",
+            next_attempt_at=None,
+        )
+        log.save_binding("summary-binding", {"target": "plugin:reply:generation"})
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "bound-oid",
+            "request_keys": ["ctx-key-0"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [
+                _frozen_entry(request0),
+                _frozen_entry(request1),
+            ],
+        })
+
+        with pytest.raises(ContextLengthError, match="provider rejected"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 1, "冻结的第二请求只真实发送一次"
+        assert reduce_calls == 0, "attempt1 的再次拒绝不得触发第二次缩减"
+        prep = log.owner("plugin:reply:generation").read(
+            "reply:s:conversation:u1:0"
+        )
+        assert len(prep.value["request_keys"]) == 2, "claim 只配第二个 key"
+        key1 = prep.value["request_keys"][1]
+        records = store.calls_for_key(key1)
+        assert len(records) == 1 and records[0]["failure"] == "ContextLengthError"
+
+        # 再次重开/重调：失败已落账为 failure Control，无新事实不再重驱。
+        # 旧代至多两个 key 的上限跨重启保持；第二拒绝是可证明失败，真实
+        # resume 开新准备后新 key 如实付费一次——旧代账目不再增长。
+        assert await conversation.start(run) is None
+        await conversation.resume("resume-1", "u1")
+        message = await (await conversation.start(run)).join()
+        assert message.body.finish == "complete", (
+            "第二拒绝是可证明失败：真实 resume 后开新准备如实付费一次"
+        )
+        assert provider_calls == 2
+        assert reduce_calls == 1, "唯一的缩减属于新准备自身的本地缩减阶段"
+        prep = log.owner("plugin:reply:generation").read(
+            "reply:s:conversation:u1:0"
+        )
+        assert len(prep.value["request_keys"]) == 2, "旧代至多两个 key"
+
+
+@pytest.mark.asyncio
+async def test_resume_after_provable_failure_pays_once(tmp_path):
+    """可证明失败（provider 明确应答 ContentSafetyError）的终结准备：
+    真实 resume 构成新授权，开新准备如实付费一次；未知结算不变。"""
+    from plugins.react.plugin import _decode_request
+
+    provider_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMResponse("paid after provable failure")
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "hi"},))
+        )["request"])
+        call0 = store.resume_call(
+            descriptor, request0, request_key="safety-key", owner_id=None
+        )
+        store.finish_call(
+            call0, usage=None, failure="ContentSafetyError",
+            next_attempt_at=None,
+        )
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "fixed-output",
+            "request_keys": ["safety-key"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [_frozen_entry(request0)],
+        })
+
+        with pytest.raises(ModelUnavailableError, match="终结失败"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0, "终结失败不自动重付"
+
+        # 可证明失败 + 真实 resume：新准备如实付费一次，旧账保留。
+        await conversation.resume("resume-1", "u1")
+        message = await (await conversation.start(run)).join()
+        assert provider_calls == 1
+        assert message.body.finish == "complete"
+        assert message.message_id != "fixed-output", "新准备有自己的 Output 身份"
+        records = store.calls_for_key("safety-key")
+        assert len(records) == 1 and records[0]["state"] == "error"

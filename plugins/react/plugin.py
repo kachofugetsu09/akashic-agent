@@ -352,7 +352,9 @@ async def _complete(
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
         except ContextLengthError:
             previews.close()
-            if reduce is None:
+            # 强制缩减重试每代至多一次：恢复续发 attempt>=1 的冻结请求再遭
+            # 拒绝时不得再次缩减/发送，终结结算后由恢复路径如实停摆。
+            if reduce is None or attempt != 0:
                 raise
             summary = await reduce(snapshot, prepared, request, model, projection, source=source, force=True)
             if summary is None or summary == prepared.get("summary"):
@@ -509,28 +511,39 @@ async def react(
                 current = len(prep_attempts(existing.value)) - 1
                 if not (0 <= current < len(keys) and keys):
                     break
-                if not model.key_terminal(keys[current]):
+                recovery = model.key_recovery(keys[current])
+                if recovery == "open":
                     break
-                if reduce is not None and model.key_context_rejected(keys[current]):
-                    # 可证明的 provider 容量拒绝：进程死于缩减/冻结之间时，
-                    # 留在本代续跑本地缩减阶段——不重发已失败的原请求，
-                    # 不开新代，也不需要新来源事实。
+                if reduce is not None and current == 0 and recovery == "rejected":
+                    # 可证明的 provider 容量拒绝且本代尚未缩减过：进程死于
+                    # 缩减/冻结之间时留在本代续跑本地缩减阶段——不重发已失败的
+                    # 原请求，不开新代，也不需要新来源事实。attempt>=1 的再次
+                    # 拒绝即终态：强制缩减每代至多一次，跨重启也不重获额度。
                     resume_rejection = True
                     break
                 base = cast(int, existing.value["base_seq"])
-                qualified = any(
-                    message.seq > base
-                    and message.source == writer.source
-                    and (
-                        isinstance(message.body, Input)
-                        or (
-                            isinstance(message.body, Control)
-                            and message.body.action == "resume"
-                        )
-                    )
+                newer = tuple(
+                    message
                     for message in reader.snapshot(after_seq=base)
+                    if message.seq > base and message.source == writer.source
+                )
+                has_input = any(isinstance(message.body, Input) for message in newer)
+                has_resume = any(
+                    isinstance(message.body, Control) and message.body.action == "resume"
+                    for message in newer
+                )
+                # resume 只在可证明失败时授权新准备；取消/孤儿/传输未知的远端
+                # 效果不可证，resume 不得据此重付，只有新 Input 作为真正新工作。
+                qualified = has_input or (
+                    has_resume and recovery in {"answered", "rejected"}
                 )
                 if not qualified:
+                    if recovery == "uncertain":
+                        raise ModelUnavailableError(
+                            f"该来源边界的生成准备已终结但远端效果不确定；resume 不足以"
+                            f"授权重付，需要同来源新 Input 或 provider 查询证据 "
+                            f"(prep={prep_key} source={writer.source} base={base} key={keys[current]})"
+                        )
                     raise ModelUnavailableError(
                         f"该来源边界的生成准备已终结失败；需要新的来源事实才能恢复 "
                         f"(prep={prep_key} source={writer.source} base={base} key={keys[current]})"

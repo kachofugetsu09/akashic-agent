@@ -440,20 +440,21 @@ async def test_background_main_program_keeps_tools_and_new_input_interrupts_it(t
         assert any(tool["function"]["name"] == "write_file" for tool in request.tools)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             conversation = snapshot.composition_root.context.require(CONVERSATION)("test:parent")
-            await conversation.accept("human-followup", Input((ContentPart("text", "[human followup]"),)))
+            await conversation.accept("human-followup", Input((
+                ContentPart("text", "[human followup]"),
+                ContentPart("channel.origin", {"channel": "test", "chat_id": "parent", "sender": "user"}),
+            )))
         control.main_release.set()
         # 中断只证明本地等待被取消，不能证明 provider 未计费：subagent 汇报
         # lane 的旧调用按未知结算终结，没有同来源 Input/resume 时如实停摆，
         # 不得借 conversation 的新 Input 换 key 重付；conversation lane 独立
-        # 应答 human-followup（旧回复被取代，不再产出 main summary）。
-        for _ in range(100):
-            rows = log.reader("test:parent").snapshot()
-            if any(
-                item.source == "conversation" and isinstance(item.body, Output)
-                and item.body.finish == "complete" for item in rows
-            ):
-                break
-            await asyncio.sleep(0.1)
+        # 应答 human-followup（旧回复被取代，不再产出 main summary），且其
+        # 已提交 Output 沿 channel.origin 真实交付给 parent sink。
+        key, address, message = await asyncio.wait_for(control.sent.get(), 10)
+        assert "human answer" in str(message), (
+            "conversation 的 human answer 必须经 delivery 发送到 parent"
+        )
+        assert "parent" in str(address)
         rows = log.reader("test:parent").snapshot()
         assert [item.message_id for item in rows if isinstance(item.body, Input)] == ["parent-input", "human-followup"]
         assert any(item.source == "conversation" and isinstance(item.body, Output) and item.body.finish == "complete" for item in rows)

@@ -88,6 +88,19 @@ _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 _DEFAULT_ROLE = "default"
 _AGENT_ROLE = "agent"
 _VISION_ROLE = "vision"
+# 可证明失败的耐久名目：这些 failure 只可能由 provider 明确应答
+# （HTTP 错误响应/内容拒绝）或发送前的本地校验拒绝产生，两种情形都不存在
+# "provider 可能已处理"的未知远端效果。取消、孤儿、传输错误、超时及一切
+# 未知名目一律按 uncertain 处理——fail-closed，不从名字猜测安全。
+_PROVABLE_FAILURES = frozenset({
+    "AuthenticationError",
+    "ContentSafetyError",
+    "ContextLengthError",
+    "EmptyResponseError",
+    "InvalidRequestError",
+    "QuotaError",
+    "RateLimitError",
+})
 
 
 class _CapabilityCatalog(Protocol):
@@ -208,33 +221,32 @@ class _BoundChat:
         finally:
             live_runs.pop(run_key, None)
 
-    def key_terminal(self, request_key: str) -> bool:
-        """同 key 的终结失败：最近记录为 error，且不可重试（无 next_attempt_at）
-        或耐久预算已耗尽。终结 key 不因重启/重调获得新预算；恢复只能走
-        新的来源边界事实（新 Input/resume 产生新准备身份）。"""
+    def key_recovery(self, request_key: str) -> str:
+        """同 key 最近耐久记录的恢复裁决，Models 独占分类、调用方只消费决定：
+
+        - "open"：无终结结算（无记录、成功、在途或仍有耐久退避额度）；
+        - "rejected"：provider 明确容量拒绝（ContextLengthError），可证明
+          该请求未被处理——本代可续跑有界缩减，真实 resume 也可开新准备；
+        - "answered"：其他可证明失败——provider 明确应答或请求可证明
+          未发出，真实 resume 后允许新准备如实付费；
+        - "uncertain"：取消、孤儿、传输/超时与一切未知名目——远端效果
+          不可证，resume 不得据此重付，只有新 Input 作为真正新工作可运行。
+
+        终结（rejected/answered/uncertain）的 key 不因重启/重调获得新预算。"""
         records = self._store.calls_for_key(request_key)
         if not records:
-            return False
+            return "open"
         last = records[-1]
         if last["state"] != "error":
-            return False
-        return last.get("next_attempt_at") is None or len(records) >= self._max_attempts
-
-    def key_context_rejected(self, request_key: str) -> bool:
-        """同 key 最近记录是否为可证明的 provider 容量拒绝。
-
-        只有耐久 failure 恰为 ContextLengthError 这一种结构化低基数原因
-        才算安全拒绝证据——它证明 provider 明确拒绝了该请求；取消、网络
-        或未知错误都不证明 provider 未接收，一律不进入此分支。调用方据此
-        只能续跑本地缩减阶段，不得重发已失败的原请求。"""
-        records = self._store.calls_for_key(request_key)
-        if not records:
-            return False
-        last = records[-1]
-        return (
-            last["state"] == "error"
-            and last.get("failure") == "ContextLengthError"
-        )
+            return "open"
+        if last.get("next_attempt_at") is not None and len(records) < self._max_attempts:
+            return "open"
+        failure = last.get("failure")
+        if failure == "ContextLengthError":
+            return "rejected"
+        if failure in _PROVABLE_FAILURES:
+            return "answered"
+        return "uncertain"
 
     def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
         """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
