@@ -40,6 +40,7 @@ class Session:
         self._effect = None
         health, ctx = registration.health, registration.ctx
         self._host = McpGenerationHost(
+            registration.grant,
             on_health=self._health,
             on_incident=lambda _id, _name, kind, reason: ctx.report_incident(kind, reason))
 

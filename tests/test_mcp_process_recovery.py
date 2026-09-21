@@ -8,8 +8,9 @@ from typing import Any, cast
 
 import pytest
 
-import agent.mcp.client as client_module
-from agent.mcp.client import McpClient, McpToolInfo
+import plugins.mcp.client as client_module
+from agent.host_bridge.plugin_execution import LocalProcessSpawner
+from plugins.mcp.client import McpClient, McpToolInfo
 
 
 def _write_restarting_server(path: Path) -> None:
@@ -79,6 +80,7 @@ async def test_mcp_client_recovers_process_epoch_and_keeps_logical_contract(
         "recovering",
         [sys.executable, str(script)],
         env={"COUNTER": str(counter)},
+        spawner=LocalProcessSpawner(),
     )
 
     try:
@@ -115,6 +117,7 @@ async def test_mcp_client_real_drift_epochs_are_cleaned_before_fatal(
         "drifting",
         [sys.executable, str(script)],
         env={"COUNTER": str(counter)},
+        spawner=LocalProcessSpawner(),
     )
 
     await client.connect()
@@ -134,7 +137,7 @@ async def test_mcp_client_real_drift_epochs_are_cleaned_before_fatal(
 async def test_mcp_client_exhausts_three_backoffs_on_contract_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = McpClient("drift", ["server"])
+    client = McpClient("drift", ["server"], spawner=LocalProcessSpawner())
     client._expected_tool_contract = client._tool_contract(
         [McpToolInfo("ping", "stable", {"type": "object"})]
     )
@@ -158,7 +161,7 @@ async def test_mcp_client_exhausts_three_backoffs_on_contract_drift(
 
 @pytest.mark.asyncio
 async def test_mcp_client_call_gate_waits_for_recovery_and_disconnect_cancels_it() -> None:
-    client = McpClient("waiting", ["server"])
+    client = McpClient("waiting", ["server"], spawner=LocalProcessSpawner())
 
     class ConnectedProcess:
         returncode = None
@@ -195,7 +198,7 @@ async def test_mcp_client_call_gate_waits_for_recovery_and_disconnect_cancels_it
 @pytest.mark.asyncio
 async def test_mcp_client_resets_crash_budget_only_after_stable_epoch() -> None:
     assert client_module._RECOVERY_DELAYS == (0.25, 1.0, 3.0)
-    client = McpClient("stable", ["server"])
+    client = McpClient("stable", ["server"], spawner=LocalProcessSpawner())
 
     class ExitedProcess:
         returncode = 17
@@ -277,6 +280,7 @@ for line in sys.stdin:
         "boot-owner", [sys.executable, str(script)],
         env={"AKASHIC_BOOT_ID": "fake", "EXPLICIT_VALUE": "keep"},
         env_scrub_keys=frozenset({"AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED", "CANDIDATE_MARKER", "EXPLICIT_VALUE"}),
+        spawner=LocalProcessSpawner(),
     )
     try:
         await client.connect()

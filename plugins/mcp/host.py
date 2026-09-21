@@ -13,7 +13,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 
-from agent.mcp.client import McpClient, McpToolExecutionError
+from .client import McpClient, McpToolExecutionError
+from agent.plugin_composition.execution import ProcessSpawner
 from agent.plugin_composition.mcp_slots import McpToolView, McpCallResult, McpLogView
 from .definitions import (
     McpServerBinding,
@@ -277,6 +278,7 @@ class McpGenerationHost:
 
     def __init__(
         self,
+        spawner: ProcessSpawner,
         *,
         on_health: HealthReporter | None = None,
         on_incident: IncidentReporter | None = None,
@@ -285,6 +287,7 @@ class McpGenerationHost:
     ) -> None:
         if readiness_timeout_seconds <= 0:
             raise ValueError("readiness_timeout_seconds must be positive")
+        self._spawner = spawner
         self._on_health = on_health
         self._on_incident = on_incident
         self._on_failure = on_failure
@@ -574,6 +577,7 @@ class McpGenerationHost:
             env_scrub_keys=frozenset(
                 key for key, _ in binding.descriptor.candidate_env
             ),
+            spawner=self._spawner,
         )
         self._next_epoch += 1
         entry = _McpEntry(
