@@ -97,9 +97,10 @@ class _BoundChat:
         """Send one exact bound model request through Chat Completions."""
 
         if request.continuation is not None:
-            raise InvalidRequestError(
+            # 发送前本地校验失败：可证明请求未发出。
+            raise _unsent(InvalidRequestError(
                 "OpenCode Go Chat Completions does not support continuation state"
-            )
+            ))
         body = _chat_body(self._descriptor, request)
         # 计费的生成调用是一次真实 attempt；不确定失败的隐式重发由调用账禁止。
         connection = (
@@ -1019,22 +1020,37 @@ def _usage(raw: Mapping[str, Any]) -> ModelUsage:
     )
 
 
+def _unsent(error: ModelError) -> ModelError:
+    """发送前本地校验失败：请求可证明未到达 provider，标记为允许重试的证据。"""
+    error.send_evidence = "unsent"
+    return error
+
+
 def _raise_status(response: httpx.Response, *, secret: str) -> None:
-    if response.status_code < 400:
+    error = _status_error(response, secret=secret)
+    if error is None:
         return
+    # HTTP 错误应答本身是正面证据：provider 明确拒绝了请求。
+    error.send_evidence = "rejected"
+    raise error
+
+
+def _status_error(response: httpx.Response, *, secret: str) -> ModelError | None:
+    if response.status_code < 400:
+        return None
     message = _redact_secret(_response_error_message(response), secret)
     lowered = message.lower()
     if response.status_code in {401, 403}:
-        raise AuthenticationError(message)
+        return AuthenticationError(message)
     if any(code in lowered for code in _CONTEXT_CODES):
-        raise ContextLengthError(message)
+        return ContextLengthError(message)
     if any(code in lowered for code in _SAFETY_CODES):
-        raise ContentSafetyError(message)
+        return ContentSafetyError(message)
     if response.status_code == 402 or (
         response.status_code == 429
         and any(value in lowered for value in ("quota", "usage limit", "credit"))
     ):
-        raise QuotaError(message)
+        return QuotaError(message)
     if response.status_code == 429:
         error = RateLimitError(message)
         # Retry-After 必须随错误传给 Models，由独占重试预算决定何时再付。
@@ -1044,15 +1060,15 @@ def _raise_status(response: httpx.Response, *, secret: str) -> None:
                 setattr(error, "retry_after", max(0.0, float(retry_after)))
             except ValueError:
                 pass
-        raise error
+        return error
     if 400 <= response.status_code < 500:
-        raise InvalidRequestError(
+        return InvalidRequestError(
             f"provider rejected the request with HTTP {response.status_code}: {message}"
         )
     error = TransportError(f"provider returned HTTP {response.status_code}: {message}")
     if response.status_code in {500, 502, 503, 504}:
         setattr(error, "retry_safe", True)
-    raise error
+    return error
 
 
 def _response_error_message(response: httpx.Response) -> str:
@@ -1092,13 +1108,19 @@ def _map_error(error: Exception) -> Exception:
         ),
     ):
         return error
+    if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
+        # 连接建立失败可证明请求未发出：这是允许重试的正面证据。
+        mapped = TransportError(f"model transport failed: {type(error).__name__}")
+        mapped.send_evidence = "unsent"
+        setattr(mapped, "retry_safe", True)
+        return mapped
     if isinstance(error, (httpx.TimeoutException, TimeoutError)):
         return ModelTimeoutError("model request timed out")
     if isinstance(error, httpx.TransportError):
-        mapped = TransportError(f"model transport failed: {type(error).__name__}")
-        setattr(mapped, "retry_safe", True)
-        return mapped
+        # 请求发出后的读/写失败不携带任何安全证据。
+        return TransportError(f"model transport failed: {type(error).__name__}")
     if isinstance(error, _StreamReadError):
+        # 已进入 HTTP 200 流：无论是否观察到 delta，远端效果都不可证。
         mapped = _map_error(error.error)
         setattr(mapped, "response_delta_seen", error.response_delta_seen)
         return mapped
@@ -1106,8 +1128,9 @@ def _map_error(error: Exception) -> Exception:
 
 
 def _retryable(error: Exception) -> bool:
-    return isinstance(error, (ModelTimeoutError, RateLimitError)) or bool(
-        getattr(error, "retry_safe", False)
+    return getattr(error, "send_evidence", None) in ("rejected", "unsent") and (
+        isinstance(error, (ModelTimeoutError, RateLimitError))
+        or bool(getattr(error, "retry_safe", False))
     )
 
 

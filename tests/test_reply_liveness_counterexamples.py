@@ -576,6 +576,7 @@ async def test_resume_continues_at_last_frozen_attempt_without_repaying(
             call0, usage=None, failure="ContextLengthError: too long",
             next_attempt_at=None,
             partial_response=False,
+            send_evidence="rejected",
         )
         call1 = store.resume_call(
             descriptor, request1, request_key="key-1", owner_id=None
@@ -694,6 +695,7 @@ async def test_terminal_prep_stalls_without_budget_bypass(tmp_path):
             call0, usage=None, failure="InvalidRequestError",
             next_attempt_at=None,
             partial_response=False,
+            send_evidence="rejected",
         )
         base_seq = log.reader("s").head()
         _seed_prep(log, "reply:s:conversation:u1:0", {
@@ -977,6 +979,7 @@ async def test_context_rejected_first_attempt_resumes_local_reduction(tmp_path):
         store.finish_call(
             call0, usage=None, failure="ContextLengthError", next_attempt_at=None,
             partial_response=False,
+            send_evidence="rejected",
         )
         log.save_binding("summary-binding", {"target": "plugin:reply:generation"})
         base_seq = log.reader("s").head()
@@ -1052,6 +1055,7 @@ async def test_context_rejected_second_attempt_is_terminal_across_restarts(
                 call, usage=None, failure="ContextLengthError",
                 next_attempt_at=None,
                 partial_response=False,
+                send_evidence="rejected",
             )
         log.save_binding("summary-binding", {"target": "plugin:reply:generation"})
         base_seq = log.reader("s").head()
@@ -1094,7 +1098,9 @@ async def test_frozen_second_attempt_rejected_on_resume_stays_terminal(
         nonlocal provider_calls
         provider_calls += 1
         if provider_calls == 1:
-            raise ContextLengthError("provider rejected actual payload")
+            rejected = ContextLengthError("provider rejected actual payload")
+            rejected.send_evidence = "rejected"
+            raise rejected
         return LLMResponse("recovered after resume")
 
     async def reducer(*args, **kwargs):
@@ -1128,6 +1134,7 @@ async def test_frozen_second_attempt_rejected_on_resume_stays_terminal(
             call0, usage=None, failure="ContextLengthError",
             next_attempt_at=None,
             partial_response=False,
+            send_evidence="rejected",
         )
         log.save_binding("summary-binding", {"target": "plugin:reply:generation"})
         base_seq = log.reader("s").head()
@@ -1203,6 +1210,7 @@ async def test_resume_after_provable_failure_pays_once(tmp_path):
             call0, usage=None, failure="ContentSafetyError",
             next_attempt_at=None,
             partial_response=False,
+            send_evidence="rejected",
         )
         base_seq = log.reader("s").head()
         _seed_prep(log, "reply:s:conversation:u1:0", {

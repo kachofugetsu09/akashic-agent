@@ -110,9 +110,10 @@ class _BoundChat:
         """Send one exact bound model request through Chat Completions."""
 
         if request.continuation is not None:
-            raise InvalidRequestError(
+            # 发送前本地校验失败：可证明请求未发出。
+            raise _unsent(InvalidRequestError(
                 "OpenAI-compatible Chat Completions does not support continuation state"
-            )
+            ))
         # 计费的生成调用是一次真实 attempt；请求可能已到达 provider 的失败不能隐式重发，
         # 重试身份由调用账的 request key 显式决定；未记账的直调保留有界重试。
         connection = (
@@ -615,15 +616,10 @@ async def _stream_chat(
             if mapped is error and not isinstance(error, ModelError):
                 raise
             # 证据以协议层观察为准：on_delta 回调缺席时 provider 仍可能
-            # 已吐出部分输出，不能凭"没有预览观察者"主张安全。只有确实
-            # 未观察到任何增量的断流才允许安全重试同一请求。
+            # 已吐出部分输出，不能凭"没有预览观察者"主张安全。已进入
+            # HTTP 200 流的任何失败都不携带 send_evidence，_retryable
+            # 不会授予重发——无论是否观察到 delta。
             response_delta_seen = bool(getattr(error, "response_delta_seen", False))
-            if (
-                not response_delta_seen
-                and isinstance(error, _StreamReadError)
-                and isinstance(mapped, TransportError)
-            ):
-                setattr(mapped, "retry_safe", True)
             if response_delta_seen:
                 setattr(mapped, "retryable", False)
             if (
@@ -1056,22 +1052,37 @@ def _merge_usage(items: Sequence[ModelUsage | None]) -> ModelUsage | None:
     )
 
 
+def _unsent(error: ModelError) -> ModelError:
+    """发送前本地校验失败：请求可证明未到达 provider，标记为允许重试的证据。"""
+    error.send_evidence = "unsent"
+    return error
+
+
 def _raise_status(response: httpx.Response, *, secret: str) -> None:
-    if response.status_code < 400:
+    error = _status_error(response, secret=secret)
+    if error is None:
         return
+    # HTTP 错误应答本身是正面证据：provider 明确拒绝了请求。
+    error.send_evidence = "rejected"
+    raise error
+
+
+def _status_error(response: httpx.Response, *, secret: str) -> ModelError | None:
+    if response.status_code < 400:
+        return None
     message = _redact_secret(_response_error_message(response), secret)
     lowered = message.lower()
     if response.status_code in {401, 403}:
-        raise AuthenticationError(message)
+        return AuthenticationError(message)
     if any(code in lowered for code in _CONTEXT_CODES):
-        raise ContextLengthError(message)
+        return ContextLengthError(message)
     if any(code in lowered for code in _SAFETY_CODES):
-        raise ContentSafetyError(message)
+        return ContentSafetyError(message)
     if response.status_code == 402 or (
         response.status_code == 429
         and any(value in lowered for value in ("quota", "usage limit", "credit"))
     ):
-        raise QuotaError(message)
+        return QuotaError(message)
     if response.status_code == 429:
         error = RateLimitError(message)
         # Retry-After 必须随错误传给 Models，由独占重试预算决定何时再付。
@@ -1081,15 +1092,15 @@ def _raise_status(response: httpx.Response, *, secret: str) -> None:
                 setattr(error, "retry_after", max(0.0, float(retry_after)))
             except ValueError:
                 pass
-        raise error
+        return error
     if 400 <= response.status_code < 500:
-        raise InvalidRequestError(
+        return InvalidRequestError(
             f"provider rejected the request with HTTP {response.status_code}: {message}"
         )
     error = TransportError(f"provider returned HTTP {response.status_code}: {message}")
     if response.status_code in {500, 502, 503, 504}:
         setattr(error, "retry_safe", True)
-    raise error
+    return error
 
 
 def _response_error_message(response: httpx.Response) -> str:
@@ -1129,13 +1140,19 @@ def _map_error(error: Exception) -> Exception:
         ),
     ):
         return error
+    if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
+        # 连接建立失败可证明请求未发出：这是允许重试的正面证据。
+        mapped = TransportError(f"model transport failed: {type(error).__name__}")
+        mapped.send_evidence = "unsent"
+        setattr(mapped, "retry_safe", True)
+        return mapped
     if isinstance(error, (httpx.TimeoutException, TimeoutError)):
         return ModelTimeoutError("model request timed out")
     if isinstance(error, httpx.TransportError):
-        mapped = TransportError(f"model transport failed: {type(error).__name__}")
-        setattr(mapped, "retry_safe", True)
-        return mapped
+        # 请求发出后的读/写失败不携带任何安全证据。
+        return TransportError(f"model transport failed: {type(error).__name__}")
     if isinstance(error, _StreamReadError):
+        # 已进入 HTTP 200 流：无论是否观察到 delta，远端效果都不可证。
         mapped = _map_error(error.error)
         setattr(mapped, "response_delta_seen", error.response_delta_seen)
         return mapped
@@ -1143,8 +1160,9 @@ def _map_error(error: Exception) -> Exception:
 
 
 def _retryable(error: Exception) -> bool:
-    return isinstance(error, (ModelTimeoutError, RateLimitError)) or bool(
-        getattr(error, "retry_safe", False)
+    return getattr(error, "send_evidence", None) in ("rejected", "unsent") and (
+        isinstance(error, (ModelTimeoutError, RateLimitError))
+        or bool(getattr(error, "retry_safe", False))
     )
 
 

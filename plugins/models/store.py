@@ -436,6 +436,7 @@ class ModelsStore:
         duration_ms: float | None = None, response: LLMResponse | None = None,
         next_attempt_at: float | None = None,
         partial_response: bool | None = None,
+        send_evidence: str | None = None,
     ) -> None:
         """只结算同一 started 记录；成功先耐久保存响应，未知 usage 不记成零。"""
         if not self.writable:
@@ -449,12 +450,14 @@ class ModelsStore:
         has_response = "response_json" in columns
         has_next = "next_attempt_at" in columns
         has_partial = "partial_response" in columns
+        has_evidence = "send_evidence" in columns
         update = (
             "UPDATE model_calls SET state=?,usage_json=?,failure=?,"
             "finished_at=CURRENT_TIMESTAMP,duration_ms=?"
             + (",response_json=?" if has_response else "")
             + (",next_attempt_at=?" if has_next else "")
             + (",partial_response=?" if has_partial else "")
+            + (",send_evidence=?" if has_evidence else "")
             + " WHERE id=? AND state='started'"
         )
         extras = (
@@ -464,6 +467,7 @@ class ModelsStore:
                 [None if partial_response is None else int(partial_response)]
                 if has_partial else []
             )
+            + ([send_evidence] if has_evidence else [])
         )
         values = (state, encoded, failure, duration_ms, *extras, call_id)
         try:
@@ -489,6 +493,10 @@ class ModelsStore:
                 not has_partial
                 or record.get("partial_response")
                 == (None if partial_response is None else int(partial_response))
+            )
+            and (
+                not has_evidence
+                or record.get("send_evidence") == send_evidence
             )
         )
         if not same:
@@ -1730,7 +1738,7 @@ ON CONFLICT(id) DO UPDATE SET
 
 _MODEL_CALLS_ATTEMPT_COLUMNS = (
     "request_key", "attempt", "owner_id", "response_json", "next_attempt_at",
-    "partial_response",
+    "partial_response", "send_evidence",
 )
 _MODEL_CALLS_BASE_COLUMNS = {
     "id": "TEXT",
@@ -1752,6 +1760,7 @@ _MODEL_CALLS_ADDITIVE_TYPES = {
     "response_json": "TEXT",
     "next_attempt_at": "REAL",
     "partial_response": "INTEGER",
+    "send_evidence": "TEXT",
 }
 
 MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
@@ -1770,7 +1779,8 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
     owner_id TEXT,
     response_json TEXT,
     next_attempt_at REAL,
-    partial_response INTEGER
+    partial_response INTEGER,
+    send_evidence TEXT
 )"""
 
 

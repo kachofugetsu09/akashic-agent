@@ -92,7 +92,9 @@ async def test_provider_capacity_retry_retires_old_draft_and_preserves_final_id(
         ids.append(state.read.snapshot('s')[0].preview.message_id)
         await request.on_delta({'content_delta': '旧' if len(calls) == 1 else '新'})
         if len(calls) == 1:
-            raise ContextLengthError('capacity')
+            rejected = ContextLengthError('capacity')
+            rejected.send_evidence = "rejected"
+            raise rejected
         assert state.read.snapshot('s')[0].preview.text == '新'
         return LLMResponse('新')
     async def reduce(snapshot, prepared, request, model, projection, *, source, force):

@@ -528,6 +528,12 @@ MODEL_DRIVERS = ServiceKey[ModelDrivers]("models.drivers.v1")
 
 class ModelError(RuntimeError):
     retryable = False
+    # 发送边界证据，driver 在产生错误处显式置位：
+    # "rejected" = provider 以 HTTP 错误应答明确拒绝了请求（未进入流处理）；
+    # "unsent"   = 连接建立失败或发送前本地校验失败，可证明请求未发出；
+    # None       = 无任何可证明事实（HTTP 200 流内失败、读/写错误、超时、
+    #              取消等），一律按远端效果不确定处理，不得自动重试。
+    send_evidence: str | None = None
 
 
 class AuthenticationError(ModelError): ...

@@ -348,15 +348,17 @@ async def _complete(
             if resume_rejected:
                 # 该 attempt 的 key 已有耐久的 provider 容量拒绝结算：
                 # 不重发已失败的原请求，直接续跑已批准的本地缩减阶段。
-                raise ContextLengthError("provider 容量拒绝已耐久结算")
+                rejected = ContextLengthError("provider 容量拒绝已耐久结算")
+                rejected.send_evidence = "rejected"
+                raise rejected
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
         except ContextLengthError as error:
             previews.close()
-            # 强制缩减重试每代至多一次，且只适用于可证明请求未被处理的
-            # 容量拒绝：driver 已观察到部分输出（response_delta_seen）时
-            # 远端效果不可证，不得缩减后重发同一请求；恢复续发 attempt>=1
-            # 的冻结请求再遭拒绝同样终结。
-            if reduce is None or attempt != 0 or getattr(error, "response_delta_seen", False):
+            # 强制缩减重试每代至多一次，且只适用于可证明的容量拒绝——
+            # send_evidence="rejected" 是 provider HTTP 拒绝应答的正面证据；
+            # HTTP 200 流内失败无论是否观察到 delta 都不得缩减后重发同一
+            # 请求；恢复续发 attempt>=1 的冻结请求再遭拒绝同样终结。
+            if reduce is None or attempt != 0 or getattr(error, "send_evidence", None) != "rejected":
                 raise
             summary = await reduce(snapshot, prepared, request, model, projection, source=source, force=True)
             if summary is None or summary == prepared.get("summary"):

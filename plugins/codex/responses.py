@@ -22,6 +22,7 @@ from agent.plugin_composition import (
     InvalidRequestError,
     LLMResponse,
     ModelContinuation,
+    ModelError,
     ModelRequest,
     ModelTimeoutError,
     ModelUsage,
@@ -107,12 +108,17 @@ class CodexResponses:
                 raise exc.error from exc
             except (httpx.TimeoutException, TimeoutError) as exc:
                 error = ModelTimeoutError("Codex Responses 请求超时")
-                if getattr(exc, "response_delta_seen", False):
+                if isinstance(exc, httpx.ConnectTimeout):
+                    # 连接建立失败可证明请求未发出。
+                    error.send_evidence = "unsent"
+                elif getattr(exc, "response_delta_seen", False):
                     setattr(error, "retryable", False)
                 raise error from exc
             except httpx.TransportError as exc:
                 error = TransportError("Codex Responses 连接失败")
-                if getattr(exc, "response_delta_seen", False):
+                if isinstance(exc, httpx.ConnectError):
+                    error.send_evidence = "unsent"
+                elif getattr(exc, "response_delta_seen", False):
                     setattr(error, "retryable", False)
                 raise error from exc
         raise AuthenticationError("Codex 请求认证失败，请重新登录")
@@ -130,9 +136,9 @@ class CodexResponses:
         tools = _responses_tools(request.tools)
         tool_choice, tools = _normalize_tool_choice(request.tool_choice, tools)
         if self._max_tool_schemas is not None and len(tools) > self._max_tool_schemas:
-            raise InvalidRequestError(
+            raise _unsent(InvalidRequestError(
                 f"Codex model accepts at most {self._max_tool_schemas} tools"
-            )
+            ))
         if self._lite:
             messages = _responses_lite_input(messages, instructions, tools)
             instructions = ""
@@ -367,10 +373,10 @@ def _continuation_items(
         return ()
     payload = continuation.payload
     if payload.get("format_version") != 1:
-        raise InvalidRequestError("unsupported Codex continuation format")
+        raise _unsent(InvalidRequestError("unsupported Codex continuation format"))
     raw_items = payload.get("items")
     if not isinstance(raw_items, tuple):
-        raise InvalidRequestError("Codex continuation items must be an array")
+        raise _unsent(InvalidRequestError("Codex continuation items must be an array"))
     return tuple(_sanitize_replay_item(item) for item in raw_items)
 
 
@@ -399,10 +405,10 @@ def _responses_input(
         if role == "assistant" and isinstance(calls, (list, tuple)):
             for call in calls:
                 if not isinstance(call, Mapping):
-                    raise InvalidRequestError("assistant tool call must be an object")
+                    raise _unsent(InvalidRequestError("assistant tool call must be an object"))
                 function = call.get("function")
                 if not isinstance(function, Mapping):
-                    raise InvalidRequestError("assistant tool call misses function")
+                    raise _unsent(InvalidRequestError("assistant tool call misses function"))
                 result.append(
                     {
                         "type": "function_call",
@@ -421,11 +427,11 @@ def _responses_content(role: object, content: object) -> object:
     if isinstance(content, str):
         return content
     if not isinstance(content, (list, tuple)):
-        raise InvalidRequestError("message content must be a string or array")
+        raise _unsent(InvalidRequestError("message content must be a string or array"))
     converted: list[dict[str, Any]] = []
     for raw in content:
         if not isinstance(raw, Mapping):
-            raise InvalidRequestError("message content block must be an object")
+            raise _unsent(InvalidRequestError("message content block must be an object"))
         block_type = raw.get("type")
         if block_type in {"input_text", "output_text", "input_image"}:
             converted.append(dict(raw))
@@ -436,13 +442,13 @@ def _responses_content(role: object, content: object) -> object:
             image = raw.get("image_url")
             url = image.get("url") if isinstance(image, Mapping) else image
             if not isinstance(url, str) or not url:
-                raise InvalidRequestError("image_url block misses URL")
+                raise _unsent(InvalidRequestError("image_url block misses URL"))
             item: dict[str, Any] = {"type": "input_image", "image_url": url}
             if isinstance(image, Mapping) and image.get("detail"):
                 item["detail"] = image["detail"]
             converted.append(item)
         else:
-            raise InvalidRequestError(f"unsupported Responses content block: {block_type}")
+            raise _unsent(InvalidRequestError(f"unsupported Responses content block: {block_type}"))
     return converted
 
 
@@ -451,7 +457,7 @@ def _responses_tools(tools: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
     for tool in tools:
         function = tool.get("function") if tool.get("type") == "function" else tool
         if not isinstance(function, Mapping) or not function.get("name"):
-            raise InvalidRequestError("tool schema misses function name")
+            raise _unsent(InvalidRequestError("tool schema misses function name"))
         result.append(
             {
                 "type": "function",
@@ -472,15 +478,15 @@ def _normalize_tool_choice(
 ) -> tuple[str, list[dict[str, Any]]]:
     if isinstance(choice, str):
         if choice not in {"auto", "none", "required"}:
-            raise InvalidRequestError(f"unsupported tool_choice: {choice}")
+            raise _unsent(InvalidRequestError(f"unsupported tool_choice: {choice}"))
         return choice, tools
     function = choice.get("function")
     name = function.get("name") if isinstance(function, Mapping) else choice.get("name")
     if choice.get("type") != "function" or not isinstance(name, str) or not name:
-        raise InvalidRequestError("named tool_choice is invalid")
+        raise _unsent(InvalidRequestError("named tool_choice is invalid"))
     selected = [tool for tool in tools if tool.get("name") == name]
     if not selected:
-        raise InvalidRequestError(f"named tool_choice references unknown tool: {name}")
+        raise _unsent(InvalidRequestError(f"named tool_choice references unknown tool: {name}"))
     return "required", selected
 
 
@@ -512,7 +518,7 @@ def _responses_lite_input(
 
 def _sanitize_replay_item(item: object) -> dict[str, Any]:
     if not isinstance(item, Mapping) or item.get("type") != "reasoning":
-        raise InvalidRequestError("Codex continuation only accepts reasoning items")
+        raise _unsent(InvalidRequestError("Codex continuation only accepts reasoning items"))
     allowed = {"type", "summary", "content", "encrypted_content"}
     return {key: _thaw(value) for key, value in item.items() if key in allowed}
 
@@ -588,27 +594,42 @@ def _optional_int(value: object) -> int | None:
     return value
 
 
+
+def _unsent(error: ModelError) -> ModelError:
+    """发送前本地校验失败：请求可证明未到达 provider，标记为允许重试的证据。"""
+    error.send_evidence = "unsent"
+    return error
+
 def _raise_status(response: httpx.Response, secret: str) -> None:
-    if response.status_code < 400:
+    error = _status_error(response, secret)
+    if error is None:
         return
+    # HTTP 错误应答本身是正面证据：provider 明确拒绝了请求。
+    error.send_evidence = "rejected"
+    raise error
+
+
+def _status_error(response: httpx.Response, secret: str) -> ModelError | None:
+    if response.status_code < 400:
+        return None
     text = response.text.replace(secret, "[REDACTED]") if secret else response.text
     lowered = text.lower()
     if response.status_code in {401, 403}:
-        raise AuthenticationError("Codex 请求认证失败，请重新登录")
+        return AuthenticationError("Codex 请求认证失败，请重新登录")
     if "context_length" in lowered or "context window" in lowered:
-        raise ContextLengthError("Codex 请求超过上下文窗口")
+        return ContextLengthError("Codex 请求超过上下文窗口")
     if any(marker in lowered for marker in ("bio_policy", "cyber_policy", "policy_violation")):
-        raise ContentSafetyError("Codex 请求被安全策略拒绝")
+        return ContentSafetyError("Codex 请求被安全策略拒绝")
     if response.status_code == 402 or (
         response.status_code == 429
         and any(marker in lowered for marker in ("quota", "billing", "usage limit"))
     ):
-        raise QuotaError("Codex 账号额度不足")
+        return QuotaError("Codex 账号额度不足")
     if response.status_code == 429:
-        raise RateLimitError("Codex 请求被限流")
+        return RateLimitError("Codex 请求被限流")
     if 400 <= response.status_code < 500:
-        raise InvalidRequestError(f"Codex 请求失败 (HTTP {response.status_code})")
-    raise TransportError(f"Codex 服务失败 (HTTP {response.status_code})")
+        return InvalidRequestError(f"Codex 请求失败 (HTTP {response.status_code})")
+    return TransportError(f"Codex 服务失败 (HTTP {response.status_code})")
 
 
 def _raise_stream_error(error: object) -> None:

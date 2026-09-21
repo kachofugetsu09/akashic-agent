@@ -328,16 +328,20 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
                 assert len(seen) == 3, "an observed partial response must not replay"
                 assert deltas == [{"content_delta": "ok"}]
             else:
+                # HTTP 200 已进入流处理：零 delta 的 EOF 断流仍不可证——
+                # provider 已接收请求，无论有无增量都不得自动重发。
                 dropped = 1
-                # 任何增量之前断流：未观察到输出，有界重试同一请求合法。
-                assert (await bound.complete(request)).content == "ok"
-                assert len(seen) == 4
-                # 无预览回调时协议层仍观察到部分输出：同样不得自动重试。
+                with pytest.raises(TransportError, match="terminal marker") as failure:
+                    await bound.complete(request)
+                assert not getattr(failure.value, "send_evidence", None), (
+                    "zero deltas is not proof the request was unprocessed"
+                )
+                assert len(seen) == 3, "a zero-delta stream failure must not replay"
                 partial = 2
                 with pytest.raises(TransportError, match="terminal marker") as failure:
                     await bound.complete(request)
                 assert not failure.value.retryable, "partial bytes observed, remote effect uncertain"
-                assert len(seen) == 5, "a partial response must not replay even without a preview callback"
+                assert len(seen) == 4, "a partial response must not replay even without a preview callback"
                 assert deltas == []
         await driver.aclose()
         with pytest.raises(RuntimeError, match="连接已关闭"):
@@ -699,9 +703,10 @@ async def test_partial_stream_failure_settles_durable_evidence_as_uncertain(
 
 
 @pytest.mark.asyncio
-async def test_clean_context_length_rejection_remains_provably_rejected(tmp_path):
-    """对照：未观察到任何增量的 incomplete(context_length_exceeded) 仍属
-    可证明容量拒绝——partial_response=0，key_recovery 判 rejected。"""
+async def test_stream_failure_without_deltas_is_uncertain(tmp_path):
+    """HTTP 200 流内 response.failed(context_length_exceeded) 即使零 delta
+    也不证明请求未被处理——send_evidence 缺失，key_recovery 判 uncertain，
+    不得自动重试/缩减/换 key。"""
     from dataclasses import replace
     from agent.plugin_composition import DriverConnectionDescriptor
     from agent.plugin_composition.models import ContextLengthError
@@ -759,7 +764,203 @@ async def test_clean_context_length_rejection_remains_provably_rejected(tmp_path
         assert not getattr(failure.value, "response_delta_seen", False)
         records = store.calls_for_key("clean-key")
         assert records[0]["partial_response"] == 0
-        assert bound.key_recovery("clean-key") == "rejected"
+        assert records[0]["send_evidence"] is None, "流内失败不携带发送证据"
+        assert records[0]["next_attempt_at"] is None
+        assert bound.key_recovery("clean-key") == "uncertain"
+    finally:
+        await driver.aclose()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_http_status_rejection_is_provable_send_evidence(tmp_path):
+    """正例：provider 在流开始前以 HTTP 错误状态明确拒绝——send_evidence
+    落账为 rejected，ContextLengthError 判 rejected 保留有界缩减资格。"""
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from agent.plugin_composition.models import ContextLengthError
+    from plugins.codex.driver import definition
+    from plugins.models.state import _BoundChat
+    from plugins.models.store import ModelsStore
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    async def respond(request):
+        return web.Response(
+            status=400, text='{"error":{"code":"context_length_exceeded"}}'
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", respond)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+
+    class Credential:
+        connection_id = "test-connection"
+        auth_identity = "test"
+
+        async def read(self):
+            return {"driver": "codex", "api_key": "k", "access_token": "k",
+                    "account_id": "test", "expires_at": "2099-01-01T00:00:00+00:00"}
+
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    descriptor = replace(
+        BoundChatModelFake(object()).descriptor, driver_id="codex",
+        connection_id="test-connection", model="fixture",
+    )
+    driver = await definition().open(
+        DriverConnectionDescriptor(
+            "test-connection", "local", "codex",
+            f"http://127.0.0.1:{port}/v1", "test", {},
+        ),
+        Credential(),
+    )
+    try:
+        bound = _BoundChat(descriptor, driver.bind_chat(descriptor, {}), store)
+        request = ModelRequest(
+            messages=({"role": "user", "content": "hello"},),
+            request_key="http-rejected-key",
+        )
+        with pytest.raises(ContextLengthError) as failure:
+            await bound.complete(request)
+        assert failure.value.send_evidence == "rejected"
+        records = store.calls_for_key("http-rejected-key")
+        assert records[0]["send_evidence"] == "rejected"
+        assert bound.key_recovery("http-rejected-key") == "rejected"
+    finally:
+        await driver.aclose()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_connect_failure_is_unsent_evidence(tmp_path):
+    """正例：连接建立失败可证明请求未发出——send_evidence=unsent 落账，
+    key_recovery 判 answered（可证明失败允许真实 resume 开新准备）。"""
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from agent.plugin_composition.models import TransportError
+    from plugins.codex.driver import definition
+    from plugins.models.state import _BoundChat
+    from plugins.models.store import ModelsStore
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    # 绑定后立即关闭的端口：TCP connect 确定性失败。
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    class Credential:
+        connection_id = "test-connection"
+        auth_identity = "test"
+
+        async def read(self):
+            return {"driver": "codex", "api_key": "k", "access_token": "k",
+                    "account_id": "test", "expires_at": "2099-01-01T00:00:00+00:00"}
+
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    descriptor = replace(
+        BoundChatModelFake(object()).descriptor, driver_id="codex",
+        connection_id="test-connection", model="fixture",
+    )
+    driver = await definition().open(
+        DriverConnectionDescriptor(
+            "test-connection", "local", "codex",
+            f"http://127.0.0.1:{port}/v1", "test", {},
+        ),
+        Credential(),
+    )
+    try:
+        bound = _BoundChat(descriptor, driver.bind_chat(descriptor, {}), store)
+        request = ModelRequest(
+            messages=({"role": "user", "content": "hello"},),
+            request_key="unsent-key",
+        )
+        with pytest.raises(TransportError):
+            await bound.complete(request)
+        records = store.calls_for_key("unsent-key")
+        assert records[0]["send_evidence"] == "unsent"
+        assert bound.key_recovery("unsent-key") == "answered"
+    finally:
+        await driver.aclose()
+
+
+@pytest.mark.asyncio
+async def test_zero_delta_stream_eof_never_replays_same_request(tmp_path):
+    """协调者复现：真实 openai driver + HTTP200 SSE 无 delta 直接 EOF——
+    provider 已接收请求，零 delta 不证明未处理。requests 与耐久 attempt
+    都必须保持 1，无自动重试计划，key_recovery 判 uncertain。"""
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from agent.plugin_composition.models import TransportError
+    from plugins.openai_compatible.driver import definition
+    from plugins.models.state import _BoundChat
+    from plugins.models.store import ModelsStore
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    requests = []
+
+    async def respond(request):
+        requests.append(request)
+        return web.Response(
+            text=": accepted, processing\n\n", content_type="text/event-stream"
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", respond)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+
+    class Credential:
+        connection_id = "test-connection"
+        auth_identity = "test"
+
+        async def read(self):
+            return {"api_key": "k", "access_token": "k"}
+
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    descriptor = replace(
+        BoundChatModelFake(object()).descriptor, driver_id="openai-compatible",
+        connection_id="test-connection", model="fixture",
+    )
+    driver = await definition().open(
+        DriverConnectionDescriptor(
+            "test-connection", "local", "openai-compatible",
+            f"http://127.0.0.1:{port}/v1", "test", {},
+        ),
+        Credential(),
+    )
+    try:
+        bound = _BoundChat(
+            descriptor, driver.bind_chat(descriptor, {}), store, max_attempts=2
+        )
+
+        async def preview(_delta):
+            return None
+
+        request = ModelRequest(
+            messages=({"role": "user", "content": "hello"},),
+            on_delta=preview,
+            request_key="zero-delta-key",
+        )
+        with pytest.raises(TransportError):
+            await bound.complete(request)
+        assert len(requests) == 1, "HTTP200_ACCEPTED_ZERO_DELTA_DISCONNECT 不得重发"
+        records = store.calls_for_key("zero-delta-key")
+        assert len(records) == 1, "耐久账目不得出现第二个 attempt"
+        assert records[0]["send_evidence"] is None
+        assert records[0]["next_attempt_at"] is None
+        assert bound.key_recovery("zero-delta-key") == "uncertain"
     finally:
         await driver.aclose()
         await runner.cleanup()

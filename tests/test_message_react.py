@@ -513,7 +513,9 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
     async def complete(request):
         requests.append(request)
         if case == "no_progress" or case == "second_overflow" or (case == "provider" and len(requests) == 1):
-            raise ContextLengthError("provider rejected actual payload")
+            rejected = ContextLengthError("provider rejected actual payload")
+            rejected.send_evidence = "rejected"
+            raise rejected
         assert state.read("published").value["summary"] == "durable old history"
         assert "old verbatim" not in str(request.messages)
         assert "current input" in str(request.messages)
