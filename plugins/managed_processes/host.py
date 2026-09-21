@@ -461,15 +461,18 @@ class ManagedProcessGenerationHost:
         command = self._resolve_command(definition.command, entry.artifact_root)
         # 授权校验与签发都发生在 spawner 边界内：cwd 必须交声明值由 grant 在
         # 固定代码制品内解析，不能先按 artifact_root/进程 cwd 改写。
-        # 端口是 provider 运行期键，在签发后通过 derive_env 追加，不经过
-        # candidate env 过滤。
-        prepared = self._spawner.prepare_process(
-            command, definition.cwd, definition.env, definition.candidate_env,
-            runtime_env_keys={definition.port_env},
-        )
-        if definition.port_env in prepared.env:
+        # 端口是 provider 声明的运行期键，先备好值再并入两份 env 输入，
+        # 由 grant 一次授权并冻结；formal/candidate 输入保持隔离。
+        if (
+            definition.port_env in definition.env
+            or definition.port_env in definition.candidate_env
+        ):
             raise ValueError(f"managed process port env collision: {definition.port_env}")
-        prepared = prepared.derive_env({definition.port_env: str(port)})
+        prepared = self._spawner.prepare_process(
+            command, definition.cwd,
+            {**definition.env, definition.port_env: str(port)},
+            {**definition.candidate_env, definition.port_env: str(port)},
+        )
         if entry.stdout_ring is None:
             entry.stdout_ring = _LogRing(
                 max_bytes=self._log_max_bytes,
@@ -493,7 +496,6 @@ class ManagedProcessGenerationHost:
         try:
             child, spawn_cancelled = await self._spawner.spawn(
                 prepared,
-                env_scrub_keys=frozenset(os.environ),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

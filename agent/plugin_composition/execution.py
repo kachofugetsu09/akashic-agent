@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -121,10 +121,10 @@ class PreparedProcess:
     """宿主签发的冻结执行制品：command/cwd/env 已经过授权校验。
 
     归属校验靠签发者私有 token，而非可被随意拼造的公开字段；
-    `derive_env` 只追加 provider 运行期键，不放宽已授权的命令与 cwd。
+    制品签发后不可修改，不存在公开的派生/修改入口。
     """
 
-    __slots__ = ("_token", "_command", "_cwd", "_env", "_runtime_keys")
+    __slots__ = ("_token", "_command", "_cwd", "_env")
 
     def __init__(
         self,
@@ -133,13 +133,11 @@ class PreparedProcess:
         command: tuple[str, ...],
         cwd: str,
         env: Mapping[str, str],
-        runtime_keys: Collection[str] = frozenset(),
     ) -> None:
         self._token = token
         self._command = tuple(command)
         self._cwd = cwd
         self._env = MappingProxyType(dict(env))
-        self._runtime_keys = frozenset(runtime_keys)
 
     @property
     def command(self) -> tuple[str, ...]:
@@ -152,21 +150,6 @@ class PreparedProcess:
     @property
     def env(self) -> Mapping[str, str]:
         return self._env
-
-    def derive_env(self, values: Mapping[str, str]) -> "PreparedProcess":
-        """只允许签发时声明的运行期键（端口/endpoint/scope），拒绝任意覆写。"""
-        unexpected = frozenset(values) - self._runtime_keys
-        if unexpected:
-            raise PermissionError(
-                "PreparedProcess 环境只允许签发时声明的运行期键: "
-                + ", ".join(sorted(unexpected))
-            )
-        merged = dict(self._env)
-        merged.update(values)
-        return PreparedProcess(
-            self._token, command=self._command, cwd=self._cwd, env=merged,
-            runtime_keys=self._runtime_keys,
-        )
 
     def _issued_by(self, token: object) -> bool:
         return self._token is token
@@ -181,16 +164,13 @@ class ProcessSpawner(Protocol):
         cwd: str,
         env: Mapping[str, str],
         candidate_env: Mapping[str, str] = {},
-        runtime_env_keys: Collection[str] = (),
     ) -> PreparedProcess:
-        """在边界内执行授权校验并签发冻结的执行制品；
-        runtime_env_keys 声明签发后允许 derive_env 追加的键。"""
+        """在边界内执行授权校验并签发冻结的执行制品。"""
         ...
     async def spawn(
         self,
         prepared: PreparedProcess,
         *,
-        env_scrub_keys: Collection[str] = frozenset(),
         stdin: object = None,
         stdout: object = None,
         stderr: object = None,
@@ -209,7 +189,6 @@ class ExecutionGrant(ProcessSpawner, Protocol):
         self,
         prepared: PreparedProcess,
         *,
-        env_scrub_keys: Collection[str] = frozenset(),
         stdin: object = None,
         stdout: object = None,
         stderr: object = None,

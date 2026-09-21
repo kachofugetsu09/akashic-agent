@@ -75,7 +75,6 @@ class McpClient:
         name: str,
         *,
         prepared: PreparedProcess,
-        env_scrub_keys: frozenset[str] | None = None,
         spawner: ProcessSpawner,
     ) -> None:
         if type(prepared) is not PreparedProcess:
@@ -85,7 +84,6 @@ class McpClient:
         self.env = dict(prepared.env)
         self.cwd = prepared.cwd
         self._prepared = prepared
-        self.env_scrub_keys = env_scrub_keys or frozenset()
         self._spawner = spawner
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1
@@ -149,7 +147,6 @@ class McpClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env_scrub_keys=frozenset(os.environ) | self.env_scrub_keys,
             limit=_STREAM_LIMIT,
         )
         self._process = child.process

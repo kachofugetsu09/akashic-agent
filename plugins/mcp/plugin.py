@@ -68,7 +68,7 @@ class Session:
                 ctx.runtime.workspace, ctx.report_incident)
             # 声明值原样交给 host；command/cwd/env 的授权在 spawn 边界内由
             # ExecutionGrant.prepare_process 一次完成。endpoint/scope 是 provider
-            # 运行期键，经 extra_env 在签发后追加，不经过 candidate env 过滤。
+            # 运行期材料，经 extra_env 并入签发输入，不绕过授权。
             extra_env = dict(endpoints)
             extra_env["AKASHIC_MCP_SCOPE_ID"] = self.identity
             command = McpMaterializedCommand(

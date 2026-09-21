@@ -90,31 +90,22 @@ async def test_signed_prepared_is_frozen_and_spawns_real_group(tmp_path: Path) -
     root, grant, code_dir = await _bound_grant(tmp_path, "consumer")
     try:
         prepared = grant.prepare_process(
-            ("child.py",), ".", {"IGNORED": "formal"}, {"MARKER": "yes"},
-            runtime_env_keys={"PORT"},
+            ("child.py",), ".", {"IGNORED": "formal"}, {"MARKER": "yes", "PORT": "1"},
         )
         assert prepared.command == (sys.executable, str(code_dir / "child.py"))
         assert prepared.cwd == str(code_dir.resolve())
         # 候选模式只采用显式 candidate_env。
         assert prepared.env["MARKER"] == "yes"
+        assert prepared.env["PORT"] == "1"
         assert "IGNORED" not in prepared.env
-        # 冻结制品不可被改写。
+        # 冻结制品不可被改写，也不存在公开的派生/修改入口。
         with pytest.raises(AttributeError):
             prepared.command = ("x",)  # type: ignore[misc]
         with pytest.raises(TypeError):
             prepared.env["MARKER"] = "tampered"  # type: ignore[index]
-        # derive_env 只允许签发时声明的运行期键；HOME/AKASHIC_WORKSPACE 等
-        # 冻结键或未声明键一律拒绝（非反射公开 API 反例）。
-        with pytest.raises(PermissionError):
-            prepared.derive_env({"HOME": "/tmp/evil"})
-        with pytest.raises(PermissionError):
-            prepared.derive_env({"AKASHIC_WORKSPACE": "/tmp/evil"})
-        with pytest.raises(PermissionError):
-            prepared.derive_env({"PYTHONPATH": "/tmp/evil"})
-        # derive_env 追加 provider 声明的运行期键，仍属同一签发者。
-        derived = prepared.derive_env({"PORT": "1"})
+        assert not hasattr(prepared, "derive_env")
         child, cancelled = await grant.spawn(
-            derived, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            prepared, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         try:
             assert cancelled is False
@@ -167,5 +158,59 @@ async def test_spawn_cancellation_still_returns_owned_receipt(tmp_path: Path) ->
         assert cancelled is True
         assert isinstance(child.process.pid, int)
         await child.kill(timeout_s=5)
+    finally:
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prepare_process_rejects_fixed_env_override_in_both_inputs(
+    tmp_path: Path,
+) -> None:
+    """调用方经 env/candidate_env 携带的固定键覆盖一律在签发边界被拒。"""
+    root, grant, _ = await _bound_grant(tmp_path, "consumer")
+    try:
+        for key in ("HOME", "AKA_PLUGIN_DATA_DIR", "AKASHIC_PLUGIN_DATA_DIR",
+                    "AKASHIC_WORKSPACE", "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
+                    "PATH"):
+            with pytest.raises(PermissionError):
+                grant.prepare_process(("child.py",), ".", {key: "/tmp/evil"})
+            with pytest.raises(PermissionError):
+                grant.prepare_process(
+                    ("child.py",), ".", {}, {key: "/tmp/evil"},
+                )
+        # 固定键与宿主钉住值一致不算覆盖；运行期新键正常放行。
+        import os
+        if "PATH" in os.environ:
+            prepared = grant.prepare_process(
+                ("child.py",), ".", {}, {"PATH": os.environ["PATH"], "PORT": "9"},
+            )
+            assert prepared.env["PORT"] == "9"
+            assert prepared.env["PATH"] == os.environ["PATH"]
+    finally:
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_children_deregistered_after_confirmed_exit(tmp_path: Path) -> None:
+    """多次 spawn/终止循环不增长 _children；存活子进程不被提前注销。"""
+    root, grant, _ = await _bound_grant(tmp_path, "consumer")
+    try:
+        prepared = grant.prepare_process(("child.py",), ".", {})
+        for _ in range(3):
+            child, _ = await grant.spawn(prepared)
+            pid = child.process.pid
+            assert grant._children.get(pid) is child
+            await child.kill(timeout_s=5)
+            for _ in range(50):
+                if pid not in grant._children:
+                    break
+                await asyncio.sleep(0.05)
+            assert pid not in grant._children
+        # 仍存活的子进程保留 owner，不被清空。
+        live, _ = await grant.spawn(prepared)
+        live_pid = live.process.pid
+        await asyncio.sleep(0.05)
+        assert grant._children.get(live_pid) is live
+        await live.kill(timeout_s=5)
     finally:
         await root.dispose()

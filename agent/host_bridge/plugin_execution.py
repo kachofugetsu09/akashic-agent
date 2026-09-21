@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import asyncio
 import secrets
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -59,7 +59,7 @@ class ExecutionAccess:
         self._owners = dict(owners)
         self._mode: Literal["candidate", "formal"] = "candidate" if candidate else "formal"
         self._environment = {key: os.environ[key] for key in (
-            "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ",
+            "PATH", "PYTHONPATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ",
             "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
         ) if key in os.environ}
 
@@ -102,16 +102,35 @@ class ExecutionGrant:
         return value
 
     def environment(self, values: Mapping[str, str], candidate_values: Mapping[str, str]) -> dict[str, str]:
-        """候选只取显式候选输入；宿主环境仅继承列出的非凭据项。"""
+        """候选只取显式候选输入；宿主固定键由本授权钉住，调用方不得覆盖。"""
         runtime = self._ctx.runtime
-        result = dict(self._environment)
-        result.update(candidate_values if self._mode == "candidate" else values)
-        result.update({
+        fixed = dict(self._environment)
+        fixed.update({
             "HOME": str(runtime.data_dir),
             "AKA_PLUGIN_DATA_DIR": str(runtime.data_dir),
             "AKASHIC_PLUGIN_DATA_DIR": str(runtime.data_dir),
             "AKASHIC_WORKSPACE": str(runtime.workspace),
         })
+        # 两份输入都核对固定键：候选模式忽略 formal 输入不等于默许其中
+        # 携带固定键覆盖意图。宿主未钉住的身份/合同键同样禁止调用方
+        # 引入，避免缺席时伪造 boot identity 或数据根。
+        reserved = {
+            "HOME", "AKA_PLUGIN_DATA_DIR", "AKASHIC_PLUGIN_DATA_DIR",
+            "AKASHIC_WORKSPACE", "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
+        }
+        conflicts = sorted({
+            key
+            for source in (values, candidate_values)
+            for key, value in source.items()
+            if (key in fixed and fixed[key] != value)
+            or (key in reserved and key not in fixed)
+        })
+        if conflicts:
+            raise PermissionError(
+                "执行环境不能覆盖宿主固定键: " + ", ".join(conflicts)
+            )
+        result = dict(candidate_values if self._mode == "candidate" else values)
+        result.update(fixed)
         return result
 
     def prepare_process(
@@ -120,24 +139,20 @@ class ExecutionGrant:
         cwd: str,
         env: Mapping[str, str],
         candidate_env: Mapping[str, str] = {},
-        runtime_env_keys: Collection[str] = (),
     ) -> PreparedProcess:
         """一次完成 command/cwd/environment 三项校验并签发冻结制品；
-        runtime_env_keys 必须来自 provider 的真实声明（port_env/endpoint/scope），
-        签发后仅这些键可经 derive_env 追加。"""
+        provider 须先备好端口/endpoint/scope 等运行期材料并入 env 输入。"""
         return PreparedProcess(
             self._issue_token,
             command=self.command(command, cwd),
             cwd=str(self.cwd(cwd)),
             env=self.environment(env, candidate_env),
-            runtime_keys=runtime_env_keys,
         )
 
     async def spawn(
         self,
         prepared: PreparedProcess,
         *,
-        env_scrub_keys: Collection[str] = frozenset(),
         stdin: object = None,
         stdout: object = None,
         stderr: object = None,
@@ -148,13 +163,25 @@ class ExecutionGrant:
             raise PermissionError("spawn 只接受本授权签发的 PreparedProcess")
         child, cancelled = await _spawn_child(
             prepared.command, cwd=prepared.cwd, env=prepared.env,
-            env_scrub_keys=env_scrub_keys,
             stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
         )
         pid = child.process.pid
         if isinstance(pid, int):
             self._children[pid] = child
+            # 确认真实退出后按对象身份注销，长期重连不再无限积累；
+            # 仍存活的子进程保留 owner，不在关闭时清空。
+            asyncio.get_running_loop().create_task(
+                self._release_on_exit(pid, child),
+                name=f"exec-child-reaper:{pid}",
+            )
         return child, cancelled
+
+    async def _release_on_exit(self, pid: int, child: "HostedChildProcess") -> None:
+        try:
+            await child.process.wait()
+        finally:
+            if self._children.get(pid) is child:
+                del self._children[pid]
 
     def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
         """只接管本授权登记的子进程：未经 spawn 签发的进程不得假定进程组归属。"""
@@ -170,7 +197,6 @@ async def _spawn_child(
     *,
     cwd: str | None,
     env: Mapping[str, str] | None,
-    env_scrub_keys: Collection[str],
     stdin: object,
     stdout: object,
     stderr: object,
@@ -181,9 +207,11 @@ async def _spawn_child(
         "stdout": stdout,
         "stderr": stderr,
         "cwd": cwd,
+        # 宿主已 scrub 全部父环境：签发的冻结 env 是唯一环境来源，
+        # 仅 Supervisor 身份标记由 owned_process_env 重新钉住。
         "env": owned_process_env(
             dict(env or {}),
-            scrub_keys=frozenset(os.environ) | frozenset(env_scrub_keys),
+            scrub_keys=frozenset(os.environ),
         ),
         **process_group_spawn_kwargs(),
     }

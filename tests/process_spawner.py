@@ -22,21 +22,18 @@ class LocalProcessSpawner:
         cwd: str | None = None,
         env: Mapping[str, str] | None = None,
         candidate_env: Mapping[str, str] = {},
-        runtime_env_keys: Collection[str] = (),
     ) -> PreparedProcess:
         return PreparedProcess(
             self._issue_token,
             command=tuple(command),
             cwd=cwd or _infer_cwd(list(command)) or ".",
             env=dict(env or {}),
-            runtime_keys=runtime_env_keys,
         )
 
     async def spawn(
         self,
         prepared: PreparedProcess,
         *,
-        env_scrub_keys: Collection[str] = frozenset(),
         stdin: object = None,
         stdout: object = None,
         stderr: object = None,
@@ -46,13 +43,22 @@ class LocalProcessSpawner:
             raise PermissionError("spawn 只接受本授权签发的 PreparedProcess")
         child, cancelled = await _spawn_child(
             prepared.command, cwd=prepared.cwd, env=prepared.env,
-            env_scrub_keys=env_scrub_keys,
             stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
         )
         pid = child.process.pid
         if isinstance(pid, int):
             self._children[pid] = child
+            asyncio.get_running_loop().create_task(
+                self._release_on_exit(pid, child),
+            )
         return child, cancelled
+
+    async def _release_on_exit(self, pid: int, child) -> None:
+        try:
+            await child.process.wait()
+        finally:
+            if self._children.get(pid) is child:
+                del self._children[pid]
 
     def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
         pid = getattr(process, "pid", None)

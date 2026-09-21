@@ -296,7 +296,6 @@ for line in sys.stdin:
             (sys.executable, str(script)),
             env={"AKASHIC_BOOT_ID": "fake", "EXPLICIT_VALUE": "keep"},
         ),
-        env_scrub_keys=frozenset({"AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED", "CANDIDATE_MARKER", "EXPLICIT_VALUE"}),
         spawner=spawner,
     )
     try:

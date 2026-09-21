@@ -559,21 +559,18 @@ class McpGenerationHost:
         workload_endpoints: Mapping[tuple[str, str], str],
     ) -> _McpEntry:
         definition = binding.definition
-        # 授权校验与签发都在 spawner 边界内完成；host 只持有冻结制品。
-        # 可追加的运行期键只来自真实 provider 声明：endpoint/workload env 名、
-        # descriptor 的 env/candidate_env 键，以及调用方给出的 extra_env。
         descriptor = binding.descriptor
-        runtime_keys = (
-            set(materialized.extra_env)
-            | {key for key, _ in descriptor.env}
-            | {key for key, _ in descriptor.candidate_env}
-            | {item.env for item in descriptor.endpoint_env}
-            | {item.env for item in descriptor.workload_env}
+        # provider 先备好 endpoint/scope 等运行期材料，再把完整 env 输入交
+        # grant 一次授权冻结；formal/candidate 输入分离，descriptor formal
+        # env 不因 endpoint 集合被注入 candidate。
+        env, candidate_env = self._materialize_envs(
+            descriptor,
+            materialized,
+            endpoint_ports,
+            workload_endpoints,
         )
         prepared = self._spawner.prepare_process(
-            tuple(materialized.command), materialized.cwd,
-            dict(materialized.env), materialized.candidate_env,
-            runtime_env_keys=runtime_keys,
+            tuple(materialized.command), materialized.cwd, env, candidate_env,
         )
         argv0 = Path(prepared.command[0])
         if (
@@ -586,20 +583,6 @@ class McpGenerationHost:
             )
         if not Path(prepared.cwd).is_absolute():
             raise ValueError(f"MCP materialized cwd invalid: {definition.name}")
-        environment = self._materialize_env(
-            descriptor,
-            materialized,
-            generation.mode,
-            endpoint_ports,
-            workload_endpoints,
-            prepared.env,
-        )
-        extras = {
-            key: value
-            for key, value in environment.items()
-            if prepared.env.get(key) != value
-        }
-        prepared = prepared.derive_env(extras)
         allowed_tools = frozenset(
             definition.candidate_read_only_tools
             if generation.mode == "candidate"
@@ -608,9 +591,6 @@ class McpGenerationHost:
         client = McpClient(
             name=f"{definition.name}@{generation.generation_id}",
             prepared=prepared,
-            env_scrub_keys=frozenset(
-                key for key, _ in binding.descriptor.candidate_env
-            ),
             spawner=self._spawner,
         )
         self._next_epoch += 1
@@ -990,16 +970,20 @@ class McpGenerationHost:
             )
         return result
 
-    @staticmethod
-    def _materialize_env(
+    @classmethod
+    def _materialize_envs(
+        cls,
         descriptor: McpServerDescriptor,
         materialized: McpMaterializedCommand,
-        mode: McpMode,
         endpoint_ports: Mapping[str, int],
         workload_endpoints: Mapping[tuple[str, str], str],
-        authorized_env: Mapping[str, str],
-    ) -> dict[str, str]:
-        environment = dict(authorized_env)
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """返回 (formal env, candidate env) 两份完整输入，交 grant 一次授权。
+
+        extra_env/endpoint/workload 是 provider 运行期材料，两种模式共用；
+        descriptor.env 只进 formal，descriptor.candidate_env 只进 candidate。
+        """
+        environment = dict(materialized.env)
         environment.update(materialized.extra_env)
         candidate_keys = {key for key, _ in descriptor.candidate_env}
         materialized_candidate_keys = sorted(candidate_keys & set(environment))
@@ -1013,24 +997,27 @@ class McpGenerationHost:
             if existing is not None and existing != value:
                 raise ValueError(f"MCP materialized env drift: {descriptor.name}:{key}")
             environment[key] = value
-        if mode == "candidate":
-            for key, value in descriptor.candidate_env:
-                existing = environment.get(key)
-                if existing is not None and existing != value:
-                    raise ValueError(
-                        f"MCP candidate env drift: {descriptor.name}:{key}"
-                    )
-                environment[key] = value
+        candidate_environment = dict(materialized.candidate_env)
+        candidate_environment.update(materialized.extra_env)
+        for key, value in descriptor.candidate_env:
+            existing = candidate_environment.get(key)
+            if existing is not None and existing != value:
+                raise ValueError(
+                    f"MCP candidate env drift: {descriptor.name}:{key}"
+                )
+            candidate_environment[key] = value
         for endpoint in descriptor.endpoint_env:
             if endpoint.process not in endpoint_ports:
                 raise ValueError(
                     f"MCP endpoint process 未 materialize: {descriptor.name}:{endpoint.process}"
                 )
-            if endpoint.env in environment:
+            if endpoint.env in environment or endpoint.env in candidate_environment:
                 raise ValueError(
                     f"MCP endpoint env 已被占用: {descriptor.name}:{endpoint.env}"
                 )
-            environment[endpoint.env] = str(endpoint_ports[endpoint.process])
+            value = str(endpoint_ports[endpoint.process])
+            environment[endpoint.env] = value
+            candidate_environment[endpoint.env] = value
         for endpoint in descriptor.workload_env:
             key = (endpoint.workload, endpoint.port)
             if key not in workload_endpoints:
@@ -1038,12 +1025,13 @@ class McpGenerationHost:
                     "MCP workload endpoint 未 materialize: "
                     f"{descriptor.name}:{endpoint.workload}:{endpoint.port}"
                 )
-            if endpoint.env in environment:
+            if endpoint.env in environment or endpoint.env in candidate_environment:
                 raise ValueError(
                     f"MCP workload env 已被占用: {descriptor.name}:{endpoint.env}"
                 )
             environment[endpoint.env] = workload_endpoints[key]
-        return environment
+            candidate_environment[endpoint.env] = workload_endpoints[key]
+        return environment, candidate_environment
 
     def _require_generation(self, generation_id: str) -> _Generation:
         generation = self._generations.get(generation_id)
