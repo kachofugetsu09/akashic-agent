@@ -113,7 +113,7 @@ scenarios = ["mobile_webui_contract"]
 priority = "p0"
 requirements = ["PLG-004", "PLG-008", "PLG-009", "TST-001", "TST-003"]
 paths = [
-  "agent/mcp/**",
+  "plugins/mcp/**",
 ]
 depends_on = ["plugin", "lifecycle"]
 scenarios = ["mcp_call_finality", "mcp_process_lifecycle"]
