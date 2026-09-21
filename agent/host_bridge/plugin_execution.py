@@ -120,13 +120,17 @@ class ExecutionGrant:
         cwd: str,
         env: Mapping[str, str],
         candidate_env: Mapping[str, str] = {},
+        runtime_env_keys: Collection[str] = (),
     ) -> PreparedProcess:
-        """一次完成 command/cwd/environment 三项校验并签发冻结制品。"""
+        """一次完成 command/cwd/environment 三项校验并签发冻结制品；
+        runtime_env_keys 必须来自 provider 的真实声明（port_env/endpoint/scope），
+        签发后仅这些键可经 derive_env 追加。"""
         return PreparedProcess(
             self._issue_token,
             command=self.command(command, cwd),
             cwd=str(self.cwd(cwd)),
             env=self.environment(env, candidate_env),
+            runtime_keys=runtime_env_keys,
         )
 
     async def spawn(

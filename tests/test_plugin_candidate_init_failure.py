@@ -1,6 +1,7 @@
 """候选初始化失败与校验目录清理的所有权合同。"""
 import json
 import os
+import secrets
 import shutil
 from pathlib import Path
 
@@ -491,28 +492,10 @@ async def test_live_old_host_blocks_journal_recovery_and_settlement(
     await host.terminate_all()
 
 
-@pytest.mark.asyncio
-async def test_sigkill_subprocess_recovers_durable_validation_root(
-    tmp_path, monkeypatch,
-):
-    """真实独立子进程 SIGKILL：旧宿主进程死亡证据齐备后才删除确切目录并结算。"""
-    import os
-    import signal
-    import subprocess
-    import sys
-
-    source, home, workspace, old = prepare(tmp_path)
-    plugin_base = old.installed_path.parents[1]
-    original_pointers = read_pointers(plugin_base)
-    result = install_git_plugin(
-        workspace=workspace, source=str(source), marketplace="lab",
-        plugins_home=home, stage_candidate=True,
-    )
-    staged_pointers = read_pointers(plugin_base)
-
-    child = tmp_path / "sigkill_child.py"
-    child.write_text('''
-import asyncio, json, os, sys
+def _sigkill_child_script(repo: str) -> str:
+    """子进程：建好持久清理义务后拉起一个独立 session 的受管子进程并等待。"""
+    return '''
+import asyncio, json, os, subprocess, sys
 sys.path.insert(0, {repo!r})
 from pathlib import Path
 from agent.plugins.manager import PluginManager
@@ -529,6 +512,11 @@ async def main():
     def fail_remove(root, ws):
         raise OSError("injected cleanup failure")
     manager_module._remove_candidate_validation_root = fail_remove
+    # 能活过父进程死亡的受管子进程：独立 session，继承本进程 boot 环境标记。
+    grandchild = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(300)"],
+        start_new_session=True,
+    )
     await host.reconcile_changed()
     update = host.reload_journal.armed_update_for_plugin("probe@lab")
     obligations = host.reload_journal.candidate_cleanup(update.update_id)
@@ -536,28 +524,55 @@ async def main():
         "update_id": update.update_id,
         "root": str(obligations[0].validation_root),
         "pid": os.getpid(),
-        "boot_id": host._host_boot_id,
+        "grandchild_pid": grandchild.pid,
+        "boot_id": host._candidate_owner_boot_id(),
     }}), flush=True)
     await asyncio.Event().wait()
 
 asyncio.run(main())
-'''.format(repo=str(Path(__file__).resolve().parents[1])))
+'''.format(repo=repo)
+
+
+@pytest.mark.asyncio
+async def test_sigkill_unsupervised_recovery_refuses_and_preserves_obligation(
+    tmp_path, monkeypatch,
+):
+    """无监督路径：旧宿主 SIGKILL 且受管子进程仍存活时，新 Manager 不删目录不结算。"""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    monkeypatch.delenv("AKASHIC_SUPERVISED", raising=False)
+    monkeypatch.delenv("AKASHIC_BOOT_ID", raising=False)
+    source, home, workspace, old = prepare(tmp_path)
+    plugin_base = old.installed_path.parents[1]
+    install_git_plugin(
+        workspace=workspace, source=str(source), marketplace="lab",
+        plugins_home=home, stage_candidate=True,
+    )
+    staged_pointers = read_pointers(plugin_base)
+
+    child = tmp_path / "sigkill_child.py"
+    child.write_text(_sigkill_child_script(str(Path(__file__).resolve().parents[1])))
     proc = subprocess.Popen(
         [sys.executable, str(child), str(workspace), str(home)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
+    grandchild_pid = None
     try:
         line = proc.stdout.readline() if proc.stdout is not None else ""
         assert line, (proc.stderr.read() if proc.stderr is not None else "")
         evidence = json.loads(line)
-        assert evidence["update_id"] == result.update_id
-        assert evidence["pid"] == proc.pid
+        grandchild_pid = int(evidence["grandchild_pid"])
         validation_root = Path(evidence["root"])
         assert validation_root.exists()
-        # 真实 SIGKILL：无 finally、无 dispose，旧宿主进程直接死亡。
+        os.kill(grandchild_pid, 0)  # 受管子进程在父死前存活。
         proc.kill()
         proc.wait()
         assert proc.returncode == -signal.SIGKILL
+        # 父进程死亡不代表独立 session 的受管子进程已死。
+        os.kill(grandchild_pid, 0)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -571,16 +586,99 @@ asyncio.run(main())
                               installed_cache_root=home / "cache")
     try:
         await recovered.load_all()
-        assert recovered.reload_journal.update(result.update_id).phase == "armed"
+        # 没有全体候选资源死亡证据：义务保留、目录保留、指针不结算。
+        with pytest.raises(RuntimeError, match="无监督路径缺少旧 boot 子进程排空证据"):
+            await recovered.discard_update(evidence["update_id"])
+        assert recovered.reload_journal.update(evidence["update_id"]).phase == "armed"
         assert read_pointers(plugin_base) == staged_pointers
         assert validation_root.exists()
-        # 旧宿主进程已死（pid 不存在）：新 Manager 删除确切旧目录后才结算指针。
-        await recovered.discard_update(result.update_id)
-        assert recovered.reload_journal.update(result.update_id).phase == "rolled_back"
+        assert recovered.reload_journal.candidate_cleanup(evidence["update_id"]) != ()
+        # 测试自己精确清理其独占进程组：受管子进程用 start_new_session，
+        # PGID == 其 PID，不触及系统其他进程（已 reparent，不能 waitpid）。
+        os.killpg(grandchild_pid, signal.SIGKILL)
+    finally:
+        if grandchild_pid is not None:
+            try:
+                os.killpg(grandchild_pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        await recovered.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_sigkill_supervised_recovery_drains_boot_then_settles(
+    tmp_path, monkeypatch,
+):
+    """supervised 路径：Guardian 按旧 boot 标记排空遗留子进程后才删目录结算。"""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    source, home, workspace, old = prepare(tmp_path)
+    plugin_base = old.installed_path.parents[1]
+    original_pointers = read_pointers(plugin_base)
+    install_git_plugin(
+        workspace=workspace, source=str(source), marketplace="lab",
+        plugins_home=home, stage_candidate=True,
+    )
+    staged_pointers = read_pointers(plugin_base)
+
+    child = tmp_path / "sigkill_child.py"
+    child.write_text(_sigkill_child_script(str(Path(__file__).resolve().parents[1])))
+    old_boot = "test-old-boot-" + secrets.token_hex(8)
+    env = dict(os.environ)
+    env["AKASHIC_SUPERVISED"] = "1"
+    env["AKASHIC_BOOT_ID"] = old_boot
+    proc = subprocess.Popen(
+        [sys.executable, str(child), str(workspace), str(home)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=env,
+    )
+    grandchild_pid = None
+    try:
+        line = proc.stdout.readline() if proc.stdout is not None else ""
+        assert line, (proc.stderr.read() if proc.stderr is not None else "")
+        evidence = json.loads(line)
+        grandchild_pid = int(evidence["grandchild_pid"])
+        # 义务记录的宿主身份必须是子进程真实继承的 boot 标记。
+        assert evidence["boot_id"] == old_boot
+        validation_root = Path(evidence["root"])
+        assert validation_root.exists()
+        proc.kill()
+        proc.wait()
+        assert proc.returncode == -signal.SIGKILL
+        os.kill(grandchild_pid, 0)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+
+    # 新宿主是 supervised 且持有不同 boot 身份：Guardian 排空旧 boot 后接管。
+    monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
+    monkeypatch.setenv("AKASHIC_BOOT_ID", "test-new-boot-" + secrets.token_hex(8))
+    recovered = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                              installed_cache_root=home / "cache")
+    try:
+        await recovered.load_all()
+        await recovered.discard_update(evidence["update_id"])
+        # Guardian 已把旧 boot 的受管子进程排空：grandchild 不复存在。
+        with pytest.raises(ProcessLookupError):
+            os.kill(grandchild_pid, 0)
+        assert recovered.reload_journal.update(evidence["update_id"]).phase == "rolled_back"
         assert read_pointers(plugin_base) == original_pointers
         assert not validation_root.exists()
-        assert recovered.reload_journal.candidate_cleanup(result.update_id) == ()
+        assert recovered.reload_journal.candidate_cleanup(evidence["update_id"]) == ()
     finally:
+        if grandchild_pid is not None:
+            try:
+                os.killpg(grandchild_pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         await recovered.terminate_all()
 
 
@@ -751,5 +849,133 @@ async def test_rollback_updates_raises_on_unsettled_candidate_cleanup(
         )
         assert host.reload_journal.update(result.update_id).phase == "rolled_back"
         assert read_pointers(plugin_base) == original_pointers
+    finally:
+        await host.terminate_all()
+
+
+_V2_CLEANUP_DDL = """
+    CREATE TABLE candidate_validation_roots (
+        update_id TEXT NOT NULL,
+        plugin_id TEXT NOT NULL,
+        validation_root TEXT NOT NULL,
+        owner_boot_id TEXT NOT NULL,
+        owner_pid INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (update_id, validation_root)
+    )
+"""
+
+
+def _candidate_schema_variants() -> dict[str, str]:
+    """同名但畸形的清理义务表：每个维度一个反例。"""
+    return {
+        "type": _V2_CLEANUP_DDL.replace(
+            "owner_pid INTEGER NOT NULL", "owner_pid TEXT NOT NULL",
+        ),
+        "notnull": _V2_CLEANUP_DDL.replace(
+            "plugin_id TEXT NOT NULL", "plugin_id TEXT",
+        ),
+        "default": _V2_CLEANUP_DDL.replace(
+            "created_at TEXT NOT NULL", "created_at TEXT NOT NULL DEFAULT 'x'",
+        ),
+        "pk": _V2_CLEANUP_DDL.replace(
+            "PRIMARY KEY (update_id, validation_root)", "PRIMARY KEY (update_id)",
+        ),
+        "missing": """
+            CREATE TABLE candidate_validation_roots (
+                update_id TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                validation_root TEXT NOT NULL,
+                owner_boot_id TEXT NOT NULL,
+                owner_pid INTEGER NOT NULL,
+                PRIMARY KEY (update_id, validation_root)
+            )
+        """,
+        "extra": _V2_CLEANUP_DDL.replace(
+            "created_at TEXT NOT NULL", "created_at TEXT NOT NULL, extra TEXT",
+        ),
+        "reordered": """
+            CREATE TABLE candidate_validation_roots (
+                update_id TEXT NOT NULL,
+                validation_root TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                owner_boot_id TEXT NOT NULL,
+                owner_pid INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (update_id, validation_root)
+            )
+        """,
+    }
+
+
+@pytest.mark.asyncio
+async def test_candidate_cleanup_schema_strict_check_and_v1_migration(tmp_path):
+    """清理义务表 schema 全维度严格核对；v1 lineage 迁移留备份且未知 owner 保守。"""
+    import sqlite3
+
+    from agent.plugins.reload_journal import (
+        ReloadJournal, check_candidate_cleanup_schema,
+    )
+
+    # 1. 合规 v2 通过；每个畸形维度 fail-loud。
+    workspace = tmp_path / "ws-ok"
+    journal = ReloadJournal(workspace)
+    with journal._connect() as conn:
+        assert check_candidate_cleanup_schema(conn) is True
+
+    for name, ddl in _candidate_schema_variants().items():
+        bad_db = tmp_path / f"bad-{name}.sqlite3"
+        conn = sqlite3.connect(bad_db)
+        try:
+            conn.executescript(ddl)
+            with pytest.raises(ValueError, match="candidate_validation_roots"):
+                check_candidate_cleanup_schema(conn)
+        finally:
+            conn.close()
+        # 畸形表在 Journal 初始化同样 fail-loud，不做猜测性迁移。
+        bad_ws = tmp_path / f"ws-bad-{name}"
+        (bad_ws / "runtime").mkdir(parents=True)
+        shutil.copy(bad_db, bad_ws / "runtime" / "plugin-reloads.sqlite3")
+        with pytest.raises(ValueError):
+            ReloadJournal(bad_ws)
+
+    # 2. v1 lineage：迁移前 VACUUM INTO 备份，行保留且 owner 证据未知。
+    v1_ws = tmp_path / "ws-v1"
+    runtime = v1_ws / "runtime"
+    runtime.mkdir(parents=True)
+    conn = sqlite3.connect(runtime / "plugin-reloads.sqlite3")
+    try:
+        conn.executescript("""
+            CREATE TABLE candidate_validation_roots (
+                update_id TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                validation_root TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (update_id, validation_root)
+            );
+        """)
+        conn.execute(
+            "INSERT INTO candidate_validation_roots VALUES(?,?,?,?)",
+            ("upd-v1", "probe@lab", "/tmp/v1-root", "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+        assert check_candidate_cleanup_schema(conn) is False
+    finally:
+        conn.close()
+
+    journal_v1 = ReloadJournal(v1_ws)
+    backups = list(runtime.glob("plugin-reloads.sqlite3.bak-candidate-roots-*"))
+    assert len(backups) == 1
+    obligation = journal_v1.candidate_cleanup("upd-v1")
+    assert len(obligation) == 1
+    assert obligation[0].owner_boot_id == ""
+    assert obligation[0].owner_pid == 0
+
+    # 3. 迁移行的 owner_pid=0/空 boot 身份属未知状态，不得据此自动删除。
+    host = PluginManager([], event_bus=EventBus(), workspace=v1_ws,
+                         installed_cache_root=tmp_path / "cache")
+    try:
+        with pytest.raises(RuntimeError, match="缺少旧宿主退出证据"):
+            await host._require_candidate_owner_exited(obligation[0])
     finally:
         await host.terminate_all()

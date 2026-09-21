@@ -22,12 +22,14 @@ class LocalProcessSpawner:
         cwd: str | None = None,
         env: Mapping[str, str] | None = None,
         candidate_env: Mapping[str, str] = {},
+        runtime_env_keys: Collection[str] = (),
     ) -> PreparedProcess:
         return PreparedProcess(
             self._issue_token,
             command=tuple(command),
             cwd=cwd or _infer_cwd(list(command)) or ".",
             env=dict(env or {}),
+            runtime_keys=runtime_env_keys,
         )
 
     async def spawn(

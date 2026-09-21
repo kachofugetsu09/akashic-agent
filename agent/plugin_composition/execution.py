@@ -124,7 +124,7 @@ class PreparedProcess:
     `derive_env` 只追加 provider 运行期键，不放宽已授权的命令与 cwd。
     """
 
-    __slots__ = ("_token", "_command", "_cwd", "_env")
+    __slots__ = ("_token", "_command", "_cwd", "_env", "_runtime_keys")
 
     def __init__(
         self,
@@ -133,11 +133,13 @@ class PreparedProcess:
         command: tuple[str, ...],
         cwd: str,
         env: Mapping[str, str],
+        runtime_keys: Collection[str] = frozenset(),
     ) -> None:
         self._token = token
         self._command = tuple(command)
         self._cwd = cwd
         self._env = MappingProxyType(dict(env))
+        self._runtime_keys = frozenset(runtime_keys)
 
     @property
     def command(self) -> tuple[str, ...]:
@@ -152,11 +154,18 @@ class PreparedProcess:
         return self._env
 
     def derive_env(self, values: Mapping[str, str]) -> "PreparedProcess":
-        """同一签发者下追加运行期环境键（端口、endpoint、scope 标识）。"""
+        """只允许签发时声明的运行期键（端口/endpoint/scope），拒绝任意覆写。"""
+        unexpected = frozenset(values) - self._runtime_keys
+        if unexpected:
+            raise PermissionError(
+                "PreparedProcess 环境只允许签发时声明的运行期键: "
+                + ", ".join(sorted(unexpected))
+            )
         merged = dict(self._env)
         merged.update(values)
         return PreparedProcess(
             self._token, command=self._command, cwd=self._cwd, env=merged,
+            runtime_keys=self._runtime_keys,
         )
 
     def _issued_by(self, token: object) -> bool:
@@ -172,8 +181,10 @@ class ProcessSpawner(Protocol):
         cwd: str,
         env: Mapping[str, str],
         candidate_env: Mapping[str, str] = {},
+        runtime_env_keys: Collection[str] = (),
     ) -> PreparedProcess:
-        """在边界内执行授权校验并签发冻结的执行制品。"""
+        """在边界内执行授权校验并签发冻结的执行制品；
+        runtime_env_keys 声明签发后允许 derive_env 追加的键。"""
         ...
     async def spawn(
         self,

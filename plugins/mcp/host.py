@@ -560,9 +560,20 @@ class McpGenerationHost:
     ) -> _McpEntry:
         definition = binding.definition
         # 授权校验与签发都在 spawner 边界内完成；host 只持有冻结制品。
+        # 可追加的运行期键只来自真实 provider 声明：endpoint/workload env 名、
+        # descriptor 的 env/candidate_env 键，以及调用方给出的 extra_env。
+        descriptor = binding.descriptor
+        runtime_keys = (
+            set(materialized.extra_env)
+            | {key for key, _ in descriptor.env}
+            | {key for key, _ in descriptor.candidate_env}
+            | {item.env for item in descriptor.endpoint_env}
+            | {item.env for item in descriptor.workload_env}
+        )
         prepared = self._spawner.prepare_process(
             tuple(materialized.command), materialized.cwd,
             dict(materialized.env), materialized.candidate_env,
+            runtime_env_keys=runtime_keys,
         )
         argv0 = Path(prepared.command[0])
         if (
@@ -576,14 +587,19 @@ class McpGenerationHost:
         if not Path(prepared.cwd).is_absolute():
             raise ValueError(f"MCP materialized cwd invalid: {definition.name}")
         environment = self._materialize_env(
-            binding.descriptor,
+            descriptor,
             materialized,
             generation.mode,
             endpoint_ports,
             workload_endpoints,
             prepared.env,
         )
-        prepared = prepared.derive_env(environment)
+        extras = {
+            key: value
+            for key, value in environment.items()
+            if prepared.env.get(key) != value
+        }
+        prepared = prepared.derive_env(extras)
         allowed_tools = frozenset(
             definition.candidate_read_only_tools
             if generation.mode == "candidate"

@@ -162,15 +162,24 @@ _CANDIDATE_CLEANUP_SCHEMA_V2 = """
     );
 """
 _CANDIDATE_CLEANUP_COLUMNS_V1 = ("update_id", "plugin_id", "validation_root", "created_at")
-_CANDIDATE_CLEANUP_COLUMNS_V2 = (
-    "update_id", "plugin_id", "validation_root",
-    "owner_boot_id", "owner_pid", "created_at",
+# owner 期望 schema：严格比较 PRAGMA table_info 的 (type, notnull, dflt_value, pk)。
+# owner_boot_id/owner_pid 允许 v1 迁移留下的 '':0 默认值（对应保守未知行），
+# 其余列不接受任何默认值。
+_CANDIDATE_CLEANUP_EXPECTED: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...] = (
+    ("update_id", "TEXT", 1, (None,), 1),
+    ("plugin_id", "TEXT", 1, (None,), 0),
+    ("validation_root", "TEXT", 1, (None,), 2),
+    ("owner_boot_id", "TEXT", 1, (None, "''"), 0),
+    ("owner_pid", "INTEGER", 1, (None, "0"), 0),
+    ("created_at", "TEXT", 1, (None,), 0),
 )
-_CANDIDATE_CLEANUP_PK = {"update_id": 1, "validation_root": 2}
 
 
 def check_candidate_cleanup_schema(conn: sqlite3.Connection) -> bool:
-    """严格核对清理义务表：未知同名表/列/主键一律 fail-loud。"""
+    """按 owner 期望 schema 严格核对清理义务表；未知同名表/列/类型/默认值/主键一律 fail-loud。
+
+    返回 False 表示缺表或命中已知 v1 lineage（交由迁移处理）。
+    """
 
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='candidate_validation_roots'",
@@ -178,15 +187,20 @@ def check_candidate_cleanup_schema(conn: sqlite3.Connection) -> bool:
     if row is None:
         return False
     info = list(conn.execute("PRAGMA table_info(candidate_validation_roots)"))
-    columns = tuple(str(item[1]) for item in info)
-    pk = {str(item[1]): int(item[5]) for item in info if int(item[5])}
-    if pk != _CANDIDATE_CLEANUP_PK:
-        raise ValueError("未知 candidate_validation_roots 主键")
-    if columns == _CANDIDATE_CLEANUP_COLUMNS_V2:
-        return True
-    if columns == _CANDIDATE_CLEANUP_COLUMNS_V1:
+    names = tuple(str(item[1]) for item in info)
+    if names == _CANDIDATE_CLEANUP_COLUMNS_V1:
         return False
-    raise ValueError(f"未知 candidate_validation_roots schema: {columns}")
+    expected_names = tuple(item[0] for item in _CANDIDATE_CLEANUP_EXPECTED)
+    if names != expected_names:
+        raise ValueError(f"未知 candidate_validation_roots schema: {names}")
+    for item, (name, type_, notnull, defaults, pk) in zip(info, _CANDIDATE_CLEANUP_EXPECTED):
+        actual = (str(item[1]), str(item[2]).upper(), int(item[3]), item[4], int(item[5]))
+        if actual[0] != name or actual[1] != type_ or actual[2] != notnull or actual[4] != pk:
+            raise ValueError(f"candidate_validation_roots.{name} schema 不符: {actual}")
+        dflt = None if actual[3] is None else str(actual[3])
+        if dflt not in defaults:
+            raise ValueError(f"candidate_validation_roots.{name} 默认值不符: {dflt!r}")
+    return True
 
 
 @dataclass(frozen=True)
@@ -960,14 +974,20 @@ class ReloadJournal:
                     f"{self.path.name}.bak-candidate-roots-{uuid.uuid4().hex}"
                 )
                 conn.execute("VACUUM INTO ?", (str(backup),))
+                # 重建而非 ALTER ADD COLUMN：列序必须与 owner schema 一致；
+                # v1 行的 owner 证据以 ''/0 落账，表示保守未知。
                 conn.execute(
                     "ALTER TABLE candidate_validation_roots "
-                    "ADD COLUMN owner_boot_id TEXT NOT NULL DEFAULT ''"
+                    "RENAME TO candidate_validation_roots_v1"
                 )
+                conn.executescript(_CANDIDATE_CLEANUP_SCHEMA_V2)
                 conn.execute(
-                    "ALTER TABLE candidate_validation_roots "
-                    "ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0"
+                    "INSERT INTO candidate_validation_roots "
+                    "(update_id,plugin_id,validation_root,owner_boot_id,owner_pid,created_at) "
+                    "SELECT update_id,plugin_id,validation_root,'',0,created_at "
+                    "FROM candidate_validation_roots_v1"
                 )
+                conn.execute("DROP TABLE candidate_validation_roots_v1")
                 if not check_candidate_cleanup_schema(conn):
                     raise RuntimeError(
                         "candidate_validation_roots 迁移后 schema 仍不匹配"

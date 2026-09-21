@@ -91,6 +91,7 @@ async def test_signed_prepared_is_frozen_and_spawns_real_group(tmp_path: Path) -
     try:
         prepared = grant.prepare_process(
             ("child.py",), ".", {"IGNORED": "formal"}, {"MARKER": "yes"},
+            runtime_env_keys={"PORT"},
         )
         assert prepared.command == (sys.executable, str(code_dir / "child.py"))
         assert prepared.cwd == str(code_dir.resolve())
@@ -102,7 +103,15 @@ async def test_signed_prepared_is_frozen_and_spawns_real_group(tmp_path: Path) -
             prepared.command = ("x",)  # type: ignore[misc]
         with pytest.raises(TypeError):
             prepared.env["MARKER"] = "tampered"  # type: ignore[index]
-        # derive_env 追加 provider 运行期键，仍属同一签发者。
+        # derive_env 只允许签发时声明的运行期键；HOME/AKASHIC_WORKSPACE 等
+        # 冻结键或未声明键一律拒绝（非反射公开 API 反例）。
+        with pytest.raises(PermissionError):
+            prepared.derive_env({"HOME": "/tmp/evil"})
+        with pytest.raises(PermissionError):
+            prepared.derive_env({"AKASHIC_WORKSPACE": "/tmp/evil"})
+        with pytest.raises(PermissionError):
+            prepared.derive_env({"PYTHONPATH": "/tmp/evil"})
+        # derive_env 追加 provider 声明的运行期键，仍属同一签发者。
         derived = prepared.derive_env({"PORT": "1"})
         child, cancelled = await grant.spawn(
             derived, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

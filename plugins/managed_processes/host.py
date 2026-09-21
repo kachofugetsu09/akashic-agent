@@ -465,6 +465,7 @@ class ManagedProcessGenerationHost:
         # candidate env 过滤。
         prepared = self._spawner.prepare_process(
             command, definition.cwd, definition.env, definition.candidate_env,
+            runtime_env_keys={definition.port_env},
         )
         if definition.port_env in prepared.env:
             raise ValueError(f"managed process port env collision: {definition.port_env}")

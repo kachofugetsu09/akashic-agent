@@ -3190,7 +3190,7 @@ class PluginManager:
                         cleanup_update_id,
                         candidate_owner.plugin_id,
                         workspace.parent,
-                        owner_boot_id=self._host_boot_id,
+                        owner_boot_id=self._candidate_owner_boot_id(),
                         owner_pid=os.getpid(),
                     )
             actual = self._archived_generations(
@@ -3268,15 +3268,21 @@ class PluginManager:
         if cancelled:
             raise asyncio.CancelledError
 
+    def _candidate_owner_boot_id(self) -> str:
+        """候选清理义务的宿主身份：优先环境 boot 标记（子进程真实继承的
+        lineage），缺席时退回本 Manager 实例身份。"""
+        return os.environ.get("AKASHIC_BOOT_ID", "").strip() or self._host_boot_id
+
     async def _require_candidate_owner_exited(
         self, obligation: CandidateCleanupObligation,
     ) -> None:
-        """journal 恢复删除前，先证明记录的候选宿主已退出；死亡未知一律拒绝。"""
+        """journal 恢复删除前，先证明记录的候选宿主及其子进程已退出；
+        死亡未知一律拒绝，无监督路径没有排空证据时 fail-closed。"""
 
         if obligation.owner_pid == os.getpid():
             # 同一进程：同一 boot 身份即本 Manager，在轨 Root 门已由调用者执行；
             # 其他身份说明旧 Manager 可能仍在本进程存活，不能凭指针猜测接管。
-            if obligation.owner_boot_id != self._host_boot_id:
+            if obligation.owner_boot_id != self._candidate_owner_boot_id():
                 raise RuntimeError(
                     "候选校验目录的旧宿主仍在本进程存活或状态未知，拒绝接管清理: "
                     f"{obligation.validation_root}"
@@ -3289,16 +3295,23 @@ class PluginManager:
                 f"{obligation.validation_root} owner_pid={obligation.owner_pid}"
             )
         current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
-        if os.environ.get("AKASHIC_SUPERVISED") == "1" and current_boot_id:
-            if obligation.owner_boot_id == current_boot_id:
-                raise RuntimeError("候选校验目录的宿主 boot 身份与当前进程冲突")
-            # supervised：旧 boot 遗留子进程经既有 Guardian 机制排空后再删目录。
-            from agent.background.boot_guardian import _cleanup_boot_processes
-            await asyncio.to_thread(
-                _cleanup_boot_processes,
-                boot_id=obligation.owner_boot_id,
-                gateway_group_id=None,
+        # 旧 Manager PID 死不代表它独立 session 的 MCP/managed 子进程已死；
+        # 只有 supervised Guardian 能按 boot 标记排空它们。无监督路径缺少
+        # 全体候选资源死亡证据，保留义务并明确拒绝自动接管。
+        if os.environ.get("AKASHIC_SUPERVISED") != "1" or not current_boot_id:
+            raise RuntimeError(
+                "无监督路径缺少旧 boot 子进程排空证据，拒绝接管候选清理: "
+                f"{obligation.validation_root} owner_pid={obligation.owner_pid}"
             )
+        if obligation.owner_boot_id == current_boot_id:
+            raise RuntimeError("候选校验目录的宿主 boot 身份与当前进程冲突")
+        # supervised：旧 boot 遗留子进程经既有 Guardian 机制排空后再删目录。
+        from agent.background.boot_guardian import _cleanup_boot_processes
+        await asyncio.to_thread(
+            _cleanup_boot_processes,
+            boot_id=obligation.owner_boot_id,
+            gateway_group_id=None,
+        )
 
     def _clear_candidate_validation_root(self, root: Path, update_id: str | None) -> None:
         """真实删除成功才销账持久义务；删除失败抛出让 dispose 重试。"""
