@@ -339,6 +339,7 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         "connect_timeout",
         "read_timeout",
         "max_retries",
+        "max_attempts",
         "allow_unverified_manual",
         "catalog_provider_id",
     }
@@ -359,6 +360,15 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         or max_retries < 0
     ):
         raise ValueError("max_retries must be a non-negative integer")
+    # max_attempts 是 Models 独占的重试预算字段，driver 只校验不消费；
+    # accounted 调用的 driver 重试恒为 0。
+    max_attempts = config.get("max_attempts")
+    if max_attempts is not None and (
+        not isinstance(max_attempts, int)
+        or isinstance(max_attempts, bool)
+        or max_attempts < 1
+    ):
+        raise ValueError("max_attempts must be a positive integer")
     allow_unverified_manual = config.get("allow_unverified_manual", False)
     if not isinstance(allow_unverified_manual, bool):
         raise ValueError("allow_unverified_manual must be boolean")
@@ -1057,7 +1067,15 @@ def _raise_status(response: httpx.Response, *, secret: str) -> None:
     ):
         raise QuotaError(message)
     if response.status_code == 429:
-        raise RateLimitError(message)
+        error = RateLimitError(message)
+        # Retry-After 必须随错误传给 Models，由独占重试预算决定何时再付。
+        retry_after = response.headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                setattr(error, "retry_after", max(0.0, float(retry_after)))
+            except ValueError:
+                pass
+        raise error
     if 400 <= response.status_code < 500:
         raise InvalidRequestError(
             f"provider rejected the request with HTTP {response.status_code}: {message}"

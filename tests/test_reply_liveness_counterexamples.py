@@ -24,7 +24,7 @@ from agent.plugin_composition.models import (
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from session.log import MessageLog
-from session.message import Control, Input, Output
+from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
 from tests import test_message_react as react_fixtures
 
 
@@ -348,3 +348,141 @@ async def test_sigkilled_provider_process_leaves_settled_orphan_without_replay(t
         if child.poll() is None:
             child.kill()
             child.wait()
+
+
+_KILLED_AFTER_RESPONSE = """
+import asyncio
+import sys
+import threading
+from pathlib import Path
+
+sys.path.insert(0, {repo!r})
+
+from agent.plugin_composition.models import LLMResponse, ToolCall as ModelToolCall
+from plugins.tools.execution import Result
+from session.log import MessageLog, MessageWriter
+from session.message import ContentPart, Input, Output
+from tests import test_message_react as fixtures
+
+calls = 0
+
+
+async def complete(request):
+    global calls
+    calls += 1
+    if calls == 1:
+        return LLMResponse(None, [ModelToolCall("call-a", "example", {{"value": "A"}})])
+    return LLMResponse("final answer")
+
+
+async def invoke(key, arguments):
+    return Result("success", (ContentPart("text", "tool done"),))
+
+
+# 在终态 Output 提交点阻塞，制造“模型响应已耐久、Output 尚未提交”的真实窗口。
+real_append = MessageWriter._append
+
+
+def blocking_append(self, message_id, body, **kwargs):
+    if isinstance(body, Output) and body.finish != "continue":
+        threading.Event().wait()
+    return real_append(self, message_id, body, **kwargs)
+
+
+MessageWriter._append = blocking_append
+
+
+async def main():
+    async with fixtures.runtime(
+        Path(sys.argv[1]), complete, invoke,
+        state_owner="plugin:reply:generation",
+    ) as (conversation, _log, _store, run):
+        await conversation.accept("u1", Input(()))
+        await (await conversation.start(run)).join()
+
+
+asyncio.run(main())
+"""
+
+
+@pytest.mark.asyncio
+async def test_sigkill_after_response_stored_replays_without_repaying(tmp_path):
+    """§10.2 真实强杀：响应已耐久、Output 未提交；恢复时无关 ToolResult 与
+    动态材料变化都不重发 provider，Output 身份沿用已固定准备。"""
+    repo = str(Path(__file__).resolve().parents[1])
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         textwrap.dedent(_KILLED_AFTER_RESPONSE).format(repo=repo),
+         str(tmp_path)],
+    )
+    try:
+        # 等第二次真实调用的 success 记录落库再 SIGKILL，不猜时间。
+        probe = ModelsStore(tmp_path / "models.db", tmp_path / "backups", writable=False)
+        try:
+            for _ in range(400):
+                try:
+                    rows = probe.read_calls("", 100)
+                except Exception:
+                    rows = ()
+                if sum(1 for row in rows if row["state"] == "success") >= 2:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                raise AssertionError("子进程未在被杀前持久化成功响应")
+        finally:
+            probe.close()
+        child.kill()
+        assert child.wait() != 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+
+    provider_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMResponse("should never be paid")
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not rerun")
+
+    async def changed_materials(snapshot):
+        del snapshot
+        # 动态材料在恢复时改变；冻结材料必须原样重放而不是重建。
+        from plugins.context.api import Materials, material_data
+        return material_data(Materials("changed dynamic materials"))
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+        material_source=changed_materials,
+    ) as (conversation, log, store, run):
+        # 无关来源的 ToolResult 抬高 head；不得新建准备或重付。
+        other = log.writer(
+            "s", author="test", source="other", body_types=(Output,),
+            content={"text": react_fixtures.check_text},
+            check_call=lambda call: None,
+        )
+        other.append("other-o", Output((ToolCall("tool", {"k": 1}),), "continue"))
+        result = log.writer(
+            "s", author="test", source="other", body_types=(ToolResult,),
+            content={"text": react_fixtures.check_text},
+            call_ref=CallRef("other-o", 0),
+        )
+        result.append(
+            "other-r",
+            ToolResult(CallRef("other-o", 0), "success",
+                       (ContentPart("text", "unrelated"),)),
+        )
+        prep = log.owner("plugin:reply:generation").read(
+            "reply:s:conversation:u1:1"
+        )
+        assert prep is not None, "生成准备记录必须可恢复"
+        output_id = prep.value["output_id"]
+
+        message = await (await conversation.start(run)).join()
+        assert provider_calls == 0, "耐久成功响应必须重放，不得重付 provider"
+        assert message.message_id == output_id, "Output 身份必须沿用已固定的生成准备"
+        assert message.body.finish == "complete"
+        assert "final answer" in str(message.body.parts)

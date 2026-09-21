@@ -81,8 +81,15 @@ async def test_one_lane_admission_fault_does_not_kill_reply_follower():
     good_second = asyncio.Event()
 
     class Reader:
+        def __init__(self, session_id):
+            self.session_id = session_id
+
         def source_names(self):
             return ("conversation",)
+
+        def head(self, *, source=None):
+            del source
+            return 0
 
     class Catalog:
         async def follow(self):
@@ -90,8 +97,7 @@ async def test_one_lane_admission_fault_does_not_kill_reply_follower():
                 yield await updates.get()
 
         def reader(self, session_id):
-            del session_id
-            return Reader()
+            return Reader(session_id)
 
     class Session:
         def __init__(self, session_id):
@@ -107,6 +113,14 @@ async def test_one_lane_admission_fault_does_not_kill_reply_follower():
             else:
                 good_first.set()
             return None
+
+        def needs_reply(self, reader, source):
+            del reader, source
+            # 持久停摆已提交后没有新事实，lane 如实退出而不影响其他 lane。
+            return False
+
+        async def record_failure(self, error, *, boundary=None):
+            del error, boundary
 
     class Source:
         name = "conversation"

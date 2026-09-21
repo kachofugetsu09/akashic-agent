@@ -390,14 +390,18 @@ class MessageProjection:
                             )})
                         elif settled.outcome == "success":
                             blocks.append({"type": "text", "text": (
-                                "一次工具调用在放弃边界外完成，结算为 success："
-                                "外部效果已经发生，结果正文不重复进入上下文。"
+                                "一次工具调用在放弃前已完成，真实结果如下；"
+                                "外部效果已经发生。"
                             )})
+                            for item in settled.parts:
+                                blocks.extend(self._render_content(item))
                         else:
                             blocks.append({"type": "text", "text": (
                                 f"一次工具调用随来源前缀放弃，结算为 {settled.outcome}："
                                 "外部效果可能已经发生，不能据此重跑。"
                             )})
+                            for item in settled.parts:
+                                blocks.extend(self._render_content(item))
                     else:
                         blocks.append({"type": "text", "text": (
                             "一次工具调用随来源前缀放弃而中断；外部效果未结算，状态未知，"

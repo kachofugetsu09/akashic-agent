@@ -226,6 +226,10 @@ class BoundChatModel(Protocol):
     @property
     def max_tool_schemas(self) -> int | None: ...
 
+    def key_state(self, request_key: str) -> str | None:
+        """该 request key 最近一条耐久调用记录的状态；无记录返回 None。"""
+        ...
+
 
 class BoundEmbeddingModel(Protocol):
     @property

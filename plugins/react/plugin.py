@@ -293,32 +293,38 @@ async def _complete(
     preview: Preview | None,
     claim: Callable[[int], tuple[str, str | None]] | None = None,
     fallback_key: str | None = None,
-    freeze: Callable[[ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None,
-    request_override: ModelRequest | None = None,
+    freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None,
+    resumed: Mapping[int, tuple[ModelRequest, Materials]] | None = None,
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str]]:
-    """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。"""
+    """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。
+
+    每个 attempt 的请求与材料都经 freeze 耐久保存；恢复时按原字节精确重放，
+    ContextLength 缩减后的第二次请求同样不重建不漂移。
+    """
     # 1. 本地容量与软水位先交给同一摘要 owner，其他材料不重新获取。
-    def build() -> tuple[ModelRequest, str | None]:
-        return context.build_attempt(snapshot, materials=prepared, model=projection,
+    def build(mats: Materials) -> tuple[ModelRequest, str | None]:
+        return context.build_attempt(snapshot, materials=mats, model=projection,
                                      tools=tools.schemas, max_output_tokens=max_output_tokens)
 
-    if request_override is None:
-        request, rejection = build()
+    prepared_attempt = prepared
+    if resumed is not None and 0 in resumed:
+        request, prepared_attempt = resumed[0]
+    else:
+        request, rejection = build(prepared_attempt)
         if rejection is not None and reduce is None:
             raise ContextLengthError(rejection)
         if reduce is not None:
-            summary = await reduce(snapshot, prepared, request, model, projection,
+            summary = await reduce(snapshot, prepared_attempt, request, model, projection,
                                    source=source, force=rejection is not None)
-            if summary is not None and summary != prepared.get("summary"):
-                prepared = {**prepared, "summary": summary}
-                request, rejection = build()
+            if summary is not None and summary != prepared_attempt.get("summary"):
+                prepared_attempt = {**prepared_attempt, "summary": summary}
+                request, rejection = build(prepared_attempt)
             if rejection is not None:
                 raise ContextLengthError(rejection)
-    else:
-        request = request_override
     if freeze is not None:
         # 生成准备把首个真实请求与材料一并冻结；恢复后不再重建或漂移。
-        request, prepared = freeze(request, prepared)
+        request, prepared_attempt = freeze(0, request, prepared_attempt)
+    prepared = prepared_attempt
     # 2. 每次 provider 调用使用生成准备中已耐久固定的 Output ID 与请求 key。
     with ExitStack() as previews:
         def begin(attempt: int) -> tuple[str, str | None, StreamCallback | None]:
@@ -344,11 +350,17 @@ async def _complete(
             summary = await reduce(snapshot, prepared, request, model, projection, source=source, force=True)
             if summary is None or summary == prepared.get("summary"):
                 raise
-            prepared = {**prepared, "summary": summary}
-            request, rejection = build()
-            if rejection is not None:
-                raise ContextLengthError(rejection)
             attempt += 1
+            if resumed is not None and attempt in resumed:
+                request, prepared = resumed[attempt]
+            else:
+                prepared = {**prepared, "summary": summary}
+                request, rejection = build(prepared)
+                if rejection is not None:
+                    raise ContextLengthError(rejection)
+                if freeze is not None:
+                    # 缩减后的第二请求与材料同样耐久冻结，恢复时精确重放。
+                    request, prepared = freeze(attempt, request, prepared)
             message_id, request_key, callback = begin(attempt)
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
@@ -445,43 +457,82 @@ async def react(
 
         # 2. 生成准备冻结请求、材料、binding 与 Output 身份；恢复不重建不漂移。
         claim: Callable[[int], tuple[str, str | None]] | None = None
-        freeze: Callable[[ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None
-        request_override: ModelRequest | None = None
+        freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None
+        resumed: dict[int, tuple[ModelRequest, Materials]] | None = None
         if state is not None:
             # 输出前驱位置用该来源已有 Output 计数；与边界身份共同固定本代。
-            prep_key = (
+            prep_base = (
                 f"reply:{reader.session_id}:{writer.source}"
                 f":{boundary_id}:{_steps(snapshot, writer.source)}"
             )
             base_seq = reader.head()
+            # 逐代核对：最近 request key 已终结失败的准备属于已结束生成；
+            # 显式恢复必须产生新准备身份（新 key），不能偷换同 key 重入。
+            generation = 0
+            prep_key = prep_base
             existing = state.transact(lambda transaction: transaction.read(prep_key))
+            while existing is not None:
+                keys = list(cast(Sequence[str], existing.value.get("request_keys", ())))
+                if not keys or model.key_state(keys[-1]) != "error":
+                    break
+                generation += 1
+                prep_key = f"{prep_base}#{generation}"
+                existing = state.transact(lambda transaction: transaction.read(prep_key))
             if existing is not None:
                 prep = dict(existing.value)
                 if prep.get("binding_id") != model.descriptor.binding_id:
                     raise ModelUnavailableError("生成准备记录的 binding 已失效")
                 frozen = reader.snapshot(through_seq=cast(int, prep["base_seq"]))
-                prepared = cast(Materials, prep["materials"])
-                request_override = _decode_request(prep["request"])
+                attempts = list(cast(Sequence[Mapping[str, object]], prep.get("attempts", ())))
+                if not attempts and "request" in prep:
+                    # v2 记录的首个请求/材料视为 attempt 0。
+                    attempts = [{"request": prep["request"], "materials": prep["materials"]}]
+                resumed = {
+                    index: (
+                        _decode_request(entry["request"]),
+                        cast(Materials, entry["materials"]),
+                    )
+                    for index, entry in enumerate(attempts)
+                }
+                prepared = cast(Materials, resumed[0][1]) if resumed else await materials(frozen)
             else:
                 prepared = await materials(frozen)
 
             def freeze_request(
-                request: ModelRequest, built: Materials
+                attempt: int, request: ModelRequest, built: Materials
             ) -> tuple[ModelRequest, Materials]:
                 def open_prep(transaction: OwnerTransaction) -> Mapping[str, object]:
                     record = transaction.read(prep_key)
                     if record is None:
                         record = transaction.save(prep_key, {
-                            "version": 2, "output_id": uuid4().hex,
+                            "version": 3, "output_id": uuid4().hex,
                             "request_keys": [uuid4().hex], "base_seq": base_seq,
                             "binding_id": model.descriptor.binding_id,
+                            "attempts": [],
+                        }, expected_version=None)
+                    value = dict(record.value)
+                    entries: list[Mapping[str, object] | None] = list(
+                        cast(Sequence[Mapping[str, object] | None], value.get("attempts") or ())
+                    )
+                    if not entries and "request" in value:
+                        entries = [{"request": value["request"], "materials": value["materials"]}]
+                    while len(entries) <= attempt:
+                        entries.append(None)
+                    if entries[attempt] is None:
+                        entries[attempt] = {
                             "request": _encode_request(request),
                             "materials": dict(built),
-                        }, expected_version=None)
-                    return record.value
+                        }
+                        record = transaction.save(
+                            prep_key, {**value, "attempts": entries},
+                            expected_version=record.version,
+                        )
+                        value = dict(record.value)
+                        entries = list(cast(Sequence[Mapping[str, object]], value["attempts"]))
+                    return cast(Mapping[str, object], entries[attempt])
 
-                value = state.transact(open_prep)
-                return _decode_request(value["request"]), cast(Materials, value["materials"])
+                entry = state.transact(open_prep)
+                return _decode_request(entry["request"]), cast(Materials, entry["materials"])
 
             def claim_attempt(attempt: int) -> tuple[str, str | None]:
                 def advance(transaction: OwnerTransaction) -> tuple[str, str]:
@@ -512,7 +563,7 @@ async def react(
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             claim=claim,
             freeze=freeze,
-            request_override=request_override,
+            resumed=resumed,
             fallback_key=(
                 f"reply:{reader.session_id}:{writer.source}"
                 f":{boundary_id}:{_steps(snapshot, writer.source)}"

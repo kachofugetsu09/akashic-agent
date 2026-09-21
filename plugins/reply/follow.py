@@ -10,7 +10,7 @@ from agent.plugin_composition.tasks import Task, TaskCapacity
 from agent.plugin_composition.tasks import RestartGate
 from typing import Protocol, cast
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
-from agent.plugin_contracts import Control, Output
+from agent.plugin_contracts import Control, Input, Output
 
 logger = logging.getLogger(__name__)
 Program = Callable[[Task, MessageReader, str], Awaitable[object]]
@@ -57,7 +57,9 @@ async def follow(
         fault.append(error)
         faulted.set()
 
-    sealed: set[tuple[str, str]] = set()
+    # 封闭项记录封存时的持久边界；只有该来源的新 Input/resume 事实才放行，
+    # 任意 head 变化（如无关 ToolResult）不构成解封依据。
+    sealed: dict[tuple[str, str], int] = {}
 
     async def drive(session_id: str, source: Source, wake: _Wake) -> None:
         """每个 Session 独立排空旧工作；并发通知只要求再次读取日志。"""
@@ -118,11 +120,17 @@ async def follow(
                         continue
                     pending = None
                     wake.changed = True
+                    if stalled():
+                        # 停摆回执已耐久提交；没有新事实时该 lane 就此退出。
+                        return
                     continue
                 if task is None:
                     if not wake.changed:
                         return
                     wake.changed = False
+                    # 先取真实边界再接纳：start 失败后的 head 可能已混入竞争
+                    # 中的新 Input，故障必须绑定接纳时的原边界。
+                    admission_boundary = head()
                     try:
                         async with ctx.runtime_scope():
                             session = source.open(session_id)
@@ -145,21 +153,15 @@ async def follow(
                         wake.changed = True
                         continue
                     except Exception as admission_error:
-                        # 接纳故障封闭该 item：能拿到 session 时持久停摆到原边界，
-                        # 否则本地封存，只有新的持久事实（head 变化）才解封。
+                        # 接纳故障封闭该 item。有 session 时走原故障保存修复
+                        # 路径（pending 循环重试直到耐久停摆提交）；没有 session
+                        # 的 open 失败没有可写 owner，只能内存封存，解封只认
+                        # 该来源的新 Input/resume 事实。
                         logger.warning("来源接纳失败，封闭该项等待新事实", exc_info=True)
                         if session is not None:
-                            try:
-                                await session.record_failure(
-                                    admission_error, boundary=head()
-                                )
-                            except asyncio.CancelledError:
-                                raise
-                            except Exception:
-                                logger.warning(
-                                    "接纳故障停摆回执保存失败", exc_info=True
-                                )
-                        sealed.add(key)
+                            pending = (admission_boundary, admission_error)
+                            continue
+                        sealed[key] = admission_boundary
                         return
                     if task is None:
                         # 来源在准入段判定不需要回复；等待下一条持久事实。
@@ -269,11 +271,29 @@ async def follow(
                         if source.name not in present:
                             continue
                         key = (session_id, source.name)
-                        if session_id in changed:
-                            # 新的持久事实解封；同 head 的封存项不再重复进入失败位置。
-                            sealed.discard(key)
-                        if key in sealed:
-                            continue
+                        sealed_at = sealed.get(key)
+                        if sealed_at is not None:
+                            # 只有该来源的新 Input 或 resume Control 才放行封存项；
+                            # 无关事实抬高 head 不能重启已封闭的失败位置。
+                            released = False
+                            for message in catalog.reader(session_id).snapshot(
+                                after_seq=sealed_at
+                            ):
+                                if message.source != source.name:
+                                    continue
+                                if isinstance(message.body, Input):
+                                    released = True
+                                    break
+                                if (
+                                    isinstance(message.body, Control)
+                                    and message.body.action == "resume"
+                                ):
+                                    released = True
+                                    break
+                            if released:
+                                del sealed[key]
+                            else:
+                                continue
                         due = session_id in changed
                         if not due and key not in active and needs is not None:
                             # 轮询重扫时 head 未变也可能仍欠回复；持久事实决定驱动。

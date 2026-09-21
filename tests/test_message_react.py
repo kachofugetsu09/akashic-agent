@@ -35,7 +35,8 @@ from session.message import (
 
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
-                  reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset()):
+                  reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset(),
+                  state_owner=None):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
@@ -147,7 +148,8 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
             return await react(reader, output, model=model, context=ContextBuilder(),
                                projection=projection, materials=materials, content=Content(), tools=Menu(task),
-                               max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools)
+                               max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools,
+                               state=None if state_owner is None else log.owner(state_owner))
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
     @asynccontextmanager

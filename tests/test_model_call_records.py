@@ -502,7 +502,15 @@ async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned
     assert request.messages[0]['tool_calls'][0]['id'] == request.messages[1]['tool_call_id']
     assert request.messages[1]['content'][0]['text'] == 'completed result'
     assert any(any(part.get('text') == 'old work' for part in row['content']) for row in request.messages)
-    assert all('late result' not in str(row) and 'reasoning_content' not in row for row in request.messages)
+    # §8.2：已执行效果的真实结果正文必须保留为可读文本，但不伪装成 wire tool
+    # result（abandoned 协议仍被排除——上面已断言只有一个 tool_calls 行）。
+    if late_result:
+        assert any('late result' in str(row) for row in request.messages)
+        assert all(
+            row.get('role') != 'tool' or 'late result' not in str(row)
+            for row in request.messages
+        )
+    assert all('reasoning_content' not in row for row in request.messages)
     assert request.messages[-1]['content'][0]['text'] == 'new request'
 
 

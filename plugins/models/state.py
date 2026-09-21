@@ -208,6 +208,17 @@ class _BoundChat:
         finally:
             live_runs.pop(run_key, None)
 
+    def key_state(self, request_key: str) -> str | None:
+        """同 key 最近一条耐久记录的状态；无记录返回 None。
+
+        供恢复方区分：started/success 需沿用原 key 恢复，已终结失败
+        只允许以新准备身份显式恢复。
+        """
+        records = self._store.calls_for_key(request_key)
+        if not records:
+            return None
+        return cast(str, records[-1]["state"])
+
     def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
         """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
         records = self._store.calls_for_key(request_key)
@@ -278,16 +289,15 @@ class _BoundChat:
         """Models 独占重试预算：一次 complete 内有界自动重试；每个真实 attempt
         先记账再结算，失败写耐久 next_attempt_at，重试前重新核对准入与孤儿。"""
         budget = self._max_attempts if budget is None else max(1, budget)
-        used = 0
         while True:
             replayed = self._scan(request_key, digest)
             if replayed is not None:
                 return replayed
-            if used >= budget:
-                # 预算只约束本次 complete 的自动重试；显式重驱由耐久
-                # next_attempt_at 退避，历史已结算记录不占用新调用预算。
-                raise ModelUnavailableError("模型调用重试预算耗尽")
             records = self._store.calls_for_key(request_key)
+            # 预算是耐久事实：连续 complete、关闭重开、进程重启都不刷新；
+            # 显式恢复只能以新准备身份（新 key）进入，同 key 重入不重新付费。
+            if len(records) >= budget:
+                raise ModelUnavailableError("模型调用重试预算耗尽")
             last = records[-1] if records else None
             next_at = None if last is None else last.get("next_attempt_at")
             if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
@@ -295,7 +305,6 @@ class _BoundChat:
                 if delay > 0:
                     # 退避可取消；取消后 attempt 记录保持 started，结果不确定。
                     await asyncio.sleep(delay)
-            used += 1
             call_id = self._store.resume_call(
                 self._descriptor, request,
                 request_key=request_key,
@@ -338,11 +347,15 @@ class _BoundChat:
                         getattr(failure, "retry_safe", False)
                         or getattr(failure, "retryable", False)
                     )
-                    retry_at = (
-                        time.time() + min(8.0, 0.5 * (2 ** used))
-                        if retryable and used < budget
-                        else None
-                    )
+                    retry_at = None
+                    if retryable and len(records) + 1 < budget:
+                        # Retry-After 优先于本地退避，且随失败记录耐久保存。
+                        hint = getattr(failure, "retry_after", None)
+                        retry_at = time.time() + (
+                            float(hint)
+                            if isinstance(hint, (int, float)) and not isinstance(hint, bool)
+                            else min(8.0, 0.5 * (2 ** (len(records) + 1)))
+                        )
                     try:
                         self._store.finish_call(
                             call_id, usage=None, failure=type(failure).__name__,
@@ -943,15 +956,9 @@ class ModelsState:
             capability_sources=model.capability_sources,
             capability_digest=capability_digest,
         )
-        # Models 重试预算是显式配置，不从 driver 的 max_retries 推导；
-        # 默认单次尝试，回复流自身以生成边界为恢复单位。
-        configured_attempts = connection.driver_config.get("max_attempts", 1)
-        max_attempts = (
-            configured_attempts
-            if isinstance(configured_attempts, int) and not isinstance(configured_attempts, bool)
-            and configured_attempts >= 1
-            else 1
-        )
+        # Models 重试预算集中在连接配置边界解析：显式 max_attempts 优先；
+        # 旧 max_retries 迁移为 N+1 次 attempt；非法值 fail-loud，不静默回 1。
+        max_attempts = _retry_budget(connection.driver_config)
         return _BoundChat(
             descriptor,
             driver.bind_chat(descriptor, model.driver_config),
@@ -1551,6 +1558,22 @@ def _driver_connection_descriptor(
         auth_identity=connection.auth_identity,
         config=connection.driver_config,
     )
+
+
+def _retry_budget(config: Mapping[str, Any]) -> int:
+    """连接配置中的 Models 重试预算：max_attempts 显式优先，旧 max_retries
+    迁移为 N+1 次 attempt（N 次重试 = 首次 + N 次重试）；非法值直接报错。"""
+    configured = config.get("max_attempts")
+    if configured is not None:
+        if not isinstance(configured, int) or isinstance(configured, bool) or configured < 1:
+            raise ValueError("max_attempts must be a positive integer")
+        return configured
+    legacy = config.get("max_retries")
+    if legacy is None:
+        return 1
+    if not isinstance(legacy, int) or isinstance(legacy, bool) or legacy < 0:
+        raise ValueError("max_retries must be a non-negative integer")
+    return legacy + 1
 
 
 def _capability_provider_id(
