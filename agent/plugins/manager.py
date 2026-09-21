@@ -3098,10 +3098,8 @@ class PluginManager:
             generations.clear()
             generations.update(actual)
             ordered = tuple(actual.values())
-            # 数据初始化由实际插件完成；每个实例只获得自己环境的数据目录。
+            # 候选数据目录独立且初始为空；正式 plugin-data 不复制进校验 workspace。
             for item in ordered:
-                if candidate_owner is not None:
-                    self._seed_candidate_data_dir(item, workspace)
                 ensure_workspace_plugin_data_dir(item.data_dir, workspace)
             await self._provide_composition_services(
                 root, ordered, candidate=candidate_owner is not None, validation_host=validation_host,
@@ -3128,22 +3126,6 @@ class PluginManager:
                 await self._discard_building_root(root, error)
             raise
         return root
-
-    def _seed_candidate_data_dir(
-        self,
-        generation: PluginGeneration,
-        workspace: Path,
-    ) -> None:
-        # 候选看到与 stable 相同的初始 plugin-data；复制到隔离目录，不共享可写状态。
-        relative = generation.data_dir.relative_to(workspace)
-        production = self._workspace / relative
-        validate_workspace_plugin_data_path(production, self._workspace)
-        if not production.is_dir():
-            return
-        generation.data_dir.mkdir(parents=True, exist_ok=True)
-        _ = shutil.copytree(
-            production, generation.data_dir, symlinks=True, dirs_exist_ok=True,
-        )
 
     @staticmethod
     def _generation_archive_ref(generation: PluginGeneration) -> str:

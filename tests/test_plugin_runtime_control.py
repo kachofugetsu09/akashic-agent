@@ -325,7 +325,8 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         )
         assert candidate.data_dir == validation_data
         assert candidate.data_dir != production_data
-        assert (validation_data / marker.name).read_bytes() == production_before
+        # 候选数据目录独立且初始为空：正式 plugin-data 不复制进校验 workspace。
+        assert not (validation_data / marker.name).exists()
         assert not (tmp_path / "workspace" / "candidate-mcp-started.json").exists()
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
@@ -350,7 +351,7 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         )
         assert (runtime_workspace / "candidate-mcp-started.json").is_file()
         assert (runtime_data / "candidate-mcp-started.json").is_file()
-        assert (runtime_data / marker.name).read_bytes() == production_before
+        assert not (runtime_data / marker.name).exists()
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
 
