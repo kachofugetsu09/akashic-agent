@@ -231,6 +231,12 @@ class BoundChatModel(Protocol):
         （含取消/未知结算）或重试预算已耗尽；终结 key 不重获预算。"""
         ...
 
+    def key_context_rejected(self, request_key: str) -> bool:
+        """该 request key 最近记录是否为可证明的 provider 容量拒绝
+        （耐久 failure 恰为 ContextLengthError）。仅此种安全拒绝允许
+        调用方续跑本地缩减阶段；取消/未知错误不返回 True。"""
+        ...
+
 
 class BoundEmbeddingModel(Protocol):
     @property

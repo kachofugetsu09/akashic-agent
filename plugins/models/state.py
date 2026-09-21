@@ -220,6 +220,22 @@ class _BoundChat:
             return False
         return last.get("next_attempt_at") is None or len(records) >= self._max_attempts
 
+    def key_context_rejected(self, request_key: str) -> bool:
+        """同 key 最近记录是否为可证明的 provider 容量拒绝。
+
+        只有耐久 failure 恰为 ContextLengthError 这一种结构化低基数原因
+        才算安全拒绝证据——它证明 provider 明确拒绝了该请求；取消、网络
+        或未知错误都不证明 provider 未接收，一律不进入此分支。调用方据此
+        只能续跑本地缩减阶段，不得重发已失败的原请求。"""
+        records = self._store.calls_for_key(request_key)
+        if not records:
+            return False
+        last = records[-1]
+        return (
+            last["state"] == "error"
+            and last.get("failure") == "ContextLengthError"
+        )
+
     def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
         """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
         records = self._store.calls_for_key(request_key)

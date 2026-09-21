@@ -296,6 +296,7 @@ async def _complete(
     freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None,
     resumed: Mapping[int, tuple[ModelRequest, Materials]] | None = None,
     start_at: int = 0,
+    resume_rejected: bool = False,
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。
 
@@ -344,6 +345,10 @@ async def _complete(
         attempt = start_at
         message_id, request_key, callback = begin(attempt)
         try:
+            if resume_rejected:
+                # 该 attempt 的 key 已有耐久的 provider 容量拒绝结算：
+                # 不重发已失败的原请求，直接续跑已批准的本地缩减阶段。
+                raise ContextLengthError("provider 容量拒绝已耐久结算")
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
         except ContextLengthError:
             previews.close()
@@ -470,6 +475,7 @@ async def react(
         freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None
         resumed: dict[int, tuple[ModelRequest, Materials]] | None = None
         start_at = 0
+        resume_rejection = False
         if state is not None:
             # 输出前驱位置用该来源已有 Output 计数；与边界身份共同固定本代。
             prep_base = (
@@ -497,6 +503,7 @@ async def react(
             prep_key = prep_base
             existing = state.transact(lambda transaction: transaction.read(prep_key))
             generation = 0
+            resume_rejection = False
             while existing is not None:
                 keys = list(cast(Sequence[str], existing.value.get("request_keys", ())))
                 current = len(prep_attempts(existing.value)) - 1
@@ -504,9 +511,16 @@ async def react(
                     break
                 if not model.key_terminal(keys[current]):
                     break
+                if reduce is not None and model.key_context_rejected(keys[current]):
+                    # 可证明的 provider 容量拒绝：进程死于缩减/冻结之间时，
+                    # 留在本代续跑本地缩减阶段——不重发已失败的原请求，
+                    # 不开新代，也不需要新来源事实。
+                    resume_rejection = True
+                    break
                 base = cast(int, existing.value["base_seq"])
                 qualified = any(
                     message.seq > base
+                    and message.source == writer.source
                     and (
                         isinstance(message.body, Input)
                         or (
@@ -518,7 +532,8 @@ async def react(
                 )
                 if not qualified:
                     raise ModelUnavailableError(
-                        "该来源边界的生成准备已终结失败；需要新的来源事实才能恢复"
+                        f"该来源边界的生成准备已终结失败；需要新的来源事实才能恢复 "
+                        f"(prep={prep_key} source={writer.source} base={base} key={keys[current]})"
                     )
                 generation += 1
                 prep_key = f"{prep_base}#{generation}"
@@ -614,6 +629,7 @@ async def react(
             freeze=freeze,
             resumed=resumed,
             start_at=start_at,
+            resume_rejected=resume_rejection,
             fallback_key=(
                 f"reply:{reader.session_id}:{writer.source}"
                 f":{boundary_id}:{_steps(snapshot, writer.source)}"

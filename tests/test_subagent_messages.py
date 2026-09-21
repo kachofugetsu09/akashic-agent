@@ -442,12 +442,24 @@ async def test_background_main_program_keeps_tools_and_new_input_interrupts_it(t
             conversation = snapshot.composition_root.context.require(CONVERSATION)("test:parent")
             await conversation.accept("human-followup", Input((ContentPart("text", "[human followup]"),)))
         control.main_release.set()
-        _, address, result = await asyncio.wait_for(control.sent.get(), 10)
-        assert address == "parent" and "main summary" in text_part(result.body.parts[0])
+        # 中断只证明本地等待被取消，不能证明 provider 未计费：subagent 汇报
+        # lane 的旧调用按未知结算终结，没有同来源 Input/resume 时如实停摆，
+        # 不得借 conversation 的新 Input 换 key 重付；conversation lane 独立
+        # 应答 human-followup（旧回复被取代，不再产出 main summary）。
+        for _ in range(100):
+            rows = log.reader("test:parent").snapshot()
+            if any(
+                item.source == "conversation" and isinstance(item.body, Output)
+                and item.body.finish == "complete" for item in rows
+            ):
+                break
+            await asyncio.sleep(0.1)
         rows = log.reader("test:parent").snapshot()
         assert [item.message_id for item in rows if isinstance(item.body, Input)] == ["parent-input", "human-followup"]
         assert any(item.source == "conversation" and isinstance(item.body, Output) and item.body.finish == "complete" for item in rows)
         report = [item for item in rows if item.source.startswith("subagent:")]
-        assert [type(item.body) for item in report] == [Output, ToolResult, Output]
-        assert control.main_calls == 3
-        assert (tmp_path / "workspace/main-report.txt").read_text() == "main result"
+        assert not any(
+            isinstance(item.body, Output) and item.body.finish == "complete"
+            for item in report
+        ), "被中断的汇报 lane 无同来源新事实，不得自动重付完成"
+        assert control.main_calls == 1
