@@ -960,6 +960,8 @@ class PluginChannels:
         """提交开放后才恢复 pending 输入，任务归当前 provider Scope。"""
         if not any(ChannelCapability.DURABLE_INBOUND in item.capabilities for item in self._declarations.values()):
             return
+        # _opened 是一次性事件：每次启动都等本次提交的开放，不能复用上一代已置位的事件。
+        self._opened = asyncio.Event()
 
         async def recover() -> None:
             await self._opened.wait()

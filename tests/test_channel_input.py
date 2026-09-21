@@ -58,6 +58,7 @@ class Custody(MessageBus):
         self.committed = asyncio.Event()
         self.complete_gate = asyncio.Event()
         self.complete_gate.set()
+        self.finished = asyncio.Event()
         self.completed = 0
         self.envelopes = []
         self.reject = False
@@ -77,6 +78,7 @@ class Custody(MessageBus):
         await self.complete_gate.wait()
         await super().complete_channel_input(envelope)
         self.completed += 1
+        self.finished.set()
 
 
 @asynccontextmanager
@@ -124,15 +126,23 @@ async def apply(ctx):
     if inbound_store is not None:
         capabilities = "[ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND]"
     (probe / "plugin.py").write_text(probe_source.replace("CHANNEL_NAME", repr(channel_name)).replace("CAPABILITIES", capabilities))
+    # 插件在提交开放时自启一轮恢复；先挡住它，由本 fixture 的同步 recover 完成
+    # 初次结算，避免断言与异步 claim 竞争。放行后 auto 恢复路径仍归插件。
+    spawned_recovery_gate = asyncio.Event()
+
+    async def gated_recover_durable_inbounds():
+        await spawned_recovery_gate.wait()
+        await custody.recover_durable_inbounds()
+
     host = PluginManager(
         [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home", message_log=log,
         channel_attachment_store=artifacts, channel_identities=identity_store,
         input_custody=InputCustody(
             custody.prepare_channel_input, custody.complete_channel_input, custody.retain_channel_input,
-            custody.reserve_durable_inbound, custody.defer_durable_inbound,
+            lambda raw: custody.reserve_durable_inbound(raw), custody.defer_durable_inbound,
             custody.settle_rejected_inbound, custody.has_pending_durable_inbound,
-            custody.pending_durable_attachment_refs, custody.recover_durable_inbounds,
+            custody.pending_durable_attachment_refs, gated_recover_durable_inbounds,
         ),
     )
 
@@ -154,6 +164,7 @@ async def apply(ctx):
         adapters.append(adapter)
         if inbound_store is not None and recover:
             await custody.recover_durable_inbounds()
+        spawned_recovery_gate.set()
         yield log, host, custody, identities, rollbacks, adapters[-1]
     finally:
         custody.prepare_gate.set()
@@ -492,12 +503,19 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
         admissions.close()
 
     # 2. 分别模拟正文提交前与提交后进程结束，重开都不能重复正文。
+    initialize_plugin_workspace(tmp_path / "workspace")
     if committed:
-        initialize_plugin_workspace(tmp_path / "workspace")
-        async with runtime(tmp_path, channel_name="akashic") as (log, host, *rest):
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                first = await snapshot.composition_root.context.require(CHANNEL_INPUT)(
-                    "akashic:room", raw_message.message_id, raw_message.message)
+        # 已归档插件 generation 钉住 stable；两段必须使用同一 durable 声明。
+        phase1_store, phase1_admissions = InboundHandoffStore(path), SessionAdmissions(path)
+        try:
+            async with runtime(tmp_path, channel_name="akashic", inbound_store=phase1_store,
+                               admissions=phase1_admissions, recover=False) as (log, host, *rest):
+                async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                    first = await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+                        "akashic:room", raw_message.message_id, raw_message.message)
+        finally:
+            phase1_store.close()
+            phase1_admissions.close()
     handoffs, admissions = InboundHandoffStore(path), SessionAdmissions(path)
     assert handoffs.list_inbound_handoffs() == reserved
     admissions.clear_stale()
@@ -710,7 +728,7 @@ async def test_same_host_replacement_recovers_reserve_only_row_without_manual_re
             await host._run_operation(lambda: host._replace_formal_root(
                 dict(host._active_generations), expected_ref=host._selection.read(),
             ))
-            await custody.committed.wait()
+            await custody.finished.wait()
             messages = log.reader("akashic:room").snapshot()
             assert [item.message_id for item in messages] == ["mobile-1"]
             assert custody.completed == 1
