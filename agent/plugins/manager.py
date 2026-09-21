@@ -365,6 +365,7 @@ class PluginManager:
         self, work: Callable[[], Awaitable[U]], *, background: bool = False,
         wait_for_snapshot: RuntimeSnapshot | None = None,
         commit_timeout: float | None = None,
+        candidate_shared: bool = False,
     ) -> ManagerOperation:
         """等待普通调用归还租约后才计提交期限，始终保留同一个任务 owner。"""
         self._require_operation_idle()
@@ -375,6 +376,7 @@ class PluginManager:
             loop.time() + commit_timeout
             if wait_for_snapshot is None else float("inf")
         )
+        operation.candidate_shared = candidate_shared
         self._operation = operation
 
         async def admitted_work() -> U:
@@ -403,7 +405,7 @@ class PluginManager:
 
     async def _run_operation(
         self, work: Callable[[], Awaitable[U]], *, allow_stable_lease: bool = False,
-        commit_timeout: float | None = None,
+        commit_timeout: float | None = None, candidate_shared: bool = False,
     ) -> U:
         """公开入口有限观察同一任务；退出观察不释放仍在工作的 owner。"""
         self._reject_operation_lease(allow_stable_lease=allow_stable_lease)
@@ -416,9 +418,15 @@ class PluginManager:
                 async with RuntimeScope(lease.fork()):
                     return await work()
 
-            operation = self._start_operation(scoped_work, commit_timeout=commit_timeout)
+            operation = self._start_operation(
+                scoped_work, commit_timeout=commit_timeout,
+                candidate_shared=candidate_shared,
+            )
         else:
-            operation = self._start_operation(work, commit_timeout=commit_timeout)
+            operation = self._start_operation(
+                work, commit_timeout=commit_timeout,
+                candidate_shared=candidate_shared,
+            )
         try:
             return cast(U, await observe_operation(operation, deadline=operation.deadline))
         finally:
@@ -1021,8 +1029,17 @@ class PluginManager:
         self._finish_drained_reload(snapshot.snapshot_id)
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
-        return await self._run_operation(self._reconcile_changed)
-
+        # 被动 reconcile 只与安装共享 candidate owner；其余操作保持 busy，不排队。
+        while True:
+            try:
+                return await self._run_operation(self._reconcile_changed)
+            except OperationBusyError:
+                operation = self._operation
+                if operation is None or operation.task.done():
+                    continue
+                if not operation.candidate_shared:
+                    raise
+                await asyncio.wait((operation.task,))
 
     async def install_candidate(
         self, *, source: str, marketplace: str, ref_name: str,
@@ -1031,7 +1048,7 @@ class PluginManager:
         return await self._run_operation(lambda: self._install_candidate(
             source=source, marketplace=marketplace, ref_name=ref_name,
             sparse_paths=sparse_paths, update_id=update_id,
-        ), allow_stable_lease=True)
+        ), allow_stable_lease=True, candidate_shared=True)
 
     async def _install_candidate(
         self,
