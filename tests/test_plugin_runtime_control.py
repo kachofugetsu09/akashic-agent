@@ -396,12 +396,12 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
         latest_lease = manager.snapshot_store.lease(selector="latest")
         old_ca_bundle.unlink()
 
-        # 2. 旧 MCP 在调用时才读取路径，oracle 必须命中原事故而不是静默切新代。
-        async with old_server() as opened:
-            async with opened.route() as route:
-                error_result = await route.call("probe", {})
-        assert error_result.tool_error
-        assert "cacert.pem" in error_result.output or "No such file" in error_result.output
+        # 2. 环境完整性按内容摘要校验：删除 env 内材料后借入即拒绝，
+        #    oracle 必须命中原事故而不是静默切新代。
+        with pytest.raises(RuntimeError, match="Python 环境内容缺失或损坏"):
+            async with old_server() as opened:
+                async with opened.route() as route:
+                    _ = await route.call("probe", {})
         assert old_lease.snapshot is manager.current_snapshot
         latest_generation = latest_lease.snapshot.generations[plugin_id]
         latest_runtime = _mcp_registration(latest_lease.snapshot)
