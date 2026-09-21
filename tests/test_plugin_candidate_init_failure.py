@@ -426,9 +426,12 @@ async def test_init_cleanup_failure_discard_recovers_after_restart(
 async def test_live_old_host_blocks_journal_recovery_and_settlement(
     tmp_path, monkeypatch,
 ):
-    """旧宿主同进程存活：新 Manager 不得凭 journal 抢删其确切校验目录。"""
+    """同 PID 同 boot 的另一个 Manager 也不是原 owner：不得凭 journal 抢删。"""
     import agent.plugins.manager as manager_module
 
+    # 两个 Manager 共享同一进程与同一 boot 标记：仍不是同实例义务。
+    shared_boot = "shared-boot-" + secrets.token_hex(8)
+    monkeypatch.setenv("AKASHIC_BOOT_ID", shared_boot)
     source, home, workspace, old = prepare(tmp_path)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace,
                          installed_cache_root=home / "cache")
@@ -463,11 +466,12 @@ async def test_live_old_host_blocks_journal_recovery_and_settlement(
         assert validation_root.exists()
         # 义务记录必须携带创建它的确切宿主身份。
         assert obligations[0].owner_pid == os.getpid()
-        assert obligations[0].owner_boot_id == host._host_boot_id
+        assert obligations[0].owner_boot_id == host._candidate_owner_boot_id()
     finally:
         monkeypatch.undo()
 
-    # 旧宿主对象仍存活：同进程新 Manager 没有旧 owner 退出证据，拒绝接管清理。
+    # 同进程同 boot 的另一 Manager 不是该义务的原 owner，拒绝接管清理。
+    monkeypatch.setenv("AKASHIC_BOOT_ID", shared_boot)
     recovered = PluginManager([], event_bus=EventBus(), workspace=workspace,
                               installed_cache_root=home / "cache")
     try:
@@ -475,7 +479,7 @@ async def test_live_old_host_blocks_journal_recovery_and_settlement(
         assert recovered.reload_journal.update(result.update_id).phase == "armed"
         assert read_pointers(plugin_base) == staged_pointers
         assert validation_root.exists()
-        with pytest.raises(RuntimeError, match="旧宿主仍在本进程存活"):
+        with pytest.raises(RuntimeError, match="candidate validation cleanup pending"):
             await recovered.discard_update(result.update_id)
         assert recovered.reload_journal.update(result.update_id).phase == "armed"
         assert read_pointers(plugin_base) == staged_pointers
@@ -587,7 +591,7 @@ async def test_sigkill_unsupervised_recovery_refuses_and_preserves_obligation(
     try:
         await recovered.load_all()
         # 没有全体候选资源死亡证据：义务保留、目录保留、指针不结算。
-        with pytest.raises(RuntimeError, match="无监督路径缺少旧 boot 子进程排空证据"):
+        with pytest.raises(RuntimeError, match="candidate validation cleanup pending"):
             await recovered.discard_update(evidence["update_id"])
         assert recovered.reload_journal.update(evidence["update_id"]).phase == "armed"
         assert read_pointers(plugin_base) == staged_pointers
@@ -606,10 +610,10 @@ async def test_sigkill_unsupervised_recovery_refuses_and_preserves_obligation(
 
 
 @pytest.mark.asyncio
-async def test_sigkill_supervised_recovery_drains_boot_then_settles(
+async def test_sigkill_supervised_recovery_also_preserves_obligation(
     tmp_path, monkeypatch,
 ):
-    """supervised 路径：Guardian 按旧 boot 标记排空遗留子进程后才删目录结算。"""
+    """supervised 路径同样无完整资源关闭回执：Guardian 扫描不是证据，仍拒绝接管。"""
     import os
     import signal
     import subprocess
@@ -658,21 +662,22 @@ async def test_sigkill_supervised_recovery_drains_boot_then_settles(
         if proc.stderr is not None:
             proc.stderr.close()
 
-    # 新宿主是 supervised 且持有不同 boot 身份：Guardian 排空旧 boot 后接管。
+    # 新宿主即使 supervised 且持不同 boot：受管子进程可去标记存活，
+    # 没有完整关闭回执就一律保留义务/目录/指针。
     monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
     monkeypatch.setenv("AKASHIC_BOOT_ID", "test-new-boot-" + secrets.token_hex(8))
     recovered = PluginManager([], event_bus=EventBus(), workspace=workspace,
                               installed_cache_root=home / "cache")
     try:
         await recovered.load_all()
-        await recovered.discard_update(evidence["update_id"])
-        # Guardian 已把旧 boot 的受管子进程排空：grandchild 不复存在。
-        with pytest.raises(ProcessLookupError):
-            os.kill(grandchild_pid, 0)
-        assert recovered.reload_journal.update(evidence["update_id"]).phase == "rolled_back"
-        assert read_pointers(plugin_base) == original_pointers
-        assert not validation_root.exists()
-        assert recovered.reload_journal.candidate_cleanup(evidence["update_id"]) == ()
+        with pytest.raises(RuntimeError, match="candidate validation cleanup pending"):
+            await recovered.discard_update(evidence["update_id"])
+        assert recovered.reload_journal.update(evidence["update_id"]).phase == "armed"
+        assert read_pointers(plugin_base) == staged_pointers
+        assert validation_root.exists()
+        assert recovered.reload_journal.candidate_cleanup(evidence["update_id"]) != ()
+        # 受管子进程确实仍活：删除它属于运维/测试自己精确处理。
+        os.kill(grandchild_pid, 0)
     finally:
         if grandchild_pid is not None:
             try:
@@ -939,6 +944,36 @@ async def test_candidate_cleanup_schema_strict_check_and_v1_migration(tmp_path):
         with pytest.raises(ValueError):
             ReloadJournal(bad_ws)
 
+    # 1b. 畸形同名四列表不是已知 v1：fail-loud 而不是被当 lineage 迁移。
+    v1_base = """
+        CREATE TABLE candidate_validation_roots (
+            update_id TEXT NOT NULL,
+            plugin_id TEXT NOT NULL,
+            validation_root TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (update_id, validation_root)
+        )
+    """
+    for name, ddl in {
+        "v1-type": v1_base.replace(
+            "plugin_id TEXT NOT NULL", "plugin_id BLOB NOT NULL",
+        ),
+        "v1-notnull": v1_base.replace("created_at TEXT NOT NULL", "created_at TEXT"),
+        "v1-default": v1_base.replace(
+            "created_at TEXT NOT NULL", "created_at TEXT NOT NULL DEFAULT 'x'",
+        ),
+        "v1-pk": v1_base.replace(
+            "PRIMARY KEY (update_id, validation_root)", "PRIMARY KEY (update_id)",
+        ),
+    }.items():
+        conn = sqlite3.connect(tmp_path / f"bad-{name}.sqlite3")
+        try:
+            conn.executescript(ddl)
+            with pytest.raises(ValueError):
+                check_candidate_cleanup_schema(conn)
+        finally:
+            conn.close()
+
     # 2. v1 lineage：迁移前 VACUUM INTO 备份，行保留且 owner 证据未知。
     v1_ws = tmp_path / "ws-v1"
     runtime = v1_ws / "runtime"
@@ -971,11 +1006,12 @@ async def test_candidate_cleanup_schema_strict_check_and_v1_migration(tmp_path):
     assert obligation[0].owner_boot_id == ""
     assert obligation[0].owner_pid == 0
 
-    # 3. 迁移行的 owner_pid=0/空 boot 身份属未知状态，不得据此自动删除。
+    # 3. 迁移行的 owner_pid=0/空 boot 身份属未知状态：不是本实例登记的义务，
+    # 一律 cleanup pending 保留，不得据此自动删除。
     host = PluginManager([], event_bus=EventBus(), workspace=v1_ws,
                          installed_cache_root=tmp_path / "cache")
     try:
-        with pytest.raises(RuntimeError, match="缺少旧宿主退出证据"):
+        with pytest.raises(RuntimeError, match="candidate validation cleanup pending"):
             await host._require_candidate_owner_exited(obligation[0])
     finally:
         await host.terminate_all()

@@ -161,7 +161,13 @@ _CANDIDATE_CLEANUP_SCHEMA_V2 = """
         PRIMARY KEY (update_id, validation_root)
     );
 """
-_CANDIDATE_CLEANUP_COLUMNS_V1 = ("update_id", "plugin_id", "validation_root", "created_at")
+# 已知 v1 lineage 的完整期望 schema；只比列名会把畸形同名四列表误当可迁移。
+_CANDIDATE_CLEANUP_EXPECTED_V1: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...] = (
+    ("update_id", "TEXT", 1, (None,), 1),
+    ("plugin_id", "TEXT", 1, (None,), 0),
+    ("validation_root", "TEXT", 1, (None,), 2),
+    ("created_at", "TEXT", 1, (None,), 0),
+)
 # owner 期望 schema：严格比较 PRAGMA table_info 的 (type, notnull, dflt_value, pk)。
 # owner_boot_id/owner_pid 允许 v1 迁移留下的 '':0 默认值（对应保守未知行），
 # 其余列不接受任何默认值。
@@ -188,19 +194,27 @@ def check_candidate_cleanup_schema(conn: sqlite3.Connection) -> bool:
         return False
     info = list(conn.execute("PRAGMA table_info(candidate_validation_roots)"))
     names = tuple(str(item[1]) for item in info)
-    if names == _CANDIDATE_CLEANUP_COLUMNS_V1:
+    if names == tuple(item[0] for item in _CANDIDATE_CLEANUP_EXPECTED_V1):
+        _check_cleanup_columns(info, _CANDIDATE_CLEANUP_EXPECTED_V1)
         return False
     expected_names = tuple(item[0] for item in _CANDIDATE_CLEANUP_EXPECTED)
     if names != expected_names:
         raise ValueError(f"未知 candidate_validation_roots schema: {names}")
-    for item, (name, type_, notnull, defaults, pk) in zip(info, _CANDIDATE_CLEANUP_EXPECTED):
+    _check_cleanup_columns(info, _CANDIDATE_CLEANUP_EXPECTED)
+    return True
+
+
+def _check_cleanup_columns(
+    info: list[tuple[object, ...]],
+    expected: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...],
+) -> None:
+    for item, (name, type_, notnull, defaults, pk) in zip(info, expected):
         actual = (str(item[1]), str(item[2]).upper(), int(item[3]), item[4], int(item[5]))
         if actual[0] != name or actual[1] != type_ or actual[2] != notnull or actual[4] != pk:
             raise ValueError(f"candidate_validation_roots.{name} schema 不符: {actual}")
         dflt = None if actual[3] is None else str(actual[3])
         if dflt not in defaults:
             raise ValueError(f"candidate_validation_roots.{name} 默认值不符: {dflt!r}")
-    return True
 
 
 @dataclass(frozen=True)

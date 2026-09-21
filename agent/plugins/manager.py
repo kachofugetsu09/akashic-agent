@@ -115,6 +115,7 @@ from agent.plugins.static_manifest import (
 )
 from agent.plugins.reload_journal import (
     CandidateCleanupObligation,
+    CandidateCleanupPendingError,
     RecoveryActionName,
     RecoveryTarget,
     ReloadJournal,
@@ -265,6 +266,9 @@ class PluginManager:
         # 清理失败仍留在 _building_roots 的 Root，按插件关联到其 armed 更新；
         # 显式 discard 必须先完成该 owner 的真实清理才允许结算指针。
         self._failed_candidate_roots: dict[str, set[CompositionRoot]] = {}
+        # 本实例在本进程真实登记的持久清理义务 (update_id, validation_root)；
+        # 跨进程/跨 Manager 的 journal pending 不属于本实例，不得凭身份字段接管。
+        self._issued_candidate_cleanup: set[tuple[str, str]] = set()
         self._operation: ManagerOperation | None = None
         self._stopping = False
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
@@ -3193,6 +3197,9 @@ class PluginManager:
                         owner_boot_id=self._candidate_owner_boot_id(),
                         owner_pid=os.getpid(),
                     )
+                    self._issued_candidate_cleanup.add(
+                        (cleanup_update_id, str(workspace.parent))
+                    )
             actual = self._archived_generations(
                 components, root, workspace=workspace, sources=sources, validation_host=validation_host,
             )
@@ -3276,42 +3283,21 @@ class PluginManager:
     async def _require_candidate_owner_exited(
         self, obligation: CandidateCleanupObligation,
     ) -> None:
-        """journal 恢复删除前，先证明记录的候选宿主及其子进程已退出；
-        死亡未知一律拒绝，无监督路径没有排空证据时 fail-closed。"""
+        """只允许本 Manager 实例在本进程真实登记的义务经 dispose 清理销账。
 
-        if obligation.owner_pid == os.getpid():
-            # 同一进程：同一 boot 身份即本 Manager，在轨 Root 门已由调用者执行；
-            # 其他身份说明旧 Manager 可能仍在本进程存活，不能凭指针猜测接管。
-            if obligation.owner_boot_id != self._candidate_owner_boot_id():
-                raise RuntimeError(
-                    "候选校验目录的旧宿主仍在本进程存活或状态未知，拒绝接管清理: "
-                    f"{obligation.validation_root}"
-                )
+        仅凭 PID 死亡、同 PID 同 boot、当前 supervised 或 Guardian 环境扫描
+        都不能证明旧候选的全体资源已关闭：受管子进程可去掉 boot 标记存活。
+        不同 Manager 或重启后的 journal pending 一律保留义务、不删目录、
+        不结算指针，显式报告 cleanup pending，需运维确认后处理。
+        """
+        mark = (obligation.update_id, str(obligation.validation_root))
+        if (
+            obligation.owner_pid == os.getpid()
+            and obligation.owner_boot_id == self._candidate_owner_boot_id()
+            and mark in self._issued_candidate_cleanup
+        ):
             return
-        from agent.background.boot_guardian import _pid_exists
-        if obligation.owner_pid <= 0 or _pid_exists(obligation.owner_pid):
-            raise RuntimeError(
-                "候选校验目录缺少旧宿主退出证据，拒绝接管清理: "
-                f"{obligation.validation_root} owner_pid={obligation.owner_pid}"
-            )
-        current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
-        # 旧 Manager PID 死不代表它独立 session 的 MCP/managed 子进程已死；
-        # 只有 supervised Guardian 能按 boot 标记排空它们。无监督路径缺少
-        # 全体候选资源死亡证据，保留义务并明确拒绝自动接管。
-        if os.environ.get("AKASHIC_SUPERVISED") != "1" or not current_boot_id:
-            raise RuntimeError(
-                "无监督路径缺少旧 boot 子进程排空证据，拒绝接管候选清理: "
-                f"{obligation.validation_root} owner_pid={obligation.owner_pid}"
-            )
-        if obligation.owner_boot_id == current_boot_id:
-            raise RuntimeError("候选校验目录的宿主 boot 身份与当前进程冲突")
-        # supervised：旧 boot 遗留子进程经既有 Guardian 机制排空后再删目录。
-        from agent.background.boot_guardian import _cleanup_boot_processes
-        await asyncio.to_thread(
-            _cleanup_boot_processes,
-            boot_id=obligation.owner_boot_id,
-            gateway_group_id=None,
-        )
+        raise CandidateCleanupPendingError((obligation.update_id,))
 
     def _clear_candidate_validation_root(self, root: Path, update_id: str | None) -> None:
         """真实删除成功才销账持久义务；删除失败抛出让 dispose 重试。"""
@@ -3319,6 +3305,7 @@ class PluginManager:
         _remove_candidate_validation_root(root, self._workspace)
         if update_id is not None:
             self._reload_journal.clear_candidate_cleanup(update_id, root)
+            self._issued_candidate_cleanup.discard((update_id, str(root)))
 
     def _candidate_cleanup_pending(self, update_id: str, plugin_id: str) -> bool:
         """保留的候选 Root 或持久校验目录义务未清完前，更新不得结算指针。"""
