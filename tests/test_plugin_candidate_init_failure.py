@@ -227,3 +227,129 @@ async def test_candidate_data_dir_is_empty_and_isolated_from_formal_data(tmp_pat
         assert (escape / "stolen.txt").read_text() == "must not be reached"
     finally:
         await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_init_and_cleanup_failure_blocks_discard_until_owner_cleaned(
+    tmp_path, monkeypatch,
+):
+    """初始化失败叠加清理失败：Root 保留为 owner，discard 不能假结算指针。"""
+    import agent.plugins.manager as manager_module
+
+    source, home, workspace, old = prepare(tmp_path)
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                         installed_cache_root=home / "cache")
+    try:
+        await host.load_all()
+        stable = host.current_snapshot
+        plugin_base = old.installed_path.parents[1]
+        original_pointers = read_pointers(plugin_base)
+        result = install_git_plugin(
+            workspace=workspace, source=str(source), marketplace="lab",
+            plugins_home=home, stage_candidate=True,
+        )
+        staged_pointers = read_pointers(plugin_base)
+        assert staged_pointers != original_pointers
+
+        # 1. 双故障：候选 Root 装配失败且 validation 目录清理失败。
+        original_compile = host._snapshot_compiler.compile
+        def fail_compile(*args, **kwargs):
+            raise ValueError("injected init failure")
+        monkeypatch.setattr(host._snapshot_compiler, "compile", fail_compile)
+
+        cleanups: list[object] = []
+        original_remove = manager_module._remove_candidate_validation_root
+        def fail_remove(root, ws):
+            cleanups.append(root)
+            raise OSError("injected cleanup failure")
+        monkeypatch.setattr(
+            manager_module, "_remove_candidate_validation_root", fail_remove,
+        )
+
+        results = await host.reconcile_changed()
+        assert any(
+            item.get("plugin_id") == "probe@lab"
+            and item.get("preparation_state") == "failed"
+            for item in results
+        )
+        update = host.reload_journal.armed_update_for_plugin("probe@lab")
+        assert update is not None and update.update_id == result.update_id
+        assert update.reload_tx_id is None
+        # 清理失败保留实际 Root owner，且关联到本插件的 armed 更新。
+        assert host._building_roots
+        assert host._failed_candidate_roots.get("probe@lab")
+
+        # 2. 显式 discard 先重试 owner 清理；清理仍失败则拒绝结算指针。
+        with pytest.raises(Exception):
+            await host.discard_update(result.update_id)
+        assert host.reload_journal.update(result.update_id).phase == "armed"
+        assert read_pointers(plugin_base) == staged_pointers
+        assert host._building_roots
+
+        # 3. 修复清理后重试 discard：先完成 owner 清理，再结算指针。
+        monkeypatch.setattr(
+            manager_module, "_remove_candidate_validation_root", original_remove,
+        )
+        await host.discard_update(result.update_id)
+        assert host.reload_journal.update(result.update_id).phase == "rolled_back"
+        assert read_pointers(plugin_base) == original_pointers
+        assert not host._building_roots
+        assert not host._failed_candidate_roots.get("probe@lab")
+        assert host.current_snapshot is stable
+        assert len(cleanups) >= 1
+    finally:
+        await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_init_cleanup_failure_discard_recovers_after_restart(
+    tmp_path, monkeypatch,
+):
+    """双故障下 discard 被拒后重启：armed 更新保留，清理完成后才结算。"""
+    import agent.plugins.manager as manager_module
+
+    source, home, workspace, old = prepare(tmp_path)
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                         installed_cache_root=home / "cache")
+    plugin_base = old.installed_path.parents[1]
+    original_pointers = read_pointers(plugin_base)
+    try:
+        await host.load_all()
+        result = install_git_plugin(
+            workspace=workspace, source=str(source), marketplace="lab",
+            plugins_home=home, stage_candidate=True,
+        )
+        staged_pointers = read_pointers(plugin_base)
+
+        def fail_compile(*args, **kwargs):
+            raise ValueError("injected init failure")
+        monkeypatch.setattr(host._snapshot_compiler, "compile", fail_compile)
+        def fail_remove(root, ws):
+            raise OSError("injected cleanup failure")
+        monkeypatch.setattr(
+            manager_module, "_remove_candidate_validation_root", fail_remove,
+        )
+
+        await host.reconcile_changed()
+        with pytest.raises(Exception):
+            await host.discard_update(result.update_id)
+        assert host.reload_journal.update(result.update_id).phase == "armed"
+        assert read_pointers(plugin_base) == staged_pointers
+    finally:
+        # 解除清理故障后 terminate 能完成保留 Root 的真实清理。
+        monkeypatch.undo()
+        await host.terminate_all()
+
+    # 重启后 armed 更新仍在；无 retained Root，显式 discard 结算指针。
+    recovered = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                              installed_cache_root=home / "cache")
+    try:
+        await recovered.load_all()
+        update = recovered.reload_journal.update(result.update_id)
+        assert update.phase == "armed"
+        assert read_pointers(plugin_base) == staged_pointers
+        await recovered.discard_update(result.update_id)
+        assert recovered.reload_journal.update(result.update_id).phase == "rolled_back"
+        assert read_pointers(plugin_base) == original_pointers
+    finally:
+        await recovered.terminate_all()

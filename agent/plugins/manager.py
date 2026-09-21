@@ -261,6 +261,9 @@ class PluginManager:
         self._cleanup_failures: list[CleanupFailure] = []
         # 仅持有尚未交给 snapshot 的真实 Root，以及它仍需使用的模块和数据 owner。
         self._building_roots: dict[CompositionRoot, tuple[PluginGeneration, ...]] = {}
+        # 清理失败仍留在 _building_roots 的 Root，按插件关联到其 armed 更新；
+        # 显式 discard 必须先完成该 owner 的真实清理才允许结算指针。
+        self._failed_candidate_roots: dict[str, set[CompositionRoot]] = {}
         self._operation: ManagerOperation | None = None
         self._stopping = False
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
@@ -2208,8 +2211,19 @@ class PluginManager:
         if update.phase != "armed":
             raise RuntimeError("更新不是等待丢弃的候选")
         if update.reload_tx_id is None:
-            # 登台前初始化失败：没有 runtime 候选资源，只按原指针结算安装恢复点。
+            # 登台前初始化失败：先完成本插件保留 Root 的真实清理，
+            # 清理失败则保留 owner 并拒绝结算指针，不伪装 discard 成功。
             self._check_operation_commit()
+            retained = self._failed_candidate_roots.get(update.plugin_id)
+            if retained:
+                for root in tuple(retained):
+                    if root in self._building_roots:
+                        await self._close_building_root(root)
+                    retained.discard(root)
+                if not retained:
+                    del self._failed_candidate_roots[update.plugin_id]
+            if self._building_roots:
+                raise RuntimeError("候选或资源 owner 仍在清理，拒绝结算指针")
             self._reload_journal.rollback_updates(
                 self.installed_plugins_home, update_id=update_id, error=reason,
             )
@@ -2782,7 +2796,10 @@ class PluginManager:
                     self._selection.read() != base_selection_ref
                 ):
                     assert snapshot.composition_root is not None
-                    await self._discard_building_root(snapshot.composition_root, SelectionConflictError("候选构建期间基线变化"))
+                    await self._discard_candidate_building_root(
+                        plugin_id, snapshot.composition_root,
+                        SelectionConflictError("候选构建期间基线变化"),
+                    )
                     raise SelectionConflictError("候选构建期间基线变化")
                 generation.reload_tx_id = self._begin_reload_attempt(
                     plugin_id=plugin_id, generation_id=generation.generation_id,
@@ -2796,7 +2813,7 @@ class PluginManager:
             return generation
         except BaseException as error:
             if root in self._building_roots:
-                await self._discard_building_root(root, error)
+                await self._discard_candidate_building_root(plugin_id, root, error)
             raise
 
     async def _compile_generation_snapshot(
@@ -2817,7 +2834,9 @@ class PluginManager:
                 composition_root=composition_root,
             )
         except BaseException as error:
-            await self._discard_building_root(composition_root, error)
+            await self._discard_candidate_building_root(
+                generation.plugin_id, composition_root, error,
+            )
             raise
         for item in generations.values():
             item.runtime_snapshot = snapshot
@@ -3151,7 +3170,12 @@ class PluginManager:
         except BaseException as error:
             # 验证构建从分配 Root 起就归 host；由外层同一次失败路径清理。
             if validation_host is None:
-                await self._discard_building_root(root, error)
+                if candidate_owner is None:
+                    await self._discard_building_root(root, error)
+                else:
+                    await self._discard_candidate_building_root(
+                        candidate_owner.plugin_id, root, error,
+                    )
             raise
         return root
 
@@ -3189,6 +3213,17 @@ class PluginManager:
             raise
         if cancelled:
             raise asyncio.CancelledError
+
+    async def _discard_candidate_building_root(
+        self, plugin_id: str, root: CompositionRoot, error: BaseException,
+    ) -> None:
+        """候选回退清理失败时把实际 Root owner 关联到该插件，等待显式重试。"""
+
+        try:
+            await self._discard_building_root(root, error)
+        finally:
+            if root in self._building_roots:
+                self._failed_candidate_roots.setdefault(plugin_id, set()).add(root)
 
     async def _discard_building_root(
         self, root: CompositionRoot, error: BaseException,
