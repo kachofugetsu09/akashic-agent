@@ -41,31 +41,21 @@ async def apply(ctx):
 ''')
     path = sources / "test_provider/plugin.py"
     text = path.read_text()
-    text = text.replace("    class Driver:", '''    from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS, SNAPSHOT_SEALING
+    text = text.replace("    class Driver:", '''    from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS
     from agent.plugin_composition.models import (
-        CapabilitySources,
         ChatModelSelection,
-        ModelCapabilities,
         ModelKind,
     )
-    from plugins.models.settings import AddConnection, AddModel, MODEL_SETTINGS
-    from plugins.models.state import ModelsState
+    from plugins.models.settings import AddConnection, AddModel
     if store.read_snapshot().revision == 0:
         store.add_connection(AddConnection(0, "connection", "test", "openai-compatible", "https://example.test/v1", "fixture", {"api_key": "fixture"}))
         store.add_model(AddModel(1, "saved", "connection", ModelKind.CHAT, "fixture", ModelCapabilities(supported_reasoning_efforts=("low", "high")), CapabilitySources()))
-    model_state = ModelsState(
-        store,
-        root_instance_token=ctx.root_instance_token,
-        context=ctx,
-    )
-    await ctx.provide(MODEL_DRIVERS, model_state.drivers)
-    await ctx.provide(MODEL_CATALOG, model_state.catalog)
-    await ctx.provide(MODEL_SETTINGS, model_state.settings)
-    await ctx.on(SNAPSHOT_SEALING, model_state.seal)
+    await ctx.provide(MODEL_DRIVERS, settings.drivers)
+    await ctx.provide(MODEL_CATALOG, settings.catalog)
     selected = []
     await ctx.provide(ServiceKey("fixture.selected"), selected)
     class Driver:''')
-    text = text.replace("            yield SimpleNamespace(chat=lambda role: model)", '''            model_state.validate_chat_selection(ChatModelSelection(model_id, reasoning_effort))
+    text = text.replace("            yield SimpleNamespace(chat=lambda role: model)", '''            settings.validate_chat_selection(ChatModelSelection(model_id, reasoning_effort))
             selected.append((model_id, reasoning_effort))
             yield SimpleNamespace(chat=lambda role: model)''')
     path.write_text(text)

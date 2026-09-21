@@ -34,6 +34,7 @@ def manager(tmp_path: Path) -> PluginManager:
 
 
 def initialize(tmp_path: Path) -> PluginSelection:
+    (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
     selection = PluginSelection(tmp_path / "workspace")
     selection.initialize()
     return selection

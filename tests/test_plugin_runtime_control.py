@@ -189,7 +189,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
 
         # 4. 已排空 artifact 仍保留，只有显式卸载才删除 cache。
         plugin_base = old_artifact.parents[1]
-        data_path = Path(str(updated["dataPath"]))
+        data_path = updated.data_path
         _ = await app._uninstall_plugin(plugin_id)
         assert not plugin_base.exists()
         assert old_ca_bundle.is_file()
@@ -211,6 +211,7 @@ async def test_socket_uninstall_waits_for_old_lease_after_client_disconnects(
     """真实控制 socket 的卸载操作由服务 owner 持续到旧代排空。"""
 
     _source, manager, _app, bus, old_artifact = await _start_runtime_mcp(tmp_path)
+    await manager.snapshot_store.retry_drains()
     plugin_id = "runtime_mcp@lab"
     production_data = tmp_path / "workspace" / "plugin-data" / "runtime_mcp-lab"
     production_marker = production_data / "retained.json"

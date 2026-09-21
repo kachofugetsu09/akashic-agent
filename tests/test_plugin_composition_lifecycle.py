@@ -30,6 +30,16 @@ from core.memory.events import MemoryWritten
 _MEMORY_WRITTEN_EVENT = EmitEventKey[MemoryWritten]("test.memory.written")
 
 
+async def _publish_committed_snapshot(manager: PluginManager, snapshot) -> None:
+    """按当前发布模型提交手工编译的 snapshot：closed scope 内完成启动后才开放。"""
+    async def publish() -> None:
+        transaction = manager.snapshot_store.begin_publish(snapshot)
+        await manager._commit_snapshot_with_publication_participants(
+            transaction, old_commands=(), new_commands=(),
+        )
+    await manager._run_operation(publish)
+
+
 @pytest.mark.asyncio
 async def test_failed_consumer_cleanup_keeps_provider_until_explicit_retry():
     """消费者关闭失败后，原资源及依赖仍由同一 Root 持有。"""
@@ -223,13 +233,13 @@ async def apply(ctx):
             (workspace / "fail-prepare").touch()
             with pytest.raises(ValueError, match="rebuild prepare failed"):
                 await manager._run_operation(lambda: manager._build_and_publish_root(
-                    dict(snapshot.generations), previous=snapshot, old_channel=None,
+                    dict(snapshot.generations), previous=snapshot, expected_ref=manager._selection.read(),
                 ))
             assert manager.current_snapshot is snapshot
             assert not snapshot.accepting_leases and snapshot.lease_count == 0
             (workspace / "fail-prepare").unlink()
         replacement = await manager._run_operation(lambda: manager._build_and_publish_root(
-            dict(snapshot.generations), previous=snapshot, old_channel=None,
+            dict(snapshot.generations), previous=snapshot, expected_ref=manager._selection.read(),
         ))
         assert replacement is manager.current_snapshot and replacement is not snapshot
         assert snapshot.composition_root is old_root
@@ -260,13 +270,15 @@ async def test_runtime_lifecycle_bail_fails_loud(tmp_path) -> None:
     await root.mount(second, name="later-plugin")
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    await manager._publish_committed_snapshot(snapshot)
 
     with pytest.raises(CompositionError) as caught:
-        await cast(Any, manager)._start_runtime_snapshot(snapshot)
+        await _publish_committed_snapshot(manager, snapshot)
 
     assert caught.value.code == "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED"
     assert calls == ["bail"]
+    transaction = manager.snapshot_store.pending_transaction
+    assert transaction is not None
+    await manager.snapshot_store.abort(transaction)
     await manager.snapshot_store.close()
     await root.dispose()
 
@@ -287,8 +299,7 @@ async def test_runtime_stop_failure_remains_retryable(tmp_path) -> None:
     await root.mount(plugin, name="retrying-plugin")
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    await manager._publish_committed_snapshot(snapshot)
-    await cast(Any, manager)._start_runtime_snapshot(snapshot)
+    await _publish_committed_snapshot(manager, snapshot)
 
     with pytest.raises(RuntimeError, match="fixture stop failure"):
         await cast(Any, manager)._stop_runtime_snapshot(snapshot)
@@ -326,13 +337,13 @@ async def test_runtime_start_ignores_snapshot_replaced_before_start(
     old_snapshot = compiler.compile({}, composition_root=old_root)
     new_snapshot = compiler.compile({}, composition_root=new_root)
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
-    await manager._publish_committed_snapshot(old_snapshot)
-    await manager._publish_committed_snapshot(new_snapshot)
+    await _publish_committed_snapshot(manager, old_snapshot)
+    await _publish_committed_snapshot(manager, new_snapshot)
 
     await cast(Any, manager)._start_runtime_snapshot(old_snapshot)
     await cast(Any, manager)._start_runtime_snapshot(new_snapshot)
 
-    assert calls == ["new"]
+    assert calls == ["old", "new"]
     assert old_root.instance_token not in cast(Any, manager)._runtime_started_roots
     await manager.snapshot_store.close()
     await old_root.dispose()
@@ -491,7 +502,7 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
     try:
         if failure == "prepare":
             with pytest.raises(ValueError, match="prepare failed"):
-                await manager._publish_committed_snapshot(snapshot)
+                await _publish_committed_snapshot(manager, snapshot)
             assert manager.current_snapshot is None
             assert snapshot.lease_count == 0
             assert events == ["prepare", "stop"]
@@ -499,30 +510,28 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
             transaction = manager.snapshot_store.pending_transaction
             assert transaction is not None
             await manager.snapshot_store.abort(transaction)
+        elif failure == "start":
+            # 启动失败回滚发布：closed scope 内已触发 prepare/start，清理走 stop。
+            with pytest.raises(ValueError, match="start failed"):
+                await _publish_committed_snapshot(manager, snapshot)
+            assert events == ["prepare", "start", "stop"]
+            assert not held
+            assert root.instance_token not in manager._runtime_starting_roots
+            assert root.instance_token not in manager._runtime_started_roots
+            assert manager.current_snapshot is None
+            transaction = manager.snapshot_store.pending_transaction
+            assert transaction is not None
+            await manager.snapshot_store.abort(transaction)
         else:
-            await manager._publish_committed_snapshot(snapshot)
-            assert events == ["prepare"]
-            if failure == "start":
-                with pytest.raises(ValueError, match="start failed"):
-                    await manager.start_runtime()
-                assert events == ["prepare", "start", "stop"]
-                assert not held
-                assert root.instance_token not in manager._runtime_starting_roots
-                assert root.instance_token not in manager._runtime_started_roots
-                # 已清理的 Root 不能跳过发布前准备直接重试。
-                with pytest.raises(RuntimeError, match="发布前准备"):
-                    await manager.start_runtime()
-            else:
-                await manager.start_runtime()
-                # 同 Root 的快照替换不重复恢复活动或重复启动消费者。
-                replacement = RuntimeSnapshotCompiler().compile({}, composition_root=root, snapshot_revision="replacement")
-                await manager._publish_committed_snapshot(replacement)
-                await manager.start_runtime()
-                assert events == ["prepare", "start"]
-                current = manager.current_snapshot
-                assert current is not None
-                await manager._stop_runtime_snapshot(current)
-                assert events == ["prepare", "start", "stop"]
+            await _publish_committed_snapshot(manager, snapshot)
+            assert events == ["prepare", "start"]
+            # 已启动 Root 的重复 start_runtime 不重复恢复活动或重复启动消费者。
+            await manager.start_runtime()
+            assert events == ["prepare", "start"]
+            current = manager.current_snapshot
+            assert current is not None
+            await manager._stop_runtime_snapshot(current)
+            assert events == ["prepare", "start", "stop"]
         async with asyncio.timeout(2):
             await tasks.close()
         assert not held
@@ -572,6 +581,8 @@ async def apply(ctx):
         paused = manager.snapshot_store.pause_admission()
         assert paused is stable_snapshot
         await manager.snapshot_store.wait_for_no_leases(stable_snapshot)
+        # 与生产调用方一致：replace 前恢复接纳，held-publication 检查只认未决 maintenance。
+        await manager.snapshot_store.resume(stable_snapshot)
         old_root = stable_snapshot.composition_root
         candidate = await manager._compile_generation_snapshot(
             stable, candidate_owner=stable,
@@ -584,7 +595,10 @@ async def apply(ctx):
         assert stable.runtime_snapshot is stable_snapshot
         await manager._dispose_unreferenced_composition_root(candidate)
         replacement = await manager._run_operation(
-            lambda: manager._replace_formal_root(dict(stable_snapshot.generations))
+            lambda: manager._replace_formal_root(
+                dict(stable_snapshot.generations),
+                expected_ref=manager._selection.read(),
+            )
         )
 
         assert candidate_root.receipt().fibers == ()
@@ -766,8 +780,12 @@ async def test_terminate_joins_untransferred_root_without_generations(tmp_path, 
     if fail_close:
         with pytest.raises(asyncio.CancelledError):
             await first
-        with pytest.raises(OSError):
+        # 同一已撤销操作的观察者如实收到 取消+真实失败 的组合证据。
+        with pytest.raises(BaseExceptionGroup) as caught:
             await second
+        leaves = _error_leaves(caught.value)
+        assert any(isinstance(error, asyncio.CancelledError) for error in leaves)
+        assert any(isinstance(error, OSError) for error in leaves)
         assert attempts == 2
         assert len(manager._building_roots) == 1
         await manager.terminate_all()
