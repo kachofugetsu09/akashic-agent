@@ -12,6 +12,7 @@ from urllib.request import urlopen
 import pytest
 
 from agent.plugin_composition import ManagedProcessDefinition
+from agent.host_bridge.plugin_execution import LocalProcessSpawner
 import plugins.managed_processes.host as managed_process_host
 from plugins.managed_processes.host import (
     ManagedProcessGenerationHost,
@@ -228,7 +229,7 @@ async def test_readiness_poll_sleep_respects_remaining_deadline(
 
     monkeypatch.setattr(asyncio, "to_thread", direct_to_thread)
     monkeypatch.setattr(managed_process_host, "_url_ready", lambda *_args: False)
-    host = ManagedProcessGenerationHost()
+    host = ManagedProcessGenerationHost(LocalProcessSpawner())
     started = asyncio.get_running_loop().time()
     with pytest.raises(TimeoutError):
         await host._wait_ready(generation, entry, _free_port())
@@ -253,7 +254,7 @@ async def test_candidate_uses_temporary_port_and_bounded_logs(tmp_path: Path) ->
     ) -> None:
         incidents.append((generation_id, process_name, kind, message))
 
-    host = ManagedProcessGenerationHost(
+    host = ManagedProcessGenerationHost(LocalProcessSpawner(),
         on_health=record_health,
         on_incident=record_incident,
         log_max_bytes=64,
@@ -288,7 +289,7 @@ async def test_candidate_uses_temporary_port_and_bounded_logs(tmp_path: Path) ->
 async def test_formal_fixed_port_and_candidate_are_isolated(tmp_path: Path) -> None:
     script = tmp_path / "server.py"
     _write_http_server(script)
-    host = ManagedProcessGenerationHost()
+    host = ManagedProcessGenerationHost(LocalProcessSpawner())
     formal_port = _free_port()
     definition = _http_definition(script, formal_port=formal_port)
 
@@ -319,7 +320,7 @@ async def test_process_exit_recovers_with_new_epoch_without_stale_resurrection(
     ) -> None:
         incidents.append((generation_id, process_name, kind, message))
 
-    host = ManagedProcessGenerationHost(
+    host = ManagedProcessGenerationHost(LocalProcessSpawner(),
         on_incident=record_incident,
         recovery_backoff_seconds=(0.01, 0.01),
         recovery_stable_seconds=60,
@@ -370,7 +371,7 @@ async def test_cancel_start_drains_real_process_group_after_repeated_cancellatio
     child_pid_file = tmp_path / "child.pid"
     port_file = tmp_path / "port"
     _write_slow_process(script)
-    host = ManagedProcessGenerationHost(stop_timeout_seconds=0.15)
+    host = ManagedProcessGenerationHost(LocalProcessSpawner(), stop_timeout_seconds=0.15)
     definition = _slow_definition(
         script,
         pid_file=pid_file,
@@ -423,7 +424,7 @@ async def test_health_ready_callback_cancellation_cleans_started_process(
         if healthy:
             raise asyncio.CancelledError
 
-    host = ManagedProcessGenerationHost(on_health=cancel_ready)
+    host = ManagedProcessGenerationHost(LocalProcessSpawner(), on_health=cancel_ready)
     with pytest.raises(asyncio.CancelledError):
         await host.start_generation(
             "health-cancel",
@@ -448,7 +449,7 @@ async def test_incident_callback_cancellation_cleans_readiness_process(
     ) -> None:
         raise asyncio.CancelledError
 
-    host = ManagedProcessGenerationHost(on_incident=cancel_incident)
+    host = ManagedProcessGenerationHost(LocalProcessSpawner(), on_incident=cancel_incident)
     with pytest.raises(asyncio.CancelledError):
         await host.start_generation(
             "incident-cancel",
@@ -477,7 +478,7 @@ async def test_health_callback_failure_is_fail_loud_and_cleans_process(
         if healthy:
             raise RuntimeError("health bridge unavailable")
 
-    host = ManagedProcessGenerationHost(on_health=fail_ready)
+    host = ManagedProcessGenerationHost(LocalProcessSpawner(), on_health=fail_ready)
     with pytest.raises(RuntimeError, match="health bridge unavailable"):
         await host.start_generation(
             "health-failure",
@@ -497,7 +498,7 @@ async def test_readiness_rejects_redirect_and_strict_timeout(
         ready_status=302,
         redirect_location="http://127.0.0.1:9/unrelated",
     )
-    host = ManagedProcessGenerationHost()
+    host = ManagedProcessGenerationHost(LocalProcessSpawner())
     with pytest.raises(TimeoutError):
         await host.start_generation(
             "redirected",
@@ -519,7 +520,7 @@ async def test_recovery_exhaustion_retains_tombstone_until_explicit_retry(
 ) -> None:
     script = tmp_path / "exhaust.py"
     _write_exhausting_recovery_server(script)
-    host = ManagedProcessGenerationHost(
+    host = ManagedProcessGenerationHost(LocalProcessSpawner(),
         recovery_backoff_seconds=(0.01, 0.01),
         recovery_stable_seconds=60.0,
     )
@@ -548,7 +549,7 @@ async def test_cleanup_failure_retains_tombstone_until_retry(
 ) -> None:
     script = tmp_path / "server.py"
     _write_http_server(script)
-    host = ManagedProcessGenerationHost()
+    host = ManagedProcessGenerationHost(LocalProcessSpawner())
     generation_id = "candidate-cleanup"
     await host.start_generation(
         generation_id,
@@ -599,7 +600,7 @@ async def test_stopped_observer_failure_cannot_retain_cleaned_process(
         if not healthy and reason == "stopped":
             raise callback_error
 
-    host = ManagedProcessGenerationHost(on_health=fail_after_root_dispose)
+    host = ManagedProcessGenerationHost(LocalProcessSpawner(), on_health=fail_after_root_dispose)
     generation_id = "stopped-observer"
     generation = await host.start_generation(
         generation_id,

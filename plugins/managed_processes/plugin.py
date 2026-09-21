@@ -30,6 +30,7 @@ class ManagedProcessHandle:
         self._drained = asyncio.Event()
         self._drained.set()
         self._host = ManagedProcessGenerationHost(
+            grant,
             on_health=lambda _id, _name, ready, reason: health.recover() if ready else health.degrade(reason),
             on_incident=lambda _id, _name, kind, reason: ctx.report_incident(kind, reason))
 

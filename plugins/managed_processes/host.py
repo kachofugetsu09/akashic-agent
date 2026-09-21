@@ -18,12 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .definitions import ManagedProcessDefinition
-from agent.host_bridge.plugin_execution import spawn_process
-from utils.process_group import (
-    OwnedProcessGroup,
-    owned_process_env,
-    process_group_spawn_kwargs,
-)
+from agent.plugin_composition.execution import ChildProcess, ProcessSpawner
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +135,7 @@ class _ProcessEpoch:
     artifact_root: Path | None
     epoch: int = 0
     process: asyncio.subprocess.Process | None = None
-    process_group: OwnedProcessGroup | None = None
+    process_group: ChildProcess | None = None
     endpoint: ManagedProcessEndpoint | None = None
     stdout_ring: _LogRing | None = None
     stderr_ring: _LogRing | None = None
@@ -189,6 +184,7 @@ class ManagedProcessGenerationHost:
 
     def __init__(
         self,
+        spawner: ProcessSpawner,
         *,
         on_health: HealthReporter | None = None,
         on_incident: IncidentReporter | None = None,
@@ -205,6 +201,7 @@ class ManagedProcessGenerationHost:
             raise ValueError("recovery backoff values must be non-negative")
         if recovery_stable_seconds <= 0:
             raise ValueError("recovery_stable_seconds must be positive")
+        self._spawner = spawner
         self._on_health = on_health
         self._on_incident = on_incident
         self._on_failure = on_failure
@@ -485,13 +482,13 @@ class ManagedProcessGenerationHost:
             "starting",
         )
         try:
-            process, spawn_cancelled = await spawn_process(
-                *command,
+            child, spawn_cancelled = await self._spawner.spawn(
+                command,
                 cwd=str(cwd),
-                env=owned_process_env(env, scrub_keys=frozenset(os.environ)),
+                env=env,
+                env_scrub_keys=frozenset(os.environ),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                **process_group_spawn_kwargs(),
             )
         except asyncio.CancelledError:
             raise
@@ -503,8 +500,9 @@ class ManagedProcessGenerationHost:
                 _error_text(error),
             )
             raise
+        process = child.process
         entry.process = process
-        entry.process_group = OwnedProcessGroup.from_process(process)
+        entry.process_group = child
         if spawn_cancelled:
             raise asyncio.CancelledError
         entry.stdout_task = asyncio.create_task(
