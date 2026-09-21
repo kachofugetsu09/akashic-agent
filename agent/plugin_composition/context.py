@@ -301,6 +301,7 @@ class Context:
                       binding_contributors: Callable[[], tuple[Context, ...]] | None = None) -> Effect:
         """服务 owner 可声明归档时实际需要的动态注册 Context，生命周期随同一 Effect。"""
         reject_executor_context_access()
+        self._root._require_unfrozen("provide Service")
 
         async def setup() -> Callable[[], Awaitable[None]]:
             self._root._register_provider(
