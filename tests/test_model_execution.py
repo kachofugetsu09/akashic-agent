@@ -229,11 +229,12 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
     from tests.model_plugin_fakes import BoundChatModelFake
 
     seen = []
-    truncated = 0
+    dropped = 0
+    partial = 0
     caplog.set_level("DEBUG", logger="core.net.http")
 
     async def complete(request):
-        nonlocal truncated
+        nonlocal dropped, partial
         seen.append((request.transport, request.headers["Authorization"]))
         assert "Cookie" not in request.headers
         if driver_name == "codex":
@@ -250,11 +251,20 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
         elif driver_name == "openai_compatible":
             assert "thinking" not in body
         if streaming or deepseek:
+            if dropped:
+                # 断流发生在任何内容增量之前：provider 未产生可观察输出，
+                # 该传输断流才可安全重试同一请求。
+                dropped -= 1
+                return web.Response(text=": keepalive\n\n", content_type="text/event-stream")
+            if partial:
+                # 协议层已观察到真实增量后断流：远端效果不可证，不得重试。
+                partial -= 1
+                return web.Response(
+                    text='data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+                    content_type="text/event-stream",
+                )
             payload = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
-            if truncated:
-                truncated -= 1
-            else:
-                payload += 'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n'
+            payload += 'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n'
             return web.Response(text=payload, content_type="text/event-stream")
         return web.json_response({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
@@ -309,22 +319,25 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
         assert [item[1] for item in seen] == ["Bearer first", "Bearer second"]
         if driver_name == "openai_compatible" and "deepseek-v4-" in model_name:
             from agent.plugin_composition.models import TransportError
-            truncated = 1
             deltas.clear()
             if streaming:
+                partial = 1
                 with pytest.raises(TransportError, match="terminal marker") as failure:
                     await bound.complete(request)
                 assert not failure.value.retryable
                 assert len(seen) == 3, "an observed partial response must not replay"
                 assert deltas == [{"content_delta": "ok"}]
             else:
+                dropped = 1
+                # 任何增量之前断流：未观察到输出，有界重试同一请求合法。
                 assert (await bound.complete(request)).content == "ok"
-                assert len(seen) == 4, "unobserved partial bytes may retry without duplicate output"
-                truncated = 2
+                assert len(seen) == 4
+                # 无预览回调时协议层仍观察到部分输出：同样不得自动重试。
+                partial = 2
                 with pytest.raises(TransportError, match="terminal marker") as failure:
                     await bound.complete(request)
-                assert failure.value.retryable, "the caller can retry after the driver's bounded attempts"
-                assert len(seen) == 6, "a partial response must not become a successful completion"
+                assert not failure.value.retryable, "partial bytes observed, remote effect uncertain"
+                assert len(seen) == 5, "a partial response must not replay even without a preview callback"
                 assert deltas == []
         await driver.aclose()
         with pytest.raises(RuntimeError, match="连接已关闭"):
@@ -591,3 +604,162 @@ def test_retry_budget_maps_legacy_and_rejects_invalid():
     for invalid in ({"max_attempts": 0}, {"max_attempts": "3"}, {"max_retries": -1}):
         with pytest.raises(ValueError):
             _retry_budget(invalid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("observe", [False, True])
+@pytest.mark.parametrize("delta_event", [
+    'data: {"type":"response.output_text.delta","delta":"part"}\n\n',
+    'data: {"type":"response.reasoning_summary_text.delta","delta":"part"}\n\n',
+    'data: {"type":"response.function_call_arguments.delta","item_id":"i","delta":"{\\""}\n\n',
+])
+async def test_partial_stream_failure_settles_durable_evidence_as_uncertain(
+    tmp_path, observe, delta_event,
+):
+    """真实 codex driver → Models：协议层观察到 text/tool/reasoning 增量后
+    response.incomplete(context_length_exceeded) 的结算必须携带部分输出证据；
+    key_recovery 判 uncertain——不缩减、不重试、resume 不得重付。"""
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from agent.plugin_composition.models import ContextLengthError
+    from plugins.codex.driver import definition
+    from plugins.models.state import _BoundChat
+    from plugins.models.store import ModelsStore
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    requests = []
+
+    async def respond(request):
+        requests.append(request)
+        # 协议层先交付一类真实增量，再以 failed 报容量失败。
+        payload = (
+            delta_event
+            + 'data: {"type":"response.failed","response":{'
+            + '"status":"failed","error":{"code":"context_length_exceeded",'
+            + '"message":"too long"}}}\n\n'
+        )
+        return web.Response(text=payload, content_type="text/event-stream")
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", respond)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+
+    class Credential:
+        connection_id = "test-connection"
+        auth_identity = "test"
+
+        async def read(self):
+            return {"driver": "codex", "api_key": "k", "access_token": "k",
+                    "account_id": "test", "expires_at": "2099-01-01T00:00:00+00:00"}
+
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    descriptor = replace(
+        BoundChatModelFake(object()).descriptor, driver_id="codex",
+        connection_id="test-connection", model="fixture",
+    )
+    driver = await definition().open(
+        DriverConnectionDescriptor(
+            "test-connection", "local", "codex",
+            f"http://127.0.0.1:{port}/v1", "test", {},
+        ),
+        Credential(),
+    )
+    try:
+        bound = _BoundChat(descriptor, driver.bind_chat(descriptor, {}), store)
+        async def preview(_delta):
+            return None
+        request = ModelRequest(
+            messages=({"role": "user", "content": "hello"},),
+            on_delta=preview if observe else None,
+            request_key="partial-key",
+        )
+        with pytest.raises(ContextLengthError) as failure:
+            await bound.complete(request)
+        # driver 证据透传到异常对象：协议层确实观察到了部分输出。
+        assert failure.value.response_delta_seen
+        records = store.calls_for_key("partial-key")
+        assert len(records) == 1
+        assert records[0]["failure"] == "ContextLengthError"
+        assert records[0]["partial_response"] == 1, "部分输出证据必须耐久入账"
+        assert records[0]["next_attempt_at"] is None, "部分输出后不得安排自动重试"
+        assert bound.key_recovery("partial-key") == "uncertain"
+        # 同 key 终结：再次调用不得发送第二个 provider 请求。
+        with pytest.raises(Exception):
+            await bound.complete(request)
+        assert len(requests) == 1
+    finally:
+        await driver.aclose()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_clean_context_length_rejection_remains_provably_rejected(tmp_path):
+    """对照：未观察到任何增量的 incomplete(context_length_exceeded) 仍属
+    可证明容量拒绝——partial_response=0，key_recovery 判 rejected。"""
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from agent.plugin_composition.models import ContextLengthError
+    from plugins.codex.driver import definition
+    from plugins.models.state import _BoundChat
+    from plugins.models.store import ModelsStore
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    async def respond(request):
+        return web.Response(
+            text='data: {"type":"response.failed","response":{'
+                 '"status":"failed","error":{"code":"context_length_exceeded",'
+                 '"message":"too long"}}}\n\n',
+            content_type="text/event-stream",
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", respond)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+
+    class Credential:
+        connection_id = "test-connection"
+        auth_identity = "test"
+
+        async def read(self):
+            return {"driver": "codex", "api_key": "k", "access_token": "k",
+                    "account_id": "test", "expires_at": "2099-01-01T00:00:00+00:00"}
+
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    descriptor = replace(
+        BoundChatModelFake(object()).descriptor, driver_id="codex",
+        connection_id="test-connection", model="fixture",
+    )
+    driver = await definition().open(
+        DriverConnectionDescriptor(
+            "test-connection", "local", "codex",
+            f"http://127.0.0.1:{port}/v1", "test", {},
+        ),
+        Credential(),
+    )
+    try:
+        bound = _BoundChat(descriptor, driver.bind_chat(descriptor, {}), store)
+        request = ModelRequest(
+            messages=({"role": "user", "content": "hello"},),
+            request_key="clean-key",
+        )
+        with pytest.raises(ContextLengthError) as failure:
+            await bound.complete(request)
+        assert not getattr(failure.value, "response_delta_seen", False)
+        records = store.calls_for_key("clean-key")
+        assert records[0]["partial_response"] == 0
+        assert bound.key_recovery("clean-key") == "rejected"
+    finally:
+        await driver.aclose()
+        await runner.cleanup()

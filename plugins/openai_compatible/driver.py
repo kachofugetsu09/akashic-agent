@@ -614,9 +614,15 @@ async def _stream_chat(
             mapped = _map_error(error)
             if mapped is error and not isinstance(error, ModelError):
                 raise
-            # 无观察者时尚未交付任何结果，断流仍可从原请求重试。
-            response_delta_seen = on_delta is not None and bool(getattr(error, "response_delta_seen", False))
-            if on_delta is None and isinstance(error, _StreamReadError) and isinstance(mapped, TransportError):
+            # 证据以协议层观察为准：on_delta 回调缺席时 provider 仍可能
+            # 已吐出部分输出，不能凭"没有预览观察者"主张安全。只有确实
+            # 未观察到任何增量的断流才允许安全重试同一请求。
+            response_delta_seen = bool(getattr(error, "response_delta_seen", False))
+            if (
+                not response_delta_seen
+                and isinstance(error, _StreamReadError)
+                and isinstance(mapped, TransportError)
+            ):
                 setattr(mapped, "retry_safe", True)
             if response_delta_seen:
                 setattr(mapped, "retryable", False)

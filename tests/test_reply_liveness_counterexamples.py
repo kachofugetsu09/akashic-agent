@@ -575,6 +575,7 @@ async def test_resume_continues_at_last_frozen_attempt_without_repaying(
         store.finish_call(
             call0, usage=None, failure="ContextLengthError: too long",
             next_attempt_at=None,
+            partial_response=False,
         )
         call1 = store.resume_call(
             descriptor, request1, request_key="key-1", owner_id=None
@@ -692,6 +693,7 @@ async def test_terminal_prep_stalls_without_budget_bypass(tmp_path):
         store.finish_call(
             call0, usage=None, failure="InvalidRequestError",
             next_attempt_at=None,
+            partial_response=False,
         )
         base_seq = log.reader("s").head()
         _seed_prep(log, "reply:s:conversation:u1:0", {
@@ -973,7 +975,8 @@ async def test_context_rejected_first_attempt_resumes_local_reduction(tmp_path):
             descriptor, request0, request_key="ctx-key", owner_id=None
         )
         store.finish_call(
-            call0, usage=None, failure="ContextLengthError", next_attempt_at=None
+            call0, usage=None, failure="ContextLengthError", next_attempt_at=None,
+            partial_response=False,
         )
         log.save_binding("summary-binding", {"target": "plugin:reply:generation"})
         base_seq = log.reader("s").head()
@@ -1048,6 +1051,7 @@ async def test_context_rejected_second_attempt_is_terminal_across_restarts(
             store.finish_call(
                 call, usage=None, failure="ContextLengthError",
                 next_attempt_at=None,
+                partial_response=False,
             )
         log.save_binding("summary-binding", {"target": "plugin:reply:generation"})
         base_seq = log.reader("s").head()
@@ -1123,6 +1127,7 @@ async def test_frozen_second_attempt_rejected_on_resume_stays_terminal(
         store.finish_call(
             call0, usage=None, failure="ContextLengthError",
             next_attempt_at=None,
+            partial_response=False,
         )
         log.save_binding("summary-binding", {"target": "plugin:reply:generation"})
         base_seq = log.reader("s").head()
@@ -1197,6 +1202,7 @@ async def test_resume_after_provable_failure_pays_once(tmp_path):
         store.finish_call(
             call0, usage=None, failure="ContentSafetyError",
             next_attempt_at=None,
+            partial_response=False,
         )
         base_seq = log.reader("s").head()
         _seed_prep(log, "reply:s:conversation:u1:0", {
@@ -1220,3 +1226,123 @@ async def test_resume_after_provable_failure_pays_once(tmp_path):
         assert message.message_id != "fixed-output", "新准备有自己的 Output 身份"
         records = store.calls_for_key("safety-key")
         assert len(records) == 1 and records[0]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_partial_context_length_failure_never_reduces_or_replays(tmp_path):
+    """§10.2 部分输出证据：provider 已交付部分增量后报容量失败，远端效果
+    不可证——同一 _complete 不得缩减、不得发送第二请求；耐久证据使
+    key_recovery 判 uncertain，resume 不得据此重付。"""
+    from agent.plugin_composition.models import ContextLengthError
+
+    provider_calls = 0
+    forced_reductions = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        error = ContextLengthError("partial output then context_length_exceeded")
+        error.response_delta_seen = True
+        raise error
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async def reducer(*args, force=False, **kwargs):
+        nonlocal forced_reductions
+        if force:
+            forced_reductions += 1
+        return None
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+        reducer=reducer,
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        with pytest.raises(ContextLengthError):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 1, "部分输出后的容量失败不得发送第二请求"
+        assert forced_reductions == 0, "部分输出证据下不得进入强制缩减分支"
+
+        # 耐久账目携带部分输出证据：重启/重开一律判 uncertain。
+        records = [
+            record
+            for record in store.read_calls("", 100)
+            if record["state"] == "error"
+        ]
+        assert records and records[-1]["partial_response"] == 1
+        key = records[-1]["request_key"]
+        assert key and _BoundChat(
+            _fixture_descriptor(), type("D", (), {"max_tool_schemas": None})(),
+            store,
+        ).key_recovery(key) == "uncertain"
+
+        # 显式 resume 不证明 provider 未处理：不得重付。
+        await conversation.resume("resume-1", "u1")
+        with pytest.raises(ModelUnavailableError, match="不确定"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 1
+
+        # 旧 uncertain 记录不可被覆盖或当作安全。
+        assert store.calls_for_key(key)[-1]["partial_response"] == 1
+
+
+@pytest.mark.asyncio
+async def test_seeded_partial_context_length_prep_stalls_until_new_input(tmp_path):
+    """耐久 partial_response=1 的 ContextLengthError：重开不建后续 key、
+    resume 不重付；新 Input 授权新准备付费一次。"""
+    from plugins.react.plugin import _decode_request
+
+    provider_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMResponse("paid answer")
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "hi"},))
+        )["request"])
+        call0 = store.resume_call(
+            descriptor, request0, request_key="partial-ctx-key", owner_id=None
+        )
+        store.finish_call(
+            call0, usage=None, failure="ContextLengthError",
+            next_attempt_at=None, partial_response=True,
+        )
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "partial-output",
+            "request_keys": ["partial-ctx-key"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [_frozen_entry(request0)],
+        })
+
+        # 部分输出的容量拒绝不是"可证明未处理"：不得续跑缩减、不开新 key。
+        with pytest.raises(ModelUnavailableError, match="不确定"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0
+        assert len(store.calls_for_key("partial-ctx-key")) == 1
+
+        await conversation.resume("resume-1", "u1")
+        with pytest.raises(ModelUnavailableError, match="不确定"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0
+
+        await conversation.accept("u2", Input((ContentPart("text", "again"),)))
+        message = await (await conversation.start(run)).join()
+        assert provider_calls == 1, "新 Input 之后的新准备如实付费一次"
+        assert len(store.calls_for_key("partial-ctx-key")) == 1, (
+            "旧 uncertain 账目不得被改写或追加"
+        )
+        assert message.body.finish == "complete"

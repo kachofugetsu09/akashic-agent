@@ -232,7 +232,10 @@ class _BoundChat:
         - "uncertain"：取消、孤儿、传输/超时与一切未知名目——远端效果
           不可证，resume 不得据此重付，只有新 Input 作为真正新工作可运行。
 
-        终结（rejected/answered/uncertain）的 key 不因重启/重调获得新预算。"""
+        终结（rejected/answered/uncertain）的 key 不因重启/重调获得新预算。
+        partial_response 是 driver 在协议层观察到的真实输出证据：只接受
+        显式 0 作为"未处理"证明，1 或缺失（旧记录无该事实）一律保守判
+        uncertain——异常名不能抵消已观察到的部分输出。"""
         records = self._store.calls_for_key(request_key)
         if not records:
             return "open"
@@ -241,6 +244,8 @@ class _BoundChat:
             return "open"
         if last.get("next_attempt_at") is not None and len(records) < self._max_attempts:
             return "open"
+        if last.get("partial_response") != 0:
+            return "uncertain"
         failure = last.get("failure")
         if failure == "ContextLengthError":
             return "rejected"
@@ -383,7 +388,11 @@ class _BoundChat:
                     response = await self._driver.complete(driver_request)
                 except BaseException as failure:
                     # 网络请求可能已经到达 provider；本地异常不证明没有计费。
-                    retryable = bool(
+                    # driver 在协议层观察到 text/tool/reasoning 增量后置
+                    # response_delta_seen——该事实耐久入账，且任何部分输出
+                    # 都不再允许本 key 自动重试（远端效果不可证）。
+                    partial = bool(getattr(failure, "response_delta_seen", False))
+                    retryable = not partial and bool(
                         getattr(failure, "retry_safe", False)
                         or getattr(failure, "retryable", False)
                     )
@@ -401,6 +410,7 @@ class _BoundChat:
                             call_id, usage=None, failure=type(failure).__name__,
                             duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
                             next_attempt_at=retry_at,
+                            partial_response=partial,
                         )
                     except Exception as record_failure:
                         raise failure from record_failure

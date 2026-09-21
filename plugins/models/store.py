@@ -435,6 +435,7 @@ class ModelsStore:
         self, call_id: str, *, usage: ModelUsage | None, failure: str | None,
         duration_ms: float | None = None, response: LLMResponse | None = None,
         next_attempt_at: float | None = None,
+        partial_response: bool | None = None,
     ) -> None:
         """只结算同一 started 记录；成功先耐久保存响应，未知 usage 不记成零。"""
         if not self.writable:
@@ -447,16 +448,22 @@ class ModelsStore:
         columns = self._attempt_columns()
         has_response = "response_json" in columns
         has_next = "next_attempt_at" in columns
+        has_partial = "partial_response" in columns
         update = (
             "UPDATE model_calls SET state=?,usage_json=?,failure=?,"
             "finished_at=CURRENT_TIMESTAMP,duration_ms=?"
             + (",response_json=?" if has_response else "")
             + (",next_attempt_at=?" if has_next else "")
+            + (",partial_response=?" if has_partial else "")
             + " WHERE id=? AND state='started'"
         )
         extras = (
             ([body] if has_response else [])
             + ([next_attempt_at] if has_next else [])
+            + (
+                [None if partial_response is None else int(partial_response)]
+                if has_partial else []
+            )
         )
         values = (state, encoded, failure, duration_ms, *extras, call_id)
         try:
@@ -478,6 +485,11 @@ class ModelsStore:
             and record["failure"] == failure
             and record.get("usage") == (None if usage is None else asdict(usage))
             and (body is None or (response is not None and record.get("response") == _response_payload(response)))
+            and (
+                not has_partial
+                or record.get("partial_response")
+                == (None if partial_response is None else int(partial_response))
+            )
         )
         if not same:
             raise RuntimeError("Model 调用已经结算为相异回执")
@@ -1716,7 +1728,10 @@ ON CONFLICT(id) DO UPDATE SET
 """
 
 
-_MODEL_CALLS_ATTEMPT_COLUMNS = ("request_key", "attempt", "owner_id", "response_json", "next_attempt_at")
+_MODEL_CALLS_ATTEMPT_COLUMNS = (
+    "request_key", "attempt", "owner_id", "response_json", "next_attempt_at",
+    "partial_response",
+)
 _MODEL_CALLS_BASE_COLUMNS = {
     "id": "TEXT",
     "binding_json": "TEXT",
@@ -1736,6 +1751,7 @@ _MODEL_CALLS_ADDITIVE_TYPES = {
     "owner_id": "TEXT",
     "response_json": "TEXT",
     "next_attempt_at": "REAL",
+    "partial_response": "INTEGER",
 }
 
 MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
@@ -1753,7 +1769,8 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
     attempt INTEGER,
     owner_id TEXT,
     response_json TEXT,
-    next_attempt_at REAL
+    next_attempt_at REAL,
+    partial_response INTEGER
 )"""
 
 
