@@ -3086,10 +3086,11 @@ class PluginManager:
         workspace = self._workspace if validation_host is None else validation_host.workspace
         if candidate_owner is not None:
             workspace = self._workspace / "runtime" / "plugin-validation" / secrets.token_hex(16) / "workspace"
-            # 候选 Root 的 Scope 在 discard、失败或晋升恢复后删除整个 validation root。
+            # 候选 Root 的 Scope 在 discard、失败或晋升恢复后删除整个 validation root；
+            # 清理失败保留在 deferred cleanup，dispose 重试时再次执行。
             root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
                 f"validation-root:{workspace.parent}",
-                lambda: shutil.rmtree(workspace.parent, ignore_errors=True),
+                lambda: _remove_candidate_validation_root(workspace.parent, self._workspace),
             )
         try:
             actual = self._archived_generations(
