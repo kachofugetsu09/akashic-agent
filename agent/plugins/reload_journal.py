@@ -177,6 +177,17 @@ class ReloadJournal:
         with self._connect() as conn:
             return update_rollback.read(conn, update_id)
 
+    def armed_update_for_plugin(self, plugin_id: str) -> update_rollback.UpdateRollback | None:
+        """按插件查唯一未完成更新；初始化失败记录在原 owner 上供显式结算。"""
+        with self._connect() as conn:
+            if not update_rollback.check_schema(conn):
+                return None
+            row = conn.execute(
+                "SELECT update_id FROM plugin_updates WHERE plugin_id=? AND phase='armed'",
+                (plugin_id,),
+            ).fetchone()
+            return None if row is None else update_rollback.read(conn, row[0])
+
     def update_for_reload(self, tx_id: str) -> update_rollback.UpdateRollback | None:
         """有更新恢复点时，完整旧指针对只由该记录恢复。"""
         with self._connect() as conn:

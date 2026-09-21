@@ -99,7 +99,6 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
 from agent.plugins.artifacts import (
     ArtifactSelector,
-    discard_latest_pointer,
     read_pointer,
     read_pointers,
     resolve_pointer,
@@ -844,6 +843,27 @@ class PluginManager:
                 return generation
         raise KeyError(f"插件不存在: {plugin_id}")
 
+    def _candidate_init_failure(self, mod: dict[str, str]) -> str | None:
+        """安装 owner 已记录初始化失败的候选不自动重试。"""
+
+        if mod.get("source_type") != "installed":
+            return None
+        update = self._reload_journal.armed_update_for_plugin(_resolve_plugin_id(mod))
+        if update is None or not update.error:
+            return None
+        return update.error
+
+    def _record_candidate_init_failure(self, mod: dict[str, str], error: BaseException) -> str:
+        """初始化失败只登记在安装 owner；latest 指针与结算留给显式 discard。"""
+
+        message = str(error) or type(error).__name__
+        if mod.get("source_type") == "installed":
+            update = self._reload_journal.armed_update_for_plugin(_resolve_plugin_id(mod))
+            if update is not None:
+                self._reload_journal.record_update_error(update.update_id, message)
+        logger.error("插件候选初始化失败: plugin=%s error=%s", _resolve_plugin_id(mod), message)
+        return message
+
     async def discard_prepared(
         self, plugin_id: str, *, error: str = "candidate discarded",
     ) -> None:
@@ -1351,12 +1371,27 @@ class PluginManager:
             if publication.get("publication_state") == "latest_ready":
                 return results
         for plugin_id in sorted(desired - set(self._active_generations)):
+            mod = discovered[plugin_id]
+            recorded = self._candidate_init_failure(mod)
+            if recorded is not None:
+                results.append(_candidate_failure_status(
+                    plugin_id, source_revision=None, error=recorded,
+                    snapshot=self.current_snapshot,
+                ))
+                _log_candidate_status(results[-1])
+                continue
             try:
-                generation = await self._load_one(discovered[plugin_id], activate=False)
+                generation = await self._load_one(mod, activate=False)
             except SelectionConflictError:
                 raise
-            except Exception:
-                _discard_installed_candidate_mod(discovered[plugin_id])
+            except Exception as error:
+                # 初始化失败只登记在安装 owner；指针与重试留给显式 discard。
+                message = self._record_candidate_init_failure(mod, error)
+                results.append(_candidate_failure_status(
+                    plugin_id, source_revision=None, error=message,
+                    snapshot=self.current_snapshot,
+                ))
+                _log_candidate_status(results[-1])
                 continue
             if generation is None:
                 continue
@@ -2095,6 +2130,13 @@ class PluginManager:
             and self._operation is not None and self._operation.committed is not None
         ):
             raise RuntimeError("更新已提交；revert 不能撤销已提交选择或插件数据")
+        if update.phase == "armed" and update.reload_tx_id is None:
+            # 初始化在登台前失败的更新没有 runtime 候选；仍按安装 owner 原协议结算。
+            async with asyncio.timeout_at(deadline):
+                await self._run_operation(
+                    lambda: self._discard_update(update_id, reason=reason), allow_stable_lease=True,
+                )
+            return
         if self._ready_candidate is None:
             async with asyncio.timeout_at(deadline):
                 await self._run_operation(
@@ -2142,8 +2184,16 @@ class PluginManager:
         update = self._reload_journal.update(update_id)
         if update.phase == "rolled_back":
             return
-        if update.phase != "armed" or update.reload_tx_id is None:
+        if update.phase != "armed":
             raise RuntimeError("更新不是等待丢弃的候选")
+        if update.reload_tx_id is None:
+            # 登台前初始化失败：没有 runtime 候选资源，只按原指针结算安装恢复点。
+            self._check_operation_commit()
+            self._reload_journal.rollback_updates(
+                self.installed_plugins_home, update_id=update_id, error=reason,
+            )
+            self._notify_updates()
+            return
         record = self._reload_journal.get(update.reload_tx_id)
         if (record.plugin_id != update.plugin_id
                 or record.candidate_artifact_pointer != update.candidate.path
@@ -2578,14 +2628,16 @@ class PluginManager:
             ):
                 continue
             await self._discard_prepared(plugin_id)
-            try:
-                prepared = await self._load_one(mod, activate=False)
-            except SelectionConflictError:
-                raise
-            except Exception:
-                # 单个候选构建失败只结算本次 latest staging，不阻断其他插件。
-                _discard_installed_candidate_mod(mod)
-                prepared = None
+            prepared: PluginGeneration | None = None
+            failure = self._candidate_init_failure(mod)
+            if failure is None:
+                try:
+                    prepared = await self._load_one(mod, activate=False)
+                except SelectionConflictError:
+                    raise
+                except Exception as error:
+                    # 初始化失败只登记在安装 owner；latest 指针不凭失败自动回退。
+                    failure = self._record_candidate_init_failure(mod, error)
             result: dict[str, object] = {
                 "plugin_id": plugin_id,
                 "active_generation": active.generation_id,
@@ -2602,6 +2654,8 @@ class PluginManager:
                     else None
                 ),
             }
+            if failure is not None:
+                result["error"] = failure
             results.append(result)
             _log_candidate_status(result)
         return results
@@ -3698,13 +3752,39 @@ def _plugins_home(installed_cache_root: Path | None) -> Path:
     return plugins_root()
 
 
-def _discard_installed_candidate_mod(mod: dict[str, str]) -> None:
-    """已安装候选在成为 candidate 前被拒绝时，结算其 latest staging 指针。"""
+def _candidate_failure_status(
+    plugin_id: str,
+    *,
+    source_revision: str | None,
+    error: str,
+    snapshot: RuntimeSnapshot | None,
+) -> dict[str, object]:
+    """初始化失败在 reconcile 结果中保持可查，不伪装成正常空结果。"""
 
-    if mod.get("source_type") != "installed":
+    return {
+        "plugin_id": plugin_id,
+        "active_generation": None,
+        "prepared_generation": None,
+        "preparation_state": "failed",
+        "candidate_revision": source_revision,
+        "snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
+        "error": error,
+    }
+
+
+def _remove_candidate_validation_root(root: Path, workspace: Path) -> None:
+    """只删除临时候选校验目录；已缺失是幂等完成，真实失败原样抛出供 owner 重试。"""
+
+    allowed = (workspace / "runtime" / "plugin-validation").resolve()
+    resolved = root.resolve()
+    if resolved == allowed or allowed not in resolved.parents:
+        raise RuntimeError(f"候选校验目录不在允许范围内: {root}")
+    if root.is_symlink():
+        raise RuntimeError(f"候选校验目录不能是符号链接: {root}")
+    try:
+        shutil.rmtree(root)
+    except FileNotFoundError:
         return
-    plugin_base = _installed_artifact_base_from_root(Path(mod["plugin_root"]))
-    _ = discard_latest_pointer(plugin_base)
 
 
 def _installed_generation_is_candidate(generation: PluginGeneration) -> bool:
