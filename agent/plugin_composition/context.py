@@ -13,7 +13,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar, cast
 
 from agent.plugin_composition.effect import Effect, EffectSetup, _join_cleanup as _await_critical
 from agent.plugin_composition.diagnostics import (
@@ -56,25 +56,43 @@ R = TypeVar("R")
 PluginApply = Callable[["Context"], object]
 
 
-class RuntimeLease(Protocol):
-    """Opaque scope 租约能力：身份可读、可 fork/release，不可遍历到 snapshot 或 Root。"""
+class RuntimeLease:
+    """Opaque scope 租约能力：身份可读、可 fork/release；snapshot 与 Root 归 Core 私有。
+
+    公开面只有 snapshot_id/active/fork/release；实现私有持有真实
+    RuntimeSnapshotLease，插件经 admission 取得的实例无法遍历到
+    snapshot、composition_root 或任意服务。
+    """
+
+    __slots__ = ("_lease",)
+
+    def __init__(self, lease: "RuntimeSnapshotLease") -> None:
+        self._lease = lease
 
     @property
-    def snapshot_id(self) -> str: ...
+    def snapshot_id(self) -> str:
+        return self._lease.snapshot.snapshot_id
 
     @property
-    def active(self) -> bool: ...
+    def active(self) -> bool:
+        return self._lease.active
 
-    def fork(self) -> "RuntimeLease": ...
+    def fork(self) -> "RuntimeLease":
+        return RuntimeLease(self._lease.fork())
 
-    async def release(self) -> None: ...
+    async def release(self) -> None:
+        await self._lease.release()
+
+    def _raw_lease(self) -> "RuntimeSnapshotLease":
+        """Core 内部还原真实租约；公开面不提供。"""
+        return self._lease
 
 
 class RuntimeScope:
     """Carry one exact snapshot from a source callback into one async operation."""
 
-    def __init__(self, lease: RuntimeLease) -> None:
-        self._lease = lease
+    def __init__(self, lease: "RuntimeLease | RuntimeSnapshotLease") -> None:
+        self._lease = lease._lease if isinstance(lease, RuntimeLease) else lease
         self._token: object | None = None
         self._closed = False
 
@@ -96,7 +114,7 @@ class RuntimeScope:
     def snapshot_id(self) -> str:
         """Expose only the immutable identity carried by this runtime scope."""
 
-        return self._lease.snapshot_id
+        return self._lease.snapshot.snapshot_id
 
     async def __aenter__(self) -> None:
         if self._closed or self._token is not None:

@@ -981,7 +981,7 @@ class PluginChannels:
         context = state.plugin_context
         if context is None:
             raise RuntimeError("Channel binding 不属于 exact Root/provider/贡献 Context")
-        owner = self._admission.require_binding_owner(snapshot_lease, context, CHANNELS, self)
+        owner = self._admission.require_channel_binding_owner(snapshot_lease, context, self)
         if (owner != state.plugin_id
                 or context.fiber.activation_token is not state.activation_token):
             raise RuntimeError("Channel binding 不属于 exact Root/provider/贡献 Context")
@@ -1112,8 +1112,8 @@ class PluginChannels:
         binding: ChannelBindingLease | None = None
         try:
             binding = await self._acquire_control_binding(key)
-            owner = self._admission.require_binding_owner(
-                binding.snapshot_lease, context, CHANNELS, self,
+            owner = self._admission.require_channel_binding_owner(
+                binding.snapshot_lease, context, self,
             )
             if (
                 owner != state.plugin_id
@@ -1541,9 +1541,9 @@ class PluginChannels:
                 assert binding is not None and envelope is not None
                 lease = binding.snapshot_lease.fork()
                 async with RuntimeScope(lease):
-                    # root/active/归属检查在 composition owner 内完成；
-                    # 插件侧只拿到已声明服务，不遍历 snapshot 或 Root。
-                    accept = self._admission.require_scope_service(lease, CHANNEL_INPUT)
+                    # root/active/当前 Task/归属检查在 composition owner 内完成；
+                    # 插件侧只拿到已声明的 channel 输入端口，不遍历 snapshot 或 Root。
+                    accept = self._admission.channel_input(lease)
                     _ = await accept(session_key, raw.message_id, raw.message)
                     accepted = True
                     # 此后失败只能保留 cleanup/recovery，不能回滚身份或去重记录。

@@ -1,17 +1,18 @@
 """Root 的来源接纳许可；连接及具体停止协议由 provider 持有。"""
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from agent.plugin_composition.context import Context, RuntimeLease
 from agent.plugin_composition.model import CompositionError, ServiceKey
 
 if TYPE_CHECKING:
+    from session.message import Message
+
+    from agent.plugin_composition.channels import ChannelInboundMessage
     from agent.plugin_composition.context import CompositionRoot
     from agent.plugins.snapshot import RuntimeSnapshotStore
-
-T = TypeVar("T")
 
 
 class SourceAdmission:
@@ -64,7 +65,7 @@ class SourceAdmission:
         if (lease is None or lease.snapshot.composition_root is None
                 or lease.snapshot.composition_root.instance_token is not self._root_token):
             raise RuntimeError("当前 runtime scope lease 不属于本 Root")
-        return lease
+        return RuntimeLease(lease)
 
     def lease(self, snapshot_id: str) -> RuntimeLease:
         """入口只能取得本 Root 的公开 opaque lease，不能借用恢复特权。"""
@@ -73,33 +74,46 @@ class SourceAdmission:
                 or current.composition_root is None
                 or current.composition_root.instance_token is not self._root_token):
             raise RuntimeError("来源 lease 不属于当前 Root")
-        return self._store.lease(snapshot_id)
+        return RuntimeLease(self._store.lease(snapshot_id))
 
     def _lease_root(self, lease: RuntimeLease) -> "CompositionRoot":
         """lease/root/active 检查在 composition owner 内完成；插件看不到 snapshot。"""
-        from agent.plugins.snapshot import RuntimeSnapshotLease
-
-        if not isinstance(lease, RuntimeSnapshotLease):
-            raise TypeError("scope 能力必须是 snapshot owner 签发的 lease")
-        root = lease.snapshot.composition_root
+        if not isinstance(lease, RuntimeLease):
+            raise TypeError("scope 能力必须是 admission owner 签发的 opaque lease")
+        raw = lease._raw_lease()
+        if not raw.active:
+            raise RuntimeError("scope lease 已释放或所属 snapshot 已退役")
+        root = raw.snapshot.composition_root
         if root is None or root.instance_token is not self._root_token:
             raise RuntimeError("scope lease 不属于本 Root")
         return root
 
-    def require_scope_service(self, lease: RuntimeLease, key: ServiceKey[T]) -> T:
-        """在 lease 所属 exact Root 上解析服务；跨 Root、无 Root 或缺服务时拒绝。"""
-        return self._lease_root(lease).context.require(key)
+    def channel_input(
+        self, lease: RuntimeLease,
+    ) -> Callable[[str, str, "ChannelInboundMessage"], Awaitable["Message"]]:
+        """在 lease 所属 exact 且 active 的本 Root 上取已声明的 channel 输入端口。
 
-    def require_binding_owner(
+        只允许当前 Task 绑定的 lease 解析；不提供任意 ServiceKey 查询。
+        """
+        from agent.plugin_composition.channels import CHANNEL_INPUT
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        root = self._lease_root(lease)
+        if get_current_runtime_lease() is not lease._raw_lease():
+            raise RuntimeError("scope lease 未绑定在当前 Task")
+        return root.context.require(CHANNEL_INPUT)
+
+    def require_channel_binding_owner(
         self,
         lease: RuntimeLease,
         ctx: Context,
-        key: ServiceKey[object],
-        service: object,
+        channels: object,
     ) -> str:
-        """确认 ctx 是 lease 所属本 Root 的贡献 Context 且 service 仍是 key 的实现。"""
+        """确认 ctx 是 lease 所属本 Root 的 CHANNELS 贡献 Context 且实现未变。"""
+        from agent.plugin_composition.channels import CHANNELS
+
         root = self._lease_root(lease)
-        if root.context.require(key) is not service:
+        if root.context.require(CHANNELS) is not channels:
             raise RuntimeError("binding 服务不属于当前 runtime scope")
         owner = root.context_owner(ctx)
         if owner is None:
