@@ -79,6 +79,71 @@ async def test_reconcile_candidate_init_failure_is_queryable_and_settles_only_on
 
 
 @pytest.mark.asyncio
+async def test_journal_failure_after_commit_keeps_real_error_and_recovery_owner(
+    tmp_path, monkeypatch,
+):
+    """promote 提交后的 durable 收尾失败：保留真实错误与已提交 Root owner。"""
+    source, home, workspace, old = prepare(tmp_path)
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                         installed_cache_root=home / "cache")
+    try:
+        await host.load_all()
+        stable = host.current_snapshot
+        result, _ = await host.install_candidate(
+            source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+        )
+        tx_id = host.reload_journal.update(result.update_id).reload_tx_id
+        assert tx_id is not None
+
+        # 1. 提交已成功、仅 draining 收尾的 journal 写入失败。
+        original_advance = host.reload_journal.advance
+        def fail_advance(failed_tx, phase, **kwargs):
+            if phase == "draining":
+                raise OSError("injected journal failure")
+            return original_advance(failed_tx, phase, **kwargs)
+        monkeypatch.setattr(host.reload_journal, "advance", fail_advance)
+
+        # 2. 真实原错误原样抛出，不被 AssertionError 掩盖。
+        with pytest.raises(OSError, match="injected journal failure"):
+            await host.switch_ready("probe@lab")
+
+        # 3. 已发生发布不回滚：新 Root 仍是 current，事务保留为恢复 owner。
+        publication = host._publication
+        assert publication is not None and publication.must_retain
+        promoted = host.current_snapshot
+        assert promoted is publication.candidate and promoted is not stable
+        assert promoted.accepting_leases is False
+        assert stable.state == "retired"
+        assert host.reload_journal.get(tx_id).phase == "committed"
+
+        # 4. 未结算的 drain/保留 owner 期间新安装被拒，不静默接管已提交 owner。
+        with pytest.raises(RuntimeError, match="drain 失败"):
+            await host.install_candidate(
+                source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+            )
+    finally:
+        await host.terminate_all()
+
+    # 5. 恢复后结算既有事务并可接受新更新；外部效果按新启动只发生一次。
+    recovered = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                              installed_cache_root=home / "cache")
+    try:
+        await recovered.load_all()
+        current = recovered.current_snapshot
+        assert current is not None
+        assert current.generations["probe@lab"].runtime_snapshot is current
+        record = recovered.reload_journal.get(tx_id)
+        # 重启结算把 committed 事务推到终态，不再停留等待 drain。
+        assert record.phase in {"recovered", "complete"}
+        result2, _ = await recovered.install_candidate(
+            source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+        )
+        assert result2.update_id != result.update_id
+    finally:
+        await recovered.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_candidate_validation_cleanup_failure_is_retained_and_retryable(
     tmp_path, monkeypatch,
 ):

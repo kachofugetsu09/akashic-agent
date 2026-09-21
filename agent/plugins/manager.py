@@ -714,6 +714,7 @@ class PluginManager:
             await self._replace_formal_root(
                 self._selection_components(selection_ref), expected_ref=selection_ref,
             )
+            self._settle_committed_publication()
             return
         enabled = load_plugin_manifest(self.installed_plugins_home)
         selected = tuple(
@@ -799,6 +800,7 @@ class PluginManager:
             await self._replace_formal_root(
                 components, expected_ref=None,
             )
+            self._settle_committed_publication()
         except BaseException as error:
             failure = error
         cleanup_errors: list[BaseException] = []
@@ -1440,6 +1442,7 @@ class PluginManager:
         snapshot = await self._replace_formal_root({
             key: item for key, item in self._active_generations.items() if key != plugin_id
         }, expected_ref=self._selection.read())
+        self._settle_committed_publication()
         return {
             "plugin_id": plugin_id, "old_generation": active.generation_id,
             "new_generation": None, "snapshot_id": snapshot.snapshot_id,
@@ -1746,9 +1749,11 @@ class PluginManager:
         try:
             self._track_reload_drain(generation, current)
         except BaseException:
-            assert self._publication is not None
-            self._hold_selection_publication(self._publication)
+            # journal 持久化失败时事务仍登记在 _publication；保留已提交
+            # Root 的恢复 owner，不吞真实错误也不伪装回滚已发生的发布。
+            self._hold_committed_publication()
             raise
+        self._settle_committed_publication()
         return self._publication_status(
             plugin_id, active=ready.previous, candidate=generation,
             publication_state="promoted",
@@ -1850,6 +1855,8 @@ class PluginManager:
                             commit_selection=False,
                         )
                     )
+                    # 恢复发布本身已完成全部 durable 收尾；本次操作仍以原错误返回。
+                    self._settle_committed_publication()
                     if recovery_cancelled and not isinstance(error, asyncio.CancelledError):
                         error = BaseExceptionGroup("发布失败且恢复期间取消", [error, asyncio.CancelledError()])
             except BaseException as recovery_error:
@@ -2005,10 +2012,20 @@ class PluginManager:
             assert transaction is not None
             self._hold_selection_publication(transaction)
             raise asyncio.CancelledError
-        # 提交已成功收尾的事务不再是需要保留的恢复 owner；不清掉会让
-        # must_retain 旧事务永久阻断后续 update 结算。
-        self._publication = None
+        # 提交成功的事务仍是 self._publication：调用者还有 durable 收尾
+        # （journal advance/settle）要写，任何持久化失败必须能拿到该事务
+        # 保留真实恢复 owner。只有收尾全部成功才允许 _settle_committed_publication。
         return snapshot
+
+    def _settle_committed_publication(self) -> None:
+        """已提交事务的 durable 收尾全部成功后，释放其恢复 owner 登记。"""
+        self._publication = None
+
+    def _hold_committed_publication(self) -> None:
+        """提交后 durable 收尾失败：保留已提交事务作为恢复 owner，不伪装回滚。"""
+        publication = self._publication
+        assert publication is not None
+        self._hold_selection_publication(publication)
 
     def _hold_selection_publication(self, transaction: SnapshotTransaction) -> None:
         """保留提交事实和新 owner；失败返回后不得后台开放接纳。"""
@@ -2083,10 +2100,16 @@ class PluginManager:
             previous=current, expected_ref=selection_ref,
             commit_selection=False,
         )
-        self._reload_journal.settle_boot(
-            action, committed=self._selection_transition_committed(action.tx_id, selection_ref),
-            cleanup_receipt="fresh-stable-root-restored",
-        )
+        try:
+            self._reload_journal.settle_boot(
+                action, committed=self._selection_transition_committed(action.tx_id, selection_ref),
+                cleanup_receipt="fresh-stable-root-restored",
+            )
+        except BaseException:
+            # 恢复发布已提交但结算写入失败：保留事务作为恢复 owner。
+            self._hold_committed_publication()
+            raise
+        self._settle_committed_publication()
         generation = replacement.generations.get(plugin_id)
         return {
             "plugin_id": plugin_id, "publication_state": "recovered",
@@ -2403,7 +2426,12 @@ class PluginManager:
         self._ready_candidate = _ReadyPluginCandidate(
             plugin_id=plugin_id, previous=active, snapshot=snapshot,
         )
-        self._advance_reload(generation, "latest_ready")
+        try:
+            self._advance_reload(generation, "latest_ready")
+        except BaseException:
+            # latest 指针已提交但 durable 收尾失败：保留事务作为恢复 owner。
+            self._hold_selection_publication(transaction)
+            raise
         if cancelled:
             raise asyncio.CancelledError
         if not candidate_only and not _installed_generation_is_candidate(generation):
@@ -2743,6 +2771,7 @@ class PluginManager:
                 snapshot = await self._replace_formal_root(
                     components, expected_ref=base_selection_ref,
                 )
+                self._settle_committed_publication()
             else:
                 snapshot = await self._compile_generation_snapshot(source, candidate_owner=source)
             generation = snapshot.generations[plugin_id]
