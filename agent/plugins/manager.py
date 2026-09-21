@@ -1152,11 +1152,20 @@ class PluginManager:
             _, prep_cancelled = await _complete_critical(
                 self._stage_candidate(plugin_id)
             )
-        except BaseException:
+        except BaseException as error:
             if self._publication is not publication_before and self._publication is not None:
                 if self._publication.must_retain:
                     self._hold_selection_publication(self._publication)
                     raise
+            if self._candidate_cleanup_pending(result.update_id, plugin_id):
+                # 初始化或清理双失败：owner 与确切目录义务未清完前更新保持 armed，
+                # 由显式 discard 完成清理后再结算指针。
+                self._reload_journal.record_update_error(
+                    result.update_id,
+                    f"candidate preparation failed: {error}",
+                )
+                self._notify_updates()
+                raise
             self._reload_journal.rollback_updates(
                 self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
             )
@@ -1174,6 +1183,12 @@ class PluginManager:
                 and status["candidate_state"] == "latest_ready"
             ):
                 _ = await self._drop_ready(plugin_id)
+            if self._candidate_cleanup_pending(result.update_id, plugin_id):
+                self._reload_journal.record_update_error(
+                    result.update_id, "install cancelled and candidate cleanup incomplete",
+                )
+                self._notify_updates()
+                raise asyncio.CancelledError
             self._reload_journal.rollback_updates(
                 self.installed_plugins_home, update_id=result.update_id, error="install cancelled",
             )
@@ -1187,9 +1202,15 @@ class PluginManager:
                 if self._publication.must_retain:
                     self._hold_selection_publication(self._publication)
                     raise RuntimeError("运行选择已提交或不确定，安装状态需显式结算")
-            self._reload_journal.rollback_updates(
-                self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
-            )
+            if self._candidate_cleanup_pending(result.update_id, plugin_id):
+                self._reload_journal.record_update_error(
+                    result.update_id, "candidate preparation failed",
+                )
+                self._notify_updates()
+            else:
+                self._reload_journal.rollback_updates(
+                    self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
+                )
             raise RuntimeError(
                 "插件候选未进入 latest_ready: "
                 f"requestedPlugin={plugin_id} "
@@ -2211,7 +2232,7 @@ class PluginManager:
         if update.phase != "armed":
             raise RuntimeError("更新不是等待丢弃的候选")
         if update.reload_tx_id is None:
-            # 登台前初始化失败：先完成本插件保留 Root 的真实清理，
+            # 登台前初始化失败：先完成本插件保留 Root 与持久校验目录的真实清理，
             # 清理失败则保留 owner 并拒绝结算指针，不伪装 discard 成功。
             self._check_operation_commit()
             retained = self._failed_candidate_roots.get(update.plugin_id)
@@ -2224,6 +2245,9 @@ class PluginManager:
                     del self._failed_candidate_roots[update.plugin_id]
             if self._building_roots:
                 raise RuntimeError("候选或资源 owner 仍在清理，拒绝结算指针")
+            # 进程重启后内存 owner 已丢失；journal 里的确切目录是唯一清理范围。
+            for validation_root in self._reload_journal.candidate_cleanup(update_id):
+                self._clear_candidate_validation_root(validation_root, update_id)
             self._reload_journal.rollback_updates(
                 self.installed_plugins_home, update_id=update_id, error=reason,
             )
@@ -2251,6 +2275,9 @@ class PluginManager:
             if any(host.parent_lease.snapshot is ready.snapshot for host in self._validation_hosts.values()):
                 raise RuntimeError("验证尚未退出或资源尚未清理")
             _ = await self._drop_ready(update.plugin_id, error=reason)
+        # 进程重启后候选 Root 已不在内存；按 journal 里的确切目录完成清理再结算。
+        for validation_root in self._reload_journal.candidate_cleanup(update_id):
+            self._clear_candidate_validation_root(validation_root, update_id)
         self._check_discarded_update(update_id)
         self._check_operation_commit()
         # runtime 清理不回写安装状态；由持有本次请求的安装入口结算恢复点。
@@ -3134,9 +3161,16 @@ class PluginManager:
             workspace = self._workspace / "runtime" / "plugin-validation" / secrets.token_hex(16) / "workspace"
             # 候选 Root 的 Scope 在 discard、失败或晋升恢复后删除整个 validation root；
             # 清理失败保留在 deferred cleanup，dispose 重试时再次执行。
+            # 目录身份先落到 armed 更新；进程被杀后仍能按记录恢复精确清理义务。
+            cleanup_update = self._reload_journal.armed_update_for_plugin(candidate_owner.plugin_id)
+            cleanup_update_id = None if cleanup_update is None else cleanup_update.update_id
+            if cleanup_update_id is not None:
+                self._reload_journal.record_candidate_cleanup(
+                    cleanup_update_id, candidate_owner.plugin_id, workspace.parent,
+                )
             root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
                 f"validation-root:{workspace.parent}",
-                lambda: _remove_candidate_validation_root(workspace.parent, self._workspace),
+                lambda: self._clear_candidate_validation_root(workspace.parent, cleanup_update_id),
             )
         try:
             actual = self._archived_generations(
@@ -3213,6 +3247,21 @@ class PluginManager:
             raise
         if cancelled:
             raise asyncio.CancelledError
+
+    def _clear_candidate_validation_root(self, root: Path, update_id: str | None) -> None:
+        """真实删除成功才销账持久义务；删除失败抛出让 dispose 重试。"""
+
+        _remove_candidate_validation_root(root, self._workspace)
+        if update_id is not None:
+            self._reload_journal.clear_candidate_cleanup(update_id, root)
+
+    def _candidate_cleanup_pending(self, update_id: str, plugin_id: str) -> bool:
+        """保留的候选 Root 或持久校验目录义务未清完前，更新不得结算指针。"""
+
+        retained = self._failed_candidate_roots.get(plugin_id)
+        if retained is not None and any(root in self._building_roots for root in retained):
+            return True
+        return bool(self._reload_journal.candidate_cleanup(update_id))
 
     async def _discard_candidate_building_root(
         self, plugin_id: str, root: CompositionRoot, error: BaseException,

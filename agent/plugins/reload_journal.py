@@ -196,6 +196,33 @@ class ReloadJournal:
             row = conn.execute("SELECT update_id FROM plugin_updates WHERE reload_tx_id=?", (tx_id,)).fetchone()
             return None if row is None else update_rollback.read(conn, row[0])
 
+    def record_candidate_cleanup(
+        self, update_id: str, plugin_id: str, validation_root: Path,
+    ) -> None:
+        """候选校验目录从创建起就是安装 owner 的持久清理义务。"""
+        with self._connect() as conn:
+            _ = conn.execute(
+                "INSERT OR REPLACE INTO candidate_validation_roots VALUES(?,?,?,?)",
+                (update_id, plugin_id, str(validation_root), _now()),
+            )
+
+    def candidate_cleanup(self, update_id: str) -> tuple[Path, ...]:
+        """返回该更新仍欠的确切校验目录；进程重启后据此恢复清理。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT validation_root FROM candidate_validation_roots WHERE update_id=?",
+                (update_id,),
+            ).fetchall()
+            return tuple(Path(row[0]) for row in rows)
+
+    def clear_candidate_cleanup(self, update_id: str, validation_root: Path) -> None:
+        """只有真实删除成功才销账，失败保留义务供显式重试。"""
+        with self._connect() as conn:
+            _ = conn.execute(
+                "DELETE FROM candidate_validation_roots WHERE update_id=? AND validation_root=?",
+                (update_id, str(validation_root)),
+            )
+
     def record_update_error(self, update_id: str, error: str) -> None:
         """保存实际失败原因，不把诊断写入伪装成发布或回退。"""
         with self._connect() as conn:
@@ -228,6 +255,21 @@ class ReloadJournal:
                 query += " AND update_id=?"
                 values = (update_id,)
             for row in conn.execute(query, values).fetchall():
+                pending = conn.execute(
+                    "SELECT 1 FROM candidate_validation_roots WHERE update_id=? LIMIT 1",
+                    (row[0],),
+                ).fetchone()
+                if pending is not None:
+                    # 确切校验目录义务未清完的更新不结算指针；先完成清理再重试。
+                    _ = conn.execute(
+                        "UPDATE plugin_updates SET error=?,updated_at=? WHERE update_id=? AND phase='armed'",
+                        (
+                            f"{error}; candidate validation cleanup pending",
+                            _now(),
+                            row[0],
+                        ),
+                    )
+                    continue
                 update_rollback.rollback(conn, update_rollback.read(conn, row[0]), plugins_home, now=_now(), error=error)
 
     def begin(
@@ -820,6 +862,13 @@ class ReloadJournal:
                 ON reload_transactions(phase);
                 CREATE INDEX IF NOT EXISTS idx_reload_events_tx
                 ON reload_events(tx_id, sequence);
+                CREATE TABLE IF NOT EXISTS candidate_validation_roots (
+                    update_id TEXT NOT NULL,
+                    plugin_id TEXT NOT NULL,
+                    validation_root TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (update_id, validation_root)
+                );
                 """)
             columns = {
                 str(row[1])

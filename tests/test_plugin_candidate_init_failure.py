@@ -302,6 +302,69 @@ async def test_init_and_cleanup_failure_blocks_discard_until_owner_cleaned(
 
 
 @pytest.mark.asyncio
+async def test_install_candidate_double_fault_keeps_update_armed(
+    tmp_path, monkeypatch,
+):
+    """install_candidate 登台失败叠加清理失败：except 不得直接结算 armed 更新。"""
+    import agent.plugins.manager as manager_module
+
+    source, home, workspace, old = prepare(tmp_path)
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                         installed_cache_root=home / "cache")
+    try:
+        await host.load_all()
+        plugin_base = old.installed_path.parents[1]
+        original_pointers = read_pointers(plugin_base)
+
+        def fail_compile(*args, **kwargs):
+            raise ValueError("injected init failure")
+        monkeypatch.setattr(host._snapshot_compiler, "compile", fail_compile)
+        keep_failing = True
+        original_remove = manager_module._remove_candidate_validation_root
+        def fail_remove(root, ws):
+            if keep_failing:
+                raise OSError("injected cleanup failure")
+            return original_remove(root, ws)
+        monkeypatch.setattr(
+            manager_module, "_remove_candidate_validation_root", fail_remove,
+        )
+
+        # 1. 双故障下安装入口原样抛出初始化与清理两份错误，更新保持 armed 而非 rolled_back。
+        with pytest.raises(Exception, match="构建和清理均失败"):
+            await host.install_candidate(
+                source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+            )
+        update = host.reload_journal.armed_update_for_plugin("probe@lab")
+        assert update is not None
+        assert update.phase == "armed" and update.reload_tx_id is None
+        assert "candidate preparation failed" in update.error
+        staged_pointers = read_pointers(plugin_base)
+        assert staged_pointers != original_pointers
+        assert host._failed_candidate_roots.get("probe@lab")
+        validation_parent = workspace / "runtime" / "plugin-validation"
+        validation_root = next(iter(validation_parent.iterdir()))
+        assert validation_root in host.reload_journal.candidate_cleanup(update.update_id)
+
+        # 2. 清理义务未清完时 discard 被拒，指针不结算。
+        with pytest.raises(Exception):
+            await host.discard_update(update.update_id)
+        assert host.reload_journal.update(update.update_id).phase == "armed"
+        assert read_pointers(plugin_base) == staged_pointers
+        assert validation_root.exists()
+
+        # 3. 修复清理后显式 discard：先完成真实清理，再结算指针。
+        keep_failing = False
+        await host.discard_update(update.update_id)
+        assert host.reload_journal.update(update.update_id).phase == "rolled_back"
+        assert read_pointers(plugin_base) == original_pointers
+        assert not validation_root.exists()
+        assert host.reload_journal.candidate_cleanup(update.update_id) == ()
+    finally:
+        monkeypatch.undo()
+        await host.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_init_cleanup_failure_discard_recovers_after_restart(
     tmp_path, monkeypatch,
 ):
@@ -353,3 +416,77 @@ async def test_init_cleanup_failure_discard_recovers_after_restart(
         assert read_pointers(plugin_base) == original_pointers
     finally:
         await recovered.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_restart_cleans_durable_validation_root_before_settling(
+    tmp_path, monkeypatch,
+):
+    """模拟进程被杀：journal 义务让新 Manager 删除确切旧校验目录后才结算指针。"""
+    import agent.plugins.manager as manager_module
+
+    source, home, workspace, old = prepare(tmp_path)
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                         installed_cache_root=home / "cache")
+    plugin_base = old.installed_path.parents[1]
+    original_pointers = read_pointers(plugin_base)
+    try:
+        await host.load_all()
+        result = install_git_plugin(
+            workspace=workspace, source=str(source), marketplace="lab",
+            plugins_home=home, stage_candidate=True,
+        )
+        staged_pointers = read_pointers(plugin_base)
+
+        def fail_compile(*args, **kwargs):
+            raise ValueError("injected init failure")
+        monkeypatch.setattr(host._snapshot_compiler, "compile", fail_compile)
+        keep_failing = True
+        original_remove = manager_module._remove_candidate_validation_root
+        def fail_remove(root, ws):
+            if keep_failing:
+                raise OSError("injected cleanup failure")
+            return original_remove(root, ws)
+        monkeypatch.setattr(
+            manager_module, "_remove_candidate_validation_root", fail_remove,
+        )
+
+        await host.reconcile_changed()
+        update = host.reload_journal.armed_update_for_plugin("probe@lab")
+        assert update is not None
+        validation_parent = workspace / "runtime" / "plugin-validation"
+        validation_root = next(iter(validation_parent.iterdir()))
+        assert validation_root.exists()
+        assert validation_root in host.reload_journal.candidate_cleanup(result.update_id)
+        # 模拟进程被杀：不优雅 terminate，旧 host 的内存 owner 直接废弃。
+        host._stopping = True
+    finally:
+        monkeypatch.undo()
+
+    recovered = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                              installed_cache_root=home / "cache")
+    try:
+        await recovered.load_all()
+        assert recovered.reload_journal.update(result.update_id).phase == "armed"
+        assert read_pointers(plugin_base) == staged_pointers
+        assert validation_root.exists()
+        # 内存 owner 已丢；journal 义务在清理故障未解除时仍拒绝结算。
+        keep_failing = True
+        monkeypatch.setattr(
+            manager_module, "_remove_candidate_validation_root", fail_remove,
+        )
+        with pytest.raises(OSError, match="injected cleanup failure"):
+            await recovered.discard_update(result.update_id)
+        assert recovered.reload_journal.update(result.update_id).phase == "armed"
+        assert read_pointers(plugin_base) == staged_pointers
+        assert validation_root.exists()
+        # 修复后重试：先删除确切旧目录，指针才允许结算。
+        keep_failing = False
+        await recovered.discard_update(result.update_id)
+        assert recovered.reload_journal.update(result.update_id).phase == "rolled_back"
+        assert read_pointers(plugin_base) == original_pointers
+        assert not validation_root.exists()
+        assert recovered.reload_journal.candidate_cleanup(result.update_id) == ()
+    finally:
+        await recovered.terminate_all()
+        await host.terminate_all()
