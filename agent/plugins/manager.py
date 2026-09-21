@@ -1972,6 +1972,9 @@ class PluginManager:
             assert transaction is not None
             self._hold_selection_publication(transaction)
             raise asyncio.CancelledError
+        # 提交已成功收尾的事务不再是需要保留的恢复 owner；不清掉会让
+        # must_retain 旧事务永久阻断后续 update 结算。
+        self._publication = None
         return snapshot
 
     def _hold_selection_publication(self, transaction: SnapshotTransaction) -> None:
