@@ -176,7 +176,6 @@ class ProcessSpawner(Protocol):
         stderr: object = None,
         limit: int | None = None,
     ) -> tuple[ChildProcess, bool]: ...
-    def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess: ...
 
 
 class ExecutionGrant(ProcessSpawner, Protocol):
@@ -195,9 +194,6 @@ class ExecutionGrant(ProcessSpawner, Protocol):
         limit: int | None = None,
     ) -> tuple[ChildProcess, bool]:
         """受控 spawn：只消费本授权签发的 PreparedProcess，返回取消标记。"""
-        ...
-    def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
-        """只接管本授权登记且由它新 session 创建的子进程；外来进程一律拒绝。"""
         ...
 
 

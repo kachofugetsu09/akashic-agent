@@ -110,8 +110,8 @@ async def test_signed_prepared_is_frozen_and_spawns_real_group(tmp_path: Path) -
         try:
             assert cancelled is False
             assert isinstance(child.process.pid, int)
-            # adopt 只接管本授权登记的 child，返回同一句柄。
-            assert grant.adopt(child.process) is child
+            # grant 不保留 registry/adopt 后门；返回句柄即唯一 owner。
+            assert not hasattr(grant, "adopt")
         finally:
             await child.kill(timeout_s=5)
     finally:
@@ -119,18 +119,48 @@ async def test_signed_prepared_is_frozen_and_spawns_real_group(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_adopt_rejects_unregistered_foreign_process(tmp_path: Path) -> None:
-    root, grant, _ = await _bound_grant(tmp_path, "consumer")
-    foreign = await asyncio.create_subprocess_exec(
-        sys.executable, "-c", "import time; time.sleep(30)",
-    )
+async def test_saved_handle_drains_group_after_wrapper_leader_exits(
+    tmp_path: Path,
+) -> None:
+    """wrapper leader 退出但同组后代仍活：provider 用保存句柄排空整组。"""
+    import os
+    import signal
+
+    root, grant, code_dir = await _bound_grant(tmp_path, "consumer")
     try:
-        with pytest.raises(PermissionError):
-            grant.adopt(foreign)
-        assert foreign.returncode is None
+        pidfile = tmp_path / "grandchild.pid"
+        (code_dir / "wrapper.py").write_text(
+            "import subprocess, sys\n"
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
+            "open(sys.argv[1], 'w').write(str(p.pid))\n"
+        )
+        prepared = grant.prepare_process(("wrapper.py", str(pidfile)), ".", {})
+        # 不接管道：后代继承 stdio 会推迟 transport 的退出确认。
+        child, _ = await grant.spawn(prepared)
+        try:
+            for _ in range(100):
+                if pidfile.exists():
+                    break
+                await asyncio.sleep(0.05)
+            grandchild_pid = int(pidfile.read_text())
+            # leader 退出，PGID 内的后代仍存活。
+            await asyncio.wait_for(child.process.wait(), timeout=10)
+            group_id = child.group_id
+            assert isinstance(group_id, int)
+            os.kill(grandchild_pid, 0)
+            assert os.getpgid(grandchild_pid) == group_id
+            # 保存句柄仍排空整个进程组，不依赖 adopt/PID 重建。
+            await child.kill(timeout_s=10)
+            with pytest.raises(ProcessLookupError):
+                os.kill(grandchild_pid, 0)
+        finally:
+            await child.kill(timeout_s=5)
+            if pidfile.exists():
+                try:
+                    os.kill(int(pidfile.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
     finally:
-        foreign.kill()
-        await foreign.wait()
         await root.dispose()
 
 
@@ -164,53 +194,40 @@ async def test_spawn_cancellation_still_returns_owned_receipt(tmp_path: Path) ->
 
 @pytest.mark.asyncio
 async def test_prepare_process_rejects_fixed_env_override_in_both_inputs(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """调用方经 env/candidate_env 携带的固定键覆盖一律在签发边界被拒。"""
+    """固定键在名称层永久保留：覆盖、引入、同值声明一律在签发边界被拒。"""
+    monkeypatch.delenv("PATH", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.delenv("AKASHIC_BOOT_ID", raising=False)
+    monkeypatch.delenv("AKASHIC_SUPERVISED", raising=False)
     root, grant, _ = await _bound_grant(tmp_path, "consumer")
     try:
         for key in ("HOME", "AKA_PLUGIN_DATA_DIR", "AKASHIC_PLUGIN_DATA_DIR",
                     "AKASHIC_WORKSPACE", "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
-                    "PATH"):
+                    "PATH", "PYTHONPATH", "LANG"):
             with pytest.raises(PermissionError):
                 grant.prepare_process(("child.py",), ".", {key: "/tmp/evil"})
             with pytest.raises(PermissionError):
                 grant.prepare_process(
                     ("child.py",), ".", {}, {key: "/tmp/evil"},
                 )
-        # 固定键与宿主钉住值一致不算覆盖；运行期新键正常放行。
-        import os
-        if "PATH" in os.environ:
-            prepared = grant.prepare_process(
-                ("child.py",), ".", {}, {"PATH": os.environ["PATH"], "PORT": "9"},
-            )
-            assert prepared.env["PORT"] == "9"
-            assert prepared.env["PATH"] == os.environ["PATH"]
-    finally:
-        await root.dispose()
-
-
-@pytest.mark.asyncio
-async def test_children_deregistered_after_confirmed_exit(tmp_path: Path) -> None:
-    """多次 spawn/终止循环不增长 _children；存活子进程不被提前注销。"""
-    root, grant, _ = await _bound_grant(tmp_path, "consumer")
-    try:
-        prepared = grant.prepare_process(("child.py",), ".", {})
-        for _ in range(3):
-            child, _ = await grant.spawn(prepared)
-            pid = child.process.pid
-            assert grant._children.get(pid) is child
-            await child.kill(timeout_s=5)
-            for _ in range(50):
-                if pid not in grant._children:
-                    break
-                await asyncio.sleep(0.05)
-            assert pid not in grant._children
-        # 仍存活的子进程保留 owner，不被清空。
-        live, _ = await grant.spawn(prepared)
-        live_pid = live.process.pid
-        await asyncio.sleep(0.05)
-        assert grant._children.get(live_pid) is live
-        await live.kill(timeout_s=5)
+        # 宿主未设置这些键时，调用方引入同名键同样被拒。
+        for key in ("PATH", "PYTHONPATH", "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED"):
+            assert key not in __import__("os").environ
+            with pytest.raises(PermissionError):
+                grant.prepare_process(("child.py",), ".", {}, {key: "x"})
+        # 正常声明键与运行期新键不受影响。
+        prepared = grant.prepare_process(
+            ("child.py",), ".", {}, {"PORT": "9", "MARKER": "yes"},
+        )
+        assert prepared.env["PORT"] == "9"
+        assert prepared.env["MARKER"] == "yes"
+        # 宿主继承缺席时固定键不凭空出现。
+        assert "PATH" not in prepared.env
+        assert "PYTHONPATH" not in prepared.env
+        # 数据根/工作区合同键仍被钉住。
+        assert "HOME" in prepared.env
+        assert "AKASHIC_WORKSPACE" in prepared.env
     finally:
         await root.dispose()

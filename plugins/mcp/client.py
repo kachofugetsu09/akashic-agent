@@ -444,8 +444,12 @@ class McpClient:
         process = self._process
         if process is None:
             return
-        process_group = self._process_group or self._spawner.adopt(process)
-        self._process_group = process_group
+        process_group = self._process_group
+        if process_group is None:
+            raise RuntimeError(
+                f"MCP server {self.name!r} 持有 process 但缺 spawn 回执句柄，"
+                "不变量损坏；不得凭 PID 重建进程组 ownership"
+            )
         self._disconnecting = True
         errors: list[BaseException] = []
         hard_kill = False
@@ -628,7 +632,12 @@ class McpClient:
         process = self._process
         if process is None:
             return
-        process_group = self._process_group or self._spawner.adopt(process)
+        process_group = self._process_group
+        if process_group is None:
+            raise RuntimeError(
+                f"MCP server {self.name!r} 持有 process 但缺 spawn 回执句柄，"
+                "不变量损坏；不得凭 PID 重建进程组 ownership"
+            )
         stderr_task = self._stderr_task
         self._disconnecting = True
         try:

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 
-from agent.host_bridge.plugin_execution import HostedChildProcess, _spawn_child
+from agent.host_bridge.plugin_execution import _spawn_child
 from agent.plugin_composition.execution import ChildProcess, PreparedProcess
 from plugins.mcp.client import _infer_cwd
 
@@ -14,7 +14,6 @@ class LocalProcessSpawner:
 
     def __init__(self) -> None:
         self._issue_token = object()
-        self._children: dict[int, HostedChildProcess] = {}
 
     def prepare_process(
         self,
@@ -41,28 +40,7 @@ class LocalProcessSpawner:
     ) -> tuple[ChildProcess, bool]:
         if type(prepared) is not PreparedProcess or not prepared._issued_by(self._issue_token):
             raise PermissionError("spawn 只接受本授权签发的 PreparedProcess")
-        child, cancelled = await _spawn_child(
+        return await _spawn_child(
             prepared.command, cwd=prepared.cwd, env=prepared.env,
             stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
         )
-        pid = child.process.pid
-        if isinstance(pid, int):
-            self._children[pid] = child
-            asyncio.get_running_loop().create_task(
-                self._release_on_exit(pid, child),
-            )
-        return child, cancelled
-
-    async def _release_on_exit(self, pid: int, child) -> None:
-        try:
-            await child.process.wait()
-        finally:
-            if self._children.get(pid) is child:
-                del self._children[pid]
-
-    def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
-        pid = getattr(process, "pid", None)
-        child = self._children.get(pid) if isinstance(pid, int) else None
-        if child is None or child.process is not process:
-            raise PermissionError("adopt 只接受本授权已登记的子进程")
-        return child

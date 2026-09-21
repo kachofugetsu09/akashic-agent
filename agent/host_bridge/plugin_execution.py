@@ -46,6 +46,14 @@ async def cleanup_workloads_for_boot(
         )
 
 
+# 名称层永久保留的执行环境键：宿主继承来源 + 数据根/工作区合同键。
+_RESERVED_ENV_NAMES = frozenset({
+    "PATH", "PYTHONPATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ",
+    "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
+    "HOME", "AKA_PLUGIN_DATA_DIR", "AKASHIC_PLUGIN_DATA_DIR", "AKASHIC_WORKSPACE",
+})
+
+
 @dataclass(frozen=True)
 class CodeOwner:
     generation_id: str
@@ -81,7 +89,6 @@ class ExecutionGrant:
         self._mode = mode
         self._environment = dict(environment)
         self._issue_token = object()
-        self._children: dict[int, HostedChildProcess] = {}
 
     @property
     def mode(self) -> Literal["candidate", "formal"]:
@@ -111,23 +118,18 @@ class ExecutionGrant:
             "AKASHIC_PLUGIN_DATA_DIR": str(runtime.data_dir),
             "AKASHIC_WORKSPACE": str(runtime.workspace),
         })
-        # 两份输入都核对固定键：候选模式忽略 formal 输入不等于默许其中
-        # 携带固定键覆盖意图。宿主未钉住的身份/合同键同样禁止调用方
-        # 引入，避免缺席时伪造 boot identity 或数据根。
-        reserved = {
-            "HOME", "AKA_PLUGIN_DATA_DIR", "AKASHIC_PLUGIN_DATA_DIR",
-            "AKASHIC_WORKSPACE", "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
-        }
+        # 固定键在名称层永久保留：宿主继承键与数据根/身份合同键一律
+        # 由本授权钉住，调用方在 env/candidate_env 提供同名键即拒绝
+        # （含宿主未设置时的引入），候选模式忽略 formal 输入不等于默许。
         conflicts = sorted({
             key
             for source in (values, candidate_values)
-            for key, value in source.items()
-            if (key in fixed and fixed[key] != value)
-            or (key in reserved and key not in fixed)
+            for key in source
+            if key in _RESERVED_ENV_NAMES
         })
         if conflicts:
             raise PermissionError(
-                "执行环境不能覆盖宿主固定键: " + ", ".join(conflicts)
+                "执行环境键由宿主固定，调用方不得提供: " + ", ".join(conflicts)
             )
         result = dict(candidate_values if self._mode == "candidate" else values)
         result.update(fixed)
@@ -161,35 +163,10 @@ class ExecutionGrant:
         """只消费本授权签发的 PreparedProcess；取消仍先接住实际回执。"""
         if type(prepared) is not PreparedProcess or not prepared._issued_by(self._issue_token):
             raise PermissionError("spawn 只接受本授权签发的 PreparedProcess")
-        child, cancelled = await _spawn_child(
+        return await _spawn_child(
             prepared.command, cwd=prepared.cwd, env=prepared.env,
             stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
         )
-        pid = child.process.pid
-        if isinstance(pid, int):
-            self._children[pid] = child
-            # 确认真实退出后按对象身份注销，长期重连不再无限积累；
-            # 仍存活的子进程保留 owner，不在关闭时清空。
-            asyncio.get_running_loop().create_task(
-                self._release_on_exit(pid, child),
-                name=f"exec-child-reaper:{pid}",
-            )
-        return child, cancelled
-
-    async def _release_on_exit(self, pid: int, child: "HostedChildProcess") -> None:
-        try:
-            await child.process.wait()
-        finally:
-            if self._children.get(pid) is child:
-                del self._children[pid]
-
-    def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
-        """只接管本授权登记的子进程：未经 spawn 签发的进程不得假定进程组归属。"""
-        pid = getattr(process, "pid", None)
-        child = self._children.get(pid) if isinstance(pid, int) else None
-        if child is None or child.process is not process:
-            raise PermissionError("adopt 只接受本授权已登记的子进程")
-        return child
 
 
 async def _spawn_child(
