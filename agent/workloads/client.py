@@ -5,18 +5,15 @@ import json
 from pathlib import Path
 from typing import Protocol, cast
 
-from agent.workloads.model import (
+from agent.plugin_composition.execution import (
+    WorkloadEffectUnknown,
     WorkloadEndpoint,
     WorkloadLease,
+    WorkloadMode,
     WorkloadStartRequest,
     WorkloadStartReceipt,
     WorkloadStopReceipt,
-    WorkloadMode,
 )
-
-
-class WorkloadEffectUnknown(RuntimeError):
-    """The connection failed after Controller may have changed Docker state."""
 
 
 class WorkloadController(Protocol):

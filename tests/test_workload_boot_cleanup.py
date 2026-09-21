@@ -11,7 +11,7 @@ from agent.plugins._operation import OperationBusyError, OperationTimeoutError
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import SelectionFormatError
 from agent.workloads.client import WorkloadEffectUnknown
-from agent.workloads.model import WorkloadLease, WorkloadStopReceipt
+from agent.plugin_composition.execution import WorkloadLease, WorkloadStopReceipt
 from bus.event_bus import EventBus
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 

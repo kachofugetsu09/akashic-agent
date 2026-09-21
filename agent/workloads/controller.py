@@ -19,7 +19,7 @@ from collections.abc import Coroutine, Mapping
 from typing import Any, TypeVar, cast
 from urllib.parse import quote, urlencode, urlsplit
 
-from agent.workloads.model import (
+from agent.plugin_composition.execution import (
     WorkloadLease,
     WorkloadMode,
     WorkloadStartRequest,

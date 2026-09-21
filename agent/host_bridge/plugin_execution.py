@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import asyncio
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -12,7 +12,16 @@ from typing import Literal
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
 from agent.workloads.client import WorkloadController
-from agent.workloads.model import WorkloadStartRequest, WorkloadLease
+from agent.plugin_composition.execution import (
+    ChildProcess,
+    WorkloadLease,
+    WorkloadStartRequest,
+)
+from utils.process_group import (
+    OwnedProcessGroup,
+    owned_process_env,
+    process_group_spawn_kwargs,
+)
 
 
 async def cleanup_workloads_for_boot(
@@ -101,6 +110,100 @@ class ExecutionGrant:
             "AKASHIC_WORKSPACE": str(runtime.workspace),
         })
         return result
+
+    async def spawn(
+        self,
+        command: tuple[str, ...],
+        *,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        env_scrub_keys: Collection[str] = frozenset(),
+        stdin: object = None,
+        stdout: object = None,
+        stderr: object = None,
+        limit: int | None = None,
+    ) -> tuple[ChildProcess, bool]:
+        """进程组终止语义不出授权边界；spawn 取消仍先接住实际回执。"""
+        return await _spawn_child(
+            command, cwd=cwd, env=env, env_scrub_keys=env_scrub_keys,
+            stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
+        )
+
+    def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
+        return HostedChildProcess(OwnedProcessGroup.from_process(process))
+
+
+async def _spawn_child(
+    command: tuple[str, ...],
+    *,
+    cwd: str | None,
+    env: Mapping[str, str] | None,
+    env_scrub_keys: Collection[str],
+    stdin: object,
+    stdout: object,
+    stderr: object,
+    limit: int | None,
+) -> tuple["HostedChildProcess", bool]:
+    options: dict[str, object] = {
+        "stdin": stdin,
+        "stdout": stdout,
+        "stderr": stderr,
+        "cwd": cwd,
+        "env": owned_process_env(
+            dict(env or {}),
+            scrub_keys=frozenset(os.environ) | frozenset(env_scrub_keys),
+        ),
+        **process_group_spawn_kwargs(),
+    }
+    if limit is not None:
+        options["limit"] = limit
+    process, spawn_cancelled = await spawn_process(*command, **options)
+    return HostedChildProcess(OwnedProcessGroup.from_process(process)), spawn_cancelled
+
+
+class LocalProcessSpawner:
+    """不经 Context 授权的同一回收实现；测试与宿主自身装配使用。"""
+
+    async def spawn(
+        self,
+        command: tuple[str, ...],
+        *,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        env_scrub_keys: Collection[str] = frozenset(),
+        stdin: object = None,
+        stdout: object = None,
+        stderr: object = None,
+        limit: int | None = None,
+    ) -> tuple[ChildProcess, bool]:
+        return await _spawn_child(
+            command, cwd=cwd, env=env, env_scrub_keys=env_scrub_keys,
+            stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
+        )
+
+    def adopt(self, process: asyncio.subprocess.Process) -> ChildProcess:
+        return HostedChildProcess(OwnedProcessGroup.from_process(process))
+
+
+class HostedChildProcess:
+    """同一授权下的子进程句柄：暴露 stdio，进程组终止走宿主实现。"""
+
+    def __init__(self, group: OwnedProcessGroup) -> None:
+        self._group = group
+
+    @property
+    def process(self) -> asyncio.subprocess.Process:
+        return self._group.process
+
+    @property
+    def group_id(self) -> int | None:
+        return self._group.group_id
+
+    async def terminate(self, *, timeout_s: float) -> None:
+        await self._group.terminate(timeout_s=timeout_s)
+
+    async def kill(self, *, timeout_s: float) -> None:
+        await self._group.kill(timeout_s=timeout_s)
 
 
 class ControllerAccess:
