@@ -825,6 +825,13 @@ class PluginManager:
             lambda: self._prepare_candidate(plugin_id), allow_stable_lease=True,
         )
 
+    async def _stage_candidate(self, plugin_id: str) -> None:
+        """安装线程完成后仍把本次制品登台为 latest 候选；取消在登台后才结算。"""
+        generation = await self._prepare_candidate(plugin_id)
+        if generation is None:
+            raise RuntimeError(f"安装目标未进入候选: {plugin_id}")
+        await self._publish_prepared(plugin_id, candidate_only=True)
+
     async def _prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
         if self._ready_candidate is not None:
             raise RuntimeError(
@@ -1070,6 +1077,16 @@ class PluginManager:
             if previous_update is not None:
                 raise RuntimeError("已有更新请求只能查询，不能重跑安装")
         self._check_operation_commit()
+        # 与 watcher 共用 candidate owner：先结算已发布的 latest，再拒绝未决候选。
+        preflight_publication = self._publication
+        _, preflight_cancelled = await _complete_critical(
+            self._reconcile_changed()
+        )
+        if preflight_cancelled:
+            if self._publication is not preflight_publication and self._publication is not None:
+                if self._publication.must_retain:
+                    self._hold_selection_publication(self._publication)
+            raise asyncio.CancelledError
         status = self.candidate_status()
         if status["candidate_state"] in {
             "preparing",
@@ -1104,18 +1121,14 @@ class PluginManager:
         publication_before = self._publication
         plugin_id = f"{result.plugin_name}@{result.marketplace}"
         try:
-            if install_cancelled:
-                raise asyncio.CancelledError
-            self._check_operation_commit()
             if self._reload_journal.update(result.update_id).phase == "committed":
                 # 安装器已确认同一制品，不另建无法关联该请求的候选。
                 self._notify_updates()
                 return result, self.candidate_status()
             # 本次安装只准备自己的目标；不顺手更新其他源码或切换正式 Root。
-            generation = await self._prepare_candidate(plugin_id)
-            if generation is None:
-                raise RuntimeError(f"安装目标未进入候选: {plugin_id}")
-            await self._publish_prepared(plugin_id, candidate_only=True)
+            _, prep_cancelled = await _complete_critical(
+                self._stage_candidate(plugin_id)
+            )
         except BaseException:
             if self._publication is not publication_before and self._publication is not None:
                 if self._publication.must_retain:
@@ -1126,6 +1139,22 @@ class PluginManager:
             )
             raise
         status = self.candidate_status()
+        if install_cancelled or prep_cancelled:
+            # 调用者取消不丢弃已登台事实：先关闭本次候选、结算指针，再如实报告取消。
+            if self._publication is not publication_before and self._publication is not None:
+                if self._publication.must_retain:
+                    self._hold_selection_publication(self._publication)
+                    raise asyncio.CancelledError
+            if (
+                result.staged_candidate
+                and status["candidate_plugin_id"] == plugin_id
+                and status["candidate_state"] == "latest_ready"
+            ):
+                _ = await self._drop_ready(plugin_id)
+            self._reload_journal.rollback_updates(
+                self.installed_plugins_home, update_id=result.update_id, error="install cancelled",
+            )
+            raise asyncio.CancelledError
         self._check_operation_commit()
         if result.staged_candidate and (
             status["candidate_plugin_id"] != plugin_id
