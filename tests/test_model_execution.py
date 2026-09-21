@@ -498,3 +498,96 @@ async def test_opencode_discovery_closes_temporary_client(status, monkeypatch):
         assert client.is_closed
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_driver_config_path_validates_max_attempts_and_keyed_single_attempt():
+    """真实 open/bind 配置路径：max_attempts 经 _connection_config 校验；带
+    request_key 的 accounted 调用 driver 恒单次，未记账直调保留有界重试。"""
+    import httpx
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from plugins.openai_compatible import driver
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    hits = 0
+
+    def respond(request):
+        nonlocal hits
+        assert request.url.path == "/v1/chat/completions"
+        hits += 1
+        return httpx.Response(503, json={"error": {"message": "overloaded"}})
+
+    client = httpx.AsyncClient(
+        base_url="http://local.test/v1", transport=httpx.MockTransport(respond)
+    )
+    original_client = driver._client
+    driver._client = lambda _connection: client
+
+    class Credential:
+        connection_id = "local"
+        auth_identity = "fixture"
+
+        async def read(self):
+            return {"api_key": "fixture"}
+
+        async def refresh(self, payload):
+            raise AssertionError("本测试不刷新凭据")
+
+        @asynccontextmanager
+        async def exclusive(self):
+            yield
+
+    try:
+        # 非法 max_attempts 在校验边界如实报错，不静默回 1。
+        bad = DriverConnectionDescriptor(
+            "local", "local", "openai-compatible", "http://local.test/v1",
+            "fixture", {"max_attempts": 0},
+        )
+        with pytest.raises(ValueError, match="max_attempts"):
+            await driver.definition().open(bad, Credential())
+        with pytest.raises(ValueError, match="max_attempts"):
+            await driver.definition().open(
+                replace(bad, config={"max_attempts": "2"}), Credential()
+            )
+        connection = await driver.definition().open(
+            DriverConnectionDescriptor(
+                "local", "local", "openai-compatible", "http://local.test/v1",
+                "fixture", {"max_retries": 1, "max_attempts": 3},
+            ),
+            Credential(),
+        )
+        bound = connection.bind_chat(
+            replace(BoundChatModelFake(object()).descriptor,
+                    connection_id="local", driver_id="openai-compatible",
+                    auth_identity="fixture", model="fixture"),
+            {},
+        )
+        request = ModelRequest(({"role": "user", "content": "hi"},))
+        # 未记账直调保留 driver 有界重试：max_retries=1 → 两次真实命中。
+        with pytest.raises(Exception):
+            await bound.complete(request)
+        assert hits == 2
+        # accounted 调用带 request_key：driver 恒单次，重试预算只属 Models。
+        hits = 0
+        with pytest.raises(Exception):
+            await bound.complete(replace(request, request_key="accounted"))
+        assert hits == 1
+        await connection.aclose()
+    finally:
+        driver._client = original_client
+        await client.aclose()
+
+
+def test_retry_budget_maps_legacy_and_rejects_invalid():
+    """Models 边界集中解析：max_attempts 显式优先，max_retries 迁移为 N+1。"""
+    from plugins.models.state import _retry_budget
+
+    assert _retry_budget({}) == 1
+    assert _retry_budget({"max_retries": 0}) == 1
+    assert _retry_budget({"max_retries": 3}) == 4
+    assert _retry_budget({"max_attempts": 2}) == 2
+    assert _retry_budget({"max_attempts": 2, "max_retries": 9}) == 2
+    for invalid in ({"max_attempts": 0}, {"max_attempts": "3"}, {"max_retries": -1}):
+        with pytest.raises(ValueError):
+            _retry_budget(invalid)
