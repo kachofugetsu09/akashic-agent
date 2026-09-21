@@ -64,64 +64,74 @@ class CodexResponses:
         return self._max_tool_schemas
 
     async def complete(self, request: ModelRequest) -> LLMResponse:
-        """Send one stream; refresh once after a rejected access token."""
+        """Send one stream; a rejected access token rotates without re-POSTing."""
 
         payload, previous_items = self._build_payload(request)
-        rejected: str | None = None
-        for attempt in range(2):
-            token, auth_headers = await headers(
-                self._credential,
-                rejected_access_token=rejected,
-            )
-            request_headers = {
-                **auth_headers,
-                "Accept": "text/event-stream",
-                "Content-Type": "application/json",
-                "originator": "codex_cli_rs",
-                "User-Agent": f"codex_cli_rs/{CODEX_CLIENT_VERSION}",
-                "x-codex-installation-id": self._installation_id,
-                "session-id": self._session_id,
-                "thread-id": self._thread_id,
-                "x-codex-window-id": self._window_id,
-            }
-            if self._lite:
-                request_headers["x-openai-internal-codex-responses-lite"] = "true"
-            try:
-                client = self._http.client()
-                # OAuth 头由本次凭据生成，不继承前次响应的 Cookie。
-                client.cookies.clear()
-                async with client.stream(
-                    "POST", "/responses", json=payload, headers=request_headers,
-                ) as response:
-                    if response.status_code >= 400:
-                        _ = await response.aread()
-                    if response.status_code == 401 and attempt == 0:
-                        rejected = token
-                        continue
-                    _raise_status(response, token)
-                    return await _consume_stream(
-                        response, request, self._descriptor.binding_id, previous_items,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except _CallbackError as exc:
-                raise exc.error from exc
-            except (httpx.TimeoutException, TimeoutError) as exc:
-                error = ModelTimeoutError("Codex Responses 请求超时")
-                if isinstance(exc, httpx.ConnectTimeout):
-                    # 连接建立失败可证明请求未发出。
-                    error.send_evidence = "unsent"
-                elif getattr(exc, "response_delta_seen", False):
-                    setattr(error, "retryable", False)
-                raise error from exc
-            except httpx.TransportError as exc:
-                error = TransportError("Codex Responses 连接失败")
-                if isinstance(exc, httpx.ConnectError):
-                    error.send_evidence = "unsent"
-                elif getattr(exc, "response_delta_seen", False):
-                    setattr(error, "retryable", False)
-                raise error from exc
-        raise AuthenticationError("Codex 请求认证失败，请重新登录")
+        token, auth_headers = await headers(self._credential)
+        request_headers = {
+            **auth_headers,
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+            "originator": "codex_cli_rs",
+            "User-Agent": f"codex_cli_rs/{CODEX_CLIENT_VERSION}",
+            "x-codex-installation-id": self._installation_id,
+            "session-id": self._session_id,
+            "thread-id": self._thread_id,
+            "x-codex-window-id": self._window_id,
+        }
+        if self._lite:
+            request_headers["x-openai-internal-codex-responses-lite"] = "true"
+        try:
+            client = self._http.client()
+            # OAuth 头由本次凭据生成，不继承前次响应的 Cookie。
+            client.cookies.clear()
+            async with client.stream(
+                "POST", "/responses", json=payload, headers=request_headers,
+            ) as response:
+                if response.status_code >= 400:
+                    _ = await response.aread()
+                if response.status_code == 401:
+                    # 401 是 provider 对本请求的明确拒绝。凭据轮换属于
+                    # driver/auth owner，本次调用不再发第二个模型 POST；
+                    # 是否再试由 Models 预算/回执链决定，下一 attempt 读取
+                    # 的是轮换后的凭据。轮换失败只影响可否调度重试。
+                    rotated = await self._rotate_rejected(token)
+                    error = AuthenticationError("Codex 请求认证失败，请重新登录")
+                    error.send_evidence = "rejected"
+                    if rotated:
+                        setattr(error, "retry_safe", True)
+                    raise error
+                _raise_status(response, token)
+                return await _consume_stream(
+                    response, request, self._descriptor.binding_id, previous_items,
+                )
+        except asyncio.CancelledError:
+            raise
+        except _CallbackError as exc:
+            raise exc.error from exc
+        except (httpx.TimeoutException, TimeoutError) as exc:
+            error = ModelTimeoutError("Codex Responses 请求超时")
+            if isinstance(exc, httpx.ConnectTimeout):
+                # 连接建立失败可证明请求未发出。
+                error.send_evidence = "unsent"
+            elif getattr(exc, "response_delta_seen", False):
+                setattr(error, "retryable", False)
+            raise error from exc
+        except httpx.TransportError as exc:
+            error = TransportError("Codex Responses 连接失败")
+            if isinstance(exc, httpx.ConnectError):
+                error.send_evidence = "unsent"
+            elif getattr(exc, "response_delta_seen", False):
+                setattr(error, "retryable", False)
+            raise error from exc
+
+    async def _rotate_rejected(self, token: str) -> bool:
+        """凭据轮换由 auth owner 承担；失败不让本次 401 失去明确拒绝分类。"""
+        try:
+            await headers(self._credential, rejected_access_token=token)
+        except ModelError:
+            return False
+        return True
 
     def _build_payload(
         self,
@@ -618,6 +628,10 @@ def _status_error(response: httpx.Response, secret: str) -> ModelError | None:
     lowered = text.lower()
     if response.status_code in {401, 403}:
         return AuthenticationError("Codex 请求认证失败，请重新登录")
+    if response.status_code >= 500:
+        # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
+        # （context_length 等）不得把错误提升为可证明的容量拒绝。
+        return TransportError(f"Codex 服务失败 (HTTP {response.status_code})")
     if "context_length" in lowered or "context window" in lowered:
         return ContextLengthError("Codex 请求超过上下文窗口")
     if any(marker in lowered for marker in ("bio_policy", "cyber_policy", "policy_violation")):

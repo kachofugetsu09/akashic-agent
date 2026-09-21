@@ -114,13 +114,10 @@ class _BoundChat:
             raise _unsent(InvalidRequestError(
                 "OpenAI-compatible Chat Completions does not support continuation state"
             ))
-        # 计费的生成调用是一次真实 attempt；请求可能已到达 provider 的失败不能隐式重发，
-        # 重试身份由调用账的 request key 显式决定；未记账的直调保留有界重试。
-        connection = (
-            self._connection
-            if request.request_key is None
-            else replace(self._connection, max_retries=0)
-        )
+        # 生成调用恒为一次物理 attempt：重试预算唯一 owner 是 Models；
+        # 未带 request_key 的直调同样不得隐式重发（§6.3）。max_retries
+        # 连接配置只留给 embeddings/discovery 等非生成路径。
+        connection = replace(self._connection, max_retries=0)
         body = _chat_body(self._descriptor, connection, self._config, request)
         if request.on_delta is None and not _is_deepseek_v4(self._descriptor.model):
             payload = await _request_json(
@@ -1076,6 +1073,10 @@ def _status_error(response: httpx.Response, *, secret: str) -> ModelError | None
     lowered = message.lower()
     if response.status_code in {401, 403}:
         return AuthenticationError(message)
+    if response.status_code >= 500:
+        # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
+        # （context_length 等）不得把错误提升为可证明的容量拒绝。
+        return TransportError(f"provider returned HTTP {response.status_code}: {message}")
     if any(code in lowered for code in _CONTEXT_CODES):
         return ContextLengthError(message)
     if any(code in lowered for code in _SAFETY_CODES):

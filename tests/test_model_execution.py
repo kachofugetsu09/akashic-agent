@@ -586,12 +586,12 @@ async def test_driver_config_path_validates_max_attempts_and_keyed_single_attemp
             {},
         )
         request = ModelRequest(({"role": "user", "content": "hi"},))
-        # 未记账直调保留 driver 有界重试：429 明确限流拒绝可安全重试，
-        # max_retries=1 → 两次真实命中。
+        # §6.3：生成调用恒为一次物理 attempt，未记账直调也无匿名重试后门；
+        # 429 明确拒绝的重试预算只属 Models，driver 不得自行重发。
         with pytest.raises(Exception):
             await bound.complete(request)
-        assert hits == 2
-        # accounted 调用带 request_key：driver 恒单次，重试预算只属 Models。
+        assert hits == 1
+        # accounted 调用带 request_key：同样恒单次，重试预算只属 Models。
         hits = 0
         with pytest.raises(Exception):
             await bound.complete(replace(request, request_key="accounted"))
@@ -987,7 +987,7 @@ async def test_http_5xx_never_proves_request_unprocessed(
     包含 context_length 文案也不得提升为安全容量拒绝。"""
     from dataclasses import replace
     from agent.plugin_composition import DriverConnectionDescriptor
-    from agent.plugin_composition.models import ModelError
+    from agent.plugin_composition.models import ModelError, TransportError
     from importlib import import_module
     from plugins.models.state import _BoundChat
     from plugins.models.store import ModelsStore
@@ -1042,14 +1042,145 @@ async def test_http_5xx_never_proves_request_unprocessed(
             messages=({"role": "user", "content": "hello"},),
             request_key="gateway-key",
         )
-        with pytest.raises(ModelError):
+        with pytest.raises(ModelError) as exc_info:
             await bound.complete(request)
+        # status-first：5xx 正文携带 context_length 文案仍归 TransportError，
+        # 不得提升为可证明的容量拒绝。
+        assert type(exc_info.value) is TransportError
         assert len(requests) == 1, "5xx 不得自动重发同一请求"
         records = store.calls_for_key("gateway-key")
         assert len(records) == 1
         assert records[0]["send_evidence"] is None
         assert records[0]["next_attempt_at"] is None
         assert bound.key_recovery("gateway-key") == "uncertain"
+    finally:
+        await driver.aclose()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["recover", "budget_one", "always_401", "refresh_fails"])
+async def test_codex_401_rotates_credential_without_hidden_second_post(tmp_path, mode):
+    """真实 codex driver → Models：401 明确拒绝后凭据轮换属 auth owner，
+    driver 在同一 complete 内不得再发模型 POST。预算>=2 时 Models 链发起
+    第二 attempt：两条耐久记录、第二次 POST 用轮换后的凭据；预算 1、
+    二次 401、轮换失败分别如实终结，无隐藏第三请求。"""
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from agent.plugin_composition.models import AuthenticationError
+    from plugins.codex.driver import definition
+    from plugins.models.state import _BoundChat
+    from plugins.models.store import ModelsStore
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    posts = []
+    refreshes = []
+    sse_ok = (
+        'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+        'data: {"type":"response.completed","response":{}}\n\n'
+    )
+
+    async def respond(request):
+        posts.append(request.headers.get("Authorization"))
+        if mode == "always_401" or len(posts) == 1:
+            return web.Response(status=401, text='{"error":{"message":"bad token"}}')
+        return web.Response(text=sse_ok, content_type="text/event-stream")
+
+    async def token(request):
+        refreshes.append(await request.json())
+        if mode == "refresh_fails":
+            return web.Response(status=500, text="refresh down")
+        return web.json_response({
+            "access_token": f"rotated-{len(refreshes)}",
+            "refresh_token": "refresh-token",
+            "expires_in": 3600,
+        })
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", respond)
+    app.router.add_post("/oauth/token", token)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+
+    class Credential:
+        connection_id = "test-connection"
+        auth_identity = "test"
+
+        def __init__(self):
+            self.current = {
+                "driver": "codex",
+                "access_token": "initial-token",
+                "refresh_token": "refresh-token",
+                "account_id": "test",
+                "expires_at": "2099-01-01T00:00:00+00:00",
+                "auth_base": f"http://127.0.0.1:{port}",
+                "api_base": f"http://127.0.0.1:{port}/v1",
+            }
+
+        async def read(self):
+            return dict(self.current)
+
+        async def refresh(self, payload):
+            self.current = dict(payload)
+
+        @asynccontextmanager
+        async def exclusive(self):
+            yield
+
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    descriptor = replace(
+        BoundChatModelFake(object()).descriptor, driver_id="codex",
+        connection_id="test-connection", model="fixture",
+    )
+    driver = await definition().open(
+        DriverConnectionDescriptor(
+            "test-connection", "local", "codex",
+            f"http://127.0.0.1:{port}/v1", "test", {},
+        ),
+        Credential(),
+    )
+    try:
+        bound = _BoundChat(
+            descriptor, driver.bind_chat(descriptor, {}), store,
+            max_attempts=1 if mode == "budget_one" else 2,
+        )
+        request = ModelRequest(
+            messages=({"role": "user", "content": "hello"},),
+            request_key="auth-key",
+        )
+        if mode == "recover":
+            response = await bound.complete(request)
+            assert response.content == "ok"
+            # 两个模型 POST 各自由一条耐久 attempt 记账；第二请求使用轮换凭据。
+            assert posts == ["Bearer initial-token", "Bearer rotated-1"]
+            records = store.calls_for_key("auth-key")
+            assert len(records) == 2
+            assert records[0]["failure"] == "AuthenticationError"
+            assert records[0]["send_evidence"] == "rejected"
+            assert records[1]["state"] == "success"
+            return
+        with pytest.raises(AuthenticationError):
+            await bound.complete(request)
+        if mode == "budget_one":
+            # 预算 1：driver 不得自行发第二模型请求。
+            assert posts == ["Bearer initial-token"]
+            assert len(refreshes) == 1, "凭据轮换仍属 auth owner 的正常能力"
+        elif mode == "always_401":
+            # 预算 2：第二 attempt 遭拒后终结，无隐藏第三请求。
+            assert posts == ["Bearer initial-token", "Bearer rotated-1"]
+        elif mode == "refresh_fails":
+            # 轮换失败如实终结：单 POST，无可调度重试。
+            assert posts == ["Bearer initial-token"]
+        records = store.calls_for_key("auth-key")
+        assert records[-1]["failure"] == "AuthenticationError"
+        assert records[-1]["send_evidence"] == "rejected"
+        assert records[-1]["next_attempt_at"] is None
+        assert bound.key_recovery("auth-key") == "answered"
     finally:
         await driver.aclose()
         await runner.cleanup()
