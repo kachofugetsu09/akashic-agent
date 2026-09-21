@@ -118,12 +118,17 @@ async def test_dead_owner_started_call_settles_as_orphan_then_explicit_retry(tmp
     orphan = store.read_call(orphan_id)
     assert orphan["state"] == "error" and "orphaned" in orphan["failure"]
 
-    # 显式重试是新的真实 attempt，不复用孤儿结果。
-    response = await bound.complete(request)
+    # 孤儿已结算为不确定 error：同 key 是终结裁决，显式恢复必须用新 key。
+    with pytest.raises(ModelUnavailableError, match="终结失败"):
+        await bound.complete(request)
+    assert calls == 0
+    response = await bound.complete(
+        ModelRequest((), request_key="stable-key-resume")
+    )
     assert response.content == "retried answer"
     assert calls == 1
     rows = store.calls_for_key("stable-key")
-    assert sorted(row["attempt"] for row in rows) == [0, 1]
+    assert [row["attempt"] for row in rows] == [0]
 
 
 @pytest.mark.asyncio
@@ -714,3 +719,118 @@ async def test_terminal_prep_stalls_without_budget_bypass(tmp_path):
         assert provider_calls == 1
         assert message.body.finish == "complete"
         assert store.calls_for_key("key-0")[-1]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_attempt_stalls_without_new_source_fact(tmp_path):
+    """取消后无新 Input/resume 不得重付：CancelledError 只证明本地等待被取消，
+    不能证明 provider 未接收；反复重启/重调不得绕过耐久预算。"""
+    from plugins.react.plugin import _decode_request
+
+    provider_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMResponse("must never be paid")
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "hi"},))
+        )["request"])
+        call0 = store.resume_call(
+            descriptor, request0, request_key="cancelled-key", owner_id=None
+        )
+        store.finish_call(
+            call0, usage=None, failure="CancelledError", next_attempt_at=None
+        )
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "fixed-output",
+            "request_keys": ["cancelled-key"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [_frozen_entry(request0)],
+        })
+
+        with pytest.raises(ModelUnavailableError, match="终结失败"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0, "取消不是免费重付理由"
+
+        # 显式 resume 是真实来源事实：回到同一准备核对旧回执后开新一代。
+        await conversation.resume("resume-1", "u1")
+        message = await (await conversation.start(run)).join()
+        assert provider_calls == 1, "resume 之后的新一代如实付费一次"
+        assert store.calls_for_key("cancelled-key")[-1]["state"] == "error"
+        assert message.message_id != "fixed-output", "新一代有自己的 Output 身份"
+
+        # 同 key 直调同样被 Models 自身的终结裁决拒绝（预算仍有剩余也不行）。
+        bound = _BoundChat(descriptor, type("D", (), {
+            "max_tool_schemas": None,
+            "complete": staticmethod(complete),
+        })(), store, max_attempts=3)
+        with pytest.raises(ModelUnavailableError, match="终结失败"):
+            await bound.complete(
+                ModelRequest(request0.messages, request_key="cancelled-key")
+            )
+        assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_resume_still_checks_started_records(tmp_path):
+    """显式 resume 回到同一准备：旧 started 记录的孤儿/不确定检查不得被绕过。"""
+    from plugins.react.plugin import _decode_request
+
+    provider_calls = 0
+
+    async def complete(request):
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMResponse("must not be paid yet")
+
+    async def invoke(key, arguments):
+        raise AssertionError("tool must not run")
+
+    async with react_fixtures.runtime(
+        tmp_path, complete, invoke, state_owner="plugin:reply:generation",
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "hi"),)))
+        descriptor = _fixture_descriptor()
+        request0 = _decode_request(_frozen_entry(
+            ModelRequest(({"role": "user", "content": "hi"},))
+        )["request"])
+        # 死 owner 遗留的同 key started 记录：resume 不是它已结算的证据。
+        store.resume_call(
+            descriptor, request0, request_key="started-key",
+            owner_id=f"{(store.host_epoch or 1) - 1}:old:old:old",
+        )
+        base_seq = log.reader("s").head()
+        _seed_prep(log, "reply:s:conversation:u1:0", {
+            "version": 3,
+            "output_id": "fixed-output",
+            "request_keys": ["started-key"],
+            "base_seq": base_seq,
+            "binding_id": "model",
+            "attempts": [_frozen_entry(request0)],
+        })
+
+        with pytest.raises(ModelUnavailableError, match="不确定"):
+            await (await conversation.start(run)).join()
+        assert provider_calls == 0, "旧 started 记录未结算前不得重付"
+        orphan = store.calls_for_key("started-key")[-1]
+        assert orphan["state"] == "error" and "orphaned" in orphan["failure"]
+
+        # 显式 resume 先回到同一准备完成孤儿结算，再由真实来源事实开新一代付费。
+        await conversation.resume("resume-1", "u1")
+        message = await (await conversation.start(run)).join()
+        assert provider_calls == 1
+        assert message.body.finish == "complete"
+        assert message.message_id != "fixed-output"

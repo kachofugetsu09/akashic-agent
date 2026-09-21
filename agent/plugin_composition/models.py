@@ -226,16 +226,9 @@ class BoundChatModel(Protocol):
     @property
     def max_tool_schemas(self) -> int | None: ...
 
-    def key_state(self, request_key: str) -> str | None:
-        """该 request key 最近一条耐久调用记录的状态；无记录返回 None。"""
-        ...
-
-    def key_interrupted(self, request_key: str) -> bool:
-        """该 request key 最近一条耐久记录是否为被中断（取消）的 attempt。"""
-        ...
-
     def key_terminal(self, request_key: str) -> bool:
-        """该 request key 是否已终结失败（不可重试或预算耗尽）。"""
+        """该 request key 是否已终结失败：最近耐久记录为不可重试 error
+        （含取消/未知结算）或重试预算已耗尽；终结 key 不重获预算。"""
         ...
 
 

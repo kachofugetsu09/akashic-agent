@@ -208,29 +208,6 @@ class _BoundChat:
         finally:
             live_runs.pop(run_key, None)
 
-    def key_state(self, request_key: str) -> str | None:
-        """同 key 最近一条耐久记录的状态；无记录返回 None。
-
-        供恢复方区分：started/success 需沿用原 key 恢复，已终结失败
-        只允许以新准备身份显式恢复。
-        """
-        records = self._store.calls_for_key(request_key)
-        if not records:
-            return None
-        return cast(str, records[-1]["state"])
-
-    def key_interrupted(self, request_key: str) -> bool:
-        """同 key 最近记录是被中断的 attempt（取消按 error 结算、无业务裁决）。"""
-        records = self._store.calls_for_key(request_key)
-        if not records:
-            return False
-        last = records[-1]
-        return (
-            last["state"] == "error"
-            and isinstance(last.get("failure"), str)
-            and last["failure"].startswith("CancelledError")
-        )
-
     def key_terminal(self, request_key: str) -> bool:
         """同 key 的终结失败：最近记录为 error，且不可重试（无 next_attempt_at）
         或耐久预算已耗尽。终结 key 不因重启/重调获得新预算；恢复只能走
@@ -323,6 +300,17 @@ class _BoundChat:
             if len(records) >= budget:
                 raise ModelUnavailableError("模型调用重试预算耗尽")
             last = records[-1] if records else None
+            if (
+                last is not None
+                and last["state"] == "error"
+                and last.get("next_attempt_at") is None
+            ):
+                # 不可重试/取消的失败是终结裁决：取消只证明本地等待被取消，
+                # 不能证明 provider 未接收或未计费；同 key 重调不得再发送，
+                # 恢复只能由调用方以新请求身份（新业务边界）显式进入。
+                raise ModelUnavailableError(
+                    "该请求 key 的最近调用已终结失败，同 key 不得重新付费"
+                )
             next_at = None if last is None else last.get("next_attempt_at")
             if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
                 delay = float(next_at) - time.time()

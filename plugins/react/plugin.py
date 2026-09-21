@@ -402,14 +402,22 @@ async def react(
             await _settle(tools, call, capture_scope)
         snapshot = reader.snapshot()
         head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
-        # 本代准备的固定身份：最近一条同来源 Input/Control（持久边界）。
-        # 无关事实抬高 head 不产生新准备、不重复付费。
+        # 本代准备的固定身份：最近一条同来源 Input 或 abandon Control。
+        # pause/failure/resume 是对同一业务项的操作，不是新边界：resume 必须
+        # 回到原准备核对旧回执，不得借 prep_base 变化绕过 started/孤儿/
+        # 终结检查。无关事实抬高 head 不产生新准备、不重复付费。
         boundary_id = next(
             (
                 message.message_id
                 for message in reversed(snapshot)
                 if message.source == writer.source
-                and isinstance(message.body, (Input, Control))
+                and (
+                    isinstance(message.body, Input)
+                    or (
+                        isinstance(message.body, Control)
+                        and message.body.action == "abandon"
+                    )
+                )
             ),
             "initial",
         )
@@ -489,19 +497,12 @@ async def react(
             prep_key = prep_base
             existing = state.transact(lambda transaction: transaction.read(prep_key))
             generation = 0
-            advance_interrupted = False
             while existing is not None:
                 keys = list(cast(Sequence[str], existing.value.get("request_keys", ())))
                 current = len(prep_attempts(existing.value)) - 1
                 if not (0 <= current < len(keys) and keys):
                     break
-                key = keys[current]
-                if model.key_interrupted(key):
-                    # 被中断的 attempt 没有业务裁决：同一代内推进到新 attempt，
-                    # 沿用冻结请求与 Output 身份，由 claim 配发新 key 如实再付。
-                    advance_interrupted = True
-                    break
-                if not model.key_terminal(key):
+                if not model.key_terminal(keys[current]):
                     break
                 base = cast(int, existing.value["base_seq"])
                 qualified = any(
@@ -538,11 +539,6 @@ async def react(
                 }
                 # 恢复从最后冻结的 attempt 继续，不重放旧失败请求、不重跑 reduce。
                 start_at = max(resumed, default=0)
-                if advance_interrupted and resumed:
-                    # 同一代内把被中断的冻结请求推进到新 attempt；claim 配发
-                    # 新 key，原 error 记录不动、不重放也不重获预算。
-                    resumed[start_at + 1] = resumed[start_at]
-                    start_at += 1
                 prepared = (
                     cast(Materials, resumed[start_at][1])
                     if resumed
