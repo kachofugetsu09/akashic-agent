@@ -1910,6 +1910,10 @@ class PluginManager:
             self._check_operation_commit()
             await self._post_snapshot_invariants(snapshot)
             self._snapshot_store.seal_pending_validation(snapshot)
+            if self._dashboard_preparer is not None:
+                # 正式 Root 是新建实例，Dashboard 资源必须在提交前对其实际
+                # snapshot 建立；失败走下方 abort/清理路径而不发布。
+                self._dashboard_preparer(snapshot)
             if previous is not None and attempt is not None:
                 self._drain_transactions[previous.snapshot_id] = cast(str, attempt.reload_tx_id)
             _, cancelled = await _complete_critical(
