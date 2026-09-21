@@ -114,6 +114,7 @@ from agent.plugins.static_manifest import (
     materialize_command,
 )
 from agent.plugins.reload_journal import (
+    CandidateCleanupObligation,
     RecoveryActionName,
     RecoveryTarget,
     ReloadJournal,
@@ -2245,9 +2246,11 @@ class PluginManager:
                     del self._failed_candidate_roots[update.plugin_id]
             if self._building_roots:
                 raise RuntimeError("候选或资源 owner 仍在清理，拒绝结算指针")
-            # 进程重启后内存 owner 已丢失；journal 里的确切目录是唯一清理范围。
-            for validation_root in self._reload_journal.candidate_cleanup(update_id):
-                self._clear_candidate_validation_root(validation_root, update_id)
+            # 进程重启后内存 owner 已丢失；journal 里的确切目录是唯一清理范围，
+            # 且必须先证明记录的宿主已退出。
+            for obligation in self._reload_journal.candidate_cleanup(update_id):
+                await self._require_candidate_owner_exited(obligation)
+                self._clear_candidate_validation_root(obligation.validation_root, update_id)
             self._reload_journal.rollback_updates(
                 self.installed_plugins_home, update_id=update_id, error=reason,
             )
@@ -2275,9 +2278,11 @@ class PluginManager:
             if any(host.parent_lease.snapshot is ready.snapshot for host in self._validation_hosts.values()):
                 raise RuntimeError("验证尚未退出或资源尚未清理")
             _ = await self._drop_ready(update.plugin_id, error=reason)
-        # 进程重启后候选 Root 已不在内存；按 journal 里的确切目录完成清理再结算。
-        for validation_root in self._reload_journal.candidate_cleanup(update_id):
-            self._clear_candidate_validation_root(validation_root, update_id)
+        # 进程重启后候选 Root 已不在内存；按 journal 里的确切目录完成清理再结算，
+        # 且必须先证明记录的宿主已退出。
+        for obligation in self._reload_journal.candidate_cleanup(update_id):
+            await self._require_candidate_owner_exited(obligation)
+            self._clear_candidate_validation_root(obligation.validation_root, update_id)
         self._check_discarded_update(update_id)
         self._check_operation_commit()
         # runtime 清理不回写安装状态；由持有本次请求的安装入口结算恢复点。
@@ -3157,22 +3162,37 @@ class PluginManager:
             lambda: store.acquire_composition_root(root)
         )
         workspace = self._workspace if validation_host is None else validation_host.workspace
-        if candidate_owner is not None:
-            workspace = self._workspace / "runtime" / "plugin-validation" / secrets.token_hex(16) / "workspace"
-            # 候选 Root 的 Scope 在 discard、失败或晋升恢复后删除整个 validation root；
-            # 清理失败保留在 deferred cleanup，dispose 重试时再次执行。
-            # 目录身份先落到 armed 更新；进程被杀后仍能按记录恢复精确清理义务。
-            cleanup_update = self._reload_journal.armed_update_for_plugin(candidate_owner.plugin_id)
-            cleanup_update_id = None if cleanup_update is None else cleanup_update.update_id
-            if cleanup_update_id is not None:
-                self._reload_journal.record_candidate_cleanup(
-                    cleanup_update_id, candidate_owner.plugin_id, workspace.parent,
-                )
-            root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
-                f"validation-root:{workspace.parent}",
-                lambda: self._clear_candidate_validation_root(workspace.parent, cleanup_update_id),
-            )
         try:
+            if candidate_owner is not None:
+                workspace = (
+                    self._workspace / "runtime" / "plugin-validation"
+                    / secrets.token_hex(16) / "workspace"
+                )
+                # 候选 Root 的 Scope 在 discard、失败或晋升恢复后删除整个 validation root；
+                # 清理失败保留在 deferred cleanup，dispose 重试时再次执行。
+                # 目录身份与宿主证据先落到 armed 更新；进程被杀后仍能按记录恢复
+                # 精确清理义务。记录与 Root 登记、失败清理在同一阶段：记录失败
+                # 也走下方 except 的真实 Root 清理，并保留原错。
+                cleanup_update = self._reload_journal.armed_update_for_plugin(
+                    candidate_owner.plugin_id
+                )
+                cleanup_update_id = (
+                    None if cleanup_update is None else cleanup_update.update_id
+                )
+                root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
+                    f"validation-root:{workspace.parent}",
+                    lambda: self._clear_candidate_validation_root(
+                        workspace.parent, cleanup_update_id
+                    ),
+                )
+                if cleanup_update_id is not None:
+                    self._reload_journal.record_candidate_cleanup(
+                        cleanup_update_id,
+                        candidate_owner.plugin_id,
+                        workspace.parent,
+                        owner_boot_id=self._host_boot_id,
+                        owner_pid=os.getpid(),
+                    )
             actual = self._archived_generations(
                 components, root, workspace=workspace, sources=sources, validation_host=validation_host,
             )
@@ -3247,6 +3267,38 @@ class PluginManager:
             raise
         if cancelled:
             raise asyncio.CancelledError
+
+    async def _require_candidate_owner_exited(
+        self, obligation: CandidateCleanupObligation,
+    ) -> None:
+        """journal 恢复删除前，先证明记录的候选宿主已退出；死亡未知一律拒绝。"""
+
+        if obligation.owner_pid == os.getpid():
+            # 同一进程：同一 boot 身份即本 Manager，在轨 Root 门已由调用者执行；
+            # 其他身份说明旧 Manager 可能仍在本进程存活，不能凭指针猜测接管。
+            if obligation.owner_boot_id != self._host_boot_id:
+                raise RuntimeError(
+                    "候选校验目录的旧宿主仍在本进程存活或状态未知，拒绝接管清理: "
+                    f"{obligation.validation_root}"
+                )
+            return
+        from agent.background.boot_guardian import _pid_exists
+        if obligation.owner_pid <= 0 or _pid_exists(obligation.owner_pid):
+            raise RuntimeError(
+                "候选校验目录缺少旧宿主退出证据，拒绝接管清理: "
+                f"{obligation.validation_root} owner_pid={obligation.owner_pid}"
+            )
+        current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
+        if os.environ.get("AKASHIC_SUPERVISED") == "1" and current_boot_id:
+            if obligation.owner_boot_id == current_boot_id:
+                raise RuntimeError("候选校验目录的宿主 boot 身份与当前进程冲突")
+            # supervised：旧 boot 遗留子进程经既有 Guardian 机制排空后再删目录。
+            from agent.background.boot_guardian import _cleanup_boot_processes
+            await asyncio.to_thread(
+                _cleanup_boot_processes,
+                boot_id=obligation.owner_boot_id,
+                gateway_group_id=None,
+            )
 
     def _clear_candidate_validation_root(self, root: Path, update_id: str | None) -> None:
         """真实删除成功才销账持久义务；删除失败抛出让 dispose 重试。"""
