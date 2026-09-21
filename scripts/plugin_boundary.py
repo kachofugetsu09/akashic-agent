@@ -49,6 +49,8 @@ PLUGIN_ROOT = "plugins"
 
 # 冻结既有公开模块，不给目录内未来新增的实现自动授予公开资格。
 # 这是兼容清单，不证明其中每个对象已经原子化；扩张须单独评审 owner。
+# admission/channel_io/config_input/execution/requests/ui 六个窄合同的 owner
+# 与评审出处见 docs/design/plugin-boundary-foundation.md §9.37。
 PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.control.context",
     "agent.host_bridge.filesystem",

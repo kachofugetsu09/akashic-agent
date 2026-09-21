@@ -52,6 +52,17 @@ class SourceAdmission:
                 or lease.snapshot.accepting_leases):
             raise RuntimeError("来源初始化需要当前 Root 的 closed scope")
 
+    def current_lease(self) -> RuntimeSnapshotLease:
+        """返回当前 Task 绑定且属于本 Root 的 lease；缺席或跨 Root 时拒绝。"""
+
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        lease = get_current_runtime_lease()
+        if (lease is None or lease.snapshot.composition_root is None
+                or lease.snapshot.composition_root.instance_token is not self._root_token):
+            raise RuntimeError("当前 runtime scope lease 不属于本 Root")
+        return lease
+
     def lease(self, snapshot_id: str) -> RuntimeSnapshotLease:
         """入口只能取得本 Root 的公开 lease，不能借用恢复特权。"""
         current = self._store.current

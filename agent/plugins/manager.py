@@ -32,10 +32,8 @@ from session.artifact_store import ArtifactStore
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
-from agent.plugin_composition.runtime_catalog import (
-    RUNTIME_CATALOG,
-    build_runtime_catalog,
-)
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+from agent.plugins.runtime_catalog import build_runtime_catalog
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
 from agent.plugin_composition.messages import (

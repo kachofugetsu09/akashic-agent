@@ -3,6 +3,7 @@ import pytest
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugin_composition.commands import COMMANDS
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from plugins.commands import plugin as commands_plugin
 from plugins.stable_view import plugin as stable_view
@@ -64,7 +65,7 @@ def test_format_stable_catalog_renders_tree() -> None:
 def test_format_stable_catalog_mcp_unavailable() -> None:
     catalog = _catalog()
     catalog.pop("mcp_servers")
-    catalog["mcp_unavailable"] = {
+    catalog["unavailable"] = {
         "code": "mcp_catalog_unavailable", "message": "no session",
     }
     text = format_stable_catalog(catalog)
@@ -72,21 +73,18 @@ def test_format_stable_catalog_mcp_unavailable() -> None:
     assert "stable_view" in text
 
 
-async def _mount_stable_view(tmp_path, monkeypatch, catalog) -> CompositionRoot:
+async def _mount_stable_view(tmp_path, catalog_reader) -> CompositionRoot:
     store = RuntimeSnapshotStore()
     snapshot = RuntimeSnapshotCompiler().compile({})
     store.install(snapshot)
     root = CompositionRoot("selected")
     root._bind_runtime_scope_acquirer(store.acquire)
-    if catalog is not None:
-        monkeypatch.setattr(
-            stable_view, "build_stable_plugin_catalog", lambda _snapshot: catalog,
-        )
+    await root.context.provide(RUNTIME_CATALOG, catalog_reader)
     await root.mount(commands_plugin.apply, name="commands")
     await root.mount(
         stable_view.apply,
         name="stable_view",
-        inject=(COMMANDS,),
+        inject=(COMMANDS, RUNTIME_CATALOG),
         runtime=PluginRuntime(
             plugin_id="stable_view", generation_id="gen-stable",
             plugin_dir=tmp_path, data_dir=tmp_path / "data",
@@ -97,8 +95,8 @@ async def _mount_stable_view(tmp_path, monkeypatch, catalog) -> CompositionRoot:
 
 
 @pytest.mark.asyncio
-async def test_stable_command_returns_tree(tmp_path, monkeypatch) -> None:
-    root = await _mount_stable_view(tmp_path, monkeypatch, _catalog())
+async def test_stable_command_returns_tree(tmp_path) -> None:
+    root = await _mount_stable_view(tmp_path, _catalog)
     try:
         commands = root.context.require(COMMANDS).freeze()
         result = await commands.execute(
@@ -113,12 +111,11 @@ async def test_stable_command_returns_tree(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stable_command_reports_reader_failure(tmp_path, monkeypatch) -> None:
-    def broken(_snapshot: object) -> dict[str, object]:
+async def test_stable_command_reports_reader_failure(tmp_path) -> None:
+    def broken() -> dict[str, object]:
         raise RuntimeError("no scope")
 
-    monkeypatch.setattr(stable_view, "build_stable_plugin_catalog", broken)
-    root = await _mount_stable_view(tmp_path, monkeypatch, None)
+    root = await _mount_stable_view(tmp_path, broken)
     try:
         commands = root.context.require(COMMANDS).freeze()
         result = await commands.execute(

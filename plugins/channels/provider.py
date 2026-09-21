@@ -10,9 +10,9 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ContextManager, Literal, Protocol, cast
+from typing import Any, ContextManager, Literal, Protocol, cast
 
-from agent.plugin_composition.context import Context, RuntimeScope
+from agent.plugin_composition.context import Context, RuntimeLease, RuntimeScope
 from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
 from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
@@ -61,10 +61,6 @@ from agent.plugin_composition.channel_io import (
     InputCustody, INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
 )
 from agent.plugin_composition.runtime_lifecycle import RUNTIME_STARTING, RuntimeStarting
-from agent.plugins.snapshot import get_current_runtime_lease
-
-if TYPE_CHECKING:
-    from agent.plugins.snapshot import RuntimeSnapshotLease
 
 class _PresentationContractFailure(TypeError):
     def __init__(self, message: str, receipt: PresentationReceipt) -> None:
@@ -165,7 +161,7 @@ class ChannelBindingLease:
         self,
         host: PluginChannels,
         key: tuple[str, str],
-        snapshot_lease: RuntimeSnapshotLease,
+        snapshot_lease: RuntimeLease,
     ) -> None:
         self._host = host
         self._key = key
@@ -880,7 +876,7 @@ class PluginChannels:
         self._declarations: dict[str, ChannelDefinition] = {}
         self._durable_reservation_owners: dict[str, tuple[str, str]] = {}
         self._binding_leases: set[ChannelBindingLease] = set()
-        self._startup_snapshot_leases: dict[str, RuntimeSnapshotLease] = {}
+        self._startup_snapshot_leases: dict[str, RuntimeLease] = {}
         self._sealed = False
         self._opened = asyncio.Event()
 
@@ -937,8 +933,7 @@ class PluginChannels:
             self._admission.require_starting(ctx)
             if key is not None:
                 raise RuntimeError("同一 Channel Context 不允许重新启动旧连接")
-            lease = get_current_runtime_lease()
-            assert lease is not None
+            lease = self._admission.current_lease()
             key = (lease.snapshot.snapshot_id, definition.name)
             self._bindings[key] = _ChannelBindingState(
                 snapshot_id=key[0], plugin_id=ctx.runtime.plugin_id,
@@ -971,7 +966,7 @@ class PluginChannels:
 
     def acquire_binding(
         self,
-        snapshot_lease: RuntimeSnapshotLease,
+        snapshot_lease: RuntimeLease,
         channel_name: str,
         *,
         _allow_claimed_after_close: bool = False,
@@ -1131,11 +1126,10 @@ class PluginChannels:
             runtime = context.runtime
             active = True
 
-            def resolve(key: ServiceKey[object]) -> object:
-                from agent.plugins.snapshot import get_current_runtime_lease
+            scope = RuntimeScope(binding.snapshot_lease.fork())
 
-                current = get_current_runtime_lease()
-                if not active or current is not scope_lease:
+            def resolve(key: ServiceKey[object]) -> object:
+                if not active or RuntimeScope.current() is not scope:
                     raise CompositionError("REQUEST_SCOPE_MISSING", "插件请求作用域已关闭")
                 if context.fiber.activation_token is not state.activation_token:
                     raise CompositionError("REQUEST_SCOPE_MISSING", "请求声明 activation 已失效")
@@ -1152,9 +1146,8 @@ class PluginChannels:
                 _workspace_files=tuple((name, runtime.workspace_file(name)) for name in runtime.workspace_files),
                 _resolve=resolve,
             )
-            scope_lease = binding.snapshot_lease.fork()
             try:
-                async with RuntimeScope(scope_lease):
+                async with scope:
                     yield request
             finally:
                 active = False
