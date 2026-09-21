@@ -604,8 +604,10 @@ def _raise_status(response: httpx.Response, secret: str) -> None:
     error = _status_error(response, secret)
     if error is None:
         return
-    # HTTP 错误应答本身是正面证据：provider 明确拒绝了请求。
-    error.send_evidence = "rejected"
+    # 4xx 是对本请求的明确拒绝应答——正面证据。5xx 只说明服务端/网关
+    # 未能给出结论，不能证明后端未接收或未处理：不授证据，fail-closed。
+    if response.status_code < 500:
+        error.send_evidence = "rejected"
     raise error
 
 

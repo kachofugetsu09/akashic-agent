@@ -533,7 +533,12 @@ async def test_driver_config_path_validates_max_attempts_and_keyed_single_attemp
         nonlocal hits
         assert request.url.path == "/v1/chat/completions"
         hits += 1
-        return httpx.Response(503, json={"error": {"message": "overloaded"}})
+        # 429 是对本请求的明确限流拒绝（含 Retry-After），属于正面证据；
+        # 5xx 不能证明后端未处理，不能用于驱动重试路径。
+        return httpx.Response(
+            429, headers={"retry-after": "0"},
+            json={"error": {"message": "rate limited"}},
+        )
 
     client = httpx.AsyncClient(
         base_url="http://local.test/v1", transport=httpx.MockTransport(respond)
@@ -581,7 +586,8 @@ async def test_driver_config_path_validates_max_attempts_and_keyed_single_attemp
             {},
         )
         request = ModelRequest(({"role": "user", "content": "hi"},))
-        # 未记账直调保留 driver 有界重试：max_retries=1 → 两次真实命中。
+        # 未记账直调保留 driver 有界重试：429 明确限流拒绝可安全重试，
+        # max_retries=1 → 两次真实命中。
         with pytest.raises(Exception):
             await bound.complete(request)
         assert hits == 2
@@ -961,6 +967,89 @@ async def test_zero_delta_stream_eof_never_replays_same_request(tmp_path):
         assert records[0]["send_evidence"] is None
         assert records[0]["next_attempt_at"] is None
         assert bound.key_recovery("zero-delta-key") == "uncertain"
+    finally:
+        await driver.aclose()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+@pytest.mark.parametrize("driver_name,path", [
+    ("openai_compatible", "/v1/chat/completions"),
+    ("opencode_go", "/v1/chat/completions"),
+    ("codex", "/v1/responses"),
+])
+async def test_http_5xx_never_proves_request_unprocessed(
+    tmp_path, driver_name, path, status,
+):
+    """三 driver 一致：5xx/网关错误不能证明后端未接收或未处理——不授
+    send_evidence、不自动重试、key_recovery 判 uncertain。错误正文即使
+    包含 context_length 文案也不得提升为安全容量拒绝。"""
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from agent.plugin_composition.models import ModelError
+    from importlib import import_module
+    from plugins.models.state import _BoundChat
+    from plugins.models.store import ModelsStore
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    requests = []
+    driver_id = driver_name.replace("_", "-")
+
+    async def respond(request):
+        requests.append(request)
+        # 5xx 正文故意携带容量文案：状态与证据优先于诊断文案。
+        return web.Response(
+            status=status,
+            text='{"error":{"message":"upstream context_length_exceeded"}}',
+        )
+
+    app = web.Application()
+    app.router.add_post(path, respond)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+
+    class Credential:
+        connection_id = "test-connection"
+        auth_identity = "test"
+
+        async def read(self):
+            return {"driver": driver_name, "api_key": "k", "access_token": "k",
+                    "account_id": "test", "expires_at": "2099-01-01T00:00:00+00:00"}
+
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    descriptor = replace(
+        BoundChatModelFake(object()).descriptor, driver_id=driver_id,
+        connection_id="test-connection", model="fixture",
+    )
+    driver = await import_module(f"plugins.{driver_name}.driver").definition().open(
+        DriverConnectionDescriptor(
+            "test-connection", "local", driver_id,
+            f"http://127.0.0.1:{port}/v1", "test", {},
+        ),
+        Credential(),
+    )
+    try:
+        bound = _BoundChat(
+            descriptor, driver.bind_chat(descriptor, {}), store, max_attempts=2
+        )
+        request = ModelRequest(
+            messages=({"role": "user", "content": "hello"},),
+            request_key="gateway-key",
+        )
+        with pytest.raises(ModelError):
+            await bound.complete(request)
+        assert len(requests) == 1, "5xx 不得自动重发同一请求"
+        records = store.calls_for_key("gateway-key")
+        assert len(records) == 1
+        assert records[0]["send_evidence"] is None
+        assert records[0]["next_attempt_at"] is None
+        assert bound.key_recovery("gateway-key") == "uncertain"
     finally:
         await driver.aclose()
         await runner.cleanup()
