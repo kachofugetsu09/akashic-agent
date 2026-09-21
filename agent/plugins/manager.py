@@ -99,6 +99,7 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
 from agent.plugins.artifacts import (
     ArtifactSelector,
+    discard_latest_pointer,
     read_pointer,
     read_pointers,
     resolve_pointer,
@@ -1304,7 +1305,13 @@ class PluginManager:
             if publication.get("publication_state") == "latest_ready":
                 return results
         for plugin_id in sorted(desired - set(self._active_generations)):
-            generation = await self._load_one(discovered[plugin_id], activate=False)
+            try:
+                generation = await self._load_one(discovered[plugin_id], activate=False)
+            except SelectionConflictError:
+                raise
+            except Exception:
+                _discard_installed_candidate_mod(discovered[plugin_id])
+                continue
             if generation is None:
                 continue
             publication = await self._publish_prepared(plugin_id)
@@ -2518,7 +2525,14 @@ class PluginManager:
             ):
                 continue
             await self._discard_prepared(plugin_id)
-            prepared = await self._load_one(mod, activate=False)
+            try:
+                prepared = await self._load_one(mod, activate=False)
+            except SelectionConflictError:
+                raise
+            except Exception:
+                # 单个候选构建失败只结算本次 latest staging，不阻断其他插件。
+                _discard_installed_candidate_mod(mod)
+                prepared = None
             result: dict[str, object] = {
                 "plugin_id": plugin_id,
                 "active_generation": active.generation_id,
@@ -3606,6 +3620,15 @@ def _plugins_home(installed_cache_root: Path | None) -> Path:
     if installed_cache_root is not None:
         return installed_cache_root.parent
     return plugins_root()
+
+
+def _discard_installed_candidate_mod(mod: dict[str, str]) -> None:
+    """已安装候选在成为 candidate 前被拒绝时，结算其 latest staging 指针。"""
+
+    if mod.get("source_type") != "installed":
+        return
+    plugin_base = _installed_artifact_base_from_root(Path(mod["plugin_root"]))
+    _ = discard_latest_pointer(plugin_base)
 
 
 def _installed_generation_is_candidate(generation: PluginGeneration) -> bool:
