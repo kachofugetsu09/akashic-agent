@@ -818,7 +818,7 @@ async def test_workspace_skill_name_does_not_block_plugin_promotion(
 
 
 @pytest.mark.asyncio
-async def test_rejected_installed_candidate_restores_latest_to_stable(
+async def test_rejected_installed_candidate_keeps_latest_for_explicit_settle(
     tmp_path: Path,
 ) -> None:
     plugin_base, _ = _write_installed_artifact(
@@ -849,9 +849,14 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
     await manager.load_all()
     results = await manager.reconcile_changed()
     assert results[0]["prepared_generation"] is None
+    assert results[0]["preparation_state"] == "failed"
+    assert "candidate rejected" in str(results[0].get("error"))
     assert manager.generation("installed_snapshot@lab").instance.version == "release-a"  # type: ignore[union-attr]
     assert read_pointer(plugin_base, "stable") == stable_pointer
-    assert read_pointer(plugin_base, "latest") == stable_pointer
+    # 初始化失败不再静默回退 latest；登台指针保留，待显式 discard 结算。
+    assert read_pointer(plugin_base, "latest") == latest_pointer
+    # 本次登台没有 armed 更新 owner；失败如实留在结果中而不伪装回退。
+    assert manager.reload_journal.armed_update_for_plugin("installed_snapshot@lab") is None
     await manager.terminate_all()
 
 
