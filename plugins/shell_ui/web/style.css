@@ -57,6 +57,10 @@
     gap: var(--shell-nav-gap);
     overflow-x: auto;
     scrollbar-width: none;
+    scroll-snap-type: x mandatory;
+    padding-inline: max(0px, calc(50% - 40px));
+    scroll-behavior: smooth;
+    mask-image: linear-gradient(to right, transparent, black 18px, black calc(100% - 18px), transparent);
   }
 
   .primary-band-nav::-webkit-scrollbar {
@@ -89,7 +93,11 @@
     font-weight: 550;
     white-space: nowrap;
     cursor: pointer;
-    transition-property: color, background-color, scale;
+    opacity: 0.7;
+    filter: blur(0.35px);
+    flex: 0 0 auto;
+    scroll-snap-align: center;
+    transition-property: color, background-color, scale, filter, opacity;
     transition-duration: var(--t-fast);
     transition-timing-function: var(--ease-out);
   }
@@ -122,6 +130,12 @@
 
   .primary-rail-button:active {
     scale: 0.96;
+  }
+
+  .primary-rail-button.is-focus {
+    scale: 1.08;
+    filter: blur(0);
+    opacity: 1;
   }
 
   .primary-rail-button.is-active {

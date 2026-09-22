@@ -140,10 +140,6 @@ input {
   overflow: hidden;
 }
 
-.chat-shell.embedded-runtime .chat-shell-body {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .chat-product-band {
   display: flex;
   min-width: 0;
@@ -768,22 +764,6 @@ input {
   border-radius: 0;
   box-shadow: none;
   background: transparent;
-}
-
-:root[data-embedded-shell="true"] .chat-shell.embedded-runtime {
-  display: grid;
-}
-
-:root[data-embedded-shell="true"] .chat-shell.embedded-runtime .chat-shell-body {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-:root[data-embedded-shell="true"] .chat-shell.embedded-runtime .runtime-dashboard {
-  height: 100%;
-  overflow: hidden;
-  border-radius: 0;
-  box-shadow: none;
-  background: var(--chat-page);
 }
 
 
@@ -1804,7 +1784,9 @@ form.composer:focus-within [data-slot="input-group"] {
     display: block;
     width: min(18.5rem, calc(100vw - 4.5rem));
     max-width: none;
-    height: 100dvh;
+    height: 100%;
+    max-height: none;
+    box-sizing: border-box;
     translate: none;
     transform: translateX(0);
     gap: 0;

@@ -35,6 +35,15 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const defaultPage = entries.find((entry) => entry.route === "") ?? entries[0];
   const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());
+  const navRef = useRef<HTMLElement>(null);
+  const [focusId, setFocusId] = useState(activeId);
+
+  useEffect(() => {
+    const nav = navRef.current;
+    const current = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (nav && current) nav.scrollTo({ left: current.offsetLeft - nav.offsetLeft - (nav.clientWidth - current.clientWidth) / 2, behavior: "smooth" });
+    setFocusId(activeId);
+  }, [activeId]);
 
   const openPage = useCallback((entry: ShellPage): void => {
     setActiveId(entry.id);
@@ -72,11 +81,21 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
         <img src={akashicBrandIcon} alt="" />
         <strong>Akashic</strong>
       </div>
-      <nav className="primary-band-nav" aria-label="主要功能">
+      <nav ref={navRef} className="primary-band-nav" aria-label="主要功能" onScroll={(event) => {
+          const nav = event.currentTarget;
+          const center = nav.scrollLeft + nav.clientWidth / 2;
+          const items = [...nav.querySelectorAll<HTMLElement>("button[data-page-id]")];
+          const nearest = items.reduce((best, item) => Math.abs(item.offsetLeft - nav.offsetLeft + item.clientWidth / 2 - center) < Math.abs(best.offsetLeft - nav.offsetLeft + best.clientWidth / 2 - center) ? item : best, items[0]);
+          if (nearest?.dataset.pageId) setFocusId(nearest.dataset.pageId);
+        }} onWheel={(event) => {
+          if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+          event.currentTarget.scrollBy({ left: event.deltaY, behavior: "smooth" });
+        }}>
         {entries.map((entry) => <button
           key={entry.id}
           type="button"
-          className={`primary-rail-button ${activeId === entry.id ? "is-active" : ""}`}
+          data-page-id={entry.id}
+          className={`primary-rail-button ${activeId === entry.id ? "is-active" : ""} ${focusId === entry.id ? "is-focus" : ""}`}
           aria-label={entry.label}
           title={entry.label}
           aria-current={activeId === entry.id ? "page" : undefined}
