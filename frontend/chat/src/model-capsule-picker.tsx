@@ -315,7 +315,7 @@ export function ModelCapsulePicker({
         else setOpen(true);
       }}
     >
-      <ModelMark runtime={visibleModel} />
+      {compact ? null : <ModelMark runtime={visibleModel} />}
       {compact ? (
         <span className="model-capsule__name">{visibleModel.model}</span>
       ) : (

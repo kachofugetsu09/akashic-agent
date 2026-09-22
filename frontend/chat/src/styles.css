@@ -1908,13 +1908,15 @@ form.composer:focus-within [data-slot="input-group"] {
   inset: auto;
   width: auto;
   max-width: 10.5rem;
-  height: var(--composer-control-size, 28px);
+  height: 28px;
   gap: 4px;
-  border-radius: 999px;
-  padding: 0 5px 0 4px;
+  border-radius: 8px;
+  padding: 0 6px;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
-  font-size: var(--chat-type-caption);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
 }
 
 .model-capsule--compact .model-capsule__trigger:hover,
@@ -1948,11 +1950,17 @@ form.composer:focus-within [data-slot="input-group"] {
   white-space: nowrap;
 }
 
+.model-capsule--compact .model-capsule__name {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
 .model-capsule--compact .model-capsule__trigger > svg {
   margin-inline-start: 0;
-  width: 12px;
-  height: 12px;
-  stroke-width: 1.75;
+  width: 11px;
+  height: 11px;
+  stroke-width: 2.4;
   opacity: 0.72;
   translate: 0 0.5px;
 }
@@ -2511,4 +2519,184 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main { --composer-compact-h: 56px; }
   .chat-main .composer { --composer-control-size: 44px; }
   .chat-main .composer textarea { font-size: 1rem; }
+}
+
+/* 手机宽度上的输入卡。几何来自 DeepSeek 输入卡（22px 圆角、文字在上、工具行在下、
+   左右 16px、底 8px）和 Beautiful UI 宽输入条（加号在左、模型与发送在右）。
+   触控目标放到 44px，对应 Pixel 9 Pro XL 竖屏 448 CSS px。 */
+@media (max-width: 36rem) {
+  .chat-main {
+    --chat-dock-inset: 16px;
+    --chat-type-body: 1rem;
+    --composer-control-size: 44px;
+    --composer-dock-end: max(8px, env(safe-area-inset-bottom, 0px));
+    /* 顶 10 + 文字 44 + 间距 12 + 工具 44 + 底 6 + 边框 2 */
+    --composer-compact-h: 7.375rem;
+  }
+
+  .conversation-heading {
+    min-block-size: 52px;
+    padding-inline: 68px 16px;
+  }
+
+  .desktop-mobile-navigation-trigger {
+    width: 44px;
+    height: 44px;
+    inset-inline-start: max(12px, env(safe-area-inset-left, 0px));
+  }
+
+  .conversation-content {
+    padding-inline: 16px;
+  }
+
+  .home-state {
+    padding: 24px 16px calc(11rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .chat-main .composer-wrap {
+    inset-inline: 16px;
+    inline-size: auto;
+  }
+
+  .chat-main .composer.is-compact,
+  .chat-main .composer.is-expanded {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    border-radius: 22px;
+    padding: 10px 0 6px;
+  }
+
+  .chat-main .composer.is-compact [data-slot="input-group"],
+  .chat-main .composer.is-expanded [data-slot="input-group"] {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .chat-main .composer.is-compact [data-slot="input-group"] > :not([data-slot="input-group-addon"]),
+  .chat-main .composer.is-expanded [data-slot="input-group"] > :not([data-slot="input-group-addon"]) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .chat-main .composer.is-compact textarea,
+  .chat-main .composer.is-compact .composer__textarea,
+  .chat-main .composer.is-expanded textarea,
+  .chat-main .composer.is-expanded .composer__textarea {
+    width: 100%;
+    height: auto;
+    min-height: 44px !important;
+    max-height: 9rem;
+    padding: 4px 12px 0 16px;
+    font-size: 1rem;
+    line-height: 24px;
+    field-sizing: content;
+  }
+
+  .chat-main .composer.is-compact .composer__bar,
+  .chat-main .composer.is-expanded .composer__bar {
+    display: grid !important;
+    width: 100%;
+    min-height: 28px;
+    grid-template-columns: 28px minmax(0, 1fr) 28px;
+    align-items: center;
+    column-gap: 8px;
+    padding: 2px 8px 0;
+  }
+
+  .chat-main .composer.is-compact .composer__lead,
+  .chat-main .composer.is-expanded .composer__lead {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .chat-main .composer.is-compact .composer__trail,
+  .chat-main .composer.is-expanded .composer__trail {
+    display: contents;
+  }
+
+  .chat-main .composer.is-compact .composer-tool,
+  .chat-main .composer.is-expanded .composer-tool {
+    grid-column: 1;
+    grid-row: 1;
+    border-radius: 8px;
+    color: var(--chat-muted);
+    background: transparent;
+  }
+
+  .chat-main .composer.is-compact .composer-action-button,
+  .chat-main .composer.is-expanded .composer-action-button {
+    grid-column: 3;
+    grid-row: 1;
+    border-radius: 8px;
+  }
+
+  .chat-main .composer.is-compact .composer-action-button:disabled,
+  .chat-main .composer.is-expanded .composer-action-button:disabled {
+    color: var(--chat-muted);
+    background: color-mix(in oklch, var(--chat-ink) 14%, var(--chat-lift));
+    opacity: 1;
+  }
+
+  .chat-main .composer.is-compact .composer-tool,
+  .chat-main .composer.is-compact .composer-action-button,
+  .chat-main .composer.is-expanded .composer-tool,
+  .chat-main .composer.is-expanded .composer-action-button {
+    width: 28px;
+    min-width: 28px;
+    max-width: 28px;
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    flex-basis: 28px;
+  }
+
+  .chat-main .composer.is-compact .composer-tool > svg,
+  .chat-main .composer.is-expanded .composer-tool > svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 2;
+  }
+
+  .chat-main .composer.is-compact .composer-action-button[data-mode="send"] > svg,
+  .chat-main .composer.is-expanded .composer-action-button[data-mode="send"] > svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 2.4;
+    transform: none;
+  }
+
+  .chat-main .model-capsule--compact {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .chat-main .model-capsule--compact .model-capsule__trigger {
+    height: 28px;
+    max-width: min(11rem, 100%);
+    border-radius: 8px;
+    padding: 0 6px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 20px;
+    background: transparent;
+  }
+
+  .chat-main .model-capsule--compact .model-capsule__trigger::before {
+    content: "";
+    position: absolute;
+    inset-block: -8px;
+    inset-inline: -4px;
+  }
+
+  .mobile-pairing-dialog {
+    width: min(32rem, calc(100% - 2rem));
+    max-height: calc(100dvh - 2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    border-radius: 20px;
+  }
 }
