@@ -184,17 +184,52 @@ input {
 }
 
 .chat-product-band__nav {
-  display: flex;
+  display: block;
   min-width: 0;
   flex: 1 1 auto;
-  align-items: center;
-  gap: var(--chat-nav-gap);
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
+  padding-block: 4px;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.chat-product-band__nav[data-grabbing="true"] {
+  cursor: grabbing;
 }
 
 .chat-product-band__nav::-webkit-scrollbar {
   display: none;
+}
+
+.chat-product-band__track {
+  position: relative;
+  display: flex;
+  width: max-content;
+  align-items: center;
+  gap: var(--chat-nav-gap);
+  will-change: transform;
+}
+
+.chat-product-band__nav[data-fade="end"] {
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 20px), transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 20px), transparent);
+}
+
+.chat-product-band__nav[data-fade="start"] {
+  mask-image: linear-gradient(to right, transparent, #000 20px, #000);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000);
+}
+
+.chat-product-band__nav[data-fade="both"] {
+  mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent);
+}
+
+.chat-product-band__track .chat-product-band__item[data-focus="1"] {
+  z-index: 2;
+  color: var(--chat-ink);
+  font-weight: 680;
 }
 
 .chat-product-band__footer {
@@ -226,14 +261,21 @@ input {
   cursor: pointer;
 }
 
+.chat-product-band__track .chat-product-band__item {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  transform-origin: center;
+  font-weight: 500;
+}
+
 .chat-product-band__item:hover {
   color: var(--chat-ink);
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 5%, transparent);
 }
 
-.chat-product-band__item.is-active {
-  color: var(--chat-ink);
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 8%, transparent);
+.chat-product-band__track .chat-product-band__item:hover {
+  background: transparent;
 }
 
 .chat-product-band__item.is-disabled {
@@ -750,7 +792,8 @@ input {
   min-block-size: 52px;
   flex: 0 0 auto;
   align-items: center;
-  padding-block: 10px;
+  gap: 2px;
+  padding-block: 6px;
   padding-inline: 24px;
   border-block-end: 1px solid var(--chat-line);
 }
@@ -1717,58 +1760,83 @@ form.composer:focus-within [data-slot="input-group"] {
     display: none;
   }
 
-  .desktop-mobile-navigation-trigger {
-    position: fixed;
-    z-index: 35;
-    inset-block-start: calc(
-      var(--chat-band-height, 0px) + env(safe-area-inset-top, 0px) + 8px
-    );
-    inset-inline-start: max(12px, env(safe-area-inset-left, 0px));
-    inset-inline-end: auto;
-    inset-block-end: auto;
-    display: grid;
-    width: 36px;
-    height: 36px;
-    place-items: center;
-    border: 0;
-    border-radius: 7px;
-    color: var(--md-sys-color-on-surface);
-    background: var(--md-sys-color-surface-container-high);
-    box-shadow: 0 2px 8px rgb(var(--md-sys-color-shadow-rgb) / 0.18);
+  .conversation-heading {
+    gap: 2px;
+    padding-inline: 8px 16px;
   }
 
-  :root[data-embedded-shell="true"] .desktop-mobile-navigation-trigger {
-    inset-block-start: max(8px, env(safe-area-inset-top, 0px));
+  .desktop-mobile-navigation-trigger {
+    position: static;
+    display: grid;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 0;
+    border-radius: 8px;
+    color: var(--chat-ink);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .desktop-mobile-navigation-trigger:hover,
+  .desktop-mobile-navigation-trigger:focus-visible {
+    background: color-mix(in oklch, var(--md-sys-color-on-surface) 6%, transparent);
+  }
+
+  .desktop-mobile-navigation-overlay {
+    background-color: color-mix(in oklch, var(--ak-ink-primary) 22%, transparent);
+    backdrop-filter: blur(3px);
+  }
+
+  .desktop-mobile-navigation-overlay[data-state="open"] {
+    animation: chat-scrim-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .desktop-mobile-navigation-overlay[data-state="closed"] {
+    animation: chat-scrim-out 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   .desktop-mobile-navigation-dialog {
-    inset-block: 0;
-    inset-inline-start: 0;
-    inset-inline-end: auto;
+    inset: 0 auto 0 0;
+    top: 0;
+    left: 0;
     display: block;
-    width: min(292px, calc(100vw - 32px));
+    width: min(18.5rem, calc(100vw - 4.5rem));
     max-width: none;
     height: 100dvh;
-    transform: none;
+    translate: none;
+    transform: translateX(0);
     gap: 0;
     overflow: hidden;
     border: 0;
-    border-start-end-radius: 20px;
-    border-end-end-radius: 20px;
-    border-start-start-radius: 0;
-    border-end-start-radius: 0;
+    border-inline-end: 1px solid var(--chat-line);
+    border-radius: 0 16px 16px 0;
     padding: 0;
-    background: var(--md-sys-color-surface-container-low);
+    --chat-ink: var(--ak-ink-primary);
+    --chat-muted: var(--ak-ink-secondary);
+    --chat-faint: var(--ak-ink-muted);
+    --chat-line: var(--ak-rule-subtle);
+    --chat-chip: var(--ak-paper-sheet);
+    --chat-rail-inline: 12px;
+    --chat-group-gap: 16px;
+    background: var(--ak-paper-canvas);
+    box-shadow: none;
+  }
+
+  .desktop-mobile-navigation-dialog[data-state="open"] {
+    animation: chat-drawer-in 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .desktop-mobile-navigation-dialog[data-state="closed"] {
+    animation: chat-drawer-out 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   .desktop-mobile-navigation-dialog .chat-sidebar {
     display: flex;
     width: 100%;
     height: 100%;
-  }
-
-  .conversation-heading {
-    padding-inline-start: 64px;
+    border: 0;
   }
 
   .chat-main .agent-content {
@@ -1908,13 +1976,15 @@ form.composer:focus-within [data-slot="input-group"] {
   inset: auto;
   width: auto;
   max-width: 10.5rem;
-  height: var(--composer-control-size, 28px);
+  height: 28px;
   gap: 4px;
-  border-radius: 999px;
-  padding: 0 5px 0 4px;
+  border-radius: 8px;
+  padding: 0 6px;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
-  font-size: var(--chat-type-caption);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
 }
 
 .model-capsule--compact .model-capsule__trigger:hover,
@@ -1948,11 +2018,17 @@ form.composer:focus-within [data-slot="input-group"] {
   white-space: nowrap;
 }
 
+.model-capsule--compact .model-capsule__name {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
 .model-capsule--compact .model-capsule__trigger > svg {
   margin-inline-start: 0;
-  width: 12px;
-  height: 12px;
-  stroke-width: 1.75;
+  width: 11px;
+  height: 11px;
+  stroke-width: 2.4;
   opacity: 0.72;
   translate: 0 0.5px;
 }
@@ -2471,6 +2547,35 @@ form.composer:focus-within [data-slot="input-group"] {
   translate: 0 0.5px;
 }
 
+@keyframes chat-drawer-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes chat-drawer-out {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+
+@keyframes chat-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes chat-scrim-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-mobile-navigation-dialog[data-state="open"],
+  .desktop-mobile-navigation-dialog[data-state="closed"],
+  .desktop-mobile-navigation-overlay[data-state="open"],
+  .desktop-mobile-navigation-overlay[data-state="closed"] {
+    animation: none;
+  }
+}
+
 .desktop-scroll-return .lucide-arrow-down {
   translate: 0 1px;
 }
@@ -2511,4 +2616,183 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main { --composer-compact-h: 56px; }
   .chat-main .composer { --composer-control-size: 44px; }
   .chat-main .composer textarea { font-size: 1rem; }
+}
+
+/* 手机宽度上的输入卡。几何来自 DeepSeek 输入卡（22px 圆角、文字在上、工具行在下、
+   左右 16px、底 8px）和 Beautiful UI 宽输入条（加号在左、模型与发送在右）。
+   触控目标放到 44px，对应 Pixel 9 Pro XL 竖屏 448 CSS px。 */
+@media (max-width: 36rem) {
+  .chat-main {
+    --chat-dock-inset: 16px;
+    --chat-type-body: 1rem;
+    --composer-control-size: 44px;
+    --composer-dock-end: max(8px, env(safe-area-inset-bottom, 0px));
+    /* 顶 10 + 文字 44 + 间距 12 + 工具 44 + 底 6 + 边框 2 */
+    --composer-compact-h: 7.375rem;
+  }
+
+  .conversation-heading {
+    min-block-size: 52px;
+    padding-inline: 6px 16px;
+  }
+
+  .desktop-mobile-navigation-trigger {
+    width: 40px;
+    height: 40px;
+  }
+
+  .conversation-content {
+    padding-inline: 16px;
+  }
+
+  .home-state {
+    padding: 24px 16px calc(11rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .chat-main .composer-wrap {
+    inset-inline: 16px;
+    inline-size: auto;
+  }
+
+  .chat-main .composer.is-compact,
+  .chat-main .composer.is-expanded {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    border-radius: 22px;
+    padding: 10px 0 6px;
+  }
+
+  .chat-main .composer.is-compact [data-slot="input-group"],
+  .chat-main .composer.is-expanded [data-slot="input-group"] {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .chat-main .composer.is-compact [data-slot="input-group"] > :not([data-slot="input-group-addon"]),
+  .chat-main .composer.is-expanded [data-slot="input-group"] > :not([data-slot="input-group-addon"]) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .chat-main .composer.is-compact textarea,
+  .chat-main .composer.is-compact .composer__textarea,
+  .chat-main .composer.is-expanded textarea,
+  .chat-main .composer.is-expanded .composer__textarea {
+    width: 100%;
+    height: auto;
+    min-height: 44px !important;
+    max-height: 9rem;
+    padding: 4px 12px 0 16px;
+    font-size: 1rem;
+    line-height: 24px;
+    field-sizing: content;
+  }
+
+  .chat-main .composer.is-compact .composer__bar,
+  .chat-main .composer.is-expanded .composer__bar {
+    display: grid !important;
+    width: 100%;
+    min-height: 28px;
+    grid-template-columns: 28px minmax(0, 1fr) 28px;
+    align-items: center;
+    column-gap: 8px;
+    padding: 2px 8px 0;
+  }
+
+  .chat-main .composer.is-compact .composer__lead,
+  .chat-main .composer.is-expanded .composer__lead {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .chat-main .composer.is-compact .composer__trail,
+  .chat-main .composer.is-expanded .composer__trail {
+    display: contents;
+  }
+
+  .chat-main .composer.is-compact .composer-tool,
+  .chat-main .composer.is-expanded .composer-tool {
+    grid-column: 1;
+    grid-row: 1;
+    border-radius: 8px;
+    color: var(--chat-muted);
+    background: transparent;
+  }
+
+  .chat-main .composer.is-compact .composer-action-button,
+  .chat-main .composer.is-expanded .composer-action-button {
+    grid-column: 3;
+    grid-row: 1;
+    border-radius: 8px;
+  }
+
+  .chat-main .composer.is-compact .composer-action-button:disabled,
+  .chat-main .composer.is-expanded .composer-action-button:disabled {
+    color: var(--chat-muted);
+    background: color-mix(in oklch, var(--chat-ink) 14%, var(--chat-lift));
+    opacity: 1;
+  }
+
+  .chat-main .composer.is-compact .composer-tool,
+  .chat-main .composer.is-compact .composer-action-button,
+  .chat-main .composer.is-expanded .composer-tool,
+  .chat-main .composer.is-expanded .composer-action-button {
+    width: 28px;
+    min-width: 28px;
+    max-width: 28px;
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    flex-basis: 28px;
+  }
+
+  .chat-main .composer.is-compact .composer-tool > svg,
+  .chat-main .composer.is-expanded .composer-tool > svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 2;
+  }
+
+  .chat-main .composer.is-compact .composer-action-button[data-mode="send"] > svg,
+  .chat-main .composer.is-expanded .composer-action-button[data-mode="send"] > svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 2.4;
+    transform: none;
+  }
+
+  .chat-main .model-capsule--compact {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .chat-main .model-capsule--compact .model-capsule__trigger {
+    height: 28px;
+    max-width: min(11rem, 100%);
+    border-radius: 8px;
+    padding: 0 6px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 20px;
+    background: transparent;
+  }
+
+  .chat-main .model-capsule--compact .model-capsule__trigger::before {
+    content: "";
+    position: absolute;
+    inset-block: -8px;
+    inset-inline: -4px;
+  }
+
+  .mobile-pairing-dialog {
+    width: min(32rem, calc(100% - 2rem));
+    max-height: calc(100dvh - 2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    border-radius: 20px;
+  }
 }
