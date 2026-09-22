@@ -553,7 +553,7 @@ V3 插件 artifact 同时可以交付 Skill 和 MCP：
 提交之前死亡使用旧选择，提交之后死亡使用新选择；数据解释由当前插件负责。
 下面保留旧链路作为历史证据，不再作为当前选择或 attached child 授权协议。
 
-**F-014：** [0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md) 与 [0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md) 要求插件安装 artifact 按 source revision/tree digest 不可变保存；同一版本号的新 commit 不能覆盖 stable runtime 仍引用的代码。插件目录内的原子 `.pointers.json` 拥有 stable/latest artifact descriptor；`<workspace>/runtime/plugin-reloads.sqlite3` 拥有单一未决 candidate phase、install provenance、turn lineage 与 append-only phase journal。普通 turn 只读取 stable；只有 owner parent turn 创建的 attached programmatic child 自动读取匹配 latest。候选独占服务使用 `runtime/plugin-validation/<generation>/` 的 plugin-data 副本和临时端口，提交或丢弃后删除。
+**F-014：** [0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md) 与 [0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md) 要求插件安装 artifact 按 source revision/tree digest 不可变保存；同一版本号的新 commit 不能覆盖 stable runtime 仍引用的代码。插件目录内的原子 `.pointers.json` 拥有 stable/latest artifact descriptor；`<workspace>/runtime/plugin-reloads.sqlite3` 拥有单一未决 candidate phase、install provenance、turn lineage 与 append-only phase journal。普通 turn 只读取 stable；只有 owner parent turn 创建的 attached programmatic child 自动读取匹配 latest。候选独占服务使用 `runtime/plugin-validation/<generation>/` 的 plugin-data 副本和临时端口，提交或丢弃后删除。清理义务持久化在 `plugin-reloads.sqlite3` 的 `candidate_validation_roots`；只有登记义务的原 Manager 实例在本进程经真实 dispose 清理成功才删目录销账。不同 Manager 或进程重启后的 pending 义务没有完整资源关闭回执，一律保留、不删目录、不结算指针，以 `candidate validation cleanup pending` 显式上报——**跨重启自动恢复被有意限制，需运维确认后处理**；不提供未经审计的 force-delete 入口。
 
 该目标的状态变化固定为：
 

@@ -25,6 +25,9 @@ from session.log import MessageCatalog, MessageLog
 async def runtime(tmp_path, monkeypatch, *, programmatic=False):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    # 新 workspace 经合法初始化入口建立空插件选择；load_all 不再容忍缺失 stable。
+    from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+    initialize_plugin_workspace(workspace)
     source = tmp_path / "plugins"
     shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", source / "conversation")
     shutil.copytree(Path(__file__).parents[1] / "plugins/sources", source / "sources")

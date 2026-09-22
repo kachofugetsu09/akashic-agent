@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import hashlib
+import logging
 import math
 import os
 import sqlite3
@@ -33,14 +35,19 @@ from .settings import (
 )
 from agent.plugin_composition.models import (
     BoundModelDescriptor,
+    LLMResponse,
     ModelCallStats,
+    ModelContinuation,
     ModelRequest,
     ModelUsage,
+    ToolCall,
     UsageCoverage,
 )
 
 MODEL_ROLES = ("default", "fast", "agent", "vision")
 _LEGACY_OPENAI_DRIVER_IDS = ("openai", "deepseek", "qwen")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,11 +158,7 @@ class ModelCallReader:
                 ).fetchone()
                 if row is None:
                     raise KeyError(call_id)
-                record = dict(row)
-                record["binding"] = json.loads(record.pop("binding_json"))
-                usage = record.pop("usage_json")
-                record["usage"] = None if usage is None else json.loads(usage)
-                return _freeze_json(record)
+                return _decode_call(row)
 
             yield read
 
@@ -180,6 +183,11 @@ class ModelCallReader:
         return records
 
 
+# 宿主锁表达“进程级宿主”身份：同进程多个 store 共享同一把锁，
+# 只有跨进程接管（或旧 store 显式 close）才递增 host_epoch。
+_PROCESS_HOST_LOCKS: dict[Path, tuple[int, int]] = {}
+
+
 class ModelsStore:
     """Own the ordinary models plugin's durable registry and write protocol."""
 
@@ -188,6 +196,24 @@ class ModelsStore:
         self.backup_dir = backup_dir
         self.writable = writable
         self.read_call = ModelCallReader(lambda: self._connect(read_only=True))
+        self._host_epoch: int | None = None
+        # 同进程活 attempt 登记属于账本身份：同一 store 的同 key 调用才合并。
+        self.live_runs: dict[object, object] = {}
+        self._host_lock_file: object | None = None
+
+    @property
+    def host_epoch(self) -> int | None:
+        """当前宿主的账本纪元；只读或未初始化的 store 按需要读取，旧库记为 0。"""
+        if self._host_epoch is None and self.path.is_file():
+            with self._connect(read_only=True) as connection:
+                if "host_epoch" not in _columns(connection, "model_registry_meta"):
+                    self._host_epoch = 0
+                else:
+                    row = connection.execute(
+                        "SELECT host_epoch FROM model_registry_meta WHERE singleton = 1"
+                    ).fetchone()
+                    self._host_epoch = None if row is None else int(row[0])
+        return self._host_epoch
 
     def initialize(self) -> None:
         """Create a new registry or expand the two approved additive columns."""
@@ -197,8 +223,9 @@ class ModelsStore:
                 raise FileNotFoundError(self.path)
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        created = self._create_database_file()
+        new_host = self._acquire_host_lock()
         try:
+            created = self._create_database_file()
             with self._connect() as connection:
                 if created:
                     connection.executescript(_SCHEMA)
@@ -222,7 +249,24 @@ class ModelsStore:
                                 f"WHERE provider IN ({','.join('?' for _ in legacy_driver_ids)})",
                                 legacy_driver_ids,
                             )
-                        connection.commit()
+                    # 独占接纳该账本的新宿主才递增 epoch；同进程收养租约的
+                    # store 仍是同一宿主，旧 owner 不能被 epoch 证据判死。
+                    if new_host:
+                        connection.execute(
+                            "UPDATE model_registry_meta SET host_epoch = host_epoch + 1 "
+                            "WHERE singleton = 1"
+                        )
+                    connection.commit()
+                self._host_epoch = int(
+                    connection.execute(
+                        "SELECT host_epoch FROM model_registry_meta WHERE singleton = 1"
+                    ).fetchone()[0]
+                )
+        except BaseException:
+            # 初始化中途失败回滚本次取得的宿主租约份额；其他 store 的合法
+            # 持有（同进程收养或别的宿主）不受影响。
+            self.close()
+            raise
         finally:
             self._secure_files()
 
@@ -309,37 +353,68 @@ class ModelsStore:
         self, descriptor: BoundModelDescriptor, request: ModelRequest
     ) -> str:
         """先耐久记录一次真实请求；不把诊断输入或凭据复制进会话历史。"""
+        return self.resume_call(
+            descriptor, request, request_key=None, owner_id=None
+        )
+
+    def calls_for_key(self, request_key: str) -> tuple[Mapping[str, Any], ...]:
+        """按稳定请求身份读取全部真实 attempt；started 记录仍需结算证据。"""
+        if not isinstance(request_key, str) or not request_key:
+            raise ValueError("模型请求 key 不能为空")
+        with self._connect(read_only=True) as connection:
+            require_attempt_schema(connection)
+            rows = connection.execute(
+                "SELECT * FROM model_calls WHERE request_key=? ORDER BY attempt, id",
+                (request_key,),
+            ).fetchall()
+        return tuple(_decode_call(row) for row in rows)
+
+    def request_identity(
+        self, descriptor: BoundModelDescriptor, request: ModelRequest
+    ) -> str:
+        """稳定请求身份：显式 key 优先；否则同一 binding 的同一冻结材料共享 digest。"""
+        if request.request_key is not None:
+            return request.request_key
+        return "digest:" + hashlib.sha256(
+            (descriptor.binding_id + ":" + _request_digest(request)).encode()
+        ).hexdigest()
+
+    def resume_call(
+        self,
+        descriptor: BoundModelDescriptor,
+        request: ModelRequest,
+        *,
+        request_key: str | None,
+        owner_id: str | None,
+    ) -> str:
+        """先耐久记录一次真实 attempt；同一请求 key 只允许同一请求内容。"""
         if not self.writable:
             raise RuntimeError("只读 Model store 不能开始外部调用")
-        payload: dict[str, Any] = {
-            "messages": request.messages,
-            "tools": request.tools,
-            "max_output_tokens": request.max_output_tokens,
-            "system_prompt": request.system_prompt,
-            "tool_choice": request.tool_choice,
-            "prompt_cache_key": request.prompt_cache_key,
-            "disable_reasoning": request.disable_reasoning,
-            "continuation": (
-                None
-                if request.continuation is None
-                else {
-                    "binding_id": request.continuation.binding_id,
-                    "payload": request.continuation.payload,
-                }
-            ),
-        }
-        digest = hashlib.sha256(
-            # ModelRequest 已在构造边界深冻结；编码不再逐层重复校验。
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
-                       sort_keys=True, allow_nan=False, default=dict).encode()
-        ).hexdigest()
+        digest = _request_digest(request)
         binding = _strict_json(asdict(descriptor), "model binding")
         call_id = uuid.uuid4().hex
         with self._connect() as connection, connection:
             require_model_calls_schema(connection)
+            if request_key is None:
+                _ = connection.execute(
+                    "INSERT INTO model_calls (id,binding_json,request_digest,state) VALUES (?,?,?,'started')",
+                    (call_id, binding, digest),
+                )
+                return call_id
+            require_attempt_schema(connection)
+            rows = connection.execute(
+                "SELECT request_digest, attempt FROM model_calls WHERE request_key=? "
+                "ORDER BY attempt, id",
+                (request_key,),
+            ).fetchall()
+            if rows and any(row["request_digest"] != digest for row in rows):
+                raise ValueError("同一模型请求 key 的请求内容不一致")
+            attempt = max((row["attempt"] for row in rows), default=-1) + 1
             _ = connection.execute(
-                "INSERT INTO model_calls (id,binding_json,request_digest,state) VALUES (?,?,?,'started')",
-                (call_id, binding, digest),
+                "INSERT INTO model_calls "
+                "(id,binding_json,request_digest,state,request_key,attempt,owner_id) "
+                "VALUES (?,?,?,'started',?,?,?)",
+                (call_id, binding, digest, request_key, attempt, owner_id),
             )
         return call_id
 
@@ -358,21 +433,79 @@ class ModelsStore:
 
     def finish_call(
         self, call_id: str, *, usage: ModelUsage | None, failure: str | None,
-        duration_ms: float | None = None,
+        duration_ms: float | None = None, response: LLMResponse | None = None,
+        next_attempt_at: float | None = None,
+        partial_response: bool | None = None,
+        send_evidence: str | None = None,
     ) -> None:
-        """只结算同一 started 记录；失败或取消不把未知 usage 记成零。"""
+        """只结算同一 started 记录；成功先耐久保存响应，未知 usage 不记成零。"""
         if not self.writable:
             raise RuntimeError("只读 Model store 不能结算外部调用")
         state = "success" if failure is None else "error"
         encoded = None if usage is None else _strict_json(asdict(usage), "model usage")
-        with self._connect() as connection, connection:
-            cursor = connection.execute(
-                "UPDATE model_calls SET state=?,usage_json=?,failure=?,finished_at=CURRENT_TIMESTAMP,duration_ms=? "
-                "WHERE id=? AND state='started'",
-                (state, encoded, failure, duration_ms, call_id),
+        body = None if response is None else _strict_json(
+            _response_payload(response), "model response"
+        )
+        columns = self._attempt_columns()
+        has_response = "response_json" in columns
+        has_next = "next_attempt_at" in columns
+        has_partial = "partial_response" in columns
+        has_evidence = "send_evidence" in columns
+        update = (
+            "UPDATE model_calls SET state=?,usage_json=?,failure=?,"
+            "finished_at=CURRENT_TIMESTAMP,duration_ms=?"
+            + (",response_json=?" if has_response else "")
+            + (",next_attempt_at=?" if has_next else "")
+            + (",partial_response=?" if has_partial else "")
+            + (",send_evidence=?" if has_evidence else "")
+            + " WHERE id=? AND state='started'"
+        )
+        extras = (
+            ([body] if has_response else [])
+            + ([next_attempt_at] if has_next else [])
+            + (
+                [None if partial_response is None else int(partial_response)]
+                if has_partial else []
             )
-            if cursor.rowcount != 1:
-                raise RuntimeError("Model 调用不存在或已经结算")
+            + ([send_evidence] if has_evidence else [])
+        )
+        values = (state, encoded, failure, duration_ms, *extras, call_id)
+        try:
+            with self._connect() as connection, connection:
+                cursor = connection.execute(update, values)
+                if cursor.rowcount == 1:
+                    return
+        except Exception:
+            pass
+        # 提交确认可能丢失；先回读已结算事实，相异回执视为契约违反。
+        try:
+            record = self.read_call(call_id)
+        except KeyError:
+            raise RuntimeError("Model 调用不存在")
+        if record["state"] == "started":
+            raise RuntimeError("Model 调用结算未提交")
+        same = (
+            record["state"] == state
+            and record["failure"] == failure
+            and record.get("usage") == (None if usage is None else asdict(usage))
+            and (body is None or (response is not None and record.get("response") == _response_payload(response)))
+            and (
+                not has_partial
+                or record.get("partial_response")
+                == (None if partial_response is None else int(partial_response))
+            )
+            and (
+                not has_evidence
+                or record.get("send_evidence") == send_evidence
+            )
+        )
+        if not same:
+            raise RuntimeError("Model 调用已经结算为相异回执")
+        logger.info("Model 调用 %s 结算回执已在库中，视为已提交", call_id)
+
+    def _attempt_columns(self) -> set[str]:
+        with self._connect(read_only=True) as connection:
+            return _columns(connection, "model_calls")
 
     def read_calls(self, after_id: str, limit: int) -> tuple[Mapping[str, Any], ...]:
         """按身份分页读取调用快照；每轮从头扫描，started 记录仍可能结算。"""
@@ -383,14 +516,7 @@ class ModelsStore:
             rows = connection.execute(
                 "SELECT * FROM model_calls WHERE id>? ORDER BY id LIMIT ?", (after_id, limit)
             ).fetchall()
-        result: list[Mapping[str, Any]] = []
-        for row in rows:
-            record = dict(row)
-            record["binding"] = json.loads(record.pop("binding_json"))
-            usage = record.pop("usage_json")
-            record["usage"] = None if usage is None else json.loads(usage)
-            result.append(_freeze_json(record))
-        return tuple(result)
+        return tuple(_decode_call(row) for row in rows)
 
     def read_call_stats(self, call_id: str) -> ModelCallStats:
         """从同一调用账选取公开字段，不把完整 binding 暴露给客户端。"""
@@ -847,6 +973,58 @@ class ModelsStore:
             if not read_only:
                 self._secure_files()
 
+    def _acquire_host_lock(self) -> bool:
+        """账本宿主的独占证据：flock 由持有者在整个生命周期持有。
+
+        只有独占锁成立时，更早 host_epoch 的 owner 才能被证明已退出；
+        拿不到锁说明仍有宿主存活，epoch 递增不能作为死亡证据。
+        同进程后续 store 收养既有租约而不再次递增 epoch：它们仍是同一宿主，
+        旧 Root 的 started 记录依旧只能按含糊处理（fail-closed）。
+        返回 True 表示本进程新接管了账本宿主身份。
+        """
+        if self._host_lock_file is not None:
+            return False
+        lock_path = self.path.with_name(f"{self.path.name}.hostlock")
+        shared = _PROCESS_HOST_LOCKS.get(lock_path)
+        if shared is not None:
+            descriptor, holders = shared
+            _PROCESS_HOST_LOCKS[lock_path] = (descriptor, holders + 1)
+            self._host_lock_file = descriptor
+            return False
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(descriptor)
+            raise RuntimeError(
+                "模型账本仍由另一宿主持有，无法证明旧 owner 已退出"
+            ) from None
+        _PROCESS_HOST_LOCKS[lock_path] = (descriptor, 1)
+        self._host_lock_file = descriptor
+        os.chmod(lock_path, 0o600)
+        return True
+
+    @property
+    def holds_host_lock(self) -> bool:
+        """本 store 是否持有账本宿主的独占证据。"""
+        return self._host_lock_file is not None
+
+    def close(self) -> None:
+        """释放宿主锁；之后的读写不再有独占宿主证据。"""
+        descriptor = self._host_lock_file
+        self._host_lock_file = None
+        if descriptor is None:
+            return
+        lock_path = self.path.with_name(f"{self.path.name}.hostlock")
+        shared = _PROCESS_HOST_LOCKS.get(lock_path)
+        if shared is not None and shared[0] == descriptor:
+            holders = shared[1] - 1
+            if holders > 0:
+                _PROCESS_HOST_LOCKS[lock_path] = (cast(int, descriptor), holders)
+                return
+            del _PROCESS_HOST_LOCKS[lock_path]
+        os.close(cast(int, descriptor))
+
     def _create_database_file(self) -> bool:
         if self.path.exists():
             os.chmod(self.path, 0o600)
@@ -1026,6 +1204,17 @@ def _missing_additive_columns(connection: sqlite3.Connection) -> tuple[str, ...]
     if "capabilities_json" not in _columns(connection, "embedding_models"):
         statements.append(
             "ALTER TABLE embedding_models ADD COLUMN capabilities_json TEXT"
+        )
+    if "host_epoch" not in _columns(connection, "model_registry_meta"):
+        statements.append(
+            "ALTER TABLE model_registry_meta ADD COLUMN host_epoch INTEGER NOT NULL DEFAULT 0"
+        )
+    call_columns = _columns(connection, "model_calls")
+    if call_columns:
+        statements.extend(
+            f"ALTER TABLE model_calls ADD COLUMN {name} {_MODEL_CALLS_ADDITIVE_TYPES[name]}"
+            for name in _MODEL_CALLS_ATTEMPT_COLUMNS
+            if name not in call_columns
         )
     return tuple(statements)
 
@@ -1385,6 +1574,62 @@ def _freeze_json(value: Any) -> Any:
     return value
 
 
+def _request_digest(request: ModelRequest) -> str:
+    payload: dict[str, Any] = {
+        "messages": request.messages,
+        "tools": request.tools,
+        "max_output_tokens": request.max_output_tokens,
+        "system_prompt": request.system_prompt,
+        "tool_choice": request.tool_choice,
+        "prompt_cache_key": request.prompt_cache_key,
+        "disable_reasoning": request.disable_reasoning,
+        "continuation": (
+            None
+            if request.continuation is None
+            else {
+                "binding_id": request.continuation.binding_id,
+                "payload": request.continuation.payload,
+            }
+        ),
+    }
+    return hashlib.sha256(
+        # ModelRequest 已在构造边界深冻结；编码不再逐层重复校验。
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                   sort_keys=True, allow_nan=False, default=dict).encode()
+    ).hexdigest()
+
+
+def _response_payload(response: LLMResponse) -> dict[str, Any]:
+    """持久响应只含可重放正文；usage 与调用身份留在调用账自己的列里。"""
+    return {
+        "content": response.content,
+        "thinking": response.thinking,
+        "finish_reason": response.finish_reason,
+        "tool_calls": [
+            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            for call in response.tool_calls
+        ],
+        "continuation": (
+            None
+            if response.continuation is None
+            else {
+                "binding_id": response.continuation.binding_id,
+                "payload": response.continuation.payload,
+            }
+        ),
+    }
+
+
+def _decode_call(row: sqlite3.Row) -> Mapping[str, Any]:
+    record = dict(row)
+    record["binding"] = json.loads(record.pop("binding_json"))
+    usage = record.pop("usage_json")
+    record["usage"] = None if usage is None else json.loads(usage)
+    response = record.pop("response_json", None)
+    record["response"] = None if response is None else json.loads(response)
+    return _freeze_json(record)
+
+
 def _strict_json(value: Any, name: str) -> str:
     active: set[int] = set()
 
@@ -1491,6 +1736,33 @@ ON CONFLICT(id) DO UPDATE SET
 """
 
 
+_MODEL_CALLS_ATTEMPT_COLUMNS = (
+    "request_key", "attempt", "owner_id", "response_json", "next_attempt_at",
+    "partial_response", "send_evidence",
+)
+_MODEL_CALLS_BASE_COLUMNS = {
+    "id": "TEXT",
+    "binding_json": "TEXT",
+    "request_digest": "TEXT",
+    "state": "TEXT",
+    "usage_json": "TEXT",
+    "failure": "TEXT",
+    "started_at": "TEXT",
+    "finished_at": "TEXT",
+    "first_token_ms": "REAL",
+    "duration_ms": "REAL",
+}
+
+_MODEL_CALLS_ADDITIVE_TYPES = {
+    "request_key": "TEXT",
+    "attempt": "INTEGER",
+    "owner_id": "TEXT",
+    "response_json": "TEXT",
+    "next_attempt_at": "REAL",
+    "partial_response": "INTEGER",
+    "send_evidence": "TEXT",
+}
+
 MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
     id TEXT PRIMARY KEY NOT NULL,
     binding_json TEXT NOT NULL,
@@ -1501,28 +1773,58 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at TEXT,
     first_token_ms REAL CHECK (first_token_ms >= 0),
-    duration_ms REAL CHECK (duration_ms >= 0 AND (first_token_ms IS NULL OR duration_ms >= first_token_ms))
+    duration_ms REAL CHECK (duration_ms >= 0 AND (first_token_ms IS NULL OR duration_ms >= first_token_ms)),
+    request_key TEXT,
+    attempt INTEGER,
+    owner_id TEXT,
+    response_json TEXT,
+    next_attempt_at REAL,
+    partial_response INTEGER,
+    send_evidence TEXT
 )"""
 
 
 def require_model_calls_schema(connection: sqlite3.Connection) -> None:
-    """未迁移或同名异构的调用表必须在 provider I/O 前明确失败。"""
-    row = connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='model_calls'"
-    ).fetchone()
-    if row is None:
+    """缺列、类型不符、主键异构或多出未知列都必须在 provider I/O 前明确失败。"""
+    info = {
+        str(item[1]): item
+        for item in connection.execute("PRAGMA table_info(model_calls)")
+    }
+    if not info:
         raise RuntimeError("model_calls 缺失，请先运行对应 yoyo 迁移")
-    if "".join(str(row[0]).lower().split()) != "".join(
-        MODEL_CALLS_SCHEMA.lower().split()
-    ):
-        raise RuntimeError("model_calls schema 不匹配，请先运行对应 yoyo 迁移")
+    for name, expected in _MODEL_CALLS_BASE_COLUMNS.items():
+        column = info.get(name)
+        if column is None or str(column[2]).upper() != expected:
+            raise RuntimeError(f"model_calls.{name} 缺失或类型不匹配，请先运行对应 yoyo 迁移")
+    if int(info["id"][5]) != 1:
+        raise RuntimeError("model_calls 主键不匹配，请先运行对应 yoyo 迁移")
+    attempt_columns = set(_MODEL_CALLS_ATTEMPT_COLUMNS) & set(info)
+    if attempt_columns and attempt_columns != set(_MODEL_CALLS_ATTEMPT_COLUMNS):
+        raise RuntimeError("model_calls attempt 记账列不完整，请先运行对应 yoyo 迁移")
+    for name in attempt_columns:
+        if str(info[name][2]).upper() != _MODEL_CALLS_ADDITIVE_TYPES[name]:
+            raise RuntimeError(f"model_calls.{name} 类型不匹配，请先运行对应 yoyo 迁移")
+    unknown = set(info) - set(_MODEL_CALLS_BASE_COLUMNS) - attempt_columns
+    if unknown:
+        raise RuntimeError(f"model_calls 存在未知列 {sorted(unknown)}，schema 不被本实现接受")
+
+
+def require_attempt_schema(connection: sqlite3.Connection) -> None:
+    """request key 记账需要扩展列；旧库先由 additive 迁移接纳。"""
+    require_model_calls_schema(connection)
+    columns = {
+        str(item[1]) for item in connection.execute("PRAGMA table_info(model_calls)")
+    }
+    if not set(_MODEL_CALLS_ATTEMPT_COLUMNS) <= columns:
+        raise RuntimeError("model_calls 缺少 attempt 记账列，请先运行对应 yoyo 迁移")
 
 
 _SCHEMA = MODEL_CALLS_SCHEMA + ";\n" + """
 CREATE TABLE model_registry_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     revision INTEGER NOT NULL CHECK (revision >= 0),
-    default_embedding_model_id TEXT DEFAULT NULL
+    default_embedding_model_id TEXT DEFAULT NULL,
+    host_epoch INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE model_connections (

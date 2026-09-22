@@ -61,6 +61,9 @@ async def apply(ctx: Context) -> None:
         writable=True,
     )
     store.initialize()
+    # 宿主租约在本 Root 退役时最后释放：effect 清理按注册逆序执行，
+    # 最先注册使它晚于 auth attempt 清理与其他资源归还。
+    _ = await ctx.effect(lambda: store.close, label="model-registry-host-lock")
     state = ModelsState(
         store,
         root_instance_token=ctx.root_instance_token,

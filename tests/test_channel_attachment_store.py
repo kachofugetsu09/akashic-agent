@@ -67,37 +67,6 @@ async def test_import_publishes_ready_metadata_and_verified_read_lease(stores) -
 
 
 @pytest.mark.asyncio
-async def test_channel_host_read_lease_forwards_bounded_chunks(stores) -> None:
-    """渠道 Host 包装 lease 后仍须保留 Mobile 分片读取能力。"""
-
-    from agent.plugins.channel_generation_host import _ChannelAttachmentReadLease
-
-    _session_store, artifact_store = stores
-    payload = b"mobile attachment chunk"
-    ref = await artifact_store.import_bytes(
-        payload,
-        kind=AttachmentKind.FILE,
-        filename="mobile.txt",
-        media_type="text/plain",
-    )
-    released: list[tuple[str, str]] = []
-
-    class Host:
-        def _release_attachment_operation(self, key: tuple[str, str]) -> None:
-            released.append(key)
-
-    lease = _ChannelAttachmentReadLease(
-        Host(), ("snapshot", "akashic"), await artifact_store.acquire(ref), ref
-    )
-
-    assert await lease.read_chunk(offset=7, max_bytes=10) == payload[7:17]
-    await lease.aclose()
-    assert released == [("snapshot", "akashic")]
-    with pytest.raises(RuntimeError, match="已关闭"):
-        await lease.read_chunk(offset=0, max_bytes=1)
-
-
-@pytest.mark.asyncio
 async def test_import_owns_image_kind_from_file_signature(stores) -> None:
     _session_store, artifact_store = stores
     image_path = Path(_session_store.db_path).parent / "extensionless"

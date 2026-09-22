@@ -268,6 +268,7 @@ async def test_candidate_environment_and_allowlist_are_host_bound(tmp_path, monk
         await owner.load_all()
         candidate = await owner.prepare_candidate("probe")
         snapshot = candidate.runtime_snapshot
+        assert snapshot is not None
         transaction = owner._begin_snapshot_publication(snapshot)
         await owner.snapshot_store.commit_latest(transaction)
         root = snapshot.composition_root
@@ -300,7 +301,7 @@ async def test_candidate_environment_and_allowlist_are_host_bound(tmp_path, monk
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_scoped_mcp_waits_for_eof_grace_and_process_group_cleanup(tmp_path, monkeypatch, cancel):
     """成功调用后，忽略 EOF 的真实进程仍完成 TERM 回收，取消不遗留资源。"""
-    import agent.mcp.client as client_module
+    import plugins.mcp.client as client_module
     from utils.process_group import process_group_exists
 
     plugins = tmp_path / "plugins"

@@ -8,7 +8,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -120,7 +120,7 @@ def _context(
         ingress=ingress,
         identity=_Identity(),
         attachment_import=_AttachmentImport(),
-        attachment_read=attachment_read,
+        attachment_read=cast(Any, attachment_read),
     )
     return context, ingress, provider
 
@@ -229,7 +229,7 @@ async def test_telegram_external_owner_handles_inbound_delivery_and_stop(
     context, ingress, provider = _context(
         config={"allow_from": ["alice"]},
         credentials={"token": CredentialRef(("token",))},
-        attachment_read=attachment_read,
+        attachment_read=cast(Any, attachment_read),
     )
     adapter = telegram_channel.build_telegram_channel(context, create_client=provider.create)
     adapter.attach_runtime(

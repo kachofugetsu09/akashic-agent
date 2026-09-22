@@ -34,7 +34,7 @@ from session.log import MessageLog
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.workloads.host import WorkloadGenerationHost
-from agent.workloads.model import (
+from agent.plugin_composition.execution import (
     WorkloadEndpoint,
     WorkloadLease,
     WorkloadStartReceipt,

@@ -32,6 +32,10 @@ note = "读取和追加 Message embedding"
 role = "core"
 note = "create-once 建立带固定属性的 Session"
 
+[capabilities."core.source_admission"]
+role = "core"
+note = "来源侧 durable 准入与恢复承认；同一事实只认一个 owner"
+
 [capabilities."core.owner_state"]
 role = "core"
 note = "按插件 owner 隔离的同库事务空间"
@@ -52,6 +56,18 @@ note = "有界字节读取租约"
 [capabilities."core.artifact_import"]
 role = "core"
 note = "来源导入与不可变引用"
+
+[capabilities."core.channel_attachment_import"]
+role = "core"
+note = "Channel 附件导入端口；宿主绑定传输与数据，不借用正式数据"
+
+[capabilities."core.channel_attachment_read"]
+role = "core"
+note = "Channel 附件有界读取端口；与 artifact_read 同一租约边界"
+
+[capabilities."core.channel_identity"]
+role = "core"
+note = "Channel 身份权威事实读取"
 
 [capabilities."core.installed_assets.v1"]
 role = "seam"
@@ -77,6 +93,14 @@ note = "generation-bound MCP server 声明注册表"
 [capabilities."core.workloads"]
 role = "core"
 note = "窄 Controller 管理的容器 workload 注册表"
+
+[capabilities."host.execution.v1"]
+role = "seam"
+note = "宿主执行端口；由 managed_processes host 提供，不授予任意 Core 访问"
+
+[capabilities."host.workload_controller.v1"]
+role = "seam"
+note = "宿主 workload 控制端口；由 workloads host 提供"
 
 [capabilities.executor]
 role = "core"
@@ -111,13 +135,17 @@ note = "普通 UI provider 拥有贡献注册、目录封存和 Dashboard 资源
 role = "core"
 note = "按当前 snapshot 提供中立插件与 MCP 只读目录投影"
 
-[capabilities."core.channels"]
+[capabilities."plugin.channels"]
 role = "seam"
-note = "inbound/outbound Channel 适配注册表；多实现可替换"
+note = "inbound/outbound Channel 适配注册表；由普通 channels provider 提供，多实现可替换"
 
 [capabilities."channel.input.v1"]
 role = "seam"
 note = "Channel 入站入口；由 CHANNELS 的注册者提供"
+
+[capabilities."core.input_custody"]
+role = "core"
+note = "durable inbound 的 reserve/defer/recover 托管事实；关闭后幂等结算"
 
 # ── 调度、生命周期与发布 ─────────────────────────────────────
 [capabilities."core.timers"]

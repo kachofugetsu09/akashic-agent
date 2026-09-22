@@ -208,7 +208,12 @@ async def test_killed_update_returns_to_old_pointer_until_commit(tmp_path, cut):
         if cut != "committed" and update.reload_tx_id is not None:
             assert update.error
         pointers = read_pointers(old.installed_path.parents[1])
-        assert pointers == pointers_before_boot
+        if cut == "committed":
+            # 提交已确认：启动结算把 stable 指针对称收敛到已提交制品，
+            # 不能让运行新制品而 stable 仍指旧制品的不一致持久化。
+            assert pointers.stable.path == update.candidate.path
+        else:
+            assert pointers == pointers_before_boot
         assert PluginSelection(workspace).read() == selected_before_boot
         assert host.ready_candidate is None
         assert (old.data_path / "history.txt").read_text() == "existing durable data"

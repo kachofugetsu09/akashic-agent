@@ -3,6 +3,7 @@
 import asyncio
 import sys
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -66,7 +67,7 @@ async def test_uninstall_waits_for_snapshot_and_fork_then_closes_whole_root(tmp_
             await original_drain(snapshot)
 
         monkeypatch.setattr(host.snapshot_store, "_on_drained", hold_drain)
-        task = asyncio.create_task(AppRuntime._uninstall_plugin(app, "target@lab"))
+        task = asyncio.create_task(AppRuntime._uninstall_plugin(cast(Any, app), "target@lab"))
         await waiting.wait()
         assert not task.done() and cache.is_dir()
         assert old.lease_count == 2 and target_state["closes"] == 0
@@ -118,7 +119,7 @@ async def test_cancelled_uninstall_rejoins_the_same_running_drain(tmp_path, monk
             await original_drain(snapshot)
 
         monkeypatch.setattr(host.snapshot_store, "_on_drained", hold_drain)
-        first = asyncio.create_task(AppRuntime._uninstall_plugin(app, "target@lab"))
+        first = asyncio.create_task(AppRuntime._uninstall_plugin(cast(Any, app), "target@lab"))
         await drain_started.wait()
         operation = host._operation
         assert operation is not None
@@ -136,7 +137,7 @@ async def test_cancelled_uninstall_rejoins_the_same_running_drain(tmp_path, monk
             await original_wait(snapshot)
 
         monkeypatch.setattr(host.snapshot_store, "wait_for_snapshot_drained", wait_for_retired)
-        retry = asyncio.create_task(AppRuntime._uninstall_plugin(app, "target@lab"))
+        retry = asyncio.create_task(AppRuntime._uninstall_plugin(cast(Any, app), "target@lab"))
         await retry_waiting.wait()
         assert not retry.done() and cache.is_dir()
         finish_drain.set()
@@ -163,7 +164,7 @@ async def test_uninstall_resource_close_failure_preserves_cache_and_owner(tmp_pa
         marker = target.data_dir / "keep.txt"
         marker.write_text("user data")
         with pytest.raises(Exception):
-            await AppRuntime._uninstall_plugin(app, "target@lab")
+            await AppRuntime._uninstall_plugin(cast(Any, app), "target@lab")
         assert state["closes"] == 1
         assert old.snapshot_id in host.snapshot_store.retained_snapshot_ids
         assert target.module_path in sys.modules

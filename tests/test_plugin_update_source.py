@@ -97,7 +97,9 @@ async def apply(ctx):
                 )
                 latest_result = await tools.execution(authorize).execute_call(latest_reply)
                 assert latest_result.outcome == "success"
-                accepted = json.loads(latest_result.parts[0].value)
+                latest_value = latest_result.parts[0].value
+                assert isinstance(latest_value, str)
+                accepted = json.loads(latest_value)
                 assert accepted["update_id"] == identity
                 assert accepted["candidate_id"] == host.read_update(identity).candidate_id
                 assert accepted["handle"]

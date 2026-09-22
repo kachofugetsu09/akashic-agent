@@ -56,13 +56,59 @@ R = TypeVar("R")
 PluginApply = Callable[["Context"], object]
 
 
+class RuntimeLease:
+    """Opaque scope 租约能力：身份可读、可 fork/release；snapshot 与 Root 归 Core 私有。
+
+    公开面只有 snapshot_id/active/fork/release；实现私有持有真实
+    RuntimeSnapshotLease，插件经 admission 取得的实例无法遍历到
+    snapshot、composition_root 或任意服务。
+    """
+
+    __slots__ = ("_lease",)
+
+    def __init__(self, lease: "RuntimeSnapshotLease") -> None:
+        self._lease = lease
+
+    @property
+    def snapshot_id(self) -> str:
+        return self._lease.snapshot.snapshot_id
+
+    @property
+    def active(self) -> bool:
+        return self._lease.active
+
+    def fork(self) -> "RuntimeLease":
+        return RuntimeLease(self._lease.fork())
+
+    async def release(self) -> None:
+        await self._lease.release()
+
+    def _raw_lease(self) -> "RuntimeSnapshotLease":
+        """Core 内部还原真实租约；公开面不提供。"""
+        return self._lease
+
+
 class RuntimeScope:
     """Carry one exact snapshot from a source callback into one async operation."""
 
-    def __init__(self, lease: RuntimeSnapshotLease) -> None:
-        self._lease = lease
+    def __init__(self, lease: "RuntimeLease | RuntimeSnapshotLease") -> None:
+        self._lease = lease._lease if isinstance(lease, RuntimeLease) else lease
         self._token: object | None = None
         self._closed = False
+
+    @property
+    def is_current(self) -> bool:
+        """本 scope 仍是当前 Task 绑定且未关闭的 lease owner。
+
+        权威归 snapshot 层的 runtime binding：跨 Task 继承、lease 已释放或
+        被其他 scope 覆盖时都返回 False，不另建并行租约状态。
+        """
+
+        if self._closed:
+            return False
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        return get_current_runtime_lease() is self._lease
 
     @property
     def snapshot_id(self) -> str:
@@ -73,8 +119,10 @@ class RuntimeScope:
     async def __aenter__(self) -> None:
         if self._closed or self._token is not None:
             raise RuntimeError("runtime scope 只能进入一次")
-        from agent.plugins.snapshot import bind_runtime_snapshot
+        from agent.plugins.snapshot import RuntimeSnapshotLease, bind_runtime_snapshot
 
+        if not isinstance(self._lease, RuntimeSnapshotLease):
+            raise TypeError("runtime scope 只接受 snapshot owner 签发的 lease")
         try:
             self._token = bind_runtime_snapshot(self._lease)
         except BaseException:
@@ -301,6 +349,7 @@ class Context:
                       binding_contributors: Callable[[], tuple[Context, ...]] | None = None) -> Effect:
         """服务 owner 可声明归档时实际需要的动态注册 Context，生命周期随同一 Effect。"""
         reject_executor_context_access()
+        self._root._require_unfrozen("provide Service")
 
         async def setup() -> Callable[[], Awaitable[None]]:
             self._root._register_provider(

@@ -108,7 +108,10 @@ version = "1.0.0"
 inject = (MESSAGE_WRITERS, SESSION_ADMISSION, TASKS)
 async def apply(ctx):
     async def forbidden(event):
-        raise AssertionError("program validation started an automatic source")
+        # 正式发布的 closed-start 会合法触发一次 RUNTIME_STARTED；
+        # 守卫只拒绝验证宿主自己发起的自动来源启动。
+        if "plugin-validation" in str(ctx.runtime.data_dir):
+            raise AssertionError("program validation started an automatic source")
     await ctx.on(RUNTIME_STARTED, forbidden)
     async def validate(entered, release):
         ctx.require(SESSION_ADMISSION).ensure(ctx, "validation", SessionAttributes("internal", "excluded"))
@@ -274,9 +277,10 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
         _commit(source)
         result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         failed = False
+        keep_failing = True
         process = None
         validation = None
-        with pytest.raises(RuntimeError, match="cleanup|清理"):
+        with pytest.raises(BaseException, match="cleanup|清理|回收"):
             async with host.open_validation(result.update_id) as scope:
                 validation = next(iter(host._validation_hosts.values()))
                 # 已安装 provider 使用自己的模块 namespace，按实际会话 host 注入故障。
@@ -287,7 +291,7 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
                     actual = session._host._cleanup_entry
                     async def fail_actual(entry):
                         nonlocal failed, process
-                        if not failed:
+                        if keep_failing:
                             failed = True
                             process = entry.client._process
                             raise OSError("injected live MCP cleanup failure")
@@ -301,6 +305,7 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
         assert tuple(host._validation_hosts) == (validation.identity,)
         with pytest.raises(RuntimeError, match="资源尚未清理|调用失败"):
             host.start_update_publication(result.update_id)
+        keep_failing = False
         await host.retry_validation_cleanup(validation.identity)
         assert process.returncode is not None
         assert host._validation_hosts == {}

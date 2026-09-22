@@ -203,7 +203,8 @@ async def test_wake_provider_200_keeps_v3_request_and_delivery_contract(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "attempts", "retryable", "content_status"),
-    ((400, 1, "false", "invalidated"), (503, 4, "true", "deferred")),
+    # 生成调用恒单次物理尝试；5xx 不携带发送证据，驱动与预算均不重发。
+    ((400, 1, "false", "invalidated"), (503, 1, "true", "deferred")),
 )
 async def test_wake_provider_error_is_terminal_and_redacted(
     tmp_path: Path,

@@ -40,6 +40,7 @@ class Session:
         self._effect = None
         health, ctx = registration.health, registration.ctx
         self._host = McpGenerationHost(
+            registration.grant,
             on_health=self._health,
             on_incident=lambda _id, _name, kind, reason: ctx.report_incident(kind, reason))
 
@@ -65,11 +66,16 @@ class Session:
             binding = McpServerBinding(_descriptor(ctx.runtime.plugin_id, value), value, entry.health,
                 ctx.fiber, entry.token, ctx.runtime.plugin_dir, ctx.runtime.data_dir,
                 ctx.runtime.workspace, ctx.report_incident)
-            environment = grant.environment(definition.env, definition.candidate_env)
-            environment.update(endpoints)
-            environment["AKASHIC_MCP_SCOPE_ID"] = self.identity
-            command = McpMaterializedCommand(grant.command(definition.command, definition.cwd),
-                str(grant.cwd(definition.cwd)), environment)
+            # 声明值原样交给 host；command/cwd/env 的授权在 spawn 边界内由
+            # ExecutionGrant.prepare_process 一次完成。endpoint/scope 是 provider
+            # 运行期材料，经 extra_env 并入签发输入，不绕过授权。
+            extra_env = dict(endpoints)
+            extra_env["AKASHIC_MCP_SCOPE_ID"] = self.identity
+            command = McpMaterializedCommand(
+                command=definition.command, cwd=definition.cwd,
+                env=dict(definition.env), candidate_env=dict(definition.candidate_env),
+                extra_env=extra_env,
+            )
             runtime = await self._host.start_generation(self.identity,
                 {definition.name: binding},
                 {definition.name: command}, mode=grant.mode)

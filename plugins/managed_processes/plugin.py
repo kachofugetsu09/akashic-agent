@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from dataclasses import replace
 from contextlib import asynccontextmanager
 from agent.plugin_composition import Context
 from agent.plugin_composition.model import FiberState
@@ -30,6 +29,7 @@ class ManagedProcessHandle:
         self._drained = asyncio.Event()
         self._drained.set()
         self._host = ManagedProcessGenerationHost(
+            grant,
             on_health=lambda _id, _name, ready, reason: health.recover() if ready else health.degrade(reason),
             on_incident=lambda _id, _name, kind, reason: ctx.report_incident(kind, reason))
 
@@ -38,9 +38,9 @@ class ManagedProcessHandle:
             if self._closed:
                 raise RuntimeError("进程 owner 已关闭")
             value = self._definition
-            materialized = replace(value, command=self._grant.command(value.command, value.cwd),
-                cwd=str(self._grant.cwd(value.cwd)), env=self._grant.environment(value.env, value.candidate_env))
-            await self._host.start_generation(self._id, {value.name: materialized}, mode=self._grant.mode)
+            # 声明值原样交给 host；command/cwd/env 的授权在 spawn 边界内由
+            # ExecutionGrant.prepare_process 一次完成并签发冻结制品。
+            await self._host.start_generation(self._id, {value.name: value}, mode=self._grant.mode)
 
     def port(self, ctx):
         self._provider.check(ctx)

@@ -278,8 +278,7 @@ async def test_programmatic_requests_keep_exact_snapshot_while_follow_does_not_p
                 try:
                     await asyncio.wait_for(entered.wait(), 3)
                     replacement = RuntimeSnapshotCompiler().compile(old.generations,
-                        snapshot_revision="programmatic-publication-proof", composition_root=old.composition_root,
-                        core_channel_definitions=manager._core_channel_definitions)
+                        snapshot_revision="programmatic-publication-proof", composition_root=old.composition_root)
                     await manager._publish_committed_snapshot(replacement)
                     assert manager.current_snapshot is replacement
                     assert not request.done() and old.lease_count == 1

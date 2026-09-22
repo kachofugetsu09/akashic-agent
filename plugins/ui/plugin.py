@@ -92,7 +92,7 @@ class Ui:
             if not loader_path.is_relative_to(root):
                 raise ValueError("Dashboard loader 不属于贡献方代码制品")
         resources = None if dashboard is None else DashboardResources(
-            ctx, dashboard, has_web=module is not None,
+            ctx, dashboard, has_web=module is not None, registry=self,
         )
         registration = Registration(ctx, module, resources)
 

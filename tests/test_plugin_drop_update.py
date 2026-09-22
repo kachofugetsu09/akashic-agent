@@ -115,6 +115,7 @@ async def test_revert_during_publication_settles_closed_candidate(tmp_path, monk
         assert host.ready_candidate is None
         update = host.reload_journal.update(result.update_id)
         assert update.phase == "rolled_back"
+        assert update.reload_tx_id is not None
         assert host.reload_journal.get(update.reload_tx_id).phase == "aborted"
         assert host.reload_journal.events(update.reload_tx_id)[-1].details["cleanup_receipt"] == "candidate-root-closed"
         assert PluginSelection(workspace).read() == selection
@@ -173,6 +174,7 @@ async def test_discard_retries_file_settlement_after_candidate_closed(tmp_path, 
         assert update.phase == "armed"
         assert host.ready_candidate is None
         assert candidate.snapshot_id not in host.snapshot_store.retained_snapshot_ids
+        assert update.reload_tx_id is not None
         assert host.reload_journal.get(update.reload_tx_id).phase == "aborted"
         assert host.reload_journal.events(update.reload_tx_id)[-1].details["cleanup_receipt"] == "candidate-root-closed"
 
@@ -218,6 +220,7 @@ async def test_discard_keeps_failed_cleanup_owner_until_real_close(tmp_path, mon
         assert update.phase == "armed"
         assert host.ready_candidate is not None
         assert candidate.snapshot_id in host.snapshot_store.retained_snapshot_ids
+        assert update.reload_tx_id is not None
         assert host.reload_journal.get(update.reload_tx_id).phase == "discarding"
         assert "cleanup_receipt" not in host.reload_journal.events(update.reload_tx_id)[-1].details
         await host.discard_update(result.update_id)

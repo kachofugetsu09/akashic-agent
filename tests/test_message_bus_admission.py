@@ -105,7 +105,7 @@ def _v3_inbound(
             metadata=metadata or {},
             attachments=attachments,
         ),
-        lease=lease,
+        lease=lease,  # pyright: ignore[reportArgumentType] - focused inbound lease fake
     )
     return envelope, lease
 
@@ -678,9 +678,18 @@ async def test_channel_authority_rejects_untrusted_session_override_before_enque
 def test_source_admission_boot_id_is_shared_across_roots():
     from agent.plugin_composition.admission import SourceAdmission
 
-    first = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-1", candidate=False)
-    second = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-1", candidate=False)
-    other = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-2", candidate=False)
+    first = SourceAdmission(
+        cast(Any, SimpleNamespace(root_instance_token=object())), cast(Any, None),
+        boot_id="host-1", candidate=False,
+    )
+    second = SourceAdmission(
+        cast(Any, SimpleNamespace(root_instance_token=object())), cast(Any, None),
+        boot_id="host-1", candidate=False,
+    )
+    other = SourceAdmission(
+        cast(Any, SimpleNamespace(root_instance_token=object())), cast(Any, None),
+        boot_id="host-2", candidate=False,
+    )
     assert first.boot_id == second.boot_id
     assert first.boot_id != other.boot_id
 

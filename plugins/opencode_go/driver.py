@@ -9,7 +9,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -97,13 +97,18 @@ class _BoundChat:
         """Send one exact bound model request through Chat Completions."""
 
         if request.continuation is not None:
-            raise InvalidRequestError(
+            # 发送前本地校验失败：可证明请求未发出。
+            raise _unsent(InvalidRequestError(
                 "OpenCode Go Chat Completions does not support continuation state"
-            )
+            ))
         body = _chat_body(self._descriptor, request)
+        # 生成调用恒为一次物理 attempt：重试预算唯一 owner 是 Models；
+        # 未带 request_key 的直调同样不得隐式重发（§6.3）。max_retries
+        # 连接配置只留给 /models discovery 等非生成路径。
+        connection = replace(self._connection, max_retries=0)
         if request.on_delta is None:
             payload = await _request_json(
-                self._connection,
+                connection,
                 self._credential,
                 "POST",
                 "/chat/completions",
@@ -114,7 +119,7 @@ class _BoundChat:
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
         return await _stream_chat(
-            self._connection,
+            connection,
             self._credential,
             body,
             request.on_delta,
@@ -476,6 +481,7 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         "connect_timeout",
         "read_timeout",
         "max_retries",
+        "max_attempts",
         "catalog_provider_id",
     }
     unknown = sorted(set(config) - allowed)
@@ -492,6 +498,13 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
     max_retries = config.get("max_retries", 3)
     if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 0:
         raise ValueError("max_retries must be a non-negative integer")
+    # max_attempts 是 Models 独占的重试预算字段，driver 只校验不消费；
+    # accounted 调用的 driver 重试恒为 0。
+    max_attempts = config.get("max_attempts")
+    if max_attempts is not None and (
+        not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or max_attempts < 1
+    ):
+        raise ValueError("max_attempts must be a positive integer")
     return _ConnectionConfig(
         base_url=_normalize_base_url(descriptor.endpoint),
         connect_timeout=connect_timeout,
@@ -1005,32 +1018,59 @@ def _usage(raw: Mapping[str, Any]) -> ModelUsage:
     )
 
 
+def _unsent(error: ModelError) -> ModelError:
+    """发送前本地校验失败：请求可证明未到达 provider，标记为允许重试的证据。"""
+    error.send_evidence = "unsent"
+    return error
+
+
 def _raise_status(response: httpx.Response, *, secret: str) -> None:
-    if response.status_code < 400:
+    error = _status_error(response, secret=secret)
+    if error is None:
         return
+    # 4xx 是对本请求的明确拒绝应答——正面证据。5xx 只说明服务端/网关
+    # 未能给出结论，不能证明后端未接收或未处理：不授证据，fail-closed。
+    if response.status_code < 500:
+        error.send_evidence = "rejected"
+    raise error
+
+
+def _status_error(response: httpx.Response, *, secret: str) -> ModelError | None:
+    if response.status_code < 400:
+        return None
     message = _redact_secret(_response_error_message(response), secret)
     lowered = message.lower()
     if response.status_code in {401, 403}:
-        raise AuthenticationError(message)
+        return AuthenticationError(message)
+    if response.status_code >= 500:
+        # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
+        # （context_length 等）不得把错误提升为可证明的容量拒绝。
+        return TransportError(f"provider returned HTTP {response.status_code}: {message}")
     if any(code in lowered for code in _CONTEXT_CODES):
-        raise ContextLengthError(message)
+        return ContextLengthError(message)
     if any(code in lowered for code in _SAFETY_CODES):
-        raise ContentSafetyError(message)
+        return ContentSafetyError(message)
     if response.status_code == 402 or (
         response.status_code == 429
         and any(value in lowered for value in ("quota", "usage limit", "credit"))
     ):
-        raise QuotaError(message)
+        return QuotaError(message)
     if response.status_code == 429:
-        raise RateLimitError(message)
+        error = RateLimitError(message)
+        # Retry-After 必须随错误传给 Models，由独占重试预算决定何时再付。
+        retry_after = response.headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                setattr(error, "retry_after", max(0.0, float(retry_after)))
+            except ValueError:
+                pass
+        return error
     if 400 <= response.status_code < 500:
-        raise InvalidRequestError(
+        return InvalidRequestError(
             f"provider rejected the request with HTTP {response.status_code}: {message}"
         )
     error = TransportError(f"provider returned HTTP {response.status_code}: {message}")
-    if response.status_code in {500, 502, 503, 504}:
-        setattr(error, "retry_safe", True)
-    raise error
+    return error
 
 
 def _response_error_message(response: httpx.Response) -> str:
@@ -1070,13 +1110,19 @@ def _map_error(error: Exception) -> Exception:
         ),
     ):
         return error
+    if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
+        # 连接建立失败可证明请求未发出：这是允许重试的正面证据。
+        mapped = TransportError(f"model transport failed: {type(error).__name__}")
+        mapped.send_evidence = "unsent"
+        setattr(mapped, "retry_safe", True)
+        return mapped
     if isinstance(error, (httpx.TimeoutException, TimeoutError)):
         return ModelTimeoutError("model request timed out")
     if isinstance(error, httpx.TransportError):
-        mapped = TransportError(f"model transport failed: {type(error).__name__}")
-        setattr(mapped, "retry_safe", True)
-        return mapped
+        # 请求发出后的读/写失败不携带任何安全证据。
+        return TransportError(f"model transport failed: {type(error).__name__}")
     if isinstance(error, _StreamReadError):
+        # 已进入 HTTP 200 流：无论是否观察到 delta，远端效果都不可证。
         mapped = _map_error(error.error)
         setattr(mapped, "response_delta_seen", error.response_delta_seen)
         return mapped
@@ -1084,8 +1130,9 @@ def _map_error(error: Exception) -> Exception:
 
 
 def _retryable(error: Exception) -> bool:
-    return isinstance(error, (ModelTimeoutError, RateLimitError)) or bool(
-        getattr(error, "retry_safe", False)
+    return getattr(error, "send_evidence", None) in ("rejected", "unsent") and (
+        isinstance(error, (ModelTimeoutError, RateLimitError))
+        or bool(getattr(error, "retry_safe", False))
     )
 
 

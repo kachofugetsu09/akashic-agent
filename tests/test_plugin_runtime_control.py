@@ -189,7 +189,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
 
         # 4. 已排空 artifact 仍保留，只有显式卸载才删除 cache。
         plugin_base = old_artifact.parents[1]
-        data_path = Path(str(updated["dataPath"]))
+        data_path = updated.data_path
         _ = await app._uninstall_plugin(plugin_id)
         assert not plugin_base.exists()
         assert old_ca_bundle.is_file()
@@ -211,6 +211,7 @@ async def test_socket_uninstall_waits_for_old_lease_after_client_disconnects(
     """真实控制 socket 的卸载操作由服务 owner 持续到旧代排空。"""
 
     _source, manager, _app, bus, old_artifact = await _start_runtime_mcp(tmp_path)
+    await manager.snapshot_store.retry_drains()
     plugin_id = "runtime_mcp@lab"
     production_data = tmp_path / "workspace" / "plugin-data" / "runtime_mcp-lab"
     production_marker = production_data / "retained.json"
@@ -324,7 +325,8 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         )
         assert candidate.data_dir == validation_data
         assert candidate.data_dir != production_data
-        assert (validation_data / marker.name).read_bytes() == production_before
+        # 候选数据目录独立且初始为空：正式 plugin-data 不复制进校验 workspace。
+        assert not (validation_data / marker.name).exists()
         assert not (tmp_path / "workspace" / "candidate-mcp-started.json").exists()
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
@@ -349,7 +351,7 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         )
         assert (runtime_workspace / "candidate-mcp-started.json").is_file()
         assert (runtime_data / "candidate-mcp-started.json").is_file()
-        assert (runtime_data / marker.name).read_bytes() == production_before
+        assert not (runtime_data / marker.name).exists()
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
 
@@ -395,12 +397,12 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
         latest_lease = manager.snapshot_store.lease(selector="latest")
         old_ca_bundle.unlink()
 
-        # 2. 旧 MCP 在调用时才读取路径，oracle 必须命中原事故而不是静默切新代。
-        async with old_server() as opened:
-            async with opened.route() as route:
-                error_result = await route.call("probe", {})
-        assert error_result.tool_error
-        assert "cacert.pem" in error_result.output or "No such file" in error_result.output
+        # 2. 环境完整性按内容摘要校验：删除 env 内材料后借入即拒绝，
+        #    oracle 必须命中原事故而不是静默切新代。
+        with pytest.raises(RuntimeError, match="Python 环境内容缺失或损坏"):
+            async with old_server() as opened:
+                async with opened.route() as route:
+                    _ = await route.call("probe", {})
         assert old_lease.snapshot is manager.current_snapshot
         latest_generation = latest_lease.snapshot.generations[plugin_id]
         latest_runtime = _mcp_registration(latest_lease.snapshot)
