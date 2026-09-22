@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import grp
 import os
 import pwd
-import grp
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -160,6 +161,39 @@ def test_operator_environment_points_mise_at_the_owner_home(tmp_path: Path) -> N
     environment = operator_environment(HOME)
     assert environment["HOME"] == str(HOME)
     assert not environment.get("XDG_DATA_HOME", "").startswith("/root")
+
+
+def test_bridge_preparation_runs_every_tool_as_the_runtime_user(tmp_path: Path) -> None:
+    """sudo 安装时 mise 与 uv 都必须使用 systemd 的运行身份。"""
+
+    from scripts.akashic_release.bridge import prepare_bridge_venv
+    from scripts.akashic_release.ownership import runtime_user_prefix
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    target = tmp_path / "bridge-venv"
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[-3:] == ["which", "python"]:
+            return subprocess.CompletedProcess(command, 0, stdout="/home/operator/python\n")
+        if "venv" in command:
+            (target / "bin").mkdir(parents=True, exist_ok=True)
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    prefix = runtime_user_prefix(user="operator", owner_uid=1000, invoking_uid=0)
+    prepare_bridge_venv(
+        checkout=checkout,
+        target=target,
+        mise=Path("/opt/mise"),
+        run=run,
+        command_prefix=prefix,
+    )
+
+    assert prefix == ("sudo", "-H", "-u", "operator", "--")
+    assert len(commands) == 4
+    assert all(tuple(command[: len(prefix)]) == prefix for command in commands)
 
 
 def test_release_to_owner_keeps_exec_bits_and_grants_read(tmp_path: Path) -> None:

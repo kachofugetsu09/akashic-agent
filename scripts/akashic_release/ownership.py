@@ -53,6 +53,16 @@ def operator_environment(owner_home: Path) -> dict[str, str]:
     return environment
 
 
+def runtime_user_prefix(
+    *, user: str, owner_uid: int, invoking_uid: int
+) -> tuple[str, ...]:
+    """Return a sudo prefix when preparation must run as the runtime user."""
+
+    if invoking_uid == owner_uid:
+        return ()
+    return ("sudo", "-H", "-u", user, "--")
+
+
 def release_to_owner(path: Path, *, uid: int, gid: int) -> None:
     """递归把生成物交还给运行时属主，并保证可读、目录可进入。
 
