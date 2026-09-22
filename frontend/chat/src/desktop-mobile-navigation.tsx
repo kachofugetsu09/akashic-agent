@@ -14,12 +14,13 @@ export function DesktopMobileNavigation(props: DesktopSidebarProps) {
 
   return <>
     <button ref={triggerRef} className="desktop-mobile-navigation-trigger" type="button" aria-label="打开导航" onClick={() => setOpen(true)}>
-      <Menu aria-hidden="true" size={22} />
+      <Menu aria-hidden="true" size={20} />
     </button>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         className="desktop-mobile-navigation-dialog"
         overlayClassName="desktop-mobile-navigation-overlay"
+        showCloseButton={false}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           triggerRef.current?.focus();
@@ -29,7 +30,6 @@ export function DesktopMobileNavigation(props: DesktopSidebarProps) {
         <DesktopSidebar
           {...props}
           onSelectSession={(sessionId) => closeThen(() => props.onSelectSession(sessionId))}
-          onOpenRuntime={() => closeThen(props.onOpenRuntime)}
           onCycleTheme={() => closeThen(props.onCycleTheme)}
           onOpenPairing={() => closeThen(props.onOpenPairing)}
           onNewChat={() => closeThen(props.onNewChat)}

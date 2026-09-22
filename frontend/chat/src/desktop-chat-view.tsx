@@ -42,7 +42,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
-    activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
+    activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
   } = controller;
@@ -60,10 +60,8 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
     <main className={shellClass}>
       {!embeddedShell && !embeddedRuntime ? (
         <ChatProductBand
-          surface={surface}
           chatReady={chatReady}
           themeLabel={theme.label}
-          onOpenRuntime={openRuntime}
           onCycleTheme={cycleTheme}
         />
       ) : null}
@@ -73,23 +71,23 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
           <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
-            onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
-          />
-          <DesktopMobileNavigation
-            embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
-            activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
+            themeLabel={theme.label} onSelectSession={activateSession}
             onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
           />
         </> : null}
 
-        {surface === "runtime" ? (
+        {embeddedRuntime ? (
           <Suspense fallback={<section className="runtime-dashboard" aria-busy="true">正在加载知识与运行…</section>}>
             <LazyRuntimeDashboard />
           </Suspense>
         ) : <section className="chat-main">
         <header className="conversation-heading">
+          <DesktopMobileNavigation
+            embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
+            activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
+            themeLabel={theme.label} onSelectSession={activateSession}
+            onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
+          />
           <h1 title={sidebarSessions.find((s) => s.active)?.title || "新会话"}>{sidebarSessions.find((session) => session.active)?.title || "新会话"}</h1>
         </header>
         <Conversation className="conversation" resize="instant">
