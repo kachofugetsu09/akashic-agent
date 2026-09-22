@@ -47,6 +47,7 @@ def prepare_generation(
     mise: Path,
     run: Run,
     runtime_env: Path | None = None,
+    installed_unit: Path | None = None,
 ) -> dict[str, object]:
     """Prepare and publish one immutable Core plus Bridge generation."""
 
@@ -84,6 +85,7 @@ def prepare_generation(
     # 安装产物必须属于运行时属主，而不是 sudo 会话；否则下一轮启动才会以
     # Permission denied 暴露出来。
     user, owner_uid, owner_gid, owner_home = resolve_runtime_owner(
+        installed_unit=installed_unit,
         runtime_env=runtime_env,
         environ=os.environ,
         fallback_uid=os.getuid(),

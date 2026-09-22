@@ -21,6 +21,7 @@ _EXEC_BITS = 0o111
 
 def resolve_runtime_owner(
     *,
+    installed_unit: Path | None,
     runtime_env: Path | None,
     environ: Mapping[str, str],
     fallback_uid: int,
@@ -32,7 +33,7 @@ def resolve_runtime_owner(
     """
 
     user, group, home = resolve_service_account(
-        installed_unit=None,
+        installed_unit=installed_unit,
         runtime_env=runtime_env,
         environ=environ,
         fallback_uid=fallback_uid,
