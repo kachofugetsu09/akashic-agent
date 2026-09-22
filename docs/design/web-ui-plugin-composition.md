@@ -23,7 +23,6 @@ Core Web Host
             ├── conversation-ui         普通插件，拥有会话侧栏与对话页
             ├── workbench-ui            普通插件，拥有工作台页
             │   └── workbench.panels    Dashboard 面板迁入
-            ├── runtime-ui              普通插件，拥有知识与运行页 adapter
             └── models                  普通插件，拥有模型页
                 └── models.connection-types
                     ├── openai-compatible
@@ -31,7 +30,7 @@ Core Web Host
                     └── opencode-go
 ```
 
-“知识与运行”由 `runtime-ui` 顶层页面 contribution 保留。删除该插件只删除页面 adapter，不删除 MCP、Skill、job、runtime inspection、Akasha 或移动端的底层能力。
+“知识与运行”独立 Web 页面已删除；MCP、Skill、job、runtime inspection、Akasha 和移动端能力仍由各自 owner 提供。
 
 ## 2. 用六岁小孩能懂的话解释
 
@@ -39,7 +38,6 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 
 - “对话”插件插进 Shell，就出现对话房间。
 - “工作台”插件插进来，就出现工作台房间。
-- “知识与运行”插件插进来，就出现运行信息房间。
 - “模型”插件插进来，就出现模型房间。
 
 模型房间自己又留了一个小插座：`models.connection-types`。Codex、OpenCode Go 和 OpenAI-compatible 各自把自己的连接按钮和表单插进去。拔掉 Codex 插件，只少 Codex 那一块；房子、模型房间和已经保存的 Connection 都不会消失。
@@ -50,7 +48,7 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 
 用户希望 L 形 2236 WebUI 本身由平等、非特权、可外置安装的普通插件拼成：
 
-- 顶部保留“对话”“工作台”“知识与运行”“模型”，不再由 `frontend/dashboard` 写死。
+- 顶部保留“对话”“工作台”“模型”，不再由 `frontend/dashboard` 写死。
 - 页面可以继续声明自己的嵌套 UI 扩展点；Provider UI 是第一条纵向组合证明。
 - `models`、`codex`、`opencode-go`、`openai-compatible` 即使移出本仓库，作为普通插件正式 install 后仍能提供同样页面和行为。
 - 新增第四种 Provider 只新增插件，不修改 Core、Shell 或 `models` 的 Provider 分支。
@@ -268,7 +266,7 @@ listener 和临时窗口；Workbench 在重绘、切换或卸载对应 DOM 时�
 
 ```text
 ┌──────────────────────────────────────────────────────┐
-│ Akashic │ 对话 │ 工作台 │ 知识与运行 │ 模型    主题 │  shell-ui
+│ Akashic │ 对话 │ 工作台 │ 模型    主题 │  shell-ui
 ├─────────┬────────────────────────────────────────────┤
 │         │                                            │
 │ page    │       active page plugin                   │  页面自己决定
@@ -282,7 +280,6 @@ listener 和临时窗口；Workbench 在重绘、切换或卸载对应 DOM 时�
 | `shell-ui` | `web.root.v1` | 唯一 Shell；声明 `shell.pages.v1` | 品牌顶栏、页面导航、route/history |
 | `conversation-ui` | `shell.pages.v1` | `conversation` page | 会话侧栏、消息、composer、desktop adapter |
 | `workbench-ui` | `shell.pages.v1` | `workbench` page；声明 `workbench.panels.v2` | Session/Plugin 工作台布局、最新读取与 panel adapter |
-| `runtime-ui` | `shell.pages.v1` | `runtime` page | 知识与运行的 desktop adapter |
 | `models` | `shell.pages.v1` | `models` page；声明 `models.connection-types.v1` | catalog、Connection、Binding、默认 chat/embedding 的 UI |
 
 page 合同不包含 readiness、onboarding 或 redirect。首版迁移期间保留现有 `/api/shell/state → models` 跳转 adapter；它必须被标为模型特判删除点，并在硬编码 Shell 退场时一并删除，不等待 Onboarding。没有默认聊天模型时，对话插件显示自己的不可用状态，用户仍可手动进入模型页。将来 Onboarding 另做普通消费者，不能为了它先把“通用恢复目标”塞进所有页面合同。
@@ -514,7 +511,7 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 
 ### 14.4 用户体验与可访问性
 
-- 2236 顶栏只显示已注册页面，默认顺序稳定；对话、工作台、知识与运行和模型均由各自普通插件注册。
+- 2236 顶栏只显示已注册页面，默认顺序稳定；对话、工作台和模型均由各自普通插件注册。
 - 插件化前的同数据截图、DOM 几何和主要交互是迁移金标准；除已确认删除的旧 Akasha 模型配置块外，迁移不得改变可见体验。
 - 浏览器 back/forward、deep link、刷新、无模型时的对话不可用提示和无页面空态行为确定。
 - 键盘可以进入顶栏、切换页面、返回触发按钮；焦点在 page/child 卸载后回到可预测位置。

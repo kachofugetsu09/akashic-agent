@@ -5,7 +5,6 @@ import "./message-view.css";
 
 interface DesktopChatAppProps {
   embeddedShell: boolean;
-  embeddedRuntime: boolean;
 }
 
 export function DesktopChatApp(props: DesktopChatAppProps) {
