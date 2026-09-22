@@ -73,6 +73,7 @@ def install(args: argparse.Namespace) -> dict[str, object]:
             mise=args.mise,
             run=_run,
             runtime_env=args.runtime_env,
+            installed_unit=args.unit_root / "akashic-host-bridge.service",
         )
         units_changed = install_units(
             checkout=paths.source(commit),

@@ -215,14 +215,25 @@ def test_release_to_owner_keeps_exec_bits_and_grants_read(tmp_path: Path) -> Non
     assert data.stat().st_mode & 0o044
 
 
-def test_resolve_runtime_owner_matches_the_unit_identity(tmp_path: Path) -> None:
+def test_resolve_runtime_owner_matches_the_installed_unit(tmp_path: Path) -> None:
     from scripts.akashic_release.ownership import resolve_runtime_owner
 
     env = tmp_path / "runtime.env"
     env.write_text("A=1\n", encoding="utf-8")
+    unit = tmp_path / "akashic-host-bridge.service"
+    unit.write_text(
+        _unit(
+            "bridge",
+            user=ACCOUNT.pw_name,
+            group=GROUP,
+            env=str(env),
+        ),
+        encoding="utf-8",
+    )
     user, uid, gid, home = resolve_runtime_owner(
+        installed_unit=unit,
         runtime_env=env,
-        environ={"SUDO_USER": "root"},
+        environ={"SUDO_USER": "different-user"},
         fallback_uid=0,
         fallback_gid=0,
     )
