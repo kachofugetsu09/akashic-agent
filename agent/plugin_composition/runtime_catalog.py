@@ -7,8 +7,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from agent.plugin_composition.model import ServiceKey
+
+if TYPE_CHECKING:
+    from agent.plugins.snapshot import RuntimeSnapshot
 
 
 RuntimeCatalogReader = Callable[[], dict[str, object]]
@@ -23,8 +27,17 @@ class RuntimeCatalogUnavailable(RuntimeError):
         self.code = code
 
 
+def build_stable_plugin_catalog(snapshot: "RuntimeSnapshot") -> dict[str, object]:
+    """Bridge an already committed stable-view archive to the Core-owned reader."""
+
+    from agent.plugins.runtime_catalog import build_runtime_catalog
+
+    return build_runtime_catalog(snapshot)
+
+
 __all__ = [
     "RUNTIME_CATALOG",
     "RuntimeCatalogReader",
     "RuntimeCatalogUnavailable",
+    "build_stable_plugin_catalog",
 ]
