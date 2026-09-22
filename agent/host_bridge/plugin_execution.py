@@ -86,7 +86,7 @@ class ExecutionGrant:
     def __init__(self, ctx: Context, owner: CodeOwner, mode: Literal["candidate", "formal"], environment: Mapping[str, str]):
         self._ctx = ctx
         self._owner = owner
-        self._mode = mode
+        self._mode: Literal["candidate", "formal"] = mode
         self._environment = dict(environment)
         self._issue_token = object()
 
@@ -203,10 +203,7 @@ class HostedChildProcess:
 
     def __init__(self, group: OwnedProcessGroup) -> None:
         self._group = group
-
-    @property
-    def process(self) -> asyncio.subprocess.Process:
-        return self._group.process
+        self.process: asyncio.subprocess.Process = group.process
 
     @property
     def group_id(self) -> int | None:

@@ -209,7 +209,13 @@ def _check_cleanup_columns(
     expected: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...],
 ) -> None:
     for item, (name, type_, notnull, defaults, pk) in zip(info, expected):
-        actual = (str(item[1]), str(item[2]).upper(), int(item[3]), item[4], int(item[5]))
+        actual = (
+            str(item[1]),
+            str(item[2]).upper(),
+            cast(int, item[3]),
+            item[4],
+            cast(int, item[5]),
+        )
         if actual[0] != name or actual[1] != type_ or actual[2] != notnull or actual[4] != pk:
             raise ValueError(f"candidate_validation_roots.{name} schema 不符: {actual}")
         dflt = None if actual[3] is None else str(actual[3])

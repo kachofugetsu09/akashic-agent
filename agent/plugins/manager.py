@@ -1307,8 +1307,23 @@ class PluginManager:
             self._reload_journal.record_update_error(update_id, f"发布未开始：{error}")
             self._notify_updates()
             raise
+        operation.task.add_done_callback(
+            lambda task: self._record_cancelled_publication(update_id, task)
+        )
         self._update_publication = (update_id, operation.task)
         self._notify_updates()
+
+    def _record_cancelled_publication(
+        self, update_id: str, task: asyncio.Task[object],
+    ) -> None:
+        """记录仍在等待旧租约时发生的发布取消。"""
+
+        if not task.cancelled():
+            return
+        update = self._reload_journal.update(update_id)
+        if update.phase != "committed" and not update.error:
+            self._reload_journal.record_update_error(update_id, "publication cancelled")
+            self._notify_updates()
 
     def _notify_updates(self) -> None:
         for event in self._update_watchers:
