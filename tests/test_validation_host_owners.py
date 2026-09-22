@@ -106,6 +106,13 @@ async def test_cancelled_build_retains_failed_unpublished_root(tmp_path, monkeyp
         task.cancel()
         outcome, = await asyncio.gather(task, return_exceptions=True)
         assert isinstance(outcome, BaseException)
+        # 取消路径的屏蔽清理在原操作任务内收尾；断言前先等它真实结束。
+        deadline = asyncio.get_running_loop().time() + 10
+        while (manager._operation is not None
+               and not manager._operation.task.done()):
+            if asyncio.get_running_loop().time() > deadline:
+                raise RuntimeError("取消后的收尾操作未在限定时间内结束")
+            await asyncio.sleep(0.02)
         assert manager._validation_hosts[host.identity] is host
         assert not host.closed and host.parent_lease.active
         assert calls == 1

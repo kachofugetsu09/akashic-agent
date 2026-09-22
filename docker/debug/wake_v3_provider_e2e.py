@@ -612,6 +612,7 @@ def _build_stack(
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
         for name in (
+            "assets",
             "content",
             "context",
             "delivery",
@@ -624,6 +625,7 @@ def _build_stack(
             "standard_tools",
             "tools",
             "turn_projection",
+            "ui",
             "wake",
         )
     ] + [
@@ -845,7 +847,10 @@ def _copy_selected_model_plugins(root: Path) -> tuple[Path, Path]:
         "from agent.plugin_composition import (\n",
         "from agent.plugin_composition import (\n    ServiceKey,\n",
     )
-    text = text.replace("inject = ()", f"inject = ({marker},)")
+    # marker 依赖让 models 的 apply 等待 provider，保证 SNAPSHOT_SEALING
+    # listener 的注册顺序是 provider 在前、models.state.seal 在后。
+    text = text.replace("inject = (UI,)", f"inject = (UI, {marker},)")
+    assert marker in text, "models inject 改写的匹配目标已变化"
     plugin.write_text(text, encoding="utf-8")
     plugin = provider / "plugin.py"
     text = plugin.read_text(encoding="utf-8")
@@ -853,7 +858,10 @@ def _copy_selected_model_plugins(root: Path) -> tuple[Path, Path]:
         "from agent.plugin_composition import MODEL_DRIVERS, Context\n",
         "from agent.plugin_composition import MODEL_DRIVERS, SNAPSHOT_SEALING, Context, ServiceKey\n",
     )
-    text = text.replace("inject = (MODEL_DRIVERS,)", "inject = ()")
+    # provider 不能 inject MODEL_DRIVERS，否则与 models 的 marker 依赖成环；
+    # 注册推迟到 SNAPSHOT_SEALING，此时 MODEL_DRIVERS 已发布且尚未封印。
+    text = text.replace("inject = (UI, MODEL_DRIVERS,)", "inject = (UI,)")
+    assert "inject = (UI,)" in text, "openai_compatible inject 改写的匹配目标已变化"
     text = text.replace(
         "    _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())\n",
         "    await ctx.provide(ServiceKey(\"wake-e2e.openai-provider.v1\"), object())\n"
@@ -861,6 +869,7 @@ def _copy_selected_model_plugins(root: Path) -> tuple[Path, Path]:
         "        _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())\n"
         "    _ = await ctx.on(SNAPSHOT_SEALING, register)\n",
     )
+    assert "ctx.on(SNAPSHOT_SEALING, register)" in text
     plugin.write_text(text, encoding="utf-8")
     return models, provider
 

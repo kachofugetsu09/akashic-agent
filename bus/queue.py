@@ -651,7 +651,8 @@ class MessageBus:
     async def _defer_durable_inbound(self, handoff_id: str) -> bool:
         async with self._durable_handoff_lock:
             if self._outbound_closed:
-                raise RuntimeError("message bus 已关闭")
+                # 关闭已释放全部进程内 owner；durable 行留给下次启动恢复，defer 幂等成立。
+                return True
             admission = self._durable_admissions.get(handoff_id)
             if admission is None:
                 return True

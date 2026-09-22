@@ -49,6 +49,8 @@ PLUGIN_ROOT = "plugins"
 
 # 冻结既有公开模块，不给目录内未来新增的实现自动授予公开资格。
 # 这是兼容清单，不证明其中每个对象已经原子化；扩张须单独评审 owner。
+# admission/channel_io/config_input/execution/requests/ui 六个窄合同的 owner
+# 与评审出处见 docs/design/plugin-boundary-foundation.md §9.37。
 PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.control.context",
     "agent.host_bridge.filesystem",
@@ -59,12 +61,16 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.migrations.context",
     "agent.plugin_composition",
     "agent.plugin_composition.access",
+    "agent.plugin_composition.admission",
+    "agent.plugin_composition.archive",
     "agent.plugin_composition.artifacts",
     "agent.plugin_composition.assets",
     "agent.plugin_composition.bindings",
+    "agent.plugin_composition.channel_io",
     "agent.plugin_composition.channels",
     "agent.plugin_composition.claims",
     "agent.plugin_composition.commands",
+    "agent.plugin_composition.config_input",
     "agent.plugin_composition.context",
     "agent.plugin_composition.control_frames",
     "agent.plugin_composition.credentials",
@@ -75,6 +81,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.durable_delivery_store",
     "agent.plugin_composition.effect",
     "agent.plugin_composition.events",
+    "agent.plugin_composition.execution",
     "agent.plugin_composition.executor",
     "agent.plugin_composition.interaction_undo",
     "agent.plugin_composition.mcp_slots",
@@ -85,14 +92,16 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.plugin_updates",
     "agent.plugin_composition.process_slots",
     "agent.plugin_composition.processes",
+    "agent.plugin_composition.process_runtime",
+    "agent.plugin_composition.requests",
+    "agent.plugin_composition.runtime_catalog",
     "agent.plugin_composition.runtime_lifecycle",
     "agent.plugin_composition.rpc",
-    "agent.plugin_composition.archive",
-    "agent.plugin_composition.process_runtime",
     "agent.plugin_composition.shell_runtime",
     "agent.plugin_composition.tasks",
     "agent.plugin_composition.timers",
     "agent.tool_catalog",
+    "agent.plugin_composition.ui",
     "agent.plugin_composition.ui_slots",
     "agent.plugin_composition.workload_slots",
     "agent.plugin_contracts",

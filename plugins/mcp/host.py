@@ -13,7 +13,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 
-from agent.mcp.client import McpClient, McpToolExecutionError
+from .client import McpClient, McpToolExecutionError
+from agent.plugin_composition.execution import ProcessSpawner
 from agent.plugin_composition.mcp_slots import McpToolView, McpCallResult, McpLogView
 from .definitions import (
     McpServerBinding,
@@ -62,11 +63,13 @@ class IncidentReporter(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class McpMaterializedCommand:
-    """Host-authorized command, cwd and base environment for one server."""
+    """provider 持有的声明命令/cwd/env 与运行期额外键；授权在 spawn 边界内完成。"""
 
     command: tuple[str, ...]
     cwd: str
     env: Mapping[str, str] = field(default_factory=dict)
+    candidate_env: Mapping[str, str] = field(default_factory=dict)
+    extra_env: Mapping[str, str] = field(default_factory=dict)
 
 @dataclass(frozen=True, slots=True)
 class McpCleanupTombstone:
@@ -277,6 +280,7 @@ class McpGenerationHost:
 
     def __init__(
         self,
+        spawner: ProcessSpawner,
         *,
         on_health: HealthReporter | None = None,
         on_incident: IncidentReporter | None = None,
@@ -285,6 +289,7 @@ class McpGenerationHost:
     ) -> None:
         if readiness_timeout_seconds <= 0:
             raise ValueError("readiness_timeout_seconds must be positive")
+        self._spawner = spawner
         self._on_health = on_health
         self._on_incident = on_incident
         self._on_failure = on_failure
@@ -554,13 +559,30 @@ class McpGenerationHost:
         workload_endpoints: Mapping[tuple[str, str], str],
     ) -> _McpEntry:
         definition = binding.definition
-        environment = self._materialize_env(
-            binding.descriptor,
+        descriptor = binding.descriptor
+        # provider 先备好 endpoint/scope 等运行期材料，再把完整 env 输入交
+        # grant 一次授权冻结；formal/candidate 输入分离，descriptor formal
+        # env 不因 endpoint 集合被注入 candidate。
+        env, candidate_env = self._materialize_envs(
+            descriptor,
             materialized,
-            generation.mode,
             endpoint_ports,
             workload_endpoints,
         )
+        prepared = self._spawner.prepare_process(
+            tuple(materialized.command), materialized.cwd, env, candidate_env,
+        )
+        argv0 = Path(prepared.command[0])
+        if (
+            not argv0.is_absolute()
+            or not argv0.is_file()
+            or not os.access(argv0, os.X_OK)
+        ):
+            raise ValueError(
+                f"MCP materialized argv[0] must be an absolute executable: {definition.name}"
+            )
+        if not Path(prepared.cwd).is_absolute():
+            raise ValueError(f"MCP materialized cwd invalid: {definition.name}")
         allowed_tools = frozenset(
             definition.candidate_read_only_tools
             if generation.mode == "candidate"
@@ -568,12 +590,8 @@ class McpGenerationHost:
         )
         client = McpClient(
             name=f"{definition.name}@{generation.generation_id}",
-            command=list(materialized.command),
-            env=environment,
-            cwd=materialized.cwd,
-            env_scrub_keys=frozenset(
-                key for key, _ in binding.descriptor.candidate_env
-            ),
+            prepared=prepared,
+            spawner=self._spawner,
         )
         self._next_epoch += 1
         entry = _McpEntry(
@@ -935,39 +953,38 @@ class McpGenerationHost:
                 )
                 or not isinstance(materialized.cwd, str)
                 or not materialized.cwd
-                or not materialized.cwd.startswith("/")
             ):
                 raise ValueError(f"MCP materialized command invalid: {name}")
-            argv0 = Path(materialized.command[0])
-            if (
-                not argv0.is_absolute()
-                or not argv0.is_file()
-                or not os.access(argv0, os.X_OK)
-            ):
-                raise ValueError(
-                    f"MCP materialized argv[0] must be an absolute executable: {name}"
-                )
-            if not isinstance(materialized.env, Mapping) or any(
-                not isinstance(key, str) or not isinstance(value, str)
-                for key, value in materialized.env.items()
-            ):
-                raise TypeError(f"MCP materialized environment invalid: {name}")
+            for source in (materialized.env, materialized.candidate_env, materialized.extra_env):
+                if not isinstance(source, Mapping) or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in source.items()
+                ):
+                    raise TypeError(f"MCP materialized environment invalid: {name}")
             result[name] = McpMaterializedCommand(
                 command=tuple(materialized.command),
                 cwd=materialized.cwd,
                 env=MappingProxyType(dict(materialized.env)),
+                candidate_env=MappingProxyType(dict(materialized.candidate_env)),
+                extra_env=MappingProxyType(dict(materialized.extra_env)),
             )
         return result
 
-    @staticmethod
-    def _materialize_env(
+    @classmethod
+    def _materialize_envs(
+        cls,
         descriptor: McpServerDescriptor,
         materialized: McpMaterializedCommand,
-        mode: McpMode,
         endpoint_ports: Mapping[str, int],
         workload_endpoints: Mapping[tuple[str, str], str],
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """返回 (formal env, candidate env) 两份完整输入，交 grant 一次授权。
+
+        extra_env/endpoint/workload 是 provider 运行期材料，两种模式共用；
+        descriptor.env 只进 formal，descriptor.candidate_env 只进 candidate。
+        """
         environment = dict(materialized.env)
+        environment.update(materialized.extra_env)
         candidate_keys = {key for key, _ in descriptor.candidate_env}
         materialized_candidate_keys = sorted(candidate_keys & set(environment))
         if materialized_candidate_keys:
@@ -980,24 +997,27 @@ class McpGenerationHost:
             if existing is not None and existing != value:
                 raise ValueError(f"MCP materialized env drift: {descriptor.name}:{key}")
             environment[key] = value
-        if mode == "candidate":
-            for key, value in descriptor.candidate_env:
-                existing = environment.get(key)
-                if existing is not None and existing != value:
-                    raise ValueError(
-                        f"MCP candidate env drift: {descriptor.name}:{key}"
-                    )
-                environment[key] = value
+        candidate_environment = dict(materialized.candidate_env)
+        candidate_environment.update(materialized.extra_env)
+        for key, value in descriptor.candidate_env:
+            existing = candidate_environment.get(key)
+            if existing is not None and existing != value:
+                raise ValueError(
+                    f"MCP candidate env drift: {descriptor.name}:{key}"
+                )
+            candidate_environment[key] = value
         for endpoint in descriptor.endpoint_env:
             if endpoint.process not in endpoint_ports:
                 raise ValueError(
                     f"MCP endpoint process 未 materialize: {descriptor.name}:{endpoint.process}"
                 )
-            if endpoint.env in environment:
+            if endpoint.env in environment or endpoint.env in candidate_environment:
                 raise ValueError(
                     f"MCP endpoint env 已被占用: {descriptor.name}:{endpoint.env}"
                 )
-            environment[endpoint.env] = str(endpoint_ports[endpoint.process])
+            value = str(endpoint_ports[endpoint.process])
+            environment[endpoint.env] = value
+            candidate_environment[endpoint.env] = value
         for endpoint in descriptor.workload_env:
             key = (endpoint.workload, endpoint.port)
             if key not in workload_endpoints:
@@ -1005,12 +1025,13 @@ class McpGenerationHost:
                     "MCP workload endpoint 未 materialize: "
                     f"{descriptor.name}:{endpoint.workload}:{endpoint.port}"
                 )
-            if endpoint.env in environment:
+            if endpoint.env in environment or endpoint.env in candidate_environment:
                 raise ValueError(
                     f"MCP workload env 已被占用: {descriptor.name}:{endpoint.env}"
                 )
             environment[endpoint.env] = workload_endpoints[key]
-        return environment
+            candidate_environment[endpoint.env] = workload_endpoints[key]
+        return environment, candidate_environment
 
     def _require_generation(self, generation_id: str) -> _Generation:
         generation = self._generations.get(generation_id)

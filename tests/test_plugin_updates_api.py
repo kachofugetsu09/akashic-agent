@@ -115,7 +115,6 @@ async def test_queued_publication_cannot_publish_a_replacement_candidate(tmp_pat
     from tests.test_plugin_update_rollback import prepare
 
     source, home, workspace, _ = prepare(tmp_path)
-    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     entered, release = asyncio.Event(), asyncio.Event()
     original_publish = host._publish_update

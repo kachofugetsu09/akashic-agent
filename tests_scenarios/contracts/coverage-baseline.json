@@ -1,8 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "683b4791b0c25e3e899d65fe7c028514240414b3",
-  "catalogDigest": "0b5805767d70cdfbc672352aacf0b46714cde1432f105d407a4e9c8ceb0001ff",
-  "purpose": "approved_contract_mapping",
+  "catalogDigest": "611798127f9c5398b8d01086aa484d5985525d9a9701194b80e3941cc9f1a7e3",
   "coveredP0": {
     "companion_control": [
       "companion_control_replay_contract"
@@ -70,5 +69,6 @@
       "shell_turn_finality_contract"
     ]
   },
+  "purpose": "approved_contract_mapping",
   "version": 1
 }

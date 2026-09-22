@@ -193,3 +193,11 @@ class ToolMenu:
             return await self._execution.execute_call(reply)
         finally:
             reply.writer.expire()
+
+    async def settle_abandoned(self, call: CallRef) -> Result:
+        """持久 abandon 区内缺回执的调用直接结算；与 watcher 共用同一幂等入口。"""
+        reply = self._reply(call)
+        try:
+            return await self._execution.settle_abandoned(reply)
+        finally:
+            reply.writer.expire()

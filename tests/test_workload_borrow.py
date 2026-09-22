@@ -19,7 +19,7 @@ from agent.plugin_composition.workload_slots import (
 from plugins.workloads.definitions import WorkloadBinding, _descriptor
 from plugins.workloads.host import WorkloadGenerationHost, _http_health
 from agent.workloads.client import WorkloadEffectUnknown
-from agent.workloads.model import (
+from agent.plugin_composition.execution import (
     WorkloadEndpoint,
     WorkloadLease,
     WorkloadStartReceipt,

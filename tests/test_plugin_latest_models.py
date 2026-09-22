@@ -103,20 +103,20 @@ async def apply(ctx):
         if target == "models":
             module = source / "state.py"
             module.write_text(module.read_text().replace(
-                '        call_id = self._store.start_call(self._descriptor, request)',
-                '        request = replace(request, messages=(*request.messages, {"role": "user", "content": "selected models"}))\n'
-                '        call_id = self._store.start_call(self._descriptor, request)'))
+                '            call_id = self._store.resume_call(',
+                '            request = replace(request, messages=(*request.messages, {"role": "user", "content": "selected models"}))\n'
+                '            call_id = self._store.resume_call('))
         else:
             module = source / "driver.py"
             module.write_text(module.read_text().replace(
                 '{"Authorization": f"Bearer {token}"}',
                 '{"Authorization": f"Bearer {token}", "X-Selected-Driver": "latest"}').replace(
-                '        body = _chat_body(self._descriptor, self._connection, self._config, request)',
+                '        body = _chat_body(self._descriptor, connection, self._config, request)',
                 '        assert self.max_tool_schemas == 4\n'
                 '        async with self._credential.exclusive():\n'
                 '            assert (await self._credential.read())["api_key"] == "existing-key"\n'
                 '            await self._credential.refresh({"api_key": "refreshed-key"})\n'
-                '        body = _chat_body(self._descriptor, self._connection, self._config, request)'))
+                '        body = _chat_body(self._descriptor, connection, self._config, request)'))
         _commit(source)
 
         async with lease_runtime_snapshot(host.snapshot_store) as stable:

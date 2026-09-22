@@ -32,10 +32,8 @@ from session.artifact_store import ArtifactStore
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
-from agent.plugin_composition.runtime_catalog import (
-    RUNTIME_CATALOG,
-    build_runtime_catalog,
-)
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+from agent.plugins.runtime_catalog import build_runtime_catalog
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
 from agent.plugin_composition.messages import (
@@ -116,6 +114,8 @@ from agent.plugins.static_manifest import (
     materialize_command,
 )
 from agent.plugins.reload_journal import (
+    CandidateCleanupObligation,
+    CandidateCleanupPendingError,
     RecoveryActionName,
     RecoveryTarget,
     ReloadJournal,
@@ -263,6 +263,12 @@ class PluginManager:
         self._cleanup_failures: list[CleanupFailure] = []
         # 仅持有尚未交给 snapshot 的真实 Root，以及它仍需使用的模块和数据 owner。
         self._building_roots: dict[CompositionRoot, tuple[PluginGeneration, ...]] = {}
+        # 清理失败仍留在 _building_roots 的 Root，按插件关联到其 armed 更新；
+        # 显式 discard 必须先完成该 owner 的真实清理才允许结算指针。
+        self._failed_candidate_roots: dict[str, set[CompositionRoot]] = {}
+        # 本实例在本进程真实登记的持久清理义务 (update_id, validation_root)；
+        # 跨进程/跨 Manager 的 journal pending 不属于本实例，不得凭身份字段接管。
+        self._issued_candidate_cleanup: set[tuple[str, str]] = set()
         self._operation: ManagerOperation | None = None
         self._stopping = False
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
@@ -364,6 +370,7 @@ class PluginManager:
         self, work: Callable[[], Awaitable[U]], *, background: bool = False,
         wait_for_snapshot: RuntimeSnapshot | None = None,
         commit_timeout: float | None = None,
+        candidate_shared: bool = False,
     ) -> ManagerOperation:
         """等待普通调用归还租约后才计提交期限，始终保留同一个任务 owner。"""
         self._require_operation_idle()
@@ -374,6 +381,7 @@ class PluginManager:
             loop.time() + commit_timeout
             if wait_for_snapshot is None else float("inf")
         )
+        operation.candidate_shared = candidate_shared
         self._operation = operation
 
         async def admitted_work() -> U:
@@ -402,7 +410,7 @@ class PluginManager:
 
     async def _run_operation(
         self, work: Callable[[], Awaitable[U]], *, allow_stable_lease: bool = False,
-        commit_timeout: float | None = None,
+        commit_timeout: float | None = None, candidate_shared: bool = False,
     ) -> U:
         """公开入口有限观察同一任务；退出观察不释放仍在工作的 owner。"""
         self._reject_operation_lease(allow_stable_lease=allow_stable_lease)
@@ -415,9 +423,15 @@ class PluginManager:
                 async with RuntimeScope(lease.fork()):
                     return await work()
 
-            operation = self._start_operation(scoped_work, commit_timeout=commit_timeout)
+            operation = self._start_operation(
+                scoped_work, commit_timeout=commit_timeout,
+                candidate_shared=candidate_shared,
+            )
         else:
-            operation = self._start_operation(work, commit_timeout=commit_timeout)
+            operation = self._start_operation(
+                work, commit_timeout=commit_timeout,
+                candidate_shared=candidate_shared,
+            )
         try:
             return cast(U, await observe_operation(operation, deadline=operation.deadline))
         finally:
@@ -708,6 +722,7 @@ class PluginManager:
             await self._replace_formal_root(
                 self._selection_components(selection_ref), expected_ref=selection_ref,
             )
+            self._settle_committed_publication()
             return
         enabled = load_plugin_manifest(self.installed_plugins_home)
         selected = tuple(
@@ -793,6 +808,7 @@ class PluginManager:
             await self._replace_formal_root(
                 components, expected_ref=None,
             )
+            self._settle_committed_publication()
         except BaseException as error:
             failure = error
         cleanup_errors: list[BaseException] = []
@@ -816,6 +832,13 @@ class PluginManager:
             lambda: self._prepare_candidate(plugin_id), allow_stable_lease=True,
         )
 
+    async def _stage_candidate(self, plugin_id: str) -> None:
+        """安装线程完成后仍把本次制品登台为 latest 候选；取消在登台后才结算。"""
+        generation = await self._prepare_candidate(plugin_id)
+        if generation is None:
+            raise RuntimeError(f"安装目标未进入候选: {plugin_id}")
+        await self._publish_prepared(plugin_id, candidate_only=True)
+
     async def _prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
         if self._ready_candidate is not None:
             raise RuntimeError(
@@ -827,6 +850,27 @@ class PluginManager:
                 generation = await self._load_one(mod, activate=False)
                 return generation
         raise KeyError(f"插件不存在: {plugin_id}")
+
+    def _candidate_init_failure(self, mod: dict[str, str]) -> str | None:
+        """安装 owner 已记录初始化失败的候选不自动重试。"""
+
+        if mod.get("source_type") != "installed":
+            return None
+        update = self._reload_journal.armed_update_for_plugin(_resolve_plugin_id(mod))
+        if update is None or not update.error:
+            return None
+        return update.error
+
+    def _record_candidate_init_failure(self, mod: dict[str, str], error: BaseException) -> str:
+        """初始化失败只登记在安装 owner；latest 指针与结算留给显式 discard。"""
+
+        message = str(error) or type(error).__name__
+        if mod.get("source_type") == "installed":
+            update = self._reload_journal.armed_update_for_plugin(_resolve_plugin_id(mod))
+            if update is not None:
+                self._reload_journal.record_update_error(update.update_id, message)
+        logger.error("插件候选初始化失败: plugin=%s error=%s", _resolve_plugin_id(mod), message)
+        return message
 
     async def discard_prepared(
         self, plugin_id: str, *, error: str = "candidate discarded",
@@ -1020,8 +1064,17 @@ class PluginManager:
         self._finish_drained_reload(snapshot.snapshot_id)
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
-        return await self._run_operation(self._reconcile_changed)
-
+        # 被动 reconcile 只与安装共享 candidate owner；其余操作保持 busy，不排队。
+        while True:
+            try:
+                return await self._run_operation(self._reconcile_changed)
+            except OperationBusyError:
+                operation = self._operation
+                if operation is None or operation.task.done():
+                    continue
+                if not operation.candidate_shared:
+                    raise
+                await asyncio.wait((operation.task,))
 
     async def install_candidate(
         self, *, source: str, marketplace: str, ref_name: str,
@@ -1030,7 +1083,7 @@ class PluginManager:
         return await self._run_operation(lambda: self._install_candidate(
             source=source, marketplace=marketplace, ref_name=ref_name,
             sparse_paths=sparse_paths, update_id=update_id,
-        ), allow_stable_lease=True)
+        ), allow_stable_lease=True, candidate_shared=True)
 
     async def _install_candidate(
         self,
@@ -1052,6 +1105,16 @@ class PluginManager:
             if previous_update is not None:
                 raise RuntimeError("已有更新请求只能查询，不能重跑安装")
         self._check_operation_commit()
+        # 与 watcher 共用 candidate owner：先结算已发布的 latest，再拒绝未决候选。
+        preflight_publication = self._publication
+        _, preflight_cancelled = await _complete_critical(
+            self._reconcile_changed()
+        )
+        if preflight_cancelled:
+            if self._publication is not preflight_publication and self._publication is not None:
+                if self._publication.must_retain:
+                    self._hold_selection_publication(self._publication)
+            raise asyncio.CancelledError
         status = self.candidate_status()
         if status["candidate_state"] in {
             "preparing",
@@ -1086,28 +1149,55 @@ class PluginManager:
         publication_before = self._publication
         plugin_id = f"{result.plugin_name}@{result.marketplace}"
         try:
-            if install_cancelled:
-                raise asyncio.CancelledError
-            self._check_operation_commit()
             if self._reload_journal.update(result.update_id).phase == "committed":
                 # 安装器已确认同一制品，不另建无法关联该请求的候选。
                 self._notify_updates()
                 return result, self.candidate_status()
             # 本次安装只准备自己的目标；不顺手更新其他源码或切换正式 Root。
-            generation = await self._prepare_candidate(plugin_id)
-            if generation is None:
-                raise RuntimeError(f"安装目标未进入候选: {plugin_id}")
-            await self._publish_prepared(plugin_id, candidate_only=True)
-        except BaseException:
+            _, prep_cancelled = await _complete_critical(
+                self._stage_candidate(plugin_id)
+            )
+        except BaseException as error:
             if self._publication is not publication_before and self._publication is not None:
                 if self._publication.must_retain:
                     self._hold_selection_publication(self._publication)
                     raise
+            if self._candidate_cleanup_pending(result.update_id, plugin_id):
+                # 初始化或清理双失败：owner 与确切目录义务未清完前更新保持 armed，
+                # 由显式 discard 完成清理后再结算指针。
+                self._reload_journal.record_update_error(
+                    result.update_id,
+                    f"candidate preparation failed: {error}",
+                )
+                self._notify_updates()
+                raise
             self._reload_journal.rollback_updates(
                 self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
             )
             raise
         status = self.candidate_status()
+        if install_cancelled or prep_cancelled:
+            # 调用者取消不丢弃已登台事实：先关闭本次候选、结算指针，再如实报告取消。
+            if self._publication is not publication_before and self._publication is not None:
+                if self._publication.must_retain:
+                    self._hold_selection_publication(self._publication)
+                    raise asyncio.CancelledError
+            if (
+                result.staged_candidate
+                and status["candidate_plugin_id"] == plugin_id
+                and status["candidate_state"] == "latest_ready"
+            ):
+                _ = await self._drop_ready(plugin_id)
+            if self._candidate_cleanup_pending(result.update_id, plugin_id):
+                self._reload_journal.record_update_error(
+                    result.update_id, "install cancelled and candidate cleanup incomplete",
+                )
+                self._notify_updates()
+                raise asyncio.CancelledError
+            self._reload_journal.rollback_updates(
+                self.installed_plugins_home, update_id=result.update_id, error="install cancelled",
+            )
+            raise asyncio.CancelledError
         self._check_operation_commit()
         if result.staged_candidate and (
             status["candidate_plugin_id"] != plugin_id
@@ -1117,9 +1207,15 @@ class PluginManager:
                 if self._publication.must_retain:
                     self._hold_selection_publication(self._publication)
                     raise RuntimeError("运行选择已提交或不确定，安装状态需显式结算")
-            self._reload_journal.rollback_updates(
-                self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
-            )
+            if self._candidate_cleanup_pending(result.update_id, plugin_id):
+                self._reload_journal.record_update_error(
+                    result.update_id, "candidate preparation failed",
+                )
+                self._notify_updates()
+            else:
+                self._reload_journal.rollback_updates(
+                    self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
+                )
             raise RuntimeError(
                 "插件候选未进入 latest_ready: "
                 f"requestedPlugin={plugin_id} "
@@ -1211,8 +1307,23 @@ class PluginManager:
             self._reload_journal.record_update_error(update_id, f"发布未开始：{error}")
             self._notify_updates()
             raise
+        operation.task.add_done_callback(
+            lambda task: self._record_cancelled_publication(update_id, task)
+        )
         self._update_publication = (update_id, operation.task)
         self._notify_updates()
+
+    def _record_cancelled_publication(
+        self, update_id: str, task: asyncio.Task[object],
+    ) -> None:
+        """记录仍在等待旧租约时发生的发布取消。"""
+
+        if not task.cancelled():
+            return
+        update = self._reload_journal.update(update_id)
+        if update.phase != "committed" and not update.error:
+            self._reload_journal.record_update_error(update_id, "publication cancelled")
+            self._notify_updates()
 
     def _notify_updates(self) -> None:
         for event in self._update_watchers:
@@ -1304,7 +1415,28 @@ class PluginManager:
             if publication.get("publication_state") == "latest_ready":
                 return results
         for plugin_id in sorted(desired - set(self._active_generations)):
-            generation = await self._load_one(discovered[plugin_id], activate=False)
+            mod = discovered[plugin_id]
+            recorded = self._candidate_init_failure(mod)
+            if recorded is not None:
+                results.append(_candidate_failure_status(
+                    plugin_id, source_revision=None, error=recorded,
+                    snapshot=self.current_snapshot,
+                ))
+                _log_candidate_status(results[-1])
+                continue
+            try:
+                generation = await self._load_one(mod, activate=False)
+            except SelectionConflictError:
+                raise
+            except Exception as error:
+                # 初始化失败只登记在安装 owner；指针与重试留给显式 discard。
+                message = self._record_candidate_init_failure(mod, error)
+                results.append(_candidate_failure_status(
+                    plugin_id, source_revision=None, error=message,
+                    snapshot=self.current_snapshot,
+                ))
+                _log_candidate_status(results[-1])
+                continue
             if generation is None:
                 continue
             publication = await self._publish_prepared(plugin_id)
@@ -1354,6 +1486,7 @@ class PluginManager:
         snapshot = await self._replace_formal_root({
             key: item for key, item in self._active_generations.items() if key != plugin_id
         }, expected_ref=self._selection.read())
+        self._settle_committed_publication()
         return {
             "plugin_id": plugin_id, "old_generation": active.generation_id,
             "new_generation": None, "snapshot_id": snapshot.snapshot_id,
@@ -1660,9 +1793,11 @@ class PluginManager:
         try:
             self._track_reload_drain(generation, current)
         except BaseException:
-            assert self._publication is not None
-            self._hold_selection_publication(self._publication)
+            # journal 持久化失败时事务仍登记在 _publication；保留已提交
+            # Root 的恢复 owner，不吞真实错误也不伪装回滚已发生的发布。
+            self._hold_committed_publication()
             raise
+        self._settle_committed_publication()
         return self._publication_status(
             plugin_id, active=ready.previous, candidate=generation,
             publication_state="promoted",
@@ -1764,6 +1899,8 @@ class PluginManager:
                             commit_selection=False,
                         )
                     )
+                    # 恢复发布本身已完成全部 durable 收尾；本次操作仍以原错误返回。
+                    self._settle_committed_publication()
                     if recovery_cancelled and not isinstance(error, asyncio.CancelledError):
                         error = BaseExceptionGroup("发布失败且恢复期间取消", [error, asyncio.CancelledError()])
             except BaseException as recovery_error:
@@ -1857,6 +1994,10 @@ class PluginManager:
             self._check_operation_commit()
             await self._post_snapshot_invariants(snapshot)
             self._snapshot_store.seal_pending_validation(snapshot)
+            if self._dashboard_preparer is not None:
+                # 正式 Root 是新建实例，Dashboard 资源必须在提交前对其实际
+                # snapshot 建立；失败走下方 abort/清理路径而不发布。
+                self._dashboard_preparer(snapshot)
             if previous is not None and attempt is not None:
                 self._drain_transactions[previous.snapshot_id] = cast(str, attempt.reload_tx_id)
             _, cancelled = await _complete_critical(
@@ -1915,7 +2056,20 @@ class PluginManager:
             assert transaction is not None
             self._hold_selection_publication(transaction)
             raise asyncio.CancelledError
+        # 提交成功的事务仍是 self._publication：调用者还有 durable 收尾
+        # （journal advance/settle）要写，任何持久化失败必须能拿到该事务
+        # 保留真实恢复 owner。只有收尾全部成功才允许 _settle_committed_publication。
         return snapshot
+
+    def _settle_committed_publication(self) -> None:
+        """已提交事务的 durable 收尾全部成功后，释放其恢复 owner 登记。"""
+        self._publication = None
+
+    def _hold_committed_publication(self) -> None:
+        """提交后 durable 收尾失败：保留已提交事务作为恢复 owner，不伪装回滚。"""
+        publication = self._publication
+        assert publication is not None
+        self._hold_selection_publication(publication)
 
     def _hold_selection_publication(self, transaction: SnapshotTransaction) -> None:
         """保留提交事实和新 owner；失败返回后不得后台开放接纳。"""
@@ -1990,10 +2144,16 @@ class PluginManager:
             previous=current, expected_ref=selection_ref,
             commit_selection=False,
         )
-        self._reload_journal.settle_boot(
-            action, committed=self._selection_transition_committed(action.tx_id, selection_ref),
-            cleanup_receipt="fresh-stable-root-restored",
-        )
+        try:
+            self._reload_journal.settle_boot(
+                action, committed=self._selection_transition_committed(action.tx_id, selection_ref),
+                cleanup_receipt="fresh-stable-root-restored",
+            )
+        except BaseException:
+            # 恢复发布已提交但结算写入失败：保留事务作为恢复 owner。
+            self._hold_committed_publication()
+            raise
+        self._settle_committed_publication()
         generation = replacement.generations.get(plugin_id)
         return {
             "plugin_id": plugin_id, "publication_state": "recovered",
@@ -2035,6 +2195,13 @@ class PluginManager:
             and self._operation is not None and self._operation.committed is not None
         ):
             raise RuntimeError("更新已提交；revert 不能撤销已提交选择或插件数据")
+        if update.phase == "armed" and update.reload_tx_id is None:
+            # 初始化在登台前失败的更新没有 runtime 候选；仍按安装 owner 原协议结算。
+            async with asyncio.timeout_at(deadline):
+                await self._run_operation(
+                    lambda: self._discard_update(update_id, reason=reason), allow_stable_lease=True,
+                )
+            return
         if self._ready_candidate is None:
             async with asyncio.timeout_at(deadline):
                 await self._run_operation(
@@ -2082,8 +2249,32 @@ class PluginManager:
         update = self._reload_journal.update(update_id)
         if update.phase == "rolled_back":
             return
-        if update.phase != "armed" or update.reload_tx_id is None:
+        if update.phase != "armed":
             raise RuntimeError("更新不是等待丢弃的候选")
+        if update.reload_tx_id is None:
+            # 登台前初始化失败：先完成本插件保留 Root 与持久校验目录的真实清理，
+            # 清理失败则保留 owner 并拒绝结算指针，不伪装 discard 成功。
+            self._check_operation_commit()
+            retained = self._failed_candidate_roots.get(update.plugin_id)
+            if retained:
+                for root in tuple(retained):
+                    if root in self._building_roots:
+                        await self._close_building_root(root)
+                    retained.discard(root)
+                if not retained:
+                    del self._failed_candidate_roots[update.plugin_id]
+            if self._building_roots:
+                raise RuntimeError("候选或资源 owner 仍在清理，拒绝结算指针")
+            # 进程重启后内存 owner 已丢失；journal 里的确切目录是唯一清理范围，
+            # 且必须先证明记录的宿主已退出。
+            for obligation in self._reload_journal.candidate_cleanup(update_id):
+                await self._require_candidate_owner_exited(obligation)
+                self._clear_candidate_validation_root(obligation.validation_root, update_id)
+            self._reload_journal.rollback_updates(
+                self.installed_plugins_home, update_id=update_id, error=reason,
+            )
+            self._notify_updates()
+            return
         record = self._reload_journal.get(update.reload_tx_id)
         if (record.plugin_id != update.plugin_id
                 or record.candidate_artifact_pointer != update.candidate.path
@@ -2106,6 +2297,11 @@ class PluginManager:
             if any(host.parent_lease.snapshot is ready.snapshot for host in self._validation_hosts.values()):
                 raise RuntimeError("验证尚未退出或资源尚未清理")
             _ = await self._drop_ready(update.plugin_id, error=reason)
+        # 进程重启后候选 Root 已不在内存；按 journal 里的确切目录完成清理再结算，
+        # 且必须先证明记录的宿主已退出。
+        for obligation in self._reload_journal.candidate_cleanup(update_id):
+            await self._require_candidate_owner_exited(obligation)
+            self._clear_candidate_validation_root(obligation.validation_root, update_id)
         self._check_discarded_update(update_id)
         self._check_operation_commit()
         # runtime 清理不回写安装状态；由持有本次请求的安装入口结算恢复点。
@@ -2295,7 +2491,12 @@ class PluginManager:
         self._ready_candidate = _ReadyPluginCandidate(
             plugin_id=plugin_id, previous=active, snapshot=snapshot,
         )
-        self._advance_reload(generation, "latest_ready")
+        try:
+            self._advance_reload(generation, "latest_ready")
+        except BaseException:
+            # latest 指针已提交但 durable 收尾失败：保留事务作为恢复 owner。
+            self._hold_selection_publication(transaction)
+            raise
         if cancelled:
             raise asyncio.CancelledError
         if not candidate_only and not _installed_generation_is_candidate(generation):
@@ -2518,7 +2719,16 @@ class PluginManager:
             ):
                 continue
             await self._discard_prepared(plugin_id)
-            prepared = await self._load_one(mod, activate=False)
+            prepared: PluginGeneration | None = None
+            failure = self._candidate_init_failure(mod)
+            if failure is None:
+                try:
+                    prepared = await self._load_one(mod, activate=False)
+                except SelectionConflictError:
+                    raise
+                except Exception as error:
+                    # 初始化失败只登记在安装 owner；latest 指针不凭失败自动回退。
+                    failure = self._record_candidate_init_failure(mod, error)
             result: dict[str, object] = {
                 "plugin_id": plugin_id,
                 "active_generation": active.generation_id,
@@ -2535,6 +2745,8 @@ class PluginManager:
                     else None
                 ),
             }
+            if failure is not None:
+                result["error"] = failure
             results.append(result)
             _log_candidate_status(result)
         return results
@@ -2624,6 +2836,7 @@ class PluginManager:
                 snapshot = await self._replace_formal_root(
                     components, expected_ref=base_selection_ref,
                 )
+                self._settle_committed_publication()
             else:
                 snapshot = await self._compile_generation_snapshot(source, candidate_owner=source)
             generation = snapshot.generations[plugin_id]
@@ -2634,7 +2847,10 @@ class PluginManager:
                     self._selection.read() != base_selection_ref
                 ):
                     assert snapshot.composition_root is not None
-                    await self._discard_building_root(snapshot.composition_root, SelectionConflictError("候选构建期间基线变化"))
+                    await self._discard_candidate_building_root(
+                        plugin_id, snapshot.composition_root,
+                        SelectionConflictError("候选构建期间基线变化"),
+                    )
                     raise SelectionConflictError("候选构建期间基线变化")
                 generation.reload_tx_id = self._begin_reload_attempt(
                     plugin_id=plugin_id, generation_id=generation.generation_id,
@@ -2648,7 +2864,7 @@ class PluginManager:
             return generation
         except BaseException as error:
             if root in self._building_roots:
-                await self._discard_building_root(root, error)
+                await self._discard_candidate_building_root(plugin_id, root, error)
             raise
 
     async def _compile_generation_snapshot(
@@ -2669,7 +2885,9 @@ class PluginManager:
                 composition_root=composition_root,
             )
         except BaseException as error:
-            await self._discard_building_root(composition_root, error)
+            await self._discard_candidate_building_root(
+                generation.plugin_id, composition_root, error,
+            )
             raise
         for item in generations.values():
             item.runtime_snapshot = snapshot
@@ -2963,16 +3181,47 @@ class PluginManager:
             lambda: store.acquire_composition_root(root)
         )
         workspace = self._workspace if validation_host is None else validation_host.workspace
-        if candidate_owner is not None:
-            workspace = self._workspace / "runtime" / "plugin-validation" / secrets.token_hex(16) / "workspace"
         try:
+            if candidate_owner is not None:
+                workspace = (
+                    self._workspace / "runtime" / "plugin-validation"
+                    / secrets.token_hex(16) / "workspace"
+                )
+                # 候选 Root 的 Scope 在 discard、失败或晋升恢复后删除整个 validation root；
+                # 清理失败保留在 deferred cleanup，dispose 重试时再次执行。
+                # 目录身份与宿主证据先落到 armed 更新；进程被杀后仍能按记录恢复
+                # 精确清理义务。记录与 Root 登记、失败清理在同一阶段：记录失败
+                # 也走下方 except 的真实 Root 清理，并保留原错。
+                cleanup_update = self._reload_journal.armed_update_for_plugin(
+                    candidate_owner.plugin_id
+                )
+                cleanup_update_id = (
+                    None if cleanup_update is None else cleanup_update.update_id
+                )
+                root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
+                    f"validation-root:{workspace.parent}",
+                    lambda: self._clear_candidate_validation_root(
+                        workspace.parent, cleanup_update_id
+                    ),
+                )
+                if cleanup_update_id is not None:
+                    self._reload_journal.record_candidate_cleanup(
+                        cleanup_update_id,
+                        candidate_owner.plugin_id,
+                        workspace.parent,
+                        owner_boot_id=self._candidate_owner_boot_id(),
+                        owner_pid=os.getpid(),
+                    )
+                    self._issued_candidate_cleanup.add(
+                        (cleanup_update_id, str(workspace.parent))
+                    )
             actual = self._archived_generations(
                 components, root, workspace=workspace, sources=sources, validation_host=validation_host,
             )
             generations.clear()
             generations.update(actual)
             ordered = tuple(actual.values())
-            # 数据初始化由实际插件完成；每个实例只获得自己环境的数据目录。
+            # 候选数据目录独立且初始为空；正式 plugin-data 不复制进校验 workspace。
             for item in ordered:
                 ensure_workspace_plugin_data_dir(item.data_dir, workspace)
             await self._provide_composition_services(
@@ -2997,7 +3246,12 @@ class PluginManager:
         except BaseException as error:
             # 验证构建从分配 Root 起就归 host；由外层同一次失败路径清理。
             if validation_host is None:
-                await self._discard_building_root(root, error)
+                if candidate_owner is None:
+                    await self._discard_building_root(root, error)
+                else:
+                    await self._discard_candidate_building_root(
+                        candidate_owner.plugin_id, root, error,
+                    )
             raise
         return root
 
@@ -3035,6 +3289,57 @@ class PluginManager:
             raise
         if cancelled:
             raise asyncio.CancelledError
+
+    def _candidate_owner_boot_id(self) -> str:
+        """候选清理义务的宿主身份：优先环境 boot 标记（子进程真实继承的
+        lineage），缺席时退回本 Manager 实例身份。"""
+        return os.environ.get("AKASHIC_BOOT_ID", "").strip() or self._host_boot_id
+
+    async def _require_candidate_owner_exited(
+        self, obligation: CandidateCleanupObligation,
+    ) -> None:
+        """只允许本 Manager 实例在本进程真实登记的义务经 dispose 清理销账。
+
+        仅凭 PID 死亡、同 PID 同 boot、当前 supervised 或 Guardian 环境扫描
+        都不能证明旧候选的全体资源已关闭：受管子进程可去掉 boot 标记存活。
+        不同 Manager 或重启后的 journal pending 一律保留义务、不删目录、
+        不结算指针，显式报告 cleanup pending，需运维确认后处理。
+        """
+        mark = (obligation.update_id, str(obligation.validation_root))
+        if (
+            obligation.owner_pid == os.getpid()
+            and obligation.owner_boot_id == self._candidate_owner_boot_id()
+            and mark in self._issued_candidate_cleanup
+        ):
+            return
+        raise CandidateCleanupPendingError((obligation.update_id,))
+
+    def _clear_candidate_validation_root(self, root: Path, update_id: str | None) -> None:
+        """真实删除成功才销账持久义务；删除失败抛出让 dispose 重试。"""
+
+        _remove_candidate_validation_root(root, self._workspace)
+        if update_id is not None:
+            self._reload_journal.clear_candidate_cleanup(update_id, root)
+            self._issued_candidate_cleanup.discard((update_id, str(root)))
+
+    def _candidate_cleanup_pending(self, update_id: str, plugin_id: str) -> bool:
+        """保留的候选 Root 或持久校验目录义务未清完前，更新不得结算指针。"""
+
+        retained = self._failed_candidate_roots.get(plugin_id)
+        if retained is not None and any(root in self._building_roots for root in retained):
+            return True
+        return bool(self._reload_journal.candidate_cleanup(update_id))
+
+    async def _discard_candidate_building_root(
+        self, plugin_id: str, root: CompositionRoot, error: BaseException,
+    ) -> None:
+        """候选回退清理失败时把实际 Root owner 关联到该插件，等待显式重试。"""
+
+        try:
+            await self._discard_building_root(root, error)
+        finally:
+            if root in self._building_roots:
+                self._failed_candidate_roots.setdefault(plugin_id, set()).add(root)
 
     async def _discard_building_root(
         self, root: CompositionRoot, error: BaseException,
@@ -3606,6 +3911,41 @@ def _plugins_home(installed_cache_root: Path | None) -> Path:
     if installed_cache_root is not None:
         return installed_cache_root.parent
     return plugins_root()
+
+
+def _candidate_failure_status(
+    plugin_id: str,
+    *,
+    source_revision: str | None,
+    error: str,
+    snapshot: RuntimeSnapshot | None,
+) -> dict[str, object]:
+    """初始化失败在 reconcile 结果中保持可查，不伪装成正常空结果。"""
+
+    return {
+        "plugin_id": plugin_id,
+        "active_generation": None,
+        "prepared_generation": None,
+        "preparation_state": "failed",
+        "candidate_revision": source_revision,
+        "snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
+        "error": error,
+    }
+
+
+def _remove_candidate_validation_root(root: Path, workspace: Path) -> None:
+    """只删除临时候选校验目录；已缺失是幂等完成，真实失败原样抛出供 owner 重试。"""
+
+    allowed = (workspace / "runtime" / "plugin-validation").resolve()
+    resolved = root.resolve()
+    if resolved == allowed or allowed not in resolved.parents:
+        raise RuntimeError(f"候选校验目录不在允许范围内: {root}")
+    if root.is_symlink():
+        raise RuntimeError(f"候选校验目录不能是符号链接: {root}")
+    try:
+        shutil.rmtree(root)
+    except FileNotFoundError:
+        return
 
 
 def _installed_generation_is_candidate(generation: PluginGeneration) -> bool:

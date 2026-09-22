@@ -23,7 +23,7 @@ from session.artifacts import (
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.requests import RequestContext
-from agent.plugin_composition.model import ServiceKey
+from agent.plugin_composition.model import CompositionError, ServiceKey
 
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")

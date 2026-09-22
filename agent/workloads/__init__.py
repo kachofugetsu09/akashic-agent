@@ -1,11 +1,11 @@
-from agent.workloads.client import UnixWorkloadController
-from agent.workloads.model import (
+from agent.plugin_composition.execution import (
     WorkloadEndpoint,
     WorkloadLease,
     WorkloadStartRequest,
     WorkloadStartReceipt,
     WorkloadStopReceipt,
 )
+from agent.workloads.client import UnixWorkloadController
 
 __all__ = [
     "UnixWorkloadController",

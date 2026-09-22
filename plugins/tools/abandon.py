@@ -82,27 +82,82 @@ async def follow_abandon(
     catalog: MessageCatalog, state: OwnerStore, tasks: TaskAdmission,
     reply: Callable[[MessageReader, str, CallRef], AbstractAsyncContextManager[MessageReply]], *, task_key: Hashable,
     report_incident: Callable[[str, str], object],
+    retry_delay: float = 5.0,
 ) -> None:
-    """只消费持久 abandon；启动追赶也结算未开始或进程中断后的调用。"""
+    """只消费持久 abandon；坏 item 只影响本 Session 的保守 cursor，其余继续推进。"""
     seen: dict[str, int] = {}
-    async for heads in catalog.follow():
-        for session_id, head in heads.items():
-            previous = seen.get(session_id, -1)
-            if head == previous:
-                continue
-            reader = catalog.reader(session_id)
-            changed = await asyncio.to_thread(reader.snapshot, after_seq=previous, through_seq=head)
-            controls = [message for message in changed
-                        if isinstance(message.body, Control) and message.body.action == "abandon"]
-            messages = await asyncio.to_thread(reader.snapshot, through_seq=head) if controls else ()
-            for control in controls:
-                for ref in abandoned_calls(messages, control):
-                    async with reply(reader, control.source, ref) as target:
-                        try:
-                            _ = await abandon_call(state, tasks, target, task_key=task_key)
-                        except LegacyReplyIdentityUnavailable as error:
-                            _ = report_incident("legacy_tool_reply_identity", str(error))
-            seen[session_id] = head
+    failed: set[str] = set()
+    stream = catalog.follow().__aiter__()
+    pending_next: asyncio.Task[Mapping[str, int]] | None = None
+    try:
+        while True:
+            if pending_next is None:
+                pending_next = asyncio.ensure_future(stream.__anext__())
+            try:
+                if failed:
+                    # 失败区间有界退避重扫；cursor 未推进，幂等回执保证重读安全。
+                    try:
+                        heads = await asyncio.wait_for(asyncio.shield(pending_next), retry_delay)
+                    except TimeoutError:
+                        heads = None
+                else:
+                    heads = await pending_next
+            except StopAsyncIteration:
+                return
+            if heads is not None:
+                pending_next = None
+            if heads is None:
+                sessions = set(failed)
+            else:
+                sessions = {
+                    session_id
+                    for session_id, head in heads.items()
+                    if seen.get(session_id, -1) != head
+                } | failed
+            for session_id in sorted(sessions):
+                reader = catalog.reader(session_id)
+                try:
+                    head = await asyncio.to_thread(reader.head)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    _ = report_incident("tool_abandon_scan", str(error))
+                    failed.add(session_id)
+                    continue
+                previous = seen.get(session_id, -1)
+                if head == previous and session_id not in failed:
+                    continue
+                ok = True
+                try:
+                    changed = await asyncio.to_thread(reader.snapshot, after_seq=previous, through_seq=head)
+                    controls = [message for message in changed
+                                if isinstance(message.body, Control) and message.body.action == "abandon"]
+                    messages = await asyncio.to_thread(reader.snapshot, through_seq=head) if controls else ()
+                    for control in controls:
+                        for ref in abandoned_calls(messages, control):
+                            try:
+                                async with reply(reader, control.source, ref) as target:
+                                    try:
+                                        _ = await abandon_call(state, tasks, target, task_key=task_key)
+                                    except LegacyReplyIdentityUnavailable as error:
+                                        _ = report_incident("legacy_tool_reply_identity", str(error))
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as error:
+                                _ = report_incident("tool_abandon_item", str(error))
+                                ok = False
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    _ = report_incident("tool_abandon_scan", str(error))
+                    ok = False
+                if ok:
+                    seen[session_id] = head
+                    failed.discard(session_id)
+                else:
+                    failed.add(session_id)
+    finally:
+        await stream.aclose()
 
 
 def abandoned_calls(messages: tuple[Message, ...], control: Message) -> tuple[CallRef, ...]:

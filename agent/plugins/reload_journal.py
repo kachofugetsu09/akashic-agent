@@ -129,6 +129,101 @@ class ReloadJournalEvent:
 
 
 @dataclass(frozen=True)
+class CandidateCleanupObligation:
+    """一条持久候选校验目录清理义务，含创建它的确切宿主身份。"""
+
+    update_id: str
+    plugin_id: str
+    validation_root: Path
+    owner_boot_id: str
+    owner_pid: int
+
+
+class CandidateCleanupPendingError(RuntimeError):
+    """候选校验目录清理义务未清完；指针结算未完成，调用者不得当作成功。"""
+
+    def __init__(self, update_ids: tuple[str, ...]) -> None:
+        super().__init__(
+            "candidate validation cleanup pending: " + ", ".join(update_ids)
+        )
+        self.update_ids = update_ids
+
+
+# 已知 lineage：v1 缺少宿主身份证据列，v2 起 owner_boot_id/owner_pid 必填。
+_CANDIDATE_CLEANUP_SCHEMA_V2 = """
+    CREATE TABLE IF NOT EXISTS candidate_validation_roots (
+        update_id TEXT NOT NULL,
+        plugin_id TEXT NOT NULL,
+        validation_root TEXT NOT NULL,
+        owner_boot_id TEXT NOT NULL,
+        owner_pid INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (update_id, validation_root)
+    );
+"""
+# 已知 v1 lineage 的完整期望 schema；只比列名会把畸形同名四列表误当可迁移。
+_CANDIDATE_CLEANUP_EXPECTED_V1: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...] = (
+    ("update_id", "TEXT", 1, (None,), 1),
+    ("plugin_id", "TEXT", 1, (None,), 0),
+    ("validation_root", "TEXT", 1, (None,), 2),
+    ("created_at", "TEXT", 1, (None,), 0),
+)
+# owner 期望 schema：严格比较 PRAGMA table_info 的 (type, notnull, dflt_value, pk)。
+# owner_boot_id/owner_pid 允许 v1 迁移留下的 '':0 默认值（对应保守未知行），
+# 其余列不接受任何默认值。
+_CANDIDATE_CLEANUP_EXPECTED: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...] = (
+    ("update_id", "TEXT", 1, (None,), 1),
+    ("plugin_id", "TEXT", 1, (None,), 0),
+    ("validation_root", "TEXT", 1, (None,), 2),
+    ("owner_boot_id", "TEXT", 1, (None, "''"), 0),
+    ("owner_pid", "INTEGER", 1, (None, "0"), 0),
+    ("created_at", "TEXT", 1, (None,), 0),
+)
+
+
+def check_candidate_cleanup_schema(conn: sqlite3.Connection) -> bool:
+    """按 owner 期望 schema 严格核对清理义务表；未知同名表/列/类型/默认值/主键一律 fail-loud。
+
+    返回 False 表示缺表或命中已知 v1 lineage（交由迁移处理）。
+    """
+
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='candidate_validation_roots'",
+    ).fetchone()
+    if row is None:
+        return False
+    info = list(conn.execute("PRAGMA table_info(candidate_validation_roots)"))
+    names = tuple(str(item[1]) for item in info)
+    if names == tuple(item[0] for item in _CANDIDATE_CLEANUP_EXPECTED_V1):
+        _check_cleanup_columns(info, _CANDIDATE_CLEANUP_EXPECTED_V1)
+        return False
+    expected_names = tuple(item[0] for item in _CANDIDATE_CLEANUP_EXPECTED)
+    if names != expected_names:
+        raise ValueError(f"未知 candidate_validation_roots schema: {names}")
+    _check_cleanup_columns(info, _CANDIDATE_CLEANUP_EXPECTED)
+    return True
+
+
+def _check_cleanup_columns(
+    info: list[tuple[object, ...]],
+    expected: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...],
+) -> None:
+    for item, (name, type_, notnull, defaults, pk) in zip(info, expected):
+        actual = (
+            str(item[1]),
+            str(item[2]).upper(),
+            cast(int, item[3]),
+            item[4],
+            cast(int, item[5]),
+        )
+        if actual[0] != name or actual[1] != type_ or actual[2] != notnull or actual[4] != pk:
+            raise ValueError(f"candidate_validation_roots.{name} schema 不符: {actual}")
+        dflt = None if actual[3] is None else str(actual[3])
+        if dflt not in defaults:
+            raise ValueError(f"candidate_validation_roots.{name} 默认值不符: {dflt!r}")
+
+
+@dataclass(frozen=True)
 class ReloadRecoveryAction:
     tx_id: str
     plugin_id: str
@@ -177,6 +272,17 @@ class ReloadJournal:
         with self._connect() as conn:
             return update_rollback.read(conn, update_id)
 
+    def armed_update_for_plugin(self, plugin_id: str) -> update_rollback.UpdateRollback | None:
+        """按插件查唯一未完成更新；初始化失败记录在原 owner 上供显式结算。"""
+        with self._connect() as conn:
+            if not update_rollback.check_schema(conn):
+                return None
+            row = conn.execute(
+                "SELECT update_id FROM plugin_updates WHERE plugin_id=? AND phase='armed'",
+                (plugin_id,),
+            ).fetchone()
+            return None if row is None else update_rollback.read(conn, row[0])
+
     def update_for_reload(self, tx_id: str) -> update_rollback.UpdateRollback | None:
         """有更新恢复点时，完整旧指针对只由该记录恢复。"""
         with self._connect() as conn:
@@ -184,6 +290,52 @@ class ReloadJournal:
                 return None
             row = conn.execute("SELECT update_id FROM plugin_updates WHERE reload_tx_id=?", (tx_id,)).fetchone()
             return None if row is None else update_rollback.read(conn, row[0])
+
+    def record_candidate_cleanup(
+        self,
+        update_id: str,
+        plugin_id: str,
+        validation_root: Path,
+        *,
+        owner_boot_id: str,
+        owner_pid: int,
+    ) -> None:
+        """候选校验目录从创建起就是安装 owner 的持久清理义务。"""
+        if not owner_boot_id.strip() or owner_pid <= 0:
+            raise ValueError("候选清理义务缺少确切的宿主身份证据")
+        with self._connect() as conn:
+            _ = conn.execute(
+                "INSERT OR REPLACE INTO candidate_validation_roots VALUES(?,?,?,?,?,?)",
+                (update_id, plugin_id, str(validation_root),
+                 owner_boot_id, owner_pid, _now()),
+            )
+
+    def candidate_cleanup(self, update_id: str) -> tuple[CandidateCleanupObligation, ...]:
+        """返回该更新仍欠的确切校验目录与宿主身份；进程重启后据此恢复清理。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT update_id,plugin_id,validation_root,owner_boot_id,owner_pid "
+                "FROM candidate_validation_roots WHERE update_id=?",
+                (update_id,),
+            ).fetchall()
+            return tuple(
+                CandidateCleanupObligation(
+                    update_id=str(row[0]),
+                    plugin_id=str(row[1]),
+                    validation_root=Path(str(row[2])),
+                    owner_boot_id=str(row[3]),
+                    owner_pid=int(row[4]),
+                )
+                for row in rows
+            )
+
+    def clear_candidate_cleanup(self, update_id: str, validation_root: Path) -> None:
+        """只有真实删除成功才销账，失败保留义务供显式重试。"""
+        with self._connect() as conn:
+            _ = conn.execute(
+                "DELETE FROM candidate_validation_roots WHERE update_id=? AND validation_root=?",
+                (update_id, str(validation_root)),
+            )
 
     def record_update_error(self, update_id: str, error: str) -> None:
         """保存实际失败原因，不把诊断写入伪装成发布或回退。"""
@@ -216,8 +368,29 @@ class ReloadJournal:
             if update_id is not None:
                 query += " AND update_id=?"
                 values = (update_id,)
+            unsettled: list[str] = []
             for row in conn.execute(query, values).fetchall():
+                pending = conn.execute(
+                    "SELECT 1 FROM candidate_validation_roots WHERE update_id=? LIMIT 1",
+                    (row[0],),
+                ).fetchone()
+                if pending is not None:
+                    # 确切校验目录义务未清完的更新不结算指针；先完成清理再重试。
+                    _ = conn.execute(
+                        "UPDATE plugin_updates SET error=?,updated_at=? WHERE update_id=? AND phase='armed'",
+                        (
+                            f"{error}; candidate validation cleanup pending",
+                            _now(),
+                            row[0],
+                        ),
+                    )
+                    unsettled.append(str(row[0]))
+                    continue
                 update_rollback.rollback(conn, update_rollback.read(conn, row[0]), plugins_home, now=_now(), error=error)
+            if unsettled:
+                # 未完成不是成功：先提交已真实回退与错误标注，再显式上报未结算项。
+                conn.commit()
+                raise CandidateCleanupPendingError(tuple(unsettled))
 
     def begin(
         self,
@@ -810,6 +983,35 @@ class ReloadJournal:
                 CREATE INDEX IF NOT EXISTS idx_reload_events_tx
                 ON reload_events(tx_id, sequence);
                 """)
+            existing_roots = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidate_validation_roots'",
+            ).fetchone()
+            if existing_roots is None:
+                conn.executescript(_CANDIDATE_CLEANUP_SCHEMA_V2)
+            elif not check_candidate_cleanup_schema(conn):
+                # v1 lineage 迁移前先留可恢复备份；未知 schema 已在 check 中 fail-loud。
+                backup = self.path.with_name(
+                    f"{self.path.name}.bak-candidate-roots-{uuid.uuid4().hex}"
+                )
+                conn.execute("VACUUM INTO ?", (str(backup),))
+                # 重建而非 ALTER ADD COLUMN：列序必须与 owner schema 一致；
+                # v1 行的 owner 证据以 ''/0 落账，表示保守未知。
+                conn.execute(
+                    "ALTER TABLE candidate_validation_roots "
+                    "RENAME TO candidate_validation_roots_v1"
+                )
+                conn.executescript(_CANDIDATE_CLEANUP_SCHEMA_V2)
+                conn.execute(
+                    "INSERT INTO candidate_validation_roots "
+                    "(update_id,plugin_id,validation_root,owner_boot_id,owner_pid,created_at) "
+                    "SELECT update_id,plugin_id,validation_root,'',0,created_at "
+                    "FROM candidate_validation_roots_v1"
+                )
+                conn.execute("DROP TABLE candidate_validation_roots_v1")
+                if not check_candidate_cleanup_schema(conn):
+                    raise RuntimeError(
+                        "candidate_validation_roots 迁移后 schema 仍不匹配"
+                    )
             columns = {
                 str(row[1])
                 for row in conn.execute("PRAGMA table_info(reload_transactions)")

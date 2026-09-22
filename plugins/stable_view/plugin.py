@@ -10,13 +10,13 @@ from agent.plugin_composition.commands import (
     CommandInvocation,
     CommandResult,
 )
-from agent.plugin_composition.runtime_catalog import build_stable_plugin_catalog
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 
 api_version = 3
 name = "stable_view"
 version = "1.0.0"
 desc = "命令行查看当前 stable 插件组合树"
-inject = (COMMANDS,)
+inject = (COMMANDS, RUNTIME_CATALOG)
 
 _FIBER_KEYS = ("name", "parent", "state", "required", "dependencies",
                "missing_services", "error")
@@ -112,29 +112,26 @@ def format_stable_catalog(catalog: Mapping[str, object]) -> str:
         for index, server in enumerate(entries):
             label = server.get("name") if isinstance(server, Mapping) else server
             lines.append(f"   {'└─' if index == len(entries) - 1 else '├─'} {label}")
-    mcp_unavailable = catalog.get("mcp_unavailable")
-    if isinstance(mcp_unavailable, Mapping):
+    unavailable = catalog.get("unavailable")
+    if isinstance(unavailable, Mapping):
         lines.append(
             "mcp_servers  (按调用打开，无持久会话目录"
-            f" [{mcp_unavailable.get('code')}])"
+            f" [{unavailable.get('code')}])"
         )
     return "\n".join(lines)
 
 
 async def apply(ctx: Context) -> None:
-    """注册 /stable 只读命令；经 runtime scope 读取真实 snapshot 投影。"""
+    """注册 /stable 只读命令；经注入的 RUNTIME_CATALOG DTO 读取当前组合投影。"""
+
+    read_catalog = ctx.require(RUNTIME_CATALOG)
 
     async def show_stable(_invocation: CommandInvocation) -> CommandResult:
         try:
-            from agent.plugins.snapshot import get_current_runtime_lease
-
             async with ctx.runtime_scope():
-                lease = get_current_runtime_lease()
-                if lease is None or lease.snapshot is None:
-                    return CommandResult("error", "runtime scope 未绑定 stable snapshot")
-                catalog = build_stable_plugin_catalog(lease.snapshot)
+                catalog = read_catalog()
             return CommandResult("success", format_stable_catalog(catalog))
-        except Exception as error:  # snapshot owner 失败也必须如实回报
+        except Exception as error:  # catalog owner 失败也必须如实回报
             return CommandResult("error", f"读取 stable 组合失败: {error}")
 
     _ = await ctx.require(COMMANDS).register(ctx, CommandDefinition(
