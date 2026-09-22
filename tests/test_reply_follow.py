@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
+from typing import Any, cast
 
 import pytest
 
@@ -45,7 +46,7 @@ async def apply(ctx):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context.require(ServiceKey("probe"))
             registered = snapshot.composition_root.context.require(SOURCES)
-            watcher = await ctx.spawn(follow(ctx, log.catalog(), registered,
+            watcher = await ctx.spawn(follow(ctx, log.catalog(), cast(Any, registered),
                                              lambda task, reader, source: program(ctx, task, reader, source)), name="follow")
         if lifecycle:
             from agent.plugin_composition import RUNTIME_STOPPING

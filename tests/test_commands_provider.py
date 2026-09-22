@@ -124,7 +124,9 @@ async def apply(ctx):
             root_ref = log.read_binding(identity)["root_ref"]
             assert isinstance(root_ref, str)
             descriptor = archive.read_descriptor(root_ref)
-            assert set(descriptor["components"]) == {
+            components = descriptor["components"]
+            assert isinstance(components, (list, tuple))
+            assert set(components) == {
                 snapshot.generations[name].archive_ref
                 for name in ("human_actions", "command_owner", "dependency")
             }

@@ -9,7 +9,7 @@ import sys
 import textwrap
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -111,7 +111,7 @@ async def test_dead_owner_started_call_settles_as_orphan_then_explicit_retry(tmp
         descriptor, request, request_key="stable-key",
         owner_id=f"{(store.host_epoch or 1) - 1}:old-process:old-root:old-attempt",
     )
-    bound = _BoundChat(descriptor, Driver(), store, max_attempts=2)
+    bound = _BoundChat(descriptor, cast(Any, Driver()), store, max_attempts=2)
     with pytest.raises(ModelUnavailableError, match="不确定"):
         await bound.complete(request)
     assert calls == 0, "孤儿证据未结算前不得发起新的付费请求"
@@ -151,7 +151,7 @@ async def test_live_attempt_is_not_treated_as_orphan(tmp_path):
             await release.wait()
             return LLMResponse(f"answer {calls}")
 
-    bound = _BoundChat(_descriptor(), Driver(), store)
+    bound = _BoundChat(_descriptor(), cast(Any, Driver()), store)
     request = ModelRequest((), request_key="same-premise")
     first = asyncio.create_task(bound.complete(request))
     await asyncio.wait_for(entered.wait(), 1)
@@ -182,7 +182,7 @@ async def test_settlement_store_failure_propagates_without_hidden_retry(tmp_path
             calls += 1
             return LLMResponse("unrecorded")
 
-    bound = _BoundChat(_descriptor(), Driver(), store)
+    bound = _BoundChat(_descriptor(), cast(Any, Driver()), store)
 
     def broken(*args: Any, **kwargs: Any) -> None:
         del args, kwargs
@@ -216,8 +216,8 @@ async def test_dead_listener_evicted_once_and_late_unsubscribe_is_safe(tmp_path)
     poison = asyncio.Event()
     unverified = asyncio.Event()
     with log._lock:
-        log._listeners[poison] = DeadLoop()
-        log._listeners[unverified] = UnverifiedLoop()
+        log._listeners[poison] = cast(Any, DeadLoop())
+        log._listeners[unverified] = cast(Any, UnverifiedLoop())
     inputs = log.writer(
         "s", author="test", source="conversation", body_types=(Input,), content={},
     )
@@ -336,7 +336,7 @@ async def test_sigkilled_provider_process_leaves_settled_orphan_without_replay(t
                 calls += 1
                 return LLMResponse("explicit retry")
 
-        bound = _BoundChat(_descriptor(), Driver(), store)
+        bound = _BoundChat(_descriptor(), cast(Any, Driver()), store)
         with pytest.raises(ModelUnavailableError, match="不确定"):
             await bound.complete(ModelRequest((), request_key="killed-key"))
         assert calls == 0, "孤儿未结算前不得重发付费请求"
@@ -784,10 +784,10 @@ async def test_cancelled_attempt_stalls_without_new_source_fact(tmp_path):
         assert message.message_id != "fixed-output", "新准备有自己的 Output 身份"
 
         # 同 key 直调同样被 Models 自身的终结裁决拒绝（预算仍有剩余也不行）。
-        bound = _BoundChat(descriptor, type("D", (), {
+        bound = _BoundChat(descriptor, cast(Any, type("D", (), {
             "max_tool_schemas": None,
             "complete": staticmethod(complete),
-        })(), store, max_attempts=3)
+        })()), store, max_attempts=3)
         with pytest.raises(ModelUnavailableError, match="终结失败"):
             await bound.complete(
                 ModelRequest(request0.messages, request_key="cancelled-key")
@@ -1002,8 +1002,10 @@ async def test_context_rejected_first_attempt_resumes_local_reduction(tmp_path):
         prep = log.owner("plugin:reply:generation").read(
             "reply:s:conversation:u1:0"
         )
-        assert len(prep.value["attempts"]) == 2, "缩减后第二请求必须耐久冻结"
-        assert len(prep.value["request_keys"]) == 2
+        attempts = prep.value["attempts"]
+        request_keys = prep.value["request_keys"]
+        assert isinstance(attempts, (list, tuple)) and len(attempts) == 2, "缩减后第二请求必须耐久冻结"
+        assert isinstance(request_keys, (list, tuple)) and len(request_keys) == 2
 
 
 @pytest.mark.asyncio
@@ -1079,7 +1081,8 @@ async def test_context_rejected_second_attempt_is_terminal_across_restarts(
         prep = log.owner("plugin:reply:generation").read(
             "reply:s:conversation:u1:0"
         )
-        assert len(prep.value["request_keys"]) == 2, "不得创建第三个 key"
+        request_keys = prep.value["request_keys"]
+        assert isinstance(request_keys, (list, tuple)) and len(request_keys) == 2, "不得创建第三个 key"
 
 
 @pytest.mark.asyncio
@@ -1157,8 +1160,10 @@ async def test_frozen_second_attempt_rejected_on_resume_stays_terminal(
         prep = log.owner("plugin:reply:generation").read(
             "reply:s:conversation:u1:0"
         )
-        assert len(prep.value["request_keys"]) == 2, "claim 只配第二个 key"
-        key1 = prep.value["request_keys"][1]
+        request_keys = prep.value["request_keys"]
+        assert isinstance(request_keys, (list, tuple)) and len(request_keys) == 2, "claim 只配第二个 key"
+        key1 = request_keys[1]
+        assert isinstance(key1, str)
         records = store.calls_for_key(key1)
         assert len(records) == 1 and records[0]["failure"] == "ContextLengthError"
 
@@ -1176,7 +1181,8 @@ async def test_frozen_second_attempt_rejected_on_resume_stays_terminal(
         prep = log.owner("plugin:reply:generation").read(
             "reply:s:conversation:u1:0"
         )
-        assert len(prep.value["request_keys"]) == 2, "旧代至多两个 key"
+        request_keys = prep.value["request_keys"]
+        assert isinstance(request_keys, (list, tuple)) and len(request_keys) == 2, "旧代至多两个 key"
 
 
 @pytest.mark.asyncio
@@ -1281,7 +1287,7 @@ async def test_partial_context_length_failure_never_reduces_or_replays(tmp_path)
         assert records and records[-1]["partial_response"] == 1
         key = records[-1]["request_key"]
         assert key and _BoundChat(
-            _fixture_descriptor(), type("D", (), {"max_tool_schemas": None})(),
+            _fixture_descriptor(), cast(Any, type("D", (), {"max_tool_schemas": None})()),
             store,
         ).key_recovery(key) == "uncertain"
 

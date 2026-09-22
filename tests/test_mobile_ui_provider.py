@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -67,7 +68,7 @@ async def test_mobile_provider_seals_actual_owner_and_fixed_asset_bytes(tmp_path
         assert binding.asset.module == original
         snapshot = RuntimeSnapshot("mobile", {}, composition_root=root)
         generation = SimpleNamespace(plugin_id="mobile", generation_id="mobile-generation")
-        assert PluginMobileUiProvider._mobile_ui_binding(snapshot, generation) is binding
+        assert PluginMobileUiProvider._mobile_ui_binding(snapshot, cast(Any, generation)) is binding
         with pytest.raises(CompositionError, match="已冻结"):
             await slots.register_mobile(
                 ctx, MobileUiDefinition(module="mobile.js"), query=binding.query,
@@ -114,7 +115,9 @@ async def test_mobile_consumer_rejects_borrowed_root_provider():
         await new.context.provide(UI_SLOTS, old.context.require(UI_SLOTS))
         snapshot = RuntimeSnapshot("new", {}, composition_root=new)
         with pytest.raises(MobileUiPluginUnavailable, match="provider 不属于"):
-            PluginMobileUiProvider._mobile_ui_binding(snapshot, SimpleNamespace(plugin_id="mobile"))
+            PluginMobileUiProvider._mobile_ui_binding(
+                snapshot, cast(Any, SimpleNamespace(plugin_id="mobile"))
+            )
     finally:
         await new.dispose()
         await old.dispose()

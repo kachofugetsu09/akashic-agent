@@ -93,13 +93,18 @@ def test_list_turns_pages_newest_first_and_filters_by_session(tmp_path: Path) ->
     memory = _memory(tmp_path / "akasha.db", turns=6)
     page = list_turns(memory, page=1, page_size=4)
     assert page["total"] == 6
-    assert [row["node_id"] for row in page["items"]] == [5, 4, 3, 2]
-    assert page["items"][0]["candidate_count"] == 2
-    assert page["items"][0]["pushes"] == 50
+    items = page["items"]
+    assert isinstance(items, list) and all(isinstance(row, dict) for row in items)
+    assert [row["node_id"] for row in items] == [5, 4, 3, 2]
+    assert items[0]["candidate_count"] == 2
+    assert items[0]["pushes"] == 50
 
     filtered = list_turns(memory, session_key="s", page=1, page_size=10)
     assert filtered["total"] == 3
-    assert {row["session_key"] for row in filtered["items"]} == {"s"}
+    filtered_items = filtered["items"]
+    assert isinstance(filtered_items, list)
+    assert all(isinstance(row, dict) for row in filtered_items)
+    assert {row["session_key"] for row in filtered_items} == {"s"}
 
 
 def test_list_turns_rejects_invalid_paging(tmp_path: Path) -> None:

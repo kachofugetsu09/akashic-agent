@@ -268,6 +268,7 @@ async def test_candidate_environment_and_allowlist_are_host_bound(tmp_path, monk
         await owner.load_all()
         candidate = await owner.prepare_candidate("probe")
         snapshot = candidate.runtime_snapshot
+        assert snapshot is not None
         transaction = owner._begin_snapshot_publication(snapshot)
         await owner.snapshot_store.commit_latest(transaction)
         root = snapshot.composition_root

@@ -2,6 +2,7 @@ from session.message import ContentReferences
 from dataclasses import replace
 from contextlib import closing
 from datetime import datetime
+from typing import Any, cast
 import os
 import sqlite3
 
@@ -311,7 +312,7 @@ def test_restore_reads_only_recorded_refs_and_rejects_changed_provenance(convers
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    restored = restore_sample(NoSnapshotCatalog(log.catalog()), entry)
+    restored = restore_sample(cast(Any, NoSnapshotCatalog(log.catalog())), entry)
     assert [message.message_id for message in restored.messages] == ['u1', 'u2', 'a']
 
     # 2. 出处被改写（digest 不匹配）必须失败。

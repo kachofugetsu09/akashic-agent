@@ -8,6 +8,7 @@ import socket
 import shutil
 from pathlib import Path
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 import pytest
 from aiohttp import web
@@ -678,7 +679,7 @@ async def test_partial_stream_failure_settles_durable_evidence_as_uncertain(
             "test-connection", "local", "codex",
             f"http://127.0.0.1:{port}/v1", "test", {},
         ),
-        Credential(),
+        cast(Any, Credential()),
     )
     try:
         bound = _BoundChat(descriptor, driver.bind_chat(descriptor, {}), store)
@@ -757,7 +758,7 @@ async def test_stream_failure_without_deltas_is_uncertain(tmp_path):
             "test-connection", "local", "codex",
             f"http://127.0.0.1:{port}/v1", "test", {},
         ),
-        Credential(),
+        cast(Any, Credential()),
     )
     try:
         bound = _BoundChat(descriptor, driver.bind_chat(descriptor, {}), store)
@@ -823,7 +824,7 @@ async def test_http_status_rejection_is_provable_send_evidence(tmp_path):
             "test-connection", "local", "codex",
             f"http://127.0.0.1:{port}/v1", "test", {},
         ),
-        Credential(),
+        cast(Any, Credential()),
     )
     try:
         bound = _BoundChat(descriptor, driver.bind_chat(descriptor, {}), store)
@@ -879,7 +880,7 @@ async def test_connect_failure_is_unsent_evidence(tmp_path):
             "test-connection", "local", "codex",
             f"http://127.0.0.1:{port}/v1", "test", {},
         ),
-        Credential(),
+        cast(Any, Credential()),
     )
     try:
         bound = _BoundChat(descriptor, driver.bind_chat(descriptor, {}), store)
@@ -944,7 +945,7 @@ async def test_zero_delta_stream_eof_never_replays_same_request(tmp_path):
             "test-connection", "local", "openai-compatible",
             f"http://127.0.0.1:{port}/v1", "test", {},
         ),
-        Credential(),
+        cast(Any, Credential()),
     )
     try:
         bound = _BoundChat(

@@ -90,7 +90,9 @@ def test_web_build_includes_plugin_ui_assets(tmp_path, monkeypatch) -> None:
     assert plugins is not None
     assert (plugins / "akasha/message_ui.js").read_text() == "new module"
     assert commands[-1] == ["npm", "run", "build:web-plugins"]
-    assert report["build_commands"][-1] == "npm run build:web-plugins"
+    build_commands = report["build_commands"]
+    assert isinstance(build_commands, list)
+    assert build_commands[-1] == "npm run build:web-plugins"
 
 
 def test_plugin_bundle_uses_generated_ui_asset(tmp_path) -> None:

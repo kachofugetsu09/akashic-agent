@@ -142,7 +142,9 @@ async def apply(ctx):
             installed = await call("install", "plugin_install", {"source": str(source), "marketplace": "lab",
                 "validation_prompt": "Report the actual result.", "validation_tools": []})
             assert installed.outcome == "success"
-            identity = json.loads(installed.parts[0].value)["update_id"]
+            installed_value = installed.parts[0].value
+            assert isinstance(installed_value, str)
+            identity = json.loads(installed_value)["update_id"]
             started = await call("run", "plugin_latest", {"update_id": identity, "action": "run"})
             assert started.outcome == "success"
             async for _ in host.watch_updates():
@@ -153,9 +155,11 @@ async def apply(ctx):
                 if status.publishing:
                     break
             observed = await call("status", "plugin_latest", {"update_id": identity, "action": "status"})
+            observed_value = observed.parts[0].value
+            assert isinstance(observed_value, str)
             if not configured_default:
                 assert "default" in status.error
-                assert "real latest result" not in observed.parts[0].value
+                assert "real latest result" not in observed_value
                 assert not requests and host._update_publication is None
                 with pytest.raises(RuntimeError, match="不得重跑"):
                     await call("retry", "plugin_latest", {"update_id": identity, "action": "run"})
@@ -165,7 +169,7 @@ async def apply(ctx):
                 assert formal_store.read_snapshot() == before
                 assert formal_store.read_calls("", 100) == ()
                 return
-            assert "real latest result" in observed.parts[0].value
+            assert "real latest result" in observed_value
         await host._update_publication[1]
         assert host.read_update(identity).phase == "committed"
         assert len(requests) == 1
@@ -173,7 +177,9 @@ async def apply(ctx):
         assert formal_store.read_calls("", 100) == ()
         credential = await formal_store.credential_handle("existing", "existing-account").read()
         assert credential["api_key"] == ("refreshed-key" if target == "openai_compatible" else "existing-key")
-        evidence = Path(host.read_update(identity).evidence)
+        evidence_value = host.read_update(identity).evidence
+        assert evidence_value is not None
+        evidence = Path(evidence_value)
         calls = ModelsStore(evidence / "model-registry.sqlite3", evidence / "backups").read_calls("", 100)
         assert len(calls) == 1 and calls[0]["state"] == "success"
         assert calls[0]["binding"]["plugin_snapshot_id"] != stable.snapshot_id

@@ -5,6 +5,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 import pytest
 
@@ -57,7 +58,7 @@ async def test_committed_input_recovers_when_its_wakeup_is_lost(tmp_path):
         poison = asyncio.Event()
         with log._lock:
             log._listeners.clear()
-            log._listeners[poison] = BrokenLoop()
+            log._listeners[poison] = cast(Any, BrokenLoop())
             log._listeners.update(listeners)
         try:
             # 已提交事务返回原结果；observer 通知失败不污染已提交的 Input。
@@ -140,7 +141,9 @@ async def test_one_lane_admission_fault_does_not_kill_reply_follower():
     async def program(task, reader, source):
         del task, reader, source
 
-    watcher = asyncio.create_task(follow(Context(), Catalog(), Sources(), program))
+    watcher = asyncio.create_task(follow(
+        cast(Any, Context()), cast(Any, Catalog()), cast(Any, Sources()), program
+    ))
     try:
         await updates.put({"broken": 1, "good": 1})
         await asyncio.wait_for(good_first.wait(), 1)
@@ -221,7 +224,9 @@ async def test_reply_follower_faults_when_drive_makes_no_durable_progress():
     async def program(task, reader, source):
         del task, reader, source
 
-    watcher = asyncio.create_task(follow(Context(), Catalog(), Sources(), program))
+    watcher = asyncio.create_task(follow(
+        cast(Any, Context()), cast(Any, Catalog()), cast(Any, Sources()), program
+    ))
     await updates.put({"one": 1})
     try:
         with pytest.raises(RuntimeError, match="没有进展|no progress"):
@@ -306,7 +311,7 @@ async def test_successful_model_response_is_durable_before_return(tmp_path):
             del request
             return LLMResponse("durable answer")
 
-    response = await _BoundChat(_descriptor(), Driver(), store).complete(
+    response = await _BoundChat(_descriptor(), cast(Any, Driver()), store).complete(
         ModelRequest(())
     )
     assert response.call_record_id is not None

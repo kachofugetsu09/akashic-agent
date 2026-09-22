@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 import shutil
 
 import pytest
@@ -810,7 +811,7 @@ async def test_old_port_cannot_settle_handoff_reclaimed_by_next_generation(tmp_p
                 durable_reservations={},
             )
             try:
-                new_port = _ChannelDurableInbound(channel_host, next_key)
+                new_port = _ChannelDurableInbound(cast(Any, channel_host), next_key)
                 assert await new_port.reserve(raw_message)
                 with pytest.raises(RuntimeError, match="exact binding reservation"):
                     await old_port.settle_rejected(

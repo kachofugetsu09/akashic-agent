@@ -154,6 +154,7 @@ def test_setup_runner_passes_plugin_data_boundary(tmp_path: Path, monkeypatch) -
 
     config = workspace / "plugin-data" / "fixture_setup-lab" / CONFIG_INPUT
     lines = load_config(config.parent)[0]["lines"]
+    assert isinstance(lines, list)
     assert lines[0] == "fixture_setup@lab"
     assert lines[2] == str(workspace.resolve())
     record = python_environments.archive.read_descriptor(environment_ref)
@@ -192,6 +193,7 @@ def test_setup_runner_reads_formal_install_artifact(
 
     config = workspace / "plugin-data" / "fixture_setup-lab" / CONFIG_INPUT
     lines = load_config(config.parent)[0]["lines"]
+    assert isinstance(lines, list)
     assert lines[0] == "fixture_setup@lab"
     assert lines[2] == str(workspace.resolve())
 

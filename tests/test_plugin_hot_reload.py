@@ -144,6 +144,7 @@ def test_import_boundary_keeps_exact_root_file_without_calling_apply(tmp_path: P
     try:
         owner._import_plugin(module_name, root)
         module = sys.modules[module_name]
+        assert module.__file__ is not None
         assert Path(module.__file__) == root / "plugin.py"
         assert callable(module.apply)
     finally:

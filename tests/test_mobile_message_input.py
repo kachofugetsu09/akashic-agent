@@ -93,7 +93,7 @@ class _MessageBusIngress:
             generation_id=self._binding.generation_id,
             binding_token=self._binding.binding_token,
             message=raw.message,
-            lease=self._binding,
+            lease=self._binding,  # pyright: ignore[reportArgumentType] - focused binding fake
         )
         await self._bus.prepare_channel_input(envelope)
         try:
