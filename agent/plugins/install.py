@@ -141,6 +141,10 @@ def install_git_plugin(
 ) -> PluginInstallResult:
     home = (plugins_home or plugins_root()).resolve(strict=False)
     journal = ReloadJournal(workspace)
+    orphaned = journal.orphaned_armed_updates()
+    if orphaned:
+        names = ", ".join(f"{item.update_id}:{item.plugin_id}" for item in orphaned)
+        raise RuntimeError(f"unsettled armed plugin updates require explicit settlement: {names}")
     update_id = uuid4().hex if update_id is None else update_id
     if not isinstance(update_id, str) or not update_id or update_id.strip() != update_id:
         raise ValueError("插件更新 ID 必须是非空且无首尾空白的字符串")

@@ -771,6 +771,52 @@ class ReloadJournal:
         with self._connect() as conn:
             return self._pending_recovery(conn)
 
+    def orphaned_armed_updates(self) -> tuple[update_rollback.UpdateRollback, ...]:
+        """Read installs with no runtime transaction to settle at boot."""
+        with self._connect() as conn:
+            return tuple(
+                update_rollback.read(conn, str(row[0]))
+                for row in conn.execute(
+                    "SELECT update_id FROM plugin_updates "
+                    "WHERE phase='armed' AND reload_tx_id IS NULL ORDER BY update_id"
+                )
+            )
+
+    def settle_generation_cleanup(
+        self, *, tx_id: str, plugin_id: str, generation_id: str, receipt: str,
+    ) -> None:
+        """Close the exact failed cleanup only after its owner releases resources."""
+        if not receipt:
+            raise ValueError("generation cleanup 缺少清理回执")
+        with self._connect() as conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT plugin_id,generation_id,phase,recovery_action,failure_resource "
+                "FROM reload_transactions WHERE tx_id=?", (tx_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"ReloadTransaction 不存在: {tx_id}")
+            if tuple(row) != (
+                plugin_id, generation_id, "cleanup_failed", "retry_generation_cleanup",
+                f"generation-cleanup:{generation_id}",
+            ):
+                raise RuntimeError("generation cleanup 回执与原失败 owner 不匹配")
+            now = _now()
+            changed = conn.execute(
+                "UPDATE reload_transactions SET phase='recovered',updated_at=? "
+                "WHERE tx_id=? AND plugin_id=? AND generation_id=? "
+                "AND phase='cleanup_failed' AND recovery_action='retry_generation_cleanup'",
+                (now, tx_id, plugin_id, generation_id),
+            )
+            if changed.rowcount != 1:
+                raise RuntimeError("generation cleanup 结算事实已变化")
+            self._append_event(conn, tx_id, "recovered", {
+                "event": "generation_cleanup_settled",
+                "plugin_id": plugin_id,
+                "generation_id": generation_id,
+                "cleanup_receipt": receipt,
+            }, now)
+
     @staticmethod
     def _pending_recovery(conn: sqlite3.Connection) -> tuple[ReloadRecoveryAction, ...]:
         placeholders = ", ".join("?" for _ in _TERMINAL_PHASES)

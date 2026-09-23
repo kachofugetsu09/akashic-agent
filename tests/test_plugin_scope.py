@@ -135,6 +135,7 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch):
     generation = SimpleNamespace(
         plugin_id="owner", generation_id="generation", module_path="module",
         scope=scope, state="prepared", fiber=None,
+        reload_tx_id=None,
         instance=SimpleNamespace(module=None),
     )
     manager._building_roots = {}

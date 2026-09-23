@@ -639,6 +639,10 @@ class PluginManager:
 
     async def _load_all(self) -> None:
         """从唯一完整选择启动；null 只允许首次固定安装输入。"""
+        orphaned = self._reload_journal.orphaned_armed_updates()
+        if orphaned:
+            names = ", ".join(f"{item.update_id}:{item.plugin_id}" for item in orphaned)
+            raise RuntimeError(f"unsettled armed plugin updates require explicit settlement: {names}")
         selection_ref = self._selection.read()
         if self._live_root is not None:
             raise RuntimeError("load_all 不能重复启动正式 Root")
@@ -1202,6 +1206,15 @@ class PluginManager:
 
         # 3. 所有资源确认关闭后才移除模块及排空 owner。
         self._remove_module_tree(generation.module_path)
+        if generation.reload_tx_id is not None:
+            record = self._reload_journal.get(generation.reload_tx_id)
+            if record.phase == "cleanup_failed":
+                self._reload_journal.settle_generation_cleanup(
+                    tx_id=record.tx_id,
+                    plugin_id=generation.plugin_id,
+                    generation_id=generation.generation_id,
+                    receipt=f"generation-cleanup:{generation.plugin_id}:{generation.generation_id}",
+                )
         generation.state = state
         if retain_selected_failed:
             generation.instance = None

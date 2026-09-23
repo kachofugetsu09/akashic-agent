@@ -206,6 +206,19 @@ async def test_uninstall_cleanup_failure_keeps_owner_and_explicit_retry_finishes
         assert failed_status["enabled"] is False
         assert failed_status["cache_exists"] is True
         assert host._draining_generations.get("target@lab") or host.generation("target@lab") is target
+        pending = tuple(
+            action for action in host._reload_journal.pending_recovery()
+            if action.plugin_id == "target@lab" and action.generation_id == target.generation_id
+        )
+        assert len(pending) == 1
+        assert pending[0].action == "retry_generation_cleanup"
+        cleanup_tx = pending[0].tx_id
+        with pytest.raises(RuntimeError, match="不匹配"):
+            host._reload_journal.settle_generation_cleanup(
+                tx_id=cleanup_tx, plugin_id="target@lab", generation_id="other-generation",
+                receipt="forged",
+            )
+        assert host._reload_journal.get(cleanup_tx).phase == "cleanup_failed"
 
         retry_accepted = await host.uninstall("target@lab")
         retry_operation = host._operation
@@ -221,6 +234,53 @@ async def test_uninstall_cleanup_failure_keeps_owner_and_explicit_retry_finishes
         assert not cache.exists()
         assert marker.read_text(encoding="utf-8") == "user data"
         assert status_for(host, "target@lab")["installed"] is False
+        assert host._reload_journal.get(cleanup_tx).phase == "recovered"
+        assert all(action.tx_id != cleanup_tx for action in host._reload_journal.pending_recovery())
+        assert host._reload_journal.events(cleanup_tx)[-1].details["cleanup_receipt"] == (
+            f"generation-cleanup:{target.plugin_id}:{target.generation_id}"
+        )
+    finally:
+        await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_journal_write_failure_keeps_exact_owner_for_retry(tmp_path, monkeypatch):
+    """A failed receipt write cannot release the physical cleanup owner."""
+    host, cache, _workspace = installed_host(tmp_path, fail_close=True)
+    try:
+        await host.load_all()
+        target = host.generation("target@lab")
+        assert target is not None
+        await host.uninstall("target@lab")
+        first = host._operation
+        assert first is not None
+        assert isinstance((await asyncio.gather(first.task, return_exceptions=True))[0], OSError)
+        tx_id = target.reload_tx_id
+        assert tx_id is not None
+        settle = host._reload_journal.settle_generation_cleanup
+
+        def fail_write(**kwargs):
+            raise OSError("journal write blocked")
+
+        monkeypatch.setattr(host._reload_journal, "settle_generation_cleanup", fail_write)
+        await host.uninstall("target@lab")
+        second = host._operation
+        assert second is not None
+        result = (await asyncio.gather(second.task, return_exceptions=True))[0]
+        assert isinstance(result, OSError) and str(result) == "journal write blocked"
+        assert host._reload_journal.get(tx_id).phase == "cleanup_failed"
+        assert host.generation("target@lab") is target
+        assert target in host._draining_generations["target@lab"]
+        assert cache.is_dir()
+
+        monkeypatch.setattr(host._reload_journal, "settle_generation_cleanup", settle)
+        await host.uninstall("target@lab")
+        third = host._operation
+        assert third is not None
+        done = (await asyncio.gather(third.task, return_exceptions=True))[0]
+        assert isinstance(done, dict) and done["state"] == "removed"
+        assert host._reload_journal.get(tx_id).phase == "recovered"
+        assert not cache.exists()
     finally:
         await host.terminate_all()
 

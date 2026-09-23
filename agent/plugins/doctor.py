@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
+from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
 )
@@ -30,6 +31,20 @@ def run_plugin_doctor(
         )
         for current_id in selected
     ]
+    journal_path = workspace / "runtime/plugin-reloads.sqlite3"
+    if journal_path.exists() or journal_path.is_symlink():
+        with ReloadJournal.inspect_existing(workspace) as journal:
+            armed = tuple(
+                item for item in journal.armed_updates
+                if item.reload_tx_id is None and (not plugin_id or item.plugin_id == plugin_id)
+            )
+        if armed:
+            names = ", ".join(f"{item.update_id}:{item.plugin_id}" for item in armed)
+            return {
+                "status": "broken", "plugins": plugins,
+                "workspace": str(resolved_workspace),
+                "error": f"unsettled armed plugin updates require explicit settlement: {names}",
+            }
     return {
         "status": _merge_status(item["status"] for item in plugins),
         "plugins": plugins,

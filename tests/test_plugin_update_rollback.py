@@ -17,6 +17,7 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition import ServiceKey
 from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, read_pointers, write_pointers
 from agent.plugins.install import install_git_plugin
+from agent.plugins.doctor import run_plugin_doctor
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import load_plugin_manifest, set_plugin_enabled, write_plugin_manifest
 from agent.plugins.reload_journal import ReloadJournal
@@ -89,6 +90,55 @@ def arm_historical_update(source, home, workspace, previous, previous_enabled):
         previous_enabled=previous_enabled,
     )
     return installed, update_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", ["before-pointer", "after-pointer"])
+@pytest.mark.parametrize("check", ["boot", "doctor"])
+async def test_orphaned_armed_install_is_visible_without_changing_inputs(tmp_path, cut, check):
+    """An unlinked install keeps its exact facts until an explicit owner settles it."""
+    source, home, workspace, old = prepare(tmp_path)
+    first = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    await first.load_all()
+    await first.terminate_all()
+    selected = PluginSelection(workspace).read()
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert selected is not None and previous is not None
+    install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    candidate = read_pointers(base)
+    assert candidate is not None and candidate.stable == candidate.latest
+    if cut == "before-pointer":
+        write_pointers(base, stable=previous.stable, latest=previous.latest)
+    pointers = read_pointers(base)
+    manifest = load_plugin_manifest(home)
+    journal = ReloadJournal(workspace)
+    journal.arm_update(
+        update_id="orphan", plugin_id="probe@lab", plugin_base=base,
+        previous=previous, candidate=candidate.stable, previous_enabled=True,
+    )
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    try:
+        if check == "boot":
+            with pytest.raises(RuntimeError, match="armed"):
+                await host.load_all()
+            assert host.live_root is None
+        else:
+            report = run_plugin_doctor(workspace=workspace, plugins_home=home)
+            assert report["status"] == "broken"
+            assert "orphan" in report["error"]
+        with pytest.raises(RuntimeError, match="unsettled armed"):
+            install_git_plugin(
+                workspace=workspace, source=str(source), marketplace="lab",
+                plugins_home=home, update_id="next-install",
+            )
+        assert journal.update("orphan").phase == "armed"
+        assert journal.update("orphan").reload_tx_id is None
+        assert PluginSelection(workspace).read() == selected
+        assert read_pointers(base) == pointers
+        assert load_plugin_manifest(home) == manifest
+    finally:
+        await host.terminate_all()
 
 
 @pytest.mark.asyncio
