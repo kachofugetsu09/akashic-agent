@@ -1,5 +1,4 @@
 """发布制品只能含选定宿主路径与各插件自己的源码。"""
-from agent.plugin_composition.config_input import load_config, save_config
 import io
 import json
 from pathlib import Path
@@ -10,12 +9,17 @@ import tarfile
 import pytest
 import yaml
 
+from agent.plugin_composition import FiberState, ServiceKey
+from agent.plugin_composition.config_input import load_config, save_config
 from agent.plugins.install import (
     finalize_uninstall_plugin,
     install_git_plugin,
     set_installed_plugin_enabled,
 )
 from agent.plugins.manifest import load_plugin_manifest
+from agent.plugins.manager import PluginManager
+from agent.plugins.selection import PluginSelection
+from bus.event_bus import EventBus
 import scripts.build_host_runtime_release as host_runtime_release
 from scripts.build_host_runtime_release import _create_context
 from scripts.build_plugin_distribution import (
@@ -444,6 +448,206 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
         assert provenance == {"commit": report["source_commit"], "path": row["source_path"]}
     with pytest.raises(FileExistsError):
         build(source, "HEAD", output)
+
+
+@pytest.mark.asyncio
+async def test_new_distribution_keeps_selected_archive_until_public_install(tmp_path):
+    """A new image is inert until the public install selects its exact bundle."""
+    source = tmp_path / "source"
+    target = source / "plugins/target/plugin.py"
+    peer = source / "plugins/peer/plugin.py"
+    target.parent.mkdir(parents=True)
+    peer.parent.mkdir(parents=True)
+    peer.write_text(
+        "from agent.plugin_composition import ServiceKey\n"
+        "api_version = 3\nname = 'peer'\nversion = '1'\n"
+        "PEER = ServiceKey('fixture.peer')\n"
+        "async def apply(ctx):\n"
+        "    state = {'started': 0, 'closed': 0}\n"
+        "    async def start():\n"
+        "        state['started'] += 1\n"
+        "        async def close():\n"
+        "            state['closed'] += 1\n"
+        "        return close\n"
+        "    await ctx.effect(start, label='peer-effect')\n"
+        "    await ctx.provide(PEER, state)\n",
+        encoding="utf-8",
+    )
+    profile = source / "docker/host-runtime/profiles/default.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(json.dumps({
+        "schema_version": 1,
+        "name": "fixture",
+        "marketplace": "release",
+        "initialization": {"plugin_configs": []},
+        "plugins": [
+            {"name": "peer", "depends_on": [], "reason": "retained service"},
+            {"name": "target", "depends_on": [], "reason": "versioned input"},
+        ],
+    }), encoding="utf-8")
+    (profile.parent.parent / "Dockerfile.distribution").write_text("FROM scratch\n")
+    (profile.parent.parent / "distribution-entrypoint.sh").write_text("#!/bin/sh\n")
+    (source / "config.example.toml").write_text("[runtime]\n", encoding="utf-8")
+    config = tmp_path / "config.toml"
+    config.write_text("[runtime]\n", encoding="utf-8")
+
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+
+    def make_distribution(version: str) -> tuple[Path, dict[str, object]]:
+        target.write_text(
+            "api_version = 3\nname = 'target'\n"
+            f"version = {version!r}\nasync def apply(ctx):\n    return None\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(source), "add", "."], check=True, capture_output=True)
+        subprocess.run([
+            "git", "-C", str(source), "-c", "user.name=Test", "-c",
+            "user.email=test@example.invalid", "-c", "commit.gpgSign=false",
+            "-c", "core.hooksPath=/dev/null", "commit", "-m", f"version {version}",
+        ], check=True, capture_output=True)
+        output = tmp_path / f"distribution-{version}"
+        return output, build(source, "HEAD", output)
+
+    distribution_a, report_a = make_distribution("1")
+    workspace, home = tmp_path / "workspace", tmp_path / "home"
+    receipt = install_profile(
+        distribution_a, distribution_a / "profiles/default.json",
+        workspace=workspace, plugins_home=home, config_path=config,
+    )
+    receipt_path = workspace / "runtime/distribution-install.json"
+    _write_receipt(receipt_path, receipt)
+    receipt_bytes = receipt_path.read_bytes()
+    PluginSelection(workspace).initialize()
+    data_file = workspace / "plugin-data/target-release/user.txt"
+    data_file.write_text("preserve user data", encoding="utf-8")
+
+    def manager() -> PluginManager:
+        return PluginManager(
+            [], event_bus=EventBus(), workspace=workspace,
+            installed_cache_root=home / "cache",
+        )
+
+    first = manager()
+    try:
+        await first.load_all()
+        selected_a = first._selection.read()
+        target_a = first.generation("target@release")
+        assert selected_a is not None and target_a is not None
+        assert target_a.fiber is not None and target_a.fiber.state is FiberState.ACTIVE
+        assert target_a.instance.version == "1"
+        archive_a = target_a.archive_ref
+        assert archive_a is not None
+        descriptor_a = first._archive.read_descriptor(archive_a)
+        assert descriptor_a["source_revision"] == target_a.source_revision
+        assert archive_a in first._selection_components(selected_a)
+    finally:
+        await first.terminate_all()
+
+    distribution_b, report_b = make_distribution("2")
+    bundle_rows = report_b["plugins"]
+    assert isinstance(bundle_rows, list)
+    bundle_b = next(
+        row for row in bundle_rows
+        if isinstance(row, dict) and row.get("name") == "target"
+    )
+    existing = ensure_profile(
+        distribution_b, distribution_b / "profiles/default.json",
+        workspace=workspace, plugins_home=home, config_path=config,
+        receipt_path=receipt_path,
+    )
+    assert existing["status"] == "existing"
+    assert existing["distribution_source_commit"] == report_a["source_commit"]
+    assert receipt_path.read_bytes() == receipt_bytes
+    assert PluginSelection(workspace).read() == selected_a
+
+    second = manager()
+    try:
+        await second.load_all()
+        still_a = second.generation("target@release")
+        assert still_a is not None and still_a.archive_ref == archive_a
+        assert still_a.instance.version == "1"
+        assert second._selection.read() == selected_a
+        root = second.live_root
+        peer = second.generation("peer@release")
+        assert root is not None and peer is not None and peer.fiber is not None
+        peer_fiber = peer.fiber
+        peer_effects = tuple(peer_fiber.effects)
+        peer_context = peer_fiber.context
+        async with peer_context.runtime_scope():
+            peer_state = peer_context.require(ServiceKey("fixture.peer"))
+        assert peer_state == {"started": 1, "closed": 0}
+
+        # This is the online public install path. It does not establish an
+        # offline distribution upgrade command or update the whole fleet.
+        accepted = await second.install(
+            source=str(distribution_b / bundle_b["file"]), marketplace="release",
+            ref_name=str(bundle_b["source_revision"]), sparse_paths=[],
+            update_id="explicit-target-b",
+        )
+        assert accepted.state == "accepted"
+        operation = second._operation
+        assert operation is not None
+        await operation.task
+        active = second.read_update("explicit-target-b")
+        target_b = second.generation("target@release")
+        assert active.state == "active" and target_b is not None
+        assert target_b is not still_a and target_b.fiber is not None
+        assert target_b.fiber.state is FiberState.ACTIVE
+        assert target_b.instance.version == "2"
+        installed_revision = subprocess.run(
+            ["git", "-C", str(target_b.plugin_dir), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        assert installed_revision == bundle_b["source_revision"]
+        assert target_b.archive_ref == active.input_ref == active.archive_ref
+        selected_b = second._selection.read()
+        assert selected_b is not None
+        assert target_b.archive_ref in second._selection_components(selected_b)
+        assert selected_b != selected_a
+        assert second._archive.read_descriptor(selected_b)["previous"] == selected_a
+        descriptor_b = second._archive.read_descriptor(target_b.archive_ref)
+        assert descriptor_b["source_revision"] == target_b.source_revision
+        assert descriptor_b["code"] != descriptor_a["code"]
+        provenance = json.loads((target_b.plugin_dir / ".akashic-source.json").read_text())
+        assert provenance == {"commit": report_b["source_commit"], "path": "plugins/target"}
+        status = second.plugin_status()
+        status_rows = status["plugins"]
+        assert isinstance(status_rows, list)
+        target_status = next(
+            item for item in status_rows
+            if isinstance(item, dict) and item.get("plugin_id") == "target@release"
+        )
+        assert target_status["selected_ref"] == target_b.archive_ref
+        assert target_status["archive_ref"] == target_b.archive_ref
+        assert target_status["fiber_state"] == "active"
+        assert second.live_root is root
+        assert second.generation("peer@release") is peer
+        assert peer.fiber is peer_fiber and tuple(peer_fiber.effects) == peer_effects
+        async with peer_context.runtime_scope():
+            assert peer_context.require(ServiceKey("fixture.peer")) is peer_state
+        assert peer_state == {"started": 1, "closed": 0}
+        archive_b = target_b.archive_ref
+    finally:
+        await second.terminate_all()
+
+    assert peer_state == {"started": 1, "closed": 1}
+    assert receipt_path.read_bytes() == receipt_bytes
+    assert data_file.read_text(encoding="utf-8") == "preserve user data"
+    assert (workspace / "runtime/plugin-archives" / f"{archive_a}.json").is_file()
+
+    third = manager()
+    try:
+        await third.load_all()
+        restored = third.generation("target@release")
+        assert restored is not None and restored.fiber is not None
+        assert restored.fiber.state is FiberState.ACTIVE
+        assert restored.instance.version == "2"
+        assert restored.archive_ref == archive_b
+        assert third._selection.read() == selected_b
+        assert receipt_path.read_bytes() == receipt_bytes
+        assert data_file.read_text(encoding="utf-8") == "preserve user data"
+    finally:
+        await third.terminate_all()
 
 
 def test_host_runtime_cli_defaults_to_distribution(monkeypatch, tmp_path, capsys):
