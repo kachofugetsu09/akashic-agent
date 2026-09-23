@@ -138,6 +138,9 @@ paths = [
   "scripts/plugin_composition_experiment.py",
   "bootstrap/tools.py",
   "tests/test_plugin_*.py",
+  "tests/test_resource_providers.py",
+  "tests/test_workload_borrow.py",
+  "tests/test_workload_boot_cleanup.py",
 ]
 deleted_paths = [
   "agent/tool_hooks/**",
@@ -207,6 +210,18 @@ paths = [
   "skills/develop-akashic-plugin/**",
   "tests/control/**",
   "tests/semantic/test_recursive_plugin_self_validation_contract.py",
+  "tests/semantic/recursive_plugin_fixture.py",
+  "tests/test_programmatic_control.py",
+  "tests/test_message_push_plugin.py",
+  "tests/test_message_markdown_memory.py",
+  "tests/test_upgrade_plugin_selection.py",
+  "tests/test_plugin_retired_activity_recovery.py",
+  "plugins/programmatic/**",
+  "plugins/message_push/**",
+  "plugins/tools/**",
+  "plugins/delivery/**",
+  "plugins/akasha/learning.py",
+  "plugins/markdown_memory/**",
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_runtime_control.py",
 ]

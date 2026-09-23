@@ -40,7 +40,7 @@ def test_catalog_has_no_unmapped_executable_files() -> None:
         "protectedTables": [],
         "retention": "plugin-data survives ordinary uninstall",
         "physicalReductionOwner": "explicit_plugin_data_deletion",
-        "recoveryEvidence": ["candidate_generation", "rollback"],
+        "recoveryEvidence": ["plugin_data_retention", "selected_input_ref"],
         "failureSemantics": ["unit_failed", "cleanup_degraded", "runtime_fatal"],
     }
 

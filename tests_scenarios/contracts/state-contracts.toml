@@ -57,22 +57,37 @@ protected_tables = []
 oracles = ["plugin_generation_contract"]
 retention = "plugin-data survives ordinary uninstall"
 physical_reduction_owner = "explicit_plugin_data_deletion"
-recovery_evidence = ["candidate_generation", "rollback"]
+recovery_evidence = ["plugin_data_retention", "selected_input_ref"]
 failure_semantics = ["unit_failed", "cleanup_degraded", "runtime_fatal"]
 
 [states.plugin_runtime_selection]
 priority = "p0"
 requirements = ["RUN-007", "OUT-004", "PLG-013", "CTRL-003", "TST-001", "TST-002", "TST-003", "TST-005", "TST-006"]
-owner = "plugin.runtime_snapshot_store"
+owner = "plugin.selection"
 normal_change = "metadata_upsert"
 destructive_owner = "protocol_owner"
 writers = ["recursive_plugin_validation", "plugin"]
 consumers = ["recursive_plugin_validation", "control", "runtime"]
-protected_tables = ["reload_transactions", "reload_events"]
+protected_tables = []
 oracles = ["recursive_plugin_self_validation_contract"]
-retention = "stable/latest descriptors survive restart; reload events remain append-only; immutable artifacts remain while referenced by a pointer or lease"
-physical_reduction_owner = "plugin.runtime_snapshot_store"
-recovery_evidence = ["runtime_pointer_snapshot", "reload_journal", "crash_recovery"]
+retention = "PluginSelection 用一次完整 archive refs CAS 替换当前输入；旧 archive 不随运行失败删除。selected 不等于 Fiber ACTIVE，失败不自动回选旧输入；Root/Fiber/Scope 独占运行与清理事实。"
+physical_reduction_owner = "plugin.selection"
+recovery_evidence = ["selected_input_ref", "selected_archive_restart", "cleanup_owner_retry"]
+failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
+
+[states.plugin_reload_journal]
+priority = "p0"
+requirements = ["PLG-013", "TST-001", "TST-002", "TST-003", "TST-005", "TST-006"]
+owner = "plugin.reload_journal"
+normal_change = "append_state_machine"
+destructive_owner = "explicit_user_data_management"
+writers = ["plugin"]
+consumers = ["recursive_plugin_validation", "plugin", "runtime"]
+protected_tables = ["reload_transactions", "reload_events", "plugin_updates"]
+oracles = ["recursive_plugin_self_validation_contract"]
+retention = "历史事务、追加事件和安装行由 ReloadJournal 保留与解码；阶段和清理回执只能沿既有 owner 更新。普通重构、预检和安装无物理删除权；预检读取 DB/WAL/SHM 副本并证明源字节不变。"
+physical_reduction_owner = "explicit_user_data_management"
+recovery_evidence = ["journal_preflight_write_set", "journal_backup_readback", "armed_install_rejection", "legacy_cleanup_receipt"]
 failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
 
 [states.mobile_receipts]

@@ -112,24 +112,6 @@ def assert_snapshot_fields(
         )
 
 
-def assert_atomic_generation_switch(
-    observations: Sequence[tuple[str, str]],
-    *,
-    previous_generation: str,
-    next_generation: str,
-) -> None:
-    """断言候选准备期间旧 generation 始终可见，提交后才原子切换。"""
-    expected = [
-        ("before", previous_generation),
-        ("candidate_ready", previous_generation),
-        ("committed", next_generation),
-    ]
-    if list(observations) != expected:
-        raise AssertionError(
-            f"plugin generation 未原子发布: expected={expected!r}, actual={list(observations)!r}"
-        )
-
-
 def assert_recursive_plugin_self_validation(observation: Mapping[str, object]) -> None:
     """Check one real selection, message, tool, and delivery observation."""
 
@@ -209,24 +191,6 @@ def assert_recursive_plugin_self_validation(observation: Mapping[str, object]) -
         raise AssertionError("MessagePush Delivery 与目标 Output 身份不一致")
     if push["repeat_same_receipt"] is not True or push["send_count"] != 1:
         raise AssertionError("MessagePush 重试重复发送或更换工具回执")
-
-
-def assert_plugin_drain_finality(
-    *,
-    status: str,
-    old_generation_lease_count: int,
-    old_scope_closed: bool,
-    cache_exists: bool,
-) -> None:
-    """断言 uninstall completed 只表示旧代和代码均已真实排空。"""
-    if status == "completed" and (
-        old_generation_lease_count != 0 or not old_scope_closed or cache_exists
-    ):
-        raise AssertionError(
-            "插件卸载假报完成: "
-            f"leases={old_generation_lease_count}, "
-            f"scope_closed={old_scope_closed}, cache_exists={cache_exists}"
-        )
 
 
 def assert_isolated_gate_paths(

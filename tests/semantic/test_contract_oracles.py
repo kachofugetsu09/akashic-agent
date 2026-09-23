@@ -7,11 +7,9 @@ import pytest
 
 from tests_scenarios.contracts.oracles import assert_call_finality
 from tests_scenarios.contracts.oracles import (
-    assert_atomic_generation_switch,
     assert_committed_turn_finality,
     assert_isolated_gate_paths,
     assert_paths_retained,
-    assert_plugin_drain_finality,
     assert_process_resources_released,
     assert_rows_unchanged,
     assert_unconfirmed_cleanup_retains_ownership,
@@ -91,31 +89,6 @@ def test_cleanup_ownership_oracle_rejects_forgetful_mutant() -> None:
         assert_unconfirmed_cleanup_retains_ownership(
             cleanup_confirmed=False,
             tracked_execution_ids=[],
-        )
-
-
-def test_plugin_publication_oracle_rejects_early_switch_mutant() -> None:
-    observations = [
-        ("before", "generation-1"),
-        ("candidate_ready", "generation-2"),
-        ("committed", "generation-2"),
-    ]
-
-    with pytest.raises(AssertionError, match="未原子发布"):
-        assert_atomic_generation_switch(
-            observations,
-            previous_generation="generation-1",
-            next_generation="generation-2",
-        )
-
-
-def test_plugin_drain_oracle_rejects_active_only_completion_mutant() -> None:
-    with pytest.raises(AssertionError, match="插件卸载假报完成"):
-        assert_plugin_drain_finality(
-            status="completed",
-            old_generation_lease_count=1,
-            old_scope_closed=False,
-            cache_exists=True,
         )
 
 
