@@ -1326,18 +1326,6 @@ class PluginManager:
     async def prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
         raise RuntimeError("候选发布入口已停用；local Loader 只允许 live Root 更新")
 
-    async def _prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
-        if self._ready_candidate is not None:
-            raise RuntimeError(
-                f"已有 latest 等待 promote/discard: {self._ready_candidate.plugin_id}"
-            )
-        await self._discard_prepared(plugin_id)
-        for mod in self.discover(installed_selector="latest"):
-            if _resolve_plugin_id(mod) == plugin_id:
-                generation = await self._load_one(mod, activate=False)
-                return generation
-        raise KeyError(f"插件不存在: {plugin_id}")
-
     async def discard_prepared(
         self, plugin_id: str, *, error: str = "candidate discarded",
     ) -> None:
@@ -1711,107 +1699,6 @@ class PluginManager:
             if not accepted.done():
                 accepted.set_exception(error if isinstance(error, Exception) else RuntimeError(str(error)))
             raise
-
-    async def _install_candidate(
-        self,
-        *,
-        source: str,
-        marketplace: str,
-        ref_name: str,
-        sparse_paths: list[str],
-        update_id: str | None = None,
-    ) -> tuple[PluginInstallResult, dict[str, object]]:
-        """只安装并准备本次目标的 latest；正式切换仍需独立发布授权。"""
-
-        # 1. 操作 owner 已取得，写 cache 前拒绝未决候选。
-        if update_id is not None:
-            try:
-                previous_update = self._reload_journal.update(update_id)
-            except KeyError:
-                previous_update = None
-            if previous_update is not None:
-                raise RuntimeError("已有更新请求只能查询，不能重跑安装")
-        self._check_operation_commit()
-        status = self.candidate_status()
-        if status["candidate_state"] in {
-            "preparing",
-            "prepared",
-            "validating",
-            "commit_started",
-            "latest_ready",
-            "discarding",
-            "promoting",
-        }:
-            raise RuntimeError(
-                "已有插件候选等待处理: "
-                f"plugin={status['candidate_plugin_id']} "
-                f"phase={status['candidate_state']} "
-                f"tx={status['candidate_reload_tx_id']}"
-            )
-
-        # 2. 线程结束前一直持有操作与目录；取消不能把线程留给下一次更新。
-        result, install_cancelled = await _complete_critical(
-            asyncio.to_thread(
-                install_git_plugin,
-                workspace=self._workspace,
-                source=source,
-                marketplace=marketplace,
-                ref_name=ref_name,
-                sparse_paths=sparse_paths,
-                plugins_home=self.installed_plugins_home,
-                stage_candidate=True,
-                update_id=update_id,
-            )
-        )
-        publication_before = self._publication
-        plugin_id = f"{result.plugin_name}@{result.marketplace}"
-        try:
-            if install_cancelled:
-                raise asyncio.CancelledError
-            self._check_operation_commit()
-            if self._reload_journal.update(result.update_id).phase == "committed":
-                # 安装器已确认同一制品，不另建无法关联该请求的候选。
-                self._notify_updates()
-                return result, self.candidate_status()
-            # 本次安装只准备自己的目标；不顺手更新其他源码或切换正式 Root。
-            generation = await self._prepare_candidate(plugin_id)
-            if generation is None:
-                raise RuntimeError(f"安装目标未进入候选: {plugin_id}")
-            await self._publish_prepared(plugin_id, candidate_only=True)
-        except BaseException:
-            if self._publication is not publication_before and self._publication is not None:
-                if self._publication.must_retain:
-                    self._hold_selection_publication(self._publication)
-                    raise
-            self._reload_journal.rollback_updates(
-                self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
-            )
-            raise
-        status = self.candidate_status()
-        self._check_operation_commit()
-        if result.staged_candidate and (
-            status["candidate_plugin_id"] != plugin_id
-            or status["candidate_state"] != "latest_ready"
-        ):
-            if self._publication is not publication_before and self._publication is not None:
-                if self._publication.must_retain:
-                    self._hold_selection_publication(self._publication)
-                    raise RuntimeError("运行选择已提交或不确定，安装状态需显式结算")
-            self._reload_journal.rollback_updates(
-                self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
-            )
-            raise RuntimeError(
-                "插件候选未进入 latest_ready: "
-                f"requestedPlugin={plugin_id} "
-                f"installedGitRevision={result.source_revision} "
-                f"actualPlugin={status['candidate_plugin_id']} "
-                f"actualRuntimeRevision={status['candidate_source_revision']} "
-                f"phase={status['candidate_state']} "
-                f"tx={status['candidate_reload_tx_id']} "
-                f"error={status['candidate_error']}"
-            )
-        self._notify_updates()
-        return result, status
 
     def read_update(self, update_id: str) -> UpdateStatus:
         """Project durable input, exact selection, and the live generation state."""
@@ -3299,12 +3186,6 @@ class PluginManager:
             raise RuntimeError(f"latest 属于其他插件: {ready.plugin_id}")
         return ready
 
-    async def _publish_prepared(
-        self, plugin_id: str, *, candidate_only: bool = False,
-    ) -> dict[str, object]:
-        """Reject the retired candidate publication owner."""
-        raise RuntimeError("候选发布入口已停用；没有第二张 generation registry")
-
     async def _post_publish_invariants(
         self,
         generation: PluginGeneration,
@@ -3463,80 +3344,6 @@ class PluginManager:
             ),
             "publication_state": publication_state,
         }
-
-    async def _prepare_changed(
-        self,
-        *,
-        discovered: dict[str, dict[str, str]],
-        plugin_ids: set[str] | None = None,
-        force_reprepare: bool = False,
-    ) -> list[dict[str, object]]:
-        results: list[dict[str, object]] = []
-        for plugin_id, active in tuple(self._active_generations.items()):
-            if plugin_ids is not None and plugin_id not in plugin_ids:
-                continue
-            mod = discovered.get(plugin_id)
-            if mod is None:
-                continue
-            plugin_dir = Path(mod["plugin_root"])
-            source_revision = _source_revision(plugin_dir)
-            _, config_revision = load_config(
-                _resolve_plugin_data_dir(mod["name"], mod, self._workspace)
-            )
-            current_prepared = None
-            if force_reprepare and current_prepared is not None:
-                await self._discard_prepared(plugin_id)
-                current_prepared = None
-            matches_active = (
-                source_revision == active.source_revision
-                and config_revision == active.config_revision
-            )
-            if matches_active:
-                if current_prepared is None:
-                    continue
-                await self._discard_prepared(plugin_id)
-                result = {
-                    "plugin_id": plugin_id,
-                    "active_generation": active.generation_id,
-                    "prepared_generation": None,
-                    "preparation_state": "active",
-                    "candidate_revision": source_revision,
-                    "snapshot_id": (
-                        self.current_snapshot.snapshot_id
-                        if self.current_snapshot is not None
-                        else None
-                    ),
-                }
-                results.append(result)
-                _log_candidate_status(result)
-                continue
-            if (
-                current_prepared is not None
-                and source_revision == current_prepared.source_revision
-                and config_revision == current_prepared.config_revision
-            ):
-                continue
-            await self._discard_prepared(plugin_id)
-            prepared = await self._load_one(mod, activate=False)
-            result: dict[str, object] = {
-                "plugin_id": plugin_id,
-                "active_generation": active.generation_id,
-                "prepared_generation": (
-                    prepared.generation_id if prepared is not None else None
-                ),
-                "preparation_state": "prepared" if prepared is not None else "failed",
-                "candidate_revision": (
-                    prepared.source_revision if prepared is not None else source_revision
-                ),
-                "snapshot_id": (
-                    self.current_snapshot.snapshot_id
-                    if self.current_snapshot is not None
-                    else None
-                ),
-            }
-            results.append(result)
-            _log_candidate_status(result)
-        return results
 
     async def _load_one(
         self,
@@ -4758,19 +4565,3 @@ def _path_metadata(path: Path) -> bytes:
     except FileNotFoundError:
         return f"{path}:missing".encode()
     return f"{path}:{stat.st_mtime_ns}:{stat.st_size}".encode()
-
-
-def _log_candidate_status(result: dict[str, object]) -> None:
-    logger.info(
-        "plugin_candidate_status plugin=%s preparation=%s active=%s prepared=%s "
-        "revision=%s",
-        result["plugin_id"],
-        result["preparation_state"],
-        result["active_generation"],
-        result["prepared_generation"] or "-",
-        str(result["candidate_revision"])[:12],
-    )
-    logger.debug(
-        "plugin_candidate_status_detail %s",
-        json.dumps(result, ensure_ascii=False, sort_keys=True),
-    )
