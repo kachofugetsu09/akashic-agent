@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import sqlite3
+import stat
+import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -148,6 +152,53 @@ class ReloadRecoveryAction:
     candidate_artifact_pointer: str | None = None
     recovery_target: RecoveryTarget | None = None
 
+
+@dataclass(frozen=True)
+class JournalPreflight:
+    """Existing journal facts and the one WAL-aware backup source."""
+
+    pending_recovery: tuple[ReloadRecoveryAction, ...]
+    armed_updates: tuple[update_rollback.UpdateRollback, ...]
+    _copy: sqlite3.Connection
+
+    def backup_to(self, path: Path) -> None:
+        """Save the checked snapshot without opening the live journal in SQLite."""
+        saved = sqlite3.connect(path)
+        try:
+            self._copy.backup(saved)
+            if saved.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise RuntimeError("reload journal 备份完整性检查失败")
+        finally:
+            saved.close()
+
+
+def _journal_bytes(path: Path) -> tuple[bytes, tuple[int, int, int]]:
+    """Read an existing regular file without following a replacement link."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"journal 路径必须是普通文件: {path}")
+        with os.fdopen(os.dup(fd), "rb") as stream:
+            content = stream.read()
+        if len(content) != info.st_size:
+            raise RuntimeError(f"journal 在读取期间变化: {path}")
+        return content, (info.st_dev, info.st_ino, info.st_size)
+    finally:
+        os.close(fd)
+
+
+def _check_journal_source(
+    paths: tuple[Path, ...], original: dict[Path, tuple[bytes, tuple[int, int, int]]],
+) -> None:
+    """Reject a changed source or sidecar set while its snapshot is in use."""
+    if {path for path in paths if path.exists() or path.is_symlink()} != set(original):
+        raise RuntimeError("journal sidecar 在读取期间变化")
+    for path, (content, identity) in original.items():
+        observed, current_identity = _journal_bytes(path)
+        if current_identity != identity or hashlib.sha256(observed).digest() != hashlib.sha256(content).digest():
+            raise RuntimeError(f"journal 在读取期间变化: {path}")
+
 class ReloadJournal:
     """Persist plugin reload phases and expose deterministic crash recovery work."""
 
@@ -159,6 +210,49 @@ class ReloadJournal:
             self._initialize()
         else:
             self._check_existing_schema()
+
+    @classmethod
+    @contextmanager
+    def inspect_existing(cls, workspace: Path) -> Iterator[JournalPreflight]:
+        """Read one existing DB/WAL/SHM snapshot without SQLite opening the source."""
+        if workspace.is_symlink() or not workspace.is_dir():
+            raise ValueError(f"journal workspace 目录无效: {workspace}")
+        runtime = workspace / "runtime"
+        if runtime.is_symlink() or not runtime.is_dir():
+            raise ValueError(f"journal runtime 目录无效: {runtime}")
+        source = runtime / "plugin-reloads.sqlite3"
+        rollback_sidecar = runtime / "plugin-reloads.sqlite3-journal"
+        if rollback_sidecar.exists() or rollback_sidecar.is_symlink():
+            raise RuntimeError("journal 存在未结算 rollback sidecar")
+        sources = (source, Path(f"{source}-wal"), Path(f"{source}-shm"))
+        original: dict[Path, tuple[bytes, tuple[int, int, int]]] = {}
+        for path in sources:
+            if path == source or path.exists() or path.is_symlink():
+                original[path] = _journal_bytes(path)
+        with tempfile.TemporaryDirectory(prefix="akashic-journal-preflight-") as directory:
+            copy = Path(directory) / source.name
+            if Path(directory).resolve().is_relative_to(workspace.resolve()):
+                raise ValueError("journal 临时副本不能位于 workspace 内")
+            for path, (content, _) in original.items():
+                (Path(directory) / path.name).write_bytes(content)
+            _check_journal_source(sources, original)
+            conn = sqlite3.connect(copy)
+            try:
+                conn.execute("PRAGMA query_only=ON")
+                cls._check_schema(conn)
+                if conn.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                    raise RuntimeError("reload journal 内容损坏")
+                pending = cls._pending_recovery(conn)
+                armed = tuple(
+                    update_rollback.read(conn, str(row[0]))
+                    for row in conn.execute(
+                        "SELECT update_id FROM plugin_updates WHERE phase='armed' ORDER BY update_id"
+                    )
+                )
+                yield JournalPreflight(pending, armed, conn)
+            finally:
+                conn.close()
+                _check_journal_source(sources, original)
 
     def arm_update(
         self, *, update_id: str, plugin_id: str, plugin_base: Path,
@@ -674,9 +768,13 @@ class ReloadJournal:
             self._append_event(conn, tx_id, phase, details_for_event, now)
 
     def pending_recovery(self) -> tuple[ReloadRecoveryAction, ...]:
-        placeholders = ", ".join("?" for _ in _TERMINAL_PHASES)
         with self._connect() as conn:
-            rows = conn.execute(
+            return self._pending_recovery(conn)
+
+    @staticmethod
+    def _pending_recovery(conn: sqlite3.Connection) -> tuple[ReloadRecoveryAction, ...]:
+        placeholders = ", ".join("?" for _ in _TERMINAL_PHASES)
+        rows = conn.execute(
                 f"""
                 SELECT tx_id, plugin_id, base_snapshot_id, candidate_snapshot_id,
                        base_generation_id, generation_id, source_revision, phase,
@@ -822,52 +920,68 @@ class ReloadJournal:
         uri = f"file:{self.path.as_posix()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
         try:
-            try:
-                shape = update_rollback.plugin_update_schema_state(conn)
-            except ValueError as error:
-                raise RuntimeError(f"runtime/plugin-reloads.sqlite3 schema 无法识别: {error}") from error
-            if shape == "old":
-                raise RuntimeError(
-                    "runtime/plugin-reloads.sqlite3 使用旧 plugin_updates schema；"
-                    "请先执行 Core migration，不会由普通启动自动迁移"
-                )
-            if shape == "missing":
-                raise RuntimeError(
-                    "runtime/plugin-reloads.sqlite3 缺少 plugin_updates；"
-                    "不会由普通启动补造历史表"
-                )
-            required = {
-                "reload_transactions": {
-                    "tx_id", "plugin_id", "base_snapshot_id", "candidate_snapshot_id",
-                    "base_generation_id", "generation_id", "source_revision", "config_revision",
-                    "phase", "started_at", "updated_at", "error", "formal_effects_json",
-                    "failure_resource", "recovery_action", "attempt_count",
-                    "runtime_owner_boot_id", "base_artifact_pointer", "candidate_artifact_pointer",
-                    "recovery_target",
-                },
-                "reload_events": {"sequence", "tx_id", "phase", "details_json", "created_at"},
-            }
-            for table, columns in required.items():
-                actual = {
-                    str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
-                }
-                if actual != columns:
-                    raise RuntimeError(
-                        f"runtime/plugin-reloads.sqlite3 缺少或包含未知 {table} 列；"
-                        "请先执行对应 Core migration"
-                    )
-            indexes = {
-                str(row[1]) for row in conn.execute("PRAGMA index_list(reload_transactions)")
-            }
-            event_indexes = {
-                str(row[1]) for row in conn.execute("PRAGMA index_list(reload_events)")
-            }
-            if "idx_reload_transactions_phase" not in indexes or "idx_reload_events_tx" not in event_indexes:
-                raise RuntimeError(
-                    "runtime/plugin-reloads.sqlite3 缺少当前索引；请先执行 Core migration"
-                )
+            self._check_schema(conn)
         finally:
             conn.close()
+
+    @staticmethod
+    def _check_schema(conn: sqlite3.Connection) -> None:
+        """Check the current schema on a caller-owned connection."""
+        try:
+            shape = update_rollback.plugin_update_schema_state(conn)
+        except ValueError as error:
+            raise RuntimeError(f"runtime/plugin-reloads.sqlite3 schema 无法识别: {error}") from error
+        if shape == "old":
+            raise RuntimeError(
+                "runtime/plugin-reloads.sqlite3 使用旧 plugin_updates schema；"
+                "请先执行 Core migration，不会由普通启动自动迁移"
+            )
+        if shape == "missing":
+            raise RuntimeError(
+                "runtime/plugin-reloads.sqlite3 缺少 plugin_updates；"
+                "不会由普通启动补造历史表"
+            )
+        required = {
+            "reload_transactions": {
+                "tx_id", "plugin_id", "base_snapshot_id", "candidate_snapshot_id",
+                "base_generation_id", "generation_id", "source_revision", "config_revision",
+                "phase", "started_at", "updated_at", "error", "formal_effects_json",
+                "failure_resource", "recovery_action", "attempt_count",
+                "runtime_owner_boot_id", "base_artifact_pointer", "candidate_artifact_pointer",
+                "recovery_target",
+            },
+            "reload_events": {"sequence", "tx_id", "phase", "details_json", "created_at"},
+        }
+        for table, columns in required.items():
+            actual = {
+                str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
+            }
+            if actual != columns:
+                raise RuntimeError(
+                    f"runtime/plugin-reloads.sqlite3 缺少或包含未知 {table} 列；"
+                    "请先执行对应 Core migration"
+                )
+        indexes = {
+            str(row[1]) for row in conn.execute("PRAGMA index_list(reload_transactions)")
+        }
+        event_indexes = {
+            str(row[1]) for row in conn.execute("PRAGMA index_list(reload_events)")
+        }
+        if "idx_reload_transactions_phase" not in indexes or "idx_reload_events_tx" not in event_indexes:
+            raise RuntimeError(
+                "runtime/plugin-reloads.sqlite3 缺少当前索引；请先执行 Core migration"
+            )
+        valid_phases = tuple(sorted(_TRANSITIONS.keys() | _TERMINAL_PHASES))
+        if conn.execute(
+            "SELECT 1 FROM reload_transactions WHERE phase NOT IN ("
+            + ",".join("?" for _ in valid_phases) + ") LIMIT 1",
+            valid_phases,
+        ).fetchone() is not None:
+            raise RuntimeError("runtime/plugin-reloads.sqlite3 含未知 reload phase")
+        if conn.execute(
+            "SELECT 1 FROM plugin_updates WHERE phase NOT IN ('armed','committed','rolled_back') LIMIT 1"
+        ).fetchone() is not None:
+            raise RuntimeError("runtime/plugin-reloads.sqlite3 含未知 install phase")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

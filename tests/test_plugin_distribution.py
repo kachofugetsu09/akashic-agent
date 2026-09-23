@@ -1,10 +1,13 @@
 """发布制品只能含选定宿主路径与各插件自己的源码。"""
 import io
 import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 import subprocess
 import sys
 import tarfile
+from typing import Any
 
 import pytest
 import yaml
@@ -18,7 +21,13 @@ from agent.plugins.install import (
 )
 from agent.plugins.manifest import load_plugin_manifest
 from agent.plugins.manager import PluginManager
-from agent.plugins.selection import PluginSelection
+from agent.plugins.selection import PluginSelection, SelectionConflictError, SelectionWriteError
+from agent.plugins.artifacts import ArtifactPointer
+from agent.plugin_composition.archive import PluginArchive
+from agent.plugins.input_preparation import prepare_plugin_input
+from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.static_manifest import PluginSourceCompileError, load_static_plugin_manifest
+from bootstrap.workspace_lock import WorkspaceMaintenanceLock
 from bus.event_bus import EventBus
 import scripts.build_host_runtime_release as host_runtime_release
 from scripts.build_host_runtime_release import _create_context
@@ -35,6 +44,8 @@ from scripts.install_plugin_distribution import (
     extract_core,
     install_profile,
     verify_distribution,
+    adopt_bundled_distribution,
+    main as distribution_main,
 )
 
 
@@ -648,6 +659,426 @@ async def test_new_distribution_keeps_selected_archive_until_public_install(tmp_
         assert data_file.read_text(encoding="utf-8") == "preserve user data"
     finally:
         await third.terminate_all()
+
+
+def _offline_case(tmp_path: Path) -> dict[str, Any]:
+    """Build one real two-plugin distribution and its first selected Root."""
+    source = tmp_path / "source"
+    for name in ("peer", "target"):
+        (source / "plugins" / name).mkdir(parents=True)
+    profile = source / "docker/host-runtime/profiles/default.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(json.dumps({
+        "schema_version": 1, "name": "fixture", "marketplace": "release",
+        "initialization": {"plugin_configs": []},
+        "plugins": [
+            {"name": "peer", "depends_on": [], "reason": "retained peer"},
+            {"name": "target", "depends_on": [], "reason": "versioned target"},
+        ],
+    }))
+    (profile.parent.parent / "Dockerfile.distribution").write_text("FROM scratch\n")
+    (profile.parent.parent / "distribution-entrypoint.sh").write_text("#!/bin/sh\n")
+    (source / "config.example.toml").write_text("[runtime]\n")
+    config = tmp_path / "config.toml"
+    config.write_text("[runtime]\n")
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    case: dict[str, Any] = {"source": source, "workspace": tmp_path / "workspace", "home": tmp_path / "home",
+            "config": config, "receipt": tmp_path / "workspace/runtime/distribution-install.json"}
+    first, _ = _offline_release(case, "1")
+    installed = install_profile(first, first / "profiles/default.json", workspace=case["workspace"],
+                                plugins_home=case["home"], config_path=config)
+    _write_receipt(case["receipt"], installed)
+    selection = PluginSelection(case["workspace"])
+    selection.initialize()
+    archive = PluginArchive(case["workspace"] / "runtime/plugin-archives")
+    refs = []
+    for item in installed["installed"]:
+        root = Path(item["installed_path"])
+        identity = load_static_plugin_manifest(root)
+        prepared = prepare_plugin_input({
+            "name": item["name"], "marketplace": "release", "plugin_root": str(root),
+            "module_path": str(root / "plugin.py"), "manifest_digest": identity.identity_digest,
+            "source_type": "installed",
+        }, workspace=case["workspace"], archive=archive)
+        refs.append(prepared.archive_ref)
+    case["root"] = selection.commit(tuple(refs), expected_ref=None)
+    return case
+
+
+def _offline_release(case: dict[str, Any], version: str) -> tuple[Path, dict[str, object]]:
+    source = case["source"]
+    for name in ("peer", "target"):
+        content = (
+            "api_version = 3\n" + f"name = {name!r}\nversion = {version!r}\n"
+            "async def apply(ctx):\n    return None\n"
+        )
+        compile(content, f"{name}/plugin.py", "exec")
+        (source / "plugins" / name / "plugin.py").write_text(content)
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True, capture_output=True)
+    subprocess.run([
+        "git", "-C", str(source), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null",
+        "commit", "-m", f"version {version}",
+    ], check=True, capture_output=True)
+    output = source.parent / f"distribution-{version}"
+    return output, build(source, "HEAD", output)
+
+
+def _adopt(case: dict[str, Any], distribution: Path, expected: str, suffix: str) -> dict[str, Any]:
+    return adopt_bundled_distribution(
+        distribution=distribution, profile=distribution / "profiles/default.json",
+        workspace=case["workspace"], plugins_home=case["home"], config_path=case["config"],
+        receipt_path=case["receipt"], backup_dir=case["source"].parent / f"backup-{suffix}",
+        expected_root_ref=expected,
+    )
+
+
+def _selection_refs(selection: PluginSelection, root_ref: str) -> tuple[str, ...]:
+    """Read string refs from the archive's generic JSON descriptor."""
+    components = selection.archive.read_descriptor(root_ref)["components"]
+    assert isinstance(components, tuple)
+    refs: list[str] = []
+    for ref in components:
+        assert isinstance(ref, str)
+        refs.append(ref)
+    return tuple(refs)
+
+
+@pytest.mark.asyncio
+async def test_adopt_bundled_distribution_selects_once_and_boots_exact_input(tmp_path):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    receipt = case["receipt"].read_bytes()
+    old_selection_bytes = PluginSelection(case["workspace"]).path.read_bytes()
+    selected = _adopt(case, release_b, case["root"], "b")
+    assert selected["status"] == "selected_not_started"
+    assert selected["new_root_ref"] != case["root"]
+    assert PluginSelection(case["workspace"]).read() == selected["new_root_ref"]
+    assert (tmp_path / "backup-b/workspace/runtime/plugin-stable.json").read_bytes() == old_selection_bytes
+    assert (tmp_path / "backup-b/workspace/runtime/plugin-reloads.sqlite3").is_file()
+    recovery = json.loads((tmp_path / "backup-b/recovery.json").read_text())
+    assert set(recovery["bundle_sha256"]) == {"peer@release", "target@release"}
+    assert case["receipt"].read_bytes() == receipt
+    assert _adopt(case, release_b, selected["new_root_ref"], "repeat")["status"] == "already_selected_not_started"
+    assert not (tmp_path / "backup-repeat").exists()
+    owner = PluginManager([], event_bus=EventBus(), workspace=case["workspace"],
+                          installed_cache_root=case["home"] / "cache")
+    try:
+        await owner.load_all()
+        assert owner.generation("target@release").instance.version == "2"
+        assert owner.generation("peer@release").instance.version == "2"
+    finally:
+        await owner.terminate_all()
+    release_c, _ = _offline_release(case, "3")
+    next_result = _adopt(case, release_c, selected["new_root_ref"], "c")
+    assert next_result["status"] == "selected_not_started"
+    assert next_result["new_root_ref"] != selected["new_root_ref"]
+    assert case["receipt"].read_bytes() == receipt
+
+
+def test_adopt_bundled_distribution_reruns_committed_install_after_prepare_failure(tmp_path, monkeypatch):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    import scripts.install_plugin_distribution as offline
+    original = offline.prepare_plugin_input
+
+    def fail_target(mod, *, workspace, archive):
+        if mod["name"] == "target":
+            raise SyntaxError("injected after formal install")
+        return original(mod, workspace=workspace, archive=archive)
+
+    monkeypatch.setattr(offline, "prepare_plugin_input", fail_target)
+    with pytest.raises(SyntaxError, match="injected"):
+        _adopt(case, release_b, case["root"], "failed")
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    assert (tmp_path / "backup-failed/recovery.json").is_file()
+    with closing(sqlite3.connect(case["workspace"] / "runtime/plugin-reloads.sqlite3")) as conn:
+        old_ids = {row[0] for row in conn.execute(
+            "SELECT update_id FROM plugin_updates WHERE plugin_id IN ('peer@release','target@release')"
+        )}
+        assert conn.execute(
+            "SELECT count(*) FROM plugin_updates WHERE plugin_id='target@release' "
+            "AND phase='committed' AND input_ref IS NULL"
+        ).fetchone()[0] >= 1
+    monkeypatch.setattr(offline, "prepare_plugin_input", original)
+    result = _adopt(case, release_b, case["root"], "retry")
+    assert result["status"] == "selected_not_started"
+    assert {item["mode"] for item in result["changed"]} == {"resume_install_B"}
+    assert PluginSelection(case["workspace"]).read() == result["new_root_ref"]
+    with closing(sqlite3.connect(case["workspace"] / "runtime/plugin-reloads.sqlite3")) as conn:
+        new_ids = {row[0] for row in conn.execute(
+            "SELECT update_id FROM plugin_updates WHERE plugin_id IN ('peer@release','target@release')"
+        )}
+    assert old_ids < new_ids
+
+
+def test_adopt_bundled_distribution_keeps_a_after_real_secondary_source_compile_error(tmp_path):
+    case = _offline_case(tmp_path)
+    broken = "def bad(:\n"
+    with pytest.raises(SyntaxError):
+        compile(broken, "target/helper.py", "exec")
+    (case["source"] / "plugins/target/helper.py").write_text(broken)
+    release_b, _ = _offline_release(case, "2")
+    with pytest.raises(PluginSourceCompileError):
+        _adopt(case, release_b, case["root"], "compile")
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    assert (tmp_path / "backup-compile/recovery.json").is_file()
+    with closing(sqlite3.connect(case["workspace"] / "runtime/plugin-reloads.sqlite3")) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM plugin_updates WHERE plugin_id='target@release' "
+            "AND phase='committed' AND input_ref IS NULL"
+        ).fetchone()[0] >= 1
+
+
+def test_adopt_bundled_distribution_rejects_bad_pointer_before_backup(tmp_path):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    pointer = case["home"] / "cache/release/target/.pointers.json"
+    pointer.write_text("broken")
+    with pytest.raises((ValueError, RuntimeError)):
+        _adopt(case, release_b, case["root"], "bad")
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    assert not (tmp_path / "backup-bad").exists()
+
+
+@pytest.mark.parametrize("damage", ["provenance", "archive", "manifest"])
+def test_adopt_bundled_distribution_rejects_damaged_identity_before_backup(tmp_path, damage):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    if damage == "provenance":
+        pointer = json.loads((case["home"] / "cache/release/target/.pointers.json").read_text())
+        artifact = case["home"] / "cache/release/target" / pointer["stable"]
+        (artifact / ".akashic-source.json").write_text("broken")
+    elif damage == "archive":
+        selection = PluginSelection(case["workspace"])
+        refs = _selection_refs(selection, case["root"])
+        target = next(ref for ref in refs if selection.archive.read_descriptor(ref)["plugin_id"] == "target@release")
+        (selection.archive.path / f"{target}.json").write_text("broken")
+    else:
+        (case["home"] / "manifest.toml").write_text("broken")
+    with pytest.raises((ValueError, RuntimeError)):
+        _adopt(case, release_b, case["root"], damage)
+    assert not (tmp_path / f"backup-{damage}").exists()
+
+
+def test_adopt_bundled_distribution_rejects_pending_reload_and_armed_install(tmp_path):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    journal = ReloadJournal(case["workspace"])
+    journal.arm_update(update_id="pending-b2", plugin_id="target@release",
+                       plugin_base=case["home"] / "cache/release/target", previous=None,
+                       candidate=ArtifactPointer(".artifacts/new"),
+                       previous_enabled=True)
+    with pytest.raises(RuntimeError, match="armed install"):
+        _adopt(case, release_b, case["root"], "armed")
+    assert not (tmp_path / "backup-armed").exists()
+
+
+def test_adopt_bundled_distribution_rejects_pending_reload_before_backup(tmp_path):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    journal = ReloadJournal(case["workspace"])
+    journal.begin(plugin_id="target@release", base_snapshot_id="base", generation_id="next",
+                  source_revision="source", config_revision="config")
+    with pytest.raises(RuntimeError, match="pending reload"):
+        _adopt(case, release_b, case["root"], "pending")
+    assert not (tmp_path / "backup-pending").exists()
+
+
+@pytest.mark.parametrize("outcome", ["conflict", "uncertain"])
+def test_adopt_bundled_distribution_preserves_prepared_install_after_cas_failure(tmp_path, monkeypatch, outcome):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    original = PluginSelection.commit
+
+    def fail_commit(self, components, *, expected_ref):
+        if outcome == "conflict":
+            raise SelectionConflictError("injected conflict")
+        raise SelectionWriteError(operation="commit", target_ref=None, outcome="uncertain",
+                                  observed_ref=None, observation_error=RuntimeError("injected"))
+
+    monkeypatch.setattr(PluginSelection, "commit", fail_commit)
+    with pytest.raises(SelectionConflictError if outcome == "conflict" else SelectionWriteError):
+        _adopt(case, release_b, case["root"], outcome)
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    with closing(sqlite3.connect(case["workspace"] / "runtime/plugin-reloads.sqlite3")) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM plugin_updates WHERE phase='committed' AND input_ref IS NOT NULL"
+        ).fetchone()[0] >= 2
+    monkeypatch.setattr(PluginSelection, "commit", original)
+    result = _adopt(case, release_b, case["root"], f"retry-{outcome}")
+    assert result["status"] == "selected_not_started"
+    assert {item["mode"] for item in result["changed"]} == {"resume_install_B"}
+
+
+def test_adopt_bundled_distribution_keeps_external_and_reports_partial(tmp_path, monkeypatch, capsys):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    external = tmp_path / "external-target"
+    external.mkdir()
+    source_text = (
+        "api_version = 3\nname = 'target'\nversion = 'external'\n"
+        "async def apply(ctx):\n    return None\n"
+    )
+    compile(source_text, "external-target/plugin.py", "exec")
+    (external / "plugin.py").write_text(source_text)
+    subprocess.run(["git", "init", str(external)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(external), "add", "."], check=True, capture_output=True)
+    subprocess.run([
+        "git", "-C", str(external), "-c", "user.name=Test", "-c",
+        "user.email=test@example.invalid", "-c", "commit.gpgSign=false",
+        "-c", "core.hooksPath=/dev/null", "commit", "-m", "external",
+    ], check=True, capture_output=True)
+    installed = install_git_plugin(workspace=case["workspace"], plugins_home=case["home"],
+                                   source=str(external), marketplace="release")
+    identity = load_static_plugin_manifest(installed.installed_path)
+    prepared = prepare_plugin_input({
+        "name": "target", "marketplace": "release", "plugin_root": str(installed.installed_path),
+        "module_path": str(installed.installed_path / "plugin.py"),
+        "manifest_digest": identity.identity_digest, "source_type": "installed",
+    }, workspace=case["workspace"], archive=PluginArchive(case["workspace"] / "runtime/plugin-archives"))
+    selection = PluginSelection(case["workspace"])
+    original = _selection_refs(selection, case["root"])
+    external_root = selection.commit(tuple(
+        prepared.archive_ref if selection.archive.read_descriptor(ref)["plugin_id"] == "target@release" else ref
+        for ref in original
+    ), expected_ref=case["root"])
+    result = _adopt(case, release_b, external_root, "partial")
+    assert result["status"] == "partial_selected_not_started"
+    assert result["skipped_external"] == ["target@release"]
+    assert [item["plugin_id"] for item in result["changed"]] == ["peer@release"]
+    selected = _selection_refs(selection, result["new_root_ref"])
+    assert prepared.archive_ref in selected
+    monkeypatch.setattr(sys, "argv", [
+        "distribution", "--distribution", str(release_b),
+        "--profile", str(release_b / "profiles/default.json"),
+        "--workspace", str(case["workspace"]), "--plugins-home", str(case["home"]),
+        "--config", str(case["config"]), "--receipt", str(case["receipt"]),
+        "--adopt-bundled", "--expected-root-ref", result["new_root_ref"],
+        "--backup-dir", str(tmp_path / "unused"),
+    ])
+    with pytest.raises(SystemExit) as exit_info:
+        distribution_main()
+    assert exit_info.value.code == 3
+    assert json.loads(capsys.readouterr().out)["status"] == "partial_selected_not_started"
+    report = verify_distribution(release_b)
+    target_row = next(row for row in report["plugins"] if row["name"] == "target")
+    install_git_plugin(workspace=case["workspace"], plugins_home=case["home"],
+                       source=str(release_b / target_row["file"]), marketplace="release",
+                       ref_name=target_row["source_revision"])
+    with pytest.raises(ValueError, match="不能覆盖外部选择"):
+        _adopt(case, release_b, result["new_root_ref"], "external-drift")
+    assert not (tmp_path / "backup-external-drift").exists()
+
+
+def test_adopt_bundled_distribution_reports_no_eligible_targets(tmp_path, monkeypatch, capsys):
+    case = _offline_case(tmp_path)
+    new = case["source"] / "plugins/new/plugin.py"
+    new.parent.mkdir(parents=True)
+    source_text = "api_version = 3\nname = 'new'\nversion = '1'\nasync def apply(ctx):\n    return None\n"
+    compile(source_text, "new/plugin.py", "exec")
+    new.write_text(source_text)
+    profile = case["source"] / "docker/host-runtime/profiles/default.json"
+    document = json.loads(profile.read_text())
+    document["plugins"] = [{"name": "new", "depends_on": [], "reason": "new source"}]
+    profile.write_text(json.dumps(document))
+    release, _ = _offline_release(case, "2")
+    monkeypatch.setattr(sys, "argv", [
+        "distribution", "--distribution", str(release),
+        "--profile", str(release / "profiles/default.json"),
+        "--workspace", str(case["workspace"]), "--plugins-home", str(case["home"]),
+        "--config", str(case["config"]), "--receipt", str(case["receipt"]),
+        "--adopt-bundled", "--expected-root-ref", case["root"],
+        "--backup-dir", str(tmp_path / "unused"),
+    ])
+    with pytest.raises(SystemExit) as exit_info:
+        distribution_main()
+    assert exit_info.value.code == 4
+    assert json.loads(capsys.readouterr().out)["status"] == "no_eligible_targets"
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    assert not (tmp_path / "unused").exists()
+
+
+def test_adopt_bundled_distribution_cli_reports_selected_and_already_with_exit_zero(tmp_path, monkeypatch, capsys):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    argv = ["distribution", "--distribution", str(release_b),
+            "--profile", str(release_b / "profiles/default.json"),
+            "--workspace", str(case["workspace"]), "--plugins-home", str(case["home"]),
+            "--config", str(case["config"]), "--receipt", str(case["receipt"]),
+            "--adopt-bundled", "--expected-root-ref", case["root"],
+            "--backup-dir", str(tmp_path / "cli-b")]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as first:
+        distribution_main()
+    assert first.value.code == 0
+    selected = json.loads(capsys.readouterr().out)
+    assert selected["status"] == "selected_not_started"
+    argv[-3] = selected["new_root_ref"]
+    argv[-1] = str(tmp_path / "cli-again")
+    with pytest.raises(SystemExit) as again:
+        distribution_main()
+    assert again.value.code == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "already_selected_not_started"
+
+
+def test_adopt_bundled_distribution_cli_reports_failure_with_exit_one(tmp_path, monkeypatch, capsys):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    (case["home"] / "cache/release/target/.pointers.json").write_text("broken")
+    monkeypatch.setattr(sys, "argv", [
+        "distribution", "--distribution", str(release_b),
+        "--profile", str(release_b / "profiles/default.json"),
+        "--workspace", str(case["workspace"]), "--plugins-home", str(case["home"]),
+        "--config", str(case["config"]), "--receipt", str(case["receipt"]),
+        "--adopt-bundled", "--expected-root-ref", case["root"],
+        "--backup-dir", str(tmp_path / "failed-cli"),
+    ])
+    with pytest.raises(SystemExit) as failure:
+        distribution_main()
+    assert failure.value.code == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+    assert not (tmp_path / "failed-cli").exists()
+
+
+def test_adopt_bundled_distribution_excludes_disabled_and_new_profile_members(tmp_path):
+    case = _offline_case(tmp_path)
+    selection = PluginSelection(case["workspace"])
+    original = _selection_refs(selection, case["root"])
+    peer_only = tuple(ref for ref in original if selection.archive.read_descriptor(ref)["plugin_id"] == "peer@release")
+    current = selection.commit(peer_only, expected_ref=case["root"])
+    set_installed_plugin_enabled("target@release", enabled=False, plugins_home=case["home"])
+    new = case["source"] / "plugins/new/plugin.py"
+    new.parent.mkdir(parents=True)
+    source_text = "api_version = 3\nname = 'new'\nversion = '1'\nasync def apply(ctx):\n    return None\n"
+    compile(source_text, "new/plugin.py", "exec")
+    new.write_text(source_text)
+    profile = case["source"] / "docker/host-runtime/profiles/default.json"
+    document = json.loads(profile.read_text())
+    document["plugins"].append({"name": "new", "depends_on": [], "reason": "new source"})
+    profile.write_text(json.dumps(document))
+    release_b, _ = _offline_release(case, "2")
+    result = _adopt(case, release_b, current, "excluded")
+    assert result["status"] == "selected_not_started"
+    assert {item["plugin_id"] for item in result["excluded"]} == {"target@release", "new@release"}
+    assert [item["plugin_id"] for item in result["changed"]] == ["peer@release"]
+    assert load_plugin_manifest(case["home"])["target@release"] is False
+    selected = _selection_refs(selection, result["new_root_ref"])
+    assert len(selected) == 1
+
+
+def test_adopt_bundled_distribution_lock_conflict_prevents_backup(tmp_path):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    lock = WorkspaceMaintenanceLock(case["workspace"])
+    lock.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="workspace 仍有生命周期 owner"):
+            _adopt(case, release_b, case["root"], "locked")
+    finally:
+        lock.release()
+    assert not (tmp_path / "backup-locked").exists()
+    assert PluginSelection(case["workspace"]).read() == case["root"]
 
 
 def test_host_runtime_cli_defaults_to_distribution(monkeypatch, tmp_path, capsys):
