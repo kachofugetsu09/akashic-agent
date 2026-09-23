@@ -22,7 +22,7 @@ from agent.plugins.install import (
 from agent.plugins.manifest import load_plugin_manifest
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import PluginSelection, SelectionConflictError, SelectionWriteError
-from agent.plugins.artifacts import ArtifactPointer
+from agent.plugins.artifacts import ArtifactPointer, read_pointers
 from agent.plugin_composition.archive import PluginArchive
 from agent.plugins.input_preparation import prepare_plugin_input
 from agent.plugins.reload_journal import ReloadJournal
@@ -47,6 +47,7 @@ from scripts.install_plugin_distribution import (
     adopt_bundled_distribution,
     main as distribution_main,
 )
+from scripts.rollback_plugin_install import rollback_plugin_install
 
 
 def test_default_profile_installs_akashic_sender() -> None:
@@ -872,6 +873,34 @@ def test_adopt_bundled_distribution_rejects_pending_reload_and_armed_install(tmp
     with pytest.raises(RuntimeError, match="armed install"):
         _adopt(case, release_b, case["root"], "armed")
     assert not (tmp_path / "backup-armed").exists()
+
+
+def test_stopped_exact_rollback_unblocks_bundled_adoption(tmp_path):
+    case = _offline_case(tmp_path)
+    release_b, _ = _offline_release(case, "2")
+    base = case["home"] / "cache/release/target"
+    previous = read_pointers(base)
+    assert previous is not None
+    journal = ReloadJournal(case["workspace"])
+    journal.arm_update(update_id="interrupted-before-pointer", plugin_id="target@release",
+                       plugin_base=base, previous=previous,
+                       candidate=ArtifactPointer(".artifacts/new"), previous_enabled=True)
+    with pytest.raises(RuntimeError, match="armed install"):
+        _adopt(case, release_b, case["root"], "blocked")
+    assert not (tmp_path / "backup-blocked").exists()
+
+    settled = rollback_plugin_install(
+        workspace=case["workspace"], plugins_home=case["home"],
+        update_id="interrupted-before-pointer", expected_root_ref=case["root"],
+        backup_dir=tmp_path / "rollback-target",
+    )
+    assert settled["status"] == "rolled_back"
+    assert journal.update("interrupted-before-pointer").phase == "rolled_back"
+    assert read_pointers(base) == previous
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    adopted = _adopt(case, release_b, case["root"], "after-rollback")
+    assert adopted["status"] == "selected_not_started"
+    assert adopted["new_root_ref"] != case["root"]
 
 
 def test_adopt_bundled_distribution_rejects_pending_reload_before_backup(tmp_path):

@@ -161,6 +161,10 @@ class JournalPreflight:
     armed_updates: tuple[update_rollback.UpdateRollback, ...]
     _copy: sqlite3.Connection
 
+    def update(self, update_id: str) -> update_rollback.UpdateRollback:
+        """Read one exact row from the checked, read-only journal snapshot."""
+        return update_rollback.read(self._copy, update_id)
+
     def backup_to(self, path: Path) -> None:
         """Save the checked snapshot without opening the live journal in SQLite."""
         saved = sqlite3.connect(path)
@@ -315,6 +319,19 @@ class ReloadJournal:
                 values = (update_id,)
             for row in conn.execute(query, values).fetchall():
                 update_rollback.rollback(conn, update_rollback.read(conn, row[0]), plugins_home, now=_now(), error=error)
+
+    def rollback_install_update(
+        self, plugins_home: Path, *, expected: update_rollback.UpdateRollback, error: str,
+    ) -> None:
+        """Roll back one unchanged, unlinked install row under the caller's offline locks."""
+        with self._connect() as conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            current = update_rollback.read(conn, expected.update_id)
+            if current != expected:
+                raise RuntimeError("插件安装恢复点在预检后改变")
+            if current.phase != "armed" or current.reload_tx_id is not None or current.input_ref is not None:
+                raise RuntimeError("指定记录不是孤立 armed 安装")
+            update_rollback.rollback(conn, current, plugins_home, now=_now(), error=error)
 
     def begin(
         self,
