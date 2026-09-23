@@ -16,7 +16,7 @@ from core.net.http import SharedHttpResources
 from plugins.sources.plugin import SOURCES
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageCatalog, MessageLog
-from session.message import ContentPart, Input
+from session.message import ContentPart, Control, Input
 from session.store import SessionStore
 from tests.fixtures.formal_plugins import (
     FULL_RUNTIME_PLUGINS,
@@ -128,6 +128,17 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
         assert MessageCatalog(core.message_log).reader("local:one").snapshot() == (
             message,
         )
+
+        async def reply_stopped():
+            async for recorded in MessageCatalog(core.message_log).reader("local:one").follow(
+                after_seq=message.seq,
+            ):
+                if isinstance(recorded.body, Control) and recorded.body.action == "failure":
+                    return recorded
+
+        failure = await asyncio.wait_for(reply_stopped(), 10)
+        assert failure is not None
+        assert failure.source == "conversation"
         from plugins.tools.plugin import ALL_TOOLS, TOOLS
 
         tools_context, tools = root._service_provider(TOOLS)
