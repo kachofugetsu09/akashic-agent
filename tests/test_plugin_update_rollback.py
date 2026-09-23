@@ -260,6 +260,33 @@ def test_stopped_rollback_allows_selected_previous_equal_candidate(tmp_path):
     assert read_pointers(base) == previous
 
 
+def test_stopped_rollback_allows_root_without_target_with_prior_install(tmp_path):
+    source, home, workspace, old = prepare(tmp_path)
+    selection = PluginSelection(workspace)
+    root_ref = selection.commit((), expected_ref=None)
+    root_bytes = selection.path.read_bytes()
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    assert previous.stable.path is not None and previous.latest.path is not None
+    set_plugin_enabled("probe@lab", enabled=False, plugins_home=home)
+    candidate, update_id = arm_historical_update(source, home, workspace, previous, False)
+    assert read_pointers(base) != previous
+
+    result = rollback_plugin_install(
+        workspace=workspace, plugins_home=home, update_id=update_id,
+        expected_root_ref=root_ref, backup_dir=tmp_path / "absent-target-backup",
+    )
+
+    assert result["status"] == "rolled_back"
+    assert read_pointers(base) == previous
+    assert load_plugin_manifest(home)["probe@lab"] is False
+    assert ReloadJournal(workspace).update(update_id).phase == "rolled_back"
+    assert selection.path.read_bytes() == root_bytes
+    assert old.installed_path.exists() and candidate.installed_path.exists()
+    assert (old.data_path / "history.txt").read_text() == "existing durable data"
+
+
 def test_stopped_rollback_rejects_different_selected_candidate(tmp_path):
     source, home, workspace, old = prepare(tmp_path)
     old_root = _select_installed(workspace, old)
