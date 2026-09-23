@@ -183,8 +183,9 @@ fleet 报告固定来源和 v3-only 静态合同；真实 MCP handshake/readines
 实现。它先把调用方提供的 canonical checkout 与 exact lock 对账，再运行 Core 已有的
 Content/Wake/Drift/Session 组合 fixture，最后在每个插件自己的目录运行其原样 fixture。
 因此修改一个插件的业务模型只需要更新该插件与 exact revision，不会给 Core 增加来源分支。
-Content coexistence probe 在隔离 workspace 中先启动 Content，再用 `Manager.install` 从已核对的
-checkout 安装插件；它检查同一个 `Manager.live_root`、活动 generation、Content 行数及前后逻辑状态。
+Content coexistence probe 在隔离 workspace 中启动 Content、MessageLog 和插件所需的内建
+provider，再用 `Manager.install` 从已核对的 checkout 安装插件；它检查同一个
+`Manager.live_root`、活动 generation、Content 行数及前后逻辑状态。
 receipt 同时保留 live Root id 和 Content 状态，不能通过并排挂载候选目录代替正式安装。
 
 ```text

@@ -226,13 +226,16 @@ manifest 和 stable artifact，不重新安装、启用默认 profile 或覆盖�
 不回滚已经写入 Workspace 的业务数据或外部效果。
 
 发布验收还必须单独证明 Core-only 启停。下面的命令把分发制品写到仓库外；runner 会先从 `core.tar`
-启动并停止无业务源码的 Core，再执行 bundle 组合。检查报告中的 `core_bootstrap.status` 与 stop 证据；
-这一步证明 Core tar 不依赖 checkout 或业务源码，不等于默认 profile 的全量业务验收。
-组合 runner 通过 `Manager.live_root` 调用精确能力 oracle，并用正常 `Manager.install` 验证运行中替换；
-报告分别记录 artifact 来源、持久消息回读、旧 Consumer Fiber 排空、新代际重激活和 runtime 资源关闭。
+启动并停止无业务源码的 Core，再安装 bundle 组合。检查报告中的 `core_bootstrap.status` 与 stop 证据；
+空 selection 不要求 Channel provider，`channel_host_present` 只作观察值。这一步证明 Core tar
+不依赖 checkout 或业务源码，不等于默认 profile 的全量业务验收。真实能力、持久消息回读和
+运行中替换须另用显式业务组合 oracle；该模式经 `Manager.live_root` 调用能力，并用正常
+`Manager.install` 替换 provider，报告旧 Consumer Fiber 排空、新代际、artifact 来源和
+`resource_close` 的 Root、MessageLog、EventBus 关闭状态。
 
 ```bash
-release_dir="$(mktemp -d /var/tmp/akashic-distribution.XXXXXX)"
+release_parent="$(mktemp -d /var/tmp/akashic-distribution.XXXXXX)"
+release_dir="$release_parent/distribution"
 release_sha="<full-40-character-sha>"
 python scripts/build_plugin_distribution.py \
   --repository "$PWD" --revision "$release_sha" --output "$release_dir"
@@ -241,6 +244,13 @@ python docker/debug/plugin_external_acceptance.py \
   --core-tar "$release_dir/core.tar" \
   --repo-root "$PWD" \
   --output "$release_dir/acceptance.json"
+
+business_json="/absolute/isolated/business-composition.json"
+python docker/debug/plugin_external_acceptance.py \
+  --business-composition-json "$business_json" \
+  --core-tar "$release_dir/core.tar" \
+  --repo-root "$PWD" \
+  --output "$release_parent/business-acceptance.json"
 ```
 
 完整边界见 [Core 与 Host Bridge 安装设计](./docs/design/akashic-core-bridge-installer.md)。

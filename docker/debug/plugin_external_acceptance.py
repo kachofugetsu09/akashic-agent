@@ -563,7 +563,6 @@ async def _start_app_runtime(
             "runtime_started": False,
             "core_runtime_created": False,
             "live_root_available": False,
-            "channel_host_started": False,
             "app_server_started": False,
             "checkout_invisible": False,
             "core_modules_from_artifact": False,
@@ -622,13 +621,13 @@ async def _start_app_runtime(
     checks = evidence["checks"]
     from agent.plugin_composition.channels import CHANNELS
     channel_provider = None if live_root is None else live_root.context.get(CHANNELS)
+    evidence["channel_host_present"] = channel_provider is not None
     checks.update(
         {
             "bootstrap_start_returned": True,
             "runtime_started": bool(getattr(runtime, "_started", False)),
             "core_runtime_created": getattr(runtime, "core", None) is not None,
             "live_root_available": live_root is not None,
-            "channel_host_started": channel_provider is not None,
             "app_server_started": getattr(runtime, "app_server", None) is not None,
             "checkout_invisible": not evidence["checkout_modules_visible"],
             "core_modules_from_artifact": not evidence["core_module_violations"],
@@ -1452,8 +1451,8 @@ async def _exercise_business_composition(
 ) -> dict[str, Any]:
     """Install a legal external subset and prove its Message behavior and replacement.
 
-    This probe deliberately uses the normal Git installer, PluginManager and
-    RuntimeSnapshot lease.  A fixture service may return a message identity,
+    This probe deliberately uses the normal Git installer and live PluginManager.
+    A fixture service may return a message identity,
     but ``_invoke_capability`` reads that identity again through the real
     ``MESSAGE_CATALOG`` before reporting success.
     """
@@ -1839,6 +1838,11 @@ async def _exercise_business_composition(
                         raise RuntimeError(f"原源码路径被重新占用，备份保留在 {backup}")
                     backup.rename(original)
 
+    resource_close = {
+        "live_root_closed": manager.live_root is None,
+        "message_log_closed": log._closed,
+        "event_bus_closed": bus._closed,
+    }
     for row in reports:
         row.pop("artifact", None)
         row["status"] = "passed" if all(row.get("checks", {}).values()) else "failed"
@@ -1859,6 +1863,7 @@ async def _exercise_business_composition(
             row.get("checks", {}).get("durable_message_readback", False)
             for row in reports
         ),
+        **resource_close,
     }
     if replacement is not None:
         checks["replacement_verified"] = (
@@ -1871,6 +1876,7 @@ async def _exercise_business_composition(
         "runtime": runtime_paths,
         "reports": reports,
         "replacement": replacement_evidence,
+        "resource_close": resource_close,
         "checks": checks,
     }
     result["status"] = "passed" if all(checks.values()) else "failed"

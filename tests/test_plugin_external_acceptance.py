@@ -505,6 +505,9 @@ async def test_business_composition_writes_reads_and_replaces_provider_from_new_
         "all_reports_passed": True,
         "business_calls_executed": True,
         "durable_message_readback": True,
+        "live_root_closed": True,
+        "message_log_closed": True,
+        "event_bus_closed": True,
         "replacement_verified": True,
     }
     assert all(row["status"] == "passed" for row in result["reports"]), [

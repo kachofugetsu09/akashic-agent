@@ -28,6 +28,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.selection import PluginSelection
 from bus.event_bus import EventBus
 from plugins.eventmail.store import EventMailStore
+from session.log import MessageLog
 
 DEFAULT_LOCK = Path(__file__).with_name("content-source-interop.lock.json")
 DEFAULT_REPORT = (
@@ -41,6 +42,10 @@ FORBIDDEN_PROACTIVE_MARKERS = (
     "get_proactive_events",
     "acknowledge_events",
     "take_proactive_events",
+)
+COEXISTENCE_BUILTINS = (
+    "commands", "content", "conversation", "eventmail", "models",
+    "programmatic", "sources", "tools", "turn_projection", "ui",
 )
 
 
@@ -481,8 +486,10 @@ async def _run_coexistence_probe(
     core_before = _source_identity(ROOT)
     with tempfile.TemporaryDirectory(prefix="akashic-content-source-interop-") as raw:
         root = Path(raw)
-        content_dir = root / "plugins" / "content"
-        _ = shutil.copytree(ROOT / "plugins" / "eventmail", content_dir)
+        plugin_dir = root / "plugins"
+        plugin_dir.mkdir()
+        for name in COEXISTENCE_BUILTINS:
+            _ = shutil.copytree(ROOT / "plugins" / name, plugin_dir / name)
         workspace = root / "workspace"
         workspace.mkdir()
         PluginSelection(workspace).initialize()
@@ -494,11 +501,13 @@ async def _run_coexistence_probe(
         save_config(data_root, tomllib.loads(config_toml))
         content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         event_bus = EventBus()
+        message_log = MessageLog(workspace / "sessions.db")
         manager = PluginManager(
-            plugin_dirs=[content_dir],
+            plugin_dirs=[plugin_dir],
             event_bus=event_bus,
             workspace=workspace,
             installed_cache_root=root / "cache",
+            message_log=message_log,
         )
         row_count = -1
         content_before: dict[str, object] = {}
@@ -544,7 +553,17 @@ async def _run_coexistence_probe(
             try:
                 await manager.terminate_all()
             finally:
-                await event_bus.aclose()
+                try:
+                    message_log.close()
+                finally:
+                    await event_bus.aclose()
+        resource_close = {
+            "live_root_closed": manager.live_root is None,
+            "message_log_closed": message_log._closed,
+            "event_bus_closed": event_bus._closed,
+        }
+        if not all(resource_close.values()):
+            raise GateError(f"coexistence owner 未全部关闭: {resource_close}")
         content_after = _content_logical_state(content_path)
         changed_tables = [
             table
@@ -562,6 +581,7 @@ async def _run_coexistence_probe(
             "content_before": content_before,
             "content_after": content_after,
             "changed_tables": changed_tables,
+            "resource_close": resource_close,
         }
     source_after = _source_identity(plugin_root)
     core_after = _source_identity(ROOT)
