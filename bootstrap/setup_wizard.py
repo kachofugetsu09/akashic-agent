@@ -95,7 +95,6 @@ def _run_plugin_setups(workspace: Path) -> None:
     sources = resolve_plugin_sources(
         (),
         installed_cache_root=cache_root,
-        installed_selector="stable",
     )
     for source in sources:
         manifest = source.static_manifest
