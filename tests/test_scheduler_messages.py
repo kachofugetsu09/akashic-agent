@@ -10,7 +10,6 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition import RUNTIME_STARTED
 from agent.plugin_composition.events import EventKey
-from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore, fire_key
 from session.log import OwnerTransaction
@@ -55,19 +54,19 @@ async def test_actual_scheduler_uses_isolated_sessions_and_only_publishes_final_
         assert target[0].body.parts[0].value == "finished"
         assert store.read().jobs[job.id].run_count == 1
         assert (tmp_path / "effect.txt").read_text() == "once\n"
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
-            assert len(calls) == 2
+        root = host.live_root
+        assert root is not None
+        calls = root.context.require(ServiceKey("fixture.calls"))
+        assert len(calls) == 2
         # 第二次触发只读自己的输入，第一轮工具轨迹不进入下一次模型请求。
         from dataclasses import replace
         second = replace(job, id="second", fire_at=datetime.now(UTC) + timedelta(seconds=1))
         store.add("schedule-2", second, "created")
         second_fire = await settled(store, fire_key(second))
         assert second_fire.session_id != fire.session_id
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
-            assert len(calls) == 3
-            assert "written" not in str(calls[-1].messages)
+        calls = root.context.require(ServiceKey("fixture.calls"))
+        assert len(calls) == 3
+        assert "written" not in str(calls[-1].messages)
         assert len(next((tmp_path / "workspace").rglob("sent.jsonl")).read_text().splitlines()) == 2
 
 
@@ -139,8 +138,9 @@ async def test_actual_scheduler_restart_resumes_after_saved_output_without_repea
             fire = await settled(store, fire_key(job))
             assert fire.status == "delivered"
             assert store.read().jobs[job.id].run_count == 1
-            async with lease_runtime_snapshot(restarted.snapshot_store) as snapshot:
-                assert snapshot.composition_root.context.require(ServiceKey("fixture.calls")) == []
+            root = restarted.live_root
+            assert root is not None
+            assert root.context.require(ServiceKey("fixture.calls")) == []
             assert (tmp_path / "effect.txt").read_text() == "once\n"
             assert len(reopened.reader("test:room").snapshot()) == 1
             assert len(next((tmp_path / "workspace").rglob("sent.jsonl")).read_text().splitlines()) == 1
@@ -167,10 +167,11 @@ async def test_cancelling_a_failed_prepared_fire_revisits_cleanup_in_same_runtim
 
     monkeypatch.setattr(OwnerTransaction, "save", observe)
     async with application(tmp_path, replying=False, start=False) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            data = snapshot.generations["test_sender"].data_dir
-            data.mkdir(parents=True, exist_ok=True)
-            (data / "credential-revoked").touch()
+        sender = host.generation("test_sender")
+        assert sender is not None
+        data = sender.data_dir
+        data.mkdir(parents=True, exist_ok=True)
+        (data / "credential-revoked").touch()
         store = JobStore(tmp_path / "workspace/schedules.json")
         job = ScheduledJob(trigger="after", tier="instant", fire_at=datetime.now(UTC),
                            channel="test", chat_id="room", timezone="UTC", message="reminder")
@@ -191,7 +192,7 @@ async def test_restart_preclaims_passive_effect_before_scheduler_or_archive_can_
     """原回复丢失本地回执后重启，启动顺序与归档 Root 都不能绕过首次恢复查询。"""
     import sys
     from types import ModuleType
-    from agent.plugin_composition.bindings import Bindings
+    from agent.plugin_composition.bindings import BINDINGS
     from agent.plugin_composition.tasks import Tasks
     from agent.plugins.manager import PluginManager
     from bus.event_bus import EventBus
@@ -255,10 +256,11 @@ async def test_restart_preclaims_passive_effect_before_scheduler_or_archive_can_
     monkeypatch.setattr(Tasks, "wait_idle", observe_idle)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root
-            assert root is not None
-            bindings = Bindings(log, host._archive, root)
+        root = host.live_root
+        sender = host.generation("test_sender")
+        assert root is not None and sender is not None and sender.fiber is not None
+        async with sender.fiber.context.runtime_scope():
+            bindings = root.context.require(BINDINGS)
             service = ServiceKey("fixture.delivery")
             binding = bindings.bind(service, {})
             async with bindings.open(binding, service) as (factory, _):

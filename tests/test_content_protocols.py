@@ -38,8 +38,11 @@ async def bound_content(definitions):
         for definition in definitions:
             async def consumer(ctx, definition=definition):
                 await ctx.require(CONTENT).register(ctx, definition)
-            await root.mount(consumer, name=definition.name, inject=(CONTENT,),
-                             runtime=PluginRuntime(definition.name, "content-test", path, path, path, {}))
+            fiber = await root.mount(consumer, name=definition.name, inject=(CONTENT,),
+                                     runtime=PluginRuntime(definition.name, "content-test", path, path, path, {}))
+            if fiber.state is FiberState.FAILED:
+                assert fiber.error is not None
+                raise fiber.error
         async with root.context.require(CONTENT).bind() as view:
             yield view
     finally:
@@ -276,7 +279,7 @@ async def test_plain_schema_needs_no_text_protocol_and_owns_its_kind():
         with pytest.raises(ValueError, match="invalid structured"):
             view.checks["fact"](ContentPart("fact", "bad"))
     duplicate = ContentSchema(name="other", content={"fact": check})
-    with pytest.raises(RuntimeError, match="拓扑未就绪"):
+    with pytest.raises(ValueError, match="唯一 owner"):
         async with bound_content((schema, duplicate)):
             pytest.fail("duplicate schema registered")
 

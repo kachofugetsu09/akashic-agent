@@ -226,7 +226,11 @@ async def apply(ctx: Context) -> None:
                         ) is None:
                             continue
                         try:
-                            sinks = select(reader, message) if delivery.selection(message.message_id) is None else ()
+                            if delivery.selection(message.message_id) is None:
+                                async with ctx.runtime_scope():
+                                    sinks = select(reader, message)
+                            else:
+                                sinks = ()
                             assert sinks is not None
                             selected = delivery.prepare(reader, message, sinks, passive=True)
                             for sink in selected.sinks:

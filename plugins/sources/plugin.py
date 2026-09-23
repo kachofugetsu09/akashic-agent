@@ -29,6 +29,10 @@ class SourceSession(Protocol):
         self, program: Callable[[Task, MessageReader, str], Awaitable[object]],
     ) -> Task | None: ...
 
+    async def record_failure(
+        self, error: BaseException, *, boundary: int | None = None,
+    ) -> None: ...
+
 
 @dataclass(frozen=True)
 class Source:

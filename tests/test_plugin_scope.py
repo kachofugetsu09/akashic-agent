@@ -139,6 +139,7 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
         instance=SimpleNamespace(module=None),
     )
     manager._building_roots = {}
+    manager._active_generations = {}
     manager._draining_generations = {}
     manager._cleanup_failures = []
     manager._snapshot_store = SimpleNamespace(
@@ -166,22 +167,7 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
     assert manager._draining_generations == {}
     assert scope.closed
     assert generation.state == "discarded"
-    assert [call.args[0] for call in remove.call_args_list] == ["module", "alias"]
-
-
-@pytest.mark.asyncio
-async def test_discard_prepared_failure_keeps_candidate_and_does_not_abort(monkeypatch):
-    manager = object.__new__(PluginManager)
-    generation = SimpleNamespace(generation_id="generation")
-    manager._prepared_generations = {"owner": generation}
-    dispose = AsyncMock(side_effect=RuntimeError("cleanup pending"))
-    abort = Mock()
-    monkeypatch.setattr(manager, "_dispose_generation", dispose)
-    monkeypatch.setattr(manager, "_abort_reload", abort)
-    with pytest.raises(RuntimeError, match="cleanup pending"):
-        await manager._discard_prepared("owner")
-    assert manager._prepared_generations["owner"] is generation
-    abort.assert_not_called()
+    assert [call.args[0] for call in remove.call_args_list] == ["module"]
 
 
 @pytest.mark.asyncio

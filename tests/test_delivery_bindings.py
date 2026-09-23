@@ -10,13 +10,12 @@ import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING
-from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.context import CompositionRoot
 from agent.plugin_composition.model import FiberState, PluginRuntime, ServiceKey
 from agent.plugin_contracts import Message
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.delivery.api import Receipt, Sink
 from plugins.delivery.execution import Deliveries
@@ -43,7 +42,7 @@ from agent.plugin_composition import RUNTIME_STARTED, ServiceKey
 api_version = 3
 name = "test_sender"
 version = "1.0.0"
-inject = (ServiceKey("delivery.senders.v1"),)
+inject = (ServiceKey("delivery.senders.v1"), ServiceKey("delivery.v1"))
 
 @dataclass(frozen=True)
 class SendResult:
@@ -426,12 +425,14 @@ async def test_sender_survives_restart_without_repeating_a_delivery(
         message = log.writer("chat", author="reply", source="conversation", body_types=(Output,),
                              content={"text": lambda part: ContentReferences()}).append(
             "answer", Output((ContentPart("text", "original body"),), "complete"))
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            root = snapshot.composition_root.context
-            binding = root.require(SENDERS).bind("test", bindings)
-            execution = root.require(ServiceKey("fixture.delivery"))()
+        root = host.live_root
+        sender = host.generation("test_sender")
+        assert root is not None and sender is not None and sender.fiber is not None
+        bindings = root.service_value(BINDINGS)
+        assert bindings is not None
+        async with sender.fiber.context.runtime_scope():
+            binding = sender.fiber.context.require(SENDERS).bind("test", bindings)
+            execution = sender.fiber.context.require(ServiceKey("fixture.delivery"))()
             sink = Sink(name="phone", binding_id=binding, address="original-room")
             execution.prepare(log.reader("chat"), message, (sink,))
             if receipt_write_fails:
@@ -458,9 +459,10 @@ async def test_sender_survives_restart_without_repeating_a_delivery(
         restored = manager(tmp_path, [source], log)
         await restored.load_all()
         await restored.start_runtime()
-        snapshot = restored.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, restored._archive, snapshot.composition_root)
+        root = restored.live_root
+        assert root is not None
+        bindings = root.service_value(BINDINGS)
+        assert bindings is not None
         records = DeliveryRecords(log.owner("plugin:delivery"), "test_sender")
         execution = Deliveries(
             records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery"
@@ -498,13 +500,15 @@ async def test_selected_and_formal_delivery_share_target_coordination(tmp_path):
     try:
         await host.load_all()
         await host.start_runtime()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            root = snapshot.composition_root.context
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
+        root = host.live_root
+        sender = host.generation("test_sender")
+        assert root is not None and sender is not None and sender.fiber is not None
+        bindings = root.service_value(BINDINGS)
+        assert bindings is not None
+        async with sender.fiber.context.runtime_scope():
             service = ServiceKey("fixture.delivery")
             binding = bindings.bind(service, {})
-            formal = root.require(service)()
+            formal = sender.fiber.context.require(service)()
             async with bindings.open(binding, service) as (factory, _):
                 selected = factory()
                 waiting = asyncio.Event()

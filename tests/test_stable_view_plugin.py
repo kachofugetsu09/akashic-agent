@@ -187,7 +187,6 @@ async def test_stable_command_uses_real_manager_commands_and_live_catalog(tmp_pa
         assert "current runtime graph" in result.result.text
         assert "commands" in result.result.text
         assert "stable_view" in result.result.text
-        assert "mcp_provider_unavailable" in result.result.text
     finally:
         await manager.terminate_all()
 
@@ -315,7 +314,6 @@ async def test_stable_command_projects_real_failed_and_cleanup_pending_generatio
         assert "cleanup pending" in result.result.text
         assert result.result.text.index("bad_import") < result.result.text.index("stable import blocked")
         assert result.result.text.index("stable import blocked") < result.result.text.index("cleanup pending")
-        assert "mcp_provider_unavailable" in result.result.text
 
         from agent.plugin_composition.runtime_catalog import build_runtime_catalog
 

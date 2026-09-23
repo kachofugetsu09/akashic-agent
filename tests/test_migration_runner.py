@@ -782,4 +782,6 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
         assert result.returncode == 0, result.stdout + result.stderr
 
     assert (workspace / "migrations.sqlite3").is_file()
-    assert set(_applied_ids(workspace / "migrations.sqlite3")) <= {_ORIGIN_ID}
+    assert set(_applied_ids(workspace / "migrations.sqlite3")) == {
+        "20260921_01_plugin_update_input_ref",
+    }

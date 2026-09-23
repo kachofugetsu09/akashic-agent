@@ -4,9 +4,8 @@ import json
 import pytest
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.tasks import TASKS, Tasks
-from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugins.manager import PluginManager
 from agent.restart import RestartGate
 from bus.event_bus import EventBus
@@ -33,12 +32,13 @@ async def test_real_tools_watcher_restarts_and_settles_offline_abandon_once(tmp_
     host, store, log, artifacts, source = environment(tmp_path)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            ctx = snapshot.composition_root.context
-            binding = ctx.require(TOOLS).bind(
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        async with ctx.require(ServiceKey("standard-tools-probe")).runtime_scope():
+            binding = await ctx.require(TOOLS).bind_scoped(
                 ctx.require(ALL_TOOLS)().select("shell"),
-                Bindings(log, host._archive, snapshot.composition_root),
+                ctx.require(BINDINGS),
             )
         inputs = log.writer(
             "s", author="user", source="conversation", body_types=(Input,), content={}
@@ -101,14 +101,14 @@ async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tm
     try:
         await host.load_all()
         await host.start_runtime()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        root = live_root.context
+        async with root.require(ServiceKey("standard-tools-probe")).runtime_scope():
             ctx = root.require(ServiceKey("standard-tools-probe"))
             catalog = root.require(TOOLS)
-            binding = catalog.bind(root.require(ALL_TOOLS)().select("shell"), bindings)
+            binding = await catalog.bind_scoped(root.require(ALL_TOOLS)().select("shell"), bindings)
             reader = log.reader("shared")
             inputs = log.writer("shared", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
             inputs.append("input", Input((ContentPart("text", "old work"),)))

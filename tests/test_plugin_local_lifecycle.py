@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Callable
+from typing import Callable, Coroutine
 
 import pytest
 
@@ -59,7 +59,7 @@ def _provider_apply(
     *,
     key: ServiceKey[str] = SVC,
     marker: str = "v",
-) -> object:
+) -> Callable[[Context], Coroutine[object, object, None]]:
     async def apply(ctx: Context) -> None:
         stats["provider_apply"] += 1
         instance = f"{marker}{stats['provider_apply']}"
@@ -78,7 +78,7 @@ def _consumer_apply(
     seen: list[str],
     *,
     key: ServiceKey[str] = SVC,
-) -> object:
+) -> Callable[[Context], Coroutine[object, object, None]]:
     async def apply(ctx: Context) -> None:
         stats["consumer_apply"] += 1
         seen.append(ctx.require(key))
@@ -1481,7 +1481,7 @@ async def test_runtime_owner_lifecycle_borrow_and_admitted_consumer_survive_prov
     work_started = asyncio.Event()
     release_work = asyncio.Event()
     admitted_auth: list[str] = []
-    work: list[Callable[[], object]] = []
+    work: list[Callable[[], Coroutine[object, object, None]]] = []
 
     async def provider_apply(ctx: Context) -> None:
         await ctx.provide(key, value)
@@ -2433,7 +2433,7 @@ async def test_spawn_cancel_during_start_closes_unstarted_user_coroutine() -> No
     root = CompositionRoot("spawn-cancel-root")
     starting = asyncio.Event()
     ran: list[str] = []
-    user_coroutines: list[object] = []
+    user_coroutines: list[Coroutine[object, object, None]] = []
 
     async def apply(ctx: Context) -> None:
         async def hold_start(_event: object) -> None:
@@ -2466,7 +2466,7 @@ async def test_spawn_task_cancel_before_first_instruction_closes_user_coroutine(
 
     root = CompositionRoot("spawn-raw-cancel-root")
     tasks: list[asyncio.Task[None]] = []
-    coroutines: list[object] = []
+    coroutines: list[Coroutine[object, object, None]] = []
     ran: list[str] = []
 
     async def apply(ctx: Context) -> None:
@@ -2619,7 +2619,9 @@ async def test_owner_scoped_dispatch_isolation() -> None:
     root = CompositionRoot("dispatch-root")
     hits: list[str] = []
 
-    def make(callback_label: str, service_name: str) -> object:
+    def make(
+        callback_label: str, service_name: str,
+    ) -> Callable[[Context], Coroutine[object, object, None]]:
         async def apply(ctx: Context) -> None:
             await ctx.on(RUNTIME_STARTED, lambda _e: hits.append(callback_label))
             await ctx.provide(ServiceKey[str](f"test.local.{service_name}"), service_name)

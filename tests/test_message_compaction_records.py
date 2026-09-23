@@ -231,9 +231,8 @@ def test_version_two_readers_reject_corrupt_persisted_partition(tmp_path):
 async def test_summary_use_reads_original_record_after_head_advance_and_restart(tmp_path):
     from pathlib import Path
     import shutil
-    from agent.plugin_composition.bindings import BINDINGS, Bindings
+    from agent.plugin_composition.bindings import BINDINGS
     from agent.plugins.manager import PluginManager
-    from agent.plugins.snapshot import lease_runtime_snapshot
     from bus.event_bus import EventBus
     from plugins.compaction.records import COMPACTION_SUMMARIES
     from plugins.context.api import check_summary
@@ -273,16 +272,16 @@ async def apply(ctx):
         first = imported("first", generation=3, parent=None,
                          cumulative_ids=("u1",), own_ids=("u1",))
         save_imported(records, first)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            async with ctx.require(MATERIALS).bind() as view:
-                prepared = await view.prepare(log.reader("s").snapshot(), "conversation")
-                summary = prepared["summary"]
-                assert isinstance(summary, Mapping)
-                reference = summary["reference"]
-                assert isinstance(reference, str)
-            metadata = ctx.require(BINDINGS).describe(reference, COMPACTION_SUMMARIES)
-            assert metadata == {"record_ref": "first", "session_id": "s"}
+        root = host.live_root
+        assert root is not None
+        async with root.context.require(MATERIALS).bind() as view:
+            prepared = await view.prepare(log.reader("s").snapshot(), "conversation")
+            summary = prepared["summary"]
+            assert isinstance(summary, Mapping)
+            reference = summary["reference"]
+            assert isinstance(reference, str)
+        metadata = root.context.require(BINDINGS).describe(reference, COMPACTION_SUMMARIES)
+        assert metadata == {"record_ref": "first", "session_id": "s"}
         writer = log.writer("s", author="assistant", source="conversation", body_types=(Output,),
                             content={"text": check_text, "context.summary": check_summary})
         used = ContentPart("context.summary", {"reference": reference})
@@ -300,9 +299,9 @@ async def apply(ctx):
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        root = host.live_root
+        assert root is not None
+        bindings = root.context.require(BINDINGS)
         assert log.reader("s").snapshot()[:2] == original
         assert log.reader("s").get("used").body.parts[-1] == used
         async with bindings.open(reference, COMPACTION_SUMMARIES) as (lookup, metadata):

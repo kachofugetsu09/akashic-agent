@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import closing
 from datetime import UTC, datetime
 import sqlite3
@@ -29,10 +30,10 @@ from session.artifact_store import ArtifactStore
 from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
 from session.inbound_store import InboundHandoffStore
 from session.log import MessageLog, SessionAttributes
-from session.message import ContentPart, ContentReferences, Input
+from session.message import ContentPart, ContentReferences, Input, Message
 
 
-VALIDATION_SERVICE = ServiceKey[object]("test.validation")
+VALIDATION_SERVICE = ServiceKey[Callable[[asyncio.Event], Awaitable[Message]]]("test.validation")
 
 
 class ValidationBus(MessageBus):

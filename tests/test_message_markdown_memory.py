@@ -1,4 +1,6 @@
 import asyncio
+import json
+import sqlite3
 from collections.abc import Mapping
 from typing import Literal, cast
 import shutil
@@ -14,7 +16,6 @@ from agent.plugin_composition.config_input import save_config
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.compaction.records import (
     COMPACTION_SUMMARIES,
@@ -48,9 +49,18 @@ def _system_prompt(material: Mapping[str, object]) -> str:
 
 
 @asynccontextmanager
+async def live_root(host: PluginManager):
+    """Read the current formal Root for profile and summary assertions."""
+    root = host.live_root
+    assert root is not None
+    yield root
+
+
+@asynccontextmanager
 async def application(tmp_path, *, start=False, transient_failure=False, draft_failures=0):
     sources = tmp_path / "plugins"
-    if not sources.exists():
+    new_workspace = not sources.exists()
+    if new_workspace:
         for name in ("content", "context", "compaction", "markdown_memory", "turn_projection"):
             shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                             ignore=shutil.ignore_patterns("__pycache__"))
@@ -156,7 +166,8 @@ async def apply(ctx):
         fixture.write_text(fixture.read_text().replace("            completed.set()",
             f"            if attempts > {draft_failures}:\n                completed.set()"))
     log = MessageLog(tmp_path / "sessions.db")
-    initialize_plugin_workspace(tmp_path / "workspace")
+    if new_workspace:
+        initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -193,8 +204,8 @@ async def test_excluded_session_never_reaches_markdown_even_when_source_is_allow
         writer.append("answer", Output((ContentPart("text", "fact-two"),), "complete"))
         summary = publish(log, "internal-summary")
         used = await record_use(log, host, summary, "used-summary")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
@@ -216,8 +227,8 @@ async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts
         writer.append("excluded-answer", Output((ContentPart("text", "fact-two"),), "complete"))
         suppressed = publish(log, "suppressed-range")
         use = await record_use(log, host, suppressed, "suppressed-use")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             store = profile_store(tmp_path)
             async def consume(message):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
@@ -258,8 +269,8 @@ async def test_markdown_does_not_reintroduce_abandoned_late_result_from_raw_rang
         writer.append("answer", Output((ContentPart("text", "new answer"),), "complete"))
         child = publish(log, "after-late-result", parent)
         used = await record_use(log, host, child, "used")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
@@ -307,9 +318,13 @@ async def record_use(
     finish: Literal["continue", "complete", "quiet"] = "continue",
     source="conversation",
 ):
-    async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-        binding = snapshot.composition_root.context.require(BINDINGS).bind(COMPACTION_SUMMARIES,
-            {"record_ref": record.reference, "session_id": record.session_id})
+    async with live_root(host) as root:
+        generation = host.generation("compaction")
+        assert generation is not None and generation.fiber is not None
+        ctx = generation.fiber.context
+        async with ctx.runtime_scope():
+            binding = ctx.require(BINDINGS).bind(COMPACTION_SUMMARIES,
+                {"record_ref": record.reference, "session_id": record.session_id})
     return log.writer("s", author="assistant", source=source, body_types=(Output,),
         content={"text": check_text, "context.summary": check_summary}).append(identity,
             Output((ContentPart("text", "successful response"), ContentPart("context.summary", {"reference": binding})), finish))
@@ -318,8 +333,8 @@ async def record_use(
 async def wait_applied(tmp_path, host, reference):
     store = profile_store(tmp_path)
     if not store.is_applied(reference):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            done = snapshot.composition_root.context.require(ServiceKey("fixture.profile_response"))
+        async with live_root(host) as root:
+            done = root.context.require(ServiceKey("fixture.profile_response"))
             _ = await asyncio.wait_for(done.wait(), 5)
         # fixture 从返回响应到写完两个文件无挂起点，等待者在提交之后恢复。
     assert store.is_applied(reference)
@@ -328,7 +343,9 @@ async def wait_applied(tmp_path, host, reference):
 @pytest.mark.asyncio
 async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_parent_facts(tmp_path):
     async with application(tmp_path) as (log, host):
-        assert not (tmp_path / "workspace/memory").exists()
+        generation = host.generation("markdown_memory")
+        assert generation is not None and generation.fiber is not None
+        await generation.fiber.dispose()
         inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
         inputs.append("u1", Input((ContentPart("text", "fact-one"),)))
         unused = publish(log, "unused-first")
@@ -344,8 +361,8 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
         memory = store.read_memory()
         assert "fact-one" in memory and "fact-two" in memory
         assert log.reader("s").snapshot() == original
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
+        async with live_root(host) as root:
+            async with root.context.require(MATERIALS).bind() as materials:
                 prepared = await materials.prepare(log.reader("s").snapshot(), "conversation")
                 assert "fact-two" in _system_prompt(prepared)
         await record_use(log, host, used, "duplicate-use", "complete")
@@ -354,8 +371,8 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
         # 直接消费重复 Output 确认幂等边界，避免只靠 watcher 时间猜测。
         from plugins.markdown_memory.plugin import project
         from agent.plugin_composition import CHAT_MODELS
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             message = log.reader("s").get("duplicate-use")
             assert message is not None
             await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS),
@@ -431,8 +448,8 @@ async def test_markdown_does_not_learn_messages_omitted_by_single_window_compact
         inputs.append("u3", Input((ContentPart("text", "fact-three"),)))
         child = publish(log, "child", parent, summarized=("u3",), omitted=("u2",))
         used = await record_use(log, host, child, "used-child")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             await project(
                 used,
                 reader=log.reader("s"),
@@ -474,8 +491,8 @@ async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(t
                 raise OSError("injected second document failure")
             apply_document(source_ref, document, path)
         monkeypatch.setattr(store, "_apply_document", fail_self)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             with pytest.raises(OSError, match="second document failure"):
                 await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
@@ -494,8 +511,8 @@ async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(t
         assert store.is_applied(record.reference)
         assert store.read_backup(record.reference, "self") == before_self
         from plugins.markdown_memory.store import MEMORY_WRITES
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            read = snapshot.composition_root.context.require(MEMORY_WRITES)
+        async with live_root(host) as root:
+            read = root.context.require(MEMORY_WRITES)
             pages = []
             after = None
             while page := read(after, 2):
@@ -520,8 +537,8 @@ async def test_delayed_parent_output_cannot_reapply_older_facts_after_child(tmp_
         first = await record_use(log, host, child, "child-first")
         late = await record_use(log, host, parent, "parent-late")
         store = profile_store(tmp_path)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             for message in (first, late):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                               models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
@@ -547,8 +564,8 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
                 raise OSError("injected partial preparation")
             return write_once(source_ref, row_kind, payload)
         monkeypatch.setattr(store, "_write_once", fail_prepare)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             with pytest.raises(OSError, match="partial preparation"):
                 await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
@@ -556,8 +573,8 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
         assert not store.is_applied(record.reference)
     async with application(tmp_path, start=True) as (log, host):
         store = profile_store(tmp_path)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             message = log.reader("s").get("used")
             assert message is not None
             await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
@@ -613,6 +630,13 @@ async def test_profile_lock_cancellation_closes_its_handle_and_allows_next_write
 async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tmp_path, monkeypatch, cancel_first):
     """模型停在确定性屏障时仍可读旧档案；另一次更新必须等待且可接替取消者。"""
     from plugins.markdown_memory import plugin
+    from session.log import MessageCatalog
+
+    async def no_heads(_catalog):
+        await asyncio.Event().wait()
+        yield {}
+
+    monkeypatch.setattr(MessageCatalog, "follow", no_heads)
 
     async with application(tmp_path) as (log, host):
         log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text}).append(
@@ -632,8 +656,8 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
             return await original_prepare(*args, **kwargs)
 
         async def update():
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                ctx = snapshot.composition_root.context
+            async with live_root(host) as root:
+                ctx = root.context
                 await plugin.project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
                     sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
@@ -656,8 +680,8 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
             monkeypatch.setattr(plugin.fcntl, "flock", tracked_flock)
             await asyncio.wait_for(second_waiting.wait(), 5)
             assert prepare_calls == [first]
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
+            async with live_root(host) as root:
+                async with root.context.require(MATERIALS).bind() as materials:
                     prepared = await asyncio.wait_for(materials.prepare((), "conversation"), 1)
                 prompt = _system_prompt(prepared)
                 assert before[1].strip() in prompt
@@ -684,31 +708,39 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("existing", ["MEMORY.md", "markdown-profile-writes.db", "PENDING.md"])
-async def test_unstarted_markdown_does_not_treat_partial_state_as_initial(tmp_path, existing):
-    async with application(tmp_path) as (log, host):
-        memory = tmp_path / "workspace/memory"
-        memory.mkdir()
-        path = memory / existing
-        path.write_bytes(b"preserved state")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            async with snapshot.composition_root.context.require(MATERIALS).bind() as view:
-                with pytest.raises(FileNotFoundError):
-                    await asyncio.wait_for(view.prepare((), "conversation"), 5)
-        assert tuple(memory.iterdir()) == (path,)
-        assert path.read_bytes() == b"preserved state"
+async def test_existing_markdown_state_is_preserved_or_migrated_by_live_owner(tmp_path, existing):
+    memory = tmp_path / "workspace/memory"
+    memory.mkdir(parents=True)
+    path = memory / existing
+    path.write_bytes(b"preserved state")
+    async with application(tmp_path) as (_log, host):
+        generation = host.generation("markdown_memory")
+        assert generation is not None and generation.fiber is not None
+        if existing == "markdown-profile-writes.db":
+            assert generation.fiber.state.name == "FAILED"
+            assert isinstance(generation.fiber.error, sqlite3.DatabaseError)
+            assert path.read_bytes() == b"preserved state"
+        elif existing == "MEMORY.md":
+            assert generation.fiber.state.name == "ACTIVE"
+            assert path.read_bytes() == b"preserved state"
+        else:
+            assert generation.fiber.state.name == "ACTIVE"
+            retired = json.loads((memory / "PENDING.retired.md").read_text())
+            assert retired["pending"] == "preserved state"
+            assert path.read_bytes() == b""
 
 
 @pytest.mark.asyncio
 async def test_an_update_lock_alone_does_not_create_a_partial_profile_state(tmp_path):
+    path = tmp_path / "workspace/memory/markdown-profile-update.lock"
+    path.parent.mkdir(parents=True)
+    path.touch()
     async with application(tmp_path) as (_log, host):
-        path = tmp_path / "workspace/memory/markdown-profile-update.lock"
-        path.parent.mkdir()
-        path.touch()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
+        async with live_root(host) as root:
+            async with root.context.require(MATERIALS).bind() as materials:
                 prepared = await materials.prepare((), "conversation")
         assert "# Akashic 的自我认知" in _system_prompt(prepared)
-        assert tuple(path.parent.iterdir()) == (path,)
+        assert path.exists()
 
 
 @pytest.mark.asyncio
@@ -724,8 +756,8 @@ async def test_default_markdown_uses_programmatic_admission_for_real_summary_pro
         writer.append("answer", Output((ContentPart("text", "fact-two"),), "complete"))
         summary = publish(log, "programmatic-summary")
         used = await record_use(log, host, summary, "use", source="programmatic")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
@@ -774,7 +806,7 @@ def test_moving_an_operation_note_into_user_facts_requires_new_evidence():
 async def test_background_discovery_reads_only_new_eligible_messages(tmp_path, monkeypatch):
     from session.log import MessageCatalog, MessageReader
 
-    first_done, next_head, finished, hold = (asyncio.Event() for _ in range(4))
+    ready, first_done, next_head, finished, hold = (asyncio.Event() for _ in range(5))
     calls = []
     original = MessageReader.snapshot
 
@@ -784,6 +816,7 @@ async def test_background_discovery_reads_only_new_eligible_messages(tmp_path, m
         return original(reader, **kwargs)
 
     async def heads(_catalog):
+        await ready.wait()
         yield {"excluded": 0, "eligible": 0}
         first_done.set()
         await next_head.wait()
@@ -791,14 +824,14 @@ async def test_background_discovery_reads_only_new_eligible_messages(tmp_path, m
         finished.set()
         await hold.wait()
 
+    monkeypatch.setattr(MessageReader, "snapshot", snapshot)
+    monkeypatch.setattr(MessageCatalog, "follow", heads)
     async with application(tmp_path) as (log, host):
         for name, learning in (("excluded", "excluded"), ("eligible", "eligible")):
             log.ensure_session(name, SessionAttributes("internal", cast(Literal["excluded", "eligible"], learning)))
             log.writer(name, author="user", source="conversation", body_types=(Input,),
                        content={"text": check_text}).append(name, Input((ContentPart("text", name),)))
-        monkeypatch.setattr(MessageReader, "snapshot", snapshot)
-        monkeypatch.setattr(MessageCatalog, "follow", heads)
-        await host.start_runtime()
+        ready.set()
         await asyncio.wait_for(first_done.wait(), 2)
         log.writer("eligible", author="user", source="conversation", body_types=(Input,),
                    content={"text": check_text}).append("next", Input((ContentPart("text", "next"),)))
@@ -820,8 +853,8 @@ async def test_markdown_retries_transient_failure_without_new_messages(tmp_path)
         await record_use(log, host, summary, "used-summary")
         original = log.reader("s").snapshot()
         await host.start_runtime()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             await asyncio.wait_for(ctx.require(ServiceKey("fixture.retry_failed")).wait(), 5)
             assert not profile_store(tmp_path).is_applied(summary.reference)
             ctx.require(ServiceKey("fixture.retry_release")).set()
@@ -862,8 +895,8 @@ async def test_profile_input_omits_large_legacy_replay_but_preserves_user_eviden
         original = log.reader("s").snapshot()
         summary = publish(log, "large-legacy")
         used = await record_use(log, host, summary, "use", source="legacy-unattributed")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
@@ -976,8 +1009,8 @@ async def test_profile_keeps_allowed_turn_inside_mixed_source_group(tmp_path):
         original = log.reader("s").snapshot()
         summary = publish(log, "mixed-source")
         used = await record_use(log, host, summary, "used")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
@@ -1003,8 +1036,8 @@ async def test_invalid_model_draft_repairs_or_retries_without_partial_writes(tmp
         before = (store.read_memory(), store.read_self(), store.read_writes(None, 20))
         await host.start_runtime()
         if draft_failures == 2:
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                ctx = snapshot.composition_root.context
+            async with live_root(host) as root:
+                ctx = root.context
                 await asyncio.wait_for(ctx.require(ServiceKey("fixture.retry_failed")).wait(), 5)
                 assert (store.read_memory(), store.read_self(), store.read_writes(None, 20)) == before
                 assert not store.is_applied(summary.reference)

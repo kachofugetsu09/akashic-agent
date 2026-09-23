@@ -83,6 +83,7 @@ async def test_real_plugin_update_watcher_reports_through_delivery(
     """Drive failed -> retry active reporting with durable send receipts."""
     from tests.test_default_reply import application
     from tests.test_plugin_install import _commit, _write_v3_plugin
+    from agent.plugins.install import install_git_plugin
     from agent.plugin_composition.bindings import BINDINGS
     from plugins.plugin_update.inputs import DELIVERY_SENDERS
     from plugins.plugin_update.tool import InstallPlugin
@@ -101,8 +102,9 @@ async def test_real_plugin_update_watcher_reports_through_delivery(
                 '    await ctx.provide(CONTROL, {"fail": False})\n'
             ),
         )
+        initial_target = tmp_path / "initial-target"
         _write_v3_plugin(
-            sources / "report_target",
+            initial_target,
             name="report_target",
             module_source=(
                 'from agent.plugin_composition import ServiceKey\n'
@@ -111,6 +113,11 @@ async def test_real_plugin_update_watcher_reports_through_delivery(
                 'async def apply(ctx):\n'
                 '    await ctx.provide(TARGET, "old")\n'
             ),
+        )
+        _commit(initial_target)
+        install_git_plugin(
+            workspace=tmp_path / "workspace", source=str(initial_target),
+            marketplace="builtin", plugins_home=tmp_path / "home",
         )
         _write_v3_plugin(
             sources / "report_consumer",
@@ -208,7 +215,7 @@ async def apply(ctx):
         log.ensure_session("updates", SessionAttributes())
         generation = next(
             item for item in host._active_generations.values()
-            if item.plugin_id.startswith("plugin_update@")
+            if item.plugin_id == "plugin_update"
         )
         plugin_context = generation.fiber.context
         identity = update_id("real-report")
@@ -221,12 +228,8 @@ async def apply(ctx):
             delivery_type = type(actual_delivery)
             original_send = delivery_type.send
 
-            async def observe_send(
-                delivery, message_id: str, sink: str, *, before_start=None,
-            ):
-                result = await original_send(
-                    delivery, message_id, sink, before_start=before_start,
-                )
+            async def observe_send(delivery, message_id: str, sink: str):
+                result = await original_send(delivery, message_id, sink)
                 send_calls.append((message_id, sink))
                 if len(send_calls) > initial_send_count and message_id.endswith(
                     (":result-failed", ":result-active")
@@ -270,15 +273,17 @@ async def apply(ctx):
                     "sink": {"name": "test", "binding_id": senders["test"], "address": "room"},
                 },
             )
-        assert result.outcome == "success"
-        async with plugin_context.runtime_scope():
             request_facts = plugin_context.require(OWNER_STATE).open(plugin_context).read(identity)
-            assert request_facts is not None
+            delivery_owner = plugin_context.require_runtime_owner(
+                DELIVERY, plugin_context.require(DELIVERY),
+            )
+        assert result.outcome == "success"
+        assert request_facts is not None
         operation = host._operation
         assert operation is not None
-        await asyncio.gather(operation.task, return_exceptions=True)
         await asyncio.wait_for(delivery_control["started"].wait(), 5)
         delivery_control["release"].set()
+        await asyncio.wait_for(asyncio.gather(operation.task, return_exceptions=True), 5)
         failed = host.read_update(identity)
         assert failed.state == "failed"
         failed_message = log.reader("updates").get(identity + ":result-failed")
@@ -291,11 +296,12 @@ async def apply(ctx):
         delivery_control["started"].clear()
         delivery_control["finished"].clear()
         delivery_control["release"] = asyncio.Event()
-        await host.retry_runtime_recovery("report_target@builtin")
-        active = host.read_update(identity)
-        assert active.state == "active"
+        retry = asyncio.create_task(host.retry_runtime_recovery("report_target@builtin"))
         await asyncio.wait_for(delivery_control["started"].wait(), 5)
         delivery_control["release"].set()
+        await asyncio.wait_for(retry, 5)
+        active = host.read_update(identity)
+        assert active.state == "active"
         active_message = log.reader("updates").get(identity + ":result-active")
         assert active_message is not None and isinstance(active_message.body, Output)
         assert active_message.body.parts[0].value == "插件 report_target@builtin 已激活。"
@@ -308,13 +314,16 @@ async def apply(ctx):
         assert log.reader("updates").get(historical_problem).body.parts[0].value == "old problem"
         async with plugin_context.runtime_scope():
             assert plugin_context.require(OWNER_STATE).open(plugin_context).read(identity) == request_facts
-            delivery_admission = plugin_context.require(DELIVERY)
+        delivery_generation = host.generation("delivery")
+        assert delivery_generation is not None and delivery_generation.fiber is not None
+        delivery_context = delivery_generation.fiber.context
+        async with delivery_context.runtime_scope():
             records = DeliveryRecords(
-                plugin_context.require(OWNER_STATE).open(plugin_context),
-                plugin_context.require_runtime_owner(DELIVERY, delivery_admission),
+                delivery_context.require(OWNER_STATE).open(delivery_context),
+                delivery_owner,
             )
-        failed_delivery = records.read(identity + ":result-failed", "test")[1]
-        active_delivery = records.read(identity + ":result-active", "test")[1]
+            failed_delivery = records.read(identity + ":result-failed", "test")[1]
+            active_delivery = records.read(identity + ":result-active", "test")[1]
         assert failed_delivery.phase == "delivered"
         assert failed_delivery.receipt is not None
         assert failed_delivery.receipt.provider_ids == ("report-sender",)
@@ -339,7 +348,7 @@ async def apply(ctx):
 
         # A duplicate wake and a watcher restart reuse the same delivered receipts.
         host._notify_updates()
-        await host.retry_runtime_recovery("plugin_update@builtin")
+        await host.retry_runtime_recovery("plugin_update")
         await asyncio.wait_for(replay_processed.wait(), 5)
         replayed_ids = {
             message_id for message_id, _sink in send_calls[initial_send_count:]

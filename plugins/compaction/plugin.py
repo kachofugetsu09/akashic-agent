@@ -59,11 +59,14 @@ async def apply(ctx: Context) -> None:
     def records() -> SummaryRecords:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
 
-    def read(reference: str) -> StoredSummary | None:
-        return records().read(reference)
-
     # 状态查询在线程执行；启动时取得窄读取口，不在线程中重新申请 owner 写权限。
+    read_record: Callable[[str], StoredSummary | None] | None = None
     read_current: Callable[[str], StoredSummary | None] | None = None
+
+    def read(reference: str) -> StoredSummary | None:
+        if read_record is None:
+            raise RuntimeError("摘要状态读取口尚未启动")
+        return read_record(reference)
 
     def head(session_id: str) -> StoredSummary | None:
         if read_current is None:
@@ -71,11 +74,14 @@ async def apply(ctx: Context) -> None:
         return read_current(session_id)
 
     async def start(_event: object) -> None:
-        nonlocal read_current
-        read_current = records().head
+        nonlocal read_current, read_record
+        state = records()
+        read_record = state.read
+        read_current = state.head
 
     async def stop(_event: object) -> None:
-        nonlocal read_current
+        nonlocal read_current, read_record
+        read_record = None
         read_current = None
 
     _ = await ctx.on(RUNTIME_STARTED, start)

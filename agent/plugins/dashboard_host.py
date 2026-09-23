@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import MutableMapping
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 from starlette.datastructures import Headers
@@ -13,15 +13,19 @@ from starlette.routing import Match
 from agent.plugin_composition import CompositionError, CompositionRoot, Context, FiberState
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.ui import UI, DashboardBinding, UiRegistry, WebUiCatalog
-from agent.plugins.manager import PluginManager
 
 logger = logging.getLogger(__name__)
+
+
+class LiveRootHost(Protocol):
+    @property
+    def live_root(self) -> CompositionRoot | None: ...
 
 
 class PluginDashboardHost:
     """Read the actual live Root provider and its current UI projection."""
 
-    def __init__(self, plugin_manager: PluginManager) -> None:
+    def __init__(self, plugin_manager: LiveRootHost) -> None:
         self._plugin_manager = plugin_manager
 
     def current(self) -> tuple[CompositionRoot, Context, UiRegistry] | None:
@@ -48,7 +52,7 @@ class PluginDashboardHost:
 class LiveDashboardMiddleware:
     """Route each request through the live Root and original owner Context."""
 
-    def __init__(self, app: object, plugin_manager: PluginManager) -> None:
+    def __init__(self, app: object, plugin_manager: LiveRootHost) -> None:
         self._app = app
         self._host = PluginDashboardHost(plugin_manager)
 

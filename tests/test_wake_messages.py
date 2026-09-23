@@ -12,7 +12,7 @@ from agent.plugin_composition.config_input import save_config
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugins.manager import PluginManager
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
@@ -29,6 +29,7 @@ from plugins.wake.request import (
 from plugins.wake.source import Source
 from plugins.wake.state import WakeState
 from session.message import Input, Output, ToolResult
+from session.log import MessageLog
 from tests.test_standard_tools import environment
 
 
@@ -40,7 +41,7 @@ async def application(
     tmp_path,
     *,
     wake_delivery=False,
-    before_load: Callable[[object, object], None] | None = None,
+    before_load: Callable[[MessageLog, PluginManager], None] | None = None,
 ):
     host, store, log, artifacts, sources = environment(tmp_path, reply=True, models=False)
     for name in ("commands", "ui", "conversation", "react", "reply_program", "wake", "delivery", "eventmail", "drift"):
@@ -59,7 +60,7 @@ async def apply(ctx):
         config_path = tmp_path / "workspace/plugin-data/wake-builtin"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         save_config(config_path, {"delivery": {"channel": "test", "recipient": "room", "session_id": "test:room"}})
-    text += "\nfrom tests.test_wake_messages import CONTROLS\n_original_runtime = Runtime\ndef Runtime(ctx, config):\n    runtime = _original_runtime(ctx, config)\n    control = CONTROLS[" + repr(str(tmp_path)) + "]\n    control['runtime'] = runtime\n    deadline = runtime.duties.deadline\n    def observe(now):\n        value = deadline(now)\n        control.setdefault('deadlines', []).append(value)\n        control['due_read'].set()\n        return value\n    runtime.duties.deadline = observe\n    finish_attempt = runtime.state.finish_attempt\n    def observe_attempt(**kwargs):\n        finish_attempt(**kwargs)\n        control['attempts'].put_nowait(kwargs)\n    runtime.state.finish_attempt = observe_attempt\n    return runtime\n"
+    text += "\nfrom tests.test_wake_messages import CONTROLS\n_original_runtime = Runtime\ndef Runtime(ctx, config):\n    runtime = _original_runtime(ctx, config)\n    control = CONTROLS[" + repr(str(tmp_path)) + "]\n    control['runtime'] = runtime\n    deadline = runtime.duties.deadline\n    def observe(now):\n        value = deadline(now)\n        control.setdefault('deadlines', []).append(value)\n        control['deadline_reads'].put_nowait(value)\n        return value\n    runtime.duties.deadline = observe\n    finish_attempt = runtime.state.finish_attempt\n    def observe_attempt(**kwargs):\n        finish_attempt(**kwargs)\n        control['attempts'].put_nowait(kwargs)\n    runtime.state.finish_attempt = observe_attempt\n    return runtime\n"
     module.write_text(text)
     provider = sources / "models_fixture"
     provider.mkdir()
@@ -92,9 +93,11 @@ async def apply(ctx):
     control = CONTROLS[CONTROL_PATH]
     async def embed(texts):
         return [[1.0, 0.0] for _ in texts]
+    async def select_interest():
+        return LearningConfig(embedding_model="fixture", dimension=2, sources=("conversation",)), embed
     await ctx.provide(SEMANTIC_INTEREST, SemanticInterest(Learning(ctx.require(TURN_PROJECTION), owner="akasha", post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect),
         ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS),
-        lambda: (LearningConfig(embedding_model="fixture", dimension=2, sources=("conversation",)), embed)))
+        select_interest))
     @asynccontextmanager
     async def unused_recall(state):
         raise AssertionError("this fixture never invokes memory recall")
@@ -165,7 +168,7 @@ async def apply(ctx):
 '''.replace("CONTROL_PATH", repr(str(tmp_path))))
     control = {"calls": [], "sent": [], "entered": asyncio.Queue(), "release": asyncio.Event(),
                "tool": "share_content", "failure": None, "thinking_only": 0,
-               "due_read": asyncio.Event(), "attempts": asyncio.Queue()}
+               "deadline_reads": asyncio.Queue(), "attempts": asyncio.Queue()}
     control["release"].set()
     CONTROLS[str(tmp_path)] = control
     try:
@@ -472,7 +475,7 @@ async def test_runtime_rebuilds_cross_generation_config_values(tmp_path):
             )
         )
         runtime = Runtime(ctx, cast(Config, previous))
-        original = runtime.capture("d" * 32, await runtime.duties.check(now), now)
+        original = await runtime.capture("d" * 32, await runtime.duties.check(now), now)
         assert original is not None
         assert type(runtime.config) is CurrentConfig
         assert type(runtime.config.delivery) is CurrentTarget
@@ -559,7 +562,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         select("old", "chosen-original")
         ctx.require(DRIFT_PROPOSALS).propose("duty", "1", {"summary": "my interests"}, now)
         runtime = Runtime(ctx, Config(delivery=DeliveryTarget(channel="test", recipient="room", session_id="test:room")))
-        original = runtime.capture("b" * 32, await runtime.duties.check(now), now)
+        original = await runtime.capture("b" * 32, await runtime.duties.check(now), now)
         assert original is not None
         assert original.model_id == "chosen-original"
         source.accept(original)
@@ -600,11 +603,13 @@ async def test_reopen_current_plugins_handle_original_facts_after_source_changes
             with pytest.raises(OSError, match="interrupt before"):
                 await asyncio.wait_for(task.join(), 10)
         saved = log.reader(original.session_id).snapshot()
-        stable_model = host.current_snapshot.generations["models_fixture"].archive_ref
+        stable_generation = host.generation("models_fixture")
+        assert stable_generation is not None
+        stable_model = stable_generation.archive_ref
     module = tmp_path / "plugins/models_fixture/plugin.py"
     changed = module.read_text()
     if fault == "input":
-        # 只有阶段 Input 的未启动请求可以使用新 stable；让新 provider 留下可观察的新正文。
+        # 未显式选择新归档，改动中的 provider 不能接管原业务事实。
         changed = changed.replace('"useful notification"', '"new provider notification"')
     else:
         changed = changed.replace("async def complete(self, request):",
@@ -618,31 +623,29 @@ async def test_reopen_current_plugins_handle_original_facts_after_source_changes
         installed_cache_root=tmp_path / "cache", message_log=log, channel_attachment_store=artifacts)
     try:
         await host.load_all()
-        assert host.current_snapshot.generations["models_fixture"].archive_ref == stable_model
-        # 源码变化不改变 stable；由测试调用者显式发布，再接纳原 Wake 工作。
-        assert await host.prepare_candidate("models_fixture") is not None
-        publication = await host.publish_prepared("models_fixture")
-        assert publication["publication_state"] == "committed"
-        assert host.current_snapshot.generations["models_fixture"].archive_ref != stable_model
+        generation = host.generation("models_fixture")
+        assert generation is not None and generation.archive_ref == stable_model
+        # 重启只加载准确的已选归档；源码变化必须另行显式选择。
         await host.start_runtime()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context.require(ServiceKey("fixture.wake"))
-            async with ctx.runtime_scope():
-                source = Source(ctx, WakeState(ctx.data_root / "wake.sqlite3"))
-                task = await source.start(original.flow_id)
-                if task is not None:
-                    await asyncio.wait_for(task.join(), 10)
-                assert source.pending() == ()
-                assert await source.start(original.flow_id) is None
-                delivery = ctx.require(DRIFT_DELIVERY).lookup(original.accepted)
-                if fault == "input":
-                    delivery_execution = ctx.require(DELIVERY).open(ctx)
-                    receipt = delivery_execution.receipt(original.notification_id, "test")
-                    persisted_binding = delivery_execution.destination(
-                        original.notification_id, "test"
-                    ).binding_id
+        root = host.live_root
+        assert root is not None
+        ctx = root.context.require(ServiceKey("fixture.wake"))
+        async with ctx.runtime_scope():
+            source = Source(ctx, WakeState(ctx.data_root / "wake.sqlite3"))
+            task = await source.start(original.flow_id)
+            if task is not None:
+                await asyncio.wait_for(task.join(), 10)
+            assert source.pending() == ()
+            assert await source.start(original.flow_id) is None
+            delivery = ctx.require(DRIFT_DELIVERY).lookup(original.accepted)
+            if fault == "input":
+                delivery_execution = ctx.require(DELIVERY).open(ctx)
+                receipt = delivery_execution.receipt(original.notification_id, "test")
+                persisted_binding = delivery_execution.destination(
+                    original.notification_id, "test"
+                ).binding_id
         if fault == "input":
-            # 未启动的 Wake 程序可以在当前 stable 运行，但投递仍固定使用原 Sink。
+            # 未启动的 Wake 程序从已选归档恢复，投递仍固定使用原 Sink。
             assert delivery is not None and delivery["status"] == "settled"
             assert receipt is not None and receipt.status == "delivered"
             assert persisted_binding == original.sink["binding_id"]
@@ -727,8 +730,11 @@ async def test_new_drift_wakes_idle_runtime_and_replaces_later_deadline(tmp_path
                 "payload": {"title": "future content"}}])
         await host.start_runtime()
         runtime = control["runtime"]
-        await asyncio.wait_for(control["due_read"].wait(), 10)
-        assert (control["deadlines"][0] is not None) is future_mail
+        async with asyncio.timeout(10):
+            while True:
+                deadline = await control["deadline_reads"].get()
+                if (deadline is not None) is future_mail:
+                    break
         completed = asyncio.Event()
         finish = runtime.state.finish_attempt
         def observe(**kwargs):
@@ -771,13 +777,13 @@ async def test_missing_target_only_maintains_pool_then_reload_can_admit_original
             assert not control["calls"] and not control["sent"]
             assert runtime.source.pending() == () and runtime.state.count_runs() == 0
             assert ctx.require(DRIFT_WAKE).snapshot(now)["proposals"][0]["ref"]["state_version"] == 1
-            assert runtime.capture("c" * 32, await runtime.duties.check(now), now) is None
+            assert await runtime.capture("c" * 32, await runtime.duties.check(now), now) is None
         finally:
             running.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await running
         enabled = Runtime(ctx, Config(delivery=DeliveryTarget(channel="test", recipient="room", session_id="test:room")))
-        original = enabled.capture("c" * 32, await enabled.duties.check(now), now)
+        original = await enabled.capture("c" * 32, await enabled.duties.check(now), now)
         assert original is not None
         enabled.source.accept(original)
         assert await enabled._run(original.flow_id) == "shared"

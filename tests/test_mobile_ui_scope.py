@@ -41,7 +41,9 @@ async def _mount_query_owner(root: CompositionRoot, code: Path, handler, *, name
 
         async def setup_cleanup():
             async def cleanup():
-                state["cleanup_count"] = int(state.get("cleanup_count", 0)) + 1
+                count = state["cleanup_count"]
+                assert isinstance(count, int)
+                state["cleanup_count"] = count + 1
 
             return cleanup
 
@@ -74,7 +76,11 @@ async def _mobile_fixture(tmp_path: Path, handler):
     owner, state = await _mount_query_owner(root, code, handler)
     provider = PluginMobileUiProvider(root)
     catalog = await provider.catalog()
-    return root, provider, owner, state, catalog["items"][0]["revision"]
+    items = catalog["items"]
+    assert isinstance(items, list) and items and isinstance(items[0], dict)
+    revision = items[0]["revision"]
+    assert isinstance(revision, str)
+    return root, provider, owner, state, revision
 
 
 @pytest.mark.asyncio
@@ -142,12 +148,12 @@ async def test_caller_cancel_keeps_target_permit_and_physical_slot_until_thread_
 
     async def observe_wait(awaitables, *args, **kwargs):
         nonlocal wait_count
-        awaitables = tuple(awaitables)
-        wait_count += 1
-        if wait_count == 1:
-            first_wait.set()
-        elif wait_count == 2:
-            second_wait.set()
+        if asyncio.current_task() in provider._draining_queries:  # pyright: ignore[reportPrivateUsage]
+            wait_count += 1
+            if wait_count == 1:
+                first_wait.set()
+            elif wait_count == 2:
+                second_wait.set()
         return await original_async_wait(awaitables, *args, **kwargs)
 
     monkeypatch.setattr(asyncio, "wait", observe_wait)
@@ -156,10 +162,10 @@ async def test_caller_cancel_keeps_target_permit_and_physical_slot_until_thread_
     )
     try:
         assert await asyncio.to_thread(started.wait, 5)
-        await first_wait.wait()
+        await asyncio.wait_for(first_wait.wait(), 5)
         child = next(iter(provider._draining_queries))  # pyright: ignore[reportPrivateUsage]
         child.cancel()
-        await second_wait.wait()
+        await asyncio.wait_for(second_wait.wait(), 5)
         assert not finished.is_set()
         assert provider._admitted_queries == 1  # pyright: ignore[reportPrivateUsage]
         assert state["context"]._fiber._in_flight_calls  # pyright: ignore[reportPrivateUsage]
@@ -278,6 +284,7 @@ async def test_capture_create_prestart_and_submit_failures_release_every_owner(t
         with pytest.raises(RuntimeError, match="create task failed"):
             await provider.query("mobile", revision, "create", {}, session_id=None, turn_id=None)
         assert created
+        assert inspect.iscoroutine(created[0])
         assert inspect.getcoroutinestate(created[0]) is inspect.CORO_CLOSED
         assert not started.is_set()
         assert provider._admitted_queries == 0  # pyright: ignore[reportPrivateUsage]
@@ -383,7 +390,9 @@ async def test_provider_close_accumulates_cancellation_until_worker_and_shutdown
     )
     close_task = None
     original_async_wait_close = asyncio.wait
+    drain_first_wait = asyncio.Event()
     drain_second_wait = asyncio.Event()
+    shutdown_first_wait = asyncio.Event()
     shutdown_second_wait = asyncio.Event()
     drain_waits = 0
     shutdown_waits = 0
@@ -398,7 +407,7 @@ async def test_provider_close_accumulates_cancellation_until_worker_and_shutdown
                 continue
             coroutine = get_coro()
             name = getattr(coroutine, "__name__", "")
-            if name == "observe_wait":
+            if name == "observe_query_wait":
                 phase = "drain"
                 break
             if name == "to_thread":
@@ -406,10 +415,14 @@ async def test_provider_close_accumulates_cancellation_until_worker_and_shutdown
                 break
         if phase == "drain":
             drain_waits += 1
+            if drain_waits == 1:
+                drain_first_wait.set()
             if drain_waits == 2:
                 drain_second_wait.set()
         elif phase == "shutdown":
             shutdown_waits += 1
+            if shutdown_waits == 1:
+                shutdown_first_wait.set()
             if shutdown_waits == 2:
                 shutdown_second_wait.set()
         return await original_async_wait_close(awaitables, *args, **kwargs)
@@ -420,11 +433,11 @@ async def test_provider_close_accumulates_cancellation_until_worker_and_shutdown
         admission_started = asyncio.Event()
         original_provider_wait_close = provider._wait_for_queries
 
-        async def observe_wait():
+        async def observe_query_wait():
             admission_started.set()
             await original_provider_wait_close()
 
-        monkeypatch.setattr(provider, "_wait_for_queries", observe_wait)
+        monkeypatch.setattr(provider, "_wait_for_queries", observe_query_wait)
         original_shutdown = provider._executor.shutdown  # pyright: ignore[reportPrivateUsage]
 
         def blocked_shutdown(*args, **kwargs):
@@ -435,16 +448,18 @@ async def test_provider_close_accumulates_cancellation_until_worker_and_shutdown
         monkeypatch.setattr(provider._executor, "shutdown", blocked_shutdown)  # pyright: ignore[reportPrivateUsage]
         close_task = asyncio.create_task(provider.aclose())
         await admission_started.wait()
+        await asyncio.wait_for(drain_first_wait.wait(), 5)
         close_task.cancel()
-        await drain_second_wait.wait()
+        await asyncio.wait_for(drain_second_wait.wait(), 5)
         assert not close_task.done()
         assert not finished.is_set()
         close_task.cancel()
         release.set()
         await query_task
         assert await asyncio.to_thread(shutdown_started.wait, 5)
+        await asyncio.wait_for(shutdown_first_wait.wait(), 5)
         close_task.cancel()
-        await shutdown_second_wait.wait()
+        await asyncio.wait_for(shutdown_second_wait.wait(), 5)
         assert not close_task.done()
         close_task.cancel()
         shutdown_release.set()

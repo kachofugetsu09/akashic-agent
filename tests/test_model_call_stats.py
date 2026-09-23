@@ -14,7 +14,6 @@ from bootstrap.dashboard_api import create_dashboard_app
 from bootstrap.tools import build_core_runtime
 from core.net.http import SharedHttpResources
 from plugins.akashic_clients.chat_api import _model_rpc_response
-from plugins.models.store import ModelsStore
 from tests.test_model_call_records import descriptor, dump
 from tests.test_mobile_message_log import mobile
 from tests.mobile_realtime.test_channel import _generic_frame
@@ -54,21 +53,15 @@ async def test_http_and_mobile_read_same_call_without_receipts_or_credentials(
             "x-akashic-web-module": module.plugin_id,
             "x-akashic-web-generation": module.generation_id,
         }
-        store = ModelsStore(
-            workspace / "model-registry.sqlite3",
-            backup_dir=workspace / "runtime/model-backups",
-            writable=True,
-        )
-        store.initialize()
-        call_id = store.start_call(
-            descriptor,
-            ModelRequest(({"role": "user", "content": "private input"},)),
-        )
-        store.record_first_token(call_id, 250)
-
         stats_context, reader = root._service_provider(MODEL_CALL_STATS)
-        stats_store = reader.__self__
-        assert stats_store.path == store.path
+        store = reader.__self__
+        assert store.path == workspace / "model-registry.sqlite3"
+        async with stats_context.runtime_scope():
+            call_id = store.start_call(
+                descriptor,
+                ModelRequest(({"role": "user", "content": "private input"},)),
+            )
+            store.record_first_token(call_id, 250)
 
         async def read_stats(model_call_id: str):
             async with stats_context.runtime_scope():
@@ -102,7 +95,7 @@ async def test_http_and_mobile_read_same_call_without_receipts_or_credentials(
                 def broken_read_call(_call_id: str):
                     raise ValueError("provider invariant broken")
 
-                patch.setattr(stats_store, "read_call", broken_read_call)
+                patch.setattr(store, "read_call", broken_read_call)
                 with pytest.raises(ValueError, match="provider invariant broken"):
                     await client.get(f'/api/dashboard/models/calls/{call_id}')
                 with pytest.raises(ValueError, match="provider invariant broken"):

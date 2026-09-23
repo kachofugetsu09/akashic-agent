@@ -83,6 +83,8 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.events",
     "agent.plugin_composition.execution",
     "agent.plugin_composition.executor",
+    # Reviewed narrow host fact: docs/design/plugin-boundary-foundation.md §9.37.
+    "agent.plugin_composition.host",
     "agent.plugin_composition.interaction_undo",
     "agent.plugin_composition.mcp_slots",
     "agent.plugin_composition.messages",

@@ -33,11 +33,12 @@ from agent.plugin_composition.runtime_lifecycle import (
     RUNTIME_STARTING,
 )
 from agent.plugin_composition.tasks import PluginTasks, TASKS
-from agent.plugin_composition.tasks import Tasks
+from agent.plugin_composition.tasks import Task, Tasks
 from agent.plugins.manager import PluginManager
+from agent.plugins.generation import PluginGeneration
+from agent.plugins.scope import PluginScope
 from agent.plugins.archive import PluginArchive
 from agent.restart import RestartGate
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.standard_tools.plugin import register_shell
@@ -148,22 +149,23 @@ async def _mount_local_shell_root(tmp_path):
     await root.context.provide(TASKS, tasks)
     await root.context.provide(PROCESSES, processes)
     await root.context.provide(OWNER_STATE, OwnerState(log))
-    generation_refs = {}
+    generations: dict[str, PluginGeneration] = {}
 
     def generation_lookup(ctx):
         runtime = ctx.runtime
-        if runtime is None:
-            raise AssertionError("local binding must point at a plugin runtime")
-        ref = generation_refs.setdefault(
-            runtime.plugin_id,
-            archive.save_descriptor(
+        generation = generations.get(runtime.plugin_id)
+        if generation is None:
+            ref = archive.save_descriptor(
                 {"plugin_id": runtime.plugin_id, "generation_id": runtime.generation_id}
-            ),
-        )
-        return type("LocalGeneration", (), {
-            "plugin_id": runtime.plugin_id,
-            "archive_ref": ref,
-        })()
+            )
+            generation = PluginGeneration(
+                runtime.plugin_id, runtime.generation_id, runtime.plugin_id,
+                "fixture", "fixture", runtime.plugin_dir, runtime.data_dir, None,
+                PluginScope(runtime.plugin_id, generation_id=runtime.generation_id),
+                archive_ref=ref,
+            )
+            generations[runtime.plugin_id] = generation
+        return generation
 
     bindings = Bindings(log, archive, root, generation_lookup)
     await root.context.provide(BINDINGS, bindings)
@@ -281,19 +283,20 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
 
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        ctx = live_root.context
+        async with ctx.require(ServiceKey("standard-tools-probe")).runtime_scope():
             tools = ctx.require(TOOLS)
             view = ctx.require(ALL_TOOLS)()
-            read = tools.bind(view.select("read_file"), bindings)
-            write = tools.bind(
+            read = await tools.bind_scoped(view.select("read_file"), bindings)
+            write = await tools.bind_scoped(
                 view.select("write_file"),
                 bindings,
                 configuration={"allowed_dir": str(tmp_path / "job")},
             )
-            edit = tools.bind(
+            edit = await tools.bind_scoped(
                 view.select("edit_file"),
                 bindings,
                 configuration={"allowed_dir": str(tmp_path / "job")},
@@ -347,10 +350,11 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
 
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        ctx = live_root.context
+        async with ctx.require(ServiceKey("standard-tools-probe")).runtime_scope():
             catalog = ctx.require(TOOLS)
             view = ctx.require(ALL_TOOLS)()
             configuration = {
@@ -358,18 +362,19 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
                 "working_dir": str(tmp_path),
                 "allow_network": False,
             }
-            command = catalog.bind(
+            command = await catalog.bind_scoped(
                 view.select("shell"), bindings, configuration=configuration
             )
-            stdin = catalog.bind(
+            stdin = await catalog.bind_scoped(
                 view.select("write_stdin"), bindings, configuration=configuration
             )
-            foreign = catalog.bind(
+            foreign = await catalog.bind_scoped(
                 view.select("write_stdin"),
                 bindings,
                 configuration={**configuration, "owner_key": "job-b"},
             )
-            cleanup = bindings.bind(SHELL_OWNERS, {})
+            async with ctx.require(SHELL_OWNERS)._ctx.runtime_scope():
+                cleanup = bindings.bind(SHELL_OWNERS, {})
         shutil.rmtree(source)
         execution = ToolExecution(
             log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
@@ -448,7 +453,9 @@ async def start_shell_call(log, bindings, tasks, binding, source, identity):
     )
     result = await execution.execute_call(reply)
     assert result.outcome == "success"
-    return cast(str, json.loads(cast(str, result.parts[0].value))["execution_id"])
+    execution_id = json.loads(cast(str, result.parts[0].value))["execution_id"]
+    assert isinstance(execution_id, int)
+    return execution_id
 
 
 @pytest.mark.asyncio
@@ -457,11 +464,12 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
     tasks = Tasks()
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            root = snapshot.composition_root.context
-            tool = root.require(TOOLS).bind(
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        root = live_root.context
+        async with root.require(ServiceKey("standard-tools-probe")).runtime_scope():
+            tool = await root.require(TOOLS).bind_scoped(
                 root.require(ALL_TOOLS)().select("shell"), bindings
             )
         first = await start_shell_call(log, bindings, tasks, tool, "conversation", "first")
@@ -471,9 +479,8 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
         ))
         shutil.rmtree(source)
         # 清理使用稳定 owner key；不因源码目录变化跳过同一进程集合的终止。
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert isinstance(snapshot.composition_root, CompositionRoot)
-            ctx = snapshot.composition_root.context
+        async with root.require(ServiceKey("standard-tools-probe")).runtime_scope():
+            ctx = root
             assert ctx.get(SHELL_OWNERS) is not None
             cleanup = ctx.require(TOOL_CLEANUP)
             async with cleanup(log.reader("shared"), "conversation", 0):
@@ -501,7 +508,7 @@ async def test_local_shell_cleanup_survives_hard_owner_unload(tmp_path, monkeypa
     graph = await _mount_local_shell_root(tmp_path)
     old_call = None
     cleanup_call = None
-    unload_call = None
+    unload_call: asyncio.Task[None] | None = None
     probe_call = None
     release_old = asyncio.Event()
     old_started = asyncio.Event()
@@ -597,6 +604,7 @@ async def test_local_shell_cleanup_survives_hard_owner_unload(tmp_path, monkeypa
         assert graph["bindings"].describe(binding, TOOLS) == descriptor
         release_cleanup.set()
         await cleanup_call
+        assert unload_call is not None
         await unload_call
         assert graph["shell_fiber"]._in_flight_calls == {}
         assert graph["effect_closes"]["shell"] == 1
@@ -612,7 +620,8 @@ async def test_local_shell_cleanup_survives_hard_owner_unload(tmp_path, monkeypa
             if task is not None and not task.done()
         )
         if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+            for task in pending:
+                await asyncio.gather(task, return_exceptions=True)
         await graph["root"].dispose()
         await graph["tasks"].close()
         await graph["processes"].close()
@@ -770,7 +779,7 @@ async def test_local_shell_task_canceled_before_start_releases_scope_and_root_pe
     gate = RestartGate(boot_id="local-c4", supervised=False)
     permit = gate.acquire()
     caller_task = None
-    cleanup_task = None
+    cleanup_task: Task | None = None
     caller_settled = asyncio.Event()
     cleanup_settled = asyncio.Event()
     cleanup_body_started = asyncio.Event()
@@ -887,13 +896,14 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
     execution_id = None
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            root = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        root = live_root.context
+        async with root.require(ServiceKey("standard-tools-probe")).runtime_scope():
             ctx = root.require(ServiceKey("standard-tools-probe"))
             catalog = root.require(TOOLS)
-            binding = catalog.bind(
+            binding = await catalog.bind_scoped(
                 root.require(ALL_TOOLS)().select("shell"),
                 bindings,
                 configuration=(
@@ -990,7 +1000,7 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
             remaining = await backend.active_execution_ids()
             if case == "cleanup_failure":
                 assert remaining == [execution_id]
-                assert any(item.kind == "shell_cleanup_failed" for item in snapshot.composition_root.recent_incidents())
+                assert any(item.kind == "shell_cleanup_failed" for item in live_root.recent_incidents())
                 with pytest.raises(RuntimeError, match="shell cleanup 未确认"):
                     await start_shell_call(log, bindings, tasks, binding, "conversation", "blocked")
                 other = await start_shell_call(log, bindings, tasks, binding, "wake", "other")

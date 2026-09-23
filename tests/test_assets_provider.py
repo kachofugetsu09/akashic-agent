@@ -11,6 +11,7 @@ from agent.plugin_composition import CompositionRoot, Context, PluginRuntime
 from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.context import FiberState
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.assets.plugin import apply
@@ -144,7 +145,12 @@ async def test_assets_provider_is_required_by_explicit_selection(tmp_path):
     manager = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                             installed_cache_root=tmp_path / "home/cache")
     try:
-        with pytest.raises(RuntimeError):
-            await manager.load_all()
+        await manager.load_all()
+        generation = manager.generation("records")
+        assert generation is not None and generation.fiber is not None
+        assert generation.fiber.state == FiberState.PENDING
+        assert INSTALLED_ASSETS in generation.fiber.dependencies
+        assert manager.live_root is not None
+        assert manager.live_root.context.get(INSTALLED_ASSETS) is None
     finally:
         await manager.terminate_all()

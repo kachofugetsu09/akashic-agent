@@ -91,7 +91,6 @@ async def test_programmatic_resume_rebinds_output_to_new_connection_after_discon
     tmp_path, monkeypatch,
 ):
     """旧连接断开后，显式 resume 必须把最终 Output 观察交给新连接。"""
-    from agent.plugins.snapshot import lease_runtime_snapshot
     from plugins.programmatic.control import PROGRAMMATIC
     from plugins.turn_projection.plugin import TURN_PROJECTION
 
@@ -117,14 +116,15 @@ async def test_programmatic_resume_rebinds_output_to_new_connection_after_discon
             )
             writer.append("final", Output((ContentPart("text", "恢复结果"),), "complete"))
 
-            async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
-                context = snapshot.composition_root.context
-                reader = core.message_log.reader(session)
-                projection = context.require(TURN_PROJECTION)
-                turn = projection.project(reader.snapshot(), "programmatic")[-1]
-                waiter = asyncio.create_task(
-                    context.require(PROGRAMMATIC).wait(reader, turn),
-                )
+            root = core.plugin_manager.live_root
+            assert root is not None
+            context = root.context
+            reader = core.message_log.reader(session)
+            projection = context.require(TURN_PROJECTION)
+            turn = projection.project(reader.snapshot(), "programmatic")[-1]
+            waiter = asyncio.create_task(
+                context.require(PROGRAMMATIC).wait(reader, turn),
+            )
             page = await second.message_read(session)
             await asyncio.wait_for(waiter, 3)
             claim.consume()
@@ -162,7 +162,6 @@ async def test_exec_cli_reads_exact_completed_message_over_real_socket(tmp_path,
 
 @pytest.mark.asyncio
 async def test_programmatic_source_uses_real_default_reply_and_tool_settlement(tmp_path):
-    from agent.plugins.snapshot import lease_runtime_snapshot
     from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, ResultParams
     from tests.test_default_reply import application
 
@@ -171,14 +170,19 @@ async def test_programmatic_source_uses_real_default_reply_and_tool_settlement(t
 
     async with application(tmp_path, replying=True, extra_sources=add_source) as (log, host):
         session = "programmatic:reply"
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            api = snapshot.composition_root.context.require(PROGRAMMATIC)
+        root = host.live_root
+        assert root is not None
+        api = root.context.require(PROGRAMMATIC)
+        generation = host.generation("programmatic")
+        assert generation is not None and generation.fiber is not None
+        context = generation.fiber.context
+        async with context.runtime_scope():
             await api.call("programmatic/session/admit", AdmitParams(session_id=session))
             await api.call("programmatic/message/send", SendParams(session_id=session, message_id="input", text="do work"))
         async with asyncio.timeout(5):
             async for _ in log.reader(session).follow():
-                async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                    result = await snapshot.composition_root.context.require(PROGRAMMATIC).call(
+                async with context.runtime_scope():
+                    result = await api.call(
                         "programmatic/message/result", ResultParams(session_id=session, input_id="input"))
                 if result["status"] != "open":
                     break
@@ -241,62 +245,3 @@ async def test_control_socket_stop_closes_clients_waiting_for_connection_slot(tm
             for writer in writers:
                 writer.close()
                 await writer.wait_closed()
-
-
-@pytest.mark.asyncio
-async def test_programmatic_requests_keep_exact_snapshot_while_follow_does_not_pin_it(tmp_path, monkeypatch):
-    from agent.plugins.snapshot import RuntimeSnapshotCompiler, get_current_runtime_snapshot
-    from plugins.programmatic.control import PROGRAMMATIC
-
-    async with endpoint(tmp_path, monkeypatch) as (address, core):
-        manager = core.plugin_manager
-        old = manager.current_snapshot
-        assert old is not None
-        api = old.composition_root.context.require(PROGRAMMATIC)
-        original = api.call
-        entered, release = asyncio.Event(), asyncio.Event()
-        observed = []
-
-        async def blocked(method, params, transport=None):
-            snapshot = get_current_runtime_snapshot()
-            observed.append(snapshot.snapshot_id)
-            if params.session_id == "programmatic:old":
-                entered.set()
-                await release.wait()
-                assert get_current_runtime_snapshot() is snapshot
-            return await original(method, params, transport)
-
-        monkeypatch.setattr(api, "call", blocked)
-        async with await AsyncAkashic.connect(address) as client:
-            async with await client.session_follow("programmatic:new") as feed:
-                stream = feed.events()
-                assert (await asyncio.wait_for(anext(stream), 3))["type"] == "reply.status"
-                assert old.lease_count == 0
-                request = asyncio.create_task(client.request("programmatic/session/admit", {
-                    "session_id": "programmatic:old",
-                }))
-                try:
-                    await asyncio.wait_for(entered.wait(), 3)
-                    replacement = RuntimeSnapshotCompiler().compile(old.generations,
-                        snapshot_revision="programmatic-publication-proof", composition_root=old.composition_root)
-                    await manager._publish_committed_snapshot(replacement)
-                    assert manager.current_snapshot is replacement
-                    assert not request.done() and old.lease_count == 1
-                    release.set()
-                    await asyncio.wait_for(request, 3)
-                    await asyncio.wait_for(manager.snapshot_store.wait_for_snapshot_drained(old), 3)
-                    await client.request("programmatic/session/admit", {"session_id": "programmatic:new"})
-                    await client.request("programmatic/message/send", {
-                        "session_id": "programmatic:new", "message_id": "new-input", "text": "new owner",
-                    })
-                    assert observed == [old.snapshot_id, replacement.snapshot_id, replacement.snapshot_id]
-                    async with asyncio.timeout(3):
-                        async for event in stream:
-                            if event["type"] == "messages.appended":
-                                assert event["items"][0]["id"] == "new-input"
-                                break
-                finally:
-                    release.set()
-                    request.cancel()
-                    await asyncio.gather(request, return_exceptions=True)
-                    await stream.aclose()

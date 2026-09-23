@@ -273,6 +273,9 @@ def test_one_time_retirement_requires_both_real_base_inventories(
     old = repo / "migrations/yoyo/20260802_01_origin.py"
     old.unlink()
     _write_bundle(repo, [("20260803_01_origin", "steps = []\n")])
+    (repo / "plugins/future_owner/akashic.plugin.toml").write_text(
+        "# retirement base manifest\n", encoding="utf-8"
+    )
     new_base = _commit(repo, "move migrations to plugin")
 
     shutil_root = repo / "plugins/future_owner"

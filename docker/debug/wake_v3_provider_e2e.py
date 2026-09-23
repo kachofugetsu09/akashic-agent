@@ -11,7 +11,7 @@ import shutil
 import sqlite3
 import sys
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -339,8 +339,10 @@ class RuntimeStack:
     artifact_metadata: ArtifactStore
     after_load: Callable[[], Awaitable[None]] | None = None
     uses_test_model: bool = True
+    _base_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
 
     async def start(self) -> None:
+        self._base_tasks = asyncio.all_tasks()
         selection = PluginSelection(self.workspace)
         stable = selection.read()
         await self.manager.load_all()
@@ -353,16 +355,28 @@ class RuntimeStack:
     async def close(self) -> None:
         """Close every isolated runtime owner while preserving its durable workspace."""
 
-        try:
-            await self.manager.terminate_all()
-        finally:
-            try:
-                await self.event_bus.aclose()
-            finally:
-                self.message_log.close()
-                self.artifact_metadata.close()
-                if self.uses_test_model:
-                    unregister_test_model_provider(self.workspace)
+        await self.manager.terminate_all()
+        await self.event_bus.aclose()
+        self.message_log.close()
+        self.artifact_metadata.close()
+        if self.uses_test_model:
+            unregister_test_model_provider(self.workspace)
+
+    async def abort_after_fault(self) -> None:
+        """End this isolated process stand-in after its injected fatal fault."""
+
+        # The faulted Root cannot claim clean stop. A real process restart drops
+        # its tasks; close only tasks created since this stack started.
+        pending = [task for task in asyncio.all_tasks() - self._base_tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await self.event_bus.aclose()
+        self.message_log.close()
+        self.artifact_metadata.close()
+        if self.uses_test_model:
+            unregister_test_model_provider(self.workspace)
 
 
 async def run_suite(
@@ -489,6 +503,7 @@ async def run_suite(
                 # its durable owner records remain the recovery evidence.
                 if not _is_fixture_settlement_failure(error):
                     raise
+                await first.abort_after_fault()
             first = None
             restarted = _build_stack(
                 workspace,

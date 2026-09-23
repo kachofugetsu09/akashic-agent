@@ -1,18 +1,19 @@
 import ast
 import asyncio
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime, timezone
 import inspect
 import logging
 from pathlib import Path
 import shutil
-from typing import Any, cast
+from typing import Any, Literal, cast, overload
 
 import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
-from agent.plugin_composition import PluginRuntime, ServiceKey
+from agent.plugin_composition import Fiber, PluginRuntime, ServiceKey
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.model import CompositionError
 from agent.plugins.manager import PluginManager
@@ -37,12 +38,31 @@ def _write_source(path, source):
     path.write_text(source)
 
 
+@overload
+def running(
+    tmp_path, program, *, lifecycle=False, fault_source: Literal[True],
+    loading_source=False, before_watcher=None, before_start=None,
+    expected_watcher_errors=None,
+) -> AbstractAsyncContextManager[tuple[MessageLog, PluginManager, asyncio.Task[None], Fiber]]: ...
+
+
+@overload
+def running(
+    tmp_path, program, *, lifecycle=False, fault_source: Literal[False] = False,
+    loading_source=False, before_watcher=None, before_start=None,
+    expected_watcher_errors=None,
+) -> AbstractAsyncContextManager[tuple[MessageLog, PluginManager, asyncio.Task[None]]]: ...
+
+
 @asynccontextmanager
 async def running(
     tmp_path, program, *, lifecycle=False, fault_source=False,
     loading_source=False, before_watcher=None, before_start=None,
     expected_watcher_errors=None,
-):
+) -> AsyncIterator[
+    tuple[MessageLog, PluginManager, asyncio.Task[None]]
+    | tuple[MessageLog, PluginManager, asyncio.Task[None], Fiber]
+]:
     sources = tmp_path / "plugins"
     for name in ("commands", "ui", "conversation", "sources", "content", "models"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
@@ -109,6 +129,7 @@ async def apply(ctx):
             await before_start(log, host, watcher, fault_fiber)
         await asyncio.wait_for(host.start_runtime(), 10)
         if fault_source:
+            assert fault_fiber is not None
             yield log, host, watcher, fault_fiber
         else:
             yield log, host, watcher
@@ -491,7 +512,7 @@ async def test_source_loading_registration_publishes_once_after_catalog_sweep(
     published = asyncio.Event()
     program_started = asyncio.Event()
     snapshots: list[tuple[str, ...]] = []
-    collector = None
+    collector: asyncio.Task[None] | None = None
     collector_joined = False
     mount_task = None
     mount_task_joined = False
@@ -923,7 +944,7 @@ async def test_follow_queued_drive_rechecks_revoked_source_before_first_instruct
     source_opened = asyncio.Event()
     opened: list[tuple[str, object, object]] = []
     old_effect = None
-    drive_task = None
+    drive_task: asyncio.Future[object] | None = None
     drive_task_joined = False
     original_changes = None
     loop = asyncio.get_running_loop()
@@ -1559,9 +1580,9 @@ async def test_follow_unrelated_source_does_not_retry_source_settlement_failure(
     unrelated_delivered = False
     loop = asyncio.get_running_loop()
 
-    follow_module = inspect.getmodule(follow)
-    assert follow_module is not None
-    original_warning = follow_module.logger.warning
+    # Plugin reload may remove the module entry while this imported function remains live.
+    follow_logger = logging.getLogger(follow.__module__)
+    original_warning = follow_logger.warning
 
     def observe_warning(message, *args, **kwargs):
         error = kwargs.get("exc_info")
@@ -1573,7 +1594,7 @@ async def test_follow_unrelated_source_does_not_retry_source_settlement_failure(
             settlement_stopped.set()
         return original_warning(message, *args, **kwargs)
 
-    monkeypatch.setattr(follow_module.logger, "warning", observe_warning)
+    monkeypatch.setattr(follow_logger, "warning", observe_warning)
 
     original_changes = None
     original_entries = None

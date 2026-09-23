@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 import shutil
 from typing import cast
@@ -13,12 +13,12 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.config_input import save_config
 from pydantic import ValidationError
 
-from agent.plugin_composition import ServiceKey
+from agent.plugin_composition import CompositionError, FiberState, ServiceKey
 from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugin_composition.assets import InstalledAsset
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.content.plugin import check_text
@@ -26,6 +26,7 @@ from plugins.context.materials import MATERIALS
 from plugins.context.plugin import Config
 from plugins.conversation.plugin import check_origin
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from plugins.sources.plugin import SOURCES
 from session.log import MessageLog
 from session.artifact_store import ArtifactStore
 from session.message import ContentPart, Input, Output, ToolResult
@@ -118,6 +119,15 @@ async def application(tmp_path):
         store.close()
 
 
+async def _installed_assets(host: PluginManager) -> tuple[InstalledAsset, ...]:
+    """Read assets through the actual active fixture consumer."""
+    generation = host.generation("fixture_skills")
+    assert generation is not None and generation.fiber is not None
+    context = generation.fiber.context
+    async with context.runtime_scope():
+        return context.require(INSTALLED_ASSETS)(context)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source,channel", [("conversation", "akashic"), ("programmatic", "programmatic"),
                                            ("wake", None), ("conversation", "telegram_bot")])
@@ -132,8 +142,9 @@ async def test_prompt_reads_veda_and_fixed_input_time_without_rewriting_messages
         log.writer("s", author="user", source="unrelated", body_types=(Input,), content={"text": check_text}).append(
             "other", Input((ContentPart("text", "另一个来源"),)))
         original = log.reader("s").snapshot()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            async with snapshot.composition_root.context.require(MATERIALS).bind() as view:
+        root = host.live_root
+        assert root is not None
+        async with root.context.require(MATERIALS).bind() as view:
                 first = await view.prepare(original, source)
                 second = await view.prepare(original, source)
                 assert first == second
@@ -169,8 +180,9 @@ async def test_prompt_fails_on_missing_or_corrupt_veda_without_reset(tmp_path, p
             veda.unlink()
         else:
             veda.write_bytes(payload)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            async with snapshot.composition_root.context.require(MATERIALS).bind() as view:
+        root = host.live_root
+        assert root is not None
+        async with root.context.require(MATERIALS).bind() as view:
                 with pytest.raises(RuntimeError, match=r"persona\.py --workspace"):
                     await view.prepare((), "conversation")
         assert not veda.exists() if payload is None else veda.read_bytes() == payload
@@ -180,41 +192,47 @@ async def test_prompt_fails_on_missing_or_corrupt_veda_without_reset(tmp_path, p
 @pytest.mark.asyncio
 async def test_skill_catalog_cache_still_requires_the_calling_task_lease(tmp_path):
     async with application(tmp_path) as (_, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            service = snapshot.composition_root.context.require(
-                ServiceKey("standard_tools.skill_inspection.v1")
-            )
+        root = host.live_root
+        assert root is not None
+        generation = host.generation("standard_tools")
+        assert generation is not None and generation.fiber is not None
+        context = generation.fiber.context
+        async with context.runtime_scope():
+            service = context.require(ServiceKey("standard_tools.skill_inspection.v1"))
             assert [item["name"] for item in service.list_skills()] == ["example"]
 
             async def inherited_task():
                 return service.list_skills()
 
-            with pytest.raises(RuntimeError, match="当前任务的 runtime scope"):
+            with pytest.raises(CompositionError, match="授权需要当前 Context"):
                 await asyncio.create_task(inherited_task())
-        with pytest.raises(RuntimeError, match="当前任务的 runtime scope"):
+        with pytest.raises(CompositionError, match="授权需要当前 Context"):
             service.list_skills()
 
 
 @pytest.mark.asyncio
 async def test_load_skill_uses_new_stable_tree_after_restart(tmp_path):
     async with application(tmp_path) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            reference = ctx.require(TOOLS).bind(
+        root = host.live_root
+        assert root is not None
+        ctx = root.context
+        reference = await ctx.require(TOOLS).bind_scoped(
                 ctx.require(ALL_TOOLS)().select("load_skill"), ctx.require(BINDINGS)
             )
-            metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
-            state = cast(Mapping[str, object], metadata["state"])
-            assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
-            asset = next(
+        metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
+        state = cast(Mapping[str, object], metadata["state"])
+        assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
+        assets = await _installed_assets(host)
+        asset = next(
                 item
-                for item in ctx.require(INSTALLED_ASSETS)()
+                for item in assets
                 if item.owner_id == "fixture_skills" and item.category == "skills"
             )
-            original_root = asset.root_dir / "example"
+        original_root = asset.root_dir / "example"
         # 安装改变后，下一次 stable 只使用新生成的资源树。
         (tmp_path / "plugins/fixture_skills/skills/example/resource.txt").write_text("resource-b")
         (tmp_path / "plugins/fixture_skills/skills/example/SKILL.md").write_text("---\ndescription: updated\n---\n新版指令")
+        await host.reconcile_changed()
     assert (original_root / "resource.txt").read_text() == "resource-a"
     log = MessageLog(tmp_path / "workspace/sessions.db")
     store = ArtifactStore(tmp_path / "workspace/sessions.db")
@@ -231,14 +249,14 @@ async def test_load_skill_uses_new_stable_tree_after_restart(tmp_path):
     )
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            ctx = snapshot.composition_root.context
-            bindings = ctx.require(BINDINGS)
-            replacement = ctx.require(TOOLS).bind(
+        root = host.live_root
+        assert root is not None
+        ctx = root.context
+        bindings = ctx.require(BINDINGS)
+        replacement = await ctx.require(TOOLS).bind_scoped(
                 ctx.require(ALL_TOOLS)().select("load_skill"), bindings
             )
-            assert replacement != reference
+        assert replacement != reference
         async with bindings.open(replacement, TOOLS) as (tools, metadata):
             async with tools.open(metadata) as tool:
                 newer_arguments = await tool.prepare({"skill": "example"})
@@ -273,15 +291,30 @@ async def test_default_reply_uses_prompt_and_real_skill_tool_with_provider_view(
         prompt_sources(root)
         path = root / "test_provider/plugin.py"
         path.write_text(
-            path.read_text().replace(
-                '"write_evidence", {})', '"load_skill", {"skill": "example"})'
-            ).replace('    await ctx.provide(ServiceKey("tools.cleanup.v1"), shell_cleanup)\n', '')
+                path.read_text().replace(
+                    '"write_evidence", {})', '"load_skill", {"skill": "example"})'
+                ).replace(
+                    '    await ctx.provide(ServiceKey("tools.cleanup.v1"), partial(\n'
+                    '        shell_cleanup, ctx, ShellOwners(ctx), ctx.require(TASKS).open(ctx),\n'
+                    '    ))\n',
+                    '',
+                )
         )
 
     async with reply_application(tmp_path, replying=True, extra_sources=sources) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            await ctx.require(CHANNEL_INPUT)("test:room", "input", ChannelInboundMessage(
+        root = host.live_root
+        assert root is not None
+        ctx = root.context
+        conversation = host.generation("conversation")
+        assert conversation is not None and conversation.fiber is not None
+        assert conversation.fiber.state is FiberState.ACTIVE
+        source_service = ctx.require(SOURCES)
+        async with aclosing(source_service.changes()) as changes:
+            async with asyncio.timeout(5):
+                async for entries in changes:
+                    if any(item.name == "conversation" for item in entries):
+                        break
+        await ctx.require(CHANNEL_INPUT)("test:room", "input", ChannelInboundMessage(
                 "test", "user", "room", "读取 example 技能", datetime(2026, 9, 7, tzinfo=UTC), {}))
         async def completed():
             async for _ in log.catalog().follow():
@@ -291,18 +324,19 @@ async def test_default_reply_uses_prompt_and_real_skill_tool_with_provider_view(
         rows = await asyncio.wait_for(completed(), 10)
         assert rows is not None
         assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output]
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
-            assert "唯一人格甲" in str(calls[0].messages)
-            environment = calls[0].messages[-1]["content"]
-            assert "input_id: input" in environment
-            assert rows[0].recorded_at.astimezone().isoformat() in environment
-            assert "fixture task" in str(calls[0].messages)
-            assert "load_skill" in str(calls[0].tools)
-            result = cast(
+        root = host.live_root
+        assert root is not None
+        calls = root.context.require(ServiceKey("fixture.calls"))
+        assert "唯一人格甲" in str(calls[0].messages)
+        environment = calls[0].messages[-1]["content"]
+        assert "input_id: input" in environment
+        assert rows[0].recorded_at.astimezone().isoformat() in environment
+        assert "fixture task" in str(calls[0].messages)
+        assert "load_skill" in str(calls[0].tools)
+        result = cast(
                 Mapping[str, object], json.loads(cast(str, rows[2].body.parts[0].value))
             )
-            assert (
+        assert (
                 Path(cast(str, result["base_directory"])) / "resource.txt"
             ).read_text() == "resource-a"
-            assert result["instructions"] == "读取 resource.txt，保留原内容。"
+        assert result["instructions"] == "读取 resource.txt，保留原内容。"

@@ -1,6 +1,7 @@
 """Web/Dashboard provider tests for the one live local UI graph."""
 
 import ast
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import ModuleType
 
@@ -22,14 +23,18 @@ from plugins.ui import plugin as ui_plugin
 from plugins.ui.dashboard import _plugin_routes, _require_routes_available
 
 
-def _module_from_source(code: Path, source: str) -> tuple[ModuleType, object]:
+class _DashboardModule(ModuleType):
+    load_dashboard: Callable[[], ModuleType]
+
+
+def _module_from_source(code: Path, source: str) -> tuple[ModuleType, Callable[[], ModuleType]]:
     """Compile a dashboard loader with a real plugin-local code origin."""
 
     code.mkdir(parents=True, exist_ok=True)
     path = code / "dashboard.py"
     path.write_text(source, encoding="utf-8")
     compiled = compile(ast.parse(source, filename=str(path)), str(path), "exec")
-    module = ModuleType("fixture_dashboard")
+    module = _DashboardModule("fixture_dashboard")
     module.__file__ = str(path)
     exec(compiled, module.__dict__)
     module._MODULE = module
@@ -42,7 +47,11 @@ async def _mount_owner(
     *,
     name: str = "view",
     register: bool = True,
-    **options: object,
+    web: str | None = None,
+    dashboard: Callable[[], ModuleType] | None = None,
+    requires: tuple[str, ...] = (),
+    provides: tuple[str, ...] = (),
+    contract_digests: Mapping[str, str] | None = None,
 ) -> Context:
     """Mount one real contributor Fiber and return its original Context."""
 
@@ -51,7 +60,10 @@ async def _mount_owner(
     async def apply(ctx: Context) -> None:
         contexts.append(ctx)
         if register:
-            await ctx.require(UI).register(ctx, **options)
+            await ctx.require(UI).register(
+                ctx, web=web, dashboard=dashboard, requires=requires,
+                provides=provides, contract_digests=contract_digests,
+            )
 
     await root.mount(
         apply,

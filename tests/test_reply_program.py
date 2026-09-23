@@ -17,7 +17,6 @@ from agent.plugin_composition.models import (
 )
 from agent.plugin_composition.tasks import TASKS
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
@@ -139,28 +138,30 @@ async def apply(ctx):
         return {"decision": "allowed"}
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
-            async with root.require(MATERIALS).bind() as material_view:
-                MaterialView = type(material_view)
-            if case == "summarized_input":
-                original_prepare = MaterialView.prepare
-                async def summarized_prepare(self, messages, source, **kwargs):
-                    prepared = await original_prepare(self, messages, source, **kwargs)
-                    if any(isinstance(message.body, ToolResult) for message in messages):
-                        return {**prepared, "summary": {"reference": "published",
-                            "source_message_ids": tuple(message.message_id for message in messages[2:]), "content": "tool work summary"}}
-                    return prepared
-                monkeypatch.setattr(MaterialView, "prepare", summarized_prepare)
-            if case == "input_during_reduction":
-                original_reduce = MaterialView.reduce
-                async def delayed_reduce(self, *args, **kwargs):
-                    if not authorizing.is_set():
-                        authorizing.set()
-                        await authorized.wait()
-                    return await original_reduce(self, *args, **kwargs)
-                monkeypatch.setattr(MaterialView, "reduce", delayed_reduce)
-            ctx = root.require(ServiceKey("probe"))
+        live_root = host.live_root
+        assert live_root is not None
+        root = live_root.context
+        async with root.require(MATERIALS).bind() as material_view:
+            MaterialView = type(material_view)
+        if case == "summarized_input":
+            original_prepare = MaterialView.prepare
+            async def summarized_prepare(self, messages, source, **kwargs):
+                prepared = await original_prepare(self, messages, source, **kwargs)
+                if any(isinstance(message.body, ToolResult) for message in messages):
+                    return {**prepared, "summary": {"reference": "published",
+                        "source_message_ids": tuple(message.message_id for message in messages[2:]), "content": "tool work summary"}}
+                return prepared
+            monkeypatch.setattr(MaterialView, "prepare", summarized_prepare)
+        if case == "input_during_reduction":
+            original_reduce = MaterialView.reduce
+            async def delayed_reduce(self, *args, **kwargs):
+                if not authorizing.is_set():
+                    authorizing.set()
+                    await authorized.wait()
+                return await original_reduce(self, *args, **kwargs)
+            monkeypatch.setattr(MaterialView, "reduce", delayed_reduce)
+        ctx = root.require(ServiceKey("probe"))
+        async with ctx.runtime_scope():
             def writer(body):
                 return root.require(MESSAGE_WRITERS).bind(
                     ctx, author="user", source="conversation", body_types=(body,),

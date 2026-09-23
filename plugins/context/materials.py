@@ -114,10 +114,11 @@ class MaterialView:
         current = decode_material(materials)
         for _, owner in self._sources:
             if owner.reduce is not None:
-                summary_value = await owner.reduce(
-                    snapshot, material_data(current), request, model, projection,
-                    source=source, force=force,
-                )
+                async with owner.context.runtime_scope():
+                    summary_value = await owner.reduce(
+                        snapshot, material_data(current), request, model, projection,
+                        source=source, force=force,
+                    )
                 self._check_active()
                 summary = decode_summary(summary_value)
                 if summary is None:

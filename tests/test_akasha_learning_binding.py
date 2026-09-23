@@ -11,9 +11,8 @@ import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
-from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.bindings import Bindings, BINDINGS
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.application.cycle import MemoryCycle
@@ -34,7 +33,6 @@ def sources(path):
     # 这里只装配真实纯学习能力；正式 Akasha 的 recall/UI/worker 接线另行验收。
     (path / "akasha/plugin.py").write_text('''
 from contextlib import asynccontextmanager
-from agent.plugin_composition import RUNTIME_STARTED
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.plugin import TOOLS
 from agent.plugin_composition.bindings import BINDINGS
@@ -51,9 +49,6 @@ async def apply(ctx):
     learning = Learning(ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id, post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect)
     await ctx.provide(AKASHA_LEARNING, learning)
     await ctx.require(CONTENT).register(ctx, {"name": "akasha", "content": {"akasha.feedback": check_feedback}})
-    async def start(event):
-        raise AssertionError("restoring learning must not start runtime")
-    await ctx.on(RUNTIME_STARTED, start)
     for action in ("remember", "forget"):
         @asynccontextmanager
         async def open_feedback(candidates, action=action):
@@ -68,6 +63,24 @@ def manager(tmp_path, roots, log):
                          installed_cache_root=tmp_path / "home", message_log=log)
 
 
+def live_root(host):
+    root = host.live_root
+    assert root is not None
+    return root
+
+
+def plugin_context(root, plugin_id):
+    for fiber in root._fibers.values():
+        if fiber.runtime is not None and fiber.runtime.plugin_id == plugin_id:
+            assert fiber.state.value == "active", root.receipt().incidents
+            return fiber.context
+    raise AssertionError(f"live Root has no {plugin_id} owner")
+
+
+def learning_context(root):
+    return plugin_context(root, "akasha")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("exclusion", ["legacy", "session"])
 async def test_excluded_learning_materials_never_reach_embeddings_or_graph(tmp_path, exclusion):
@@ -80,9 +93,8 @@ async def test_excluded_learning_materials_never_reach_embeddings_or_graph(tmp_p
     consumer = None
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         embeddings = MessageEmbeddings(log)
         consumer = await MessageConsumer.load(tmp_path / "memory.db", 
             catalog=log.catalog(), embeddings=embeddings, bindings=bindings, config=MemoryConfig())
@@ -99,7 +111,7 @@ async def test_excluded_learning_materials_never_reach_embeddings_or_graph(tmp_p
             (provenance,) if exclusion == "legacy" else ())))
         writer.append("old-answer", Output((ContentPart("text", "excluded answer"),), "complete"))
         rule = LearningConfig(embedding_model="fixture-space", dimension=2, sources=("legacy-unattributed",))
-        async with lease_runtime_snapshot(host.snapshot_store):
+        async with learning_context(live).runtime_scope():
             identity = bindings.bind(AKASHA_LEARNING, rule.model_dump())
         embedded = []
         async def embed(texts):
@@ -136,19 +148,18 @@ async def test_learning_restores_complete_interrupted_turn_without_relearning(tm
     memory = tmp_path / "memory.db"
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         embeddings = MessageEmbeddings(log)
         consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         assert memory.exists()  # 首次切换起点在任何学习之前已耐久。
         rule = LearningConfig(embedding_model="fixture-space", dimension=2, sources=("chat",))
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            learning = snapshot.composition_root.context.require(AKASHA_LEARNING)
+        async with learning_context(live).runtime_scope():
+            learning = live.context.require(AKASHA_LEARNING)
             identity = bindings.bind(AKASHA_LEARNING, rule.model_dump())
-            feedback_tool = snapshot.composition_root.context.require(TOOLS).bind(
-                snapshot.composition_root.context.require(ALL_TOOLS)().select(
+            feedback_tool = live.context.require(TOOLS).bind(
+                live.context.require(ALL_TOOLS)().select(
                     "remember_memory"
                 ),
                 bindings,
@@ -172,9 +183,9 @@ async def test_learning_restores_complete_interrupted_turn_without_relearning(tm
         from plugins.content.plugin import CONTENT
         async def authorize(binding, arguments):
             return {"allowed": True}
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
-            async with snapshot.composition_root.context.require(CONTENT).bind() as view:
+        async with plugin_context(live, "tools").runtime_scope():
+            catalog = live.context.require(TOOLS)
+            async with live.context.require(CONTENT).bind() as view:
                 reply = MessageReply("feedback", ref, log.reader("s"),
                     log.writer("s", author="tool", source="chat", body_types=(ToolResult,),
                                call_ref=ref, content=view.checks), lambda: None)
@@ -201,9 +212,8 @@ async def test_learning_restores_complete_interrupted_turn_without_relearning(tm
         await host.terminate_all()
         host = manager(tmp_path, [root], log)
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         def forbidden_commit(*args, **kwargs):
             raise AssertionError("loading a published graph must not learn again")
         monkeypatch.setattr(MemoryCycle, "commit", forbidden_commit)
@@ -239,9 +249,8 @@ async def test_initial_cutover_is_not_recomputed_after_restart_before_first_lear
     consumer = None
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         def accept(identity):
             log.writer("s", author="user", source="chat", body_types=(Input,), content={}).append(identity, Input(()))
         accept("old")
@@ -274,14 +283,13 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
     memory = tmp_path / "memory.db"
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         embeddings = MessageEmbeddings(log)
         consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         rule = LearningConfig(embedding_model="fixture-space", dimension=2, sources=("chat", "wake", "timer"))
-        async with lease_runtime_snapshot(host.snapshot_store):
+        async with learning_context(live).runtime_scope():
             identity = bindings.bind(AKASHA_LEARNING, rule.model_dump())
         def write(kind, identity, body, source="chat"):
             return log.writer("s", author="test", source=source, body_types=(kind,),
@@ -350,7 +358,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
         consumer.close()
         consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
-        async with lease_runtime_snapshot(host.snapshot_store):
+        async with learning_context(live).runtime_scope():
             changed_model = bindings.bind(AKASHA_LEARNING, {**rule.model_dump(), "embedding_model": "other-space"})
             changed_dimension = bindings.bind(AKASHA_LEARNING, {**rule.model_dump(), "dimension": 3})
         for changed in (changed_model, changed_dimension):
@@ -388,13 +396,12 @@ async def test_feedback_uses_prepared_message_identity_after_interrupt_and_repor
     consumer = None
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         consumer = await MessageConsumer.load(tmp_path / "memory.db", catalog=log.catalog(),
             embeddings=MessageEmbeddings(log), bindings=bindings, config=MemoryConfig())
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with learning_context(live).runtime_scope():
+            ctx = live.context
             catalog = ctx.require(TOOLS)
             identity = catalog.bind(
                 ctx.require(ALL_TOOLS)().select(tool_name), bindings
@@ -414,29 +421,30 @@ async def test_feedback_uses_prepared_message_identity_after_interrupt_and_repor
                 if len(permissions) == 1:
                     raise asyncio.CancelledError
                 return {"allowed": True}
-            execution = catalog.execution(authorize)
-            async with snapshot.composition_root.context.require(CONTENT).bind() as view:
-                reply = MessageReply("result", ref, log.reader("s"),
-                    log.writer("s", author="tool", source="chat", body_types=(ToolResult,),
-                               call_ref=ref, content=view.checks), lambda: None)
-                if expected == "success":
-                    with pytest.raises(asyncio.CancelledError):
-                        await execution.execute_call(reply)
-                    write(Input, "u3", Input((ContentPart("text", "later interrupt"),)))
-                result = await execution.execute_call(reply)
-                assert result.outcome == expected
-                repeated = await execution.execute_call(reply)
-                assert repeated == result
-                results = [message for message in log.reader("s").snapshot() if isinstance(message.body, ToolResult)]
-                assert len(results) == 1
-                if expected == "success":
-                    feedback = result.parts[-1].value
-                    assert isinstance(feedback, Mapping)
-                    assert feedback["target_message_ids"] == ("u2",)
-                    assert permissions[0] == permissions[1]
-                else:
-                    assert permissions == []
-                    assert all(part.kind != "akasha.feedback" for part in result.parts)
+            async with plugin_context(live, "tools").runtime_scope():
+                execution = catalog.execution(authorize)
+                async with live.context.require(CONTENT).bind() as view:
+                    reply = MessageReply("result", ref, log.reader("s"),
+                        log.writer("s", author="tool", source="chat", body_types=(ToolResult,),
+                                   call_ref=ref, content=view.checks), lambda: None)
+                    if expected == "success":
+                        with pytest.raises(asyncio.CancelledError):
+                            await execution.execute_call(reply)
+                        write(Input, "u3", Input((ContentPart("text", "later interrupt"),)))
+                    result = await execution.execute_call(reply)
+                    assert result.outcome == expected
+                    repeated = await execution.execute_call(reply)
+                    assert repeated == result
+                    results = [message for message in log.reader("s").snapshot() if isinstance(message.body, ToolResult)]
+                    assert len(results) == 1
+                    if expected == "success":
+                        feedback = result.parts[-1].value
+                        assert isinstance(feedback, Mapping)
+                        assert feedback["target_message_ids"] == ("u2",)
+                        assert permissions[0] == permissions[1]
+                    else:
+                        assert permissions == []
+                        assert all(part.kind != "akasha.feedback" for part in result.parts)
     finally:
         if consumer is not None:
             consumer.close()
@@ -485,17 +493,16 @@ async def apply(ctx):
     memory = tmp_path / "memory.db"
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         embeddings = MessageEmbeddings(log)
         consumer = await MessageConsumer.load(memory, catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         before = logical_state_sha256(memory)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
+        async with learning_context(live).runtime_scope():
+            catalog = live.context.require(TOOLS)
             identity = catalog.bind(
-                snapshot.composition_root.context.require(ALL_TOOLS)().select(
+                live.context.require(ALL_TOOLS)().select(
                     "foreign_feedback"
                 ),
                 bindings,
@@ -504,7 +511,7 @@ async def apply(ctx):
                 embedding_model="fixture", dimension=2, sources=("chat",)
             )
             learning_binding = bindings.bind(AKASHA_LEARNING, rule.model_dump())
-            async with snapshot.composition_root.context.require(CONTENT).bind() as view:
+            async with live.context.require(CONTENT).bind() as view:
                 log.writer("s", author="user", source="chat", body_types=(Input,), content=view.checks).append(
                     "u", Input((ContentPart("text", "question"),)))
                 output = log.writer("s", author="assistant", source="chat", body_types=(Output,),
@@ -516,7 +523,8 @@ async def apply(ctx):
                                call_ref=ref, content=view.checks), lambda: None)
                 async def authorize(binding, arguments):
                     return {"allowed": True}
-                assert (await catalog.execution(authorize).execute_call(reply)).outcome == "success"
+                async with plugin_context(live, "tools").runtime_scope():
+                    assert (await catalog.execution(authorize).execute_call(reply)).outcome == "success"
                 output.append("answer", Output((ContentPart("text", "answer"),), "complete"))
         async def embed(texts):
             return [[0.6, 0.8] for _ in texts]
@@ -545,17 +553,16 @@ async def test_same_output_feedback_checks_all_member_targets_before_authorizati
     consumer = None
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         embeddings = MessageEmbeddings(log)
         consumer = await MessageConsumer.load(tmp_path / "memory.db", catalog=log.catalog(),
                                               embeddings=embeddings, bindings=bindings, config=MemoryConfig())
         async def embed(texts):
             return [[0.6, 0.8] for _ in texts]
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
-            view = snapshot.composition_root.context.require(ALL_TOOLS)()
+        async with learning_context(live).runtime_scope():
+            catalog = live.context.require(TOOLS)
+            view = live.context.require(ALL_TOOLS)()
             remember = catalog.bind(view.select("remember_memory"), bindings)
             forget = catalog.bind(view.select("forget_memory"), bindings)
             rule = LearningConfig(
@@ -565,7 +572,7 @@ async def test_same_output_feedback_checks_all_member_targets_before_authorizati
             async def consume():
                 return await consumer.consume(catalog=log.catalog(), learning_binding=learning,
                                               embeddings=embeddings, bindings=bindings, embed_batch=embed)
-            async with snapshot.composition_root.context.require(CONTENT).bind() as view:
+            async with live.context.require(CONTENT).bind() as view:
                 inputs = log.writer("s", author="user", source="chat", body_types=(Input,), content=view.checks)
                 outputs = log.writer("s", author="assistant", source="chat", body_types=(Output,),
                                      content=view.checks, check_call=lambda call: None)
@@ -582,14 +589,15 @@ async def test_same_output_feedback_checks_all_member_targets_before_authorizati
                 async def authorize(binding, arguments):
                     authorized.append(arguments)
                     return {"allowed": True}
-                execution = catalog.execution(authorize)
                 results = []
-                for index in range(2):
-                    ref = CallRef("calls", index)
-                    reply = MessageReply(f"result{index}", ref, log.reader("s"),
-                        log.writer("s", author="tool", source="chat", body_types=(ToolResult,),
-                                   call_ref=ref, content=view.checks), lambda: None)
-                    results.append(await execution.execute_call(reply))
+                async with plugin_context(live, "tools").runtime_scope():
+                    execution = catalog.execution(authorize)
+                    for index in range(2):
+                        ref = CallRef("calls", index)
+                        reply = MessageReply(f"result{index}", ref, log.reader("s"),
+                            log.writer("s", author="tool", source="chat", body_types=(ToolResult,),
+                                       call_ref=ref, content=view.checks), lambda: None)
+                        results.append(await execution.execute_call(reply))
                 assert [result.outcome for result in results] == (["error", "error"] if conflict else ["success", "success"])
                 assert len(authorized) == (0 if conflict else 2)
                 if conflict:

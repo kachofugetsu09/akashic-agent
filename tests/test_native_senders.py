@@ -14,11 +14,10 @@ import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from websockets.asyncio.server import serve
 
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.config_input import save_config, save_credential
+from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.config_input import load_config, save_config, save_credential
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.delivery.api import Sink
@@ -98,11 +97,12 @@ async def application(tmp_path, channel, endpoint):
                          installed_cache_root=tmp_path / "cache", channel_attachment_store=physical)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root
-            assert root is not None
-            bindings = Bindings(log, host._archive, root)
-            binding = snapshot.composition_root.context.require(DELIVERY_SENDERS).bind(channel, bindings)
+        root = host.live_root
+        assert root is not None
+        bindings = root.context.require(BINDINGS)
+        sender_context, senders = root._service_provider(DELIVERY_SENDERS)
+        async with sender_context.runtime_scope():
+            binding = senders.bind(channel, bindings)
         yield log, host, bindings, binding, physical, config
     finally:
         await host.terminate_all()
@@ -307,7 +307,9 @@ async def test_native_address_rejection_and_credential_revocation_have_no_effect
                 receipt = await execution.send(msg.message_id, channel)
                 assert receipt.status == "rejected" and isinstance(receipt.error, str) and "地址" in receipt.error
                 assert records.read(msg.message_id, channel)[1].phase == "rejected"
-                config.write_text(config.read_text().replace("wire-fixture-secret", "revoked-replacement"))
+                updated, _ = load_config(config.parent)
+                updated["token"] = save_credential(config.parent, "revoked-replacement")
+                save_config(config.parent, updated)
                 # 显式 retry 仍使用原 binding；不能悄悄切到新 token。
                 with pytest.raises(RuntimeError, match="revision 已漂移"):
                     await execution.retry(msg.message_id, channel)

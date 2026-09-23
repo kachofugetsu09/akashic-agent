@@ -18,7 +18,6 @@ from bootstrap.runtime_readiness import RuntimeReadiness
 
 async def producers(app: AppRuntime) -> None:
     """stdin 只模拟插件生产者提交；判断、发送和结算全部由实际内置服务完成。"""
-    from agent.plugins.snapshot import lease_runtime_snapshot
     from plugins.drift.plugin import DRIFT_PROPOSALS
     from plugins.eventmail.plugin import EVENTMAIL_ALERT_SOURCE, EVENTMAIL_CONTENT_SOURCE
 
@@ -29,21 +28,22 @@ async def producers(app: AppRuntime) -> None:
         while line := await reader.readline():
             command = json.loads(line)
             assert app.core is not None and app.core.plugin_manager is not None
-            async with lease_runtime_snapshot(app.core.plugin_manager.snapshot_store) as snapshot:
-                ctx = snapshot.composition_root.context
-                now = datetime.now(timezone.utc)
-                if command["type"] == "drift":
-                    result = ctx.require(DRIFT_PROPOSALS).propose("fixture-duty", "1", {"summary": "真实职责"}, now)
-                elif command["type"] == "alert":
-                    result = ctx.require(EVENTMAIL_ALERT_SOURCE).bind("fixture").report(
-                        event_id="alarm", payload={"summary": "真实告警"}, observed_at=now)
-                elif command["type"] == "content":
-                    result = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("fixture").submit("batch", [
-                        {"item_id": "article", "revision": "1", "not_before": now,
-                         "payload": {"title": "真实文章", "url": "https://example.com/original",
-                                     "published_at": now.isoformat(), "preprocess_score": 0.9}}])
-                else:
-                    raise ValueError("未知 fixture producer")
+            root = app.core.plugin_manager.live_root
+            assert root is not None
+            ctx = root.context
+            now = datetime.now(timezone.utc)
+            if command["type"] == "drift":
+                result = ctx.require(DRIFT_PROPOSALS).propose("fixture-duty", "1", {"summary": "真实职责"}, now)
+            elif command["type"] == "alert":
+                result = ctx.require(EVENTMAIL_ALERT_SOURCE).bind("fixture").report(
+                    event_id="alarm", payload={"summary": "真实告警"}, observed_at=now)
+            elif command["type"] == "content":
+                result = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("fixture").submit("batch", [
+                    {"item_id": "article", "revision": "1", "not_before": now,
+                     "payload": {"title": "真实文章", "url": "https://example.com/original",
+                                 "published_at": now.isoformat(), "preprocess_score": 0.9}}])
+            else:
+                raise ValueError("未知 fixture producer")
             print(json.dumps({"fixture_receipt": result}, default=str), flush=True)
     finally:
         transport.close()

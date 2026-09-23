@@ -113,7 +113,8 @@ class _FollowingCatalog:
 def test_client_plugin_declares_independent_capabilities() -> None:
     names = tuple(key.name for key in plugin.inject)
 
-    assert "core.channels" in names
+    assert "plugin.channels" in names
+    assert "channel.input.v1" in names
     assert "core.message_catalog" in names
     assert "reply.status.v2" in names
     assert "models.selection.v1" in names

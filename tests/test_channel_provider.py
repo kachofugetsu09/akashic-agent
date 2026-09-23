@@ -162,7 +162,7 @@ async def test_control_ack_unknown_effect_is_not_replayed(tmp_path):
             self.runtime_ports = ports
 
         def open_admission(self):
-            self.opened.set()
+            opened.set()
 
         def close_admission(self):
             pass
@@ -271,12 +271,12 @@ async def test_local_channel_replacement_keeps_unrelated_binding_and_hard_consum
                 ),
             )
 
-        old = await root.mount(
+        old = await asyncio.wait_for(root.mount(
             lambda ctx: contribution(ctx, old_opened, old_closed, "old"),
             name="local-old",
             inject=(CHANNELS, CHANNEL_INPUT),
             runtime=PluginRuntime("local-old", "local-old", tmp_path, tmp_path, tmp_path, {}),
-        )
+        ), 10)
 
         async def hard_consumer(ctx):
             consumer_seen.append(ctx.require(LOCAL_CHANNEL_SERVICE))
@@ -287,13 +287,13 @@ async def test_local_channel_replacement_keeps_unrelated_binding_and_hard_consum
 
             await ctx.effect(lambda: cleanup, label="local-hard-consumer")
 
-        hard = await root.mount(
+        hard = await asyncio.wait_for(root.mount(
             hard_consumer,
             name="local-hard-consumer",
             inject=(LOCAL_CHANNEL_SERVICE,),
             runtime=PluginRuntime("local-hard-consumer", "local-hard-consumer", tmp_path, tmp_path, tmp_path, {}),
-        )
-        await old_opened.wait()
+        ), 10)
+        await asyncio.wait_for(old_opened.wait(), 10)
         old_state = next(state for state in channels._bindings.values() if state.channel_name == "local-replace")
         old_context = old_state.plugin_context
         assert old_context is not None and old_state.factory_context is not None
@@ -301,13 +301,18 @@ async def test_local_channel_replacement_keeps_unrelated_binding_and_hard_consum
         unrelated = next(state for state in channels._bindings.values() if state.channel_name == "probe")
         unrelated_token = unrelated.binding_token
         unrelated_context = unrelated.plugin_context
-        unrelated_activation = None if unrelated_context is None else unrelated_context._fiber.activation_token
+        unrelated_activation = None if unrelated_context is None else unrelated_context.fiber.activation_token
         unrelated_adapter = unrelated.adapter
         unrelated_starts = unrelated_adapter.starts
         unrelated_stops = unrelated_adapter.stops
 
         dispose = asyncio.create_task(old.dispose())
-        await hard_consumer_exit.wait()
+        try:
+            await asyncio.wait_for(hard_consumer_exit.wait(), 10)
+        except TimeoutError:
+            release_hard_consumer.set()
+            await asyncio.wait_for(asyncio.gather(dispose, return_exceptions=True), 5)
+            raise
         assert old.state == FiberState.UNLOADING
         with pytest.raises(CompositionError) as error:
             async with old_state.factory_context.open_scope():
@@ -319,16 +324,16 @@ async def test_local_channel_replacement_keeps_unrelated_binding_and_hard_consum
         assert unrelated_adapter.starts == unrelated_starts
         assert unrelated_adapter.stops == unrelated_stops
         release_hard_consumer.set()
-        await dispose
+        await asyncio.wait_for(dispose, 10)
         assert old_closed.is_set()
 
-        fresh = await root.mount(
+        fresh = await asyncio.wait_for(root.mount(
             lambda ctx: contribution(ctx, new_opened, new_closed, "new"),
             name="local-new",
             inject=(CHANNELS, CHANNEL_INPUT),
             runtime=PluginRuntime("local-new", "local-new", tmp_path, tmp_path, tmp_path, {}),
-        )
-        await new_opened.wait()
+        ), 10)
+        await asyncio.wait_for(new_opened.wait(), 10)
         new_state = next(state for state in channels._bindings.values() if state.channel_name == "local-replace")
         assert fresh.state == FiberState.ACTIVE
         assert len(adapters) == 2
@@ -343,7 +348,7 @@ async def test_local_channel_replacement_keeps_unrelated_binding_and_hard_consum
         assert unchanged.binding_token == unrelated_token
         assert unchanged.plugin_context is unrelated_context
         assert unchanged.plugin_context is not None
-        assert unchanged.plugin_context._fiber.activation_token is unrelated_activation
+        assert unchanged.plugin_context.fiber.activation_token is unrelated_activation
         assert unchanged.plugin_context._fiber.state == FiberState.ACTIVE
         assert root.context.require(HOST_INFO).boot_id == "host-boot"
     assert new_closed.is_set()
@@ -362,8 +367,11 @@ async def test_channel_operation_task_creation_and_unentered_cancel_close_scopes
         def attach_runtime(self, ports):
             self.ports = ports
 
+        def attach_presentation(self, ports):
+            self.presentation_ports = ports
+
         def open_admission(self):
-            self.opened.set()
+            opened.set()
 
         def close_admission(self):
             pass
@@ -394,10 +402,12 @@ async def test_channel_operation_task_creation_and_unentered_cancel_close_scopes
         first = RawInbound("task-factory-failure", ChannelInboundMessage(
             channel="probe", sender="user", chat_id="room", content="/stop",
             timestamp=datetime(2026, 9, 15, tzinfo=UTC),
+            metadata={},
         ))
         second = RawInbound("task-cancelled-before-entry", ChannelInboundMessage(
             channel="probe", sender="user", chat_id="room", content="/stop",
             timestamp=datetime(2026, 9, 15, tzinfo=UTC),
+            metadata={},
         ))
         captured = []
         original_create_task = provider_module.asyncio.create_task

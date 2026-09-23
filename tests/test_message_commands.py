@@ -217,15 +217,19 @@ async def test_default_reply_short_circuits_command_before_model_or_tool(tmp_pat
         assert first.session_id == "probe:room"
         assert first.source == "conversation"
         assert isinstance(first.body, Input)
-        assert dict(first.body.parts[0].value) == {
+        input_origin = first.body.parts[0].value
+        assert isinstance(input_origin, Mapping)
+        assert dict(input_origin) == {
             "channel": "probe", "chat_id": "room", "sender": "user",
         }
         assert first.body.parts[-1].value == "/probe"
         result = rows[-1]
         assert result.author == "app" and result.source == "conversation"
         assert isinstance(result.body, Output)
-        assert result.body.parts[0].value["input_id"] == "first"
-        assert result.body.parts[0].value["name"] == "probe"
+        command_result = result.body.parts[0].value
+        assert isinstance(command_result, Mapping)
+        assert command_result["input_id"] == "first"
+        assert command_result["name"] == "probe"
         command_context = _generation_context(host, "probe_command")
         async with command_context.runtime_scope():
             calls = command_context.require(ServiceKey("fixture.command_calls"))

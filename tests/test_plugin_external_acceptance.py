@@ -271,18 +271,30 @@ def test_capability_enumeration_does_not_count_as_call() -> None:
         asyncio.run(_invoke_capability(root=Root(), plugin_id="models@test", spec=spec))
 
 
-def test_capability_oracle_calls_declared_input_and_checks_output() -> None:
+@pytest.mark.asyncio
+async def test_capability_oracle_calls_declared_input_and_checks_output(tmp_path: Path) -> None:
+    from agent.plugin_composition import CompositionRoot, PluginRuntime
+
     key = ServiceKey("message.display:model.facts")
     seen = []
+    root = CompositionRoot("capability-oracle")
 
-    def display(part):
-        seen.append(part)
-        return {"call_record_id": part.value["call_record_id"], "thinking": part.value["thinking"]}
+    async def apply(ctx):
+        def display(part):
+            ctx.require_runtime_owner(key, display)
+            seen.append(part)
+            return {"call_record_id": part.value["call_record_id"], "thinking": part.value["thinking"]}
 
-    class Root:
-        def provided_services(self, *, plugin_ids):
-            _ = plugin_ids
-            return {key: display}
+        await ctx.provide(key, display)
+
+    await root.mount(
+        apply, name="models@test",
+        runtime=PluginRuntime(
+            plugin_id="models@test", generation_id="models-test-1",
+            plugin_dir=tmp_path, data_dir=tmp_path, workspace=tmp_path,
+            config={},
+        ),
+    )
 
     spec = {
         "service": key.name,
@@ -302,13 +314,14 @@ def test_capability_oracle_calls_declared_input_and_checks_output() -> None:
         },
     }
 
-    evidence = asyncio.run(
-        _invoke_capability(root=Root(), plugin_id="models@test", spec=spec)
-    )
-    assert evidence["call_executed"] is True
-    assert evidence["status"] == "passed"
-    assert len(seen) == 1
-    assert seen[0].kind == "model.facts"
+    try:
+        evidence = await _invoke_capability(root=root, plugin_id="models@test", spec=spec)
+        assert evidence["call_executed"] is True
+        assert evidence["status"] == "passed"
+        assert len(seen) == 1
+        assert seen[0].kind == "model.facts"
+    finally:
+        await root.dispose()
 
 
 def test_distribution_report_requires_external_bundle_files(tmp_path: Path) -> None:
@@ -477,7 +490,15 @@ async def test_business_composition_writes_reads_and_replaces_provider_from_new_
         },
     )
 
-    assert result["status"] == "passed", result
+    assert result["status"] == "passed", {
+        "failed_checks": [key for key, ok in result["checks"].items() if not ok],
+        "replacement_failed": (
+            None if result["replacement"] is None else [
+                key for key, ok in result["replacement"]["checks"].items() if not ok
+            ]
+        ),
+        "errors": [row.get("error") for row in result["reports"] if row["status"] != "passed"],
+    }
     assert result["checks"] == {
         "composition_loaded": True,
         "all_reports_passed": True,

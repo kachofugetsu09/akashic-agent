@@ -10,7 +10,7 @@ import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
-from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition import (
     CompositionError,
     CompositionRoot,
@@ -22,7 +22,6 @@ from agent.plugin_composition.model import FiberState, PluginRuntime, ServiceKey
 from agent.plugin_composition.tasks import TASKS, PluginTasks, Tasks
 from agent.plugin_contracts import CallRef
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tools.api import Result, durable_call_key
 from plugins.tools.execution import ToolExecution
@@ -387,9 +386,10 @@ async def test_display_name_reads_old_binding_without_opening_removed_tool(tmp_p
     host = manager(tmp_path, [sources], log)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            from agent.plugin_composition.bindings import BINDINGS
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        async with live_root.context.require(TOOLS)._ctx.runtime_scope():
+            ctx = live_root.context
             binding_id = ctx.require(TOOLS).bind(
                 ctx.require(ALL_TOOLS)().select("example"), ctx.require(BINDINGS)
             )
@@ -399,8 +399,10 @@ async def test_display_name_reads_old_binding_without_opening_removed_tool(tmp_p
         restored = manager(tmp_path, [sources], log)
         try:
             await restored.load_all()
-            async with lease_runtime_snapshot(restored.snapshot_store) as snapshot:
-                lookup = snapshot.composition_root.context.require(TOOL_DISPLAY_NAME)
+            restored_root = restored.live_root
+            assert restored_root is not None
+            async with restored_root.context.require(TOOLS)._ctx.runtime_scope():
+                lookup = restored_root.context.require(TOOL_DISPLAY_NAME)
                 assert lookup(binding_id) == "example"
                 with pytest.raises(KeyError):
                     lookup("missing")
@@ -419,15 +421,16 @@ async def test_ordinary_tool_binding_runs_in_the_selected_stable_scope(
     sources = tmp_path / "plugins"
     write_plugins(sources)
     initialize_plugin_workspace(tmp_path / "workspace")
-    host = manager(tmp_path, [sources])
     log = MessageLog(tmp_path / "sessions.db")
+    host = manager(tmp_path, [sources], log)
     tasks = Tasks()
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        ctx = live_root.context
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
             binding_id = catalog.bind(
                 ctx.require(ALL_TOOLS)().select("example"), bindings
@@ -482,13 +485,14 @@ async def test_tool_configuration_is_owned_frozen_without_recapture(tmp_path):
     path.write_text(source)
     log = MessageLog(tmp_path / "sessions.db")
     initialize_plugin_workspace(tmp_path / "workspace")
-    host = manager(tmp_path, [sources])
+    host = manager(tmp_path, [sources], log)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        ctx = live_root.context
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
             ref = ctx.require(ALL_TOOLS)().select("example")
             with pytest.raises(ValueError, match="prefix configuration"):
@@ -513,35 +517,46 @@ async def test_tool_configuration_is_owned_frozen_without_recapture(tmp_path):
 async def test_binding_authorize_checks_final_arguments(tmp_path):
     sources = tmp_path / "plugins"
     write_plugins(sources)
+    add_authorize(sources)
     log = MessageLog(tmp_path / "sessions.db")
     initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [sources], log)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        ctx = live_root.context
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
             old_binding = catalog.bind(
                 ctx.require(ALL_TOOLS)().select("example"), bindings
             )
+        old_policy = host.generation("authorize")
+        assert old_policy is not None
+        old_policy_ref = old_policy.archive_ref
         await host.terminate_all()
 
-        add_authorize(sources)
+        policy = sources / "authorize/plugin.py"
+        policy.write_text(policy.read_text().replace('name="fixed-policy"', 'name="fixed-policy-v2"'))
         host = manager(tmp_path, [sources], log)
         await host.load_all()
+        changes = await host.reconcile_changed()
+        assert any(row["plugin_id"] == "authorize" and row["publication_state"] == "active" for row in changes)
+        new_policy = host.generation("authorize")
+        assert new_policy is not None and new_policy.archive_ref != old_policy_ref
         caller_checks = []
 
         async def caller_authorize(binding, arguments):
             caller_checks.append((binding, arguments))
             return {"permission": "caller"}
 
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
+            bindings = ctx.require(BINDINGS)
             new_binding = catalog.bind(
                 ctx.require(ALL_TOOLS)().select("example"), bindings
             )
@@ -586,10 +601,11 @@ async def test_binding_authorize_presence_and_name_must_match_current_registrati
     host = manager(tmp_path, [sources], log)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            ctx = snapshot.composition_root.context
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        bindings = ctx.require(BINDINGS)
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
             old_binding = catalog.bind(
                 ctx.require(ALL_TOOLS)().select("example"), bindings
@@ -604,10 +620,15 @@ async def test_binding_authorize_presence_and_name_must_match_current_registrati
 
         host = manager(tmp_path, [sources], log)
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            ctx = snapshot.composition_root.context
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
+        if replacement == "removed":
+            await host.reconcile_disabled_and_drain("authorize")
+        else:
+            await host.reconcile_changed()
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        bindings = ctx.require(BINDINGS)
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
             metadata = bindings.describe(old_binding, TOOLS)
             with pytest.raises(ValueError, match="归档工具限制与 binding 不一致") as error:

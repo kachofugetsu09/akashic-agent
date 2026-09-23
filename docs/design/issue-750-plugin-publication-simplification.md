@@ -1,5 +1,37 @@
 # Issue 750：单图插件系统与局部换代任务拆分
 
+## 2026-09-23 · R1 语义与验收映射
+
+本轮从集成分支 `33bd6d41` 和固定 `main@ae444d47` 继续。执行者只有一个
+`gpt-6-sol/high` integration writer；未更新 PR、正式 workspace 或外部插件环境。
+恢复归档、隔离测试的 argv/JUnit/source hash 和 Gate 报告在
+`/mnt/data/issue750-green-r1-20260923.68KJfw/`，最终本地验收状态由
+`/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md` 与其中指向的结果文件确定。独立概念 review、远端 CI、正式部署
+仍由后续 owner 决定。
+
+R1 继续保持 0072 的单一 live Root：selection CAS 是持久选择，运行中的 Fiber 是
+另一个事实。首次空选择先提交固定归档再加载；B 已被选中但加载失败时保留 B 与错误，
+不能自动复活 A；显式 retry 从 B 的原归档建立新 generation。卸载与更新先返回
+accepted，旧 owner 的调用和资源仍由 Manager 排空，失败保留 owner 供重试。
+这些路径由当前 `test_plugin_hot_reload`、`test_plugin_stable_runtime`、
+`test_plugin_uninstall_root_drain`、`test_plugin_update_source` 和
+`test_plugin_retired_activity_recovery` 验证；旧 candidate 晋升、discard 与全图
+snapshot publication 用例不再充当单图的成功 oracle。删除文件到现行 owner 的逐项映射
+见测试清理 ledger。
+
+停止期发现两处可达竞态：Subagent watcher 等待子任务结算后，Fiber 可能已撤销新
+OwnerCall；此时只放弃本次新接纳，保留持久指针由下次启动读取，其余异常继续抛出。
+Web adapter 关闭只关闭该 binding 的新接纳与 follower，真实 Web transport 的
+`_stopping` 仍由 transport stop 拥有；因此已捕获的旧回调可排空，新 binding 可接入。
+Subagent 恢复 12 项与 Web 入口 45 项已在隔离环境复验。
+
+结构映射只更新精确 `agent.plugin_composition.host` 模块许可、四个实际 role key、
+由 typed RPC 生成的控制 schema，以及 Gate 的 Models 删除路径与退役 nodeid。
+`plugin_uninstall_drain_finality` 现执行 live MCP 换代、Socket accepted/排空、
+cleanup retry、隔离 host grant、Shell owner 与 plugin-data 保留。Gate baseline
+除计算所得 `catalogDigest` 外没有改 `base`、`coveredP0` 或 `acceptedGaps`；
+27 个公开场景、原 84 项矩阵和全量 Python 的最终结果必须分别读本轮运行证据。
+
 ## 2026-09-23 · 本地集成继续执行
 
 用户恢复了唯一集成 worker 的执行授权：在隔离集成 worktree 上正常合入固定

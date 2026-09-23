@@ -1365,7 +1365,7 @@ async def test_web_v3_adapter_stop_drains_old_callback_before_unregistering(
         "old-message",
         {"session_id": "akashic:abc", "text": "旧 binding", "media": []},
     ))
-    await ingress.started.wait()
+    await asyncio.wait_for(ingress.started.wait(), 5)
     stop_task = asyncio.create_task(old.stop())
     await asyncio.sleep(0)
     assert not stop_task.done()
@@ -1404,7 +1404,7 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
         "old-message",
         {"session_id": "akashic:abc", "text": "旧消息", "media": []},
     ))
-    await add_started.wait()
+    await asyncio.wait_for(add_started.wait(), 5)
 
     old.close_admission()
     stop_task = asyncio.create_task(old.stop())
@@ -1415,10 +1415,10 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
         binding_token="new-binding",
     )
     add_release.set()
-    await old_ingress.started.wait()
+    await asyncio.wait_for(old_ingress.started.wait(), 5)
     assert new_ingress.messages == []
     old_ingress.release.set()
-    await asyncio.gather(send_task, stop_task)
+    await asyncio.wait_for(asyncio.gather(send_task, stop_task), 5)
     assert [item.message.content for item in old_ingress.messages] == ["旧消息"]
     assert new_ingress.messages == []
     await new.stop()

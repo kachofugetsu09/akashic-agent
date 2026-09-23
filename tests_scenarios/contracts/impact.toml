@@ -152,7 +152,6 @@ paths = [
   "agent/plugin_composition/*model*.py",
   "agent/plugin_composition/models.py",
   "agent/plugin_composition/__init__.py",
-  "agent/plugins/model_*.py",
   "agent/plugins/snapshot.py",
   "agent/tools/filesystem.py",
   "agent/model_runtime/**",
@@ -180,7 +179,14 @@ paths = [
   "tests/test_*model*.py",
   "tests/semantic/test_model_owner_contract.py",
 ]
-deleted_paths = ["agent/provider.py", "agent/tools/vision.py", "bootstrap/providers.py"]
+deleted_paths = [
+  "agent/provider.py",
+  "agent/tools/vision.py",
+  "bootstrap/providers.py",
+  # Frozen base has manager.py; main later added the model_* wrappers.
+  # This pattern matches those paths without matching manifest.py or mobile_ui.py.
+  "agent/plugins/m[ao][dn][ae]*.py",
+]
 depends_on = ["plugin", "runtime"]
 scenarios = ["model_owner_contract"]
 

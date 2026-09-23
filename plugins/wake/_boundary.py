@@ -86,6 +86,8 @@ class ToolCatalog(Protocol):
 
     def bind(self, ref: ToolRef, bindings: Bindings) -> str: ...
 
+    async def bind_scoped(self, ref: ToolRef, bindings: Bindings) -> str: ...
+
 
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")

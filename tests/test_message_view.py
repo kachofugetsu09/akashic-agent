@@ -27,10 +27,10 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 @pytest.mark.asyncio
 async def test_live_message_projection_uses_only_page_providers_and_releases_scopes(storage):
-    from agent.plugin_composition import CompositionRoot, FiberState, ServiceKey
+    from agent.plugin_composition import CompositionRoot, FiberState, PluginRuntime, ServiceKey
     from agent.plugin_composition.message_view import project_message_rows
 
-    _, log, _ = storage
+    path, log, _ = storage
     log.save_binding("tool", {"service": "tools.v1", "metadata": {"tool": {"name": "tool"}}})
     log.writer(
         "s", author="user", source="conversation", body_types=(Input, Output),
@@ -42,7 +42,7 @@ async def test_live_message_projection_uses_only_page_providers_and_releases_sco
         check_call=lambda _call: None,
     ).append(
         "output",
-        Output((ContentPart("example.fact", {"secret": "keep"}), ToolCall("tool", {"q": "x"})), "complete"),
+        Output((ContentPart("example.fact", {"secret": "keep"}), ToolCall("tool", {"q": "x"})), "continue"),
     )
     log.writer(
         "s", author="assistant", source="conversation", body_types=(Output,),
@@ -60,6 +60,11 @@ async def test_live_message_projection_uses_only_page_providers_and_releases_sco
     ).append("loading", Output((ContentPart("loading.fact", {"x": 2}),), "complete"))
     page = log.reader("s").read_tail()
     root = CompositionRoot("live-message-view")
+    runtime = PluginRuntime(
+        plugin_id="display-owner", generation_id="display-owner-1",
+        plugin_dir=path.parent, data_dir=path.parent,
+        workspace=path.parent, config={},
+    )
     calls: list[str] = []
     unused_calls: list[str] = []
     labels = ["live"]
@@ -99,7 +104,7 @@ async def test_live_message_projection_uses_only_page_providers_and_releases_sco
     async def unrelated(ctx):
         await ctx.provide(unrelated_key, lambda _part: {"label": "unrelated"})
 
-    owner = await root.mount(apply, name="display-owner")
+    owner = await root.mount(apply, name="display-owner", runtime=runtime)
     unrelated_fiber = await root.mount(unrelated, name="unrelated-display")
     loading_started = asyncio.Event()
     loading_release = asyncio.Event()
@@ -117,7 +122,7 @@ async def test_live_message_projection_uses_only_page_providers_and_releases_sco
         loading_started.set()
         await loading_release.wait()
 
-    loading_task = asyncio.create_task(root.mount(loading, name="loading-display"))
+    loading_task = asyncio.create_task(root.mount(loading, name="loading-display", runtime=runtime))
     await loading_started.wait()
     assert loading_handles[0].state is FiberState.LOADING
     assert root.service_value(loading_key) is None
@@ -153,7 +158,7 @@ async def test_live_message_projection_uses_only_page_providers_and_releases_sco
         await owner.dispose()
         assert closed == ["live"]
         labels[0] = "new"
-        owner = await root.mount(apply, name="display-owner")
+        owner = await root.mount(apply, name="display-owner", runtime=runtime)
         calls.clear()
         rows = await project_message_rows(root, page, display_only=True)
         assert _mapping(rows[0]["body"])["parts"] == [
@@ -173,10 +178,10 @@ async def test_live_message_projection_uses_only_page_providers_and_releases_sco
 
 @pytest.mark.asyncio
 async def test_live_message_projection_releases_scope_on_renderer_error(storage):
-    from agent.plugin_composition import CompositionRoot, ServiceKey
+    from agent.plugin_composition import CompositionRoot, PluginRuntime, ServiceKey
     from agent.plugin_composition.message_view import project_message_rows
 
-    _, log, _ = storage
+    path, log, _ = storage
     log.writer(
         "s", author="assistant", source="conversation", body_types=(Output,),
         content={"example.fact": lambda _: ContentReferences()},
@@ -192,7 +197,14 @@ async def test_live_message_projection_releases_scope_on_renderer_error(storage)
 
         await ctx.provide(key, fail)
 
-    owner = await root.mount(apply, name="display-owner")
+    owner = await root.mount(
+        apply, name="display-owner",
+        runtime=PluginRuntime(
+            plugin_id="display-owner", generation_id="display-owner-1",
+            plugin_dir=path.parent, data_dir=path.parent,
+            workspace=path.parent, config={},
+        ),
+    )
     try:
         with pytest.raises(RuntimeError, match="renderer failed"):
             await project_message_rows(root, page, display_only=False)

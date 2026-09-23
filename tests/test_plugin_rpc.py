@@ -35,6 +35,12 @@ RPC_LOADING_STARTED: asyncio.Event | None = None
 RPC_LOADING_RELEASE: asyncio.Event | None = None
 
 
+def _rpc_error(frame: dict[str, object]) -> dict[str, object]:
+    error = frame["error"]
+    assert isinstance(error, dict)
+    return error
+
+
 def _write_plugin_source(path: Path, source: str) -> None:
     """Parse and compile a generated plugin before writing it to the fixture workspace."""
     tree = ast.parse(source, filename=str(path))
@@ -101,8 +107,8 @@ async def test_connection_uses_current_plugin_schema_and_keeps_inflight_method()
     responses = {frame["id"]: frame for frame in frames}
     assert responses[2]["result"] == "old"
     assert responses[3]["result"] == 42
-    assert responses[4]["error"]["code"] == -32602
-    assert responses[5]["error"]["code"] == -32601
+    assert _rpc_error(responses[4])["code"] == -32602
+    assert _rpc_error(responses[5])["code"] == -32601
     assert active == []
 
 
@@ -329,12 +335,12 @@ async def test_live_rpc_resolution_holds_exact_provider_scope_during_local_repla
         await old_module.ENTERED.wait()
 
         invalid = await request(3, "example/inspect", {"amount": 42})
-        assert invalid["error"]["code"] == -32602
-        assert len(target.fiber._fiber._in_flight_calls) == 1
+        assert _rpc_error(invalid)["code"] == -32602
+        assert len(target.fiber._in_flight_calls) == 1
         old_module.RAISE = True
         failed = await request(4, "example/inspect", {"value": "error"})
-        assert failed["error"]["code"] == -32603
-        assert len(target.fiber._fiber._in_flight_calls) == 1
+        assert _rpc_error(failed)["code"] == -32603
+        assert len(target.fiber._in_flight_calls) == 1
         old_module.RAISE = False
         old_module.CANCEL = True
         old_module.CANCEL_ENTERED = asyncio.Event()
@@ -343,7 +349,7 @@ async def test_live_rpc_resolution_holds_exact_provider_scope_during_local_repla
         cancelled.cancel()
         cancelled_result = await asyncio.gather(cancelled, return_exceptions=True)
         assert isinstance(cancelled_result[0], asyncio.CancelledError)
-        assert len(target.fiber._fiber._in_flight_calls) == 1
+        assert len(target.fiber._in_flight_calls) == 1
         old_module.CANCEL = False
         old_module.CLEANUP.clear()
 
@@ -370,10 +376,10 @@ async def test_live_rpc_resolution_holds_exact_provider_scope_during_local_repla
         await hard_module.HARD_CLOSED.wait()
         assert operation is not None and target.fiber.state is FiberState.UNLOADING
         assert not old_request.done()
-        assert len(target.fiber._fiber._in_flight_calls) == 1
+        assert len(target.fiber._in_flight_calls) == 1
 
         unavailable = await request(6, "example/inspect", {"value": "blocked"})
-        assert unavailable["error"]["code"] == -32601
+        assert _rpc_error(unavailable)["code"] == -32601
         peer_result = await request(7, "example/peer", {"value": "still-live"})
         assert peer_result["result"] == {"peer": "still-live"}
         assert manager.generation("peer") is peer
@@ -387,12 +393,12 @@ async def test_live_rpc_resolution_holds_exact_provider_scope_during_local_repla
         assert old_result["result"] == {"version": "old", "value": "old"}
         operation_result = await asyncio.gather(operation.task, return_exceptions=True)
         assert len(operation_result) == 1 and operation_result[0].state == "active"
-        assert not target.fiber._fiber._in_flight_calls
+        assert not target.fiber._in_flight_calls
         assert old_module.CLEANUP == ["handler", "effect"]
         assert old_module.CLOSES == 1
 
         invalid = await request(8, "example/inspect", {"value": "old schema"})
-        assert invalid["error"]["code"] == -32602
+        assert _rpc_error(invalid)["code"] == -32602
         current = await request(9, "example/inspect", {"amount": 42})
         assert current["result"] == {"version": "new", "value": 42}
         assert manager.live_root is root
@@ -476,9 +482,9 @@ async def test_live_rpc_rejects_loading_and_missing_methods_on_one_connection(
         assert root.service_value(rpc_method_key("example/inspect")) is None
 
         loading = await request(2, "example/inspect", {"value": "loading"})
-        assert loading["error"]["code"] == -32601
+        assert _rpc_error(loading)["code"] == -32601
         missing = await request(3, "example/missing", {})
-        assert missing["error"]["code"] == -32601
+        assert _rpc_error(missing)["code"] == -32601
 
         RPC_LOADING_RELEASE.set()
         await startup

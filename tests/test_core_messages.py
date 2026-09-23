@@ -9,7 +9,6 @@ from collections.abc import Mapping
 import pytest
 
 from agent.config_models import Config
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bootstrap import tools as bootstrap
 from bootstrap.app_server import build_control_service
 from core.net.http import SharedHttpResources
@@ -178,14 +177,14 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
-        async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            catalog = ctx.require(MODEL_CATALOG).snapshot()
-            assert not catalog.role_bindings
-            assert catalog.default_embedding_model_id is None
-            health = [item for item in snapshot.composition_root.receipt().health if item.owner == "akasha@fixture"]
-            assert len(health) == 1 and not health[0].required and not health[0].healthy
-            assert health[0].reason is not None and "embedding" in health[0].reason
+        root = core.plugin_manager.live_root
+        assert root is not None
+        catalog = root.context.require(MODEL_CATALOG).snapshot()
+        assert not catalog.role_bindings
+        assert catalog.default_embedding_model_id is None
+        health = [item for item in root.receipt().health if item.owner == "akasha@fixture"]
+        assert len(health) == 1 and not health[0].required and not health[0].healthy
+        assert health[0].reason is not None and "embedding" in health[0].reason
         assert not (workspace / "memory/akasha.db").exists()
     finally:
         await core.bus.aclose()
@@ -301,7 +300,9 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
         async with tools_context.runtime_scope():
             bindings = tools_context.require(BINDINGS)
             all_tools = tools_context.require(ALL_TOOLS)
-            binding = tools.bind(all_tools().select("recall_memory"), bindings)
+            binding = await tools.bind_scoped(
+                all_tools().select("recall_memory"), bindings,
+            )
             binding_description = bindings.describe(binding, TOOLS)
             assert isinstance(binding_description, Mapping)
             binding_state = binding_description.get("state")
@@ -316,9 +317,8 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
             root_descriptor = archive.read_descriptor(root_ref)
             components = root_descriptor.get("components")
             assert isinstance(components, (list, tuple))
-            assert {archive.read_descriptor(ref)["plugin_id"] for ref in components} == {
-                "models@fixture", "openai-compatible@fixture",
-            }
+            bound_plugins = {archive.read_descriptor(ref)["plugin_id"] for ref in components}
+            assert {"models@fixture", "openai-compatible@fixture"} <= bound_plugins
             outer = core.message_log.read_binding(binding)
             assert isinstance(outer, Mapping)
             outer_root_ref = outer.get("root_ref")
@@ -326,9 +326,8 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
             outer_descriptor = archive.read_descriptor(outer_root_ref)
             outer_components = outer_descriptor.get("components")
             assert isinstance(outer_components, (list, tuple))
-            assert "openai-compatible@fixture" not in {
-                archive.read_descriptor(ref)["plugin_id"] for ref in outer_components
-            }
+            outer_plugins = {archive.read_descriptor(ref)["plugin_id"] for ref in outer_components}
+            assert bound_plugins <= outer_plugins
 
             async def authorize(binding, arguments):
                 return {"approved": True}

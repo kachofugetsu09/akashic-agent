@@ -456,10 +456,9 @@ class WebChatChannel:
     def _close_v3_binding(self, adapter: WebNativeChannelAdapter) -> None:
         if self._v3_adapters.get(adapter.binding_token) is not adapter:
             raise RuntimeError("Web v3 binding 未注册")
-        # Host closes admission before draining binding operations.  Followers
-        # own their reader after short acquisition, so this boundary cancels
-        # the long reader tasks before the adapter is drained.
-        self._stopping = True
+        # Adapter admission is closed before draining captured calls. Followers
+        # own their reader after short acquisition, so cancel those long reads.
+        # The Web transport stays open for a replacement binding.
         self._cancel_followers_for_admission()
 
     def _cancel_followers_for_admission(self) -> None:

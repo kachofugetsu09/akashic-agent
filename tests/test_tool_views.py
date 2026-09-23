@@ -11,7 +11,6 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.tools.api import MessageReply
@@ -91,8 +90,10 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
             bindings = ctx.require(BINDINGS)
             view = ToolView.combine(
@@ -207,8 +208,10 @@ async def test_standard_web_is_directly_callable_without_search(tmp_path):
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
             view = ToolView.combine(
                 ctx.require(ALL_TOOLS)(), cast(ToolView, ctx.require(TOOL_SEARCH_TOOLS)),
@@ -246,10 +249,11 @@ async def test_fixed_bindings_keep_display_schema_but_do_not_reopen_history(
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        bindings = ctx.require(BINDINGS)
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             catalog = ctx.require(TOOLS)
             old = catalog.bind(ctx.require(ALL_TOOLS)().select("example"), bindings)
         await host.terminate_all()
@@ -266,10 +270,15 @@ async def test_fixed_bindings_keep_display_schema_but_do_not_reopen_history(
             )
         restored = _manager(tmp_path, [sources], log)
         await restored.load_all()
-        async with lease_runtime_snapshot(restored.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, restored._archive, snapshot.composition_root)
+        if replacement == "removed":
+            await restored.reconcile_disabled_and_drain("target")
+        else:
+            await restored.reconcile_changed()
+        restored_root = restored.live_root
+        assert restored_root is not None
+        ctx = restored_root.context
+        bindings = ctx.require(BINDINGS)
+        async with ctx.require(TOOLS)._ctx.runtime_scope():
             menu = ToolMenu(
                 ctx.require(TOOLS),
                 bindings,

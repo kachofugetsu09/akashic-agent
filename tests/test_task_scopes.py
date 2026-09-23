@@ -427,6 +427,7 @@ async def test_task_factory_failure_closes_run_and_releases_local_scope():
         loop.set_task_factory(old_factory)
 
     assert len(created_coroutines) == 1
+    assert inspect.iscoroutine(created_coroutines[0])
     assert inspect.getcoroutinestate(created_coroutines[0]) == inspect.CORO_CLOSED
     assert ran == []
     assert not ctx.fiber._fiber._in_flight_calls

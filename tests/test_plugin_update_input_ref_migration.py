@@ -64,7 +64,7 @@ def _runner(tmp_path: Path, repo: Path) -> MigrationRunner:
 def _old_database(workspace: Path) -> Path:
     database = workspace / "runtime/plugin-reloads.sqlite3"
     database.parent.mkdir(parents=True)
-    with sqlite3.connect(database) as conn:
+    with closing(sqlite3.connect(database)) as conn, conn:
         conn.executescript("""
             CREATE TABLE reload_transactions (
                 tx_id TEXT PRIMARY KEY,
@@ -128,7 +128,7 @@ def test_runner_uses_connection_callback_and_preserves_old_rows_fk_and_indexes(t
     database = _old_database(workspace)
     outcome = _runner(tmp_path, repo).run()
     assert outcome.migrations == (MIGRATION_ID,)
-    with sqlite3.connect(database) as conn:
+    with closing(sqlite3.connect(database)) as conn, conn:
         columns = [row[1] for row in conn.execute("PRAGMA table_info(plugin_updates)")]
         assert columns[-1] == "input_ref"
         assert conn.execute(
@@ -190,7 +190,7 @@ def test_old_and_unknown_runtime_schema_are_rejected_without_startup_writes(tmp_
     unknown = tmp_path / "unknown"
     path = unknown / "runtime/plugin-reloads.sqlite3"
     path.parent.mkdir(parents=True)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute("CREATE TABLE plugin_updates (update_id TEXT PRIMARY KEY)")
         conn.execute("CREATE UNIQUE INDEX plugin_update_active ON plugin_updates(update_id)")
     before_unknown = path.read_bytes()

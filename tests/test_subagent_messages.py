@@ -33,6 +33,7 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 class ModelControl:
     entered: asyncio.Queue = field(default_factory=asyncio.Queue)
     release: asyncio.Event = field(default_factory=asyncio.Event)
+    fail_after_send: bool = False
     calls: int = 0
     main_calls: int = 0
     main_entered: asyncio.Queue = field(default_factory=asyncio.Queue)
@@ -63,15 +64,6 @@ def _provider_context(host: PluginManager, plugin_id: str):
     generation = host.generation(plugin_id)
     assert generation is not None and generation.fiber is not None
     return generation.fiber.context
-
-
-def _registered_source(host: PluginManager, name: str):
-    context = _provider_context(host, "sources")
-    with context.runtime_scope():
-        matches = tuple(source for source in context.require(SOURCES).entries()
-                        if source.name == name)
-    assert len(matches) == 1
-    return matches[0]
 
 
 async def _capture_report_owners(host: PluginManager, control: ModelControl) -> None:
@@ -248,7 +240,7 @@ async def apply(ctx):
     module = provider / "plugin.py"
     text = provider_source.replace("async def apply(ctx):", "from " + __name__ + " import CONTROLS, _check_report_owners\nasync def apply(ctx):")
     text = text.replace("CONTROL_PATH", repr(str(tmp_path)))
-    text = text.replace("        async def complete(self, request):", "        async def complete(self, request):\n            control = CONTROLS[" + repr(str(tmp_path)) + "]\n            if '## 后台任务结果' in str(request.messages):\n                control.main_calls += 1\n                control.main_entered.put_nowait(request)\n                _check_report_owners(control)\n                await control.main_release.wait()\n                if '状态：failed' in str(request.messages):\n                    return LLMResponse('main summary: failed')\n                if control.main_tool and 'main-report.txt' not in str(request.messages[:-1]):\n                    return LLMResponse(None, [ToolCall('main-write', 'write_file', {'path': CONTROL_REPORT_PATH, 'content': 'main result'})])\n                summary = ('new provider result' if 'new provider result' in str(request.messages[-1])\n                           else 'cancelled' if 'cancelled' in str(request.messages[-1])\n                           else 'child finished')\n                return LLMResponse('main summary: ' + summary)\n            if '[human followup]' in str(request.messages):\n                return LLMResponse('human answer')\n            control.calls += 1\n            control.entered.put_nowait(request)\n            await control.release.wait()")
+    text = text.replace("        async def complete(self, request):", "        async def complete(self, request):\n            control = CONTROLS[" + repr(str(tmp_path)) + "]\n            if '## 后台任务结果' in str(request.messages):\n                control.main_calls += 1\n                control.main_entered.put_nowait(request)\n                _check_report_owners(control)\n                await control.main_release.wait()\n                if '状态：failed' in str(request.messages):\n                    return LLMResponse('main summary: failed')\n                if control.main_tool and 'main-report.txt' not in str(request.messages[:-1]):\n                    return LLMResponse(None, [ToolCall('main-write', 'write_file', {'path': CONTROL_REPORT_PATH, 'content': 'main result'})])\n                summary = ('new provider result' if 'new provider result' in str(request.messages[-1])\n                           else 'cancelled' if 'cancelled' in str(request.messages[-1])\n                           else 'child finished')\n                return LLMResponse('main summary: ' + summary)\n            if '[human followup]' in str(request.messages):\n                return LLMResponse('human answer')\n            control.calls += 1\n            control.entered.put_nowait(request)\n            await control.release.wait()\n            if control.fail_after_send:\n                raise OSError('response lost after send')")
     text = text.replace("CONTROL_REPORT_PATH", repr(str(tmp_path / "workspace/main-report.txt")))
     _write_python_source(module, text)
     event_bus = EventBus()
@@ -654,9 +646,16 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
         model_generation = host.generation("models_fixture")
         assert model_generation is not None
         stable_model = model_generation.archive_ref
-        await host.terminate_all()
+        if stage == "started":
+            stopping = asyncio.create_task(host.terminate_all())
+            await asyncio.sleep(0)
+            control.fail_after_send = True
+            control.release.set()
+            await asyncio.wait_for(stopping, 10)
+            control.fail_after_send = False
+        else:
+            await host.terminate_all()
         log.close()
-        control.release.set()
         # 当前插件处理原已接纳事实；已完成结果不因源码变化重算。
         provider = tmp_path / "plugins/models_fixture/plugin.py"
         changed_provider = provider.read_text().replace(
@@ -719,7 +718,8 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                 assert rows is not None
                 assert [type(row.body) for row in rows] == [Input, Control]
                 failure = rows[-1].body
-                assert isinstance(failure, Control) and "远端效果不确定" in failure.reason
+                assert isinstance(failure, Control) and failure.reason is not None
+                assert failure.reason == "response lost after send"
                 assert control.calls == 1
                 async def failed_report():
                     async for _ in reopened.catalog().follow():
@@ -737,14 +737,14 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                 assert control.main_calls == 1 and control.report_owner_checks == 1
                 assert not (workspace / "main-report.txt").exists()
                 return
-            async def completed():
+            async def completed_reports() -> list[Message] | None:
                 async for _ in reopened.catalog().follow():
                     messages = reopened.reader("test:parent").snapshot()
                     returned = [message for message in messages if isinstance(message.body, Output)
                                 and message.source.startswith("subagent:") and message.body.finish == "complete"]
                     if returned:
                         return returned
-            returned = await asyncio.wait_for(completed(), 10)
+            returned = await asyncio.wait_for(completed_reports(), 10)
             assert returned is not None
             expected_result = "new provider result" if stage == "started" else "child finished"
             assert len(returned) == 1 and f"main summary: {expected_result}" in text_part(returned[0].body.parts[0])

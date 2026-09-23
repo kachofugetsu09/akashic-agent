@@ -3,10 +3,11 @@ import ast
 import asyncio
 from pathlib import Path
 import shutil
+from typing import cast
 
 import pytest
 
-from agent.plugin_composition import CompositionError, CompositionRoot, FiberState, PluginRuntime, ServiceKey
+from agent.plugin_composition import CompositionError, CompositionRoot, Context, FiberState, PluginRuntime, ServiceKey
 from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.bindings import BINDINGS
@@ -16,7 +17,7 @@ from agent.plugin_composition.commands import (
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.commands import plugin as commands_plugin
-from plugins.commands.registry import PluginCommands
+from plugins.commands.registry import CommandRegistry, PluginCommands
 from session.log import MessageLog
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
@@ -265,7 +266,9 @@ async def apply(ctx):
             generation = host.generation(name)
             assert generation is not None
             archive_refs.append(generation.archive_ref)
-        assert set(descriptor["components"]) == set(archive_refs)
+        components = descriptor["components"]
+        assert isinstance(components, tuple)
+        assert set(components) == set(archive_refs)
         async with bindings.open(identity, COMMANDS) as (selected, metadata):
             assert selected is root.context.require(COMMANDS)
             assert metadata == {"name": "probe"}
@@ -294,8 +297,8 @@ async def test_execute_scopes_both_owners_and_rejects_new_known_calls_during_dra
     """已接纳命令持有两层 owner；排空只拒绝新命令，不抹成未知。"""
     root = CompositionRoot(f"commands-drain-{owner}")
     provider_fiber = contributor_fiber = peer_fiber = None
-    contributor_context = None
-    peer_context = None
+    contributor_context: Context | None = None
+    peer_context: Context | None = None
     call_task = dispose_task = rejected_task = None
     commands = None
     release = asyncio.Event()
@@ -309,7 +312,7 @@ async def test_execute_scopes_both_owners_and_rejects_new_known_calls_during_dra
     calls = []
     captured_scopes = {}
     cleanup_counts = {"provider": 0, "contributor": 0}
-    view_ref = None
+    view_ref: CommandRegistry | None = None
 
     async def contribute(ctx):
         nonlocal contributor_context
@@ -566,7 +569,7 @@ async def test_execute_releases_both_owner_scopes_for_success_error_cancel_and_r
             if outcome == "handler_error":
                 raise OSError("handler failure")
             if outcome == "result_error":
-                return object()
+                return cast(CommandResult, object())  # Inject an invalid runtime result.
             if outcome == "cancel":
                 return cancelled_handler(invocation)
             raise AssertionError("recover path must not invoke the original handler")

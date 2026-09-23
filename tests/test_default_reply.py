@@ -14,11 +14,19 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.config_input import save_config
 
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition import FiberState
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from session.log import MessageLog
 from session.message import Control, Input, Output, ToolResult
+
+
+@asynccontextmanager
+async def live_root(host: PluginManager):
+    """Read the one formal Root used by the installed reply consumer."""
+    root = host.live_root
+    assert root is not None
+    yield root
 
 
 @asynccontextmanager
@@ -229,8 +237,8 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
     async with application(tmp_path, replying=replying) as (log, host):
         message = ChannelInboundMessage("test", "user", "room", "do the work",
                                         datetime(2026, 9, 5, tzinfo=UTC), {})
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            accept = snapshot.composition_root.context.require(CHANNEL_INPUT)
+        async with live_root(host) as root:
+            accept = root.context.require(CHANNEL_INPUT)
             accepted = await accept("test:room", "u1", message)
         assert isinstance(accepted.body, Input)
         if replying:
@@ -244,8 +252,8 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
             assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output]
             assert (tmp_path / "effect.txt").read_text() == "once\n"
         else:
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
+            async with live_root(host) as root:
+                calls = root.context.require(ServiceKey("fixture.calls"))
                 assert calls == []
                 assert all("[Source messages]" in str(call.messages) for call in calls)
             assert log.reader("test:room").snapshot() == (accepted,)
@@ -254,14 +262,12 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_bad_reply_tool_configuration_fails_before_consuming_any_input(tmp_path):
-    with pytest.raises(RuntimeError, match="插件组合拓扑未就绪"):
-        async with application(tmp_path, replying=True, start=False, missing_tool=True):
-            pytest.fail("坏配置不得启动完整组合")
-    log = MessageLog(tmp_path / "sessions.db")
-    try:
+    async with application(tmp_path, replying=True, start=False, missing_tool=True) as (log, host):
+        reply = host.generation("reply")
+        assert reply is not None and reply.fiber is not None
+        assert reply.fiber.state is FiberState.FAILED
+        assert reply.fiber.error is not None
         assert log.catalog().snapshot_heads() == {}
-    finally:
-        log.close()
 
 
 @pytest.mark.asyncio
@@ -288,8 +294,8 @@ async def apply(ctx):
 ''')
 
     async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+        async with live_root(host) as root:
+            await root.context.require(CHANNEL_INPUT)(
                 "s", "u", ChannelInboundMessage("test", "user", "s", "record evidence",
                                                  datetime(2026, 9, 5, tzinfo=UTC), {}))
         async def completed():
@@ -311,8 +317,8 @@ async def apply(ctx):
 async def test_default_reply_discovers_then_calls_tool_without_react_search_branch(tmp_path):
     from agent.plugin_composition import ServiceKey
     async with application(tmp_path, replying=True, discovery=True) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+        async with live_root(host) as root:
+            await root.context.require(CHANNEL_INPUT)(
                 "s", "u", ChannelInboundMessage("test", "user", "s", "record evidence",
                                                  datetime(2026, 9, 5, tzinfo=UTC), {}))
         async def completed():
@@ -332,8 +338,8 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
         ]
         assert rows[2].body.parts[-1].kind == "text"
         assert (tmp_path / "effect.txt").read_text() == "once\n"
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            calls = snapshot.composition_root.context.require(
+        async with live_root(host) as root:
+            calls = root.context.require(
                 ServiceKey("fixture.calls")
             )
             expected = {"tool_search", "tool_call"}
@@ -348,7 +354,7 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             payload = json.loads(cast(str, rows[2].body.parts[0].value))
             assert payload["matched_groups"][0]["tools"][0]["function"]["name"] == "write_evidence"
             assert "matched_groups" in str(calls[1].messages)
-            ctx = snapshot.composition_root.context
+            ctx = root.context
             # 新投影从持久日志重建；摘要覆盖搜索结果时，只有请求视图失去 schema。
             async with ctx.require(CHAT_MODELS).execution() as execution:
                 model = execution.chat("agent")
@@ -380,8 +386,8 @@ async def test_default_reply_applies_provider_tool_capacity_before_first_request
     async with application(
         tmp_path, replying=True, discovery=True, extra_sources=constrain_provider
     ) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+        async with live_root(host) as root:
+            await root.context.require(CHANNEL_INPUT)(
                 "s", "u", ChannelInboundMessage("test", "user", "s", "record evidence",
                                                  datetime(2026, 9, 5, tzinfo=UTC), {}))
 
@@ -395,8 +401,8 @@ async def test_default_reply_applies_provider_tool_capacity_before_first_request
         assert rows is not None
         assert isinstance(rows[-1].body, Control)
         assert "容量不足" in (rows[-1].body.reason or "")
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
+        async with live_root(host) as root:
+            calls = root.context.require(ServiceKey("fixture.calls"))
             assert calls == []
 
 
@@ -440,8 +446,8 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
                 assert "摘要后的完整请求仍超过" in reason
             elif soft_only:
                 assert "近期原文保留量内没有合法摘要切点" in reason
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
+            async with live_root(host) as root:
+                calls = root.context.require(ServiceKey("fixture.calls"))
                 assert len(calls) == (1 if large_summary else 0)
                 assert all("[Source messages]" in str(call.messages) for call in calls)
             assert not (tmp_path / "effect.txt").exists()
@@ -453,8 +459,8 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
         refs = [next(cast(Mapping[str, object], part.value)["reference"] for part in row.body.parts
                      if isinstance(part, ContentPart) and part.kind == "context.summary") for row in outputs]
         assert refs[0] == refs[1]
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             assert all(ctx.require(MODEL_CALLS)(identity)["state"] == "success" for identity in record.model_call_ids)
             calls = ctx.require(ServiceKey("fixture.calls"))
             assert len(calls) == 3
@@ -486,8 +492,8 @@ async def test_reply_recovers_rejected_protocol_without_creating_tool_effect(tmp
         provider.write_text(code)
 
     async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        async with live_root(host) as root:
+            ctx = root.context
             accept = ctx.require(CHANNEL_INPUT)
             calls = ctx.require(ServiceKey("fixture.calls"))
             await accept("test:room", "bad-input", ChannelInboundMessage(
@@ -516,8 +522,8 @@ async def test_reply_recovers_rejected_protocol_without_creating_tool_effect(tmp
             assert "test_provider：Write local evidence" in str(system)
             assert all("可搜索工具目录" not in str(row) for row in request.messages if row["role"] != "system")
         before = rows
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+        async with live_root(host) as root:
+            await root.context.require(CHANNEL_INPUT)(
                 "test:room", "follow-up", ChannelInboundMessage(
                     "test", "user", "room", "continue", datetime.now(UTC), {},
                 ),

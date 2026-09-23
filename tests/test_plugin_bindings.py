@@ -326,13 +326,13 @@ async def apply(ctx):
             with pytest.raises(ValueError, match="不属于"):
                 if dynamic:
                     result_value["registration"] = invalid
-                    with provider_context.runtime_scope():
+                    async with provider_context.runtime_scope():
                         binding.bind(RESULT, {})
                 else:
-                    with provider_context.runtime_scope():
+                    async with provider_context.runtime_scope():
                         binding.bind(RESULT, {}, contributors=(invalid,))
         result_value["registration"] = context
-        with provider_context.runtime_scope():
+        async with provider_context.runtime_scope():
             identity = binding.bind(
                 RESULT, {"target": "extra"}, contributors=() if dynamic else (context,)
             )

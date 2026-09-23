@@ -19,11 +19,18 @@ from agent.restart import RestartGate
 from bootstrap import tools as bootstrap
 from bootstrap.app_server import build_control_service
 from core.net.http import SharedHttpResources
+from plugins.akashic_clients.capabilities import MESSAGE_DISPLAY
 from session.message import ContentPart, Input, Message
 from session.artifacts import AttachmentRef
 from session.log import MessageCatalog, MessageLog
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from tests.test_plugin_install import _commit
+
+
+def _rpc_object(frame: dict[str, object], key: str) -> dict[str, object]:
+    value = frame[key]
+    assert isinstance(value, dict)
+    return value
 
 
 def _write_plugin_source(path: Path, source: str) -> None:
@@ -103,7 +110,11 @@ def _write_live_input_plugin(source: Path, *, version: str) -> None:
         "        admissions.ensure(ctx, session_id, SessionAttributes())\n"
         "        body = Input((ContentPart('text', VERSION + ':' + incoming.content),))\n"
         "        return open_input(session_id).append(message_id, body)\n"
-        "    await ctx.provide(CHANNEL_INPUT, accept)\n",
+        "    await ctx.provide(CHANNEL_INPUT, accept)\n"
+        "    async def close():\n"
+        "        global CLOSES\n"
+        "        CLOSES += 1\n"
+        "    await ctx.effect(lambda: close)\n",
     )
 
 
@@ -263,17 +274,17 @@ async def test_message_send_uses_live_channel_owner_during_local_replace(
         await hard_module.HARD_CLOSED.wait()
         assert operation is not None and target.fiber.state is FiberState.UNLOADING
         assert not old_request.done()
-        assert len(target.fiber._fiber._in_flight_calls) == 1
+        assert len(target.fiber._in_flight_calls) == 1
         peer_scope_task = asyncio.create_task(probe_peer_scope())
         await peer_scope_entered.wait()
-        assert len(peer_fiber._fiber._in_flight_calls) == 1
+        assert len(peer_fiber._in_flight_calls) == 1
         assert peer_fiber.state is FiberState.ACTIVE
         assert peer_context.fiber.activation_token is peer_token
 
         unavailable = await request(3, "message/send", {
             "session_id": session_id, "message_id": "blocked", "text": "unavailable",
         })
-        assert unavailable["error"]["code"] == -32603
+        assert _rpc_object(unavailable, "error")["code"] == -32603
         assert old_module.ENTERED_COUNT == old_entered_count
         assert manager.generation("peer") is peer
         assert peer.fiber is peer_fiber
@@ -284,31 +295,31 @@ async def test_message_send_uses_live_channel_owner_during_local_replace(
         peer_scope_release.set()
         await peer_scope_task
         assert peer_scope_finished.is_set()
-        assert not peer_fiber._fiber._in_flight_calls
+        assert not peer_fiber._in_flight_calls
 
         release.set()
         old_result = await old_request
-        assert old_result["result"]["message_id"] == "old"
+        assert _rpc_object(old_result, "result")["message_id"] == "old"
         operation_result = await asyncio.gather(operation.task, return_exceptions=True)
         assert len(operation_result) == 1 and operation_result[0].state == "active"
-        assert not target.fiber._fiber._in_flight_calls
+        assert not target.fiber._in_flight_calls
         assert old_module.CLOSES == 1
 
         new_result = await request(4, "message/send", {
             "session_id": session_id, "message_id": "new", "text": "available",
         })
-        assert new_result["result"]["message_id"] == "new"
+        assert _rpc_object(new_result, "result")["message_id"] == "new"
         messages = core.message_log.reader(session_id).snapshot()
         assert [message.message_id for message in messages] == ["old", "new"]
         assert [message.body.parts[0].value for message in messages] == [
             "old:accepted", "new:available",
         ]
         page = core.message_log.reader(session_id).read_page()
-        manager_display = root.service_value(ServiceKey("core.message_display.v1"))
-        assert callable(manager_display)
+        manager_display = root.service_value(MESSAGE_DISPLAY)
+        assert manager_display is not None
         manager_rows = await manager_display(page, display_only=True)
         control_page = await request(5, "message/read", {"session_id": session_id})
-        assert control_page["result"]["items"] == manager_rows
+        assert _rpc_object(control_page, "result")["items"] == manager_rows
         assert manager.live_root is root
     finally:
         peer_scope_release.set()

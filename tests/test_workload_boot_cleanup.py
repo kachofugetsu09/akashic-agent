@@ -66,7 +66,6 @@ def manager(tmp_path, controller):
 
 async def close(owner):
     await owner.terminate_all()
-    await owner._event_bus.aclose()
 
 
 @pytest.mark.asyncio
@@ -78,18 +77,17 @@ async def test_new_boot_cleans_once_before_apply_and_root_changes_do_not(tmp_pat
         await owner.load_all()
         assert controller.calls == [expected]
         assert (tmp_path / "workspace" / "applied.txt").read_text() == "applied\n"
-        stable = owner.current_snapshot
+        live_root = owner.live_root
+        old_generation = owner.generation("probe")
+        assert live_root is not None and old_generation is not None
         with pytest.raises(RuntimeError, match="不能重复启动"):
             await owner.load_all()
-        ref = owner._selection.read()
-        assert ref is not None
-        await owner._run_operation(lambda: owner._replace_formal_root(
-            owner._selection_components(ref), expected_ref=ref,
-        ))
-        assert owner.current_snapshot is not stable
-        candidate = await owner.prepare_candidate("probe")
-        assert candidate is not None and candidate.validation_workspace is not None
-        await owner.discard_prepared("probe")
+        source = tmp_path / "plugins/probe/plugin.py"
+        source.write_text(source.read_text() + "\n# changed input\n")
+        changed = await owner.reconcile_changed()
+        assert changed[0]["publication_state"] == "active"
+        assert owner.live_root is live_root
+        assert owner.generation("probe") is not old_generation
         assert controller.calls == [expected]
     finally:
         await close(owner)
@@ -137,7 +135,7 @@ async def test_bad_cleanup_receipt_blocks_boot_and_keeps_failure_owner(tmp_path,
         assert owner._operation.task.exception() is error.value
         assert "old-container" in str(error.value)
         assert controller.receipts == (valid, bad)
-        assert owner.current_snapshot is None
+        assert owner.live_root is None
         assert owner._selection.read() is None
         assert not (tmp_path / "workspace" / "applied.txt").exists()
     finally:
@@ -159,7 +157,7 @@ async def test_unknown_cleanup_result_is_not_success_or_replayed(tmp_path):
         assert error.value is unknown
         assert owner._operation.task.exception() is unknown
         assert len(controller.calls) == 1
-        assert owner.current_snapshot is None
+        assert owner.live_root is None
         assert not (tmp_path / "workspace" / "applied.txt").exists()
     finally:
         await close(owner)
@@ -196,7 +194,7 @@ async def test_cancelled_boot_retains_pending_task_and_never_applies_after_late_
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await operation.task
-        assert owner.current_snapshot is None
+        assert owner.live_root is None
         assert owner._selection.read() is None
         assert not (tmp_path / "workspace" / "applied.txt").exists()
         assert len(controller.calls) == 1
@@ -217,7 +215,7 @@ async def test_expired_boot_does_not_apply_after_confirmed_cleanup(tmp_path):
     try:
         with pytest.raises(OperationTimeoutError):
             await owner.load_all()
-        assert owner.current_snapshot is None
+        assert owner.live_root is None
         assert not (tmp_path / "workspace" / "applied.txt").exists()
     finally:
         await close(owner)

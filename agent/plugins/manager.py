@@ -2183,7 +2183,22 @@ class PluginManager:
                 and generation.state == "failed"
                 and self._active_generations.get(generation.plugin_id) is generation
             )
-            if not retained_pre_fiber_failure and (
+            selected_ref = self._selection.read()
+            retained_failed_fiber = (
+                generation.fiber is not None
+                and generation.fiber.state == FiberState.FAILED
+                and generation.fiber.error is not None
+                and generation.archive_ref is not None
+                and self._selection_contains(selected_ref, generation.archive_ref)
+                and self._active_generations.get(generation.plugin_id) is generation
+            )
+            if retained_failed_fiber:
+                generation.load_error = generation.fiber.error
+                generation.state = "failed"
+                await self._dispose_generation(
+                    generation, state="failed", retain_selected_failed=True,
+                )
+            elif not retained_pre_fiber_failure and (
                 generation.state != "active"
                 or self._active_generations.get(generation.plugin_id) is generation
             ):
@@ -4494,8 +4509,6 @@ class PluginManager:
             _, externally_cancelled = await _complete_critical(
                 self._stop_runtime_snapshot(snapshot)
             )
-        _, cancelled = await _complete_critical(self._plugin_tasks.close())
-        externally_cancelled = externally_cancelled or cancelled
         _, cancelled = await _complete_critical(self._plugin_processes.close())
         externally_cancelled = externally_cancelled or cancelled
         # The local path drains child Fibers first, then closes the one formal Root.
@@ -4511,6 +4524,8 @@ class PluginManager:
                     self._dispose_generation(generation, state="retired")
                 )
                 externally_cancelled = externally_cancelled or cancelled
+        _, cancelled = await _complete_critical(self._plugin_tasks.close())
+        externally_cancelled = externally_cancelled or cancelled
         if live_root is not None:
             _, cancelled = await _complete_critical(live_root.dispose())
             externally_cancelled = externally_cancelled or cancelled

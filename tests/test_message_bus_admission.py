@@ -339,22 +339,33 @@ def test_plugin_manager_without_gate_gets_one_fresh_host_boot_id(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> None:
     from agent.plugin_composition.channels import ChannelCapability, InboundIdentity
-    from plugins.channels.provider import PluginChannels
+    from agent.plugin_composition.context import CompositionRoot
+    from plugins.channels.provider import PluginChannels, _ChannelBindingState
 
     async def unused(*args):
         return None
 
-    host = object.__new__(PluginChannels)
-    states = {}
-    for channel in ("alpha", "beta"):
-        states[("snapshot", channel)] = SimpleNamespace(
+    root = CompositionRoot("channel-routing")
+    async def apply(_ctx):
+        return None
+
+    fiber = await root.mount(apply, name="channel-owner")
+    context = fiber.context
+
+    def binding(channel, snapshot):
+        return _ChannelBindingState(
+            snapshot_id=snapshot, plugin_id="channel-owner", generation_id="test",
             channel_name=channel,
             capabilities=(ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
+            factory=lambda _context: pytest.fail("recovery must not start an adapter"),
+            adapter=None, binding_token=channel, config={}, factory_context=None,
+            plugin_context=context, activation_token=context.fiber.activation_token,
             admission_open=True,
-            stopping=False,
-            stopped=False,
         )
+
+    host = object.__new__(PluginChannels)
+    states = {("snapshot", channel): binding(channel, "snapshot") for channel in ("alpha", "beta")}
     host._bindings = states
     seen = []
 
@@ -381,19 +392,15 @@ async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> Non
             },
         ),
     )
-    assert await host.recover_inbound(raw) is True
-    assert seen == [(("snapshot", "beta"), "beta")]
+    try:
+        assert await host.recover_inbound(raw) is True
+        assert seen == [(("snapshot", "beta"), "beta")]
 
-    states[("other", "beta")] = SimpleNamespace(
-        channel_name="beta",
-        capabilities=(ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND),
-        inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-        admission_open=True,
-        stopping=False,
-        stopped=False,
-    )
-    with pytest.raises(RuntimeError, match="不唯一"):
-        await host.recover_inbound(raw)
+        states[("other", "beta")] = binding("beta", "other")
+        with pytest.raises(RuntimeError, match="不唯一"):
+            await host.recover_inbound(raw)
+    finally:
+        await root.dispose()
 
 
 @pytest.mark.asyncio

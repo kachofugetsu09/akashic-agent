@@ -5,8 +5,9 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from urllib.parse import urlencode
 
 import pytest
@@ -27,6 +28,11 @@ from agent.plugins.dashboard_host import LiveDashboardMiddleware
 from plugins.ui import plugin as ui_plugin
 
 
+class _RootHost:
+    def __init__(self, root: CompositionRoot) -> None:
+        self.live_root = root
+
+
 def _write_dashboard_module(
     code: Path,
     *,
@@ -36,7 +42,7 @@ def _write_dashboard_module(
     websocket_error: bool = False,
     cleanup_error: bool = False,
     request_dependency: bool = False,
-) -> tuple[ModuleType, object]:
+) -> tuple[ModuleType, Callable[[], ModuleType]]:
     """Create a real plugin-local module and loader with the same code origin."""
 
     if websocket:
@@ -87,7 +93,6 @@ def _write_dashboard_module(
             route += """
         await http_dependency_release.wait()
         observed_dependency.append(_context.require(DEPENDENCY))
-        observed_dependency_state.append(_context.fiber.state.value)
         http_dependency_read.set()
 """
         route += """
@@ -111,7 +116,6 @@ ws_cleanup_started = asyncio.Event()
 ws_cleanup_finished = asyncio.Event()
 ws_cleanup_release = asyncio.Event()
 observed_dependency = []
-observed_dependency_state = []
 http_dependency_release = asyncio.Event()
 http_dependency_read = asyncio.Event()
 DEPENDENCY = None
@@ -174,6 +178,7 @@ async def _live_dashboard(
     )
     if request_dependency is not None:
         module.DEPENDENCY = request_dependency
+        module.inject = (request_dependency,)
 
         async def dependency_provider(ctx: Context) -> None:
             await ctx.provide(request_dependency, "frozen-dependency")
@@ -198,7 +203,7 @@ async def _live_dashboard(
             config={},
         ),
     )
-    manager = SimpleNamespace(live_root=root)
+    manager = _RootHost(root)
     return root, LiveDashboardMiddleware(host, manager), module
 
 
@@ -339,14 +344,14 @@ async def test_old_http_scope_drains_and_new_fence_is_rejected(tmp_path: Path) -
             ),
             name="old-http-owner",
         )
-        await module.http_started.wait()
+        await asyncio.wait_for(module.http_started.wait(), timeout=5)
         dispose_task = asyncio.create_task(root_owner.dispose(), name="dashboard-dispose")
-        await root_owner._admission_closed.wait()  # pyright: ignore[reportPrivateUsage]
+        await asyncio.wait_for(root_owner._admission_closed.wait(), timeout=5)  # pyright: ignore[reportPrivateUsage]
         assert root_owner.state is FiberState.UNLOADING
         module.http_dependency_release.set()
-        await module.http_dependency_read.wait()
+        await asyncio.wait_for(module.http_dependency_read.wait(), timeout=5)
         assert module.observed_dependency == ["frozen-dependency"]
-        assert module.observed_dependency_state == [FiberState.UNLOADING.value]
+        assert root_owner.state is FiberState.UNLOADING
         async with peer_fiber.context.runtime_scope():
             assert peer_fiber.state is FiberState.ACTIVE
         peer_after = (
@@ -358,15 +363,15 @@ async def test_old_http_scope_drains_and_new_fence_is_rejected(tmp_path: Path) -
             peer_fiber._stopping_completed,  # pyright: ignore[reportPrivateUsage]
         )
         assert peer_after == peer_before
-        sent = await _asgi_call(
+        sent = await asyncio.wait_for(_asgi_call(
             middleware,
             _http_scope(headers),
             [{"type": "http.request", "body": b"", "more_body": False}],
-        )
+        ), timeout=5)
         assert sent[0]["status"] == 409
         module.http_release.set()
-        old_sent = await old_task
-        await dispose_task
+        old_sent = await asyncio.wait_for(old_task, timeout=5)
+        await asyncio.wait_for(dispose_task, timeout=5)
         assert old_sent[0]["status"] == 200
         assert root_owner.state is FiberState.DISPOSED
         assert module.http_finished.is_set()
@@ -375,12 +380,12 @@ async def test_old_http_scope_drains_and_new_fence_is_rejected(tmp_path: Path) -
         if old_task is not None and not old_task.done():
             old_task.cancel()
             try:
-                await old_task
+                await asyncio.wait_for(old_task, timeout=5)
             except BaseException:
                 pass
         if dispose_task is not None and not dispose_task.done():
             try:
-                await dispose_task
+                await asyncio.wait_for(dispose_task, timeout=5)
             except BaseException:
                 pass
         await root.dispose()
@@ -407,6 +412,7 @@ async def test_dashboard_rejection_releases_ui_before_backpressured_wire(
 
     try:
         snapshot_id, catalog_id = _identity(root, module)
+        pending: list[dict[str, object]]
         if rejection == "http-stale":
             scope = _http_scope([
                 (b"x-akashic-web-snapshot", snapshot_id.encode()),
@@ -507,7 +513,7 @@ async def test_same_context_reregister_gets_new_registration_fence(tmp_path: Pat
             ),
         )
         registry = contexts[0].require(UI)
-        middleware = LiveDashboardMiddleware(host, SimpleNamespace(live_root=root))
+        middleware = LiveDashboardMiddleware(host, _RootHost(root))
         registration = registry._entries["dashboard"]  # pyright: ignore[reportPrivateUsage]
         first = registration.effect
         assert first is not None
@@ -575,7 +581,7 @@ async def test_dashboard_hard_dependency_reactivation_gets_new_context_and_fence
 ) -> None:
     root = CompositionRoot("dashboard-dependency-reactivation")
     host = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    dependency = ServiceKey[object]("test.dashboard.hard-dependency")
+    dependency = ServiceKey[str]("test.dashboard.hard-dependency")
     contexts: list[Context] = []
     seen_dependency: list[str] = []
 
@@ -607,7 +613,7 @@ async def test_dashboard_hard_dependency_reactivation_gets_new_context_and_fence
         await root.context.provide(DASHBOARD_ROUTES, tuple(host.routes))
         provider_a = await root.mount(provide_a, name="dependency-a")
         await root.mount(ui_plugin.apply, name="ui")
-        contributor = await root.mount(
+        contributor_fiber = await root.mount(
             contributor,
             name="dashboard",
             inject=(UI, dependency),
@@ -620,7 +626,7 @@ async def test_dashboard_hard_dependency_reactivation_gets_new_context_and_fence
                 config={},
             ),
         )
-        middleware = LiveDashboardMiddleware(host, SimpleNamespace(live_root=root))
+        middleware = LiveDashboardMiddleware(host, _RootHost(root))
         old_context = contexts[0]
         old_registry = old_context.require(UI)
         old_catalog = old_registry.catalog()
@@ -629,9 +635,9 @@ async def test_dashboard_hard_dependency_reactivation_gets_new_context_and_fence
         generation_id = root.generation_id
 
         await provider_a.dispose()
-        assert contributor.state is FiberState.PENDING
+        assert contributor_fiber.state is FiberState.PENDING
         provider_b = await root.mount(provide_b, name="dependency-b")
-        assert contributor.state is FiberState.ACTIVE
+        assert contributor_fiber.state is FiberState.ACTIVE
         assert provider_b.state is FiberState.ACTIVE
         assert seen_dependency == ["A", "B"]
         new_context = contexts[1]
@@ -706,7 +712,7 @@ async def test_websocket_owner_cancel_settles_before_backpressured_wire_close(
         })
         wire_release = asyncio.Event()
 
-        pending = [{"type": "websocket.connect"}]
+        pending: list[dict[str, object]] = [{"type": "websocket.connect"}]
 
         async def receive() -> dict[str, object]:
             if pending:
@@ -771,7 +777,7 @@ async def test_websocket_caller_cancel_is_observable_and_cleanup_is_joined(
         })
         release = asyncio.Event()
 
-        pending = [{"type": "websocket.connect"}]
+        pending: list[dict[str, object]] = [{"type": "websocket.connect"}]
 
         async def receive() -> dict[str, object]:
             if pending:
@@ -1008,7 +1014,7 @@ async def test_core_route_passthrough_without_ui_and_identity_is_stale(tmp_path:
     async def core_route() -> dict[str, bool]:
         return {"ok": True}
 
-    middleware = LiveDashboardMiddleware(host, SimpleNamespace(live_root=root))
+    middleware = LiveDashboardMiddleware(host, _RootHost(root))
     try:
         sent = await _asgi_call(
             middleware,

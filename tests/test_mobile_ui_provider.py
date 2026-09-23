@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
@@ -11,6 +12,9 @@ import agent.plugins.mobile_ui as mobile_ui_module
 from agent.plugin_composition import (
     CompositionError,
     CompositionRoot,
+    Context,
+    Effect,
+    Fiber,
     FiberState,
     MobileUiDefinition,
     MobileUiNavigation,
@@ -27,6 +31,42 @@ from plugins.ui import plugin as ui_plugin
 DEPENDENCY = ServiceKey[str]("test.mobile.ui.dependency")
 
 
+class _OwnerState(TypedDict, total=False):
+    context: Context
+    effect: Effect
+
+
+def _owner_context(state: _OwnerState) -> Context:
+    context = state.get("context")
+    assert isinstance(context, Context)
+    return context
+
+
+def _owner_effect(state: _OwnerState) -> Effect:
+    effect = state.get("effect")
+    assert isinstance(effect, Effect)
+    return effect
+
+
+def _item_revision(item: dict[str, object]) -> str:
+    revision = item["revision"]
+    assert isinstance(revision, str)
+    return revision
+
+
+def _item_sha(item: dict[str, object]) -> str:
+    sha = item["module_sha256"]
+    assert isinstance(sha, str)
+    return sha
+
+
+def _catalog_items(catalog: dict[str, object]) -> list[dict[str, object]]:
+    items = catalog["items"]
+    assert isinstance(items, list)
+    assert all(isinstance(item, dict) for item in items)
+    return items
+
+
 async def mount_ui_owner(
     root: CompositionRoot,
     code: Path,
@@ -36,8 +76,8 @@ async def mount_ui_owner(
     available=None,
     query=None,
     inject: tuple[ServiceKey[object], ...] = (UI_SLOTS,),
-):
-    state: dict[str, object] = {}
+) -> tuple[Fiber, _OwnerState]:
+    state: _OwnerState = {}
 
     def default_query(method, payload, *, session_id, turn_id):
         return {
@@ -48,7 +88,7 @@ async def mount_ui_owner(
             "turn_id": turn_id,
         }
 
-    async def apply(ctx):
+    async def apply(ctx: Context) -> None:
         state["context"] = ctx
         if register:
             query_handler = default_query if query is None else query
@@ -80,7 +120,7 @@ async def mount_ui_owner(
     return fiber, state
 
 
-async def build_mobile_root(root: CompositionRoot, code: Path) -> tuple[object, dict[str, object]]:
+async def build_mobile_root(root: CompositionRoot, code: Path) -> tuple[Fiber, _OwnerState]:
     await root.mount(ui_plugin.apply, name="ui")
     return await mount_ui_owner(root, code)
 
@@ -99,22 +139,24 @@ async def test_mobile_provider_reads_live_registration_and_fixed_asset_bytes(tmp
     provider = PluginMobileUiProvider(root)
     try:
         _fiber, state = await build_mobile_root(root, tmp_path)
-        context = state["context"]
+        context = _owner_context(state)
         catalog = await provider.catalog()
-        assert len(catalog["items"]) == 1
-        item = catalog["items"][0]
+        assert len(_catalog_items(catalog)) == 1
+        item = _catalog_items(catalog)[0]
+        assert isinstance(_item_revision(item), str)
+        assert isinstance(_item_sha(item), str)
         assert item["id"] == "mobile"
         assert item["module_bytes"] == len(original.encode())
         asset = await provider.asset(
-            "mobile", item["revision"], "module", item["module_sha256"],
+            "mobile", _item_revision(item), "module", _item_sha(item),
         )
         assert asset["content"] == original
         (tmp_path / "mobile.js").write_text("changed", encoding="utf-8")
         assert (await provider.asset(
-            "mobile", item["revision"], "module", item["module_sha256"],
+            "mobile", _item_revision(item), "module", _item_sha(item),
         ))["content"] == original
         result = await provider.query(
-            "mobile", item["revision"], "inspect", {"ok": True},
+            "mobile", _item_revision(item), "inspect", {"ok": True},
             session_id="session", turn_id="turn",
         )
         assert result["owner"] == "mobile"
@@ -134,12 +176,12 @@ async def test_mobile_registration_effect_replaces_identity_in_same_context(tmp_
         _fiber, state = await mount_ui_owner(root, tmp_path)
         slots = root.context.require(UI_SLOTS)
         old_binding = slots.bindings()[0]
-        old_effect = state["effect"]
+        old_effect = _owner_effect(state)
         old_catalog = await provider.catalog()
 
         await old_effect.aclose()
         new_effect = await slots.register_mobile(
-            state["context"],
+            _owner_context(state),
             MobileUiDefinition(module="mobile.js", stylesheet="mobile.css"),
             query=lambda method, payload, *, session_id, turn_id: {"new": True},
         )
@@ -147,7 +189,7 @@ async def test_mobile_registration_effect_replaces_identity_in_same_context(tmp_
         new_catalog = await provider.catalog()
         assert new_binding.context is old_binding.context
         assert new_binding.registration_uuid != old_binding.registration_uuid
-        assert new_catalog["items"][0]["revision"] != old_catalog["items"][0]["revision"]
+        assert _catalog_items(new_catalog)[0]["revision"] != _catalog_items(old_catalog)[0]["revision"]
         await new_effect.aclose()
     finally:
         await provider.aclose()
@@ -194,9 +236,9 @@ async def test_mobile_hard_dependency_reactivation_gets_new_context_and_fence(tm
             tmp_path,
             inject=(UI_SLOTS, DEPENDENCY),
         )
-        old_context = state["context"]
+        old_context = _owner_context(state)
         old_catalog = await provider.catalog()
-        old_item = old_catalog["items"][0]
+        old_item = _catalog_items(old_catalog)[0]
         old_binding = root.context.require(UI_SLOTS).bindings()[0]
 
         await dependency_a.dispose()
@@ -207,22 +249,22 @@ async def test_mobile_hard_dependency_reactivation_gets_new_context_and_fence(tm
             runtime=dependency_runtime("dependency-b", dependency_b_code),
         )
         assert fiber.state is FiberState.ACTIVE
-        new_context = state["context"]
+        new_context = _owner_context(state)
         new_binding = root.context.require(UI_SLOTS).bindings()[0]
         new_catalog = await provider.catalog()
-        new_item = new_catalog["items"][0]
+        new_item = _catalog_items(new_catalog)[0]
         assert new_context is not old_context
         assert new_binding.context is new_context
         assert new_binding.registration_uuid != old_binding.registration_uuid
-        assert new_item["revision"] != old_item["revision"]
-        assert new_item["module_sha256"] == old_item["module_sha256"]
+        assert _item_revision(new_item) != _item_revision(old_item)
+        assert _item_sha(new_item) == _item_sha(old_item)
         assert new_item["module_bytes"] == old_item["module_bytes"]
         with pytest.raises(MobileUiStaleRevision):
             await provider.asset(
-                "mobile", old_item["revision"], "module", old_item["module_sha256"],
+                "mobile", _item_revision(old_item), "module", _item_sha(old_item),
             )
         assert (await provider.asset(
-            "mobile", new_item["revision"], "module", new_item["module_sha256"],
+            "mobile", _item_revision(new_item), "module", _item_sha(new_item),
         ))["content"] == (tmp_path / "mobile.js").read_text()
     finally:
         if dependency_b is not None:
@@ -272,7 +314,7 @@ async def test_mobile_ui_owner_replacement_rejects_stale_slots_and_accepts_new_s
             inject=(DEPENDENCY,),
         )
         _owner, state = await mount_ui_owner(root, tmp_path)
-        old_context = state["context"]
+        old_context = _owner_context(state)
         old_slots = root.context.require(UI_SLOTS)
         old_binding = old_slots.bindings()[0]
         await dependency_a.dispose()
@@ -301,7 +343,7 @@ async def test_mobile_ui_owner_replacement_rejects_stale_slots_and_accepts_new_s
             )
         assert stale_registration.value.code == "STALE_ACTIVATION"
         assert await provider.catalog()
-        assert new_slots.bindings()[0].context is state["context"]
+        assert new_slots.bindings()[0].context is _owner_context(state)
     finally:
         if dependency_b is not None:
             await dependency_b.dispose()
@@ -320,13 +362,13 @@ async def test_mobile_available_runs_in_real_target_permit_and_peer_is_unchanged
     peer_calls: list[str] = []
 
     def available() -> bool:
-        context = owner_state["context"]
+        context = _owner_context(owner_state)
         captured = context.capture_runtime_scope()
         captured._close()  # pyright: ignore[reportPrivateUsage]
         observed.append((context.fiber.state, True))
         return True
 
-    owner_state: dict[str, object] = {}
+    owner_state: _OwnerState = {}
     try:
         await root.mount(ui_plugin.apply, name="ui")
         _fiber, owner_state = await mount_ui_owner(
@@ -456,8 +498,8 @@ async def test_mobile_asset_and_query_retain_same_task_permit_during_unloading(
         peer, peer_state = await mount_ui_owner(
             root, peer_code, name="peer", register=False,
         )
-        context = state["context"]
-        peer_context = peer_state["context"]
+        context = _owner_context(state)
+        peer_context = _owner_context(peer_state)
 
         async def setup_peer_cleanup():
             async def cleanup_peer():
@@ -471,13 +513,13 @@ async def test_mobile_asset_and_query_retain_same_task_permit_during_unloading(
         )
         peer_identity = (
             peer_context,
-            peer.context.activation_token,
+            peer.context.fiber.activation_token,
             peer.state,
             peer_context.fiber.state,
             peer_effect,
             peer_cleanup_count,
         )
-        item = (await provider.catalog())["items"][0]
+        item = _catalog_items(await provider.catalog())[0]
 
         async with context.runtime_scope():
             dispose_task = asyncio.create_task(owner.dispose())
@@ -493,7 +535,7 @@ async def test_mobile_asset_and_query_retain_same_task_permit_during_unloading(
             await peer_entered.wait()
             assert (
                 peer_context,
-                peer.context.activation_token,
+                peer.context.fiber.activation_token,
                 peer.state,
                 peer_context.fiber.state,
                 peer_effect,
@@ -501,18 +543,18 @@ async def test_mobile_asset_and_query_retain_same_task_permit_during_unloading(
             ) == peer_identity
             assert peer_cleanup_count == 0
             asset = await provider.asset(
-                "mobile", item["revision"], "module", item["module_sha256"],
+                "mobile", _item_revision(item), "module", _item_sha(item),
             )
             assert asset["content"] == (tmp_path / "mobile.js").read_text()
             result = await provider.query(
-                "mobile", item["revision"], "retained", {},
+                "mobile", _item_revision(item), "retained", {},
                 session_id=None, turn_id=None,
             )
             assert result["method"] == "retained"
             with pytest.raises(MobileUiPluginUnavailable):
                 await asyncio.create_task(
                     provider.asset(
-                        "mobile", item["revision"], "module", item["module_sha256"],
+                        "mobile", _item_revision(item), "module", _item_sha(item),
                     )
                 )
             peer_release.set()
@@ -544,7 +586,7 @@ async def test_mobile_ui_provider_rejects_new_tasks_during_ui_owner_unloading(
     try:
         ui_fiber = await root.mount(ui_plugin.apply, name="ui")
         await mount_ui_owner(root, tmp_path)
-        item = (await provider.catalog())["items"][0]
+        item = _catalog_items(await provider.catalog())[0]
         ui_context, _slots = provider._ui_slots()  # pyright: ignore[reportPrivateUsage]
         async with ui_context.runtime_scope():
             ui_dispose_task = asyncio.create_task(ui_fiber.dispose())
@@ -556,13 +598,13 @@ async def test_mobile_ui_provider_rejects_new_tasks_during_ui_owner_unloading(
             with pytest.raises(MobileUiPluginUnavailable):
                 await asyncio.create_task(
                     provider.asset(
-                        "mobile", item["revision"], "module", item["module_sha256"],
+                        "mobile", _item_revision(item), "module", _item_sha(item),
                     )
                 )
             with pytest.raises(MobileUiPluginUnavailable):
                 await asyncio.create_task(
                     provider.query(
-                        "mobile", item["revision"], "ui-unloading", {},
+                        "mobile", _item_revision(item), "ui-unloading", {},
                         session_id=None, turn_id=None,
                     )
                 )
@@ -604,12 +646,12 @@ async def test_mobile_registration_rejects_cross_root_escaped_assets_and_stale_p
         slots = left.context.require(UI_SLOTS)
         with pytest.raises(ValueError, match="实际 Root"):
             await slots.register_mobile(
-                right_state["context"], MobileUiDefinition(module="mobile.js"), query=query,
+                _owner_context(right_state), MobileUiDefinition(module="mobile.js"), query=query,
             )
         for path in ("../foreign.js", "linked.js", str(foreign)):
             with pytest.raises(RuntimeError, match="mobile UI"):
                 await slots.register_mobile(
-                    left_state["context"], MobileUiDefinition(module=path), query=query,
+                    _owner_context(left_state), MobileUiDefinition(module=path), query=query,
                 )
 
         borrowed_effect = await borrowed_root.context.provide(

@@ -14,6 +14,7 @@ from agent.plugin_composition import (
     CompositionRoot,
     EmitEventKey,
     Effect,
+    FiberState,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
 )
@@ -29,16 +30,6 @@ from core.memory.events import MemoryWritten
 
 
 _MEMORY_WRITTEN_EVENT = EmitEventKey[MemoryWritten]("test.memory.written")
-
-
-async def _publish_committed_snapshot(manager: PluginManager, snapshot) -> None:
-    """按当前发布模型提交手工编译的 snapshot：closed scope 内完成启动后才开放。"""
-    async def publish() -> None:
-        transaction = manager.snapshot_store.begin_publish(snapshot)
-        await manager._commit_snapshot_with_publication_participants(
-            transaction, old_commands=(), new_commands=(),
-        )
-    await manager._run_operation(publish)
 
 
 @pytest.mark.asyncio
@@ -267,83 +258,6 @@ async def _bound_root(root: CompositionRoot) -> AsyncIterator[None]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prepare_failure", [False, True])
-async def test_stable_root_rebuild_prepares_before_resume_and_cleans_partial_failure(tmp_path, prepare_failure):
-    """真实重新编译路径在关闭的当前快照中恢复活动，失败不开放接纳。"""
-    from agent.plugin_composition import ServiceKey
-    from session.log import MessageLog
-
-    source = tmp_path / "plugins" / "probe"
-    source.mkdir(parents=True)
-    (source / "plugin.py").write_text('''
-from agent.plugin_composition import RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
-from agent.plugin_composition.tasks import TASKS
-from agent.plugins.snapshot import get_current_runtime_snapshot
-api_version = 3
-name = "probe"
-version = "1.0.0"
-workspace_files = ("fail-prepare",)
-async def apply(ctx):
-    events, held = [], []
-    def prepare(_):
-        snapshot = get_current_runtime_snapshot()
-        assert snapshot.composition_root.instance_token is ctx.root_instance_token
-        assert not snapshot.accepting_leases
-        hold = ctx.require(TASKS).open(ctx).activity("resource")
-        hold.__enter__()
-        held.append(hold)
-        events.append("prepare")
-        if ctx.workspace_file("fail-prepare").exists():
-            raise ValueError("rebuild prepare failed")
-    def stop(_):
-        events.append("stop")
-        for hold in held:
-            hold.__exit__(None, None, None)
-        held.clear()
-    await ctx.provide(ServiceKey("probe.events"), events)
-    await ctx.on(RUNTIME_STARTING, prepare)
-    await ctx.on(RUNTIME_STARTED, lambda _: events.append("start"))
-    await ctx.on(RUNTIME_STOPPING, stop)
-''')
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    log = MessageLog(workspace / "sessions.db")
-    initialize_plugin_workspace(workspace)
-    manager = PluginManager([source.parent], event_bus=EventBus(), workspace=workspace,
-                            installed_cache_root=tmp_path / "home", message_log=log)
-    try:
-        await manager.load_all()
-        await manager.start_runtime()
-        snapshot = manager.snapshot_store.pause_admission()
-        assert snapshot is not None
-        await manager.snapshot_store.wait_for_no_leases(snapshot)
-        old_root = snapshot.composition_root
-        await manager._close_formal_root(snapshot)
-        stable = next(iter(manager._active_generations.values()))
-        if prepare_failure:
-            (workspace / "fail-prepare").touch()
-            with pytest.raises(ValueError, match="rebuild prepare failed"):
-                await manager._run_operation(lambda: manager._build_and_publish_root(
-                    dict(snapshot.generations), previous=snapshot, expected_ref=manager._selection.read(),
-                ))
-            assert manager.current_snapshot is snapshot
-            assert not snapshot.accepting_leases and snapshot.lease_count == 0
-            (workspace / "fail-prepare").unlink()
-        replacement = await manager._run_operation(lambda: manager._build_and_publish_root(
-            dict(snapshot.generations), previous=snapshot, expected_ref=manager._selection.read(),
-        ))
-        assert replacement is manager.current_snapshot and replacement is not snapshot
-        assert snapshot.composition_root is old_root
-        assert replacement.generations[stable.plugin_id] is not stable
-        events = replacement.composition_root.context.require(ServiceKey("probe.events"))
-        assert events == ["prepare", "start"]
-    finally:
-        async with asyncio.timeout(3):
-            await manager.terminate_all()
-        log.close()
-
-
-@pytest.mark.asyncio
 async def test_runtime_lifecycle_bail_fails_loud(tmp_path) -> None:
     calls: list[str] = []
     root = CompositionRoot("runtime-lifecycle-bail")
@@ -357,20 +271,13 @@ async def test_runtime_lifecycle_bail_fails_loud(tmp_path) -> None:
     async def second(ctx) -> None:
         await ctx.on(RUNTIME_STARTED, lambda _: calls.append("second"))
 
-    await root.mount(first, name="bailing-plugin")
+    failed = await root.mount(first, name="bailing-plugin")
     await root.mount(second, name="later-plugin")
-    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-
-    with pytest.raises(CompositionError) as caught:
-        await _publish_committed_snapshot(manager, snapshot)
-
-    assert caught.value.code == "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED"
-    assert calls == ["bail"]
-    transaction = manager.snapshot_store.pending_transaction
-    assert transaction is not None
-    await manager.snapshot_store.abort(transaction)
-    await manager.snapshot_store.close()
+    assert failed.state == FiberState.FAILED
+    assert isinstance(failed.error, CompositionError)
+    assert failed.error.code == "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED"
+    assert calls == ["bail", "second"]
+    assert not root.receipt().ready
     await root.dispose()
 
 
@@ -388,57 +295,14 @@ async def test_runtime_stop_failure_remains_retryable(tmp_path) -> None:
         await ctx.on(RUNTIME_STOPPING, stop)
 
     await root.mount(plugin, name="retrying-plugin")
-    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    await _publish_committed_snapshot(manager, snapshot)
-
-    with pytest.raises(RuntimeError, match="fixture stop failure"):
-        await cast(Any, manager)._stop_runtime_snapshot(snapshot)
-    await cast(Any, manager)._stop_runtime_snapshot(snapshot)
-    await cast(Any, manager)._stop_runtime_snapshot(snapshot)
-
-    assert stop_calls == ["stop", "stop"]
-    await manager.snapshot_store.close()
+    with pytest.raises(ExceptionGroup, match="Root 子作用域关闭失败") as caught:
+        await root.dispose()
+    assert isinstance(caught.value.exceptions[0], RuntimeError)
+    assert str(caught.value.exceptions[0]) == "fixture stop failure"
+    await root.dispose()
     await root.dispose()
 
-
-@pytest.mark.asyncio
-async def test_runtime_start_ignores_snapshot_replaced_before_start(
-    tmp_path,
-) -> None:
-    """A retired Root must not start after publication replaces it."""
-
-    calls: list[str] = []
-    old_root = CompositionRoot("runtime-start-old")
-    new_root = CompositionRoot("runtime-start-new")
-
-    async def old_plugin(ctx) -> None:
-        async def start(_event: object) -> None:
-            async with ctx.runtime_scope():
-                calls.append("old")
-
-        await ctx.on(RUNTIME_STARTED, start)
-
-    async def new_plugin(ctx) -> None:
-        await ctx.on(RUNTIME_STARTED, lambda _: calls.append("new"))
-
-    await old_root.mount(old_plugin, name="old-plugin")
-    await new_root.mount(new_plugin, name="new-plugin")
-    compiler = RuntimeSnapshotCompiler()
-    old_snapshot = compiler.compile({}, composition_root=old_root)
-    new_snapshot = compiler.compile({}, composition_root=new_root)
-    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
-    await _publish_committed_snapshot(manager, old_snapshot)
-    await _publish_committed_snapshot(manager, new_snapshot)
-
-    await cast(Any, manager)._start_runtime_snapshot(old_snapshot)
-    await cast(Any, manager)._start_runtime_snapshot(new_snapshot)
-
-    assert calls == ["old", "new"]
-    assert old_root.instance_token not in cast(Any, manager)._runtime_started_roots
-    await manager.snapshot_store.close()
-    await old_root.dispose()
-    await new_root.dispose()
+    assert stop_calls == ["stop", "stop"]
 
 
 @pytest.mark.asyncio
@@ -477,6 +341,31 @@ async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
             await root.dispose()
 
     assert observed == []
+
+
+@pytest.mark.asyncio
+async def test_event_bus_rejects_inherited_wrong_task_binding() -> None:
+    """Observer task cannot inherit a Channel lease from the caller task."""
+    from types import SimpleNamespace
+
+    from agent.plugin_composition.channels import (
+        bind_channel_turn_binding,
+        get_current_channel_turn_binding,
+        reset_channel_turn_binding,
+    )
+
+    bus = EventBus()
+    observed: list[object | None] = []
+    bus.on(int, lambda _: observed.append(get_current_channel_turn_binding()))
+    lease = SimpleNamespace(active=True)
+    token = bind_channel_turn_binding(lease)
+    try:
+        assert get_current_channel_turn_binding() is lease
+        await asyncio.create_task(bus.fanout(1))
+    finally:
+        reset_channel_turn_binding(token)
+        await bus.aclose()
+    assert observed == [None]
 
 
 @pytest.mark.asyncio
@@ -663,167 +552,6 @@ def _memory_written_event() -> MemoryWritten:
     )
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [None, "prepare", "start"])
-async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start_failure(tmp_path, failure):
-    from agent.plugin_composition import RUNTIME_STARTING
-    from agent.plugin_composition.tasks import Tasks
-    from agent.plugins.snapshot import get_current_runtime_snapshot
-
-    root = CompositionRoot("startup-resources")
-    tasks = Tasks()
-    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
-    held = []
-    events = []
-
-    async def plugin(ctx):
-        def prepare(_):
-            snapshot = get_current_runtime_snapshot()
-            assert snapshot is not None and snapshot.composition_root is root
-            assert not snapshot.accepting_leases
-            with pytest.raises(RuntimeError, match="不可租用|暂停"):
-                manager.snapshot_store.lease(snapshot.snapshot_id)
-            hold = tasks.activity("resource")
-            hold.__enter__()
-            held.append(hold)
-            events.append("prepare")
-            if failure == "prepare":
-                raise ValueError("prepare failed")
-
-        async def start(_):
-            events.append("start")
-            if failure == "start":
-                raise ValueError("start failed")
-
-        def stop(_):
-            events.append("stop")
-            for hold in held:
-                hold.__exit__(None, None, None)
-            held.clear()
-
-        await ctx.on(RUNTIME_STARTING, prepare)
-        await ctx.on(RUNTIME_STARTED, start)
-        await ctx.on(RUNTIME_STOPPING, stop)
-
-    await root.mount(plugin, name="resource-owner")
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    try:
-        if failure == "prepare":
-            with pytest.raises(ValueError, match="prepare failed"):
-                await _publish_committed_snapshot(manager, snapshot)
-            assert manager.current_snapshot is None
-            assert snapshot.lease_count == 0
-            assert events == ["prepare", "stop"]
-            assert root.instance_token not in manager._runtime_starting_roots
-            transaction = manager.snapshot_store.pending_transaction
-            assert transaction is not None
-            await manager.snapshot_store.abort(transaction)
-        elif failure == "start":
-            # 启动失败回滚发布：closed scope 内已触发 prepare/start，清理走 stop。
-            with pytest.raises(ValueError, match="start failed"):
-                await _publish_committed_snapshot(manager, snapshot)
-            assert events == ["prepare", "start", "stop"]
-            assert not held
-            assert root.instance_token not in manager._runtime_starting_roots
-            assert root.instance_token not in manager._runtime_started_roots
-            assert manager.current_snapshot is None
-            transaction = manager.snapshot_store.pending_transaction
-            assert transaction is not None
-            await manager.snapshot_store.abort(transaction)
-        else:
-            await _publish_committed_snapshot(manager, snapshot)
-            assert events == ["prepare", "start"]
-            # 已启动 Root 的重复 start_runtime 不重复恢复活动或重复启动消费者。
-            await manager.start_runtime()
-            assert events == ["prepare", "start"]
-            current = manager.current_snapshot
-            assert current is not None
-            await manager._stop_runtime_snapshot(current)
-            assert events == ["prepare", "start", "stop"]
-        async with asyncio.timeout(2):
-            await tasks.close()
-        assert not held
-    finally:
-        await manager.terminate_all()
-        await root.dispose()
-
-
-@pytest.mark.asyncio
-async def test_recovery_disposes_candidate_root_before_building_new_instances(tmp_path):
-    """关闭候选后重建实际新实例，原 snapshot 仍描述它原来的 Root。"""
-    source = tmp_path / "plugins" / "registry"
-    source.mkdir(parents=True)
-    (source / "plugin.py").write_text(
-        """
-api_version = 3
-name = "registry"
-version = "1.0.0"
-_registry = set()
-async def apply(ctx):
-    generation_id = ctx.runtime.generation_id
-    if generation_id in _registry:
-        raise RuntimeError("generation owner still registered")
-    _registry.add(generation_id)
-    async def cleanup():
-        _registry.remove(generation_id)
-    await ctx.effect(lambda: cleanup, label="registry-owner")
-""",
-        encoding="utf-8",
-    )
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    initialize_plugin_workspace(workspace)
-    manager = PluginManager(
-        [source.parent],
-        event_bus=EventBus(),
-        workspace=workspace,
-        installed_cache_root=tmp_path / "home",
-    )
-    try:
-        await manager.load_all()
-        await manager.start_runtime()
-        stable_snapshot = manager.current_snapshot
-        assert stable_snapshot is not None
-        stable = manager.generation("registry")
-        assert stable is not None
-        paused = manager.snapshot_store.pause_admission()
-        assert paused is stable_snapshot
-        await manager.snapshot_store.wait_for_no_leases(stable_snapshot)
-        # 与生产调用方一致：replace 前恢复接纳，held-publication 检查只认未决 maintenance。
-        await manager.snapshot_store.resume(stable_snapshot)
-        old_root = stable_snapshot.composition_root
-        candidate = await manager._compile_generation_snapshot(
-            stable, candidate_owner=stable,
-        )
-        candidate_root = candidate.composition_root
-        assert candidate_root is not None and candidate_root is not old_root
-        assert candidate_root.frozen and old_root.frozen
-        assert candidate_root in manager._building_roots
-        assert stable_snapshot.composition_root is old_root
-        assert stable.runtime_snapshot is stable_snapshot
-        await manager._dispose_unreferenced_composition_root(candidate)
-        replacement = await manager._run_operation(
-            lambda: manager._replace_formal_root(
-                dict(stable_snapshot.generations),
-                expected_ref=manager._selection.read(),
-            )
-        )
-
-        assert candidate_root.receipt().fibers == ()
-        assert stable_snapshot.composition_root is old_root
-        root = replacement.composition_root
-        assert root is not None
-        assert root.receipt().ready
-        assert root.frozen
-        fresh = replacement.generations[stable.plugin_id]
-        assert fresh is not stable
-        module = fresh.instance.module
-        assert module is not None
-        assert module.__dict__["_registry"] == {fresh.generation_id}
-    finally:
-        await manager.terminate_all()
-
-
 def _root_failure_manager(tmp_path, *, fail_mount=False):
     """建立真实插件，其连接首次关闭失败且需要原模块和数据才能重试。"""
     source = tmp_path / "plugins" / "root_owner"
@@ -870,84 +598,22 @@ def _error_leaves(error):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entry", ["batch", "generation"])
-@pytest.mark.parametrize("failure", ["mount", "compile"])
-async def test_failed_root_build_keeps_module_data_and_cleanup_owner(
-    tmp_path, monkeypatch, entry, failure,
+async def test_failed_root_build_retries_cleanup_and_keeps_both_errors(
+    tmp_path,
 ):
-    """批次和单 generation 回滚都不能丢弃部分装配后未关闭的连接。"""
-    import sys
-
-    manager = _root_failure_manager(tmp_path, fail_mount=failure == "mount")
-    if failure == "compile":
-        def fail_compile(*args, **kwargs):
-            raise ValueError("catalog compilation failed")
-        monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_compile)
+    """首次 live Root 装配失败后清理重试成功仍保留两个原始错误。"""
+    manager = _root_failure_manager(tmp_path, fail_mount=True)
     with pytest.raises(BaseExceptionGroup) as caught:
-        if entry == "batch":
-            await manager.load_all()
-        else:
-            await manager._run_operation(lambda: manager._load_one(manager.discover()[0]))
+        await manager.load_all()
     leaves = _error_leaves(caught.value)
     assert any(isinstance(error, ValueError) for error in leaves)
     assert any(isinstance(error, OSError) for error in leaves)
-    [(root, generations)] = manager._building_roots.items()
-    [generation] = generations
-    module = sys.modules[generation.module_path]
-    assert module.attempts == 1
-    assert (generation.data_dir / "connection-owner").read_text() == "open"
-    assert not generation.scope.closed
-    assert generation.runtime_snapshot is None
-    assert manager._building_roots[root] == (generation,)
-
-    await manager.terminate_all()
-
-    assert module.attempts == 2
-    assert root.receipt().fibers == ()
+    assert manager.generation("root_owner") is None
+    assert manager.live_root is None
+    assert (tmp_path / "workspace/plugin-data/root_owner-builtin/connection-owner").read_text() == "closed"
     assert manager._building_roots == {}
     assert manager._draining_generations == {}
-    assert generation.module_path not in sys.modules
-    assert generation.scope.closed
-
-
-@pytest.mark.asyncio
-async def test_cancelled_compilation_cleanup_keeps_cancel_and_real_failure(tmp_path, monkeypatch):
-    """重复取消等待中的回收仍保留原始错误、取消和失败连接。"""
-    import sys
-
-    manager = _root_failure_manager(tmp_path)
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    def fail_compile(generations, **kwargs):
-        generation = generations["root_owner"]
-        module = sys.modules[generation.module_path]
-        module.entered, module.release = entered, release
-        raise ValueError("catalog compilation failed")
-
-    monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_compile)
-    task = asyncio.create_task(manager._run_operation(lambda: manager._load_one(manager.discover()[0])))
-    await entered.wait()
-    task.cancel()
-    asyncio.get_running_loop().call_soon(task.cancel)
-    asyncio.get_running_loop().call_soon(release.set)
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    operation = manager._operation
-    await asyncio.wait((operation.task,))
-    error = operation.task.exception()
-    assert isinstance(error, BaseExceptionGroup)
-    leaves = _error_leaves(error)
-    assert any(isinstance(error, asyncio.CancelledError) for error in leaves)
-    assert any(isinstance(error, ValueError) for error in leaves)
-    assert any(isinstance(error, OSError) for error in leaves)
-    [generations] = manager._building_roots.values()
-    [generation] = generations
-    module = sys.modules[generation.module_path]
-    assert module.attempts == 1
-    assert not generation.scope.closed
     await manager.terminate_all()
-    assert module.attempts == 2
-    assert manager._building_roots == {}
 
 
 @pytest.mark.asyncio
@@ -1004,31 +670,6 @@ async def test_terminate_joins_untransferred_root_without_generations(tmp_path, 
         await second
         assert attempts == 2
     assert manager._building_roots == {}
-
-
-@pytest.mark.asyncio
-async def test_compilation_cancellation_with_successful_cleanup_stays_cancelled(tmp_path, monkeypatch):
-    """清理成功后仍抛调用者取消，不伪装为候选拒绝或清理失败。"""
-    import sys
-
-    manager = _root_failure_manager(tmp_path)
-    loaded = []
-
-    def cancel_compile(generations, **kwargs):
-        generation = generations["root_owner"]
-        loaded.append(generation)
-        sys.modules[generation.module_path].attempts = 1
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(manager._snapshot_compiler, "compile", cancel_compile)
-    with pytest.raises(asyncio.CancelledError):
-        await manager._run_operation(lambda: manager._load_one(manager.discover()[0]))
-    [generation] = loaded
-    assert generation.module_path not in sys.modules
-    assert generation.scope.closed
-    assert manager._building_roots == {}
-    assert manager._draining_generations == {}
-    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -1160,13 +801,13 @@ async def test_frozen_binding_removal_requires_whole_root_teardown():
         assert registration in root.root_fiber.effects
         assert service.name in root.receipt().services
         # 退出失败也不能补挂、替换服务或重新激活旧工作。
-        for operation in (
-            lambda: root.context.provide(service, object()),
-            lambda: root.mount(lambda ctx: None, name="replacement"),
+        for operation, code in (
+            (lambda: root.context.provide(service, object()), "INACTIVE_EFFECT"),
+            (lambda: root.mount(lambda ctx: None, name="replacement"), "COMPOSITION_FROZEN"),
         ):
             with pytest.raises(CompositionError) as caught:
                 await operation()
-            assert caught.value.code == "COMPOSITION_FROZEN"
+            assert caught.value.code == code
         await root.dispose()
         assert attempts == 2 and starts == [value]
         assert registration not in root.root_fiber.effects
@@ -1179,50 +820,6 @@ async def test_frozen_binding_removal_requires_whole_root_teardown():
     finally:
         await store.close()
         await root.dispose()
-
-
-@pytest.mark.asyncio
-async def test_sealing_precedes_freeze_and_started_resources_and_health_remain_live():
-    """封印回调完成装配，启动回调仍能取得资源，健康变化不重启绑定。"""
-    from agent.plugin_composition import SNAPSHOT_SEALING, SnapshotSealing, RuntimeStarted, ServiceKey
-
-    root = CompositionRoot("freeze-start-resources")
-    service = ServiceKey[list[str]]("test.sealing.service")
-    values = []
-    contexts, health, tasks = [], [], []
-    running = asyncio.Event()
-    closed = []
-
-    async def plugin(ctx):
-        contexts.append(ctx)
-        health.append(await ctx.health("connection"))
-        async def seal(_):
-            await ctx.provide(service, values)
-        async def follow():
-            running.set()
-            await asyncio.Event().wait()
-        async def start(_):
-            assert root.frozen
-            await ctx.effect(lambda: lambda: closed.append("connection"))
-            tasks.append(await ctx.spawn(follow(), name="connection-follower"))
-        await ctx.on(SNAPSHOT_SEALING, seal)
-        await ctx.on(RUNTIME_STARTED, start)
-
-    await root.mount(plugin, name="resource-owner")
-    await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
-    token = contexts[0].fiber.activation_token
-    async with _bound_root(root):
-        await root.context.serial(RUNTIME_STARTED, RuntimeStarted())
-        await running.wait()
-        health[0].degrade("connection retrying")
-        assert root.receipt().required_degraded
-        values.append("reconnected")
-        health[0].recover()
-        assert root.receipt().ready
-        assert contexts[0].fiber.activation_token is token
-        assert root.context.require(service) == ["reconnected"]
-    assert tasks[0].done()
-    assert closed == ["connection"]
 
 
 @pytest.mark.asyncio

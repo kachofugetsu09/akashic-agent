@@ -172,7 +172,7 @@ class Runtime:
             self.state.read_only(), self.source.read, read_message, history.status,
         )
 
-    def capture(self, flow_id: str, admission: Admission, now: datetime) -> Request | None:
+    async def capture(self, flow_id: str, admission: Admission, now: datetime) -> Request | None:
         """先固定归档程序、工具、出站目标与上下文，随后才允许领取领域条目。"""
         owner = admission.owner
         if owner is None:
@@ -210,7 +210,7 @@ class Runtime:
             sink=sink,
             program_binding=bindings.bind(WAKE_PROGRAM, {}),
             tools={
-                name: catalog.bind(view.select(name), bindings)
+                name: await catalog.bind_scoped(view.select(name), bindings)
                 for name in WAKE_TOOLS[owner]
             },
             snapshot_seq=admission.pool.snapshot_seq,
@@ -256,7 +256,7 @@ class Runtime:
                         mail_watermark=self.ctx.require(EVENTMAIL_WAKE).mail_watermark())
                     admission = await self.duties.check(now)
                     owner = admission.owner
-                    original = self.capture(flow_id, admission, now)
+                    original = await self.capture(flow_id, admission, now)
                     if original is None:
                         outcome = "admission_rejected" if owner is not None else (
                             "content_insufficient" if admission.pool.due_count or admission.pool.expired_count else "no_due")

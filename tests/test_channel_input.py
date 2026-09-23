@@ -60,6 +60,7 @@ class Custody(MessageBus):
         self.reserve_gate = asyncio.Event()
         self.reserve_gate.set()
         self.committed = asyncio.Event()
+        self.finished = asyncio.Event()
         self.complete_gate = asyncio.Event()
         self.complete_gate.set()
         self.durable_reserved = asyncio.Event()
@@ -468,7 +469,7 @@ async def test_sources_callback_scope_drains_without_fallback_or_unrelated_stop(
     disposing = None
     try:
         accept = root.context.require(SOURCE_INPUT)
-        callback = asyncio.create_task(accept(
+        callback = asyncio.ensure_future(accept(
             "probe:room", "selected-1", ChannelInboundMessage(
                 "probe", "user", "room", "hello", datetime.now(UTC), {},
             ),
@@ -722,12 +723,20 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
     # 2. 分别模拟正文提交前与提交后进程结束，重开都不能重复正文。
     initialize_plugin_workspace(tmp_path / "workspace")
     if committed:
-        initialize_plugin_workspace(tmp_path / "workspace")
-        async with runtime(tmp_path, channel_name="akashic") as (log, host, *rest):
-            context = _source_context(host)
-            async with context.runtime_scope():
-                first = await context.require(CHANNEL_INPUT)(
-                    "akashic:room", raw_message.message_id, raw_message.message)
+        first_handoffs = InboundHandoffStore(path)
+        first_admissions = SessionAdmissions(path)
+        try:
+            async with runtime(
+                tmp_path, channel_name="akashic", inbound_store=first_handoffs,
+                admissions=first_admissions, recover=False,
+            ) as (log, host, *rest):
+                context = _source_context(host)
+                async with context.runtime_scope():
+                    first = await context.require(CHANNEL_INPUT)(
+                        "akashic:room", raw_message.message_id, raw_message.message)
+        finally:
+            first_handoffs.close()
+            first_admissions.close()
     handoffs, admissions = InboundHandoffStore(path), SessionAdmissions(path)
     assert handoffs.list_inbound_handoffs() == reserved
     admissions.clear_stale()
@@ -1250,21 +1259,16 @@ async def test_mobile_precommit_cancel_or_shutdown_keeps_exact_attachment_handof
             submit.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(submit, 2)
-            if close_bus:
-                await custody.aclose()
             assert not log.reader("akashic:room").snapshot()
             assert durable.pending_attachment_refs(session_key="akashic:room", provider_message_id="mobile-1") == (ref,)
             assert not custody.envelopes[0].lease.active
-            if close_bus:
-                assert custody._durable_admissions == {}
-            else:
-                assert custody._durable_admissions["handoff-1"].recoverable
-                await durable.defer("handoff-1")
-                assert manager.inbound_store.has_inbound_handoff(
-                    channel="akashic",
-                    session_key="akashic:room",
-                    provider_message_id="mobile-1",
-                )
+            assert custody._durable_admissions["handoff-1"].recoverable
+            await durable.defer("handoff-1")
+            assert manager.inbound_store.has_inbound_handoff(
+                channel="akashic",
+                session_key="akashic:room",
+                provider_message_id="mobile-1",
+            )
     finally:
         manager.close()
 
@@ -1344,11 +1348,11 @@ async def test_mobile_prepare_waiting_on_handoff_lock_cannot_commit_after_close(
             submit = asyncio.create_task(adapter.context.ingress.admit(mobile_raw()))
             await asyncio.wait_for(custody.prepared.wait(), 2)
             closing_started = asyncio.Event()
-            stop = custody._stop_outbound_dispatcher
+            stop = custody._release_durable_admissions_for_shutdown
             async def mark_close():
                 closing_started.set()
                 await stop()
-            monkeypatch.setattr(custody, "_stop_outbound_dispatcher", mark_close)
+            monkeypatch.setattr(custody, "_release_durable_admissions_for_shutdown", mark_close)
             closing = asyncio.create_task(custody.aclose())
             await asyncio.wait_for(closing_started.wait(), 2)
             custody._durable_handoff_lock.release()

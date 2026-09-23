@@ -312,6 +312,11 @@ class SourceRuntime:
             next_due = self._aware_now() + timedelta(minutes=5)
             self.store.commit_poll(cursor, len(items), next_due)
             completed = True
+        except asyncio.CancelledError:
+            # A canceled source task has lost its runtime owner. Do not arm a
+            # replacement while an isolated crash/restart drops that owner.
+            self._closed = True
+            raise
         finally:
             self._handle = None
             self._task = None

@@ -389,9 +389,10 @@ async def test_live_catalog_tracks_manager_replacement_without_lifecycle_side_ef
             tuple(fiber.fiber_id for fiber in root._fibers.values()),  # pyright: ignore[reportPrivateUsage]
         )
         assert before == after
-        first_item = next(item for item in first["plugins"] if item["id"] == "probe")
-        assert first_item["composition"]["ready"] is True
-        assert first_item["composition"]["health"] == [
+        first_item = next(item for item in _rows(first["plugins"]) if item["id"] == "probe")
+        first_item_composition = _payload(first_item["composition"])
+        assert first_item_composition["ready"] is True
+        assert first_item_composition["health"] == [
             {
                 "owner": "probe",
                 "name": "probe-health",
@@ -400,9 +401,9 @@ async def test_live_catalog_tracks_manager_replacement_without_lifecycle_side_ef
                 "reason": None,
             }
         ]
-        assert first_item["composition"]["incident_count"] == 1
-        assert first_item["composition"]["recent_incidents"][0]["fiber_id"] == old_child.fiber_id
-        assert first["mcp_unavailable"]["code"] == "mcp_provider_unavailable"
+        assert first_item_composition["incident_count"] == 1
+        assert _rows(first_item_composition["recent_incidents"])[0]["fiber_id"] == old_child.fiber_id
+        assert _payload(first["mcp_unavailable"])["code"] == "mcp_provider_unavailable"
 
         await foreign.context.provide(RUNTIME_CATALOG, reader)
         foreign_fiber = await foreign.mount(
@@ -438,11 +439,12 @@ async def test_live_catalog_tracks_manager_replacement_without_lifecycle_side_ef
         same_reader = old_child.context.require(RUNTIME_CATALOG)
         async with old_child.context.runtime_scope():
             same = same_reader(old_child.context)
-        same_item = next(item for item in same["plugins"] if item["id"] == "probe")
-        assert same_item["composition"]["incident_count"] == 2
+        same_item = next(item for item in _rows(same["plugins"]) if item["id"] == "probe")
+        same_item_composition = _payload(same_item["composition"])
+        assert same_item_composition["incident_count"] == 2
         assert {
             item["fiber_id"]
-            for item in same_item["composition"]["recent_incidents"]
+            for item in _rows(same_item_composition["recent_incidents"])
         } == {old_child.fiber_id}
 
         probe_file.write_text(source("2.0.0"), encoding="utf-8")
@@ -476,12 +478,13 @@ async def test_live_catalog_tracks_manager_replacement_without_lifecycle_side_ef
         new_reader = new_child_context.require(RUNTIME_CATALOG)
         async with new_child_context.runtime_scope():
             second = new_reader(new_child_context)
-        second_item = next(item for item in second["plugins"] if item["id"] == "probe")
+        second_item = next(item for item in _rows(second["plugins"]) if item["id"] == "probe")
+        second_item_composition = _payload(second_item["composition"])
         assert second_item["generation_id"] == fresh.generation_id
         assert second_item["generation_id"] != first_item["generation_id"]
-        assert second_item["composition"]["incident_count"] == 1
-        assert second_item["composition"]["recent_incidents"][0]["fiber_id"] == new_child.fiber_id
-        assert second_item["composition"]["recent_incidents"][0]["message"] == "version 2.0.0"
+        assert second_item_composition["incident_count"] == 1
+        assert _rows(second_item_composition["recent_incidents"])[0]["fiber_id"] == new_child.fiber_id
+        assert _rows(second_item_composition["recent_incidents"])[0]["message"] == "version 2.0.0"
         assert {item.fiber_id for item in root.receipt().incidents} >= {
             old_child.fiber_id,
             new_child.fiber_id,

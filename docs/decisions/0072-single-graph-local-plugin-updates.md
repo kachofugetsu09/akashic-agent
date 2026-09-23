@@ -409,6 +409,17 @@ Sources 不重选默认来源，不建立第二 registry，也不替 Core 借用
 compile、diff/hash 与 `git diff --check`，未执行测试、Gate、CI、应用 import、插件安装、业务
 进程、正式 workspace 或部署。
 
+## 2026-09-23 · R1 集成对账
+
+R1 没有增加第二张 candidate/snapshot 执行图。旧测试中“B 失败后自动回 A”与
+“discard 恢复旧正式图”的成功断言属于本决定明确退役的行为；提交前失败不改选择、
+CAS 冲突不冒充成功、CAS 后失败保留 B、取消不虚报回滚、清理失败保留 owner、
+重启读取 exact selected archive，均移到真实 local install/Root/retry 边界。
+旧 oracle 与当前用例的逐项关系见
+[测试清理 ledger](../refactor/test-gate-cleanup-ledger.md)，具体执行结果见
+`/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md`。本段只对账已批准语义，
+不代替独立概念 review、远端 CI 或正式状态验收。
+
 ## 理由
 
 0071 的整图换代允许暂停接纳并完整重建，适合低频大变更，但让 Fitbit 级更新支付全图冻结、双实例与恢复成本。改为按实际依赖局部启停后，保护对象从“整张图”收窄到“实际调用与实际依赖”，与 0070 的数据归属、PLG-006 的清理责任兼容：谁拥有资源仍由谁关闭，谁拥有数据仍由谁解释。不引入 prepare/commit/rollback 三阶段接口，是因为固定制品、原子选择和局部 Fiber 生命周期已能覆盖已确认需求；为 1% 假设场景新增通用恢复协议不符合本次已批准取舍。
@@ -422,4 +433,4 @@ compile、diff/hash 与 `git diff --check`，未执行测试、Gate、CI、应�
 
 ## 验收
 
-最终验收标准在设计文档第 6 节及 §6.4 验收映射，覆盖最小拓扑（变更节点 + 硬消费者 + 稳定宿主的可选子 Fiber + 无关长任务）、Root/boot/模块/Fiber/服务/任务/资源身份不变、无关生命周期计数不增加、编译失败不动图、启动失败不回退、清理失败保留 owner、内部 Shell 不自等。当前状态：验收设计已完成，尚未运行任何测试。
+最终验收标准在设计文档第 6 节及 §6.4 验收映射，覆盖最小拓扑（变更节点 + 硬消费者 + 稳定宿主的可选子 Fiber + 无关长任务）、Root/boot/模块/Fiber/服务/任务/资源身份不变、无关生命周期计数不增加、编译失败不动图、启动失败不回退、清理失败保留 owner、内部 Shell 不自等。本段是决策形成时的验收设计记录；2026-09-23 R1 的实际运行结果见上方集成对账及其回执。

@@ -3,9 +3,11 @@ import ast
 import json
 import shutil
 import sys
+from contextlib import AbstractAsyncContextManager
+from collections.abc import Callable
 from pathlib import Path
 
-from agent.plugin_composition.mcp_slots import MCP_SERVERS
+from agent.plugin_composition.mcp_slots import MCP_SERVERS, McpServer
 
 import pytest
 
@@ -13,10 +15,13 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
+from agent.plugin_composition import Context
+from agent.plugins.install import install_git_plugin
 from session.log import MessageLog
 from tests.test_plugin_bindings import manager
+from tests.test_plugin_install import _commit
 
-SERVICE = ServiceKey("test.bound.mcp")
+SERVICE = ServiceKey[Callable[[], AbstractAsyncContextManager[McpServer]]]("test.bound.mcp")
 
 
 def _write_source(path, source):
@@ -78,18 +83,30 @@ def select_mcp_provider(folder):
                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
+def install_probe(tmp_path, plugins):
+    """Install the local probe so its two Python runtimes have fixed environments."""
+    repo = tmp_path / "probe-source"
+    shutil.move(str(plugins / "probe"), repo)
+    _commit(repo)
+    install_git_plugin(
+        workspace=tmp_path / "workspace", source=str(repo), marketplace="lab",
+        plugins_home=tmp_path / "home",
+    )
+
+
 @pytest.mark.asyncio
 async def test_mcp_is_opened_per_call_and_route_expires(tmp_path):
     plugins = tmp_path / "plugins"
     write_plugin(plugins / "probe")
     initialize_plugin_workspace(tmp_path / "workspace")
     select_mcp_provider(plugins)
+    install_probe(tmp_path, plugins)
     owner = manager(tmp_path, [plugins])
     try:
         await owner.load_all()
         root = owner.live_root
         assert root is not None
-        data = root.plugin_runtime("probe").data_dir
+        data = root.plugin_runtime("probe@lab").data_dir
         assert not (data / "first.count").exists()
         identities = []
         for _ in range(2):
@@ -116,8 +133,9 @@ async def test_missing_environment_does_not_create_a_session_or_lose_effect(tmp_
     write_plugin(plugins / "probe")
     select_mcp_provider(plugins)
     initialize_plugin_workspace(tmp_path / "workspace")
+    install_probe(tmp_path, plugins)
     owner = manager(tmp_path, [plugins])
-    def missing(*args):
+    def missing(*args, **kwargs):
         raise FileNotFoundError("fixed environment missing")
     monkeypatch.setattr(owner, "_resolve_runtime_command", missing)
     try:
@@ -143,6 +161,7 @@ async def test_scoped_cleanup_failure_retains_real_owner(tmp_path, monkeypatch, 
     write_plugin(plugins / "probe")
     initialize_plugin_workspace(tmp_path / "workspace")
     select_mcp_provider(plugins)
+    install_probe(tmp_path, plugins)
     owner = manager(tmp_path, [plugins])
     original = None
     failed = False
@@ -159,7 +178,7 @@ async def test_scoped_cleanup_failure_retains_real_owner(tmp_path, monkeypatch, 
         root = owner.live_root
         assert root is not None
         service = root.context.require(MCP_SERVERS)
-        data = root.plugin_runtime("probe").data_dir
+        data = root.plugin_runtime("probe@lab").data_dir
         host_class = sys.modules[type(service).__module__].McpGenerationHost
         original = host_class._cleanup_entry
         monkeypatch.setattr(host_class, "_cleanup_entry", fail_once)
@@ -197,26 +216,17 @@ async def test_scoped_cleanup_failure_retains_real_owner(tmp_path, monkeypatch, 
 async def test_shutdown_waits_for_an_owned_start(tmp_path, monkeypatch, local):
     """Real MCP connect drain plus the narrow local contribution branch."""
     from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING
-    from agent.mcp.client import McpClient
 
     connect_entered, connect_release = asyncio.Event(), asyncio.Event()
     open_started, open_release = asyncio.Event(), asyncio.Event()
     hard_consumer_cleanup_started = asyncio.Event()
     hard_consumer_release = asyncio.Event()
-    original_connect = McpClient.connect
-
-    async def gated_connect(client):
-        connect_entered.set()
-        await connect_release.wait()
-        return await original_connect(client)
-
-    monkeypatch.setattr(McpClient, "connect", gated_connect)
     task = dispose_task = shutdown = rejected = None
     root = None
     owner = None
     service = None
     probe_context = None
-    peer_context = None
+    peer_context: Context | None = None
     peer_fiber = None
     hard_consumer = None
     peer_service = ServiceKey("test.mcp.unrelated.peer")
@@ -226,14 +236,25 @@ async def test_shutdown_waits_for_an_owned_start(tmp_path, monkeypatch, local):
         write_plugin(plugins / "probe")
         initialize_plugin_workspace(tmp_path / "workspace")
         select_mcp_provider(plugins)
+        install_probe(tmp_path, plugins)
         owner = manager(tmp_path, [plugins])
         await owner.load_all()
         root = owner.live_root
         assert root is not None
         service = root.context.require(MCP_SERVERS)
+        host_class = sys.modules[type(service).__module__].McpGenerationHost
+        client_class = sys.modules[host_class.__module__].McpClient
+        original_connect = client_class.connect
+
+        async def gated_connect(client):
+            connect_entered.set()
+            await connect_release.wait()
+            return await original_connect(client)
+
+        monkeypatch.setattr(client_class, "connect", gated_connect)
         probe_fiber = next(
             fiber for fiber in root.root_fiber.children
-            if fiber.runtime is not None and fiber.runtime.plugin_id == "probe"
+            if fiber.runtime is not None and fiber.runtime.plugin_id == "probe@lab"
         )
         mcp_fiber = next(
             fiber for fiber in root.root_fiber.children
@@ -353,6 +374,7 @@ async def test_shutdown_waits_for_an_owned_start(tmp_path, monkeypatch, local):
             assert not probe_context._fiber._in_flight_calls
             hard_consumer_release.set()
             if local:
+                assert dispose_task is not None
                 await dispose_task
                 assert owner.live_root is root
                 assert probe_fiber.state is FiberState.DISPOSED
@@ -369,6 +391,7 @@ async def test_shutdown_waits_for_an_owned_start(tmp_path, monkeypatch, local):
                 assert tuple(peer_context._fiber.effects) == peer_effects
                 assert peer_state == peer_counts
             else:
+                assert shutdown is not None
                 await shutdown
     finally:
         connect_release.set()
@@ -510,7 +533,6 @@ for raw in sys.stdin:
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_scoped_mcp_waits_for_eof_grace_and_process_group_cleanup(tmp_path, monkeypatch, cancel):
     """成功调用后，忽略 EOF 的真实进程仍完成 TERM 回收，取消不遗留资源。"""
-    import plugins.mcp.client as client_module
     from utils.process_group import process_group_exists
 
     plugins = tmp_path / "plugins"
@@ -526,18 +548,13 @@ if own_count > 0:
     signal.pause()
 ''')
     initialize_plugin_workspace(tmp_path / "workspace")
+    install_probe(tmp_path, plugins)
     waiting_for_exit = asyncio.Event()
-    original_wait = client_module._wait_for_leader_exit
     log = None
     owner = None
     root = None
     task = None
 
-    async def wait_for_exit(process):
-        waiting_for_exit.set()
-        return await original_wait(process)
-
-    monkeypatch.setattr(client_module, "_wait_for_leader_exit", wait_for_exit)
     try:
         log = MessageLog(tmp_path / "messages.db")
         owner = manager(tmp_path, [plugins], message_log=log)
@@ -545,7 +562,18 @@ if own_count > 0:
         await owner.load_all()
         root = owner.live_root
         assert root is not None
-        data = root.plugin_runtime("probe").data_dir
+        service = root.context.require(MCP_SERVERS)
+        host_class = sys.modules[type(service).__module__].McpGenerationHost
+        client_class = sys.modules[host_class.__module__].McpClient
+        client_module = sys.modules[client_class.__module__]
+        original_wait = client_module._wait_for_leader_exit
+
+        async def wait_for_exit(process):
+            waiting_for_exit.set()
+            return await original_wait(process)
+
+        monkeypatch.setattr(client_module, "_wait_for_leader_exit", wait_for_exit)
+        data = root.plugin_runtime("probe@lab").data_dir
         bindings = root.context.require(BINDINGS)
         provider_context, _ = root._service_provider(SERVICE)
         async with provider_context.runtime_scope():

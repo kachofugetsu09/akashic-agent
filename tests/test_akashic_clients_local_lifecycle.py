@@ -350,6 +350,7 @@ def _mobile_host_app(
                 yield
             finally:
                 await runtime.stop()
+                runtime.close()
                 holder.clear()
 
     app = FastAPI(lifespan=lifespan)
@@ -438,7 +439,7 @@ def _install_mobile_close_before_child(
     holder["task_factory_previous"] = previous
     holder["close_scheduled"] = False
 
-    def factory(loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+    def factory(loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any) -> asyncio.Future[Any]:
         code = getattr(coro, "cr_code", None)
         if (
             not holder["close_scheduled"]
@@ -849,14 +850,18 @@ def test_real_mobile_owner_cleanup_releases_idle_followers(
 
                 client.portal.call(reader.closed.wait)
                 if trigger == "provider":
+                    try:
+                        observed_state = client.portal.call(lambda: client_fiber.state)
+                        assert observed_state is FiberState.UNLOADING, observed_state
+                        client.portal.call(
+                            _assert_peer_scope,
+                            peer_context,
+                            peer_token,
+                        )
+                    finally:
+                        client.portal.call(reader.cleanup_gate.set)
+                        client.portal.call(_await_task, provider_dispose)
                     assert client.portal.call(lambda: client_fiber.state is FiberState.PENDING)
-                    client.portal.call(
-                        _assert_peer_scope,
-                        peer_context,
-                        peer_token,
-                    )
-                    client.portal.call(reader.cleanup_gate.set)
-                    client.portal.call(_await_task, provider_dispose)
                 client.portal.call(reader.provider_closed.wait)
                 assert client.portal.call(lambda: not runtime._message_followers)
                 assert not state.listeners

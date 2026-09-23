@@ -13,6 +13,7 @@ from agent.plugin_composition.mcp_slots import MCP_SERVERS, McpServerDefinition,
 from agent.plugin_composition.workload_slots import WORKLOADS, Workload, WorkloadPort, WorkloadData, WorkloadHealth, WorkloadLimits
 from agent.workloads.client import WorkloadEffectUnknown
 from plugins.workloads import plugin as workloads_plugin
+from plugins.workloads import host as workloads_host
 from plugins.mcp import plugin as mcp_plugin
 from tests.test_workload_borrow import Controller
 
@@ -56,7 +57,8 @@ async def test_apply_owns_workload_before_controller_await_and_uses_real_referen
             return await super().start(request)
     async def healthy(*args):
         return True, "ready"
-    monkeypatch.setattr("plugins.workloads.host._http_health", healthy)
+    # Reload tests can replace sys.modules; patch the module held by this provider.
+    monkeypatch.setattr(workloads_host, "_http_health", healthy)
     (tmp_path / "server.py").write_text("pass\n")
     controller = DelayedController()
     root = await root_with_grants(tmp_path, controller)

@@ -7,10 +7,9 @@ import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
-from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.delivery.records import DeliveryRecords
@@ -65,17 +64,16 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
     try:
         await host.load_all()
         await host.start_runtime()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            ctx = snapshot.composition_root.context
-            tools = ctx.require(TOOLS)
-            binding = tools.bind(
-                ctx.require(ALL_TOOLS)().select("message_push"), bindings
-            )
-            activity = snapshot.composition_root.context.require(
-                ServiceKey("fixture.delivery")
-            )().activity("test", "room")
+        root = host.live_root
+        sender = host.generation("test_sender")
+        assert root is not None and sender is not None and sender.fiber is not None
+        bindings = root.service_value(BINDINGS)
+        tools = root.service_value(TOOLS)
+        all_tools = root.service_value(ALL_TOOLS)
+        assert bindings is not None and tools is not None and all_tools is not None
+        binding = await tools.bind_scoped(all_tools().select("message_push"), bindings)
+        async with sender.fiber.context.runtime_scope():
+            activity = sender.fiber.context.require(ServiceKey("fixture.delivery"))().activity("test", "room")
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(bindings, key),
                                   authorize, task_key="effects")
         invalid = await execution.execute("bad-route", binding, {**parameters, "target_channel": "missing"})
@@ -112,9 +110,10 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
         restored = manager([source])
         await restored.load_all()
         await restored.start_runtime()
-        snapshot = restored.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        recovered = Bindings(log, restored._archive, snapshot.composition_root)
+        root = restored.live_root
+        assert root is not None
+        recovered = root.service_value(BINDINGS)
+        assert recovered is not None
         async def no_new_authorization(*_):
             pytest.fail("query original send must not reauthorize or reprepare")
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(recovered, key),

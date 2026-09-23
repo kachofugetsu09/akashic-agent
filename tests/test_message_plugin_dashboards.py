@@ -16,6 +16,7 @@ from typing import cast
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 from agent.plugins.manager import PluginManager
 from agent.plugin_composition.ui import WebModuleDescriptor
@@ -46,7 +47,7 @@ def _file_snapshot(path: Path) -> dict[str, tuple[int, str]]:
 
 def _dashboard_before_load(
     workspace: Path,
-    holder: dict[str, object],
+    holder: dict[str, FastAPI],
 ):
     """Build the one real Dashboard app before the Manager loads its Root."""
 
@@ -98,8 +99,10 @@ def _render_compiled_module(
         let panel;
         const dispose = panelModule.activate({
           http: { request: async () => { throw new Error("HTTP should not be used while rendering"); } },
-          ui: { inject: (_slot, register) => {
-            register({ register: (candidate) => { panel = candidate; } });
+              ui: { inject: (_slot, register) => {
+                register({ register: (candidate) => {
+                  if (candidate.id === process.env.TEST_PANEL_ID) panel = candidate;
+                } });
             return () => {};
           } },
         });
@@ -116,16 +119,18 @@ def _render_compiled_module(
         **os.environ,
         "TEST_MODULE": str(module_file),
         "TEST_PAYLOAD": str(payload_file),
-        "TEST_MARKER": marker,
+            "TEST_MARKER": marker,
+            "TEST_PANEL_ID": "akasha-inspector" if module.plugin_id == "akasha" else "wake-attempts",
     }
-    subprocess.run(
+    result = subprocess.run(
         ["node", "--input-type=module", "-e", script],
         cwd=_REPO_ROOT,
         env=environment,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    assert result.returncode == 0, result.stderr
 
 
 def _seed_saved_recall(log: MessageLog, _host: PluginManager) -> None:
@@ -163,7 +168,7 @@ def _seed_saved_recall(log: MessageLog, _host: PluginManager) -> None:
 async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tmp_path: Path) -> None:
     from tests.test_akasha_message_plugin import application
 
-    holder: dict[str, object] = {}
+    holder: dict[str, FastAPI] = {}
     async with application(
         tmp_path,
         embedding_available=False,
@@ -215,7 +220,7 @@ async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tm
 async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_path: Path) -> None:
     from tests.test_wake_messages import application, request
 
-    holder: dict[str, object] = {}
+    holder: dict[str, FastAPI] = {}
     async with application(
         tmp_path,
         before_load=_dashboard_before_load(tmp_path / "workspace", holder),
@@ -281,7 +286,7 @@ async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_pa
 async def test_wake_dashboard_get_missing_state_does_not_create_database(tmp_path: Path) -> None:
     from tests.test_wake_messages import application
 
-    holder: dict[str, object] = {}
+    holder: dict[str, FastAPI] = {}
     async with application(
         tmp_path,
         before_load=_dashboard_before_load(tmp_path / "workspace", holder),
@@ -345,7 +350,7 @@ async def test_wake_dashboard_reads_nonempty_state_at_exact_workspace(
     from tests.test_wake_messages import application
 
     root = tmp_path / directory
-    holder: dict[str, object] = {}
+    holder: dict[str, FastAPI] = {}
     async with application(
         root,
         before_load=_dashboard_before_load(root / "workspace", holder),
@@ -390,7 +395,7 @@ async def test_akasha_dashboard_filters_pages_and_returns_original_detail(tmp_pa
     """第二页不得混入另一会话；详情恢复列表截断的完整正文，读取不改变 SQL 事实。"""
     from tests.test_akasha_message_plugin import application
 
-    holder: dict[str, object] = {}
+    holder: dict[str, FastAPI] = {}
     async with application(
         tmp_path,
         embedding_available=False,
@@ -433,7 +438,7 @@ async def test_akasha_page_does_not_read_bodies_outside_its_results(tmp_path: Pa
     """小页和空筛选不应展开全部历史正文；观察真实 SQLite 查询而非自己造的统计。"""
     from tests.test_akasha_message_plugin import application
 
-    holder: dict[str, object] = {}
+    holder: dict[str, FastAPI] = {}
     async with application(
         tmp_path,
         embedding_available=False,

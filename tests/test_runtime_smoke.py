@@ -9,9 +9,11 @@ import sys
 import threading
 import types
 from pathlib import Path
-from typing import cast, Any
+from typing import Any, Required, TypedDict, Unpack, cast
+from collections.abc import Callable, Iterable
 
 import pytest
+import uvicorn
 
 import main
 from bootstrap import app as bootstrap_app
@@ -36,9 +38,37 @@ from agent.plugin_composition import (
     ServiceKey,
 )
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+from agent.restart import RestartGate
+from agent.supervisor import RESTART_EXIT_CODE
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+
+class _CoreKwargs(TypedDict, total=False):
+    restart_gate: RestartGate | None
+    clear_stale_session_admissions: bool
+    plugin_dirs: Iterable[Path] | None
+
+
+class _DashboardKwargs(TypedDict, total=False):
+    workspace: Required[Path]
+    host: str | None
+    port: int | None
+    uds: str | None
+    plugin_manager: object | None
+
+
+class _AppKwargs(TypedDict, total=False):
+    restart_gate: RestartGate | None
+    readiness: bootstrap_app.RuntimeReadiness | None
+
+
+class _FakeDashboardServer(uvicorn.Server):
+    """Expose the only server shutdown flag used by fault injection tests."""
+
+    def __init__(self) -> None:
+        self.should_exit = False
 
 
 def test_plugin_uninstall_uses_runtime_control_request(
@@ -95,11 +125,12 @@ def test_agent_turn_rejects_internal_plugin_commands(
     monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "turn:owner")
 
     with pytest.raises(ValueError, match="Core 内部维护动作"):
-        main._reject_agent_internal_plugin_action("plugin-promote")
+        main._reject_agent_internal_plugin_action("plugin-enable")
+    with pytest.raises(ValueError, match="Core 内部维护动作"):
+        main._reject_agent_internal_plugin_action("plugin-disable")
 
     main._reject_agent_internal_plugin_action("plugin-install")
     main._reject_agent_internal_plugin_action("plugin-uninstall")
-    main._reject_agent_internal_plugin_action("plugin-revert")
 
 
 def test_app_runtime_does_not_own_public_web_listener(tmp_path: Path) -> None:
@@ -796,11 +827,11 @@ def _capture_real_app_runtime(
     real_build_core_runtime = bootstrap_app.build_core_runtime
 
     def build_core_runtime(
-        config: object,
+        config: Config,
         workspace: Path,
         http_resources: SharedHttpResources,
-        **kwargs: object,
-    ) -> object:
+        **kwargs: Unpack[_CoreKwargs],
+    ) -> bootstrap_tools.CoreRuntime:
         kwargs["plugin_dirs"] = plugin_dirs
         core = real_build_core_runtime(
             config,
@@ -861,7 +892,7 @@ async def test_real_app_first_null_source_subset_keeps_host_and_owner_chain(
     dashboard_started = asyncio.Event()
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         observed["dashboard_server"] = server
         real_serve = server.serve
@@ -918,6 +949,7 @@ async def test_real_app_first_null_source_subset_keeps_host_and_owner_chain(
         control_service = runtime.control_service
         assert control_service is not None
         failures = control_service.plugin_status()["source_failures"]
+        assert isinstance(failures, list)
         assert len(failures) == 1
         assert failures[0]["source_root"] == str(
             (source_root / "b-first-null-bad").resolve()
@@ -1015,7 +1047,7 @@ async def test_real_app_first_null_all_fail_commits_empty_and_stops_cleanly(
     dashboard_started = asyncio.Event()
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         observed["dashboard_server"] = server
         real_serve = server.serve
@@ -1107,7 +1139,7 @@ async def test_real_app_runtime_waits_without_primary_until_dashboard_releases(
     dashboard_started = asyncio.Event()
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         observed["dashboard_server"] = server
         observed["pre_root"] = kwargs["plugin_manager"].live_root  # type: ignore[attr-defined]
@@ -1170,7 +1202,7 @@ async def test_real_live_root_local_failure_preserves_peer_identity_and_lifecycl
     dashboard_started = asyncio.Event()
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         observed["dashboard_server"] = server
         real_serve = server.serve
@@ -1317,13 +1349,20 @@ async def test_real_cold_start_local_failure_preserves_peer_and_host_lifecycle(
     """A cold-start bad Fiber stays local while the real host and peer continue."""
 
     config_path, socket_path = _prepare_real_host_fixture(monkeypatch, tmp_path)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'disabled_builtin = ["akasha", "wake"]',
+            "disabled_builtin = []",
+        ),
+        encoding="utf-8",
+    )
     source_root = _write_cold_start_plugins(tmp_path / "cold-start-plugins")
     observed: dict[str, object] = {}
     _capture_real_app_runtime(monkeypatch, observed, plugin_dirs=(source_root,))
     dashboard_started = asyncio.Event()
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         observed["dashboard_server"] = server
         real_serve = server.serve
@@ -1530,10 +1569,12 @@ async def test_real_cold_start_local_failure_preserves_peer_and_host_lifecycle(
             except asyncio.CancelledError:
                 pass
     _assert_real_app_closed(observed, tmp_path, socket_path)
-    assert peer_state is not None
-    assert peer_state["events"][:2] == ["starting", "started"]
-    assert peer_state["events"].count("starting") == 1
-    assert peer_state["events"].count("started") == 1
+    assert isinstance(peer_state, dict)
+    events = peer_state["events"]
+    assert isinstance(events, list)
+    assert events[:2] == ["starting", "started"]
+    assert events.count("starting") == 1
+    assert events.count("started") == 1
     assert peer_state["cleanup"] == 1
 
 
@@ -1558,7 +1599,7 @@ async def test_real_selected_archive_import_failure_keeps_peer_and_host(
     dashboard_started = asyncio.Event()
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         observed["dashboard_server"] = server
         real_serve = server.serve
@@ -1757,7 +1798,7 @@ async def test_real_app_host_task_error_propagates_and_cleans_every_owner(
     failure_started = asyncio.Event()
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         observed["dashboard_server"] = server
         real_serve = server.serve
@@ -1831,7 +1872,7 @@ async def test_real_app_external_cancel_waits_for_physical_cleanup(
     dashboard_started = asyncio.Event()
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         real_serve = server.serve
 
@@ -1936,8 +1977,8 @@ async def test_real_stdio_entry_waits_for_physical_input_and_cleans_resources(
         cfg: Config,
         workspace: Path,
         http: SharedHttpResources,
-        **kwargs: object,
-    ) -> object:
+        **kwargs: Unpack[_CoreKwargs],
+    ) -> bootstrap_tools.CoreRuntime:
         kwargs["plugin_dirs"] = ()
         core = real_build_core(cfg, workspace, http, **kwargs)
         observed["core"] = core
@@ -2031,8 +2072,8 @@ def _capture_cli_runtime(
     def build_app_runtime(
         config: Config,
         workspace: Path,
-        **kwargs: object,
-    ) -> object:
+        **kwargs: Unpack[_AppKwargs],
+    ) -> bootstrap_app.AppRuntime:
         runtime = real_build_app_runtime(config, workspace, **kwargs)
         real_run = runtime.run  # type: ignore[attr-defined]
 
@@ -2065,7 +2106,7 @@ def _observe_cli_dashboard(
 
     real_build_dashboard_server = bootstrap_app.build_dashboard_server
 
-    def build_dashboard_server(**kwargs: object) -> object:
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
         server = real_build_dashboard_server(**kwargs)
         observed["dashboard_server"] = server
         real_serve = server.serve
@@ -2254,10 +2295,10 @@ async def test_cli_serve_same_turn_cancel_wins_real_runtime_completion(
     cleanup_finished = asyncio.Event()
     cleanup_calls: list[str] = []
     loop = asyncio.get_running_loop()
-    callbacks: dict[int, object] = {}
+    callbacks: dict[int, Callable[..., object]] = {}
     real_add = loop.add_signal_handler
 
-    def add_signal_handler(sig: int, callback: object, *args: object) -> None:
+    def add_signal_handler(sig: int, callback: Callable[..., object], *args: object) -> None:
         callbacks[sig] = callback
         real_add(sig, callback, *args)
 
@@ -2363,12 +2404,12 @@ async def test_cli_serve_stop_signal_returns_zero_and_removes_handler(
     dashboard_started = asyncio.Event()
     _observe_cli_dashboard(monkeypatch, observed, dashboard_started)
     loop = asyncio.get_running_loop()
-    callbacks: dict[int, object] = {}
+    callbacks: dict[int, Callable[..., object]] = {}
     removed: list[int] = []
     real_add = loop.add_signal_handler
     real_remove = loop.remove_signal_handler
 
-    def add_signal_handler(sig: int, callback: object, *args: object) -> None:
+    def add_signal_handler(sig: int, callback: Callable[..., object], *args: object) -> None:
         callbacks[sig] = callback
         real_add(sig, callback, *args)
 
@@ -2427,11 +2468,11 @@ async def test_cli_serve_settings_restart_commits_real_channel_and_returns_75(
 
     monkeypatch.setattr(main.RuntimeReadiness, "mark_ready", mark_ready)
     loop = asyncio.get_running_loop()
-    callbacks: dict[int, object] = {}
+    callbacks: dict[int, Callable[..., object]] = {}
     real_add = loop.add_signal_handler
     real_remove = loop.remove_signal_handler
 
-    def add_signal_handler(sig: int, callback: object, *args: object) -> None:
+    def add_signal_handler(sig: int, callback: Callable[..., object], *args: object) -> None:
         callbacks[sig] = callback
         real_add(sig, callback, *args)
 
@@ -2818,7 +2859,10 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
         provider=object(),
         light_provider=None,
         presence=object(),
-        plugin_manager=None,
+        plugin_manager=types.SimpleNamespace(
+            bind_endpoint_switcher=lambda _: None,
+            configure_dashboard_routes=lambda _: None,
+        ),
         start=_start,
         stop=_stop,
     )

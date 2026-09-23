@@ -854,35 +854,37 @@ async def _invoke_capability(
     value = provided[key]
     if not callable(value):
         raise TypeError("选定能力不可调用；服务枚举和对象读取不能充当行为验收")
+    provider_context, value = root._service_provider(key)
     safe_entrypoint = _SAFE_CAPABILITY_ENTRYPOINTS.get(service)
     if safe_entrypoint != entrypoint:
         raise ValueError(
             f"能力 oracle 未登记为无外部副作用的测试入口: {service} {entrypoint}"
         )
-    if service == "message.display:model.facts":
-        if (
-            not isinstance(input_value, dict)
-            or set(input_value) != {"kind", "value"}
-            or input_value["kind"] != "model.facts"
-            or not isinstance(input_value["value"], dict)
-        ):
-            raise ValueError("model.facts oracle input 必须是 {kind,value} ContentPart")
-        from session.message import ContentPart
+    async with provider_context.runtime_scope():
+        if service == "message.display:model.facts":
+            if (
+                not isinstance(input_value, dict)
+                or set(input_value) != {"kind", "value"}
+                or input_value["kind"] != "model.facts"
+                or not isinstance(input_value["value"], dict)
+            ):
+                raise ValueError("model.facts oracle input 必须是 {kind,value} ContentPart")
+            from session.message import ContentPart
 
-        actual = value(ContentPart(input_value["kind"], input_value["value"]))
-    elif service in {
-        "acceptance.messages.roundtrip.v1",
-        "acceptance.consumer.roundtrip.v1",
-    }:
-        if not isinstance(input_value, dict):
-            raise ValueError(
-                "Message roundtrip oracle input 必须是 JSON object"
-            )
-        actual = value(input_value)
-    else:  # pragma: no cover - guarded by the registry above
-        raise ValueError(f"未实现安全能力 oracle: {service}")
-    if inspect.isawaitable(actual):
-        actual = await actual
+            actual = value(ContentPart(input_value["kind"], input_value["value"]))
+        elif service in {
+            "acceptance.messages.roundtrip.v1",
+            "acceptance.consumer.roundtrip.v1",
+        }:
+            if not isinstance(input_value, dict):
+                raise ValueError(
+                    "Message roundtrip oracle input 必须是 JSON object"
+                )
+            actual = value(input_value)
+        else:  # pragma: no cover - guarded by the registry above
+            raise ValueError(f"未实现安全能力 oracle: {service}")
+        if inspect.isawaitable(actual):
+            actual = await actual
     evidence["actual"] = actual
     evidence["actual_type"] = type(actual).__name__
     if "type" in expected and type(actual).__name__ != expected["type"]:
@@ -1491,7 +1493,6 @@ async def _exercise_business_composition(
     PluginSelection(workspace).initialize()
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
-    from agent.plugins.snapshot import lease_runtime_snapshot
     from bus.event_bus import EventBus
     from session.log import MessageLog, SessionAttributes
 
@@ -1507,7 +1508,8 @@ async def _exercise_business_composition(
     reports: list[dict[str, Any]] = []
     installed_by_id: dict[str, dict[str, Any]] = {}
     replacement_evidence: dict[str, Any] | None = None
-    initial_snapshot: Any = None
+    initial_root: Any = None
+    initial_generations: dict[str, Any] = {}
     source_restore: tuple[Path, Path] | None = None
 
     async def run_call(
@@ -1525,21 +1527,21 @@ async def _exercise_business_composition(
                     session_id,
                     SessionAttributes(visibility="internal", learning="excluded"),
                 )
-        async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
-            if snapshot.composition_root is None:
-                raise RuntimeError("business composition snapshot 缺少 composition root")
-            generation = snapshot.generations.get(plugin_id)
-            if generation is None:
-                raise RuntimeError(f"business capability 缺少 generation: {plugin_id}")
-            evidence = await _invoke_capability(
-                root=snapshot.composition_root,
-                plugin_id=plugin_id,
-                spec=spec,
-            )
-            evidence["selector"] = "stable"
-            evidence["snapshot_id"] = snapshot.snapshot_id
-            evidence["generation_id"] = generation.generation_id
-            return evidence
+        root = manager.live_root
+        if root is None:
+            raise RuntimeError("business composition 缺少 live Root")
+        generation = manager.generation(plugin_id)
+        if generation is None:
+            raise RuntimeError(f"business capability 缺少 generation: {plugin_id}")
+        evidence = await _invoke_capability(
+            root=root,
+            plugin_id=plugin_id,
+            spec=spec,
+        )
+        evidence["selector"] = "live"
+        evidence["snapshot_id"] = root.generation_id
+        evidence["generation_id"] = generation.generation_id
+        return evidence
 
     try:
         # 1. Install every declared provider and consumer before loading the
@@ -1596,9 +1598,13 @@ async def _exercise_business_composition(
             reports.append(row)
 
         await manager.load_all()
-        initial_snapshot = manager.current_snapshot
-        if initial_snapshot is None:
-            raise RuntimeError("business composition 未形成 stable snapshot")
+        initial_root = manager.live_root
+        if initial_root is None:
+            raise RuntimeError("business composition 未形成 live Root")
+        initial_generations = {
+            plugin_id: manager.generation(plugin_id)
+            for plugin_id in installed_by_id
+        }
         visible_checkout_modules: list[dict[str, str]] = []
         for job in jobs:
             checkout = _source_checkout(str(job["source"]), repo_root)
@@ -1614,7 +1620,7 @@ async def _exercise_business_composition(
             plugin_id = row.get("plugin_id")
             if not isinstance(plugin_id, str):
                 continue
-            generation = initial_snapshot.generations.get(plugin_id)
+            generation = initial_generations.get(plugin_id)
             row["checks"]["apply"] = generation is not None
             if generation is None:
                 row["error"] = row.get("error", "apply 后缺少 stable generation")
@@ -1668,8 +1674,8 @@ async def _exercise_business_composition(
                 raise ValueError("replacement 必须声明 provider plugin 和 consumer")
             provider_id = f"{provider_name}@{marketplace}"
             consumer_id = f"{consumer_name}@{marketplace}"
-            old_provider = initial_snapshot.generations.get(provider_id)
-            old_consumer = initial_snapshot.generations.get(consumer_id)
+            old_provider = initial_generations.get(provider_id)
+            old_consumer = initial_generations.get(consumer_id)
             if old_provider is None or old_consumer is None:
                 raise RuntimeError(
                     "replacement 需要 provider 与真实 consumer 同时存在于旧组合"
@@ -1699,67 +1705,44 @@ async def _exercise_business_composition(
                 )
                 original_provider_source.rename(backup)
                 source_restore = (original_provider_source, backup)
-            old_provider_generation_id: str
-            old_consumer_generation_id: str
-            old_consumer_call: dict[str, Any]
-            install_result: Any = None
-            publication: tuple[str, asyncio.Task[None]] | None = None
-            async with lease_runtime_snapshot(manager.snapshot_store) as old_snapshot:
-                old_provider_generation_id = old_snapshot.generations[provider_id].generation_id
-                old_consumer_generation_id = old_snapshot.generations[consumer_id].generation_id
-                raw_input = before_spec.get("input")
-                if isinstance(raw_input, dict):
-                    session_id = raw_input.get("session_id")
-                    if isinstance(session_id, str) and session_id:
-                        log.ensure_session(
-                            session_id,
-                            SessionAttributes(visibility="internal", learning="excluded"),
-                        )
-                old_consumer_call = await _invoke_capability(
-                    root=old_snapshot.composition_root,
-                    plugin_id=consumer_id,
-                    spec=before_spec,
-                )
-                old_consumer_call["snapshot_id"] = old_snapshot.snapshot_id
-                old_consumer_call["generation_id"] = old_consumer_generation_id
-                install_result, candidate_status = await manager.install_candidate(
-                    source=replacement_source,
-                    marketplace=marketplace,
-                    ref_name="",
-                    sparse_paths=[],
-                )
-                waiting_for_old = asyncio.Event()
-                wait_for_no_leases = manager.snapshot_store.wait_for_no_leases
-
-                async def observe_drain(snapshot: Any) -> None:
-                    if snapshot is old_snapshot:
-                        waiting_for_old.set()
-                    await wait_for_no_leases(snapshot)
-
-                manager.snapshot_store.wait_for_no_leases = observe_drain
-                try:
-                    manager.start_update_publication(install_result.update_id)
-                    publication = manager._update_publication
-                    if publication is None:
-                        raise RuntimeError("replacement publication task 未创建")
-                    await asyncio.wait_for(waiting_for_old.wait(), timeout=10)
-                    if publication[1].done():
-                        raise RuntimeError("旧 lease 未释放，publication 却已经结束")
-                    # 观察真实 drain 入口后仍执行旧消费者；不靠 sleep 猜测时序。
-                    old_consumer_call = await _invoke_capability(
-                        root=old_snapshot.composition_root, plugin_id=consumer_id, spec=before_spec,
+            old_provider_generation_id = old_provider.generation_id
+            old_consumer_generation_id = old_consumer.generation_id
+            old_consumer_fiber = old_consumer.fiber
+            if old_consumer_fiber is None:
+                raise RuntimeError("replacement consumer 缺少 live Fiber")
+            old_consumer_token = old_consumer_fiber.context.fiber.activation_token
+            raw_input = before_spec.get("input")
+            if isinstance(raw_input, dict):
+                session_id = raw_input.get("session_id")
+                if isinstance(session_id, str) and session_id:
+                    log.ensure_session(
+                        session_id,
+                        SessionAttributes(visibility="internal", learning="excluded"),
                     )
-                    old_consumer_call["snapshot_id"] = old_snapshot.snapshot_id
-                    old_consumer_call["generation_id"] = old_consumer_generation_id
-                finally:
-                    manager.snapshot_store.wait_for_no_leases = wait_for_no_leases
-            await publication[1]
-            update_status = manager.reload_journal.update(install_result.update_id)
-            new_snapshot = manager.current_snapshot
-            if new_snapshot is None:
-                raise RuntimeError("replacement publication 后缺少 stable snapshot")
-            new_provider = new_snapshot.generations.get(provider_id)
-            new_consumer = new_snapshot.generations.get(consumer_id)
+            update_id = "acceptance-" + uuid4().hex
+            async with old_consumer_fiber.context.runtime_scope():
+                old_consumer_call = await _invoke_capability(
+                    root=initial_root, plugin_id=consumer_id, spec=before_spec,
+                )
+                old_consumer_call["snapshot_id"] = initial_root.generation_id
+                old_consumer_call["generation_id"] = old_consumer_generation_id
+                installation = asyncio.create_task(manager.install(
+                    source=replacement_source, marketplace=marketplace,
+                    ref_name="", sparse_paths=[], update_id=update_id,
+                ))
+                await asyncio.wait_for(old_consumer_fiber._admission_closed.wait(), 10)
+                waited_for_old = old_consumer_fiber._admission_closed.is_set()
+                operation = manager._operation
+                if operation is None or operation.task.done():
+                    raise RuntimeError("旧 consumer 调用未排空，安装却已结束")
+            accepted = await installation
+            await operation.task
+            update_status = manager.read_update(update_id)
+            new_root = manager.live_root
+            if new_root is not initial_root:
+                raise RuntimeError("replacement 改换了 live Root")
+            new_provider = manager.generation(provider_id)
+            new_consumer = manager.generation(consumer_id)
             if new_provider is None or new_consumer is None:
                 raise RuntimeError("replacement publication 后 provider/consumer generation 缺失")
             new_consumer_call = await run_call(
@@ -1768,7 +1751,7 @@ async def _exercise_business_composition(
             )
             new_module = sys.modules.get(new_provider.module_path)
             new_module_file = getattr(new_module, "__file__", None)
-            replacement_artifact = Path(install_result.installed_path).resolve(strict=True)
+            replacement_artifact = Path(new_provider.plugin_dir).resolve(strict=True)
             replacement_entrypoint = replacement_artifact / "plugin.py"
             new_module_sha256 = (
                 None
@@ -1788,23 +1771,23 @@ async def _exercise_business_composition(
                 "old_consumer_call": old_consumer_call,
                 "new_consumer_call": new_consumer_call,
                 "update": {
-                    "update_id": install_result.update_id,
-                    "phase": update_status.phase,
-                    "source_revision": install_result.source_revision,
-                    "candidate_status": candidate_status,
+                    "update_id": update_id,
+                    "state": update_status.state,
+                    "source_revision": new_provider.source_revision,
+                    "selection": accepted.selection,
                 },
                 "replacement_artifact": str(replacement_artifact),
                 "replacement_module_file": new_module_file,
                 "old_artifact": str(old_provider_artifact),
                 "checks": {
-                    "publication_committed": update_status.phase == "committed",
-                    "publication_waited_for_old_lease": waiting_for_old.is_set(),
+                    "publication_committed": update_status.state == "active" and accepted.selection == "selected",
+                    "publication_waited_for_old_lease": waited_for_old,
                     "provider_generation_changed": (
                         old_provider_generation_id != new_provider.generation_id
                     ),
                     "consumer_read_under_new_snapshot": (
-                        new_consumer_call.get("snapshot_id")
-                        != old_consumer_call.get("snapshot_id")
+                        new_consumer.fiber is not None
+                        and new_consumer.fiber.context.fiber.activation_token is not old_consumer_token
                     ),
                     "old_consumer_readback": bool(
                         old_consumer_call.get("durable_message_readback", False)
@@ -1865,7 +1848,7 @@ async def _exercise_business_composition(
             else "failed"
         )
     checks = {
-        "composition_loaded": initial_snapshot is not None,
+        "composition_loaded": initial_root is not None,
         "all_reports_passed": bool(reports)
         and all(row.get("status") == "passed" for row in reports),
         "business_calls_executed": any(
@@ -2039,7 +2022,7 @@ def main(argv: list[str] | None = None) -> int:
             sources = _load_source_map(args.sources_json)
             for entry in inventory["packages"]:
                 label = str(entry.get("package", ""))
-                if entry.get("classification") != "manifest-plugin":
+                if entry.get("classification") != "code-plugin":
                     reports.append(
                         _failure_report(
                             label,

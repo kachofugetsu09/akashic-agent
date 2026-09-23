@@ -1,7 +1,8 @@
-"""强杀后只读唯一 stable；不续跑候选，也不伪造安装回退。"""
+"""Crash and pointer recovery around the live plugin selection."""
+from __future__ import annotations
+
 import asyncio
 from contextlib import closing
-from contextvars import Context
 from pathlib import Path
 import signal
 import shutil
@@ -12,56 +13,44 @@ import sys
 import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
-
 from agent.plugin_composition import ServiceKey
 from agent.plugins.artifacts import ArtifactPointer, read_pointers, write_pointers
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import load_plugin_manifest, set_plugin_enabled, write_plugin_manifest
 from agent.plugins.reload_journal import ReloadJournal
-from agent.plugins.selection import PluginSelection, SelectionWriteError
+from agent.plugins.selection import PluginSelection
 from bus.event_bus import EventBus
 from tests.test_plugin_install import _commit, _write_v3_plugin
 
 CHILD = '''
 import asyncio, os, signal, sys
 from pathlib import Path
-import agent.plugins.install as installer
-import agent.plugins.manager as runtime
-from agent.plugins.reload_journal import ReloadJournal
-from agent.plugin_composition import ServiceKey
+from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 workspace, home, source = map(Path, sys.argv[1:4])
 cut = sys.argv[4]
 def kill():
     os.kill(os.getpid(), signal.SIGKILL)
 async def run():
-    host = runtime.PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     await host.load_all()
-    if cut in {"latest", "manifest"}:
-        name = "write_pointers" if cut == "latest" else "upsert_plugin_manifest"
-        original = getattr(installer, name)
-        def changed(*args, **kwargs):
-            result = original(*args, **kwargs)
+    original = host._selection.commit
+    def switched(*args, **kwargs):
+        if cut == "before":
             kill()
-            return result
-        setattr(installer, name, changed)
-    result, status = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[], update_id="crash-update")
-    assert host.latest_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "new"
-    if cut in {"promoting", "committed"}:
-        original = host._selection.commit
-        def switched(*args, **kwargs):
-            if cut == "promoting":
-                kill()
-            result = original(*args, **kwargs)
-            kill()
-            return result
-        host._selection.commit = switched
-    await host.switch_ready("probe@lab")
+        result = original(*args, **kwargs)
+        kill()
+        return result
+    host._selection.commit = switched
+    accepted = await host.install(source=str(source), marketplace="lab", ref_name="", sparse_paths=[], update_id="crash-update")
+    assert accepted.state == "accepted"
+    operation = host._operation
+    assert operation is not None
+    await operation.task
     raise AssertionError("crash cut was not reached")
 asyncio.run(run())
 '''
-
 
 def prepare(tmp_path):
     source = tmp_path / "source"
@@ -85,137 +74,33 @@ async def apply(ctx):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("finish", ["commit", "pointer_failure", "shutdown", "cancel_after_commit", "retry_after_cancel"])
-async def test_publication_returns_to_caller_before_waiting_for_its_generation(tmp_path, monkeypatch, finish):
-    """真实发布等待调用者归还旧租约，失败及关闭仍由原切换 owner 结算。"""
-    from agent.plugins.snapshot import get_current_runtime_lease
-    from agent.plugin_composition.context import RuntimeScope
-
+@pytest.mark.parametrize("cut", ["before", "after"])
+async def test_killed_update_boots_exact_selected_archive(tmp_path: Path, cut: str) -> None:
+    """A process crash cannot turn an uncertain CAS into an implicit rollback."""
     source, home, workspace, old = prepare(tmp_path)
-    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
-    lease = None
-    shutdown = None
-    try:
-        await host.load_all()
-        stable = host.current_snapshot
-        selection_before = PluginSelection(workspace).read()
-        result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        waiting = asyncio.Event()
-        original_wait = host._snapshot_store.wait_for_no_leases
-        async def wait(snapshot):
-            assert get_current_runtime_lease() is None
-            if snapshot is stable:
-                waiting.set()
-            await original_wait(snapshot)
-        monkeypatch.setattr(host._snapshot_store, "wait_for_no_leases", wait)
-        if finish == "pointer_failure":
-            def fail_pointer(*args, **kwargs):
-                raise SelectionWriteError(
-                    operation="commit", target_ref=None, outcome="unchanged",
-                    observed_ref=selection_before, observation_error=None,
-                )
-            monkeypatch.setattr(host._selection, "commit", fail_pointer)
-        elif finish == "cancel_after_commit":
-            original_track = host._track_reload_drain
-            def cancel_after_commit(*args):
-                original_track(*args)
-                assert host._reload_journal.update(result.update_id).phase == "committed"
-                asyncio.current_task().cancel()
-            monkeypatch.setattr(host, "_track_reload_drain", cancel_after_commit)
-        lease = await host._snapshot_store.acquire()
-        async with RuntimeScope(lease):
-            host.start_update_publication(result.update_id)
-            await asyncio.wait_for(waiting.wait(), 10)
-            publication = host._update_publication[1]
-            assert host.update_is_publishing(result.update_id)
-            assert host._reload_journal.update(result.update_id).phase == "armed"
-            assert host.current_snapshot is stable
-            if finish == "retry_after_cancel":
-                publication.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await publication
-                assert host._reload_journal.update(result.update_id).error == "publication cancelled"
-                with pytest.raises(RuntimeError, match="失败|未知"):
-                    host.start_update_publication(result.update_id)
-                await host.discard_update(result.update_id)
-                assert host.read_update(result.update_id).phase == "rolled_back"
-                assert host.current_snapshot is stable
-                return
-            if finish == "shutdown":
-                shutdown = asyncio.create_task(host.terminate_all(), context=Context())
-                with pytest.raises(asyncio.CancelledError):
-                    await publication
-        if shutdown is not None:
-            await asyncio.wait_for(shutdown, 10)
-        elif finish == "cancel_after_commit":
-            try:
-                await asyncio.wait_for(publication, 10)
-            except asyncio.CancelledError:
-                pass  # 下方从真实选择和 journal 核对已提交事实。
-        else:
-            await asyncio.wait_for(publication, 10)
-        update = host._reload_journal.update(result.update_id)
-        assert not host.update_is_publishing(result.update_id)
-        if finish in {"commit", "cancel_after_commit"}:
-            assert update.phase == "committed"
-            assert PluginSelection(workspace).read() != selection_before
-            assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "new"
-        else:
-            assert update.phase != "committed"
-            expected_error = "publication cancelled" if finish == "shutdown" else "outcome=unchanged"
-            assert expected_error in update.error
-            assert PluginSelection(workspace).read() == selection_before
-            assert read_pointers(old.installed_path.parents[1]).stable == update.previous.stable
-            if finish == "pointer_failure":
-                # 整体运行恢复不伪装成安装 owner 已回写旧 latest。
-                assert update.phase == "armed"
-                assert update.reload_tx_id is not None
-                assert host._reload_journal.get(update.reload_tx_id).phase == "aborted"
-                assert read_pointers(old.installed_path.parents[1]).latest == update.candidate
-                assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "old"
-    finally:
-        if lease is not None:
-            await lease.release()
-        if shutdown is not None:
-            await asyncio.gather(shutdown, return_exceptions=True)
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("cut", ["latest", "manifest", "promoting", "committed"])
-async def test_killed_update_returns_to_old_pointer_until_commit(tmp_path, cut):
-    source, home, workspace, old = prepare(tmp_path)
-    result = await asyncio.to_thread(subprocess.run,
+    initial = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    await initial.load_all()
+    await initial.terminate_all()
+    selected_old = PluginSelection(workspace).read()
+    assert selected_old is not None
+    result = await asyncio.to_thread(
+        subprocess.run,
         [sys.executable, "-c", CHILD, str(workspace), str(home), str(source), cut],
         cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == -signal.SIGKILL, result.stdout + result.stderr
-    journal = ReloadJournal(workspace)
-    before = journal.update("crash-update")
-    # committed 切点在 selection 已提交、journal 尚未记录的窗口。
-    assert before.phase == "armed"
-    selected_before_boot = PluginSelection(workspace).read()
-    pointers_before_boot = read_pointers(old.installed_path.parents[1])
-    # 删除原 Git source，启动不能靠重新拉取或重建候选解决中断。
+    selected_after = PluginSelection(workspace).read()
+    assert (selected_after == selected_old) is (cut == "before")
     (source / "plugin.py").unlink()
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     try:
         await host.load_all()
-        value = host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))()
-        assert value == ("new" if cut == "committed" else "old")
-        update = journal.update("crash-update")
-        assert update.phase == ("committed" if cut == "committed" else "armed")
-        if cut != "committed" and update.reload_tx_id is not None:
-            assert update.error
-        pointers = read_pointers(old.installed_path.parents[1])
-        if cut == "committed":
-            # 提交已确认：启动结算把 stable 指针对称收敛到已提交制品，
-            # 不能让运行新制品而 stable 仍指旧制品的不一致持久化。
-            assert pointers.stable.path == update.candidate.path
-        else:
-            assert pointers == pointers_before_boot
-        assert PluginSelection(workspace).read() == selected_before_boot
-        assert host.ready_candidate is None
+        assert PluginSelection(workspace).read() == selected_after
+        root = host.live_root
+        assert root is not None
+        assert root.context.require(ServiceKey("version.probe"))() == (
+            "old" if cut == "before" else "new"
+        )
         assert (old.data_path / "history.txt").read_text() == "existing durable data"
         assert old.installed_path.exists()
     finally:
@@ -317,19 +202,3 @@ def test_reload_link_and_commit_are_atomic_with_update_guard(tmp_path):
         journal.advance(tx, "committed")
     assert journal.get(tx).phase == "promoting"
     assert journal.update(staged.update_id).phase == "armed"
-
-
-@pytest.mark.asyncio
-async def test_same_artifact_enable_commits_only_after_runtime_activation(tmp_path):
-    source, home, workspace, _ = prepare(tmp_path)
-    installed = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
-    set_plugin_enabled("probe@lab", enabled=False, plugins_home=home)
-    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
-    await host.load_all()
-    try:
-        result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        assert result.installed_path == installed.installed_path
-        assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "new"
-        assert ReloadJournal(workspace).update(result.update_id).phase == "committed"
-    finally:
-        await host.terminate_all()

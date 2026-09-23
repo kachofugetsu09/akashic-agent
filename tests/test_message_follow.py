@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent.config_models import Config
-from agent.plugin_composition import CompositionRoot, FiberState, RUNTIME_STARTED, ServiceKey
+from agent.plugin_composition import CompositionRoot, Context, FiberState, RUNTIME_STARTED, ServiceKey
 from agent.plugin_composition.tasks import Tasks
 from bootstrap.app_server import build_control_service
 from bootstrap import tools as bootstrap
@@ -383,10 +383,10 @@ async def test_status_loading_activation_delivers_after_provider_started_gate():
         await started.wait()
         assert not (await anext(stream))["available"]
         release.set()
-        provider = await mount_task
+        provider_fiber = await mount_task
         frame = await asyncio.wait_for(anext(stream), 3)
         assert frame["available"] and frame["items"] == []
-        await provider.dispose()
+        await provider_fiber.dispose()
     finally:
         release.set()
         if not mount_task.done():
@@ -442,7 +442,7 @@ async def test_status_same_fiber_reactivation_changes_registration_identity():
     root = CompositionRoot("reply-status-reactivation")
     first_state, second_state = ReplyState(), ReplyState()
     dependency_key = ServiceKey[object]("reply-status-reactivation-dependency")
-    provider_context = None
+    provider_context: Context | None = None
     dependency_value = None
     activation_contexts = []
 
@@ -514,8 +514,8 @@ async def test_status_provider_disposal_drains_real_reply_scope_before_close():
     root = CompositionRoot("reply-status-drain")
     state = ReplyState()
     tasks = Tasks()
-    provider_context = None
-    peer_context = None
+    provider_context: Context | None = None
+    peer_context: Context | None = None
     close_started, hard_consumer_closed = asyncio.Event(), asyncio.Event()
     work_entered, work_release = asyncio.Event(), asyncio.Event()
     close_count = 0

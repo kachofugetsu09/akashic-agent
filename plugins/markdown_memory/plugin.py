@@ -19,6 +19,8 @@ from agent.plugin_composition import (
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     Context,
+    CompositionError,
+    FiberState,
     ModelRequest,
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
@@ -55,7 +57,7 @@ workspace_files = (
 
 MaterialData = Mapping[str, object]
 inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
-          TURN_PROJECTION, COMPACTION_SUMMARIES)
+          TURN_PROJECTION, COMPACTION_SUMMARIES, COMPACTION_READER)
 
 
 _MEMORY_HEADINGS = (
@@ -796,34 +798,39 @@ async def apply(ctx: Context) -> None:
                     for session, head in heads.items():
                         if head <= cursor.get(session, -1):
                             continue
-                        async with ctx.runtime_scope():
-                            assert store is not None
-                            reader = catalog.reader(session)
-                            if reader.attributes.learning != "eligible":
-                                cursor[session] = head
-                                continue
-                            messages = await asyncio.to_thread(
-                                reader.snapshot, after_seq=cursor.get(session, -1), through_seq=head,
-                            )
-                            for message in messages:
-                                try:
-                                    compaction = ctx.get(COMPACTION_READER)
-                                    await project(message, reader=reader, bindings=ctx.require(BINDINGS),
-                                                  store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
-                                    sources=config.sources, projection=ctx.require(TURN_PROJECTION),
-                                    content=ctx.require(CONTENT), context=context,
-                                    summaries=ctx.require(COMPACTION_SUMMARIES),
-                                    compaction=compaction)
-                                except ModelError as error:
-                                    if not error.retryable:
-                                        raise
-                                    logger.warning(
-                                        "Markdown 模型暂时失败，将重试原消息: session=%s message=%s error=%s",
-                                        session, message.message_id, type(error).__name__, exc_info=True,
-                                    )
-                                    retry = True
-                                    break
-                                cursor[session] = message.seq
+                        try:
+                            async with ctx.runtime_scope():
+                                assert store is not None
+                                reader = catalog.reader(session)
+                                if reader.attributes.learning != "eligible":
+                                    cursor[session] = head
+                                    continue
+                                messages = await asyncio.to_thread(
+                                    reader.snapshot, after_seq=cursor.get(session, -1), through_seq=head,
+                                )
+                                for message in messages:
+                                    try:
+                                        compaction = ctx.get(COMPACTION_READER)
+                                        await project(message, reader=reader, bindings=ctx.require(BINDINGS),
+                                                      store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
+                                        sources=config.sources, projection=ctx.require(TURN_PROJECTION),
+                                        content=ctx.require(CONTENT), context=context,
+                                        summaries=ctx.require(COMPACTION_SUMMARIES),
+                                        compaction=compaction)
+                                    except ModelError as error:
+                                        if not error.retryable:
+                                            raise
+                                        logger.warning(
+                                            "Markdown 模型暂时失败，将重试原消息: session=%s message=%s error=%s",
+                                            session, message.message_id, type(error).__name__, exc_info=True,
+                                        )
+                                        retry = True
+                                        break
+                                    cursor[session] = message.seq
+                        except CompositionError as error:
+                            if error.code != "OWNER_UNAVAILABLE" or ctx.fiber.state not in {FiberState.UNLOADING, FiberState.DISPOSED}:
+                                raise
+                            return
                     if retry:
                         break
             if not retry:

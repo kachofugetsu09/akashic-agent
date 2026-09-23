@@ -29,6 +29,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 from starlette.websockets import WebSocketDisconnect
+from starlette.types import Message as ASGIMessage
 
 from agent.plugin_composition import CompositionError, CompositionRoot, FiberState, ServiceKey
 from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
@@ -41,6 +42,7 @@ from agent.plugins.manager import OperationBusyError, PluginManager, _source_rev
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.selection import SelectionConflictError
 from agent.plugins.manifest import write_plugin_manifest
+from agent.plugins.install import install_git_plugin
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
@@ -100,8 +102,21 @@ def _copy_assets_provider(tmp_path: Path) -> None:
 
 
 async def _read_assets(manager: PluginManager) -> tuple[InstalledAsset, ...]:
-    async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
-        return snapshot.composition_root.context.require(INSTALLED_ASSETS)()
+    root = manager.live_root
+    assert root is not None
+    consumer = next(
+        fiber.context for fiber in root._fibers.values()
+        if fiber.state is FiberState.ACTIVE and INSTALLED_ASSETS in fiber.dependencies
+    )
+    async with consumer.runtime_scope():
+        return consumer.require(INSTALLED_ASSETS)(consumer)
+
+
+def _source_failures(manager: PluginManager) -> list[dict[str, object]]:
+    failures = manager.plugin_status()["source_failures"]
+    assert isinstance(failures, list)
+    assert all(isinstance(item, dict) for item in failures)
+    return failures
 
 
 def _write_plugin(root: Path, name: str, source: str) -> Path:
@@ -200,8 +215,8 @@ def test_reload_journal_existing_schema_closes_readonly_connection(
     captured: list[sqlite3.Connection] = []
     real_connect = reload_journal_module.sqlite3.connect
 
-    def observed_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        connection = real_connect(*args, **kwargs)
+    def observed_connect(database: str | Path, *, uri: bool = False) -> sqlite3.Connection:
+        connection = real_connect(database, uri=uri)
         captured.append(connection)
         return connection
 
@@ -305,6 +320,31 @@ def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
     return skill_dir
 
 
+def _save_installed_source(repo: Path, source: str, skills: dict[str, str] | None = None) -> None:
+    """Commit one real local Git source for the public install path."""
+    from tests.test_plugin_install import _commit
+
+    repo.mkdir(exist_ok=True)
+    (repo / "plugin.py").write_text(source, encoding="utf-8")
+    for name, body in (skills or {}).items():
+        skill = repo / "skills" / name
+        skill.mkdir(parents=True, exist_ok=True)
+        (skill / "SKILL.md").write_text(body, encoding="utf-8")
+    _commit(repo)
+
+
+async def _install_new_revision(manager: PluginManager, repo: Path, update_id: str):
+    """Wait for the public install owner after its accepted receipt."""
+    accepted = await manager.install(
+        source=str(repo), marketplace="lab", ref_name="", sparse_paths=[],
+        update_id=update_id,
+    )
+    operation = manager._operation
+    assert operation is not None
+    await operation.task
+    return accepted
+
+
 @pytest.mark.asyncio
 async def test_candidate_publishes_unique_generation(tmp_path: Path):
     _write_plugin(tmp_path / "plugins", "candidate", _v3_source("candidate"))
@@ -336,12 +376,11 @@ async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     try:
-        if accepted:
-            await manager.load_all()
-        else:
-            with pytest.raises(RuntimeError):
-                await manager.load_all()
-        assert (manager.generation("ordinary") is not None) is accepted
+        await manager.load_all()
+        generation = manager.generation("ordinary")
+        assert generation is not None and generation.fiber is not None
+        assert (generation.fiber.state == FiberState.ACTIVE) is accepted
+        assert (generation.fiber.error is None) is accepted
     finally:
         await manager.terminate_all()
 
@@ -359,7 +398,7 @@ async def test_invalid_source_does_not_block_next_load_attempt(tmp_path: Path):
         selection = manager._selection.read()
         assert selection is not None
         assert manager._selection_components(selection) == ()
-        failures = manager.plugin_status()["source_failures"]
+        failures = _source_failures(manager)
         assert failures[0]["plugin_id"] is None
         assert failures[0]["phase"] == "identity"
 
@@ -367,32 +406,31 @@ async def test_invalid_source_does_not_block_next_load_attempt(tmp_path: Path):
         result = await manager.reconcile_changed()
         assert result[0]["publication_state"] == "unselected_source"
         assert manager.generation("broken") is None
-        assert manager.plugin_status()["source_failures"] == failures
+        assert _source_failures(manager) == failures
     finally:
         await manager.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_candidate_compile_error_keeps_original_error_and_stable(tmp_path: Path, monkeypatch):
-    """编译失败清理候选，原错误直接交给调用者，正式选择不变。"""
+async def test_candidate_compile_error_keeps_original_error_and_stable(tmp_path: Path):
+    """已选 source 编译失败留下准确诊断，不切换选择或旧 owner。"""
     plugin = _write_plugin(tmp_path / "plugins", "ordinary", _v3_source("ordinary"))
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     try:
         await manager.load_all()
-        stable = manager.current_snapshot
-        (plugin / "plugin.py").write_text(_v3_source("ordinary", version="2.0.0"))
-        failure = ValueError("fixture compilation failed")
-
-        def fail_compile(*args, **kwargs):
-            raise failure
-
-        monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_compile)
-        with pytest.raises(ValueError, match="fixture compilation failed") as caught:
-            await manager.prepare_candidate("ordinary")
-        assert caught.value is failure
-        assert manager.current_snapshot is stable
-        assert manager.prepared_generation("ordinary") is None
+        stable = manager.generation("ordinary")
+        selected = manager._selection.read()
+        (plugin / "plugin.py").write_text("def invalid(:\n", encoding="utf-8")
+        result = await manager.reconcile_changed()
+        assert result[0]["publication_state"] == "source_unavailable"
+        assert manager._selection.read() == selected
+        assert manager.generation("ordinary") is stable
+        assert stable is not None and stable.fiber is not None
+        assert stable.fiber.state == FiberState.ACTIVE
+        failure = _source_failures(manager)[0]
+        assert failure["error_type"] == "SyntaxError"
+        assert failure["source_root"] == str(plugin.resolve())
     finally:
         await manager.terminate_all()
 
@@ -407,11 +445,20 @@ async def test_boot_failure_never_publishes_a_smaller_plugin_selection(tmp_path:
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     try:
-        with pytest.raises(RuntimeError, match="拓扑未就绪"):
-            await manager.load_all()
-        assert manager.current_snapshot is None
-        assert manager.generation("good") is None
-        assert manager.generation("broken") is None
+        await manager.load_all()
+        selection = manager._selection.read()
+        assert selection is not None
+        selected = {
+            manager._archive.read_descriptor(ref)["plugin_id"]
+            for ref in manager._selection_components(selection)
+        }
+        assert selected == {"good", "broken"}
+        good = manager.generation("good")
+        broken = manager.generation("broken")
+        assert good is not None and good.fiber is not None
+        assert good.fiber.state == FiberState.ACTIVE
+        assert broken is not None and broken.fiber is not None
+        assert broken.fiber.state == FiberState.FAILED
     finally:
         await manager.terminate_all()
 
@@ -430,11 +477,14 @@ async def test_candidate_failure_is_bound_to_requested_plugin(tmp_path: Path):
         (root / name / "plugin.py").write_text(
             f"this is not valid python for {name} !!!\n", encoding="utf-8"
         )
-        # 身份源码在导入前解析；失败直接传播原错误，不产生伪造的候选记录。
-        with pytest.raises(ValueError, match=f"{name}/plugin.py"):
-            await manager.prepare_candidate(name)
-        assert manager.candidate_status(name)["candidate_state"] is None
-        assert manager.generation(name) is not None
+        # 身份源码在导入前解析；当前 owner 和完整选择不被坏源码替换。
+        selected = manager._selection.read()
+        active = manager.generation(name)
+        result = await manager.reconcile_changed()
+        assert result[0]["publication_state"] == "source_unavailable"
+        assert manager._selection.read() == selected
+        assert manager.generation(name) is active
+        assert any(item["source_root"] == str((root / name).resolve()) for item in _source_failures(manager))
         # 完整选择要求全部插件身份可解析；恢复后再验证下一个。
         (root / name / "plugin.py").write_text(original, encoding="utf-8")
 
@@ -487,14 +537,18 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
-    modules_before = set(sys.modules)
-    with pytest.raises(RuntimeError, match="拓扑未就绪"):
-        await manager.load_all()
-    assert manager.current_snapshot is None
-    assert not any(name.startswith("_akashic_") for name in set(sys.modules) - modules_before)
-
-    save_config(config_dir, {"required": "ok"})
     await manager.load_all()
+    failed = manager.generation("module_tree")
+    assert failed is not None and failed.fiber is not None
+    assert failed.fiber.state == FiberState.FAILED
+    selected = manager._selection.read()
+    await manager.terminate_all()
+    assert failed.module_path not in sys.modules
+    assert not any(name.startswith(failed.module_path + ".") for name in sys.modules)
+    save_config(config_dir, {"required": "ok"})
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    assert manager._selection.read() == selected
     generation = manager.generation("module_tree")
     assert generation is not None
     assert f"{generation.module_path}.child" in sys.modules
@@ -523,11 +577,12 @@ async def test_source_revision_includes_helper_changes(tmp_path: Path):
     assert active is not None
 
     helper.write_text("value = 2\n", encoding="utf-8")
-    prepared = await manager.prepare_candidate("revision")
-
-    assert prepared is not None
-    assert prepared.source_revision != active.source_revision
-    await manager.discard_prepared("revision")
+    result = await manager.reconcile_changed()
+    updated = manager.generation("revision")
+    assert result[0]["publication_state"] == "active"
+    assert updated is not None and updated is not active
+    assert updated.source_revision != active.source_revision
+    assert updated.instance.module.helper.value == 2
     await manager.terminate_all()
 
 
@@ -545,8 +600,11 @@ async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
-    with pytest.raises(RuntimeError, match="插件组合拓扑未就绪"):
-        await manager.load_all()
+    await manager.load_all()
+    escaped = manager.generation("escaped")
+    assert escaped is not None and escaped.fiber is not None
+    assert escaped.fiber.state == FiberState.FAILED
+    assert escaped.fiber.error is not None
 
     await manager.terminate_all()
 
@@ -602,12 +660,12 @@ async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Pa
     os.utime(plugin_file, ns=(plugin_stat.st_atime_ns, plugin_stat.st_mtime_ns))
     os.utime(helper_file, ns=(helper_stat.st_atime_ns, helper_stat.st_mtime_ns))
 
-    prepared = await manager.prepare_candidate("fresh_source")
-
-    assert prepared is not None
-    assert prepared.instance.version == "release-b"
-    assert prepared.instance.module.helper_value == "release-b"
-    await manager.discard_prepared("fresh_source")
+    result = await manager.reconcile_changed()
+    updated = manager.generation("fresh_source")
+    assert result[0]["publication_state"] == "active"
+    assert updated is not None
+    assert updated.instance.version == "release-b"
+    assert updated.instance.module.helper_value == "release-b"
     await manager.terminate_all()
 
 
@@ -647,17 +705,11 @@ async def test_assets_provider_leaves_skill_duplicates_to_standard_tools(tmp_pat
         "---\ndescription: second\n---\nsecond\n", encoding="utf-8"
     )
 
-    assert await manager.prepare_candidate("second_skills") is not None
-    publication = await manager.publish_prepared("second_skills")
-    assert publication["publication_state"] == "committed"
-
-    second = manager.generation("second_skills")
-    assert second is not None
-    second_asset = next(
-        asset
-        for asset in await _read_assets(manager)
-        if asset.category == "skills" and asset.owner_id == "second_skills"
-    )
+    result = await manager.reconcile_changed()
+    assert result[0]["publication_state"] == "unselected_source"
+    assert manager.generation("second_skills") is None
+    # 新 source 必须经显式选择；重复名称仍由实际 Skill parser 拒绝。
+    second_asset = InstalledAsset("second_skills", "skills", second_dir / "skills")
     with pytest.raises(RuntimeError, match="Skill 名称重复"):
         SkillCatalogParser(capability_checker=None).parse(
             (
@@ -716,10 +768,8 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
         encoding="utf-8",
     )
 
-    prepared = await manager.prepare_candidate("skill_reload")
-
-    assert prepared is not None
-    await manager.publish_prepared("skill_reload")
+    result = await manager.reconcile_changed()
+    assert result[0]["publication_state"] == "active"
     prepared_asset = next(
         asset for asset in await _read_assets(manager) if asset.category == "skills"
     )
@@ -759,8 +809,14 @@ async def test_disabled_installed_plugin_is_not_part_of_boot_selection(tmp_path:
     manager = _manager(tmp_path)
     try:
         await manager.load_all()
-        assert manager.current_snapshot is not None
-        assert set(manager.current_snapshot.generations) == {"selected"}
+        assert manager.live_root is not None
+        selection = manager._selection.read()
+        assert selection is not None
+        selected = {
+            manager._archive.read_descriptor(ref)["plugin_id"]
+            for ref in manager._selection_components(selection)
+        }
+        assert selected == {"selected"}
         assert manager.generation("installed_snapshot@lab") is None
         assert read_pointer(plugin_base, "stable") == pointer
     finally:
@@ -768,207 +824,183 @@ async def test_disabled_installed_plugin_is_not_part_of_boot_selection(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_installed_candidate_requires_explicit_promote_or_discard(
-    tmp_path: Path,
-) -> None:
-    plugin_base, stable_root = _write_installed_artifact(
-        tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a")
+async def test_installed_update_requires_explicit_install_and_fixed_selection(tmp_path: Path) -> None:
+    """Pointer drift cannot publish B; public install selects its exact archive."""
+    workspace = tmp_path / "workspace"
+    repo = tmp_path / "source"
+    initialize_plugin_workspace(workspace)
+    _save_installed_source(repo, _installed_snapshot_source("release-a"))
+    install_git_plugin(
+        workspace=workspace, source=str(repo), marketplace="lab",
+        plugins_home=tmp_path / "home",
     )
-    _, latest_root = _write_installed_artifact(
-        tmp_path, "2.0.0-bbbb", _installed_snapshot_source("release-b")
-    )
-    _, _ = _write_installed_artifact(
-        tmp_path, "3.0.0-cccc", _installed_snapshot_source("release-c")
-    )
-    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
-    latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
-    next_pointer = ArtifactPointer(".artifacts/3.0.0-cccc")
-    write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
-    write_plugin_manifest(
-        {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
-    )
-    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
-        plugin_dirs=[],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
+        plugin_dirs=[], event_bus=EventBus(), workspace=workspace,
         installed_cache_root=tmp_path / "home" / "cache",
     )
-    await manager.load_all()
-    stable_generation = manager.generation("installed_snapshot@lab")
-    stable_snapshot = manager.current_snapshot
-    assert stable_generation is not None and stable_snapshot is not None
-    assert stable_generation.instance.version == "release-a"
+    try:
+        await manager.load_all()
+        old = manager.generation("installed_snapshot@lab")
+        selected_a = manager._selection.read()
+        assert old is not None and old.instance.version == "release-a"
+        base = tmp_path / "home" / "cache" / "lab" / "installed_snapshot"
+        pointer = read_pointer(base, "stable")
+        _save_installed_source(repo, _installed_snapshot_source("release-b"))
+        assert await manager.reconcile_changed() == []
+        assert manager._selection.read() == selected_a
+        assert manager.generation("installed_snapshot@lab") is old
+        assert read_pointer(base, "stable") == pointer
 
-    write_pointers(plugin_base, stable=stable_pointer, latest=latest_pointer)
-    result = (await manager.reconcile_changed())[0]
-    candidate = manager.ready_candidate
-    assert result["publication_state"] == "latest_ready"
-    assert candidate is not None and candidate.instance.version == "release-b"
-    assert manager.generation("installed_snapshot@lab") is stable_generation
-    assert manager.current_snapshot is stable_snapshot
-    stable_lease = manager.snapshot_store.lease()
-    latest_lease = manager.snapshot_store.lease(selector="latest")
-    assert (
-        stable_lease.snapshot.generations["installed_snapshot@lab"].instance.version
-        == "release-a"
-    )
-    assert (
-        latest_lease.snapshot.generations["installed_snapshot@lab"].instance.version
-        == "release-b"
-    )
-    await stable_lease.release()
-    await latest_lease.release()
-
-    discarded = await manager.drop_candidate("installed_snapshot@lab")
-    assert discarded["publication_state"] == "discarded"
-    # promote/drop 不再写 per-plugin artifact 指针；stable 运行选择由 selection journal 承担。
-    assert manager.generation("installed_snapshot@lab").instance.version == "release-a"  # type: ignore[union-attr]
-    assert manager.current_snapshot is stable_snapshot
-    assert manager.ready_candidate is None
-    assert not latest_root.samefile(stable_root)
-
-    write_pointers(plugin_base, stable=stable_pointer, latest=latest_pointer)
-    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-    promoted = await manager.switch_ready("installed_snapshot@lab")
-    assert promoted["publication_state"] == "promoted"
-    assert manager.generation("installed_snapshot@lab").instance.version == "release-b"  # type: ignore[union-attr]
-
-    write_pointers(plugin_base, stable=latest_pointer, latest=next_pointer)
-    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-    await manager.switch_ready("installed_snapshot@lab")
-    assert manager.generation("installed_snapshot@lab").instance.version == "release-c"  # type: ignore[union-attr]
-    await manager.terminate_all()
+        accepted = await _install_new_revision(manager, repo, "installed-b")
+        current = manager.generation("installed_snapshot@lab")
+        assert accepted.selection == "selected"
+        assert current is not None and current is not old
+        assert current.instance.version == "release-b"
+        assert manager._selection.read() != selected_a
+        assert manager.read_update("installed-b").state == "active"
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_installed_promotion_uses_fixed_assets_without_touching_workspace_skills(tmp_path: Path) -> None:
+async def test_installed_update_uses_fixed_assets_without_touching_workspace_skills(tmp_path: Path) -> None:
     _install_assets_provider(tmp_path)
-    plugin_base, stable_root = _write_installed_artifact(
-        tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a", skills=True)
-    )
-    _, candidate_root = _write_installed_artifact(
-        tmp_path, "2.0.0-bbbb", _installed_snapshot_source("release-b", skills=True)
-    )
-    _write_installed_skill(stable_root, "shared", "stable body\n")
-    _write_installed_skill(candidate_root, "shared", "candidate body\n")
-    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
-    candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
-    write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
     workspace = tmp_path / "workspace"
+    repo = tmp_path / "source"
+    initialize_plugin_workspace(workspace)
+    _save_installed_source(
+        repo, _installed_snapshot_source("release-a", skills=True),
+        {"shared": "stable body\n"},
+    )
+    install_git_plugin(
+        workspace=workspace, source=str(repo), marketplace="lab",
+        plugins_home=tmp_path / "home",
+    )
     personal = workspace / "skills" / "shared"
     personal.mkdir(parents=True)
     (personal / "SKILL.md").write_bytes(b"user-owned bytes")
-    legacy = workspace / "skills" / "old-link"
-    legacy.symlink_to(stable_root / "skills" / "shared")
-    initialize_plugin_workspace(tmp_path / "workspace")
-    manager = PluginManager([], event_bus=EventBus(), workspace=workspace,
-                            installed_cache_root=tmp_path / "home" / "cache")
+    manager = PluginManager(
+        [], event_bus=EventBus(), workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
 
-    async def content():
-        asset = next(item for item in await _read_assets(manager) if item.category == "skills")
+    async def content() -> str:
+        asset = next(item for item in await _read_assets(manager) if item.category == "skills"
+                     and item.owner_id == "installed_snapshot@lab")
         return (asset.root_dir / "shared" / "SKILL.md").read_text()
 
     try:
         await manager.load_all()
         assert await content() == "stable body\n"
-        write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
-        assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+        selected_a = manager._selection.read()
+        _save_installed_source(
+            repo, _installed_snapshot_source("release-b", skills=True),
+            {"shared": "candidate body\n"},
+        )
+        assert await manager.reconcile_changed() == []
         assert await content() == "stable body\n"
-        await manager.drop_candidate("installed_snapshot@lab")
-        assert await content() == "stable body\n"
-        write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
-        assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-        assert (await manager.switch_ready("installed_snapshot@lab"))["publication_state"] == "promoted"
+        await _install_new_revision(manager, repo, "asset-b")
+        assert manager._selection.read() != selected_a
         assert await content() == "candidate body\n"
     finally:
         await manager.terminate_all()
     assert (personal / "SKILL.md").read_bytes() == b"user-owned bytes"
-    assert legacy.readlink() == stable_root / "skills" / "shared"
     assert not (workspace / "runtime" / "plugin-skill-links.json").exists()
 
 
 @pytest.mark.asyncio
-async def test_workspace_skill_name_does_not_block_plugin_promotion(
-    tmp_path: Path,
-) -> None:
+async def test_workspace_skill_name_does_not_block_installed_update(tmp_path: Path) -> None:
     _install_assets_provider(tmp_path)
-    plugin_base, _ = _write_installed_artifact(
-        tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a")
-    )
-    _, candidate_root = _write_installed_artifact(
-        tmp_path, "2.0.0-bbbb", _installed_snapshot_source("release-b", skills=True)
-    )
-    _write_installed_skill(candidate_root, "personal", "candidate body\n")
-    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
-    candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
-    write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
     workspace = tmp_path / "workspace"
+    repo = tmp_path / "source"
+    initialize_plugin_workspace(workspace)
+    _save_installed_source(repo, _installed_snapshot_source("release-a"))
+    install_git_plugin(
+        workspace=workspace, source=str(repo), marketplace="lab",
+        plugins_home=tmp_path / "home",
+    )
     personal = workspace / "skills" / "personal"
     personal.mkdir(parents=True)
     (personal / "SKILL.md").write_text("user body\n", encoding="utf-8")
-    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
-        plugin_dirs=[],
-        event_bus=EventBus(),
-        workspace=workspace,
+        [], event_bus=EventBus(), workspace=workspace,
         installed_cache_root=tmp_path / "home" / "cache",
     )
-    await manager.load_all()
-    stable_generation = manager.generation("installed_snapshot@lab")
-    stable_snapshot = manager.current_snapshot
-    write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
-    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-    await manager.switch_ready("installed_snapshot@lab")
-    assert manager.current_snapshot is not stable_snapshot
-    assert manager.generation("installed_snapshot@lab") is not stable_generation
-    # 晋升不写 per-plugin artifact 指针；workspace 用户资产不受影响。
-    assert personal.is_dir() and not personal.is_symlink()
-    assert (personal / "SKILL.md").read_text(encoding="utf-8") == "user body\n"
-    await manager.terminate_all()
+    try:
+        await manager.load_all()
+        old = manager.generation("installed_snapshot@lab")
+        _save_installed_source(
+            repo, _installed_snapshot_source("release-b", skills=True),
+            {"personal": "plugin body\n"},
+        )
+        await _install_new_revision(manager, repo, "personal-b")
+        current = manager.generation("installed_snapshot@lab")
+        assert current is not None and current is not old
+        assert current.instance.version == "release-b"
+        assert any(
+            item.owner_id == "installed_snapshot@lab" and item.category == "skills"
+            for item in await _read_assets(manager)
+        )
+        assert personal.is_dir() and not personal.is_symlink()
+        assert (personal / "SKILL.md").read_text(encoding="utf-8") == "user body\n"
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_rejected_installed_candidate_keeps_latest_for_explicit_settle(
-    tmp_path: Path,
+async def test_rejected_installed_update_keeps_selected_b_for_explicit_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plugin_base, _ = _write_installed_artifact(
-        tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a")
+    """A failed B remains selected and retry loads its immutable archive."""
+    workspace = tmp_path / "workspace"
+    repo = tmp_path / "source"
+    initialize_plugin_workspace(workspace)
+    _save_installed_source(repo, _installed_snapshot_source("release-a"))
+    install_git_plugin(
+        workspace=workspace, source=str(repo), marketplace="lab",
+        plugins_home=tmp_path / "home",
     )
-    _, _ = _write_installed_artifact(
-        tmp_path,
-        "2.0.0-bbbb",
-        _v3_source(
-            "installed_snapshot",
-            version="release-b",
-            body="    raise ValueError('candidate rejected during apply')\n",
-        ),
-    )
-    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
-    latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
-    write_pointers(plugin_base, stable=stable_pointer, latest=latest_pointer)
-    write_plugin_manifest(
-        {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
-    )
-    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
-        plugin_dirs=[],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
+        [], event_bus=EventBus(), workspace=workspace,
         installed_cache_root=tmp_path / "home" / "cache",
     )
-    await manager.load_all()
-    results = await manager.reconcile_changed()
-    assert results[0]["prepared_generation"] is None
-    assert results[0]["preparation_state"] == "failed"
-    assert "candidate rejected" in str(results[0].get("error"))
-    assert manager.generation("installed_snapshot@lab").instance.version == "release-a"  # type: ignore[union-attr]
-    assert read_pointer(plugin_base, "stable") == stable_pointer
-    # 初始化失败不再静默回退 latest；登台指针保留，待显式 discard 结算。
-    assert read_pointer(plugin_base, "latest") == latest_pointer
-    # 本次登台没有 armed 更新 owner；失败如实留在结果中而不伪装回退。
-    assert manager.reload_journal.armed_update_for_plugin("installed_snapshot@lab") is None
-    await manager.terminate_all()
+    monkeypatch.setenv("INSTALLED_B_ALLOWED", "yes")
+    try:
+        await manager.load_all()
+        old = manager.generation("installed_snapshot@lab")
+        selected_a = manager._selection.read()
+        source_b = _v3_source(
+            "installed_snapshot", version="release-b", exports="import os\n",
+            body="    if os.environ['INSTALLED_B_ALLOWED'] != 'yes':\n"
+                 "        raise ValueError('B start blocked')\n",
+        )
+        _save_installed_source(repo, source_b)
+        monkeypatch.setenv("INSTALLED_B_ALLOWED", "no")
+        accepted = await manager.install(
+            source=str(repo), marketplace="lab", ref_name="", sparse_paths=[],
+            update_id="rejected-b",
+        )
+        operation = manager._operation
+        assert operation is not None
+        with pytest.raises(RuntimeError, match="目标依赖未 ACTIVE"):
+            await operation.task
+        failed = manager.generation("installed_snapshot@lab")
+        selected_b = manager._selection.read()
+        assert accepted.selection == "selected"
+        assert selected_b is not None and selected_b != selected_a
+        assert failed is not None and failed.state == "failed"
+        assert failed.load_error is not None
+        assert "B start blocked" in str(failed.load_error)
+        assert manager.read_update("rejected-b").state == "failed"
+        assert old is not failed and old.scope.closed
+        monkeypatch.setenv("INSTALLED_B_ALLOWED", "yes")
+        recovered = await manager.retry_runtime_recovery("installed_snapshot@lab")
+        current = manager.generation("installed_snapshot@lab")
+        assert recovered["publication_state"] == "recovered"
+        assert manager._selection.read() == selected_b
+        assert current is not None and current.instance.version == "release-b"
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -1033,32 +1065,62 @@ async def test_restart_keeps_stable_when_legacy_candidate_pointers_drift(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_admission_waits_while_current_is_quiesced(
-    tmp_path: Path,
-) -> None:
-    _write_plugin(
-        tmp_path / "plugins", "snapshot_admission", _v3_source("snapshot_admission")
+async def test_live_admission_waits_for_held_owner_call_during_update(tmp_path: Path) -> None:
+    """A held call delays old Fiber unload and a stale activation cannot reenter."""
+    plugin = _write_plugin(
+        tmp_path / "plugins", "admission", _v3_source("admission", version="release-a"),
     )
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
-    snapshot = manager.current_snapshot
-    assert snapshot is not None
-    held = manager.snapshot_store.lease()
-    quiescing = asyncio.create_task(manager.snapshot_store.quiesce_current())
-    waiting = asyncio.create_task(manager.snapshot_store.acquire())
-    await asyncio.sleep(0)
-    assert not quiescing.done()
-    assert not waiting.done()
+    old = manager.generation("admission")
+    assert old is not None and old.fiber is not None
+    old_context = old.fiber.context
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    closed = asyncio.Event()
 
-    await held.release()
-    assert await quiescing is snapshot
-    assert not waiting.done()
-    await manager.snapshot_store.resume(snapshot)
-    admitted = await waiting
-    assert admitted.snapshot is snapshot
-    await admitted.release()
-    await manager.terminate_all()
+    async def hold_call() -> None:
+        async with old_context.runtime_scope():
+            permit = old_context.capture_runtime_scope()
+            entered.set()
+            try:
+                await permit.wait_admission_closed()
+                closed.set()
+                await release.wait()
+            finally:
+                await permit.close()
+
+    holder = asyncio.create_task(hold_call())
+    update: asyncio.Task[list[dict[str, object]]] | None = None
+    try:
+        await entered.wait()
+        (plugin / "plugin.py").write_text(
+            _v3_source("admission", version="release-b"), encoding="utf-8",
+        )
+        update = asyncio.create_task(manager.reconcile_changed())
+        await asyncio.wait_for(closed.wait(), timeout=2)
+        assert not update.done()
+        with pytest.raises(CompositionError, match="不接纳新调用"):
+            async with old_context.runtime_scope():
+                pass
+        release.set()
+        await holder
+        result = await update
+        current = manager.generation("admission")
+        assert result[0]["publication_state"] == "active"
+        assert current is not None and current is not old
+        assert current.fiber is not None and current.fiber.state == FiberState.ACTIVE
+        assert old.scope.closed
+    finally:
+        release.set()
+        if update is not None and not update.done():
+            update.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await update
+        if not holder.done():
+            await holder
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -1110,49 +1172,41 @@ async def test_snapshot_cleanup_join_survives_repeated_caller_cancel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
-    _write_plugin(tmp_path / "plugins", "snapshot", _v3_source("snapshot"))
+async def test_live_selection_compile_abort_then_commit(tmp_path: Path) -> None:
+    """A bad source keeps A; a valid update commits B in the same Root."""
+    plugin = _write_plugin(
+        tmp_path / "plugins", "selection", _v3_source("selection", version="release-a"),
+    )
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
-    await manager.load_all()
-    active = manager.generation("snapshot")
-    prepared = await manager.prepare_candidate("snapshot")
-    installed = manager.current_snapshot
-    assert active is not None and prepared is not None and installed is not None
-    compiler = RuntimeSnapshotCompiler()
-    v1 = compiler.compile({"snapshot": active})
-    next_snapshot = compiler.compile(
-        {"snapshot": prepared}
-    )
-    drained: list[str] = []
+    try:
+        await manager.load_all()
+        root = manager.live_root
+        old = manager.generation("selection")
+        selected_a = manager._selection.read()
+        assert root is not None and old is not None and selected_a is not None
 
-    async def on_drained(snapshot: RuntimeSnapshot) -> None:
-        drained.append(snapshot.snapshot_id)
+        (plugin / "plugin.py").write_text("def invalid(:\n", encoding="utf-8")
+        result = await manager.reconcile_changed()
+        assert result[0]["publication_state"] == "source_unavailable"
+        assert manager._selection.read() == selected_a
+        assert manager.generation("selection") is old
+        assert old.fiber is not None and old.fiber.state == FiberState.ACTIVE
 
-    store = RuntimeSnapshotStore(on_drained)
-    store.install(v1)
-    v1_lease = store.lease()
-    transaction = store.begin_publish(next_snapshot)
-    with pytest.raises(RuntimeError, match="不可租用"):
-        store.lease(next_snapshot.snapshot_id)
-    await store.abort(transaction)
-    assert store.current is v1
-    assert drained == [next_snapshot.snapshot_id]
-    await v1_lease.release()
-    next_snapshot = compiler.compile(
-        {"snapshot": prepared}
-    )
-    held_v1 = store.lease()
-    await store.commit(store.begin_publish(next_snapshot))
-    assert store.current is next_snapshot
-    with pytest.raises(RuntimeError, match="不可租用"):
-        store.lease(v1.snapshot_id)
-    await held_v1.release()
-    await store.retry_drains()
-    assert drained == [next_snapshot.snapshot_id, v1.snapshot_id]
-    await store.close()
-    await manager.discard_prepared("snapshot")
-    await manager.terminate_all()
+        (plugin / "plugin.py").write_text(
+            _v3_source("selection", version="release-b"), encoding="utf-8",
+        )
+        committed = await manager.reconcile_changed()
+        current = manager.generation("selection")
+        selected_b = manager._selection.read()
+        assert committed[0]["publication_state"] == "active"
+        assert selected_b is not None and selected_b != selected_a
+        assert current is not None and current is not old
+        assert current.instance.version == "release-b"
+        assert old.scope.closed
+        assert manager.live_root is root
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -1230,47 +1284,6 @@ async def test_runtime_snapshot_latest_closes_before_fresh_formal_publication(
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(
-    tmp_path: Path,
-) -> None:
-    _write_plugin(
-        tmp_path / "plugins", "snapshot_discard", _v3_source("snapshot_discard")
-    )
-    initialize_plugin_workspace(tmp_path / "workspace")
-    manager = _manager(tmp_path)
-    await manager.load_all()
-    active = manager.generation("snapshot_discard")
-    prepared = await manager.prepare_candidate("snapshot_discard")
-    assert active is not None and prepared is not None
-    compiler = RuntimeSnapshotCompiler()
-    stable = compiler.compile({"snapshot_discard": active}, snapshot_revision="stable")
-    latest = compiler.compile(
-        {"snapshot_discard": prepared}, snapshot_revision="latest"
-    )
-    drained: list[str] = []
-
-    async def on_drained(snapshot: RuntimeSnapshot) -> None:
-        drained.append(snapshot.snapshot_id)
-
-    store = RuntimeSnapshotStore(on_drained)
-    store.install(stable)
-    await store.commit_latest(store.begin_publish(latest))
-    latest_lease = store.lease(selector="latest")
-    discarding = asyncio.create_task(store.discard_latest())
-    await asyncio.sleep(0)
-    assert not discarding.done()
-    stable_lease = store.lease()
-    await latest_lease.release()
-    assert await discarding is latest
-    assert store.current is stable
-    assert store.latest is stable
-    await stable_lease.release()
-    await store.close()
-    await manager.discard_prepared("snapshot_discard")
-    await manager.terminate_all()
-
-
-@pytest.mark.asyncio
 async def test_reconcile_changed_adds_and_removes_discovered_plugin(
     tmp_path: Path,
 ) -> None:
@@ -1328,7 +1341,7 @@ async def test_first_null_commits_only_sources_that_prepare_and_compile(
         assert len(commit_calls) == 1
         assert commit_calls[0][0] == tuple(manager._selection_components(selection))
         assert commit_calls[0][1] is None
-        failures = manager.plugin_status()["source_failures"]
+        failures = _source_failures(manager)
         assert failures[0]["source_root"] == str(broken.resolve())
         assert failures[0]["plugin_id"] is None
     finally:
@@ -1361,7 +1374,7 @@ async def test_first_null_all_source_content_failures_commit_empty_once(
         assert manager._selection_components(selection) == ()
         assert commit_calls == [((), None)]
         assert manager.live_root is not None
-        assert len(manager.plugin_status()["source_failures"]) == 2
+        assert len(_source_failures(manager)) == 2
     finally:
         await manager.terminate_all()
 
@@ -1372,14 +1385,14 @@ async def test_first_null_all_source_content_failures_commit_empty_once(
         _v3_source("second"), encoding="utf-8",
     )
     restarted = _manager(tmp_path)
-    commit_calls = 0
+    restart_commit_count = 0
     real_commit = restarted._selection.commit
 
     def observed_restart_commit(
         components: tuple[str, ...], *, expected_ref: str | None,
     ) -> str:
-        nonlocal commit_calls
-        commit_calls += 1
+        nonlocal restart_commit_count
+        restart_commit_count += 1
         return real_commit(components, expected_ref=expected_ref)
 
     restarted._selection.commit = observed_restart_commit  # type: ignore[method-assign]
@@ -1390,7 +1403,7 @@ async def test_first_null_all_source_content_failures_commit_empty_once(
         await restarted.load_all()
         assert restarted._selection.read() == selection_before
         assert restarted._selection_components(selection_before) == ()
-        assert commit_calls == 0
+        assert restart_commit_count == 0
         assert restarted.generation("first") is None
         assert restarted.generation("second") is None
     finally:
@@ -1417,15 +1430,15 @@ async def test_first_null_secondary_compile_failure_is_diagnostic_only(
             for ref in manager._selection_components(selection)
         ]
         assert [descriptor["plugin_id"] for descriptor in descriptors] == ["healthy"]
-        failures = manager.plugin_status()["source_failures"]
+        failures = _source_failures(manager)
         assert failures[0]["plugin_id"] == "broken"
         assert failures[0]["phase"] == "compile"
         before = list(failures)
         await asyncio.to_thread(manager.watch_revision)
-        assert manager.plugin_status()["source_failures"] == before
+        assert _source_failures(manager) == before
         (broken / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
         await asyncio.to_thread(manager.watch_revision)
-        assert manager.plugin_status()["source_failures"] == before
+        assert _source_failures(manager) == before
     finally:
         await manager.terminate_all()
 
@@ -1594,21 +1607,22 @@ async def test_selected_secondary_compile_repair_prepares_before_clearing_error(
 
     try:
         await manager.load_all()
-        before_errors = list(manager.plugin_status()["source_failures"])
+        before_errors = list(_source_failures(manager))
         before_revision = await asyncio.to_thread(manager.watch_revision)
         (selected / "helper.py").write_text(
             "def broken(:\n    return 1\n", encoding="utf-8",
         )
         broken_revision = await asyncio.to_thread(manager.watch_revision)
         assert broken_revision != before_revision
-        assert manager.plugin_status()["source_failures"] == before_errors
+        assert _source_failures(manager) == before_errors
 
         result = await manager.reconcile_changed()
         assert result[0]["publication_state"] == "source_unavailable"
-        failure = manager.plugin_status()["source_failures"][0]
+        failure = _source_failures(manager)[0]
         assert failure["source_root"] == str(selected.resolve())
         assert failure["phase"] == "compile"
         assert failure["error_type"] == "SyntaxError"
+        assert isinstance(failure["error_text"], str)
         assert "line" in failure["error_text"]
 
         (selected / "helper.py").write_text("VALUE = 2\n", encoding="utf-8")
@@ -1616,7 +1630,7 @@ async def test_selected_secondary_compile_repair_prepares_before_clearing_error(
         assert fixed_revision != broken_revision
         repaired = await manager.reconcile_changed()
         assert repaired[0]["publication_state"] == "active"
-        assert manager.plugin_status()["source_failures"] == []
+        assert _source_failures(manager) == []
     finally:
         await manager.terminate_all()
 
@@ -1673,7 +1687,7 @@ async def test_selected_source_disappearance_keeps_selection_and_runtime_owner(
         assert result[0]["publication_state"] == "source_unavailable"
         assert manager._selection.read() == selection_before
         assert manager.generation("selected") is not None
-        failure = manager.plugin_status()["source_failures"][0]
+        failure = _source_failures(manager)[0]
         assert failure["plugin_id"] == "selected"
         assert failure["error_type"] == "SourceUnavailable"
         assert failure["source_root"] == str(plugin_dir.resolve())
@@ -1685,7 +1699,7 @@ async def test_selected_source_disappearance_keeps_selection_and_runtime_owner(
         assert restored == plugin_dir
         repaired = await manager.reconcile_changed()
         assert repaired == []
-        assert manager.plugin_status()["source_failures"] == []
+        assert _source_failures(manager) == []
         await assert_peer_unchanged()
     finally:
         await manager.terminate_all()
@@ -1718,7 +1732,7 @@ async def test_archive_only_restart_never_invents_source_root(
         missing = await restarted.reconcile_changed()
         assert missing[0]["publication_state"] == "source_unavailable"
         assert missing[0]["source_root"] is None
-        failures = restarted.plugin_status()["source_failures"]
+        failures = _source_failures(restarted)
         assert len(failures) == 1
         assert failures[0]["source_root"] == str(plugin_dir.resolve())
         assert failures[0]["plugin_id"] is None
@@ -1728,7 +1742,7 @@ async def test_archive_only_restart_never_invents_source_root(
         )
         repaired = await restarted.reconcile_changed()
         assert repaired == []
-        assert restarted.plugin_status()["source_failures"] == []
+        assert _source_failures(restarted) == []
     finally:
         await restarted.terminate_all()
 
@@ -1906,8 +1920,9 @@ async def test_plugin_toggle_changes_assets_without_creating_workspace_projectio
         await manager.reconcile_changed()
         assert manager.generation("computer") is None
         write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
-        await manager.reconcile_changed()
-        assert manager.generation("computer") is not None
+        result = await manager.reconcile_changed()
+        assert result[0]["publication_state"] == "unselected_source"
+        assert manager.generation("computer") is None
         assert not (tmp_path / "workspace" / "skills").exists()
         assert not (tmp_path / "workspace" / "drift" / "skills").exists()
     finally:
@@ -2117,9 +2132,13 @@ async def test_initial_web_module_is_not_served_without_its_dashboard_api(
     )
     initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
-    _ = create_dashboard_app(tmp_path / "workspace", plugin_manager=manager)
-    with pytest.raises(RuntimeError, match="paired API broken"):
-        await manager.load_all()
+    app = create_dashboard_app(tmp_path / "workspace", plugin_manager=manager)
+    await manager.load_all()
+    failed = manager.generation("paired_web")
+    assert failed is not None and failed.fiber is not None
+    assert failed.fiber.state == FiberState.FAILED
+    assert "paired API broken" in str(failed.fiber.error)
+    assert TestClient(app).get("/api/dashboard/paired_web").status_code == 404
 
     await manager.terminate_all()
 
@@ -2283,17 +2302,17 @@ async def test_dashboard_websocket_uses_live_manager_owner_switch_and_closes(
             "__akashic_web_generation": module.generation_id,
         })
 
-        pending = [{"type": "websocket.connect"}]
+        pending: list[ASGIMessage] = [{"type": "websocket.connect"}]
 
-        async def receive() -> dict[str, object]:
+        async def receive() -> ASGIMessage:
             if pending:
                 return pending.pop(0)
             await asyncio.Future()
             return {"type": "websocket.disconnect"}
 
-        sent: list[dict[str, object]] = []
+        sent: list[ASGIMessage] = []
 
-        async def send(message: dict[str, object]) -> None:
+        async def send(message: ASGIMessage) -> None:
             sent.append(message)
 
         task = asyncio.create_task(
@@ -2409,10 +2428,16 @@ async def test_local_compile_failure_keeps_selection_and_old_owner(
             "def broken(:\n    return None\n",
             encoding="utf-8",
         )
-        with pytest.raises(SyntaxError):
-            await manager._run_operation(manager._reconcile_changed)
+        await manager.reconcile_changed()
         assert manager._selection.read() == selection
         assert manager.generation("compile_local") is old
+        source_failures = manager.plugin_status()["source_failures"]
+        assert isinstance(source_failures, list)
+        assert any(
+            item["plugin_id"] == "compile_local" and item["error_type"] == "SyntaxError"
+            for item in source_failures
+            if isinstance(item, dict)
+        )
     finally:
         await manager.terminate_all()
 

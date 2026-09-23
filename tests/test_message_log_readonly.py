@@ -54,7 +54,8 @@ def test_corrupt_message_uses_original_decoder_and_preserves_evidence(tmp_path, 
         inputs = log.writer("s", author="user", source="program", body_types=(Input,), content={})
         inputs.append("input", Input(()))
     with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute(f"UPDATE messages SET {field} = ? WHERE id = ?", ("not JSON", "input"))
+        bad_value = '{"bad":true}' if field == "body" else "[]"
+        connection.execute(f"UPDATE messages SET {field} = ? WHERE id = ?", (bad_value, "input"))
     before = path.read_bytes()
     with pytest.raises(ValueError):
         read_persisted_messages(path, "s")

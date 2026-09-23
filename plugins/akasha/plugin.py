@@ -262,9 +262,10 @@ async def apply(ctx: Context) -> None:
                 return [list(vector) for vector in result.vectors]
         return embed
 
-    def select_interest() -> tuple[LearningConfig, Embed]:
-        _identity, rule, model_id = select_learning()
-        return rule, embedder(rule, model_id)
+    async def select_interest() -> tuple[LearningConfig, Embed]:
+        async with ctx.runtime_scope():
+            _identity, rule, model_id = select_learning()
+            return rule, embedder(rule, model_id)
 
     _ = await ctx.provide(SEMANTIC_INTEREST, SemanticInterest(
         learning, ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS), select_interest,

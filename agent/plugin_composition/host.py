@@ -21,4 +21,3 @@ class HostInfo:
 
 
 HOST_INFO = ServiceKey[HostInfo]("core.host_info")
-

@@ -24,7 +24,10 @@ async def test_interest_uses_completed_eligible_cached_inputs_and_cutoff(tmp_pat
         calls.append(texts)
         return [[0.0, 1.0] for _ in texts]
 
-    interest = SemanticInterest(learning, log.catalog(), embeddings, lambda: (rule, embed))
+    async def select():
+        return rule, embed
+
+    interest = SemanticInterest(learning, log.catalog(), embeddings, select)
 
     def append(identity, body, *, session="chat", source="conversation", vector=(1.0, 0.0)):
         writer = log.writer(session, author="fixture", source=source, body_types=(type(body),),
@@ -61,7 +64,9 @@ async def test_interest_uses_completed_eligible_cached_inputs_and_cutoff(tmp_pat
         assert await interest.score(["candidate"], cutoff=cutoff) == score
         async def unavailable(texts):
             raise ConnectionError("provider unavailable")
-        failing = SemanticInterest(learning, log.catalog(), embeddings, lambda: (rule, unavailable))
+        async def select_unavailable():
+            return rule, unavailable
+        failing = SemanticInterest(learning, log.catalog(), embeddings, select_unavailable)
         with pytest.raises(ConnectionError, match="provider unavailable"):
             await failing.score(["candidate"], cutoff=cutoff)
     finally:

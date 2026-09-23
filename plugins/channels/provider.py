@@ -1007,7 +1007,9 @@ class PluginChannels:
                 raise RuntimeError("validation Host 不启动正式 Channel adapter")
             if key is not None:
                 raise RuntimeError("同一 Channel Context 不允许重新启动旧连接")
-            key = (ctx.generation_id, definition.name)
+            # Retry can mount the same selected archive again. Keep old ports
+            # tied to this activation instead of reusing its generation key.
+            key = (f"{ctx.generation_id}:{uuid.uuid4().hex}", definition.name)
             self._bindings[key] = _ChannelBindingState(
                 snapshot_id=key[0], plugin_id=ctx.runtime.plugin_id,
                 generation_id=ctx.runtime.generation_id, channel_name=definition.name,
@@ -1173,6 +1175,7 @@ class PluginChannels:
         operation: Callable[[RuntimeScope], Awaitable[_T]],
         *,
         name: str,
+        cancel_child: bool = False,
     ) -> _T:
         """Capture a parent Fiber scope and settle an exact child Task."""
 
@@ -1194,6 +1197,13 @@ class PluginChannels:
                 await scope.close()
                 raise
             try:
+                if cancel_child:
+                    try:
+                        return cast(_T, await asyncio.shield(task))
+                    except asyncio.CancelledError:
+                        task.cancel()
+                        await _await_task_after_cancellation(task)
+                        raise
                 return cast(_T, await _await_task_after_cancellation(task))
             finally:
                 if not entered:
@@ -1492,6 +1502,7 @@ class PluginChannels:
                     key, raw, _retained_claim=_retained_claim, _claimed=True,
                 ),
                 name=f"channel-input:{raw.message_id}",
+                cancel_child=True,
             )
         finally:
             self._release_presentation_operation(key)

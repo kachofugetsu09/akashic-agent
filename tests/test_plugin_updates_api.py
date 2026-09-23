@@ -23,7 +23,7 @@ async def test_public_install_hands_off_before_old_generation_drains(tmp_path):
     async with installed_host(tmp_path, existing=True, changed=True) as (host, source, _, _):
         caller = _caller(host)
         old = host.generation("target@lab")
-        peer = host.generation("peer@builtin")
+        peer = host.generation("peer")
         assert old is not None
         assert peer is not None
         old_fiber = old.fiber
@@ -55,7 +55,7 @@ async def test_public_install_hands_off_before_old_generation_drains(tmp_path):
             assert final is not None and final.state == "active"
             assert final.input_ref == accepted.input_ref
         assert host.live_root is not None
-        assert host.generation("peer@builtin") is peer
+        assert host.generation("peer") is peer
 
 
 async def _install_in_scope(caller, update_id, source):
@@ -115,7 +115,7 @@ async def test_required_health_failure_is_failed_and_retry_reuses_selection(tmp_
     async with installed_host(tmp_path, existing=True, changed=True) as (host, source, _, _):
         caller = _caller(host)
         root = host.live_root
-        peer = host.generation("peer@builtin")
+        peer = host.generation("peer")
         assert root is not None
         assert peer is not None and peer.fiber is not None
         control = peer.fiber.context.require(HEALTH_CONTROL)

@@ -174,6 +174,11 @@ def test_preview_large_unicode_and_generation_switch_remain_ephemeral(gateway, t
                 return await mount_status(root, ReplyState(), name='reply-new')
             new_fiber = client.portal.call(switch_provider)
             unavailable_status = receive(ws, 'reply.status')
+            for _ in range(4):
+                if unavailable_status['snapshot_id'] != old_snapshot_id:
+                    break
+                assert unavailable_status['available']
+                unavailable_status = receive(ws, 'reply.status')
             assert (
                 unavailable_status['version'] == 2
                 and unavailable_status['session_id'] == session

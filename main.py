@@ -41,7 +41,7 @@ def _reject_agent_internal_plugin_action(command: str) -> None:
         raise ValueError(
             f"{command} 是 Core 内部维护动作。当前 turn 只应使用 "
             "plugin-install 或 plugin-uninstall；"
-            "安装验证正确后直接结束本轮，系统会自动切换。"
+            "安装结果需查询 accepted、selected 和 active 状态。"
         )
 
 

@@ -18,6 +18,7 @@ from agent.plugin_composition import (
     CHAT_MODELS,
     ModelRequest,
 )
+from agent.plugin_composition.models import DriverChatModel, DriverEmbeddingModel
 from bootstrap.app_server import build_control_service
 from bootstrap import tools as bootstrap
 from bootstrap.init_workspace import init_workspace
@@ -405,13 +406,17 @@ async def _mount_model_driver_graph(
 
     from agent.plugin_composition import (
         CHAT_MODELS,
+        CapabilitySources,
         ChatModelSelection,
         CompositionRoot,
+        DiscoveredModel,
         DriverConnection,
         EmbeddingResult,
         EMBEDDINGS,
         LLMResponse,
         ModelContinuation,
+        ModelCapabilities,
+        ModelKind,
         MODEL_DRIVERS,
         MODEL_CATALOG,
         ModelDriverDefinition,
@@ -623,7 +628,7 @@ async def _mount_model_driver_graph(
                         driver_id,
                         _args[0],
                     ).bind_chat(*_args)
-                return object()
+                return cast(DriverChatModel, object())  # Inject an invalid driver result.
 
             def bind_embedding(*_args):
                 if with_live_models:
@@ -632,7 +637,7 @@ async def _mount_model_driver_graph(
                         driver_id,
                         _args[0],
                     ).bind_embedding(*_args)
-                return object()
+                return cast(DriverEmbeddingModel, object())  # Inject an invalid driver result.
 
             return DriverConnection(bind_chat, bind_embedding, close=close)
 
@@ -644,7 +649,14 @@ async def _mount_model_driver_graph(
                 await release_discover.wait()
             if discover_error[0] is not None:
                 raise discover_error[0]
-            return ()
+            return (
+                DiscoveredModel(
+                    kind=ModelKind.CHAT,
+                    model="fixture-chat",
+                    capabilities=ModelCapabilities(),
+                    capability_sources=CapabilitySources(),
+                ),
+            )
 
         async def probe_driver(descriptor, _credential):
             probe_calls.append(descriptor.connection_id)
@@ -673,6 +685,7 @@ async def _mount_model_driver_graph(
             cancel_states.append(dict(state))
             if cancel_error[0] is not None:
                 raise cancel_error[0]
+            return dict(state)
 
         return ModelDriverDefinition(
             driver_id,
@@ -1610,6 +1623,7 @@ async def test_failed_auth_cleanup_keeps_old_effect_separate_from_new_registrati
 
         async def b_cancel(state):
             b_events.append(("cancel", dict(state)))
+            return dict(state)
 
         b_definition = ModelDriverDefinition(
             "driver-a",
@@ -2206,7 +2220,13 @@ async def test_public_driver_aclose_finishes_after_repeated_cancel(close_fails):
         if close_fails:
             raise LookupError("public close failed")
 
-    connection = DriverConnection(lambda *_args: None, lambda *_args: None, close=close)
+    def no_chat(*_args) -> DriverChatModel:
+        raise AssertionError("close test must not bind a chat model")
+
+    def no_embedding(*_args) -> DriverEmbeddingModel:
+        raise AssertionError("close test must not bind an embedding model")
+
+    connection = DriverConnection(no_chat, no_embedding, close=close)
 
     async def run():
         started.set()

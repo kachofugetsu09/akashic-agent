@@ -251,13 +251,13 @@ class PluginMobileUiProvider:
 
         while True:
             async with self._admission_lock:
-                tasks = tuple(self._draining_queries)
-                if self._admitted_queries == 0 and not tasks:
+                if self._admitted_queries == 0:
+                    if self._draining_queries:
+                        raise RuntimeError("mobile UI query admission 计数失衡")
                     return
-            if tasks:
-                _ = await asyncio.gather(*tasks, return_exceptions=True)
-            else:
-                await self._queries_idle.wait()
+            # The done callback owns the count. Await its signal even when the
+            # child is done, so the callback gets a turn before shutdown.
+            await self._queries_idle.wait()
 
     async def _reserve_query_slot(self) -> None:
         """Reserve bounded admission before selecting or capturing a target."""

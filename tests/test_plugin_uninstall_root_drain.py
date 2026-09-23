@@ -69,6 +69,12 @@ def status_for(host, plugin_id):
     return next(item for item in host.plugin_status()["plugins"] if item["plugin_id"] == plugin_id)
 
 
+def operation_status(host: PluginManager) -> dict[str, object]:
+    operation = host.plugin_status()["operation"]
+    assert isinstance(operation, dict)
+    return operation
+
+
 @pytest.mark.asyncio
 async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
     tmp_path,
@@ -156,7 +162,7 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
         assert target_status["installed"] is False
         assert target_status["enabled"] is None
         assert target_status["cache_exists"] is False
-        assert host.plugin_status()["operation"]["state"] == "done"
+        assert operation_status(host)["state"] == "done"
     finally:
         consumer_release.set()
         peer_release.set()
@@ -254,7 +260,10 @@ async def test_uninstall_removes_selected_target_when_no_active_fiber_remains(tm
         assert failed_update.state == "failed"
         assert failed_update.input_ref is not None
         assert failed_update.selection == "selected"
-        assert host.generation("target@lab") is None
+        failed_generation = host.generation("target@lab")
+        assert failed_generation is not None
+        assert failed_generation.fiber is None
+        assert isinstance(failed_generation.load_error, RuntimeError)
         assert status_for(host, "target@lab")["selected_ref"] == failed_update.input_ref
         assert cache.is_dir()
         assert status_for(host, "target@lab")["installed"] is True
@@ -363,9 +372,8 @@ async def test_uninstall_finalizer_failure_retains_facts_until_explicit_retry(
         result = await asyncio.gather(operation.task, return_exceptions=True)
         assert isinstance(result[0], OSError)
         assert str(result[0]) == "finalizer failed"
-        status = host.plugin_status()
         target_status = status_for(host, "target@lab")
-        assert status["operation"]["state"] == "error"
+        assert operation_status(host)["state"] == "error"
         assert target_status["installed"] is True
         assert target_status["enabled"] is False
         assert target_status["cache_exists"] is True

@@ -101,12 +101,12 @@ def test_plugin_bundle_uses_generated_ui_asset(tmp_path) -> None:
     source = tmp_path / "source"
     plugin = source / "plugins/akasha"
     plugin.mkdir(parents=True)
-    (plugin / "message_plugin.py").write_text(
-        'api_version = 3\nname = "akasha"\nversion = "1"\ndef apply(ctx, config): pass\n'
+    (plugin / "plugin.py").write_text(
+        'api_version = 3\nname = "akasha"\nversion = "1"\nasync def apply(ctx): pass\n'
     )
     (plugin / "akashic.plugin.toml").write_text(
         'schema_version = 1\napi_version = 3\nname = "akasha"\n'
-        'version = "1"\nentrypoint = "message_plugin.py"\n'
+        'version = "1"\nentrypoint = "plugin.py"\n'
     )
     (plugin / "message_ui.js").write_text("stale module\n")
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
