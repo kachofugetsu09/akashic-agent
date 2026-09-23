@@ -23,7 +23,7 @@ from agent.plugins.archive import PluginArchive, decode_config
 from agent.plugins._operation import (
     ManagerOperation, OperationBusyError, OperationTimeoutError,
     complete_critical as _complete_critical, current_operation,
-    observe_operation, revoke_on_cancel, run_operation,
+    observe_operation, run_operation,
 )
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.validation import ValidationHost
@@ -61,11 +61,9 @@ from agent.plugin_composition import (
     PluginRuntime,
     PluginTimers,
     ServiceKey,
-    RUNTIME_STARTING,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     SNAPSHOT_SEALING,
-    RuntimeStarting,
     RuntimeStarted,
     RuntimeStopping,
     SnapshotSealing,
@@ -107,14 +105,13 @@ from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
 from agent.plugins.artifacts import (
     ArtifactSelector,
     read_pointer,
-    read_pointers,
     resolve_pointer,
 )
 from agent.plugins.source_resolver import (
     PluginSourceFailure,
     scan_plugin_sources,
 )
-from agent.plugins.selection import PluginSelection, SelectionConflictError, SelectionWriteError
+from agent.plugins.selection import PluginSelection
 from agent.plugins.scope import CleanupFailure, PluginScope
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.importer import FreshPluginImporter
@@ -1343,52 +1340,7 @@ class PluginManager:
     ) -> None:
         raise RuntimeError("候选 generation registry 已停用；无第二张运行图")
 
-    def _begin_reload_attempt(
-        self,
-        *,
-        plugin_id: str,
-        generation_id: str,
-        source_revision: str,
-        config_revision: str,
-        plugin_dir: Path,
-        source_type: str,
-    ) -> str:
-        selection_ref = self._selection.read()
-        base = self.current_snapshot
-        base_generation = None if base is None else base.generations.get(plugin_id)
-        base_pointer: str | None = None
-        candidate_pointer: str | None = None
-        if source_type == "installed":
-            plugin_base = _installed_artifact_base_from_root(plugin_dir)
-            pointers = read_pointers(plugin_base)
-            if pointers is None:
-                raise RuntimeError(
-                    f"installed reload 缺少 artifact pointer state: {plugin_base}"
-                )
-            candidate_pointer = plugin_dir.relative_to(plugin_base).as_posix()
-            if pointers.latest.path != candidate_pointer:
-                raise RuntimeError(
-                    "installed reload generation 与 latest pointer 不一致: "
-                    f"generation={candidate_pointer} latest={pointers.latest.path}"
-                )
-            base_pointer = pointers.stable.path
-        return self._reload_journal.begin(
-            plugin_id=plugin_id,
-            base_snapshot_id=base.snapshot_id if base is not None else None,
-            base_generation_id=(
-                None if base_generation is None else base_generation.generation_id
-            ),
-            generation_id=generation_id,
-            source_revision=source_revision,
-            config_revision=config_revision,
-            base_artifact_pointer=base_pointer,
-            candidate_artifact_pointer=candidate_pointer,
-            details={"base_selection_ref": selection_ref},
-        )
 
-    def _abort_reload_attempt(self, tx_id: str | None, *, error: str) -> None:
-        if tx_id is not None:
-            self._reload_journal.advance(tx_id, "aborted", error=error)
 
     async def _dispose_generation(
         self,
@@ -1799,39 +1751,8 @@ class PluginManager:
         return read_persisted_messages(database, session_id)
 
     def start_update_publication(self, update_id: str) -> None:
-        """同步接纳无 lease 的宿主任务；返回只表示已接纳，不表示已晋升。"""
+        """Reject the retired candidate publication entry."""
         raise RuntimeError("候选发布入口已停用；local Loader 不等待旧 snapshot lease")
-        update = self._reload_journal.update(update_id)
-        if update.phase == "committed":
-            return
-        if update.phase != "armed":
-            raise RuntimeError("已回退的更新不能再次发布")
-        current = self._update_publication
-        if current is not None and not current[1].done():
-            if current[0] == update_id:
-                return
-            raise RuntimeError("另一个插件更新正在发布")
-        ready = self._require_ready_candidate(update.plugin_id)
-        if ready.candidate.reload_tx_id != update.reload_tx_id:
-            raise RuntimeError("更新恢复点与当前候选不匹配")
-        if self._reload_journal.get(cast(str, update.reload_tx_id)).phase != "latest_ready":
-            raise RuntimeError("候选已失去提交授权")
-        if update.error:
-            raise RuntimeError("候选调用失败或结果未知，不能发布")
-        retained = [host.identity for host in self._validation_hosts.values()
-                    if host.parent_lease.snapshot is ready.snapshot]
-        if retained:
-            raise RuntimeError(f"验证尚未退出或资源尚未清理: {retained}")
-        try:
-            operation = self._start_operation(
-                lambda: self._publish_update(update_id, update.plugin_id), background=True,
-            )
-        except OperationBusyError as error:
-            self._reload_journal.record_update_error(update_id, f"发布未开始：{error}")
-            self._notify_updates()
-            raise
-        self._update_publication = (update_id, operation.task)
-        self._notify_updates()
 
     def _notify_updates(self) -> None:
         for event in self._update_watchers:
@@ -1854,22 +1775,6 @@ class PluginManager:
         current = self._update_publication
         return current is not None and current[0] == update_id and not current[1].done()
 
-    async def _publish_update(self, update_id: str, plugin_id: str) -> None:
-        """沿原发布 owner 排空和切换；失败作为恢复点诊断保留。"""
-        try:
-            self._check_operation_commit()
-            _ = await self._switch_ready(plugin_id, update_id=update_id)
-        except asyncio.CancelledError:
-            if self._reload_journal.update(update_id).phase == "committed":
-                self._reload_journal.record_update_error(update_id, "已提交；运行收尾取消，须检查保留的恢复 owner")
-                return
-            self._reload_journal.record_update_error(update_id, "publication cancelled")
-            raise
-        except Exception as error:
-            self._reload_journal.record_update_error(update_id, str(error) or type(error).__name__)
-            logger.exception("插件更新未完成: update=%s plugin=%s", update_id, plugin_id)
-        finally:
-            self._notify_updates()
 
     def annotate_reload(self, tx_id: str, details: dict[str, object]) -> None:
         """Append turn lineage evidence to an existing reload transaction."""
@@ -2181,171 +2086,10 @@ class PluginManager:
         if old_commands != new_commands:
             raise RuntimeError("command catalog host 尚未绑定")
 
-    async def _prepare_runtime_snapshot(self, lease: RuntimeSnapshotLease) -> None:
-        """在 exact closed scope 内等待启动资源；失败标记留给 stopping 清理。"""
-        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 
-        snapshot = lease.snapshot
-        root = snapshot.composition_root
-        if root is None:
-            return
-        if snapshot.accepting_leases or root.instance_token in self._runtime_starting_roots:
-            raise RuntimeError("Root 启动准备必须位于未准备的 closed snapshot")
-        self._runtime_starting_roots.add(root.instance_token)
-        token = bind_runtime_snapshot(lease)
-        try:
-            result = await root.context.serial(RUNTIME_STARTING, RuntimeStarting())
-            if result is not None:
-                raise CompositionError("RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED", "runtime.starting 不接受 Bail")
-        finally:
-            reset_runtime_snapshot(token)
 
-    async def _commit_snapshot_with_publication_participants(
-        self,
-        transaction: SnapshotTransaction,
-        *,
-        old_commands: tuple[tuple[str, str], ...],
-        new_commands: tuple[tuple[str, str], ...],
-        before_open: Callable[[], None] | None = None,
-        after_open: Callable[[], None] | None = None,
-    ) -> SnapshotTransaction:
-        """关闭目标 lease 内准备临时资源，全部完成后才开放正式接纳。"""
 
-        lease = self._snapshot_store.retain_publication_target(transaction)
-        try:
-            return await self._commit_snapshot_participants(
-                transaction, old_commands=old_commands, new_commands=new_commands,
-                before_open=before_open, after_open=after_open,
-                startup_snapshot_lease=lease,
-            )
-        except BaseException as error:
-            if transaction.must_retain:
-                self._hold_selection_publication(transaction)
-                raise
-            try:
-                await self._stop_runtime_snapshot(transaction.candidate, lease=lease)
-            except BaseException as cleanup_error:
-                raise BaseExceptionGroup("发布与启动资源清理失败", [error, cleanup_error]) from None
-            raise
-        finally:
-            await lease.release()
 
-    async def _start_closed_runtime_snapshot(self, lease: RuntimeSnapshotLease) -> None:
-        """全部生命周期初始化在 closed exact scope 内完成，之后才允许提交。"""
-        async with self._runtime_lifecycle_lock:
-            self._check_operation_commit()
-            root = lease.snapshot.composition_root
-            if root is None:
-                return
-            await self._prepare_runtime_snapshot(lease)
-        async with _snapshot_lease_scope(lease.fork()):
-                result = await root.context.serial(RUNTIME_STARTED, RuntimeStarted())
-                if result is not None:
-                    raise CompositionError(
-                        "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED", "runtime.started 接入点不接受 Bail",
-                    )
-                self._runtime_started_roots.add(root.instance_token)
-
-    async def _commit_snapshot_participants(
-        self,
-        transaction: SnapshotTransaction,
-        *,
-        old_commands: tuple[tuple[str, str], ...],
-        new_commands: tuple[tuple[str, str], ...],
-        before_open: Callable[[], None] | None = None,
-        after_open: Callable[[], None] | None = None,
-        startup_snapshot_lease: RuntimeSnapshotLease,
-    ) -> SnapshotTransaction:
-        """Publish one snapshot around a single closed external-participant step."""
-
-        # 1. 旧 Root 已退出；所有新资源在 closed scope 内由 provider 初始化。
-        provisional = transaction
-        await self._snapshot_store.commit_provisional(provisional)
-
-        participants_switch_attempted = False
-        forward_error: BaseException | None = None
-        try:
-            participants_switch_attempted = True
-            try:
-                await self._switch_plugin_endpoints(old_commands, new_commands)
-            except BaseException as error:
-                forward_error = error
-                raise
-            await self._start_closed_runtime_snapshot(startup_snapshot_lease)
-            await self._snapshot_store.finalize_provisional(
-                provisional,
-                before_open=before_open,
-                after_open=after_open,
-                schedule_previous_drain=False,
-            )
-            if provisional.previous is not None:
-                self._snapshot_store.schedule_retired_drain(provisional.previous)
-        except BaseException as publication_error:
-            revoke_on_cancel(publication_error)
-            if provisional.must_retain:
-                self._hold_selection_publication(provisional)
-                raise
-            rollback_errors: list[BaseException] = []
-            endpoint_restore_failed = False
-            if participants_switch_attempted:
-                try:
-                    await self._switch_plugin_endpoints(new_commands, old_commands)
-                except BaseException as caught:
-                    rollback_errors.append(caught)
-                    endpoint_restore_failed = True
-            published_rollback = self._snapshot_store.current is provisional.candidate
-            if published_rollback:
-                await self._snapshot_store.rollback_published(
-                    provisional,
-                    keep_candidate_latest=False,
-                    reopen_previous=False,
-                )
-            if not published_rollback:
-                await self._snapshot_store.rollback_provisional(
-                    provisional,
-                    keep_candidate_latest=False,
-                    reopen_previous=False,
-                )
-            if rollback_errors:
-                resources: list[str] = []
-                if endpoint_restore_failed:
-                    resources.append("plugin-endpoint")
-                raise _PublicationParticipantRestoreError(
-                    "外部 publication participant 失败后旧 owner 恢复失败: "
-                    + "; ".join(
-                        str(error) or type(error).__name__ for error in rollback_errors
-                    ),
-                    resources=tuple(resources),
-                ) from rollback_errors[0]
-            if forward_error is not None:
-                if isinstance(forward_error, asyncio.CancelledError):
-                    raise forward_error
-                raise _PublicationParticipantSwitchError(
-                    "外部 publication participant 拒绝切换: "
-                    f"{str(forward_error) or type(forward_error).__name__}"
-                ) from forward_error
-            raise publication_error
-        return provisional
-
-    async def _compile_topology_snapshot(
-        self,
-        inputs: dict[str, PluginGeneration] | tuple[str, ...],
-    ) -> RuntimeSnapshot:
-        generations = {} if isinstance(inputs, tuple) else dict(inputs)
-        composition_root = await self._resolve_composition_root(
-            generations, components=inputs if isinstance(inputs, tuple) else None,
-        )
-        try:
-            snapshot = self._snapshot_compiler.compile(
-                generations,
-                composition_root=composition_root,
-            )
-        except BaseException as error:
-            await self._discard_building_root(composition_root, error)
-            raise
-        for item in generations.values():
-            item.runtime_snapshot = snapshot
-        return snapshot
 
     async def publish_prepared(self, plugin_id: str) -> dict[str, object]:
         raise RuntimeError("候选发布入口已停用；local Loader 只允许 live Root 更新")
@@ -2355,369 +2099,12 @@ class PluginManager:
         raise RuntimeError("候选发布入口已停用；local Loader 只允许 live Root 更新")
 
 
-    async def _switch_ready(self, plugin_id: str, *, update_id: str | None = None) -> dict[str, object]:
-        ready = self._require_ready_candidate(plugin_id)
-        candidate = ready.candidate
-        tx_id = candidate.reload_tx_id
-        if tx_id is None or self._reload_journal.get(tx_id).phase != "latest_ready":
-            raise RuntimeError("latest candidate 已失去发布授权")
-        if update_id is not None:
-            update = self._reload_journal.update(update_id)
-            if update.phase != "armed" or update.reload_tx_id != tx_id:
-                raise RuntimeError("待发布更新与当前候选不匹配")
-        record = self._reload_journal.get(tx_id)
-        current = self.current_snapshot
-        if record.base_snapshot_id != (None if current is None else current.snapshot_id):
-            raise RuntimeError("候选基线已变化，必须重新准备完整组合")
-        inputs = tuple(self._generation_archive_ref(item) for item in ready.snapshot.generations.values())
-        intent = self._reload_journal.selection_candidate(tx_id)
-        if intent is None or intent[1] != inputs:
-            raise RuntimeError("候选缺少完整 selection 提交证据")
-        expected_ref = intent[0]
-        if self._selection.read() != expected_ref:
-            raise SelectionConflictError("候选 stable 基线已变化")
-        from agent.plugins.snapshot import get_current_runtime_lease
-        if get_current_runtime_lease() is not None:
-            raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换完整 Root")
 
-        # 1. 验证实例先退出，不能把它的模块、目录或身份改作正式实例。
-        self._snapshot_store.pause_candidate_admission(ready.snapshot)
-        try:
-            await self._snapshot_store.wait_for_no_leases(ready.snapshot)
-            self._check_operation_commit()
-            self._snapshot_store.seal_candidate_validation(ready.snapshot)
-        except BaseException:
-            if not self._stopping and current_operation.get() is self._operation:
-                await self._snapshot_store.resume(ready.snapshot)
-            raise
-        try:
-            _, cancelled = await _complete_critical(self._snapshot_store.discard_latest(ready.snapshot))
-        except BaseException as error:
-            self._record_root_failure(
-                candidate, error, resource="runtime-snapshot-drain",
-                formal_effects=("candidate_runtime_cleanup_pending",), recovery_target="base",
-            )
-            raise
-        if cancelled:
-            self._abort_reload(candidate, error="候选关闭期间取消")
-            if self._reload_journal.get(tx_id).phase == "aborted":
-                self._reload_journal.annotate(tx_id, {"cleanup_receipt": "candidate-root-closed"})
-            self._ready_candidate = None
-            raise asyncio.CancelledError
-        def before_open() -> None:
-            if self._reload_journal.get(tx_id).phase != "latest_ready":
-                raise RuntimeError("更新已失去发布授权")
-            if update_id is not None:
-                update = self._reload_journal.update(update_id)
-                if update.phase != "armed" or update.reload_tx_id != tx_id or update.error:
-                    raise RuntimeError("更新请求已撤销或失去精确候选授权")
-            self._advance_reload(candidate, "promoting")
 
-        try:
-            formal = await self._replace_formal_root(
-                inputs, expected_ref=expected_ref, before_open=before_open,
-                attempt=candidate, validated=ready.snapshot,
-            )
-        except BaseException:
-            publication = self._publication
-            if publication is not None and publication.must_retain and (
-                plugin_id in publication.candidate.generations
-                and publication.candidate.generations[plugin_id].reload_tx_id == tx_id
-            ):
-                self._ready_candidate = None
-                raise
-            if self._reload_journal.get(tx_id).phase not in {"cleanup_failed", "degraded"}:
-                self._abort_reload(candidate, error="正式组合发布失败")
-                if self._reload_journal.get(tx_id).phase == "aborted":
-                    self._reload_journal.annotate(tx_id, {"cleanup_receipt": "candidate-root-closed"})
-                self._ready_candidate = None
-                if current is not None:
-                    self._drain_transactions.pop(current.snapshot_id, None)
-                    self._drained_before_commit.discard(current.snapshot_id)
-            raise
-        generation = formal.generations[plugin_id]
-        self._ready_candidate = None
-        try:
-            self._track_reload_drain(generation, current)
-        except BaseException:
-            assert self._publication is not None
-            self._hold_selection_publication(self._publication)
-            raise
-        return self._publication_status(
-            plugin_id, active=ready.previous, candidate=generation,
-            publication_state="promoted",
-        )
 
-    async def _replace_formal_root(
-        self,
-        inputs: dict[str, PluginGeneration] | tuple[str, ...],
-        *,
-        expected_ref: str | None,
-        before_open: Callable[[], None] | None = None,
-        attempt: PluginGeneration | None = None,
-        validated: RuntimeSnapshot | None = None,
-    ) -> RuntimeSnapshot:
-        """排空旧组合，真实关闭外部 owner；失败只在释放成功后重建旧输入。"""
-        self._check_operation_commit()
-        from agent.plugins.snapshot import get_current_runtime_lease
-        if get_current_runtime_lease() is not None:
-            raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换完整 Root")
-        if self._publication is not None and self._publication.must_retain:
-            if not self._publication.candidate.accepting_leases:
-                raise RuntimeError("持久发布尚在 maintenance，必须显式恢复或关闭")
-        if self._selection.read() != expected_ref:
-            raise SelectionConflictError("完整 Root 基线已变化")
-        self._publication = None
-        current = self.current_snapshot
-        if any(
-            root.root_fiber.state == FiberState.UNLOADING
-            or any(item.state == FiberState.UNLOADING for item in root.receipt().fibers)
-            for root in self._building_roots
-        ):
-            raise RuntimeError("构建 Root 清理尚未完成，必须显式 recovery/terminate 重试")
-        if any(
-            identity != (None if current is None else current.snapshot_id)
-            for identity in self._snapshot_store.retained_snapshot_ids
-        ):
-            raise RuntimeError("仍有未释放的 snapshot owner，必须先完成回收")
-        previous = self._snapshot_store.pause_admission()
-        try:
-            if self._endpoint_quiescer is not None:
-                await self._endpoint_quiescer()
-            if previous is not None:
-                await self._snapshot_store.wait_for_no_leases(previous)
-            self._check_operation_commit()
-        except BaseException:
-            # 只有这段尚未开始 release 的路径可以恢复原接纳；shutdown 永远优先。
-            if not self._stopping and current_operation.get() is self._operation:
-                await self._snapshot_store.resume(previous)
-                if not self._stopping and self._endpoint_resumer is not None:
-                    await self._endpoint_resumer()
-            raise
 
-        try:
-            # 释放阶段取消也必须等待实际 owner 返回，随后进入恢复而非继续提交。
-            _, cancelled = await _complete_critical(self._close_formal_root(previous))
-            if cancelled:
-                raise asyncio.CancelledError
-            self._check_operation_commit()
-            return await self._build_and_publish_root(
-                inputs, previous=previous,
-                expected_ref=expected_ref,
-                before_open=before_open, attempt=attempt, validated=validated,
-            )
-        except BaseException as error:
-            revoke_on_cancel(error)
-            if self._publication is not None and self._publication.must_retain:
-                raise
-            if not self._operation_can_continue():
-                self._snapshot_store.pause_admission()
-                owner = attempt or (None if isinstance(inputs, tuple) else next(iter(inputs.values()), None))
-                if owner is not None:
-                    self._record_root_failure(
-                        owner, error, formal_effects=("old_runtime_restore_uncertain",),
-                        recovery_target="base",
-                    )
-                raise
-            try:
-                self._check_operation_commit()
-                # 构建或 teardown 已失败的 owner 只允许显式 recovery/terminate 重试。
-                if self._selection.read() != expected_ref:
-                    raise SelectionConflictError("恢复前 stable 已变化，不能重建旧输入")
-                if any(
-                    root.root_fiber.state == FiberState.UNLOADING
-                    or any(item.state == FiberState.UNLOADING for item in root.receipt().fibers)
-                    for root in self._building_roots
-                ) or any(
-                    identity != (None if previous is None else previous.snapshot_id)
-                    for identity in self._snapshot_store.retained_snapshot_ids
-                ):
-                    raise RuntimeError("新组合仍持有未完成清理的 Root")
-                if previous is not None:
-                    old_root = previous.composition_root
-                    if old_root is not None and old_root.root_fiber.state != FiberState.DISPOSED:
-                        raise RuntimeError("旧 Root 释放未完成，必须显式 retry")
-                    _, recovery_cancelled = await _complete_critical(
-                        self._build_and_publish_root(
-                            tuple(self._generation_archive_ref(item) for item in previous.generations.values()),
-                            previous=previous, expected_ref=expected_ref,
-                            commit_selection=False,
-                        )
-                    )
-                    if recovery_cancelled and not isinstance(error, asyncio.CancelledError):
-                        error = BaseExceptionGroup("发布失败且恢复期间取消", [error, asyncio.CancelledError()])
-            except BaseException as recovery_error:
-                self._snapshot_store.pause_admission()
-                owner = attempt or (None if isinstance(inputs, tuple) else next(iter(inputs.values()), None))
-                if owner is not None:
-                    self._record_root_failure(
-                        owner, recovery_error, formal_effects=("old_runtime_restore_uncertain",),
-                        recovery_target=(
-                            "candidate"
-                            if previous is None and attempt is None and owner.source_type == "builtin"
-                            else "base"
-                        ),
-                    )
-                raise BaseExceptionGroup("完整 Root 发布与恢复均失败", [error, recovery_error]) from None
-            raise error
 
-    async def _close_formal_root(self, snapshot: RuntimeSnapshot | None) -> None:
-        """关闭实际 Root，让依赖顺序决定资源退出。"""
-        if snapshot is not None:
-            await self._stop_runtime_snapshot(snapshot)
-            if snapshot.composition_root is not None:
-                await snapshot.composition_root.dispose()
 
-    async def _build_and_publish_root(
-        self,
-        inputs: dict[str, PluginGeneration] | tuple[str, ...],
-        *,
-        expected_ref: str | None,
-        commit_selection: bool = True,
-        previous: RuntimeSnapshot | None,
-        before_open: Callable[[], None] | None = None,
-        attempt: PluginGeneration | None = None,
-        validated: RuntimeSnapshot | None = None,
-    ) -> RuntimeSnapshot:
-        """把新物理 snapshot 交给 Store，再启动并提交它的全部 owner。"""
-        operation = self._check_operation_commit()
-
-        def authorize_commit() -> None:
-            # 外部启停需要完成清理，但取消不能因此获得 stable 提交授权。
-            self._check_operation_commit()
-            if before_open is not None:
-                before_open()
-            assert transaction is not None
-            components = tuple(self._generation_archive_ref(item) for item in snapshot.generations.values())
-            try:
-                if self._selection.read() != expected_ref:
-                    raise SelectionConflictError("提交前 stable 基线已变化")
-                if not commit_selection and (
-                    expected_ref is None or self._selection_components(expected_ref) != components
-                ):
-                    raise RuntimeError("恢复 Root 输入必须等于已提交完整选择")
-                if commit_selection and (
-                    expected_ref is None or self._selection_components(expected_ref) != components
-                ):
-                    self._check_operation_commit()
-                    # 同步调用在返回结果前中断，也不能假定没有提交。
-                    transaction.selection_result = SelectionWriteError(
-                        operation="commit", target_ref=None, outcome="uncertain",
-                        observed_ref=None, observation_error=None,
-                    )
-                    transaction.selection_result = self._selection.commit(components, expected_ref=expected_ref)
-                else:
-                    self._check_operation_commit()
-                    transaction.selection_result = expected_ref
-                operation.committed = snapshot
-            except SelectionWriteError as error:
-                transaction.selection_result = error
-                raise
-            except SelectionConflictError:
-                transaction.selection_result = None
-                raise
-
-        snapshot = await self._compile_topology_snapshot(inputs)
-        transaction: SnapshotTransaction | None = None
-        try:
-            if validated is not None:
-                _validate_candidate_formal_snapshot_identity(
-                    candidate=validated, formal=snapshot,
-                )
-            if attempt is not None:
-                actual = snapshot.generations[attempt.plugin_id]
-                actual.reload_tx_id = attempt.reload_tx_id
-                self._reload_journal.annotate(cast(str, attempt.reload_tx_id), {
-                    "event": "formal_root_created",
-                    "formal_snapshot_id": snapshot.snapshot_id,
-                    "runtime_generations": {key: item.generation_id for key, item in snapshot.generations.items()},
-                })
-            transaction = self._begin_snapshot_publication(snapshot)
-            self._publication = transaction
-            self._check_operation_commit()
-            await self._post_snapshot_invariants(snapshot)
-            self._snapshot_store.seal_pending_validation(snapshot)
-            if previous is not None and attempt is not None:
-                self._drain_transactions[previous.snapshot_id] = cast(str, attempt.reload_tx_id)
-            _, cancelled = await _complete_critical(
-                self._commit_snapshot_with_publication_participants(
-                    transaction,
-                    old_commands=_snapshot_command_catalog(previous),
-                    new_commands=_snapshot_command_catalog(snapshot),
-                    before_open=authorize_commit,
-                    after_open=lambda: self._activate_snapshot(snapshot, previous),
-                )
-            )
-        except BaseException as error:
-            if transaction is not None and transaction.must_retain:
-                self._hold_selection_publication(transaction)
-                raise
-            # Participant 的清理已经失败时保留 pending；外层不能隐式重试它。
-            if isinstance(error, _PublicationParticipantRestoreError):
-                if operation.revoked and isinstance(error, Exception):
-                    raise BaseExceptionGroup("发布取消且资源清理失败", [asyncio.CancelledError(), error]) from None
-                raise
-            if operation.revoked and isinstance(error, Exception):
-                error = BaseExceptionGroup("发布取消且资源操作失败", [asyncio.CancelledError(), error])
-            cleanup_cancelled = False
-            try:
-                if transaction is not None and self._snapshot_store.pending_transaction is transaction:
-                    _, cleanup_cancelled = await _complete_critical(
-                        self._snapshot_store.abort(transaction, reopen_previous=False)
-                    )
-                elif transaction is None:
-                    _, cleanup_cancelled = await _complete_critical(
-                        self._dispose_unreferenced_composition_root(snapshot)
-                    )
-            except BaseException as cleanup_error:
-                raise BaseExceptionGroup("新 Root 发布与清理均失败", [error, cleanup_error]) from None
-            if cleanup_cancelled and not isinstance(error, asyncio.CancelledError):
-                raise BaseExceptionGroup("发布失败且清理期间取消", [error, asyncio.CancelledError()]) from None
-            raise error
-        try:
-            if self._endpoint_resumer is not None:
-                await self._endpoint_resumer()
-            self._check_operation_commit()
-        except BaseException as error:
-            assert transaction is not None
-            self._hold_selection_publication(transaction)
-            owner = (
-                snapshot.generations[attempt.plugin_id]
-                if attempt is not None else next(iter(snapshot.generations.values()), None)
-            )
-            if owner is not None:
-                self._record_root_failure(
-                    owner, error, formal_effects=("committed_runtime_start_failed",),
-                    recovery_target="candidate",
-                )
-            raise
-        if cancelled:
-            assert transaction is not None
-            self._hold_selection_publication(transaction)
-            raise asyncio.CancelledError
-        return snapshot
-
-    def _hold_selection_publication(self, transaction: SnapshotTransaction) -> None:
-        """保留提交事实和新 owner；失败返回后不得后台开放接纳。"""
-        if transaction.must_retain:
-            self._snapshot_store.hold_failed_publication(transaction)
-        else:
-            self._snapshot_store.pause_admission()
-            transaction.candidate.accepting_leases = False
-
-    def _begin_snapshot_publication(self, snapshot: RuntimeSnapshot) -> SnapshotTransaction:
-        transaction = self._snapshot_store.begin_publish(snapshot)
-        if snapshot.composition_root is not None:
-            self._building_roots.pop(snapshot.composition_root, None)
-        return transaction
-
-    def _activate_snapshot(self, snapshot: RuntimeSnapshot, previous: RuntimeSnapshot | None) -> None:
-        """提交时激活整个新组合，旧组合整体退役。"""
-        old = {} if previous is None else previous.generations
-        for generation in snapshot.generations.values():
-            generation.state = "active"
-        for generation in old.values():
-            self._retire_generation(generation)
 
     async def retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
         return await self._run_operation(lambda: self._retry_runtime_recovery(plugin_id))
@@ -3171,16 +2558,6 @@ class PluginManager:
             "operation": operation_view,
         }
 
-    def _ready_candidate_status(self) -> dict[str, object]:
-        ready = self._ready_candidate
-        if ready is None:
-            raise RuntimeError("没有等待 promote/discard 的插件候选")
-        return self._publication_status(
-            ready.plugin_id,
-            active=ready.previous,
-            candidate=ready.candidate,
-            publication_state="latest_ready",
-        )
 
     def _require_ready_candidate(self, plugin_id: str) -> _ReadyPluginCandidate:
         ready = self._ready_candidate
@@ -3190,42 +2567,7 @@ class PluginManager:
             raise RuntimeError(f"latest 属于其他插件: {ready.plugin_id}")
         return ready
 
-    async def _post_publish_invariants(
-        self,
-        generation: PluginGeneration,
-        snapshot: RuntimeSnapshot,
-    ) -> None:
-        await self._post_snapshot_invariants(snapshot)
-        if snapshot.generations.get(generation.plugin_id) is not generation:
-            raise RuntimeError("RuntimeSnapshot generation 不一致")
 
-    async def _post_snapshot_invariants(
-        self,
-        snapshot: RuntimeSnapshot,
-    ) -> None:
-        await asyncio.sleep(0)
-        if snapshot.state == "committed":
-            if self.current_snapshot is not snapshot:
-                raise RuntimeError("RuntimeSnapshot 已提交指针不一致")
-        elif (
-            snapshot.state != "validating"
-            or self._snapshot_store.pending_candidate is not snapshot
-        ):
-            raise RuntimeError("RuntimeSnapshot 候选事务不一致")
-        for item in snapshot.generations.values():
-            if not item.scope.accepting_resources:
-                raise RuntimeError("RuntimeSnapshot 插件作用域已关闭")
-            root = snapshot.composition_root
-            if root is not None:
-                runtime = root.plugin_runtime(item.plugin_id)
-                if runtime.generation_id != item.generation_id or runtime.data_dir != item.data_dir:
-                    raise RuntimeError("RuntimeSnapshot generation 与实际挂载 runtime 不一致")
-                if not any(
-                    fiber.runtime is runtime
-                    and fiber.plugin_module is cast(ComposablePlugin, item.instance).module
-                    for fiber in root.root_fiber.children
-                ):
-                    raise RuntimeError("RuntimeSnapshot generation 与实际挂载模块不一致")
 
     def _advance_reload(
         self,
@@ -3278,32 +2620,6 @@ class PluginManager:
             return
         self._advance_reload(generation, "aborted", error=error)
 
-    def _track_reload_drain(
-        self,
-        generation: PluginGeneration,
-        previous_snapshot: RuntimeSnapshot | None,
-    ) -> None:
-        tx_id = generation.reload_tx_id
-        if tx_id is None:
-            return
-        phase = self._reload_journal.get(tx_id).phase
-        if phase in {"cleanup_failed", "degraded", "aborted", "recovered", "complete"}:
-            return
-        if phase == "latest_ready":
-            self._advance_reload(generation, "promoting")
-            phase = "promoting"
-        if phase in {"commit_started", "promoting"}:
-            self._advance_reload(generation, "committed")
-        if previous_snapshot is None:
-            self._advance_reload(generation, "complete")
-            return
-        snapshot_id = previous_snapshot.snapshot_id
-        if snapshot_id in self._drained_before_commit:
-            self._drained_before_commit.remove(snapshot_id)
-            self._advance_reload(generation, "complete")
-            return
-        self._advance_reload(generation, "draining")
-        self._drain_transactions[snapshot_id] = tx_id
 
     def _finish_drained_reload(self, snapshot_id: str) -> None:
         tx_id = self._drain_transactions.pop(snapshot_id, None)

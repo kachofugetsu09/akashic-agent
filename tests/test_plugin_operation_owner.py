@@ -7,7 +7,6 @@ import pytest
 from agent.plugin_composition import CompositionRoot, FiberState
 from agent.plugins._operation import OperationBusyError, OperationTimeoutError, complete_critical
 from agent.plugins.manager import PluginManager, _copy_in_thread
-from agent.plugins.snapshot import RuntimeSnapshotCompiler
 from bus.event_bus import EventBus
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
@@ -211,44 +210,82 @@ async def test_failed_effect_keeps_owner_until_explicit_terminate_retry(tmp_path
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("release_started", [False, True])
-async def test_deadline_restores_only_the_unreleased_old_root(tmp_path, release_started):
-    entered, finish_close = asyncio.Event(), asyncio.Event()
-
-    class Host(PluginManager):
-        async def _load_all(self):
-            entered.set()
-            await self._replace_formal_root({}, expected_ref=self._selection.read())
-
-    host = manager(tmp_path, Host)
-    root = CompositionRoot("old")
+async def test_load_deadline_keeps_building_root_until_actual_close(tmp_path):
+    """The load deadline revokes commit while the real Root close still has an owner."""
+    entered, finish_close, joining = (asyncio.Event() for _ in range(3))
+    closes, late_commits = [], []
+    root = CompositionRoot("building")
 
     async def close():
+        closes.append("close")
         entered.set()
         await finish_close.wait()
 
-    if release_started:
-        await root.context.effect(lambda: close)
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    host._snapshot_store.install(snapshot)
-    lease = None if release_started else host._snapshot_store.lease(snapshot.snapshot_id)
-    host.POST_PUBLISH_TIMEOUT_SECONDS = 0.05
+    await root.context.effect(lambda: close)
+
+    class Host(PluginManager):
+        async def _load_all(self):
+            await self._close_building_root(root)
+            self._check_operation_commit()
+            late_commits.append("committed")
+
+        async def _finish_termination(self, previous):
+            joining.set()
+            await super()._finish_termination(previous)
+
+    host = manager(tmp_path, Host)
+    host._building_roots[root] = ()
+    selected_before = host._selection.read()
     host.BOOT_COMMIT_TIMEOUT_SECONDS = 0.05
-    update = asyncio.create_task(host.load_all())
-    await entered.wait()
-    with pytest.raises(OperationTimeoutError):
-        await update
-    operation = host._operation
-    if release_started:
-        assert not operation.task.done()
-        assert not snapshot.accepting_leases
+    load = asyncio.create_task(host.load_all())
+    shutdown = None
+    body_error = None
+    try:
+        await entered.wait()
+        with pytest.raises(OperationTimeoutError):
+            await load
+        operation = host._operation
+        assert operation.revoked and not operation.task.done()
+        assert root in host._building_roots and closes == ["close"]
+        assert host._selection.read() == selected_before
+        with pytest.raises(OperationBusyError):
+            await host.start_runtime()
+
+        host.POST_PUBLISH_TIMEOUT_SECONDS = 5
+        shutdown = asyncio.create_task(host.terminate_all())
+        await joining.wait()
+        assert not shutdown.done() and not operation.task.done()
+        assert root in host._building_roots
         finish_close.set()
-    await settle(operation.task)
-    assert host.current_snapshot is snapshot
-    assert snapshot.accepting_leases is not release_started
-    if lease is not None:
-        await lease.release()
-    await host.terminate_all()
+        await shutdown
+        assert root not in host._building_roots
+        assert closes == ["close"] and late_commits == []
+        assert host._selection.read() == selected_before
+    except BaseException as error:
+        body_error = error
+    finally:
+        # 释放真实 Effect 后才观察任务；body 与 cleanup 双故障都必须可见。
+        finish_close.set()
+        cleanup_errors = []
+        for task in (load, shutdown):
+            if task is None:
+                continue
+            try:
+                failure = await settle(task)
+                if task is shutdown and failure is not None:
+                    cleanup_errors.append(failure)
+            except BaseException as error:
+                cleanup_errors.append(error)
+        try:
+            await host.terminate_all()
+        except BaseException as error:
+            cleanup_errors.append(error)
+        if body_error is not None:
+            if cleanup_errors:
+                raise BaseExceptionGroup("load assertion and cleanup failed", [body_error, *cleanup_errors])
+            raise body_error
+        if cleanup_errors:
+            raise BaseExceptionGroup("load cleanup failed", cleanup_errors)
 
 
 @pytest.mark.asyncio

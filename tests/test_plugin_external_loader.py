@@ -202,18 +202,12 @@ async def test_warm_core_inspection_tracks_live_fibers_and_local_failure(
         ):
             raise AssertionError("warm inspection must not compile a snapshot")
 
-        async def reject_root_replace(
-            inputs, *, expected_ref, before_open=None, attempt=None, validated=None,
-        ):
-            raise AssertionError("warm inspection must not replace the formal Root")
-
         def reject_ready_gate():
             raise AssertionError("warm inspection must not gate on the Root receipt")
 
         monkeypatch.setattr(manager, "load_all", reject_load_all)
         monkeypatch.setattr(manager.snapshot_store, "acquire", reject_snapshot_acquire)
         monkeypatch.setattr(manager._snapshot_compiler, "compile", reject_snapshot_compile)
-        monkeypatch.setattr(manager, "_replace_formal_root", reject_root_replace)
         monkeypatch.setattr(root, "receipt", reject_ready_gate)
 
         inspected = await core.inspect_modules()

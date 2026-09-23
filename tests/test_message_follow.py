@@ -295,7 +295,6 @@ async def test_build_control_service_reply_status_uses_live_root_not_snapshot(tm
         monkeypatch.setattr(
             manager.snapshot_store, "wait_for_stable_change", reject_snapshot_entry,
         )
-        monkeypatch.setattr(manager, "_replace_formal_root", reject_snapshot_entry)
         monkeypatch.setattr(manager._snapshot_compiler, "compile", reject_snapshot_compile)
         async with aclosing(service.follow("s", -1)) as stream:
             frame = await anext(stream)

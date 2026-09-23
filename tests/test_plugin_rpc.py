@@ -362,7 +362,6 @@ async def test_live_rpc_resolution_holds_exact_provider_scope_during_local_repla
             raise AssertionError("局部换代不得编译 snapshot")
 
         monkeypatch.setattr(manager.snapshot_store, "acquire", reject_snapshot_entry)
-        monkeypatch.setattr(manager, "_replace_formal_root", reject_snapshot_entry)
         monkeypatch.setattr(manager._snapshot_compiler, "compile", reject_snapshot_compile)
 
         _write_live_rpc_plugin(target_source, version="new")

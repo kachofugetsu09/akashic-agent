@@ -250,7 +250,6 @@ async def test_message_send_uses_live_channel_owner_during_local_replace(
             raise AssertionError("live message/send path must not compile snapshot")
 
         monkeypatch.setattr(manager.snapshot_store, "acquire", reject_snapshot_entry)
-        monkeypatch.setattr(manager, "_replace_formal_root", reject_snapshot_entry)
         monkeypatch.setattr(manager._snapshot_compiler, "compile", reject_snapshot_compile)
 
         old_module = target.instance.module
