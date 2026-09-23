@@ -45,18 +45,17 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 按 [0072](decisions/0072-single-graph-local-plugin-updates.md) 与
 [单图设计](design/issue-750-plugin-publication-simplification.md) 继续完成：
 
-- **T06 旧图退役**：核对并删除仍残留的私有整图发布、snapshot/validation 执行路径；
-  保留实际 cold boot/shutdown、历史 reader、未决恢复与 cleanup owner。不得整删仍有
-  持久协议或物理资源责任的模块。
-- **T07 离线升级**：形成并实施显式采用新 distribution bundled 输入的单 writer 路径，
-  保留禁用项、外部替换、用户配置和历史归档，用完整 selection CAS 发布。
-  普通 restart/ensure_profile 不自动采用新 bundle；默认 profile 不含 Akasha，
-  通用机制验证不能替代真实 Akasha 发行输入与功能验收。
-- **联合验收**：各 lane 经独立 review 后串行集成，在最终干净 HEAD 上核对累计
-  Gate 与源码摘要；远端 CI、正式运行/恢复、发布和 final enable 仍未完成。
+- **外部组合验收**：Content/H5 的历史 lock 不匹配当前 Core 祖先与单参数 `apply(ctx)`
+  入口。固定兼容的外部源码和 artifact-owned Python 后，按原完整场景重新验收；
+  不改 lock 指向任意 HEAD、删 case 或降低 coverage baseline 取绿。
+- **真实资源验收**：本地 Workload 协议测试不代表 Docker 写入挂载、跨 boot 资源恢复
+  或显示代理已验证；这些结果须由对应真实 Controller 与客户端提供。
+- **发行与恢复**：远端 CI、正式发布、运行数据恢复和 final enable 仍需独立交付。
+  普通 restart/ensure_profile 不自动采用新 bundle；通用 distribution 夹具不能替代
+  真实 Akasha 发行输入与功能验收，历史未决资源也不能用源码通过代为结算。
 
 既有 Subagent Tools owner、DeliveryPolicy readiness 和旧 oracle 的历史阻塞不再作为
-当前缺陷；基线、退役映射与验收证据统一见单图设计的“开发基线与 A1/B1 集成”一节。
+当前缺陷；本地退役、停止期回退和分层证据见单图设计的“本地收口与运行验收边界”一节。
 本地开发与验证不授权 PR 合并、正式数据写入或部署。
 
 ## P0 · 独立语义验收

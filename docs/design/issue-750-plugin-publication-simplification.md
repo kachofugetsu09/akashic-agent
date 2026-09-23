@@ -1,5 +1,47 @@
 # Issue 750：单图插件系统与局部换代任务拆分
 
+## 2026-09-24 · 本地收口与运行验收边界
+
+本节说明单图收口后的代码和验收边界。下方按日期、工单保存的 WIP、旧失败和
+分批通过项是历史记录，不再用它们推断当前仍有候选运行图或已经完成发布。
+
+```text
+固定安装输入 ──> PluginSelection CAS ──> 同一 live Root 的局部 Fiber 更新
+                                           └─ 原 Scope 关闭失败：原 owner 保留并显式重试
+停止期孤立安装 ──> 外置备份 ──> 原安装 owner 精确回退；不改变 PluginSelection
+```
+
+- T06 删除了旧 Store/Compiler/全图 lease、候选 ValidationHost、旧 runtime catalog
+  和 Manager 的 prepare/publish/promote/discard 路径。现行 catalog 来自
+  `agent/plugin_composition/runtime_catalog.py`；历史 journal/archive/消息和实际失败
+  cleanup owner 保留。selected B、B Fiber ACTIVE 和实际资源关闭是三个不同事实。
+- B2 在停止期按维护锁、发布锁顺序，经正式 installer 与完整 archive 准备后作一次
+  selection CAS；成功只报告 selected-not-started，不启动 Manager/Root 或业务服务。
+  禁用项、外部替换、配置与历史归档仍按各自 owner 保留。
+- 孤立 armed 安装会阻止 cold boot、doctor 与下一安装。显式
+  `scripts/rollback_plugin_install.py` 只恢复一个 `update_id` 的安装状态，不提供
+  confirm-install、自动回退或 Root 切换。安全条件、备份和重试见
+  [状态地图](persistence-state-map.md#1022-单图安装与停止期指定回退)。
+- Wake 已结束的业务失败仍由 task incident、failed attempt 与原来源/Delivery 输入
+  负责恢复；停止时不再次抛成 generation-cleanup。取消期间真实 teardown 错误仍
+  上抛并保留资源 owner。当前故障夹具证明旧 Root 真正关闭后同进程新 stack 恢复，
+  不冒称两个独立 OS 进程的崩溃恢复。
+- LongMemEval 按维护者决定退役。PersonaMem 的必要 helper 收回本包，但旧
+  CoreRuntime 入口尚未恢复，不把导入/纯函数检查写成 benchmark 端到端通过。
+
+本地证据集中在 `/mnt/data/issue750-overnight-20260924.DgHQu2/`：完整公开回归曾为
+2389 passed / 5 failed / 4 skipped；五个失败修复后的 clean `d7a08247` 联合对照
+为59/59。安装回退两模块原生65/65。分批证据不冒称最终全量重跑；每组
+`command.json`、`result.json`、JUnit 和源码 manifest 保存其真实输入。
+最终累计 Docker Gate 必须以最终 clean HEAD 的 `gate.json`、sourceDigest、planDigest
+及资源清理结果为准，旧27/27或 catalog audit 不能替代。
+
+独立 T-39273e 已接受最终 Store/Wake、setup 和 migration 源码切片。
+Content/H5 的历史 exact lock、六个外部入口和 artifact Python 仍不满足当前 Core
+输入；Core-only/fleet 49/49 与隔离四插件业务组合成功不能覆盖这个缺口。
+Workload 的内存 Controller 协议也不证明真实 Docker/data/display。
+远端 CI、正式数据、部署与客户端验收均不由本地源码结论代替。
+
 ## 2026-09-23 · 开发基线与 A1/B1 集成
 
 T-3ed982 修复 Gate 模型影响映射后，独立 `gpt-5.6-terra/xhigh` 的 T-a1ea29

@@ -85,9 +85,9 @@ writers = ["plugin"]
 consumers = ["recursive_plugin_validation", "plugin", "runtime"]
 protected_tables = ["reload_transactions", "reload_events", "plugin_updates"]
 oracles = ["recursive_plugin_self_validation_contract"]
-retention = "历史事务、追加事件和安装行由 ReloadJournal 保留与解码；阶段和清理回执只能沿既有 owner 更新。普通重构、预检和安装无物理删除权；预检读取 DB/WAL/SHM 副本并证明源字节不变。"
+retention = "历史事务、追加事件和安装行由 ReloadJournal 保留与解码；阶段和清理回执只能沿既有 owner 更新。普通重构、预检和安装无物理删除权；预检读取 DB/WAL/SHM 副本并证明源字节不变。停止期指定安装回退先保存一致逻辑备份，再由原 owner 恢复安装指针与启用项并结算同一孤立 armed 行；不改变 Root 选择，不删除历史行或插件数据。"
 physical_reduction_owner = "explicit_user_data_management"
-recovery_evidence = ["journal_preflight_write_set", "journal_backup_readback", "armed_install_rejection", "legacy_cleanup_receipt"]
+recovery_evidence = ["journal_preflight_write_set", "journal_backup_readback", "armed_install_rejection", "exact_install_rollback", "legacy_cleanup_receipt"]
 failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
 
 [states.mobile_receipts]
