@@ -52,15 +52,18 @@ OwnerCall 固定，源码修改后由显式 `reconcile_changed` 或 disable 才�
 `_replace_formal_root`/candidate 清理调用，boot cleanup 的未知结果和坏 receipt
 仍 fail loud。Yoyo 退役测试补上其声称的旧 manifest fixture，生产迁移文件未改。
 
-Models 的删除映射必须同时面对 frozen baseline 与后来的 main：frozen
-`683b4791` 只有 `agent/plugins/manager.py`，main 另有随后新增、此次删除的
-`model_catalog.py`、`model_control.py`。`deleted_paths` 中
-`agent/plugins/m[ao][dn][ae]*.py` 在这两个 Git 树只匹配上述三条路径，
-不匹配 `manifest.py` 或 `mobile_ui.py`；当前 live Models/RPC/provider 路径
-仍在 `paths`，P0 `model_owner_contract`、要求与依赖未减。
+Models 的先前删除映射已被 T-71d1a1 拒绝：frozen baseline `683b4791`
+只有仍存活的 `agent/plugins/manager.py`，不能用它证明后来新增、此次删除的
+`model_catalog.py`、`model_control.py`。现以普通 `paths` 中的
+`agent/plugin*/model*.py` 表示模型能力的变更归属：当前匹配
+`agent/plugin_composition/model.py`、`model_settings_http.py`、`models.py`，
+固定 main 还匹配两个已退休的 `agent/plugins/model_*.py` wrapper；
+不匹配 Manager、manifest、mobile_ui。原 composition-model 命中集保留；
+P0 `model_owner_contract`、要求与依赖未减。这是普通影响映射，不是 frozen base
+上的删除证明。
 `coverage-baseline.json` 只更新 `catalogDigest`，由现有 Gate 算法按
 `impact.toml`、`state-contracts.toml`、`scenarios.toml` 的文件名和原始字节顺序
-计算，当前值 `faa83931c6d8caa8481a7b2bfd44974e387c165f8ae9ed8ea6ad4a12e27f191c`；
+计算，修正后值 `327e454ed750ac5a941d22f6cda6fc21ae385368b189dc117c40b002d652d6f7`；
 `acceptedGaps`、`coveredP0`、`base`、purpose、version 不变。Gate audit 与 27 场景
 plan 通过；首轮 run 为 26/27，唯一红项是上述三个旧 nodeid 无法收集。
 最终 run 的实际结果须由同轮独立报告记录，plan 不算执行。

@@ -6,8 +6,9 @@
 `gpt-6-sol/high` integration writer；未更新 PR、正式 workspace 或外部插件环境。
 恢复归档、隔离测试的 argv/JUnit/source hash 和 Gate 报告在
 `/mnt/data/issue750-green-r1-20260923.68KJfw/`，最终本地验收状态由
-`/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md` 与其中指向的结果文件确定。独立概念 review、远端 CI、正式部署
-仍由后续 owner 决定。
+`/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md` 与其中指向的结果文件确定。
+T-71d1a1 对 Gate 模型影响映射提出 request-changes；本次改正仍待独立复审。
+先前本地测试结果保留，远端 CI、正式部署与 Issue 750 最终验收未完成。
 
 R1 继续保持 0072 的单一 live Root：selection CAS 是持久选择，运行中的 Fiber 是
 另一个事实。首次空选择先提交固定归档再加载；B 已被选中但加载失败时保留 B 与错误，
@@ -343,7 +344,7 @@ Tools、UI、模型及资源 provider 中与全局 snapshot 绑定的部分要�
 - [PluginManager._switch_ready / _replace_formal_root](../../agent/plugins/manager.py)：1578、1671 行起，关闭候选并替换完整正式 Root。
 - [fresh-root 测试](../../tests/test_plugin_fresh_root.py)：124 行起，明确要求候选和正式组合中的每个插件都是新实例。
 - [Ui.register / seal](../../plugins/ui/plugin.py)：52、112 行起，一次性封存后不再允许登记。
-- [发布等待测试](../../tests/test_plugin_publication_admission.py)：固定了等待旧 lease 超过提交期限仍继续 publishing 的行为。
+- 旧发布等待测试已退役；[现行更新调用排空](../../tests/test_plugin_hot_reload.py)与[卸载期限及清理 owner](../../tests/test_plugin_uninstall_root_drain.py)保护有限排空，旧行为及替代边界见[§6.4 验收映射](#64-t01-验收映射本-worktree-副本补充)。
 
 [Issue #750](https://github.com/kachofugetsu09/akashic-agent/issues/750) 报告了发布长时间等待、
 整组装载和 Akasha 重放拖慢可用性等现象。这些生产现象来自 issue，并非本次重新测量。

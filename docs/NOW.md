@@ -42,7 +42,7 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 ## P0 · 单图插件系统与局部换代（Issue 750）
 
-- 唯一集成 worker 在固定 `main@ae444d47` 上按[R1 语义与验收映射](design/issue-750-plugin-publication-simplification.md#2026-09-23--r1-语义与验收映射)迁移旧 candidate/snapshot 测试，并保留单一 live Root 的故障保护。本地插件套件 451/451、原 84 项矩阵 84/84、Subagent 12/12、Web 45/45；生产与测试 pyright、边界、schema 和 Yoyo 检查通过。完整 Python 和 27 个公开 Gate 场景的最终结果及恢复点，以 `/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md` 和其链接的本轮证据为准。主审尚未冻结共同基线；不得据此推送 PR、分发三路任务或称 final enable 完成。实施模型为 gpt-6-sol/high；后续 Luna 槽为 gpt-6-luna/xhigh，独立概念 review 仍按 WORKFLOW 执行。
+- 唯一集成 worker 在固定 `main@ae444d47` 上按[R1 语义与验收映射](design/issue-750-plugin-publication-simplification.md#2026-09-23--r1-语义与验收映射)迁移旧 candidate/snapshot 测试，并保留单一 live Root 的故障保护。本地插件套件 451/451、原 84 项矩阵 84/84、Subagent 12/12、Web 45/45；生产与测试 pyright、边界、schema 和 Yoyo 检查通过。完整 Python 与当时 27 个公开 Gate 场景的结果见 `/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md`。T-71d1a1 对 Gate 模型影响映射提出 request-changes；本次改正待独立复审，共同基线未冻结。不得据此推送 PR、分发三路任务或称 Issue 750/final enable 完成；远端 CI 与部署未验收。
 
 - T-fb9a7f 已闭合 Selected-Load A 的真实 selection identity oracle，并完成 Core T02 局部行为证据：selection 1/1、Core 其余四组 25/25。详见设计文档 T-fb9a7f 段与 `/tmp/i750-core.YE9wsb/`；不外推为 Issue 750 完成，完整回归/Gate/CI/正式运行/final enable 仍为 WIP。
 

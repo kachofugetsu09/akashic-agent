@@ -149,7 +149,7 @@ scenarios = ["plugin_generation_contract", "plugin_workload_contract", "plugin_u
 priority = "p0"
 requirements = ["RUN-005", "RUN-009", "RUN-010", "RUN-011", "RUN-012", "TST-001", "TST-003"]
 paths = [
-  "agent/plugin_composition/*model*.py",
+  "agent/plugin*/model*.py",
   "agent/plugin_composition/models.py",
   "agent/plugin_composition/__init__.py",
   "agent/plugins/snapshot.py",
@@ -183,9 +183,6 @@ deleted_paths = [
   "agent/provider.py",
   "agent/tools/vision.py",
   "bootstrap/providers.py",
-  # Frozen base has manager.py; main later added the model_* wrappers.
-  # This pattern matches those paths without matching manifest.py or mobile_ui.py.
-  "agent/plugins/m[ao][dn][ae]*.py",
 ]
 depends_on = ["plugin", "runtime"]
 scenarios = ["model_owner_contract"]

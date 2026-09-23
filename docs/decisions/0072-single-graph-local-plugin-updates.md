@@ -417,8 +417,9 @@ CAS 冲突不冒充成功、CAS 后失败保留 B、取消不虚报回滚、清�
 重启读取 exact selected archive，均移到真实 local install/Root/retry 边界。
 旧 oracle 与当前用例的逐项关系见
 [测试清理 ledger](../refactor/test-gate-cleanup-ledger.md)，具体执行结果见
-`/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md`。本段只对账已批准语义，
-不代替独立概念 review、远端 CI 或正式状态验收。
+`/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md`。T-71d1a1 对当时
+Gate 模型影响映射提出 request-changes；本次改正待独立复审。先前本地测试结果
+仍是历史证据，不构成共同基线批准、远端 CI、部署或 Issue 750 完成。
 
 ## 理由
 
