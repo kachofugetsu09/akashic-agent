@@ -151,8 +151,8 @@ async def _process_instance(
     counter: list,
     t_start: float,
 ) -> None:
-    from eval.longmemeval.ingest import ingest_instance
-    from eval.longmemeval.runtime import (
+    from .ingest import ingest_instance
+    from .runtime import (
         close_runtime,
         create_runtime,
         format_model_trace,

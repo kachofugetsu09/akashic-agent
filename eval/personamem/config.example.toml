@@ -1,14 +1,15 @@
 # ============================================================
-# LongMemEval Benchmark Config
+# PersonaMem Benchmark Config
 # ============================================================
-# Copy this file to eval/longmemeval/config.toml. Configure the benchmark
+# Copy this file to eval/personamem/config.toml. Configure the benchmark
 # workspace's chat and embedding defaults once through the 2236 Models page,
 # then run:
 #
-#   python -m eval.longmemeval.run \
-#     --config eval/longmemeval/config.toml \
-#     --data eval/longmemeval/data/longmemeval_akashic.json \
-#     --workspace /tmp/lme_bench \
+#   python -m eval.personamem.run \
+#     --config eval/personamem/config.toml \
+#     --questions /path/to/questions_32k.csv \
+#     --contexts /path/to/shared_contexts_32k.jsonl \
+#     --workspace /tmp/personamem_bench \
 #     --limit 1
 #
 # The ordinary models plugin owns connections, credentials, capabilities,

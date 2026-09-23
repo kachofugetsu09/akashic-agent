@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from .dataset import LMEInstance
-from .runtime import BenchmarkRuntime
+from .dataset import PersonaMemInstance
+from .runtime import PersonaMemRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +27,11 @@ def _parse_date(raw: str) -> str:
     return raw
 
 
-def _ingest_state_path(rt: BenchmarkRuntime, question_id: str) -> Path:
+def _ingest_state_path(rt: PersonaMemRuntime, question_id: str) -> Path:
     return rt.workspace / "ingest_state.json"
 
 
-def _load_ingest_state(rt: BenchmarkRuntime, question_id: str) -> dict | None:
+def _load_ingest_state(rt: PersonaMemRuntime, question_id: str) -> dict | None:
     path = _ingest_state_path(rt, question_id)
     if not path.exists():
         return None
@@ -43,7 +43,7 @@ def _load_ingest_state(rt: BenchmarkRuntime, question_id: str) -> dict | None:
 
 
 def _write_ingest_state(
-    rt: BenchmarkRuntime,
+    rt: PersonaMemRuntime,
     question_id: str,
     *,
     completed: bool,
@@ -65,14 +65,14 @@ def _write_ingest_state(
     )
 
 
-def _is_ingested(rt: BenchmarkRuntime, question_id: str) -> bool:
+def _is_ingested(rt: PersonaMemRuntime, question_id: str) -> bool:
     state = _load_ingest_state(rt, question_id)
     return bool(state and state.get("completed") is True)
 
 
 async def ingest_instance(
-    rt: BenchmarkRuntime,
-    instance: LMEInstance,
+    rt: PersonaMemRuntime,
+    instance: PersonaMemInstance,
     *,
     force: bool = False,
     on_progress: Callable[[int, int], None] | None = None,

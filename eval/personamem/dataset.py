@@ -7,8 +7,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from eval.longmemeval.dataset import LMETurn
-
 SUPPORTED_QUESTION_TYPES = (
     "acknowledge_latest_user_preferences",
     "generalize_to_new_scenarios",
@@ -20,6 +18,12 @@ SUPPORTED_QUESTION_TYPES = (
 )
 
 _LABEL_RE = re.compile(r"\(([a-z])\)")
+
+
+@dataclass
+class PersonaTurn:
+    role: str
+    content: str
 
 
 @dataclass
@@ -38,7 +42,7 @@ class PersonaMemInstance:
     question_date: str = ""
     haystack_session_ids: list[str] = field(default_factory=list)
     haystack_dates: list[str] = field(default_factory=list)
-    haystack_sessions: list[list[LMETurn]] = field(default_factory=list)
+    haystack_sessions: list[list[PersonaTurn]] = field(default_factory=list)
     answer_session_ids: list[str] = field(default_factory=list)
 
     @property
@@ -99,9 +103,9 @@ def _load_shared_contexts(path: Path) -> dict[str, list[dict]]:
     return contexts
 
 
-def _build_turns(raw_messages: list[dict]) -> tuple[str, list[LMETurn]]:
+def _build_turns(raw_messages: list[dict]) -> tuple[str, list[PersonaTurn]]:
     persona_parts: list[str] = []
-    turns: list[LMETurn] = []
+    turns: list[PersonaTurn] = []
 
     for item in raw_messages:
         role = str(item.get("role", "") or "").strip().lower()
@@ -113,14 +117,14 @@ def _build_turns(raw_messages: list[dict]) -> tuple[str, list[LMETurn]]:
             continue
         if role not in {"user", "assistant"}:
             continue
-        turns.append(LMETurn(role=role, content=content))
+        turns.append(PersonaTurn(role=role, content=content))
 
     return "\n\n".join(persona_parts).strip(), turns
 
 
-def _split_into_sessions(turns: list[LMETurn]) -> list[list[LMETurn]]:
-    sessions: list[list[LMETurn]] = []
-    current: list[LMETurn] = []
+def _split_into_sessions(turns: list[PersonaTurn]) -> list[list[PersonaTurn]]:
+    sessions: list[list[PersonaTurn]] = []
+    current: list[PersonaTurn] = []
 
     for turn in turns:
         current.append(turn)
