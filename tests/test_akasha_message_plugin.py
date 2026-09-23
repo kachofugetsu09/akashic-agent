@@ -41,6 +41,7 @@ def _reference_rows(material: Mapping[str, object]) -> tuple[Mapping[str, object
 
 @asynccontextmanager
 async def application(tmp_path, *, embedding_available: bool = True,
+                      before_load: Callable[[MessageLog, PluginManager], None] | None = None,
                       before_start: Callable[[MessageLog, PluginManager], None] | None = None):
     root = tmp_path / "plugins"
     for name in ("commands", "ui", "akasha", "turn_projection", "content", "context", "tools"):
@@ -59,6 +60,7 @@ name = "fixture_embeddings"
 version = "1.0.0"
 inject = ()
 async def apply(ctx):
+    embedding_context = ctx
     embedded = asyncio.Event()
     descriptor = EmbeddingSpaceDescriptor(
         plugin_snapshot_id="fixture", model_revision=0, model_id="fixture", connection_id="fixture",
@@ -86,9 +88,9 @@ async def apply(ctx):
             return descriptor
         @asynccontextmanager
         async def bind(self, *, model_id=None):
-            from agent.plugins.snapshot import get_current_runtime_snapshot
-            assert get_current_runtime_snapshot().composition_root.context.require(EMBEDDINGS) is embeddings
-            yield model
+            async with embedding_context.runtime_scope():
+                assert embedding_context.require(EMBEDDINGS) is embeddings
+                yield model
     embeddings = Embeddings()
     await ctx.provide(EMBEDDINGS, embeddings)
     await ctx.provide(ServiceKey("fixture.embedded"), embedded)
@@ -99,6 +101,8 @@ async def apply(ctx):
     host = PluginManager([root], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
+        if before_load is not None:
+            before_load(log, host)
         await host.load_all()
         if before_start is not None:
             before_start(log, host)
@@ -247,16 +251,22 @@ async def test_inspector_reads_actual_queries_through_the_mobile_provider(tmp_pa
     from agent.plugins.mobile_ui import PluginMobileUiProvider
 
     async with application(tmp_path) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            revision = snapshot.generations["akasha"].source_revision
-            async with ctx.require(CONTENT).bind() as content:
-                log.writer("s", author="user", source="conversation", body_types=(Input,),
-                           content=content.checks).append("q", Input((ContentPart("text", "remember it"),)))
-                async with ctx.require(MATERIALS).bind() as materials:
-                    await materials.prepare(log.reader("s").snapshot(), "conversation")
-        provider = PluginMobileUiProvider(host.snapshot_store)
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        async with ctx.require(CONTENT).bind() as content:
+            log.writer("s", author="user", source="conversation", body_types=(Input,),
+                       content=content.checks).append("q", Input((ContentPart("text", "remember it"),)))
+            async with ctx.require(MATERIALS).bind() as materials:
+                await materials.prepare(log.reader("s").snapshot(), "conversation")
+        provider = PluginMobileUiProvider(live_root)
         try:
+            catalog = await provider.catalog()
+            revision = next(
+                item["revision"] for item in catalog["items"]
+                if isinstance(item, Mapping) and item["id"] == "akasha"
+            )
+            assert isinstance(revision, str)
             before = (tmp_path / "embedding-calls.txt").read_text()
             listing = await provider.query("akasha", revision, "inspector.recent", {},
                                            session_id=None, turn_id=None)
@@ -275,7 +285,7 @@ async def test_inspector_reads_actual_queries_through_the_mobile_provider(tmp_pa
             assert detail["source"] == {"kind": "context", "session_id": "s", "source": "conversation", "through_seq": 0}
             assert (tmp_path / "embedding-calls.txt").read_text() == before
         finally:
-            provider._executor.shutdown(wait=True)
+            await provider.aclose()
 
 
 @pytest.mark.asyncio
@@ -306,11 +316,19 @@ async def test_inspector_reads_saved_queries_when_embedding_is_unavailable(tmp_p
             ),
         )
 
-    async with application(tmp_path, embedding_available=False, before_start=seed) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            revision = snapshot.generations["akasha"].source_revision
-        provider = PluginMobileUiProvider(host.snapshot_store)
+    async with application(
+        tmp_path, embedding_available=False, before_start=seed,
+    ) as (log, host):
+        live_root = host.live_root
+        assert live_root is not None
+        provider = PluginMobileUiProvider(live_root)
         try:
+            catalog = await provider.catalog()
+            revision = next(
+                item["revision"] for item in catalog["items"]
+                if isinstance(item, Mapping) and item["id"] == "akasha"
+            )
+            assert isinstance(revision, str)
             listing = await provider.query("akasha", revision, "inspector.recent", {},
                                            session_id=None, turn_id=None)
             assert listing["total"] == 1
@@ -336,7 +354,7 @@ async def test_inspector_reads_saved_queries_when_embedding_is_unavailable(tmp_p
                 "saved query", "saved answer",
             ]
         finally:
-            provider._executor.shutdown(wait=True)
+            await provider.aclose()
 
 
 @pytest.mark.asyncio
@@ -344,24 +362,30 @@ async def test_mobile_inspector_bounds_long_messages_without_dropping_hit_member
     from agent.plugins.mobile_ui import PluginMobileUiProvider
 
     async with application(tmp_path) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            revision = snapshot.generations["akasha"].source_revision
-            async with ctx.require(CONTENT).bind() as content:
-                inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content=content.checks)
-                outputs = log.writer("s", author="assistant", source="conversation", body_types=(Output,), content=content.checks)
-                inputs.append("long", Input((ContentPart("text", "长" * (193 * 1024)),)))
-                inputs.append("correction", Input((ContentPart("text", "keep this correction"),)))
-                outputs.append("answer", Output((ContentPart("text", "learned answer"),), "complete"))
-                await asyncio.wait_for(ctx.require(ServiceKey("fixture.embedded")).wait(), 10)
-                inputs.append("query", Input((ContentPart("text", "recall it"),)))
-                async with ctx.require(MATERIALS).bind() as materials:
-                    prepared = await materials.prepare(log.reader("s").snapshot(), "conversation")
-                    references = _reference_rows(prepared)
-                    identity = references[0]["retrieval_ref"]
-                    assert isinstance(identity, str)
-        provider = PluginMobileUiProvider(host.snapshot_store)
+        live_root = host.live_root
+        assert live_root is not None
+        ctx = live_root.context
+        async with ctx.require(CONTENT).bind() as content:
+            inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content=content.checks)
+            outputs = log.writer("s", author="assistant", source="conversation", body_types=(Output,), content=content.checks)
+            inputs.append("long", Input((ContentPart("text", "长" * (193 * 1024)),)))
+            inputs.append("correction", Input((ContentPart("text", "keep this correction"),)))
+            outputs.append("answer", Output((ContentPart("text", "learned answer"),), "complete"))
+            await asyncio.wait_for(ctx.require(ServiceKey("fixture.embedded")).wait(), 10)
+            inputs.append("query", Input((ContentPart("text", "recall it"),)))
+            async with ctx.require(MATERIALS).bind() as materials:
+                prepared = await materials.prepare(log.reader("s").snapshot(), "conversation")
+                references = _reference_rows(prepared)
+                identity = references[0]["retrieval_ref"]
+                assert isinstance(identity, str)
+        provider = PluginMobileUiProvider(live_root)
         try:
+            catalog = await provider.catalog()
+            revision = next(
+                item["revision"] for item in catalog["items"]
+                if isinstance(item, Mapping) and item["id"] == "akasha"
+            )
+            assert isinstance(revision, str)
             detail = await provider.query("akasha", revision, "inspector.detail", {"query_id": identity},
                                           session_id=None, turn_id=None)
             assert detail["schema"] == "akasha.queries.v1"
@@ -383,7 +407,7 @@ async def test_mobile_inspector_bounds_long_messages_without_dropping_hit_member
             assert isinstance(long_message.body.parts[0].value, str)
             assert len(long_message.body.parts[0].value) == 193 * 1024
         finally:
-            provider._executor.shutdown(wait=True)
+            await provider.aclose()
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from plugins.content.plugin import CONTENT
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,7 +36,12 @@ CONTROLS = {}
 
 
 @asynccontextmanager
-async def application(tmp_path, *, wake_delivery=False):
+async def application(
+    tmp_path,
+    *,
+    wake_delivery=False,
+    before_load: Callable[[object, object], None] | None = None,
+):
     host, store, log, artifacts, sources = environment(tmp_path, reply=True, models=False)
     for name in ("commands", "ui", "conversation", "react", "reply_program", "wake", "delivery", "eventmail", "drift"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
@@ -163,14 +169,18 @@ async def apply(ctx):
     control["release"].set()
     CONTROLS[str(tmp_path)] = control
     try:
+        if before_load is not None:
+            before_load(log, host)
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context.require(ServiceKey("fixture.wake"))
-            async with ctx.runtime_scope():
-                state = WakeState(ctx.data_root / "wake.sqlite3")
-                state.initialize()
-                source = Source(ctx, state)
-                yield host, log, ctx, source, control
+        root = host.live_root
+        if root is None:
+            raise AssertionError("live Root must exist after load_all")
+        ctx = root.context.require(ServiceKey("fixture.wake"))
+        async with ctx.runtime_scope():
+            state = WakeState(ctx.data_root / "wake.sqlite3")
+            state.initialize()
+            source = Source(ctx, state)
+            yield host, log, ctx, source, control
     finally:
         await host.terminate_all()
         log.close()

@@ -739,6 +739,30 @@ class MobileGatewayRuntime:
             )
         )
         self._message_followers[connection.websocket] = task
+
+        def settle_ready(done: asyncio.Task[None]) -> None:
+            if ready.done():
+                return
+            if done.cancelled():
+                ready.set_result(None)
+                return
+            error = done.exception()
+            if error is None:
+                ready.set_result(None)
+            else:
+                ready.set_exception(error)
+
+        task.add_done_callback(settle_ready)
+
+        def child_is_live() -> bool:
+            return (
+                not self._stopping
+                and self._connections.get(device_id) is connection
+                and self._message_followers.get(connection.websocket) is task
+                and not task.done()
+                and not task.cancelling()
+            )
+
         try:
             result = await ready
         except MobileCommandError as error:
@@ -754,18 +778,27 @@ class MobileGatewayRuntime:
         if result is None:
             await self._cancel_message_follow(connection.websocket)
             return
-        if self._stopping or self._connections.get(device_id) is not connection:
+        if not child_is_live():
             await self._cancel_message_follow(connection.websocket)
             return
         try:
+            cleanup_child = False
             async with connection.send_lock:
-                await _send_reply(connection.websocket, frame_id=frame.id,
-                    connection_epoch=connection.connection_epoch, reply_type="session.follow.ok",
-                    payload={"version": 2, "through_seq": result.through_seq},
-                    session_id=result.session_id, turn_id=None)
-                # The native command receipt is the ordering barrier: the
-                # child cannot publish session.message before it is on wire.
-                _ = start_follow.set()
+                if child_is_live():
+                    await _send_reply(connection.websocket, frame_id=frame.id,
+                        connection_epoch=connection.connection_epoch, reply_type="session.follow.ok",
+                        payload={"version": 2, "through_seq": result.through_seq},
+                        session_id=result.session_id, turn_id=None)
+                    # The native command receipt is the ordering barrier: the
+                    # child cannot publish session.message before it is on wire.
+                    if child_is_live():
+                        _ = start_follow.set()
+                    else:
+                        cleanup_child = True
+                else:
+                    cleanup_child = True
+            if cleanup_child:
+                await self._cancel_message_follow(connection.websocket)
         except BaseException:
             await self._cancel_message_follow(connection.websocket)
             raise
@@ -778,7 +811,7 @@ class MobileGatewayRuntime:
         ready: asyncio.Future[_MessageFollowReady | None],
         start_follow: asyncio.Event,
     ) -> None:
-        """Create, publish, then use the exact message scope in one child task."""
+        """Acquire the reader briefly, then run the long follow without it."""
         started = False
         try:
             async with self.channel.open_message_scope():
@@ -788,22 +821,21 @@ class MobileGatewayRuntime:
                     if not ready.done():
                         ready.set_exception(error)
                     return
-                if not ready.done():
-                    ready.set_result(
-                        _MessageFollowReady(
-                            session_id=reader.session_id,
-                            through_seq=reader.head(),
-                        )
-                    )
-                _ = await start_follow.wait()
-                started = True
-                await self._follow_message_session(
-                    reader,
-                    request.after_seq,
-                    device_id,
-                    connection,
-                    display_only=request.display_only,
+                result = _MessageFollowReady(
+                    session_id=reader.session_id,
+                    through_seq=reader.head(),
                 )
+            if not ready.done():
+                ready.set_result(result)
+            _ = await start_follow.wait()
+            started = True
+            await self._follow_message_session(
+                reader,
+                request.after_seq,
+                device_id,
+                connection,
+                display_only=request.display_only,
+            )
         except asyncio.CancelledError:
             if not ready.done():
                 ready.set_result(None)
@@ -1456,6 +1488,7 @@ class MobileGatewayRuntime:
     def close_admission(self) -> None:
         """Cancel long-lived follow readers before the host drains this binding."""
 
+        self._stopping = True
         for task in tuple(self._message_followers.values()):
             if not task.done() and not task.cancelling():
                 task.cancel()

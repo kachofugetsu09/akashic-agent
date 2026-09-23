@@ -215,7 +215,7 @@ async def apply(ctx):
 
 @pytest.mark.asyncio
 async def test_actual_conversation_plugin_accepts_without_model_or_reply_and_shares_source_task(tmp_path):
-    from plugins.conversation.plugin import CONVERSATION
+    from plugins.sources.plugin import SOURCES
     from session.message import Control
 
     plugin_home, _ = install_formal_plugins(tmp_path, MINIMAL_MESSAGE_PLUGINS)
@@ -229,20 +229,27 @@ async def test_actual_conversation_plugin_accepts_without_model_or_reply_and_sha
         await asyncio.Event().wait()
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            open_source = snapshot.composition_root.context.require(CONVERSATION)
-            first = open_source("s")
+        generation = host.generation("sources@fixture")
+        assert generation is not None and generation.fiber is not None
+        sources_context = generation.fiber.context
+        async with sources_context.runtime_scope():
+            matches = tuple(item for item in sources_context.require(SOURCES).entries()
+                            if item.name == "conversation")
+        assert len(matches) == 1
+        source = matches[0]
+        async with source.context.runtime_scope():
+            first = source.open("s")
             accepted = await first.accept("u1", Input((ContentPart("text", "saved without a model"),)))
             assert log.catalog().snapshot_heads() == {"s": 0}
             assert log.reader("s").get("u1") == accepted
             task = await first.start(program)
             await entered.wait()
-            second = open_source("s")
+            second = source.open("s")
             assert await second.start(program) is task
             await second.control("pause", Control("pause", 0), expected_head=0, handle=task.handle)
             with pytest.raises(asyncio.CancelledError):
                 await task.join()
-            assert await open_source("s").start(program) is None
+            assert await source.open("s").start(program) is None
     finally:
         await host.terminate_all()
         log.close()

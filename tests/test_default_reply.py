@@ -75,7 +75,7 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from pathlib import Path
-from agent.plugin_composition import CHAT_MODELS, SNAPSHOT_SEALING, ServiceKey
+from agent.plugin_composition import CHAT_MODELS, ServiceKey
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
 from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
 from plugins.models.content import MODEL_CONTENT, ContentOwner
@@ -95,9 +95,8 @@ async def apply(ctx):
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
-    settings = ModelsState(store, root_instance_token=ctx.root_instance_token, context=ctx)
+    settings = ModelsState(store, context=ctx)
     await ctx.provide(MODEL_SETTINGS, settings.settings)
-    await ctx.on(SNAPSHOT_SEALING, settings.seal)
     class Driver:
         max_tool_schemas = None
         def estimate_context_tokens(self, messages, tools):
@@ -177,9 +176,10 @@ async def apply(ctx):
     artifacts = ChannelAttachmentArtifactStore(
         workspace=workspace, metadata_store=artifact_store
     )
+    event_bus = EventBus()
     host = PluginManager(
         [sources],
-        event_bus=EventBus(),
+        event_bus=event_bus,
         workspace=workspace,
         installed_cache_root=tmp_path / "home/cache",
         message_log=log,
@@ -191,9 +191,30 @@ async def apply(ctx):
             await host.start_runtime()
         yield log, host
     finally:
-        await host.terminate_all()
-        log.close()
-        artifact_store.close()
+        termination_error = None
+        try:
+            await host.terminate_all()
+        except BaseException as error:
+            termination_error = error
+        cleanup_errors = []
+        for cleanup in (log.close, artifact_store.close):
+            try:
+                cleanup()
+            except BaseException as error:
+                cleanup_errors.append(error)
+        try:
+            await event_bus.aclose()
+        except BaseException as error:
+            cleanup_errors.append(error)
+        if termination_error is not None:
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "Manager termination and fixture cleanup failed",
+                    [termination_error, *cleanup_errors],
+                ) from termination_error
+            raise termination_error
+        if cleanup_errors:
+            raise BaseExceptionGroup("fixture cleanup failed", cleanup_errors)
 
 
 @pytest.mark.asyncio

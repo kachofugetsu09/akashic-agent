@@ -16,6 +16,7 @@ from starlette.routing import WebSocketRoute
 
 from agent.plugin_composition import Context, DashboardContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
+from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.model import CompositionError, ServiceKey, resolve_declared_workspace_file, resolve_declared_workspace_root
 from agent.plugin_composition.ui import UI, DashboardBinding, DashboardRoute
 
@@ -47,7 +48,7 @@ class DashboardResources:
 
     def build(
         self, *, occupied: list[DashboardRoute],
-        workload_urls: Mapping[tuple[str, str], str], validation: bool,
+        workload_urls: Mapping[tuple[str, str], str],
     ) -> DashboardBinding:
         """延迟加载原包模块，校验域路由，并保留实际返回的资源。"""
         # 1. 同一次资源取得只能执行一次；失败由原 Effect 清理。
@@ -102,7 +103,7 @@ class DashboardResources:
             plugin_id=runtime.plugin_id,
             plugin_dir=module_path.parent,
             data_root=data_root,
-            validation=validation,
+            validation=ctx.require(HOST_INFO).validation,
             _resolve=resolve,
             _workspace_roots=tuple(
                 (name, resolve_declared_workspace_root(workspace, name))
@@ -152,9 +153,9 @@ class DashboardResources:
             plugin_id=runtime.plugin_id,
             app=app,
             routes=routes,
+            context=ctx,
             runtime_workspace=workspace,
             runtime_data_root=data_root,
-            validation=validation,
             module_name=module.__name__,
             generation_id=runtime.generation_id,
             has_web=self.has_web,

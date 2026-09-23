@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ContextManager, Generic, TypeVar, cast
@@ -195,9 +195,39 @@ class EventRegistry:
         *,
         plugin_ids: Collection[str] | None = None,
     ) -> Bail[R] | None:
-        for listener in self._active_listeners(
-            cast(EventKey, key), plugin_ids=plugin_ids
-        ):
+        return await self._run_serial(
+            self._active_listeners(cast(EventKey, key), plugin_ids=plugin_ids),
+            key,
+            payload,
+        )
+
+    async def serial_for_owner(
+        self,
+        owner: "Fiber",
+        key: SerialEventKey[P, R],
+        payload: P,
+    ) -> Bail[R] | None:
+        """Core-only：只派发给准确 owner Fiber 的 listener。
+
+        生命周期 dispatch 必须覆盖 LOADING/UNLOADING 中的 owner 自身，
+        不走 `_active_listeners` 的 ACTIVE 过滤；顺序、Bail 校验与
+        listener 失败语义与 `serial` 完全一致。
+        """
+
+        listeners = [
+            listener
+            for listener in self._listeners.get(cast(EventKey, key), ())
+            if listener.owner is owner
+        ]
+        return await self._run_serial(listeners, key, payload)
+
+    async def _run_serial(
+        self,
+        listeners: Iterable[_Listener],
+        key: SerialEventKey[P, R],
+        payload: P,
+    ) -> Bail[R] | None:
+        for listener in listeners:
             try:
                 with _listener_boundary(listener, "serial", key.name):
                     result = listener.callback(payload)

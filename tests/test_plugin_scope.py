@@ -8,6 +8,8 @@ import pytest
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.scope import CleanupFailure, PluginScope
+from agent.plugins.manifest import upsert_plugin_manifest
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
 @pytest.mark.asyncio
@@ -18,6 +20,8 @@ async def test_disabled_cleanup_retries_a_generation_that_never_reached_a_snapsh
 
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
                             installed_cache_root=tmp_path / "home/cache")
+    initialize_plugin_workspace(tmp_path / "workspace")
+    upsert_plugin_manifest("owner", enabled=False, plugins_home=tmp_path / "home")
     scope = PluginScope("owner")
     attempts = 0
 

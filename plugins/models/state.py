@@ -6,12 +6,22 @@ import json
 import logging
 import math
 import secrets
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from time import monotonic_ns
 from types import MappingProxyType
-from typing import Any, AsyncGenerator, AsyncIterator, Mapping, Protocol, Sequence, cast
+from uuid import uuid4
+from typing import (
+    Any,
+    AsyncContextManager,
+    AsyncGenerator,
+    AsyncIterator,
+    Mapping,
+    Protocol,
+    Sequence,
+    cast,
+)
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.tasks import register_task_bound_context
@@ -35,6 +45,7 @@ from agent.plugin_composition import (
     EmbeddingResult,
     EmbeddingSpaceDescriptor,
     LLMResponse,
+    MODEL_CATALOG,
     MODEL_DRIVERS,
     ModelAvailability,
     ModelCatalogSnapshot,
@@ -44,9 +55,9 @@ from agent.plugin_composition import (
     ModelKind,
     ModelRequest,
     ModelUnavailableError,
+    FiberState,
     SavedEmbedding,
     ServiceKey,
-    SnapshotSealing,
 )
 
 from .settings import (
@@ -58,7 +69,6 @@ from .settings import (
     FinishConnectionAuth,
     MODEL_SETTINGS,
     ModelChange,
-    ModelSettingsSource,
     SetDefaultModel,
     SettingsReceipt,
     StartConnectionAuth,
@@ -188,26 +198,146 @@ class _BoundEmbedding:
 
 
 @dataclass
-class _AuthAttempt:
-    driver_id: str
-    connection_id: str
+class _DriverRegistration:
+    """Keep one provider Context, definition, and lifecycle identity together."""
+
+    context: Context
     definition: ModelDriverDefinition
-    state: Mapping[str, Any]
+    registration_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SelectedDriver:
+    connection_id: str
+    registration: _DriverRegistration
+
+
+@dataclass
+class _AuthAttempt:
+    connection_id: str
+    registration: _DriverRegistration
+    state: Mapping[str, Any] | None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cancelled: bool = False
     expiry_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
 
-@asynccontextmanager
-async def _driver_scope() -> AsyncGenerator[dict[str, DriverConnection]]:
-    """在绑定结束或失败时关闭本次打开的全部连接。"""
-    async with AsyncExitStack() as stack:
-        opened: dict[str, DriverConnection] = {}
+@dataclass(frozen=True, slots=True)
+class _SelectedChat:
+    role: str
+    model_id: str
+    effort: str | None
+
+
+@dataclass(slots=True)
+class _ConnectionHolder:
+    driver: DriverConnection | None = None
+
+
+async def _close_connection(holder: _ConnectionHolder) -> None:
+    """Close one driver connection inside its owning Fiber Effect."""
+
+    driver = holder.driver
+    if driver is not None and driver.close is not None:
+        await driver.close()
+
+
+class _DriverScope:
+    """Hold selected driver scopes and pre-registered connection Effects."""
+
+    def __init__(
+        self,
+        selected: tuple[_SelectedDriver, ...],
+    ) -> None:
+        self.selected = {
+            item.connection_id: item for item in selected
+        }
+        self.opened: dict[str, DriverConnection] = {}
+        self._holders = {
+            connection_id: _ConnectionHolder()
+            for connection_id in self.selected
+        }
+        self._effects: list[Effect] = []
+        self._runtime_scopes: list[AsyncContextManager[None]] = []
+
+    async def enter(self) -> None:
+        """Acquire every selected owner before any driver I/O can suspend."""
+
         try:
-            yield opened
-        finally:
-            for driver in opened.values():
-                _ = stack.push_async_callback(driver.aclose)
+            contexts: list[Context] = []
+            for item in self.selected.values():
+                context = item.registration.context
+                if not any(existing is context for existing in contexts):
+                    contexts.append(context)
+            for context in contexts:
+                scope = context.runtime_scope()
+                await scope.__aenter__()
+                self._runtime_scopes.append(scope)
+            for connection_id, item in self.selected.items():
+                holder = self._holders[connection_id]
+                effect = await item.registration.context.effect(
+                    lambda holder=holder: lambda: _close_connection(holder),
+                    label=f"model-connection:{connection_id}",
+                )
+                self._effects.append(effect)
+        except BaseException as error:
+            try:
+                await self.close()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "model driver scope 准备和清理均失败",
+                    [error, cleanup_error],
+                ) from None
+            raise
+
+    async def close(self) -> None:
+        """Close every registered connection and then release driver scopes."""
+
+        errors: list[BaseException] = []
+        for effect in reversed(self._effects):
+            try:
+                await effect.aclose()
+            except BaseException as error:
+                errors.append(error)
+        self._effects.clear()
+        for scope in reversed(self._runtime_scopes):
+            try:
+                await scope.__aexit__(None, None, None)
+            except BaseException as error:
+                errors.append(error)
+        self._runtime_scopes.clear()
+        if not errors:
+            return
+        if len(errors) == 1:
+            raise errors[0]
+        raise BaseExceptionGroup("model driver scope 清理失败", errors)
+
+    def holder(self, connection_id: str) -> _ConnectionHolder:
+        """Return the pre-registered holder for one selected connection."""
+
+        return self._holders[connection_id]
+
+
+@asynccontextmanager
+async def _driver_scope(
+    state: ModelsState,
+    connections: Sequence[StoredConnection],
+    *,
+    selected: tuple[_SelectedDriver, ...] | None = None,
+) -> AsyncGenerator[_DriverScope]:
+    """Protect selected driver owners and register their connection cleanup first."""
+
+    fixed = (
+        state._select_driver_records(connections)
+        if selected is None
+        else selected
+    )
+    scope = _DriverScope(fixed)
+    await scope.enter()
+    try:
+        yield scope
+    finally:
+        await scope.close()
 
 
 class _Execution:
@@ -326,12 +456,6 @@ class _SettingsView:
     def __init__(self, state: ModelsState) -> None:
         self._state = state
 
-    def read_source(self) -> ModelSettingsSource:
-        return self._state.read_settings_source()
-
-    def use_source(self, source: ModelSettingsSource) -> None:
-        self._state.use_settings_source(source)
-
     async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]:
         return await self._state.discover_models(connection)
 
@@ -362,25 +486,20 @@ class _MemoryCredential:
 
 
 class ModelsState:
-    """Own one model revision store and one Root-local frozen driver registry."""
+    """Own one model store and the current driver registrations for this Root."""
 
     def __init__(
         self,
         store: ModelsStore,
         *,
-        root_instance_token: object,
-        context: Context | None = None,
+        context: Context,
         capability_catalog: _CapabilityCatalog | None = None,
     ) -> None:
         self.store = store
-        self._settings_store = store
-        self.root_instance_token = root_instance_token
+        self._instance_id = uuid4().hex
         self.context = context
         self.capability_catalog = capability_catalog
-        self._driver_registrations: dict[str, ModelDriverDefinition] = {}
-        self._driver_contexts: dict[str, Context] = {}
-        self._drivers: Mapping[str, ModelDriverDefinition] = MappingProxyType({})
-        self.sealed = False
+        self._registrations: dict[str, _DriverRegistration] = {}
         self.drivers = _DriversView(self)
         self.chat_models = _ChatModelsView(self)
         self.embeddings = _EmbeddingsView(self)
@@ -395,57 +514,110 @@ class ModelsState:
     ) -> Effect:
         """Register one driver as an Effect of its provider Fiber."""
 
-        if (
-            ctx.root_instance_token is not self.root_instance_token
-            or ctx.require(MODEL_DRIVERS) is not self.drivers
-        ):
+        if (ctx.root_instance_token is not self.context.root_instance_token
+                or ctx.require(MODEL_DRIVERS) is not self.drivers):
             raise RuntimeError("model driver 与 MODEL_DRIVERS 不属于同一个 Root")
         if not definition.driver_id.strip() or not definition.contract_version.strip():
             raise ValueError("model driver identity 不能为空")
-        def setup():
-            if self.sealed:
-                raise RuntimeError("model driver registry 已封印")
-            if definition.driver_id in self._driver_registrations:
-                raise ValueError(f"model driver 重复注册: {definition.driver_id}")
-            self._driver_registrations[definition.driver_id] = definition
-            self._driver_contexts[definition.driver_id] = ctx
 
-            def cleanup() -> None:
-                current = self._driver_registrations.get(definition.driver_id)
-                if current is definition:
-                    del self._driver_registrations[definition.driver_id]
-                    del self._driver_contexts[definition.driver_id]
+        def setup():
+            if definition.driver_id in self._registrations:
+                raise ValueError(f"model driver 重复注册: {definition.driver_id}")
+            record = _DriverRegistration(ctx, definition, uuid4().hex)
+            self._registrations[definition.driver_id] = record
+
+            async def cleanup() -> None:
+                await self._cleanup_registration(record)
 
             return cleanup
 
         return await ctx.effect(setup, label=f"model-driver:{definition.driver_id}")
 
-    async def seal(self, _event: SnapshotSealing) -> None:
-        """Freeze registrations after checking committed config readability."""
+    def _registration_required(self, driver_id: str) -> _DriverRegistration:
+        record = self._registrations.get(driver_id)
+        if record is None or record.context.fiber.state is not FiberState.ACTIVE:
+            raise DriverUnavailableError(f"model driver 不可用: {driver_id}")
+        return record
 
-        if self.sealed:
-            raise RuntimeError("model driver registry 重复封印")
-        snapshot = self.store.read_snapshot()
-        if snapshot is not None:
-            _check_vision_binding(snapshot)
-        for connection in (() if snapshot is None else snapshot.connections.values()):
-            if not connection.enabled:
+    def _select_driver_records(
+        self,
+        connections: Sequence[StoredConnection],
+    ) -> tuple[_SelectedDriver, ...]:
+        """Freeze current registrations before any selected driver can await."""
+
+        selected: list[_SelectedDriver] = []
+        seen: set[str] = set()
+        for connection in connections:
+            if connection.connection_id in seen:
                 continue
-            definition = self._driver_registrations.get(connection.driver_id)
-            if definition is None:
-                continue
-            driver = await definition.open(
-                _driver_connection_descriptor(connection),
-                self.store.credential_handle(
-                    connection.connection_id,
-                    connection.auth_identity,
-                ),
+            seen.add(connection.connection_id)
+            selected.append(
+                _SelectedDriver(
+                    connection_id=connection.connection_id,
+                    registration=self._registration_required(connection.driver_id),
+                )
             )
-            await driver.aclose()
-        self._drivers = MappingProxyType(dict(self._driver_registrations))
-        self.sealed = True
+        return tuple(selected)
+
+    def _runtime_namespace(self, selected: Sequence[_SelectedDriver]) -> str:
+        """Derive a stable identity from this Models instance and selected registrations."""
+
+        identities = sorted(
+            {
+                (item.registration.definition.driver_id, item.registration.registration_id)
+                for item in selected
+            }
+        )
+        payload = "\0".join(
+            (self._instance_id, *(f"{driver}\0{registration}" for driver, registration in identities))
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    async def _cleanup_registration(self, record: _DriverRegistration) -> None:
+        """Retire one registration and retry its auth cleanup under its Effect binder."""
+
+        if self._registrations.get(record.definition.driver_id) is record:
+            del self._registrations[record.definition.driver_id]
+        attempts = [
+            (attempt_id, attempt)
+            for attempt_id, attempt in tuple(self._auth_attempts.items())
+            if attempt.registration is record
+        ]
+        for _attempt_id, attempt in attempts:
+            attempt.cancelled = True
+        current = asyncio.current_task()
+        for _attempt_id, attempt in attempts:
+            task = attempt.expiry_task
+            attempt.expiry_task = None
+            if task is not None and task is not current:
+                task.cancel()
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    pass
+        failures: list[BaseException] = []
+        for attempt_id, attempt in attempts:
+            async with attempt.lock:
+                if self._auth_attempts.get(attempt_id) is not attempt:
+                    continue
+                if attempt.state is None:
+                    self._auth_attempts.pop(attempt_id, None)
+                    continue
+                cancel = record.definition.cancel_auth
+                if cancel is None:
+                    self._auth_attempts.pop(attempt_id, None)
+                    continue
+                try:
+                    await cancel(attempt.state)
+                except BaseException as error:
+                    failures.append(error)
+                    continue
+                self._auth_attempts.pop(attempt_id, None)
+        if failures:
+            raise BaseExceptionGroup("model auth attempt 清理失败", failures)
 
     def catalog_snapshot(self) -> ModelCatalogSnapshot:
+        self._check_snapshot_service(MODEL_CATALOG, self.catalog)
         snapshot = self._snapshot_or_empty()
         connections = tuple(
             ConnectionDescriptor(
@@ -472,6 +644,7 @@ class ModelsState:
         self,
         selection: ChatModelSelection,
     ) -> ChatModelSelection:
+        self._check_snapshot_service(CHAT_MODELS, self.chat_models)
         if selection.reasoning_effort and selection.model_id is None:
             raise ValueError("推理强度必须绑定显式模型")
         if selection.model_id is None:
@@ -492,6 +665,45 @@ class ModelsState:
             raise ValueError(f"模型不支持推理强度: {selection.reasoning_effort}")
         return selection
 
+    def _select_chat_models(
+        self,
+        snapshot: StoredSnapshot,
+        explicit_model_id: str | None,
+        reasoning_effort: str | None,
+    ) -> tuple[_SelectedChat, ...]:
+        """Freeze role-to-model choices before any driver connection can await."""
+
+        _check_vision_binding(snapshot)
+        selected: list[_SelectedChat] = []
+        for role in MODEL_ROLES:
+            model_id = snapshot.role_bindings.get(role)
+            binding_role = role
+            if explicit_model_id is not None and role == _AGENT_ROLE:
+                model_id = explicit_model_id
+            if model_id is None:
+                if role == _DEFAULT_ROLE:
+                    raise ModelUnavailableError("尚未配置 default 聊天模型")
+                default_id = snapshot.role_bindings.get(_DEFAULT_ROLE)
+                if role == _VISION_ROLE:
+                    if (
+                        default_id is None
+                        or "image"
+                        not in snapshot.models[default_id].capabilities.input_modalities
+                    ):
+                        continue
+                model_id = default_id
+                binding_role = _DEFAULT_ROLE
+            if model_id is None:
+                continue
+            effort = (
+                reasoning_effort
+                if explicit_model_id and role == _AGENT_ROLE
+                else snapshot.role_reasoning_efforts.get(binding_role)
+                or snapshot.models[model_id].default_reasoning_effort
+            )
+            selected.append(_SelectedChat(role, model_id, effort))
+        return tuple(selected)
+
     @asynccontextmanager
     async def execution(
         self,
@@ -501,8 +713,7 @@ class ModelsState:
         inherited = _CURRENT_EXECUTION.get()
         if inherited is not None and inherited.owner_task is not asyncio.current_task():
             raise RuntimeError("model execution 不能由子 task 继承")
-        scope = self._capture_runtime_scope("model execution")
-        async with scope:
+        async with self.context.runtime_scope():
             self._check_snapshot_service(CHAT_MODELS, self.chat_models)
             existing = inherited
             if existing is not None:
@@ -522,12 +733,26 @@ class ModelsState:
                 ChatModelSelection(model_id, reasoning_effort)
             )
             snapshot = self._snapshot_required()
-            async with _driver_scope() as opened:
+            selected_models = self._select_chat_models(
+                snapshot,
+                selection.model_id,
+                selection.reasoning_effort,
+            )
+            connections = tuple(
+                snapshot.connections[snapshot.models[item.model_id].connection_id]
+                for item in selected_models
+            )
+            selected_drivers = self._select_driver_records(connections)
+            namespace = self._runtime_namespace(selected_drivers)
+            async with _driver_scope(
+                self, connections, selected=selected_drivers
+            ) as opened:
                 execution = await self._build_execution(
-                    scope.snapshot_id,
+                    namespace,
                     snapshot,
                     selection.model_id,
                     selection.reasoning_effort,
+                    selected_models,
                     opened,
                 )
                 token = _CURRENT_EXECUTION.set(execution)
@@ -562,31 +787,29 @@ class ModelsState:
         inherited = _CURRENT_EXECUTION.get()
         if inherited is not None and inherited.owner_task is not asyncio.current_task():
             raise RuntimeError("model execution 不能由子 task 继承")
-        scope = self._capture_runtime_scope("embedding execution")
-        async with scope:
+        async with self.context.runtime_scope():
             self._check_snapshot_service(EMBEDDINGS, self.embeddings)
-            async with _driver_scope() as opened:
-                existing = inherited
-                if existing is not None:
-                    if existing.state is not self:
-                        raise RuntimeError("同一执行不能绑定两个 models Service")
-                    selected = model_id or existing.snapshot.default_embedding_model_id
-                    if selected is None:
-                        raise ModelUnavailableError("尚未配置默认 embedding 模型")
-                    bound = await self._bind_embedding(
-                        existing.plugin_snapshot_id,
-                        existing.snapshot,
-                        selected,
-                        opened,
-                    )
-                    yield bound
-                    return
+            existing = inherited
+            if existing is not None:
+                if existing.state is not self:
+                    raise RuntimeError("同一执行不能绑定两个 models Service")
+                selected = model_id or existing.snapshot.default_embedding_model_id
+                if selected is None:
+                    raise ModelUnavailableError("尚未配置默认 embedding 模型")
+                snapshot = existing.snapshot
+            else:
                 snapshot = self._snapshot_required()
                 selected = model_id or snapshot.default_embedding_model_id
                 if selected is None:
                     raise ModelUnavailableError("尚未配置默认 embedding 模型")
+            connection = self._embedding_connection(snapshot, selected)
+            selected_drivers = self._select_driver_records((connection,))
+            plugin_snapshot_id = self._runtime_namespace(selected_drivers)
+            async with _driver_scope(
+                self, (connection,), selected=selected_drivers
+            ) as opened:
                 bound = await self._bind_embedding(
-                    scope.snapshot_id,
+                    plugin_snapshot_id,
                     snapshot,
                     selected,
                     opened,
@@ -595,23 +818,35 @@ class ModelsState:
 
     def chat_contributors(self) -> tuple[Context, ...]:
         """只归档可选聊天模型所需的实际 driver，不夹带独立 embedding 或未配置的 driver。"""
+        self._check_snapshot_service(CHAT_MODELS, self.chat_models)
         snapshot = self._snapshot_or_empty()
-        drivers = {snapshot.connections[model.connection_id].driver_id for model in snapshot.models.values()
-                   if model.kind == ModelKind.CHAT and model.enabled and snapshot.connections[model.connection_id].enabled}
-        return tuple(context for driver, context in self._driver_contexts.items() if driver in drivers)
+        drivers = {
+            snapshot.connections[model.connection_id].driver_id
+            for model in snapshot.models.values()
+            if model.kind == ModelKind.CHAT
+            and model.enabled
+            and snapshot.connections[model.connection_id].enabled
+        }
+        return tuple(
+            record.context
+            for driver_id, record in self._registrations.items()
+            if driver_id in drivers
+            and record.context.fiber.state is FiberState.ACTIVE
+        )
 
     def save_embedding_binding(self, bindings: Bindings, model_id: str | None) -> str:
         """由实际注册表选择 driver owner，调用者不能自己拼归档闭包。"""
-        self._check_snapshot_service(EMBEDDINGS, self.embeddings)
         descriptor = self.describe_embedding(model_id)
         saved = SavedEmbedding(model_id=descriptor.model_id, space_identity=descriptor.identity,
                                dimensions=descriptor.dimensions)
+        registration = self._registration_required(descriptor.driver_id)
         return bindings.bind(EMBEDDINGS, saved.model_dump(),
-            contributors=(self._driver_contexts[descriptor.driver_id],))
+            contributors=(registration.context,))
 
     def describe_embedding(self, model_id: str | None) -> EmbeddingSpaceDescriptor:
         """描述已配置空间，不读取凭据或执行外部 I/O。"""
 
+        self._check_snapshot_service(EMBEDDINGS, self.embeddings)
         snapshot = self._snapshot_required()
         selected = model_id or snapshot.default_embedding_model_id
         if selected is None:
@@ -622,17 +857,35 @@ class ModelsState:
         connection = snapshot.connections[model.connection_id]
         if not connection.enabled:
             raise ModelUnavailableError(f"模型连接已禁用: {connection.connection_id}")
-        definitions = self._drivers if self.sealed else self._driver_registrations
-        definition = definitions.get(connection.driver_id)
-        if definition is None:
-            raise DriverUnavailableError(f"model driver 不可用: {connection.driver_id}")
+        registration = self._registration_required(connection.driver_id)
+        namespace = self._runtime_namespace(
+            (_SelectedDriver(connection.connection_id, registration),)
+        )
         return _embedding_descriptor(
-            "described",
+            namespace,
             snapshot,
             connection,
             model,
-            definition,
+            registration.definition,
         )
+
+    def _embedding_connection(
+        self,
+        snapshot: StoredSnapshot,
+        model_id: str,
+    ) -> StoredConnection:
+        """Resolve the one embedding connection before entering its owner scope."""
+
+        model = snapshot.models.get(model_id)
+        if model is None or model.kind is not ModelKind.EMBEDDING or not model.enabled:
+            raise ModelUnavailableError(f"embedding 模型不可用: {model_id}")
+        dimensions = model.capabilities.embedding_dimensions
+        if dimensions is None or dimensions <= 0:
+            raise ModelUnavailableError(f"embedding 模型缺少 dimensions: {model_id}")
+        connection = snapshot.connections[model.connection_id]
+        if not connection.enabled:
+            raise ModelUnavailableError(f"模型连接已禁用: {connection.connection_id}")
+        return connection
 
     async def _build_execution(
         self,
@@ -640,42 +893,17 @@ class ModelsState:
         snapshot: StoredSnapshot,
         explicit_model_id: str | None,
         reasoning_effort: str | None,
-        opened: dict[str, DriverConnection],
+        selected: tuple[_SelectedChat, ...],
+        opened: _DriverScope,
     ) -> _Execution:
-        _check_vision_binding(snapshot)
         chat: dict[str, BoundChatModel] = {}
-        for role in MODEL_ROLES:
-            model_id = snapshot.role_bindings.get(role)
-            binding_role = role
-            if explicit_model_id is not None and role == _AGENT_ROLE:
-                model_id = explicit_model_id
-            if model_id is None:
-                if role == _DEFAULT_ROLE:
-                    raise ModelUnavailableError("尚未配置 default 聊天模型")
-                default_id = snapshot.role_bindings.get(_DEFAULT_ROLE)
-                if role == _VISION_ROLE:
-                    if (
-                        default_id is None
-                        or "image"
-                        not in snapshot.models[default_id].capabilities.input_modalities
-                    ):
-                        continue
-                model_id = default_id
-                binding_role = _DEFAULT_ROLE
-            if model_id is None:
-                continue
-            effort = (
-                reasoning_effort
-                if explicit_model_id and role == _AGENT_ROLE
-                else snapshot.role_reasoning_efforts.get(binding_role)
-                or snapshot.models[model_id].default_reasoning_effort
-            )
-            chat[role] = await self._bind_chat(
+        for item in selected:
+            chat[item.role] = await self._bind_chat(
                 plugin_snapshot_id,
                 snapshot,
-                model_id,
-                role,
-                effort,
+                item.model_id,
+                item.role,
+                item.effort,
                 opened,
             )
         return _Execution(
@@ -694,7 +922,7 @@ class ModelsState:
         model_id: str,
         role: str,
         effort: str | None,
-        opened: dict[str, DriverConnection],
+        opened: _DriverScope,
     ) -> BoundChatModel:
         model = snapshot.models.get(model_id)
         if model is None or model.kind is not ModelKind.CHAT or not model.enabled:
@@ -737,7 +965,7 @@ class ModelsState:
         plugin_snapshot_id: str,
         snapshot: StoredSnapshot,
         model_id: str,
-        opened: dict[str, DriverConnection],
+        opened: _DriverScope,
     ) -> BoundEmbeddingModel:
         model = snapshot.models.get(model_id)
         if model is None or model.kind is not ModelKind.EMBEDDING or not model.enabled:
@@ -762,46 +990,36 @@ class ModelsState:
     async def _open_driver(
         self,
         connection: StoredConnection,
-        opened: dict[str, DriverConnection],
+        scope: _DriverScope,
+        *,
+        credential: Any | None = None,
     ) -> tuple[ModelDriverDefinition, DriverConnection]:
         if not connection.enabled:
             raise ModelUnavailableError(f"模型连接已禁用: {connection.connection_id}")
-        definition = self._drivers.get(connection.driver_id)
-        if definition is None:
+        selected = scope.selected.get(connection.connection_id)
+        if selected is None:
             raise DriverUnavailableError(f"model driver 不可用: {connection.driver_id}")
-        driver = opened.get(connection.connection_id)
+        if selected.registration.definition.driver_id != connection.driver_id:
+            raise DriverUnavailableError(f"model driver 不可用: {connection.driver_id}")
+        definition = selected.registration.definition
+        driver = scope.opened.get(connection.connection_id)
         if driver is None:
             driver = await definition.open(
                 _driver_connection_descriptor(connection),
-                self._settings_store.credential_handle(
+                credential
+                if credential is not None
+                else self.store.credential_handle(
                     connection.connection_id, connection.auth_identity
                 ),
             )
-            opened[connection.connection_id] = driver
+            scope.holder(connection.connection_id).driver = driver
+            scope.opened[connection.connection_id] = driver
         return definition, driver
 
-    def read_settings_source(self) -> ModelSettingsSource:
-        """在来源真实 Scope 内交出设置位置；凭据仍由原 connection 持久化。"""
-        self._check_snapshot_service(MODEL_SETTINGS, self.settings)
-        return ModelSettingsSource(self._settings_store.path, self._settings_store.backup_dir)
-
-    def use_settings_source(self, source: ModelSettingsSource) -> None:
-        """空 Root 一次接续已有设置；新 models/driver 执行，调用账仍写本地 store。"""
-        self._check_snapshot_service(MODEL_SETTINGS, self.settings)
-        if not self.sealed:
-            raise RuntimeError("接续模型设置需要已发布的调用 Scope")
-        if self._settings_store is not self.store or self.store.read_snapshot() != StoredSnapshot.empty():
-            raise RuntimeError("只能为空模型 Root 接续一次设置，不能替换已有设置")
-        settings = ModelsStore(source.path, source.backup_dir)
-        if settings.read_snapshot() is None:
-            raise ModelUnavailableError("原模型设置库不存在")
-        self._settings_store = settings
-
     async def apply_change(self, command: ModelChange) -> SettingsReceipt:
-        """Keep the exact driver generation alive across settings network I/O."""
+        """Validate driver I/O under Models ownership before one store CAS."""
 
-        scope = self._capture_runtime_scope("model settings")
-        async with scope:
+        async with self.context.runtime_scope():
             self._check_snapshot_service(MODEL_SETTINGS, self.settings)
             return await self._apply_change(command)
 
@@ -811,8 +1029,7 @@ class ModelsState:
     ) -> tuple[DiscoveredModel, ...]:
         """Discover one unsaved connection without publishing durable state."""
 
-        scope = self._capture_runtime_scope("model settings")
-        async with scope:
+        async with self.context.runtime_scope():
             self._check_snapshot_service(MODEL_SETTINGS, self.settings)
             return await self._discover_new_connection(connection)
 
@@ -821,38 +1038,17 @@ class ModelsState:
         key: ServiceKey[object],
         expected: object,
     ) -> None:
-        """Reject a saved service used through another runtime snapshot."""
+        """Reject a service object that is not provided by this Models Context."""
 
-        context = self.context
-        if context is None or context.root_instance_token is not self.root_instance_token:
-            raise RuntimeError("models Service 不属于当前 runtime snapshot")
-        try:
-            context.require_runtime_owner(key, expected)
-        except (PermissionError, RuntimeError) as error:
-            raise RuntimeError("models Service 不属于当前 runtime snapshot") from error
-
-    def _capture_runtime_scope(self, operation: str):
-        context = self.context
-        if context is None:
-            raise RuntimeError(f"{operation} 缺少当前 task 的 runtime snapshot lease")
-        try:
-            return context.capture_runtime_scope()
-        except RuntimeError as error:
-            raise RuntimeError(
-                f"{operation} 缺少当前 task 的 runtime snapshot lease"
-            ) from error
+        if self.context.require(key) is not expected:
+            raise RuntimeError("models Service 不属于当前 Context")
 
     async def _apply_change(self, command: ModelChange) -> SettingsReceipt:
-        if self._settings_store is not self.store:
-            raise RuntimeError("接续的模型设置只用于执行；请在原设置 owner 修改连接、模型或角色")
-        if not self.sealed:
-            raise RuntimeError("models settings 只能使用已发布 snapshot")
         if isinstance(command, AddConnection):
             await self._probe_new_connection(command)
             revision = self.store.add_connection(command)
         elif isinstance(command, CreateConnectionWithModel):
             self._check_initial_model_identity(command)
-            await self._probe_new_connection(command.connection)
             await self._check_new_connection_model(command)
             revision = self.store.create_connection_with_model(command)
         elif isinstance(command, UpdateConnection):
@@ -884,16 +1080,18 @@ class ModelsState:
         connection = snapshot.connections.get(command.connection_id)
         if connection is None or not connection.enabled:
             raise ModelUnavailableError(f"模型连接不可用: {command.connection_id}")
-        definition = self._driver_required(connection.driver_id)
+        registration = self._registration_required(connection.driver_id)
+        definition = registration.definition
         if definition.discover is None:
             raise ValueError(f"driver 不支持模型发现: {connection.driver_id}")
-        discovered = await definition.discover(
-            _driver_connection_descriptor(connection),
-            self.store.credential_handle(
-                connection.connection_id,
-                connection.auth_identity,
-            ),
-        )
+        async with registration.context.runtime_scope():
+            discovered = await definition.discover(
+                _driver_connection_descriptor(connection),
+                self.store.credential_handle(
+                    connection.connection_id,
+                    connection.auth_identity,
+                ),
+            )
         if self.capability_catalog is not None:
             discovered = await self.capability_catalog.enrich(
                 discovered,
@@ -914,7 +1112,8 @@ class ModelsState:
     ) -> tuple[DiscoveredModel, ...]:
         """Read and enrich a provider catalog using an in-memory credential."""
 
-        definition = self._driver_required(connection.driver_id)
+        registration = self._registration_required(connection.driver_id)
+        definition = registration.definition
         if definition.discover is None:
             raise ValueError(f"driver 不支持模型发现: {connection.driver_id}")
         descriptor = DriverConnectionDescriptor(
@@ -930,7 +1129,8 @@ class ModelsState:
             connection.auth_identity,
             connection.credential,
         )
-        discovered = await definition.discover(descriptor, credential)
+        async with registration.context.runtime_scope():
+            discovered = await definition.discover(descriptor, credential)
         if self.capability_catalog is not None:
             discovered = await self.capability_catalog.enrich(
                 discovered,
@@ -942,37 +1142,33 @@ class ModelsState:
         return discovered
 
     async def _probe_new_connection(self, command: AddConnection) -> None:
-        definition = self._driver_required(command.driver_id)
-        descriptor = DriverConnectionDescriptor(
+        connection = StoredConnection(
             connection_id=command.connection_id,
             name=command.name,
             driver_id=command.driver_id,
             endpoint=command.endpoint,
             auth_identity=command.auth_identity,
-            config=command.driver_config,
+            driver_config=command.driver_config,
+            enabled=True,
         )
         credential = _MemoryCredential(
             command.connection_id, command.auth_identity, command.credential
         )
-        if definition.probe is not None:
-            await definition.probe(descriptor, credential)
-        else:
-            driver = await definition.open(descriptor, credential)
-            await driver.aclose()
+        selected = self._select_driver_records((connection,))
+        async with _driver_scope(self, (connection,), selected=selected) as opened:
+            await self._probe_connection(connection, credential, opened)
 
     async def _probe_updated_connection(self, command: UpdateConnection) -> None:
         snapshot = self._snapshot_required()
         existing = snapshot.connections.get(command.connection_id)
         if existing is None:
             raise ModelUnavailableError(f"模型连接不存在: {command.connection_id}")
-        definition = self._driver_required(existing.driver_id)
-        descriptor = DriverConnectionDescriptor(
-            connection_id=existing.connection_id,
+        connection = replace(
+            existing,
             name=command.name,
-            driver_id=existing.driver_id,
             endpoint=command.endpoint or existing.endpoint,
             auth_identity=command.auth_identity,
-            config=(
+            driver_config=(
                 command.driver_config
                 if command.driver_config is not None
                 else existing.driver_config
@@ -980,25 +1176,42 @@ class ModelsState:
         )
         credential = (
             _MemoryCredential(
-                existing.connection_id, command.auth_identity, command.credential
+                connection.connection_id, command.auth_identity, command.credential
             )
             if command.credential is not None
             else self.store.credential_handle(
-                existing.connection_id, command.auth_identity
+                connection.connection_id, command.auth_identity
             )
         )
+        selected = self._select_driver_records((connection,))
+        async with _driver_scope(self, (connection,), selected=selected) as opened:
+            await self._probe_connection(connection, credential, opened)
+
+    async def _probe_connection(
+        self,
+        connection: StoredConnection,
+        credential: Any,
+        scope: _DriverScope,
+    ) -> None:
+        """Probe or open one connection using the already selected registration."""
+
+        selected = scope.selected.get(connection.connection_id)
+        if selected is None:
+            raise DriverUnavailableError(f"model driver 不可用: {connection.driver_id}")
+        definition = selected.registration.definition
+        descriptor = _driver_connection_descriptor(connection)
         if definition.probe is not None:
             await definition.probe(descriptor, credential)
         else:
-            driver = await definition.open(descriptor, credential)
-            await driver.aclose()
+            await self._open_driver(connection, scope, credential=credential)
 
     async def _check_model(self, command: AddModel) -> None:
         snapshot = self._snapshot_required()
         connection = snapshot.connections.get(command.connection_id)
         if connection is None:
             raise ModelUnavailableError(f"模型连接不存在: {command.connection_id}")
-        async with _driver_scope() as opened:
+        selected = self._select_driver_records((connection,))
+        async with _driver_scope(self, (connection,), selected=selected) as opened:
             definition, driver = await self._open_driver(connection, opened)
             await self._check_bound_model(
                 snapshot,
@@ -1015,7 +1228,6 @@ class ModelsState:
         """Validate the first model against the uncommitted connection draft."""
 
         connection_change = command.connection
-        definition = self._driver_required(connection_change.driver_id)
         connection = StoredConnection(
             connection_id=connection_change.connection_id,
             name=connection_change.name,
@@ -1025,15 +1237,21 @@ class ModelsState:
             driver_config=connection_change.driver_config,
             enabled=True,
         )
-        driver = await definition.open(
-            _driver_connection_descriptor(connection),
-            _MemoryCredential(
-                connection.connection_id,
-                connection.auth_identity,
-                connection_change.credential,
-            ),
+        credential = _MemoryCredential(
+            connection.connection_id,
+            connection.auth_identity,
+            connection_change.credential,
         )
-        try:
+        selected = self._select_driver_records((connection,))
+        async with _driver_scope(self, (connection,), selected=selected) as opened:
+            definition = selected[0].registration.definition
+            if definition.probe is not None:
+                await definition.probe(
+                    _driver_connection_descriptor(connection), credential
+                )
+            definition, driver = await self._open_driver(
+                connection, opened, credential=credential
+            )
             await self._check_bound_model(
                 self._snapshot_or_empty(),
                 connection,
@@ -1041,8 +1259,6 @@ class ModelsState:
                 definition,
                 driver,
             )
-        finally:
-            await driver.aclose()
 
     async def _check_bound_model(
         self,
@@ -1077,29 +1293,41 @@ class ModelsState:
             raise ValueError("initial model belongs to a different connection")
 
     async def _start_auth(self, command: StartConnectionAuth) -> SettingsReceipt:
-        definition = self._driver_required(command.driver_id)
+        registration = self._registration_required(command.driver_id)
+        definition = registration.definition
         if definition.start_auth is None:
             raise ValueError(f"driver 不支持登录: {command.driver_id}")
-        result = await definition.start_auth(dict(command.input))
         attempt_id = secrets.token_urlsafe(18)
-        state, challenge = _auth_state_and_challenge(result)
         attempt = _AuthAttempt(
-            driver_id=command.driver_id,
             connection_id=command.connection_id,
-            definition=definition,
-            state=state,
+            registration=registration,
+            state=None,
         )
         self._auth_attempts[attempt_id] = attempt
-        attempt.expiry_task = asyncio.create_task(
-            self._expire_auth_attempt(attempt_id, attempt),
-            name=f"model-auth-expiry:{attempt_id}",
-        )
-        return SettingsReceipt(
-            revision=self._snapshot_or_empty().revision,
-            status="pending",
-            attempt_id=attempt_id,
-            challenge=cast(Mapping[str, Any] | None, challenge),
-        )
+        try:
+            async with attempt.lock:
+                async with registration.context.runtime_scope():
+                    result = await definition.start_auth(dict(command.input))
+                    state, challenge = _auth_state_and_challenge(result)
+                    attempt.state = state
+                    self._require_live_attempt(attempt_id, attempt)
+                    attempt.expiry_task = asyncio.create_task(
+                        self._expire_auth_attempt(attempt_id, attempt),
+                        name=f"model-auth-expiry:{attempt_id}",
+                    )
+            return SettingsReceipt(
+                revision=self._snapshot_or_empty().revision,
+                status="pending",
+                attempt_id=attempt_id,
+                challenge=cast(Mapping[str, Any] | None, challenge),
+            )
+        except BaseException:
+            if (
+                self._auth_attempts.get(attempt_id) is attempt
+                and attempt.state is None
+            ):
+                self._auth_attempts.pop(attempt_id, None)
+            raise
 
     async def _finish_auth(self, command: FinishConnectionAuth) -> SettingsReceipt:
         attempt = self._auth_attempts.get(command.attempt_id)
@@ -1107,60 +1335,79 @@ class ModelsState:
             raise ValueError(f"auth attempt 不存在: {command.attempt_id}")
         async with attempt.lock:
             self._require_live_attempt(command.attempt_id, attempt)
-            definition = attempt.definition
+            registration = attempt.registration
+            definition = registration.definition
             if definition.finish_auth is None:
-                raise ValueError(
-                    f"driver 不支持完成登录: {attempt.driver_id}"
+                raise ValueError(f"driver 不支持完成登录: {definition.driver_id}")
+            if attempt.state is None:
+                raise RuntimeError("driver auth 尚未返回可完成的 state")
+            selected = (_SelectedDriver(attempt.connection_id, registration),)
+            async with _driver_scope(self, (), selected=selected) as opened:
+                result = await definition.finish_auth(attempt.state)
+                if str(result.get("status") or "") != "complete":
+                    next_state, challenge = _auth_state_and_challenge(result)
+                    attempt.state = next_state
+                    self._require_live_attempt(command.attempt_id, attempt)
+                    return SettingsReceipt(
+                        revision=self._snapshot_or_empty().revision,
+                        status="pending",
+                        attempt_id=command.attempt_id,
+                        challenge=cast(Mapping[str, Any] | None, challenge),
+                    )
+                self._require_live_attempt(command.attempt_id, attempt)
+                fields = _auth_connection_fields(result)
+                current = self.store.read_snapshot()
+                existing = (
+                    None
+                    if current is None
+                    else current.connections.get(attempt.connection_id)
                 )
-            result = await definition.finish_auth(attempt.state)
+                if existing is not None and existing.driver_id != definition.driver_id:
+                    raise ValueError("auth driver 与已有 connection 不一致")
+                connection = StoredConnection(
+                    connection_id=attempt.connection_id,
+                    name=fields["name"],
+                    driver_id=definition.driver_id,
+                    endpoint=fields["endpoint"],
+                    auth_identity=fields["auth_identity"],
+                    driver_config=fields["driver_config"],
+                    enabled=True,
+                )
+                credential: Any = _MemoryCredential(
+                    connection.connection_id,
+                    connection.auth_identity,
+                    fields["credential"],
+                )
+                await self._probe_connection(connection, credential, opened)
+                self._require_live_attempt(command.attempt_id, attempt)
             self._require_live_attempt(command.attempt_id, attempt)
-            if str(result.get("status") or "") != "complete":
-                next_state, challenge = _auth_state_and_challenge(result)
-                attempt.state = next_state
-                return SettingsReceipt(
-                    revision=self._snapshot_or_empty().revision,
-                    status="pending",
-                    attempt_id=command.attempt_id,
-                    challenge=cast(Mapping[str, Any] | None, challenge),
-                )
-            connection = _auth_connection_fields(result)
-            current = self.store.read_snapshot()
-            existing = (
-                None
-                if current is None
-                else current.connections.get(attempt.connection_id)
-            )
             if existing is None:
                 change: AddConnection | UpdateConnection = AddConnection(
                     expected_revision=command.expected_revision,
-                    connection_id=attempt.connection_id,
-                    name=connection["name"],
-                    driver_id=attempt.driver_id,
-                    endpoint=connection["endpoint"],
-                    auth_identity=connection["auth_identity"],
-                    credential=connection["credential"],
-                    driver_config=connection["driver_config"],
+                    connection_id=connection.connection_id,
+                    name=connection.name,
+                    driver_id=connection.driver_id,
+                    endpoint=connection.endpoint,
+                    auth_identity=connection.auth_identity,
+                    credential=fields["credential"],
+                    driver_config=connection.driver_config,
                 )
-                await self._probe_new_connection(change)
                 self._require_live_attempt(command.attempt_id, attempt)
                 revision = self.store.add_connection(change)
             else:
-                if existing.driver_id != attempt.driver_id:
-                    raise ValueError("auth driver 与已有 connection 不一致")
                 change = UpdateConnection(
                     expected_revision=command.expected_revision,
-                    connection_id=attempt.connection_id,
-                    name=connection["name"],
-                    endpoint=connection["endpoint"],
-                    auth_identity=connection["auth_identity"],
-                    credential=connection["credential"],
-                    driver_config=connection["driver_config"],
+                    connection_id=connection.connection_id,
+                    name=connection.name,
+                    endpoint=connection.endpoint,
+                    auth_identity=connection.auth_identity,
+                    credential=fields["credential"],
+                    driver_config=connection.driver_config,
                 )
-                await self._probe_updated_connection(change)
                 self._require_live_attempt(command.attempt_id, attempt)
                 revision = self.store.update_connection(change)
             self._stop_auth_expiry(attempt)
-            del self._auth_attempts[command.attempt_id]
+            self._auth_attempts.pop(command.attempt_id, None)
             return SettingsReceipt(revision=revision, status="committed")
 
     async def _cancel_auth(self, command: CancelConnectionAuth) -> SettingsReceipt:
@@ -1175,11 +1422,25 @@ class ModelsState:
                     status="cancelled",
                     attempt_id=command.attempt_id,
                 )
-            definition = attempt.definition
-            if definition.cancel_auth is not None:
-                await definition.cancel_auth(attempt.state)
-            self._stop_auth_expiry(attempt)
-            self._auth_attempts.pop(command.attempt_id, None)
+            if attempt.state is None:
+                self._stop_auth_expiry(attempt)
+                self._auth_attempts.pop(command.attempt_id, None)
+            else:
+                registration = attempt.registration
+                if self._registrations.get(registration.definition.driver_id) is not registration:
+                    raise DriverUnavailableError(
+                        f"model driver 不可用: {registration.definition.driver_id}"
+                    )
+                if registration.context.fiber.state is not FiberState.ACTIVE:
+                    raise DriverUnavailableError(
+                        f"model driver 不可用: {registration.definition.driver_id}"
+                    )
+                async with registration.context.runtime_scope():
+                    cancel = registration.definition.cancel_auth
+                    if cancel is not None:
+                        await cancel(attempt.state)
+                self._stop_auth_expiry(attempt)
+                self._auth_attempts.pop(command.attempt_id, None)
         return SettingsReceipt(
             revision=self._snapshot_or_empty().revision,
             status="cancelled",
@@ -1201,7 +1462,6 @@ class ModelsState:
         except asyncio.CancelledError:
             return
         except Exception:
-            self._auth_attempts.pop(attempt_id, None)
             logger.exception("expired model auth attempt cleanup failed: %s", attempt_id)
 
     @staticmethod
@@ -1216,40 +1476,29 @@ class ModelsState:
         attempt_id: str,
         attempt: _AuthAttempt,
     ) -> None:
-        if attempt.cancelled or self._auth_attempts.get(attempt_id) is not attempt:
+        if (
+            attempt.cancelled
+            or self._auth_attempts.get(attempt_id) is not attempt
+            or self._registrations.get(attempt.registration.definition.driver_id)
+            is not attempt.registration
+            or attempt.registration.context.fiber.state is not FiberState.ACTIVE
+        ):
             raise ValueError(f"auth attempt 已取消: {attempt_id}")
 
-    async def close_auth_attempts(self) -> None:
-        """Cancel every unfinished login before this models generation retires."""
-
-        failures: list[BaseException] = []
-        for attempt_id in tuple(self._auth_attempts):
-            try:
-                await self._cancel_auth(CancelConnectionAuth(attempt_id))
-            except BaseException as error:
-                failures.append(error)
-        if failures:
-            raise BaseExceptionGroup("model auth attempt 清理失败", failures)
-
-    def _driver_required(self, driver_id: str) -> ModelDriverDefinition:
-        definition = self._drivers.get(driver_id)
-        if definition is None:
-            raise DriverUnavailableError(f"model driver 不可用: {driver_id}")
-        return definition
-
     def _snapshot_required(self) -> StoredSnapshot:
-        snapshot = self._settings_store.read_snapshot()
+        snapshot = self.store.read_snapshot()
         if snapshot is None:
             raise ModelUnavailableError("尚未配置任何模型")
         return snapshot
 
     def _snapshot_or_empty(self) -> StoredSnapshot:
-        return self._settings_store.read_snapshot() or StoredSnapshot.empty()
+        return self.store.read_snapshot() or StoredSnapshot.empty()
 
     def _availability(self, connection: StoredConnection) -> ModelAvailability:
         if not connection.enabled:
             return ModelAvailability.DISABLED
-        if connection.driver_id not in self._drivers:
+        record = self._registrations.get(connection.driver_id)
+        if record is None or record.context.fiber.state is not FiberState.ACTIVE:
             return ModelAvailability.DRIVER_UNAVAILABLE
         return ModelAvailability.AVAILABLE
 

@@ -176,9 +176,6 @@ class InboundState(StrEnum):
 
 class ChannelBindingLease(Protocol):
     @property
-    def snapshot_lease(self) -> object: ...
-
-    @property
     def snapshot_id(self) -> str: ...
 
     @property
@@ -1061,7 +1058,7 @@ class Channels(Protocol):
 
     async def register(self, ctx: Context, definition: ChannelDefinition) -> None: ...
 
-    def acquire_binding(self, snapshot_lease: Any, channel_name: str) -> ChannelBindingLease: ...
+    def acquire_binding(self, channel_name: str) -> ChannelBindingLease: ...
 
     async def dispatch_outbound(
         self, envelope: OutboundEnvelope, binding: ChannelBindingLease,
@@ -1124,7 +1121,6 @@ def _validate_binding_lease(lease: object) -> None:
     """Check the narrow exact-binding fields before an envelope retains a lease."""
 
     for field_name in (
-        "snapshot_lease",
         "snapshot_id",
         "generation_id",
         "channel_name",

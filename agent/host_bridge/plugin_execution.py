@@ -44,22 +44,38 @@ class CodeOwner:
 
 
 class ExecutionAccess:
-    def __init__(self, root_token: object, owners: Mapping[str, CodeOwner], *, candidate: bool):
+    def __init__(self, root_token: object, owners: Mapping[object, CodeOwner], *, candidate: bool):
         self._root_token = root_token
-        self._owners = dict(owners)
+        self._owners: dict[tuple[str, str], CodeOwner] = {}
+        for key, owner in owners.items():
+            if isinstance(key, tuple):
+                self._owners[key] = owner
+            else:
+                self._owners[(str(key), owner.generation_id)] = owner
         self._mode: Literal["candidate", "formal"] = "candidate" if candidate else "formal"
         self._environment = {key: os.environ[key] for key in (
             "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ",
             "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
         ) if key in os.environ}
 
+    def add_owner(self, plugin_id: str, generation_id: str, owner: CodeOwner) -> None:
+        """Add one exact generation owner without rebuilding the Root facade."""
+        key = (plugin_id, generation_id)
+        if key in self._owners:
+            raise RuntimeError(f"执行 owner 已存在: {plugin_id}/{generation_id}")
+        self._owners[key] = owner
+
+    def remove_owner(self, plugin_id: str, generation_id: str) -> None:
+        """Remove only the generation whose Fiber and resources are already closed."""
+        self._owners.pop((plugin_id, generation_id), None)
+
     def bind(self, ctx: Context) -> ExecutionGrant:
         """验证实际代码 owner，不接受自报插件名、模式或数据根。"""
         if ctx.root_instance_token is not self._root_token or ctx.require(EXECUTION) is not self:
             raise PermissionError("执行授权不能跨 Root")
         runtime = ctx.runtime
-        owner = self._owners[runtime.plugin_id]
-        if owner.generation_id != runtime.generation_id or owner.code_dir.resolve() != runtime.plugin_dir.resolve():
+        owner = self._owners.get((runtime.plugin_id, runtime.generation_id))
+        if owner is None or owner.code_dir.resolve() != runtime.plugin_dir.resolve():
             raise PermissionError("执行 Context 不属于固定代码制品")
         return ExecutionGrant(ctx, owner, self._mode, self._environment)
 

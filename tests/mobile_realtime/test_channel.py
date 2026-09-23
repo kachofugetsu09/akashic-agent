@@ -30,6 +30,11 @@ from agent.plugin_composition import (
     ModelDescriptor,
     ModelKind,
 )
+from agent.plugin_composition.ui_slots import (
+    MobileUiQueryTimeout,
+    MobileUiRpcExecutionError,
+    MobileUiRpcInvalidRequest,
+)
 from agent.plugin_composition.channels import (
     AttachmentKind as V3AttachmentKind,
     AttachmentRef,
@@ -2549,7 +2554,7 @@ async def test_plugin_ui_hot_update_only_targets_subscribed_connection(
         def __init__(self) -> None:
             self.revision = "a" * 64
 
-        def catalog(self) -> dict[str, object]:
+        async def catalog(self) -> dict[str, object]:
             return {"catalog_revision": self.revision, "items": []}
 
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
@@ -2686,11 +2691,11 @@ async def test_plugin_ui_timeout_becomes_transient_command_error(
     tmp_path: Path,
 ) -> None:
     class _TimeoutProvider:
-        def catalog(self) -> dict[str, object]:
+        async def catalog(self) -> dict[str, object]:
             return {"catalog_revision": "a" * 64, "items": []}
 
         async def query(self, *args: object, **kwargs: object) -> dict[str, object]:
-            raise channel_module.MobileUiQueryTimeout("插件 mobile UI query 超时")
+            raise MobileUiQueryTimeout("插件 mobile UI query 超时")
 
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
@@ -2712,11 +2717,11 @@ async def test_plugin_ui_invalid_request_becomes_transient_command_error(
     tmp_path: Path,
 ) -> None:
     class _InvalidRequestProvider:
-        def catalog(self) -> dict[str, object]:
+        async def catalog(self) -> dict[str, object]:
             return {"catalog_revision": "a" * 64, "items": []}
 
         async def query(self, *args: object, **kwargs: object) -> dict[str, object]:
-            raise channel_module.MobileUiRpcInvalidRequest("消息不属于请求会话")
+            raise MobileUiRpcInvalidRequest("消息不属于请求会话")
 
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
@@ -2742,12 +2747,12 @@ async def test_plugin_ui_execution_failure_becomes_transient_command_error(
         def __init__(self) -> None:
             self.calls = 0
 
-        def catalog(self) -> dict[str, object]:
+        async def catalog(self) -> dict[str, object]:
             return {"catalog_revision": "a" * 64, "items": []}
 
         async def query(self, *args: object, **kwargs: object) -> dict[str, object]:
             self.calls += 1
-            raise channel_module.MobileUiRpcExecutionError(
+            raise MobileUiRpcExecutionError(
                 "插件 mobile UI RPC 执行失败: sample@github.recall.current"
             )
 

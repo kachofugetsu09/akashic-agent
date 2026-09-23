@@ -8,7 +8,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from types import MappingProxyType
 from typing import Protocol, cast
 
@@ -16,6 +16,7 @@ from markdown_it import MarkdownIt
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.model import FiberState
 from agent.plugin_contracts import ContentPart, ContentReferences, freeze_metadata
 from agent.plugin_contracts import json_value
 
@@ -171,7 +172,7 @@ class ContentView(Protocol):
 
 
 class _ContentView:
-    """本次请求固定的协议集合；Prompt、解码和提交共用其 generation lease。"""
+    """本次请求固定的协议集合；所有回调共用 bind 取得的本地 owner scope。"""
 
     def __init__(self, content: Content, definitions: tuple[tuple[Context, ContentSchema], ...]):
         self._content = content
@@ -316,23 +317,42 @@ class Content:
 
     @asynccontextmanager
     async def bind(self) -> AsyncGenerator[ContentView]:
-        """调用方把 bind 保持到 append 完成，未提交结果不跨 lease 恢复。"""
+        """固定 ACTIVE 定义并在视图关闭前保护所有真实贡献者。"""
         async with self._ctx.runtime_scope():
-            definitions: list[tuple[Context, ContentSchema]] = []
-            for key in sorted(self._definitions):
-                owner, definition, prepare = self._definitions[key]
-                if prepare is not None:
-                    prepared = _definition(prepare())
-                    if (not isinstance(prepared, TextProtocol) or prepared.name != definition.name
-                            or prepared.content != definition.content):
-                        raise ValueError("动态协议不能更换名称或内容 schema")
-                    definition = prepared
-                definitions.append((owner, definition))
-            view = _ContentView(self, tuple(definitions))
-            try:
-                yield view
-            finally:
-                view.close()
+            async with AsyncExitStack() as scopes:
+                definitions = tuple(
+                    (owner, definition, prepare)
+                    for key in sorted(self._definitions)
+                    for owner, definition, prepare in (self._definitions[key],)
+                    if owner.fiber.state is FiberState.ACTIVE
+                )
+                contributors: list[Context] = []
+                seen: set[int] = set()
+                for owner, _, _ in definitions:
+                    identity = id(owner)
+                    if identity not in seen:
+                        seen.add(identity)
+                        contributors.append(owner)
+                for contributor in contributors:
+                    await scopes.enter_async_context(contributor.runtime_scope())
+
+                prepared_definitions: list[tuple[Context, ContentSchema]] = []
+                for owner, definition, prepare in definitions:
+                    if prepare is not None:
+                        prepared = _definition(prepare())
+                        if (
+                            not isinstance(prepared, TextProtocol)
+                            or prepared.name != definition.name
+                            or prepared.content != definition.content
+                        ):
+                            raise ValueError("动态协议不能更换名称或内容 schema")
+                        definition = prepared
+                    prepared_definitions.append((owner, definition))
+                view = _ContentView(self, tuple(prepared_definitions))
+                try:
+                    yield view
+                finally:
+                    view.close()
 
 
 CONTENT = ServiceKey[Content]("content.v2")

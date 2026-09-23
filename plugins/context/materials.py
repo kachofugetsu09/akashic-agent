@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_contracts import Message
 
@@ -191,9 +192,14 @@ class ContextMaterials:
 
     @asynccontextmanager
     async def bind(self, *, exclude: frozenset[str] = frozenset()) -> AsyncIterator[MaterialView]:
-        """调用程序明确选择材料；持有原 Root 到请求提交，排除者不会执行。"""
+        """固定 ACTIVE 材料并持有 provider 与贡献者的局部 scope。"""
         async with self._ctx.runtime_scope():
-            sources = {name: source for name, source in self._sources.items() if name not in exclude}
+            sources = {
+                name: source
+                for name, source in self._sources.items()
+                if name not in exclude
+                and source.context.fiber.state is FiberState.ACTIVE
+            }
             for name, plugin_id in self._prompt_sources.items():
                 if name in exclude:
                     continue
@@ -208,11 +214,19 @@ class ContextMaterials:
             order = sorted(sources, key=lambda key: (
                 sources[key].plugin_id.encode("utf-8"), key.encode("utf-8"),
             ))
-            view = MaterialView(self._ctx, tuple((key, sources[key]) for key in order))
-            try:
-                yield view
-            finally:
-                view.close()
+            selected = tuple((key, sources[key]) for key in order)
+            contributors: list[Context] = []
+            for _, source in selected:
+                if not any(context is source.context for context in contributors):
+                    contributors.append(source.context)
+            async with AsyncExitStack() as scopes:
+                for context in contributors:
+                    await scopes.enter_async_context(context.runtime_scope())
+                view = MaterialView(self._ctx, selected)
+                try:
+                    yield view
+                finally:
+                    view.close()
 
 
 MATERIALS = ServiceKey[ContextMaterials]("context.materials.v3")

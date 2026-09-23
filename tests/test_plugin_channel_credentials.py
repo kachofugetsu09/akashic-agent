@@ -6,11 +6,31 @@ from agent.plugin_composition.config_input import (
     CONFIG_INPUT, load_config, save_config, save_credential, revoke_credential,
 )
 from agent.plugins.channel_credentials import CoreProviderClientFactory
+from agent.plugin_composition.credentials import CredentialClients
 
 
 def _factory(data: Path) -> CoreProviderClientFactory:
     config, revision = load_config(data)
     return CoreProviderClientFactory(data, config, revision)
+
+
+@pytest.mark.asyncio
+async def test_manager_credentials_close_only_the_requested_generation() -> None:
+    """A retired generation cannot close an unrelated factory."""
+    class Factory:
+        def __init__(self):
+            self.closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    first, second = Factory(), Factory()
+    clients = CredentialClients({})
+    clients.add_factory("plugin", "generation-a", first)  # type: ignore[arg-type]
+    clients.add_factory("plugin", "generation-b", second)  # type: ignore[arg-type]
+    await clients.remove_factory("plugin", "generation-a")
+    assert first.closed
+    assert not second.closed
 
 
 @pytest.mark.asyncio

@@ -1,17 +1,18 @@
-"""Expose a narrow read-only catalog for the current runtime scope."""
+"""Expose a narrow, read-only projection of the live composition Root."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
-from agent.plugin_composition.model import ServiceKey, TopologyFiberView
+from agent.plugin_composition.model import HealthView, IncidentView, ServiceKey
 
 if TYPE_CHECKING:
-    from agent.plugins.snapshot import RuntimeSnapshot
+    from agent.plugin_composition.context import CompositionRoot, Context, Fiber
+    from agent.plugins.manager import PluginGeneration
 
 
-RuntimeCatalogReader = Callable[[], dict[str, object]]
+RuntimeCatalogReader = Callable[["Context"], dict[str, object]]
 RUNTIME_CATALOG = ServiceKey[RuntimeCatalogReader]("core.runtime_catalog.v1")
 
 
@@ -23,34 +24,23 @@ class RuntimeCatalogUnavailable(RuntimeError):
         self.code = code
 
 
-def build_runtime_catalog(snapshot: RuntimeSnapshot) -> dict[str, object]:
-    """Project neutral plugin and MCP facts from one leased snapshot."""
+def build_runtime_catalog(
+    root: CompositionRoot,
+    active_generations: Mapping[str, PluginGeneration],
+    draining_generations: Mapping[str, Sequence[PluginGeneration]] | None = None,
+) -> dict[str, object]:
+    """Read current Fibers, health, incidents, and MCP state from one live Root."""
 
-    try:
-        mcp_servers = _mcp_items(snapshot)
-    except RuntimeCatalogUnavailable as error:
-        return {
-            "unavailable": {
-                "code": error.code,
-                "message": str(error),
-            }
-        }
-    return {
-        "snapshot_id": snapshot.snapshot_id,
-        "plugins": _plugin_items(snapshot),
-        "mcp_servers": mcp_servers,
-    }
-
-
-def build_stable_plugin_catalog(snapshot: RuntimeSnapshot) -> dict[str, object]:
-    """Project plugin composition facts; MCP 会话目录缺席不遮蔽组合视图。"""
-
+    revision = root._composition_revision  # pyright: ignore[reportPrivateUsage]
+    draining = {} if draining_generations is None else draining_generations
     catalog: dict[str, object] = {
-        "snapshot_id": snapshot.snapshot_id,
-        "plugins": _plugin_items(snapshot),
+        # Keep the wire name for existing clients. It is now a display identity,
+        # not a snapshot lease or a frozen publication token.
+        "snapshot_id": f"{root.generation_id}:{revision}",
+        "plugins": _plugin_items(root, active_generations, draining, revision),
     }
     try:
-        catalog["mcp_servers"] = _mcp_items(snapshot)
+        catalog["mcp_servers"] = _mcp_items(root)
     except RuntimeCatalogUnavailable as error:
         catalog["mcp_unavailable"] = {
             "code": error.code,
@@ -59,160 +49,162 @@ def build_stable_plugin_catalog(snapshot: RuntimeSnapshot) -> dict[str, object]:
     return catalog
 
 
-def _plugin_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
-    """Project generation and composition facts from one leased snapshot."""
+def _plugin_items(
+    root: CompositionRoot,
+    active_generations: Mapping[str, PluginGeneration],
+    draining_generations: Mapping[str, Sequence[PluginGeneration]],
+    composition_revision: int,
+) -> list[dict[str, object]]:
+    """Project each active generation from current registered Fiber objects."""
 
-    from agent.plugins.composable import ComposablePlugin
+    receipt = root.receipt()
+    fibers = tuple(
+        fiber
+        for fiber in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+        if fiber.runtime is not None
+    )
+    current_by_generation: dict[tuple[str, str], list[Fiber]] = {}
+    for fiber in fibers:
+        assert fiber.runtime is not None
+        key = (fiber.runtime.plugin_id, fiber.runtime.generation_id)
+        current_by_generation.setdefault(key, []).append(fiber)
+    generation_by_fiber_name = {
+        fiber.name: (fiber.runtime.plugin_id, fiber.runtime.generation_id)
+        for fiber in fibers
+        if fiber.runtime is not None
+    }
+    health_by_generation: dict[tuple[str, str], list[HealthView]] = {}
+    for item in receipt.health:
+        generation_key = generation_by_fiber_name.get(item.owner)
+        if generation_key is not None:
+            health_by_generation.setdefault(generation_key, []).append(item)
+    generation_by_fiber_id = {
+        fiber.fiber_id: (fiber.runtime.plugin_id, fiber.runtime.generation_id)
+        for fiber in fibers
+        if fiber.runtime is not None
+    }
+    incident_by_generation: dict[tuple[str, str], list[IncidentView]] = {}
+    for item in receipt.incidents:
+        generation_key = generation_by_fiber_id.get(item.fiber_id)
+        if generation_key is not None:
+            incident_by_generation.setdefault(generation_key, []).append(item)
+    incident_counts = root._incident_counts  # pyright: ignore[reportPrivateUsage]
 
-    composition = _plugin_composition_items(snapshot)
     items: list[dict[str, object]] = []
-    for generation in sorted(snapshot.active_generations(), key=lambda item: item.plugin_id):
-        current = composition.get(generation.plugin_id)
-        if current is None:
+    for plugin_id, generation in sorted(active_generations.items()):
+        generation_key = (plugin_id, generation.generation_id)
+        plugin_fibers = tuple(
+            sorted(current_by_generation.get(generation_key, ()), key=lambda fiber: fiber.name)
+        )
+        # An active generation without a registered Fiber is not ready. In
+        # particular, all(empty) must not turn LOADING/UNLOADING into ready.
+        ready = bool(plugin_fibers) and generation.state == "active" and all(
+            fiber.state.value == "active" or not fiber.required_for_readiness
+            for fiber in plugin_fibers
+        )
+        health = health_by_generation.get(generation_key, [])
+        ready = ready and all(
+            not item.required or item.healthy
+            for item in health
+        )
+        manifest = generation.static_manifest
+        if manifest is None:
             raise RuntimeError(
-                f"stable v3 插件缺少 composition inspection: {generation.plugin_id}"
+                f"generation 缺少已验证 static manifest: {generation.plugin_id}"
             )
+        cleanup_pending = any(
+            item is generation
+            for item in draining_generations.get(plugin_id, ())
+        )
+        owned_fiber_ids = {fiber.fiber_id for fiber in plugin_fibers}
+        incidents = incident_by_generation.get(generation_key, [])
         items.append(
             {
-                "id": generation.plugin_id,
+                "id": plugin_id,
                 "revision": generation.source_revision,
                 "generation_id": generation.generation_id,
-                "api_version": cast(ComposablePlugin, generation.instance).api_version,
-                "composition": current,
+                "archive_ref": generation.archive_ref,
+                "state": generation.state,
+                "api_version": manifest.api_version,
+                "load_error": (
+                    None
+                    if generation.load_error is None
+                    else str(generation.load_error)
+                    or type(generation.load_error).__name__
+                ),
+                "cleanup_pending": cleanup_pending,
+                "composition": {
+                    "ready": ready,
+                    "composition_revision": composition_revision,
+                    "fibers": [_fiber_item(root, fiber) for fiber in plugin_fibers],
+                    "health": [_health_item(item) for item in health],
+                    "incident_count": sum(
+                        count
+                        for (fiber_id, _owner), count in incident_counts.items()
+                        if fiber_id in owned_fiber_ids
+                    ),
+                    "recent_incidents": [_incident_item(item) for item in incidents[-20:]],
+                    "incident_overflowed": receipt.incident_overflowed,
+                },
             }
         )
     return items
 
 
-def _plugin_composition_items(
-    snapshot: RuntimeSnapshot,
-) -> dict[str, dict[str, object]]:
-    """Group current Root facts by the top-level plugin Fiber owner."""
+def _fiber_item(root: CompositionRoot, fiber: Fiber) -> dict[str, object]:
+    """Serialize one current Fiber without consulting a frozen topology."""
 
-    root = snapshot.composition_root
-    topology = snapshot.composition_topology
-    if root is None and topology is None:
-        return {}
-    if root is None or topology is None:
-        raise RuntimeError("stable snapshot 的 composition Root 与 Topology 必须成对存在")
-
-    # 1. Frozen parent edges assign every nested Fiber to one top-level plugin.
-    all_plugin_ids = set(snapshot.generations)
-    active_plugin_ids = {
-        generation.plugin_id for generation in snapshot.active_generations()
+    parent = fiber.parent
+    return {
+        "name": fiber.name,
+        "fiber_id": fiber.fiber_id,
+        "parent": None if parent is root.root_fiber else parent.name,
+        "state": fiber.state.value,
+        "required": fiber.required_for_readiness,
+        "dependencies": [key.name for key in fiber.dependencies],
+        "missing_services": list(fiber.missing_services),
+        "error": None if fiber.error is None else str(fiber.error),
     }
-    all_owners = _top_level_plugin_owners(topology.fibers, all_plugin_ids)
-    receipt = root.receipt()
-    current_fibers = {fiber.name: fiber for fiber in receipt.fibers}
-    if current_fibers.keys() != all_owners.keys():
-        raise RuntimeError("stable snapshot 的 current Fiber 与冻结 Topology 不一致")
-    owner_by_fiber = {
-        name: owner
-        for name, owner in all_owners.items()
-        if owner in active_plugin_ids
+
+
+def _health_item(item: HealthView) -> dict[str, object]:
+    """Serialize one current health entry."""
+
+    return {
+        "owner": item.owner,
+        "name": item.name,
+        "required": item.required,
+        "healthy": item.healthy,
+        "reason": item.reason,
     }
-    incident_counts = dict(receipt.incident_counts)
-
-    # 2. Current health details stay bounded while cumulative counts remain exact.
-    result: dict[str, dict[str, object]] = {}
-    for plugin_id in sorted(active_plugin_ids):
-        owned_names = {
-            name for name, owner in owner_by_fiber.items() if owner == plugin_id
-        }
-        topology_fibers = tuple(
-            fiber for fiber in topology.fibers if fiber.name in owned_names
-        )
-        health = tuple(item for item in receipt.health if item.owner in owned_names)
-        recent_incidents = tuple(
-            item for item in receipt.incidents if item.owner in owned_names
-        )[-20:]
-        fibers = tuple(current_fibers[fiber.name] for fiber in topology_fibers)
-        ready = all(
-            not fiber.required_for_readiness or fiber.state.value == "active"
-            for fiber in fibers
-        ) and all(not item.required or item.healthy for item in health)
-        result[plugin_id] = {
-            "ready": ready,
-            "topology_identity": topology.identity,
-            "composition_revision": topology.composition_revision,
-            "fibers": [
-                {
-                    "name": topology_fiber.name,
-                    "parent": topology_fiber.parent,
-                    "state": current_fibers[topology_fiber.name].state.value,
-                    "required": topology_fiber.required_for_readiness,
-                    "dependencies": list(topology_fiber.dependencies),
-                    "missing_services": list(
-                        current_fibers[topology_fiber.name].missing_services
-                    ),
-                    "error": current_fibers[topology_fiber.name].error,
-                }
-                for topology_fiber in topology_fibers
-            ],
-            "health": [
-                {
-                    "owner": item.owner,
-                    "name": item.name,
-                    "required": item.required,
-                    "healthy": item.healthy,
-                    "reason": item.reason,
-                }
-                for item in health
-            ],
-            "incident_count": sum(
-                incident_counts.get(name, 0) for name in owned_names
-            ),
-            "recent_incidents": [
-                {
-                    "sequence": item.sequence,
-                    "owner": item.owner,
-                    "kind": item.kind,
-                    "message": item.message,
-                    "error_type": item.error_type,
-                }
-                for item in recent_incidents
-            ],
-            "incident_overflowed": receipt.incident_overflowed,
-        }
-    return result
 
 
-def _top_level_plugin_owners(
-    fibers: tuple[TopologyFiberView, ...],
-    plugin_ids: set[str],
-) -> dict[str, str]:
-    """Resolve each frozen Fiber name to its top-level plugin Fiber."""
+def _incident_item(item: IncidentView) -> dict[str, object]:
+    """Serialize one bounded recent incident."""
 
-    parent_by_name = {fiber.name: fiber.parent for fiber in fibers}
-    owners: dict[str, str] = {}
-    for name in parent_by_name:
-        current = name
-        seen: set[str] = set()
-        while parent_by_name[current] is not None:
-            if current in seen:
-                raise RuntimeError(f"composition parent edge 构成循环: {name}")
-            seen.add(current)
-            parent = parent_by_name[current]
-            if not isinstance(parent, str) or parent not in parent_by_name:
-                raise RuntimeError(f"composition parent edge 缺失: {name} -> {parent}")
-            current = parent
-        if current not in plugin_ids:
-            raise RuntimeError(f"composition 顶层 Fiber 不属于 active v3 插件: {current}")
-        owners[name] = current
-    return owners
+    return {
+        "sequence": item.sequence,
+        "fiber_id": item.fiber_id,
+        "owner": item.owner,
+        "kind": item.kind,
+        "message": item.message,
+        "error_type": item.error_type,
+    }
 
 
-def _mcp_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
-    """声明不能冒充已取得的工具目录；读取能力仍待 MCP owner 提供。"""
+def _mcp_items(root: CompositionRoot) -> list[dict[str, object]]:
+    """Read the MCP owner or return an explicit unavailable section."""
+
     from agent.plugin_composition.mcp_slots import MCP_SERVERS
-    root = snapshot.composition_root
-    service = None if root is None else root.context.get(MCP_SERVERS)
-    if service is None:
-        return []
-    if service.root_instance_token is not root.instance_token:
-        raise RuntimeError("MCP provider 不属于所选 Root")
-    return service.catalog()
 
+    service = root.context.get(MCP_SERVERS)
+    if service is None:
+        raise RuntimeCatalogUnavailable(
+            "mcp_provider_unavailable", "MCP provider 尚未在当前 Root 提供"
+        )
+    if service.root_instance_token is not root.instance_token:
+        raise RuntimeError("MCP provider 不属于当前 Root")
+    return service.catalog()
 
 
 __all__ = [
@@ -220,5 +212,4 @@ __all__ = [
     "RuntimeCatalogReader",
     "RuntimeCatalogUnavailable",
     "build_runtime_catalog",
-    "build_stable_plugin_catalog",
 ]

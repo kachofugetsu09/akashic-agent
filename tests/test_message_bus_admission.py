@@ -3,11 +3,10 @@ from __future__ import annotations
 from session.inbound_store import InboundHandoffStore
 import asyncio
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -15,36 +14,16 @@ from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
     ChannelInboundMessage,
-    ChannelDeliveryReceipt,
-    DeliveryStatus,
     InboundEnvelope,
     InboundOwner,
     InboundState,
     JsonValue,
-    OutboundEnvelope,
     RawInbound,
 )
 from bus.events import InboundMessage
 from bus.queue import MessageBus
 from session.manager import SessionManager
 from session.store import SessionAdmissionConflictError
-
-
-def _v3_outbound() -> tuple[OutboundEnvelope, _OutboundBinding]:
-    envelope = OutboundEnvelope(
-        logical_delivery_id="delivery-1",
-        delivery_id="delivery-1",
-        attempt_sequence=1,
-        snapshot_id="snapshot-1",
-        generation_id="generation-1",
-        binding_token="binding-1",
-        channel="feishu",
-        recipient="chat-1",
-        body="hello",
-        metadata={"kind": "final"},
-    )
-    binding = _OutboundBinding()
-    return envelope, binding
 
 
 class _InboundLease:
@@ -58,10 +37,6 @@ class _InboundLease:
         self.generation_id = "generation-1"
         self.binding_token = "binding-1"
         self.channel_name = channel
-        self.snapshot_lease = SimpleNamespace(
-            active=True,
-            snapshot=SimpleNamespace(snapshot_id=self.snapshot_id),
-        )
         self.closed = 0
         self.closed_event = asyncio.Event()
         self.close_gate = close_gate
@@ -108,15 +83,6 @@ def _v3_inbound(
         lease=lease,
     )
     return envelope, lease
-
-
-@dataclass(frozen=True)
-class _OutboundBinding:
-    snapshot_id: str = "snapshot-1"
-    generation_id: str = "generation-1"
-    binding_token: str = "binding-1"
-    channel_name: str = "feishu"
-    active: bool = True
 
 
 @pytest.mark.asyncio
@@ -214,342 +180,6 @@ async def test_cleanup_finalize_failure_is_fatal_and_observable(
 
 
 @pytest.mark.asyncio
-async def test_removed_legacy_outbound_paths_fail_loud() -> None:
-    bus = MessageBus()
-
-    with pytest.raises(RuntimeError, match="legacy publish_outbound 已删除"):
-        await bus.publish_outbound(object())
-    with pytest.raises(RuntimeError, match="legacy publish_outbound_awaited 已删除"):
-        await bus.publish_outbound_awaited(object())
-    assert bus.outbound_size == 0
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_outbound_returns_exact_provider_receipt_once() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def deliver(
-        received: OutboundEnvelope,
-        owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        assert received is envelope
-        assert owner is binding
-        return ChannelDeliveryReceipt(
-            delivery_id=received.delivery_id,
-            status=DeliveryStatus.DELIVERED,
-            provider_ids=("provider-1",),
-        )
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    receipt = await bus.publish_channel_outbound_awaited(envelope, binding)
-    assert receipt.status is DeliveryStatus.DELIVERED
-    assert receipt.provider_ids == ("provider-1",)
-    assert calls == 1
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_pre_provider_commit_fences_adapter_effect() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    provider_calls = 0
-
-    async def deliver(
-        _received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal provider_calls
-        provider_calls += 1
-        raise AssertionError("failed pre-provider commit must fence adapter effect")
-
-    def reject_commit() -> None:
-        raise RuntimeError("ledger commit failed")
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    receipt = await bus.publish_channel_outbound_awaited(
-        envelope,
-        binding,
-        passive=False,
-        before_provider=reject_commit,
-    )
-
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert receipt.error == "ledger commit failed"
-    assert provider_calls == 0
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_direct_channel_outbound_waits_for_passive_turn() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    entered = asyncio.Event()
-
-    async def deliver(
-        received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        entered.set()
-        return ChannelDeliveryReceipt(
-            received.delivery_id,
-            DeliveryStatus.DELIVERED,
-        )
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    await bus.chat_lane.mark_passive_pending(
-        envelope.channel,
-        envelope.recipient,
-    )
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    pending = asyncio.create_task(
-        bus.publish_channel_outbound_awaited(
-            envelope,
-            binding,
-            passive=False,
-        )
-    )
-    await asyncio.sleep(0)
-    assert not entered.is_set()
-    assert not pending.done()
-
-    await bus.chat_lane.mark_passive_done(
-        envelope.channel,
-        envelope.recipient,
-    )
-    receipt = await asyncio.wait_for(pending, timeout=1)
-    assert receipt.status is DeliveryStatus.DELIVERED
-    assert entered.is_set()
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_direct_channel_wait_is_rejected_by_terminal_bus_close() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def deliver(
-        _received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("关闭前仍在 lane 等待的 direct push 不得调用 provider")
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    await bus.chat_lane.mark_passive_pending(
-        envelope.channel,
-        envelope.recipient,
-    )
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    pending = asyncio.create_task(
-        bus.publish_channel_outbound_awaited(
-            envelope,
-            binding,
-            passive=False,
-        )
-    )
-    while bus.outbound_size:
-        await asyncio.sleep(0)
-
-    await asyncio.wait_for(bus.aclose(), timeout=1)
-    receipt = await asyncio.wait_for(pending, timeout=1)
-
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert calls == 0
-    assert dispatch.done()
-    await bus.chat_lane.mark_passive_done(
-        envelope.channel,
-        envelope.recipient,
-    )
-
-
-@pytest.mark.asyncio
-async def test_v3_passive_channel_outbound_does_not_wait_for_its_own_turn() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def deliver(
-        received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        return ChannelDeliveryReceipt(
-            received.delivery_id,
-            DeliveryStatus.DELIVERED,
-        )
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    await bus.chat_lane.mark_passive_pending(
-        envelope.channel,
-        envelope.recipient,
-    )
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-
-    receipt = await asyncio.wait_for(
-        bus.publish_channel_outbound_awaited(
-            envelope,
-            binding,
-            passive=True,
-        ),
-        timeout=1,
-    )
-
-    assert receipt.status is DeliveryStatus.DELIVERED
-    assert calls == 1
-    await bus.chat_lane.mark_passive_done(
-        envelope.channel,
-        envelope.recipient,
-    )
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_outbound_exception_is_unknown_without_retry() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def fail_after_effect(
-        _received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        raise RuntimeError("provider receipt lost")
-
-    bus.bind_channel_outbound_dispatcher(fail_after_effect)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    receipt = await bus.publish_channel_outbound_awaited(envelope, binding)
-    assert receipt.status is DeliveryStatus.FAILED
-    assert receipt.error == "provider receipt lost"
-    assert calls == 1
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_outbound_cancel_waits_for_provider_settlement() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    calls = 0
-
-    async def blocked_delivery(
-        received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        entered.set()
-        await release.wait()
-        return ChannelDeliveryReceipt(
-            received.delivery_id,
-            DeliveryStatus.DELIVERED,
-        )
-
-    bus.bind_channel_outbound_dispatcher(blocked_delivery)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    pending = asyncio.create_task(
-        bus.publish_channel_outbound_awaited(envelope, binding)
-    )
-    await asyncio.wait_for(entered.wait(), timeout=1)
-    pending.cancel()
-    await asyncio.sleep(0)
-    assert not pending.done()
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-    assert calls == 1
-    assert bus._pending_channel_receipts == set()
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_queued_receipt_rejected_on_bus_close() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    pending = asyncio.create_task(
-        bus.publish_channel_outbound_awaited(envelope, binding)
-    )
-    await asyncio.sleep(0)
-    assert len(bus._pending_channel_receipts) == 1
-    await bus.aclose()
-    receipt = await pending
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert bus._pending_channel_receipts == set()
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_publish_after_bus_close_is_immediately_rejected() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def deliver(
-        _received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("closed bus must not dispatch")
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    await bus.aclose()
-
-    receipt = await bus.publish_channel_outbound_awaited(envelope, binding)
-
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert calls == 0
-    assert bus.outbound_size == 0
-    await bus.dispatch_outbound()
-    assert calls == 0
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_publish_blocked_at_lane_is_rejected_by_concurrent_close() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    key, state = bus._chat_lane._acquire_state(
-        envelope.channel,
-        envelope.recipient,
-    )
-    try:
-        await state.condition.acquire()
-        pending = asyncio.create_task(
-            bus.publish_channel_outbound_awaited(envelope, binding)
-        )
-        await asyncio.sleep(0)
-        closing = asyncio.create_task(bus.aclose())
-        await asyncio.sleep(0)
-        assert not pending.done()
-        state.condition.release()
-        await closing
-        receipt = await pending
-    finally:
-        if state.condition.locked():
-            state.condition.release()
-        bus._chat_lane._release_state(key, state)
-
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert bus.outbound_size == 0
-
-
-@pytest.mark.asyncio
 async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
     tmp_path: Path,
 ) -> None:
@@ -628,7 +258,7 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
     await asyncio.sleep(0)
     closing = asyncio.create_task(bus.aclose())
     await asyncio.sleep(0)
-    assert bus._outbound_closed is True
+    assert bus._closed is True
     assert not reserving.done()
     assert not closing.done()
     bus._durable_handoff_lock.release()
@@ -672,15 +302,15 @@ async def test_channel_authority_rejects_untrusted_session_override_before_enque
         timestamp=datetime.now(timezone.utc), metadata=metadata,
     ))
     with pytest.raises(RuntimeError, match='只属于'):
-        await host._admit_inbound(('snapshot', channel), raw)
+        await host._admit_inbound_scoped(('snapshot', channel), raw)
 
 
-def test_source_admission_boot_id_is_shared_across_roots():
-    from agent.plugin_composition.admission import SourceAdmission
+def test_host_info_boot_id_is_shared_across_roots():
+    from agent.plugin_composition.host import HostInfo
 
-    first = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-1", candidate=False)
-    second = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-1", candidate=False)
-    other = SourceAdmission(SimpleNamespace(root_instance_token=object()), None, boot_id="host-2", candidate=False)
+    first = HostInfo("host-1", False)
+    second = HostInfo("host-1", False)
+    other = HostInfo("host-2", False)
     assert first.boot_id == second.boot_id
     assert first.boot_id != other.boot_id
 
@@ -728,8 +358,7 @@ async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> Non
     host._bindings = states
     seen = []
 
-    async def recover(key, raw, **kwargs):
-        assert kwargs.get("_use_recovery_snapshot_lease") is True
+    async def recover(key, raw):
         seen.append((key, raw.message.channel))
         return True
 

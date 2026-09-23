@@ -111,10 +111,15 @@ def gateway(tmp_path):
             async with open_request_scope(host_scope) as scope:
                 yield scope.require(MESSAGE_CATALOG)
 
-        channel.bind_message_scope(message_scope)
+        async def idle_reply_status(_session_id: str):
+            await asyncio.Event().wait()
+            if False:
+                yield {}
+
+        channel.bind_message_scope(message_scope, reply_status=idle_reply_status)
         runtime.bind_channel(channel)
         with TestClient(create_mobile_gateway_app(runtime)) as client:
-            yield log, runtime, client, device, private
+            yield log, runtime, client, device, private, scope_tasks
         assert not runtime._message_followers
         assert not log._listeners
 
@@ -128,7 +133,7 @@ def gateway(tmp_path):
 
 @contextmanager
 def connected(gateway):
-    _log, runtime, client, device, private = gateway
+    _log, runtime, client, device, private, _scope_tasks = gateway
     with client.websocket_connect("/ws") as websocket:
         challenge = websocket.receive_json()["payload"]
         nonce = uuid4().hex
@@ -205,21 +210,33 @@ def _receive_appended_message(websocket) -> dict[str, Any]:
 
 
 def test_mobile_follow_scope_stays_in_child_and_releases_on_reload(gateway):
-    log, runtime, _client, _device, _private = gateway
+    log, runtime, _client, _device, _private, scope_tasks = gateway
     session_id = f"akashic:{uuid4()}"
     append(log, session_id, "one", Input((ContentPart("text", "hello"),)))
 
     with connected(gateway) as (websocket, epoch):
+        first_scope_index = len(scope_tasks)
         _follow(websocket, epoch, session_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+        assert scope_tasks[first_scope_index][0] == "enter"
+        assert scope_tasks[first_scope_index + 1][0] == "exit"
+        assert scope_tasks[first_scope_index][1] is scope_tasks[first_scope_index + 1][1]
         assert [
             item["id"] for item in _receive_appended_message(websocket)["items"]
         ] == ["one"]
         # Replacing the follow cancels its child and opens a new exact scope.
+        second_scope_index = len(scope_tasks)
         _follow(websocket, epoch, session_id, "01ARZ3NDEKTSV4RRFFQ69G5FAW")
+        assert scope_tasks[second_scope_index][0] == "enter"
+        assert scope_tasks[second_scope_index + 1][0] == "exit"
+        assert scope_tasks[second_scope_index][1] is scope_tasks[second_scope_index + 1][1]
 
     assert not runtime._message_followers
 
     # A fresh websocket is a real reload boundary; the next follow must open
     # a new scope after the previous connection has released its own scope.
     with connected(gateway) as (websocket, epoch):
+        third_scope_index = len(scope_tasks)
         _follow(websocket, epoch, session_id, "01ARZ3NDEKTSV4RRFFQ69G5FAX")
+        assert scope_tasks[third_scope_index][0] == "enter"
+        assert scope_tasks[third_scope_index + 1][0] == "exit"
+        assert scope_tasks[third_scope_index][1] is scope_tasks[third_scope_index + 1][1]

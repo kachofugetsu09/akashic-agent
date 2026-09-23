@@ -85,15 +85,18 @@ class CallSource(Protocol):
     def messages(self) -> tuple[Message, ...]: ...
 
 
-class Conversation(Protocol):
-    async def complete(self, program: Callable[[Task, MessageReader], Awaitable[Message]]) -> Message: ...
+class ConversationComplete(Protocol):
+    async def __call__(
+        self, session_id: str,
+        program: Callable[[Task, MessageReader], Awaitable[Message]],
+    ) -> Message: ...
 
 
 class BindSavedTool(Protocol):
     async def __call__(self, bindings: Bindings, binding_id: str, *, configuration: Mapping[str, object]) -> str: ...
 
 
-CONVERSATION = ServiceKey[Callable[[str], Conversation]]("conversation.v1")
+CONVERSATION_COMPLETE = ServiceKey[ConversationComplete]("conversation.complete.v1")
 CHECK_ORIGIN = ServiceKey[Callable[[ContentPart], ContentReferences]]("conversation.check_origin.v1")
 REPLY_PROGRAM = ServiceKey[Callable[[Task, MessageReader, str, Sequence[Mapping[str, object]]], Awaitable[Message]]]("reply.program.v2")
 TOOL_BIND_SAVED = ServiceKey[BindSavedTool]("tools.bind-saved.v1")

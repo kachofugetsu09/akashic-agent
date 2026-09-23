@@ -17,17 +17,24 @@ from agent.plugin_composition import (
     CHAT_MODELS,
     ModelRequest,
 )
-from agent.plugins.model_control import RuntimeModelControl
-from agent.plugins.snapshot import lease_runtime_snapshot
+from bootstrap.app_server import build_control_service
 from bootstrap import tools as bootstrap
 from bootstrap.init_workspace import init_workspace
 from core.net.http import SharedHttpResources
 
 
-async def _model_command(control: RuntimeModelControl, payload: dict[str, object]) -> dict[str, object]:
+async def _model_command(core, payload: dict[str, object]) -> dict[str, object]:
     """Configure the installed Models owner through its public RPC boundary."""
 
-    result = await control.invoke_rpc("models/command", payload)
+    service = build_control_service(core)
+    resolve = service.resolve_method
+    if resolve is None:
+        raise AssertionError("ControlService 未提供动态 RPC resolver")
+    async with resolve("models/command") as operation:
+        if operation is None:
+            raise AssertionError("live Root 未提供 models/command")
+        params = operation.params.model_validate(payload)
+        result = await operation.invoke(params, None)
     assert isinstance(result, dict)
     assert result.get("status") == 200, result
     body = result.get("body")
@@ -87,8 +94,7 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
-        control = RuntimeModelControl(core.plugin_manager.snapshot_store)
-        await _model_command(control, {
+        await _model_command(core, {
             "type": "add_connection",
             "expected_revision": 0,
             "connection_id": "local",
@@ -104,7 +110,7 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
             "supports_tool_calls": True,
             "supported_reasoning_efforts": ["low", "high"],
         }
-        await _model_command(control, {
+        await _model_command(core, {
             "type": "add_model",
             "expected_revision": 1,
             "model_id": "first",
@@ -114,16 +120,17 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
             "capabilities": capabilities,
             "capability_sources": {},
         })
-        await _model_command(control, {
+        await _model_command(core, {
             "type": "set_default",
             "expected_revision": 2,
             "role": "default",
             "model_id": "first",
         })
 
-        async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
-            context = snapshot.composition_root.context
-            models_service = context.require(CHAT_MODELS)
+        root = core.plugin_manager.live_root
+        assert root is not None
+        models_context, models_service = root._service_provider(CHAT_MODELS)
+        async with models_context.runtime_scope():
             async with models_service.execution() as first_execution:
                 first_descriptor = first_execution.chat("agent").descriptor
                 assert first_descriptor.model_id == "first"
@@ -140,7 +147,7 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
                     assert nested is first_execution
                     assert nested.chat("agent").descriptor == first_descriptor
 
-                await _model_command(control, {
+                await _model_command(core, {
                     "type": "add_model",
                     "expected_revision": 3,
                     "model_id": "second",
@@ -150,7 +157,7 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
                     "capabilities": capabilities,
                     "capability_sources": {},
                 })
-                await _model_command(control, {
+                await _model_command(core, {
                     "type": "set_default",
                     "expected_revision": 4,
                     "role": "default",
@@ -170,15 +177,12 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
                 assert calls[-1]["model"] == "first"
                 assert first_execution.chat("agent").descriptor == first_descriptor
 
-                lease_count = snapshot.lease_count
-
                 async def child_execution() -> None:
                     with pytest.raises(RuntimeError, match="不能由子 task 继承"):
                         async with models_service.execution():
                             raise AssertionError("子 task 不应取得 model execution")
 
                 await asyncio.create_task(child_execution())
-                assert snapshot.lease_count == lease_count
                 assert len(calls) == 2
                 assert transports[0] is transports[1]
 
@@ -200,11 +204,18 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
 
         assert [call["model"] for call in calls] == ["first", "first", "second"]
         assert transports[2] is not transports[0]
+        assert not models_context._fiber._in_flight_calls
     finally:
-        await core.bus.aclose()
-        await core.stop()
-        await http.aclose()
-        await runner.cleanup()
+        try:
+            await core.bus.aclose()
+        finally:
+            try:
+                await core.stop()
+            finally:
+                try:
+                    await http.aclose()
+                finally:
+                    await runner.cleanup()
 
 
 async def _noop_delta() -> None:
@@ -363,91 +374,1844 @@ async def test_done_does_not_wait_for_a_stalled_http_tail(observe):
         await response.aclose()
 
 
+async def _mount_model_driver_graph(
+    tmp_path,
+    *,
+    block_close=False,
+    with_driver_b_consumer=False,
+    hold_models_cleanup=False,
+    with_live_models=False,
+    with_driver_dependency=False,
+):
+    """Mount Models and real driver Fibers used by connection-lifetime tests."""
+
+    from agent.plugin_composition import (
+        CHAT_MODELS,
+        ChatModelSelection,
+        CompositionRoot,
+        DriverConnection,
+        EmbeddingResult,
+        EMBEDDINGS,
+        LLMResponse,
+        ModelContinuation,
+        MODEL_DRIVERS,
+        MODEL_CATALOG,
+        ModelDriverDefinition,
+        PluginRuntime,
+        RUNTIME_STARTED,
+        RUNTIME_STARTING,
+        RUNTIME_STOPPING,
+        ServiceKey,
+    )
+    from plugins.models.state import ModelsState
+    from plugins.models.store import ModelsStore
+
+    root = CompositionRoot("model-driver-scope")
+    model_contexts = []
+    driver_contexts = {}
+    driver_fibers = {}
+    driver_definitions = {}
+    driver_registration_effects = {}
+    close_events = []
+    open_started = asyncio.Event()
+    release_open = asyncio.Event()
+    discover_started = asyncio.Event()
+    release_discover = asyncio.Event()
+    discover_calls = []
+    discover_error = [None]
+    probe_calls = []
+    probe_started = asyncio.Event()
+    release_probe = asyncio.Event()
+    open_calls = []
+    bind_chat_calls = []
+    close_snapshot_states = []
+    auth_started = asyncio.Event()
+    release_auth = asyncio.Event()
+    auth_returned = asyncio.Event()
+    release_auth_return = asyncio.Event()
+    finish_started = asyncio.Event()
+    release_finish = asyncio.Event()
+    finish_returned = asyncio.Event()
+    release_finish_return = asyncio.Event()
+    auth_finish_result = [{
+        "status": "complete",
+        "name": "auth connection",
+        "endpoint": "https://example.invalid/auth",
+        "auth_identity": "auth-user",
+        "credential": {"token": "auth-token"},
+        "driver_config": {},
+    }]
+    auth_callback_events = []
+    cancel_states = []
+    cancel_error = [None]
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    consumer_cleanup_started = asyncio.Event()
+    release_consumer = asyncio.Event()
+    driver_b_consumer_cleanup_started = asyncio.Event()
+    release_driver_b_consumer = asyncio.Event()
+    models_cleanup_started = asyncio.Event()
+    release_models_cleanup = asyncio.Event()
+    fail_open_ids = set()
+    fail_close_ids = set()
+    credential_reads = []
+    live_chat_calls = []
+    live_chat_descriptors = []
+    live_embedding_calls = []
+    live_embedding_descriptors = []
+    driver_resources = {
+        driver_id: ServiceKey(f"test.{driver_id}.resource")
+        for driver_id in ("driver-a", "driver-b")
+    }
+    driver_dependency = ServiceKey("test.driver.dependency")
+    driver_dependency_fiber = None
+
+    class LiveChat:
+        def __init__(self, driver_id, tag, descriptor):
+            self.driver_id = driver_id
+            self.tag = tag
+            self.descriptor = descriptor
+
+        async def complete(self, request):
+            live_chat_calls.append(
+                (self.tag, self.descriptor.binding_id, request.messages)
+            )
+            return LLMResponse(
+                content=f"{self.tag}:{self.descriptor.model}",
+                continuation=ModelContinuation(
+                    self.descriptor.binding_id,
+                    {"tag": self.tag, "cursor": "next"},
+                ),
+            )
+
+        def estimate_context_tokens(self, messages, tools=()):
+            return len(messages) + len(tools)
+
+        def estimate_appended_message_tokens(self, messages):
+            return len(messages)
+
+        @property
+        def max_tool_schemas(self):
+            return None
+
+    class LiveEmbedding:
+        def __init__(self, driver_id, tag, descriptor):
+            self.driver_id = driver_id
+            self.tag = tag
+            self.descriptor = descriptor
+
+        async def embed(self, texts):
+            live_embedding_calls.append((self.tag, tuple(texts)))
+            vector = tuple(float(index + 1) for index in range(self.descriptor.dimensions))
+            return EmbeddingResult(
+                vectors=tuple(vector for _text in texts),
+            )
+
+    def make_live_connection(driver_id, tag, descriptor, *, close=None):
+        def bind_chat(bound_descriptor, _config):
+            live_chat_descriptors.append((tag, bound_descriptor))
+            return LiveChat(driver_id, tag, bound_descriptor)
+
+        def bind_embedding(bound_descriptor, _config):
+            live_embedding_descriptors.append((tag, bound_descriptor))
+            return LiveEmbedding(driver_id, tag, bound_descriptor)
+
+        return DriverConnection(bind_chat, bind_embedding, close=close)
+
+    async def apply_models(ctx):
+        store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+        store.initialize()
+        state = ModelsState(
+            store,
+            context=ctx,
+        )
+        model_contexts.append((ctx, state))
+        await ctx.provide(MODEL_DRIVERS, state.drivers)
+        await ctx.provide(CHAT_MODELS, state.chat_models)
+        await ctx.provide(EMBEDDINGS, state.embeddings)
+        await ctx.provide(MODEL_CATALOG, state.catalog)
+        from plugins.models.settings import MODEL_SETTINGS
+
+        await ctx.provide(MODEL_SETTINGS, state.settings)
+        if hold_models_cleanup:
+            async def cleanup_models() -> None:
+                models_cleanup_started.set()
+                await release_models_cleanup.wait()
+
+            await ctx.effect(lambda: cleanup_models, label="models-hard-cleanup")
+
+    models_fiber = await root.mount(
+        apply_models,
+        name="models",
+        runtime=PluginRuntime(
+            "models",
+            "models:g1",
+            tmp_path,
+            tmp_path / "models-data",
+            tmp_path,
+            {},
+        ),
+    )
+
+    if with_driver_dependency:
+        async def apply_driver_dependency(ctx):
+            await ctx.provide(driver_dependency, object())
+
+        driver_dependency_fiber = await root.mount(
+            apply_driver_dependency,
+            name="driver-dependency",
+            runtime=PluginRuntime(
+                "driver-dependency",
+                "driver-dependency:g1",
+                tmp_path,
+                tmp_path / "driver-dependency-data",
+                tmp_path,
+                {},
+            ),
+        )
+
+    def definition_for(driver_id):
+        async def open_driver(descriptor, _credential):
+            connection_id = descriptor.connection_id
+            open_calls.append(connection_id)
+            if with_live_models:
+                credential_reads.append((driver_id, connection_id))
+                await _credential.read()
+            if driver_id == "driver-a" and connection_id == "first":
+                open_started.set()
+                await release_open.wait()
+            if connection_id in fail_open_ids:
+                raise RuntimeError(f"{connection_id} open failed")
+
+            async def close():
+                ctx = driver_contexts[driver_id]
+                async with ctx.runtime_scope():
+                    assert ctx.require(MODEL_DRIVERS) is model_contexts[0][1].drivers
+                    close_events.append(connection_id)
+                    close_snapshot_states.append(
+                        model_contexts[0][1].store.read_snapshot()
+                    )
+                    if block_close and connection_id == "test":
+                        close_started.set()
+                        await release_close.wait()
+                    if connection_id in fail_close_ids:
+                        raise LookupError(f"{connection_id} close failed")
+
+            def bind_chat(*_args):
+                bind_chat_calls.append(_args[0].connection_id)
+                if with_live_models:
+                    return make_live_connection(
+                        driver_id,
+                        driver_id,
+                        _args[0],
+                    ).bind_chat(*_args)
+                return object()
+
+            def bind_embedding(*_args):
+                if with_live_models:
+                    return make_live_connection(
+                        driver_id,
+                        driver_id,
+                        _args[0],
+                    ).bind_embedding(*_args)
+                return object()
+
+            return DriverConnection(bind_chat, bind_embedding, close=close)
+
+        async def discover_driver(descriptor, _credential):
+            assert driver_contexts[driver_id].require(MODEL_DRIVERS) is model_contexts[0][1].drivers
+            discover_calls.append(descriptor.connection_id)
+            if driver_id == "driver-a":
+                discover_started.set()
+                await release_discover.wait()
+            if discover_error[0] is not None:
+                raise discover_error[0]
+            return ()
+
+        async def probe_driver(descriptor, _credential):
+            probe_calls.append(descriptor.connection_id)
+            if driver_id == "driver-b" and descriptor.connection_id == "created":
+                probe_started.set()
+                await release_probe.wait()
+
+        async def start_auth(_input):
+            auth_callback_events.append((driver_id, "start", dict(_input)))
+            auth_started.set()
+            await release_auth.wait()
+            auth_returned.set()
+            await release_auth_return.wait()
+            return {"state": {"step": 1}, "challenge": {"kind": "test"}}
+
+        async def finish_auth(_state):
+            auth_callback_events.append((driver_id, "finish", dict(_state)))
+            finish_started.set()
+            await release_finish.wait()
+            finish_returned.set()
+            await release_finish_return.wait()
+            return dict(auth_finish_result[0])
+
+        async def cancel_auth(state):
+            auth_callback_events.append((driver_id, "cancel", dict(state)))
+            cancel_states.append(dict(state))
+            if cancel_error[0] is not None:
+                raise cancel_error[0]
+
+        return ModelDriverDefinition(
+            driver_id,
+            "test-v1",
+            open_driver,
+            discover=discover_driver,
+            probe=probe_driver if driver_id == "driver-b" else None,
+            start_auth=start_auth,
+            finish_auth=finish_auth,
+            cancel_auth=cancel_auth,
+        )
+
+    async def mount_driver(driver_id):
+        definition = definition_for(driver_id)
+
+        async def apply_driver(ctx):
+            driver_contexts[driver_id] = ctx
+            if with_driver_dependency:
+                ctx.require(driver_dependency)
+            await ctx.provide(driver_resources[driver_id], object())
+            effect = await ctx.require(MODEL_DRIVERS).register(ctx, definition)
+            driver_definitions[driver_id] = definition
+            driver_registration_effects[driver_id] = effect
+
+        dependencies = (MODEL_DRIVERS,)
+        if with_driver_dependency:
+            dependencies += (driver_dependency,)
+
+        driver_fibers[driver_id] = await root.mount(
+            apply_driver,
+            name=driver_id,
+            inject=dependencies,
+            runtime=PluginRuntime(
+                driver_id,
+                f"{driver_id}:g1",
+                tmp_path,
+                tmp_path / f"{driver_id}-data",
+                tmp_path,
+                {},
+            ),
+        )
+
+    await mount_driver("driver-a")
+    await mount_driver("driver-b")
+
+    driver_b_consumer_fiber = None
+    if with_driver_b_consumer:
+        async def apply_driver_b_consumer(ctx):
+            ctx.require(driver_resources["driver-b"])
+
+            async def cleanup() -> None:
+                driver_b_consumer_cleanup_started.set()
+                await release_driver_b_consumer.wait()
+
+            await ctx.effect(lambda: cleanup, label="hard-driver-b-consumer")
+
+        driver_b_consumer_fiber = await root.mount(
+            apply_driver_b_consumer,
+            name="driver-b-consumer",
+            inject=(driver_resources["driver-b"],),
+            runtime=PluginRuntime(
+                "driver-b-consumer",
+                "driver-b-consumer:g1",
+                tmp_path,
+                tmp_path / "driver-b-consumer-data",
+                tmp_path,
+                {},
+            ),
+        )
+
+    async def apply_consumer(ctx):
+        ctx.require(driver_resources["driver-a"])
+
+        async def cleanup():
+            consumer_cleanup_started.set()
+            await release_consumer.wait()
+
+        await ctx.effect(lambda: cleanup, label="hard-driver-consumer")
+
+    consumer_fiber = await root.mount(
+        apply_consumer,
+        name="driver-a-consumer",
+        inject=(driver_resources["driver-a"],),
+        runtime=PluginRuntime(
+            "driver-a-consumer",
+            "driver-a-consumer:g1",
+            tmp_path,
+            tmp_path / "consumer-data",
+            tmp_path,
+            {},
+        ),
+    )
+    unrelated_fiber = await root.mount(
+        lambda _ctx: None,
+        name="unrelated-model-owner",
+        runtime=PluginRuntime(
+            "unrelated-model-owner",
+            "unrelated-model-owner:g1",
+            tmp_path,
+            tmp_path / "unrelated-data",
+            tmp_path,
+            {},
+        ),
+    )
+    unrelated_events = []
+    await unrelated_fiber.context.on(
+        RUNTIME_STARTING, lambda _event: unrelated_events.append("starting")
+    )
+    await unrelated_fiber.context.on(
+        RUNTIME_STARTED, lambda _event: unrelated_events.append("started")
+    )
+    await unrelated_fiber.context.on(
+        RUNTIME_STOPPING, lambda _event: unrelated_events.append("stopping")
+    )
+    assert model_contexts
+    return {
+        "tmp_path": tmp_path,
+        "root": root,
+        "models_fiber": models_fiber,
+        "driver_dependency_fiber": driver_dependency_fiber,
+        "driver_dependency": driver_dependency,
+        "model_context": model_contexts[0][0],
+        "state": model_contexts[0][1],
+        "driver_contexts": driver_contexts,
+        "driver_fibers": driver_fibers,
+        "driver_definitions": driver_definitions,
+        "driver_registration_effects": driver_registration_effects,
+        "consumer_fiber": consumer_fiber,
+        "unrelated_fiber": unrelated_fiber,
+        "unrelated_events": unrelated_events,
+        "open_started": open_started,
+        "release_open": release_open,
+        "discover_started": discover_started,
+        "release_discover": release_discover,
+        "discover_calls": discover_calls,
+        "discover_error": discover_error,
+        "probe_calls": probe_calls,
+        "probe_started": probe_started,
+        "release_probe": release_probe,
+        "open_calls": open_calls,
+        "bind_chat_calls": bind_chat_calls,
+        "close_snapshot_states": close_snapshot_states,
+        "auth_started": auth_started,
+        "release_auth": release_auth,
+        "auth_returned": auth_returned,
+        "release_auth_return": release_auth_return,
+        "finish_started": finish_started,
+        "release_finish": release_finish,
+        "finish_returned": finish_returned,
+        "release_finish_return": release_finish_return,
+        "auth_finish_result": auth_finish_result,
+        "auth_callback_events": auth_callback_events,
+        "cancel_states": cancel_states,
+        "cancel_error": cancel_error,
+        "fail_open_ids": fail_open_ids,
+        "close_started": close_started,
+        "release_close": release_close,
+        "consumer_cleanup_started": consumer_cleanup_started,
+        "release_consumer": release_consumer,
+        "driver_b_consumer_fiber": driver_b_consumer_fiber,
+        "driver_b_consumer_cleanup_started": driver_b_consumer_cleanup_started,
+        "release_driver_b_consumer": release_driver_b_consumer,
+        "models_cleanup_started": models_cleanup_started,
+        "release_models_cleanup": release_models_cleanup,
+        "fail_close_ids": fail_close_ids,
+        "close_events": close_events,
+        "credential_reads": credential_reads,
+        "live_chat_calls": live_chat_calls,
+        "live_chat_descriptors": live_chat_descriptors,
+        "live_embedding_calls": live_embedding_calls,
+        "live_embedding_descriptors": live_embedding_descriptors,
+        "make_live_connection": make_live_connection,
+    }
+
+
+def _model_test_connection(connection_id, driver_id):
+    from plugins.models.store import StoredConnection
+
+    return StoredConnection(
+        connection_id,
+        connection_id,
+        driver_id,
+        "https://example.invalid",
+        "test",
+        {},
+        True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_models_context_rejects_sync_queries_after_same_fiber_reload(tmp_path):
+    """A reloaded Models Fiber rejects every old public sync view at the old Context."""
+
+    from agent.plugin_composition import (
+        CHAT_MODELS,
+        ChatModelSelection,
+        CompositionError,
+        CompositionRoot,
+        EMBEDDINGS,
+        MODEL_CATALOG,
+        MODEL_DRIVERS,
+        PluginRuntime,
+        ServiceKey,
+    )
+    from plugins.models.settings import MODEL_SETTINGS
+    from plugins.models.state import ModelsState
+    from plugins.models.store import ModelsStore
+
+    root = CompositionRoot("stale-models-context")
+    dependency = ServiceKey("test.models.reload-dependency")
+    states = []
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+
+    async def apply_dependency(ctx):
+        await ctx.provide(dependency, object())
+
+    async def apply_models(ctx):
+        ctx.require(dependency)
+        state = ModelsState(store, context=ctx)
+        states.append(state)
+        await ctx.provide(MODEL_DRIVERS, state.drivers)
+        await ctx.provide(CHAT_MODELS, state.chat_models)
+        await ctx.provide(EMBEDDINGS, state.embeddings)
+        await ctx.provide(MODEL_CATALOG, state.catalog)
+        await ctx.provide(MODEL_SETTINGS, state.settings)
+
+    runtime = PluginRuntime(
+        "stale-models",
+        "stale-models:g1",
+        tmp_path,
+        tmp_path / "models-data",
+        tmp_path,
+        {},
+    )
+    dependency_fiber = await root.mount(
+        apply_dependency,
+        name="models-reload-dependency",
+        runtime=PluginRuntime(
+            "models-reload-dependency",
+            "models-reload-dependency:g1",
+            tmp_path,
+            tmp_path / "dependency-data",
+            tmp_path,
+            {},
+        ),
+    )
+    models_fiber = await root.mount(
+        apply_models,
+        name="stale-models",
+        inject=(dependency,),
+        runtime=runtime,
+    )
+    try:
+        old_state = states[0]
+        await dependency_fiber.dispose()
+        await root.mount(
+            apply_dependency,
+            name="models-reload-dependency",
+            runtime=PluginRuntime(
+                "models-reload-dependency",
+                "models-reload-dependency:g2",
+                tmp_path,
+                tmp_path / "dependency-data-2",
+                tmp_path,
+                {},
+            ),
+        )
+        assert models_fiber.context is states[1].context
+        for read in (
+            old_state.catalog_snapshot,
+            lambda: old_state.validate_chat_selection(ChatModelSelection()),
+            old_state.chat_contributors,
+            lambda: old_state.describe_embedding(None),
+        ):
+            with pytest.raises(CompositionError) as excinfo:
+                read()
+            assert excinfo.value.code == "STALE_ACTIVATION"
+    finally:
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_models_owner_scope_survives_unloading_but_rejects_new_scope(tmp_path):
+    """An admitted Models owner may drain while new Tasks are rejected."""
+
+    from agent.plugin_composition import ChatModelSelection, CompositionError, FiberState
+
+    graph = await _mount_model_driver_graph(
+        tmp_path,
+        hold_models_cleanup=True,
+    )
+    unloading = None
+    try:
+        before = graph["state"].store.read_snapshot()
+        assert before is not None
+        async with graph["model_context"].runtime_scope():
+            unloading = asyncio.create_task(graph["models_fiber"].dispose())
+            await graph["consumer_cleanup_started"].wait()
+            assert graph["models_fiber"].state is FiberState.UNLOADING
+            assert graph["state"].catalog_snapshot().revision == before.revision
+            assert graph["state"].validate_chat_selection(
+                ChatModelSelection()
+            ) == ChatModelSelection()
+            async with graph["model_context"].runtime_scope():
+                assert graph["state"].catalog_snapshot().revision == before.revision
+
+            async def acquire_new_scope():
+                async with graph["model_context"].runtime_scope():
+                    return None
+
+            with pytest.raises(CompositionError) as excinfo:
+                await asyncio.create_task(acquire_new_scope())
+            assert excinfo.value.code == "OWNER_UNAVAILABLE"
+
+        graph["release_consumer"].set()
+        await graph["models_cleanup_started"].wait()
+        graph["release_models_cleanup"].set()
+        await unloading
+        assert graph["models_fiber"].state is FiberState.DISPOSED
+        assert not graph["models_fiber"]._in_flight_calls
+    finally:
+        graph["release_consumer"].set()
+        graph["release_models_cleanup"].set()
+        if unloading is not None:
+            await unloading
+        await graph["root"].dispose()
+
+
+async def _start_graph_auth(graph, connection_id):
+    """Run the fixture's real start-auth callback to a stored attempt."""
+
+    from plugins.models.settings import StartConnectionAuth
+
+    task = asyncio.create_task(
+        graph["state"]._start_auth(
+            StartConnectionAuth("driver-a", connection_id, {"prompt": "test"})
+        )
+    )
+    await graph["auth_started"].wait()
+    graph["release_auth"].set()
+    await graph["auth_returned"].wait()
+    graph["release_auth_return"].set()
+    return await task
+
+
+async def _apply_graph_start_auth(graph, connection_id):
+    """Start one auth attempt through the public Models settings facade."""
+
+    from plugins.models.settings import StartConnectionAuth
+
+    task = asyncio.create_task(
+        graph["state"].settings.apply(
+            StartConnectionAuth("driver-a", connection_id, {"prompt": "test"})
+        )
+    )
+    await graph["auth_started"].wait()
+    graph["release_auth"].set()
+    await graph["auth_returned"].wait()
+    graph["release_auth_return"].set()
+    return await task
+
+
+async def _configure_live_models(graph):
+    """Persist one chat and one embedding model through real settings calls."""
+
+    from agent.plugin_composition import CapabilitySources, ModelCapabilities, ModelKind
+    from plugins.models.settings import AddConnection, AddModel, SetDefaultModel
+
+    settings = graph["state"].settings
+    await settings.apply(
+        AddConnection(
+            0,
+            "chat-connection",
+            "Chat connection",
+            "driver-a",
+            "https://chat.example.invalid",
+            "chat-user",
+            {"token": "chat-token"},
+        )
+    )
+    await settings.apply(
+        AddModel(
+            1,
+            "chat-model",
+            "chat-connection",
+            ModelKind.CHAT,
+            "chat-model",
+            ModelCapabilities(
+                context_window=4096,
+                max_output_tokens=256,
+                supports_tool_calls=True,
+                supported_reasoning_efforts=("low", "high"),
+            ),
+            CapabilitySources(),
+        )
+    )
+    await settings.apply(SetDefaultModel(2, "default", "chat-model"))
+    await settings.apply(
+        AddConnection(
+            3,
+            "embedding-connection",
+            "Embedding connection",
+            "driver-b",
+            "https://embedding.example.invalid",
+            "embedding-user",
+            {"token": "embedding-token"},
+        )
+    )
+    await settings.apply(
+        AddModel(
+            4,
+            "embedding-model",
+            "embedding-connection",
+            ModelKind.EMBEDDING,
+            "embedding-model",
+            ModelCapabilities(
+                embedding_dimensions=2,
+                embedding_normalization="l2",
+            ),
+            CapabilitySources(),
+        )
+    )
+    await settings.apply(SetDefaultModel(5, None, "embedding-model"))
+    snapshot = graph["state"].store.read_snapshot()
+    assert snapshot is not None and snapshot.revision == 6
+    return snapshot
+
+
+async def _replace_driver_with_same_definition(graph, driver_id, *, name):
+    """Dispose one real registration Fiber, then register its same definition again."""
+
+    from agent.plugin_composition import MODEL_DRIVERS, PluginRuntime
+
+    old_fiber = graph["driver_fibers"][driver_id]
+    definition = graph["driver_definitions"][driver_id]
+    unloading = asyncio.create_task(old_fiber.dispose())
+    if driver_id == "driver-a":
+        await graph["consumer_cleanup_started"].wait()
+        graph["release_consumer"].set()
+    await unloading
+
+    async def apply_replacement(ctx):
+        graph["driver_contexts"][driver_id] = ctx
+        effect = await ctx.require(MODEL_DRIVERS).register(ctx, definition)
+        graph["driver_registration_effects"][driver_id] = effect
+
+    replacement = await graph["root"].mount(
+        apply_replacement,
+        name=name,
+        inject=(MODEL_DRIVERS,),
+        runtime=PluginRuntime(
+            f"{driver_id}-replacement",
+            f"{driver_id}-replacement:g1",
+            graph["tmp_path"],
+            graph["tmp_path"] / f"{driver_id}-replacement-data",
+            graph["tmp_path"],
+            {},
+        ),
+    )
+    graph["driver_fibers"][driver_id] = replacement
+    return old_fiber, replacement
+
+
+async def _reregister_driver_in_same_context(graph, driver_id):
+    """Replace one registration Effect without reloading its existing Fiber."""
+
+    from agent.plugin_composition import MODEL_DRIVERS
+
+    fiber = graph["driver_fibers"][driver_id]
+    context = graph["driver_contexts"][driver_id]
+    definition = graph["driver_definitions"][driver_id]
+    old_effect = graph["driver_registration_effects"][driver_id]
+    await old_effect.aclose()
+    new_effect = await context.require(MODEL_DRIVERS).register(context, definition)
+    graph["driver_registration_effects"][driver_id] = new_effect
+    return fiber, context, old_effect, new_effect
+
+
+@pytest.mark.asyncio
+async def test_live_models_facades_pin_execution_and_persist_call(tmp_path):
+    """Real facades pin one execution while settings and child Tasks change."""
+
+    from agent.plugin_composition import ModelKind, ModelRequest, ModelUnavailableError, PluginRuntime
+    from plugins.models.settings import AddModel, SetDefaultModel
+
+    graph = await _mount_model_driver_graph(tmp_path, with_live_models=True)
+    try:
+        await _configure_live_models(graph)
+        state = graph["state"]
+        models_identity = (
+            graph["models_fiber"].context,
+            graph["models_fiber"]._activation_token,
+        )
+        driver_identity = (
+            graph["driver_fibers"]["driver-a"].context,
+            graph["driver_fibers"]["driver-a"]._activation_token,
+        )
+
+        async with state.chat_models.execution() as first:
+            first_chat = first.chat("agent")
+            first_descriptor = first_chat.descriptor
+            async with state.chat_models.execution() as nested:
+                assert nested is first
+                assert nested.chat("agent").descriptor == first_descriptor
+
+            async def child_execution():
+                with pytest.raises(RuntimeError, match="不能由子 task 继承"):
+                    async with state.chat_models.execution():
+                        raise AssertionError("child execution must not inherit")
+
+            await asyncio.create_task(child_execution())
+
+            async def independent_child():
+                async with state.chat_models.independent_execution() as independent:
+                    return independent.chat("agent").descriptor
+
+            assert await asyncio.create_task(independent_child()) == first_descriptor
+
+            await state.settings.apply(
+                AddModel(
+                    6,
+                    "chat-model-next",
+                    "chat-connection",
+                    ModelKind.CHAT,
+                    "chat-model-next",
+                    first_descriptor.capabilities,
+                    first_descriptor.capability_sources,
+                )
+            )
+            await state.settings.apply(SetDefaultModel(7, "default", "chat-model-next"))
+            response = await first_chat.complete(
+                ModelRequest(messages=({"role": "user", "content": "pinned"},))
+            )
+            assert response.content == "driver-a:chat-model"
+            assert first_chat.descriptor == first_descriptor
+
+        async with state.chat_models.execution() as next_execution:
+            next_descriptor = next_execution.chat("agent").descriptor
+            assert next_descriptor.model_id == "chat-model-next"
+            assert next_descriptor.binding_id != first_descriptor.binding_id
+
+        call_id = response.call_record_id
+        assert call_id is not None
+        record = state.store.read_call(call_id)
+        assert record["state"] == "success"
+        assert record["binding"]["binding_id"] == first_descriptor.binding_id
+        assert "credential" not in record["binding"]
+        assert ("driver-a", "chat-connection") in graph["credential_reads"]
+
+        before_invalid = state.store.read_snapshot()
+        credential_handle = state.store.credential_handle(
+            "chat-connection", "chat-user"
+        )
+        before_credential = dict(await credential_handle.read())
+        before_credentials = tuple(graph["credential_reads"])
+        with pytest.raises(ModelUnavailableError):
+            await state.settings.apply(
+                AddModel(
+                    8,
+                    "invalid-model",
+                    "missing-connection",
+                    ModelKind.CHAT,
+                    "invalid-model",
+                    first_descriptor.capabilities,
+                    first_descriptor.capability_sources,
+                )
+            )
+        assert state.store.read_snapshot() == before_invalid
+        assert dict(await credential_handle.read()) == before_credential
+        assert tuple(graph["credential_reads"]) == before_credentials
+
+        old_unrelated_context = graph["unrelated_fiber"].context
+        await graph["unrelated_fiber"].dispose()
+        async def apply_unrelated(_ctx):
+            return None
+
+        graph["unrelated_fiber"] = await graph["root"].mount(
+            apply_unrelated,
+            name="unrelated-model-owner",
+            runtime=PluginRuntime(
+                "unrelated-model-owner",
+                "unrelated-model-owner:g2",
+                tmp_path,
+                tmp_path / "unrelated-data-2",
+                tmp_path,
+                {},
+            ),
+        )
+        assert (
+            graph["models_fiber"].context,
+            graph["models_fiber"]._activation_token,
+        ) == models_identity
+        assert (
+            graph["driver_fibers"]["driver-a"].context,
+            graph["driver_fibers"]["driver-a"]._activation_token,
+        ) == driver_identity
+        assert graph["unrelated_fiber"].context is not old_unrelated_context
+        async with state.chat_models.execution() as after_unrelated:
+            assert after_unrelated.chat("agent").descriptor == next_descriptor
+    finally:
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_same_context_reregistration_changes_identity_without_fiber_reload(tmp_path):
+    """A registration Effect can be replaced while its Fiber and Context stay live."""
+
+    graph = await _mount_model_driver_graph(tmp_path, with_live_models=True)
+    try:
+        await _configure_live_models(graph)
+        state = graph["state"]
+        fiber = graph["driver_fibers"]["driver-a"]
+        context = graph["driver_contexts"]["driver-a"]
+        activation = fiber._activation_token
+        async with state.chat_models.execution() as before_execution:
+            before_descriptor = before_execution.chat("agent").descriptor
+
+        same_fiber, same_context, old_effect, new_effect = (
+            await _reregister_driver_in_same_context(graph, "driver-a")
+        )
+        assert same_fiber is fiber
+        assert same_context is context
+        assert fiber.context is context
+        assert fiber._activation_token is activation
+        assert old_effect not in fiber.effects
+        assert new_effect in fiber.effects
+
+        async with state.chat_models.execution() as after_execution:
+            after_descriptor = after_execution.chat("agent").descriptor
+        assert state.store.read_snapshot().revision == 6
+        assert after_descriptor.plugin_snapshot_id != before_descriptor.plugin_snapshot_id
+        assert after_descriptor.binding_id != before_descriptor.binding_id
+    finally:
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_models_registration_replacement_rejects_old_continuation(tmp_path):
+    """A same-id re-registration changes binding identity before new driver I/O."""
+
+    from agent.plugin_composition import ModelRequest, ModelUnavailableError
+
+    graph = await _mount_model_driver_graph(tmp_path, with_live_models=True)
+    try:
+        await _configure_live_models(graph)
+        state = graph["state"]
+        async with state.chat_models.execution() as execution:
+            old_chat = execution.chat("agent")
+            old_descriptor = old_chat.descriptor
+            old_response = await old_chat.complete(
+                ModelRequest(messages=({"role": "user", "content": "old"},))
+            )
+        assert old_response.call_record_id is not None
+        assert old_response.continuation is not None
+        old_record = state.store.read_call(old_response.call_record_id)
+        call_count = len(state.store.read_calls("", 1000))
+        old_context = graph["driver_fibers"]["driver-a"].context
+        await _replace_driver_with_same_definition(
+            graph,
+            "driver-a",
+            name="driver-a-replacement-for-continuation",
+        )
+        assert graph["driver_fibers"]["driver-a"].context is not old_context
+
+        async with state.chat_models.execution() as replacement_execution:
+            replacement_chat = replacement_execution.chat("agent")
+            replacement_descriptor = replacement_chat.descriptor
+            assert state.store.read_snapshot().revision == 6
+            assert replacement_descriptor.plugin_snapshot_id != old_descriptor.plugin_snapshot_id
+            assert replacement_descriptor.binding_id != old_descriptor.binding_id
+            assert old_record["binding"]["binding_id"] == old_descriptor.binding_id
+            live_calls = len(graph["live_chat_calls"])
+            with pytest.raises(ModelUnavailableError):
+                await replacement_chat.complete(
+                    ModelRequest(
+                        messages=({"role": "user", "content": "continued"},),
+                        continuation=old_response.continuation,
+                    )
+                )
+            assert len(graph["live_chat_calls"]) == live_calls
+            assert len(state.store.read_calls("", 1000)) == call_count
+            current_response = await replacement_chat.complete(
+                ModelRequest(messages=({"role": "user", "content": "new"},))
+            )
+            assert current_response.content == "driver-a:chat-model"
+        assert state.store.read_call(old_response.call_record_id) == old_record
+        assert len(state.store.read_calls("", 1000)) == call_count + 1
+    finally:
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_embedding_namespace_tracks_only_its_driver_registration(tmp_path):
+    """Chat and embedding bindings keep independent live registration identities."""
+
+    from agent.plugin_composition import ModelKind
+    from plugins.models.settings import AddModel, SetDefaultModel
+
+    graph = await _mount_model_driver_graph(tmp_path, with_live_models=True)
+    try:
+        await _configure_live_models(graph)
+        state = graph["state"]
+        async with state.chat_models.execution() as chat_execution:
+            chat_descriptor = chat_execution.chat("agent").descriptor
+            await state.settings.apply(
+                AddModel(
+                    6,
+                    "chat-model-next",
+                    "chat-connection",
+                    ModelKind.CHAT,
+                    "chat-model-next",
+                    chat_descriptor.capabilities,
+                    chat_descriptor.capability_sources,
+                )
+            )
+            await state.settings.apply(SetDefaultModel(7, "default", "chat-model-next"))
+            async with state.embeddings.bind() as nested_embedding:
+                first_descriptor = nested_embedding.descriptor
+                result = await nested_embedding.embed(("one", "two"))
+                assert first_descriptor.driver_id == "driver-b"
+                assert first_descriptor.dimensions == 2
+                assert all(len(vector) == 2 for vector in result.vectors)
+                assert first_descriptor.plugin_snapshot_id != chat_descriptor.plugin_snapshot_id
+                assert chat_descriptor.model_revision == 6
+                assert first_descriptor.model_revision == 6
+                assert chat_execution.chat("agent").descriptor == chat_descriptor
+        async with state.embeddings.bind() as external_embedding:
+            external_descriptor = external_embedding.descriptor
+            external_result = await external_embedding.embed(("outside",))
+        assert external_descriptor.model_revision == 8
+        assert external_descriptor.plugin_snapshot_id == first_descriptor.plugin_snapshot_id
+        assert external_descriptor.identity == first_descriptor.identity
+        assert external_descriptor.dimensions == first_descriptor.dimensions
+        assert external_result.vectors == ((1.0, 2.0),)
+        assert chat_descriptor.driver_id == "driver-a"
+
+        await _replace_driver_with_same_definition(
+            graph,
+            "driver-a",
+            name="driver-a-replacement-for-embedding",
+        )
+        async with state.embeddings.bind() as after_chat_replacement:
+            after_chat_descriptor = after_chat_replacement.descriptor
+        assert after_chat_descriptor.plugin_snapshot_id == first_descriptor.plugin_snapshot_id
+        assert after_chat_descriptor.identity == first_descriptor.identity
+        assert after_chat_descriptor.dimensions == first_descriptor.dimensions
+
+        await _replace_driver_with_same_definition(
+            graph,
+            "driver-b",
+            name="driver-b-replacement-for-embedding",
+        )
+        async with state.embeddings.bind() as after_embedding_replacement:
+            after_embedding_descriptor = after_embedding_replacement.descriptor
+            replacement_result = await after_embedding_replacement.embed(("three",))
+        assert after_embedding_descriptor.plugin_snapshot_id != first_descriptor.plugin_snapshot_id
+        assert after_embedding_descriptor.identity == first_descriptor.identity
+        assert after_embedding_descriptor.dimensions == first_descriptor.dimensions
+        assert replacement_result.vectors == ((1.0, 2.0),)
+        assert graph["credential_reads"].count(("driver-b", "embedding-connection")) >= 2
+    finally:
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_driver_reactivation_changes_registration_identity_without_revision_change(tmp_path):
+    """A hard dependency replacement reloads the same driver Fiber and Context."""
+
+    from agent.plugin_composition import PluginRuntime
+
+    graph = await _mount_model_driver_graph(
+        tmp_path,
+        with_live_models=True,
+        with_driver_dependency=True,
+    )
+    try:
+        await _configure_live_models(graph)
+        state = graph["state"]
+        async with state.chat_models.execution() as execution:
+            old_descriptor = execution.chat("agent").descriptor
+        driver_fiber = graph["driver_fibers"]["driver-a"]
+        old_context = driver_fiber.context
+        dependency = graph["driver_dependency_fiber"]
+        unloading = asyncio.create_task(dependency.dispose())
+        await graph["consumer_cleanup_started"].wait()
+        graph["release_consumer"].set()
+        await unloading
+
+        async def apply_dependency(ctx):
+            await ctx.provide(graph["driver_dependency"], object())
+
+        await graph["root"].mount(
+            apply_dependency,
+            name="driver-dependency",
+            runtime=PluginRuntime(
+                "driver-dependency",
+                "driver-dependency:g2",
+                tmp_path,
+                tmp_path / "driver-dependency-data-2",
+                tmp_path,
+                {},
+            ),
+        )
+        assert graph["driver_fibers"]["driver-a"] is driver_fiber
+        assert driver_fiber.context is not old_context
+        async with state.chat_models.execution() as execution:
+            new_descriptor = execution.chat("agent").descriptor
+        assert state.store.read_snapshot().revision == 6
+        assert new_descriptor.plugin_snapshot_id != old_descriptor.plugin_snapshot_id
+        assert new_descriptor.binding_id != old_descriptor.binding_id
+    finally:
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_auth_start_unload_cleanup_preserves_callback_state(tmp_path):
+    """Driver unload during start retains returned state for registration cleanup."""
+
+    from agent.plugin_composition import FiberState
+    from plugins.models.settings import StartConnectionAuth
+
+    graph = await _mount_model_driver_graph(tmp_path)
+    try:
+        before = graph["state"].store.read_snapshot()
+        assert before is not None
+        start_task = asyncio.create_task(
+            graph["state"]._start_auth(
+                StartConnectionAuth("driver-a", "auth-start", {})
+            )
+        )
+        await graph["auth_started"].wait()
+        unloading = asyncio.create_task(graph["driver_fibers"]["driver-a"].dispose())
+        await graph["consumer_cleanup_started"].wait()
+        assert graph["driver_fibers"]["driver-a"].state is FiberState.UNLOADING
+        graph["release_auth"].set()
+        await graph["auth_returned"].wait()
+        graph["release_auth_return"].set()
+        with pytest.raises(ValueError, match="auth attempt 已取消"):
+            await start_task
+        graph["release_consumer"].set()
+        await unloading
+        assert not graph["driver_fibers"]["driver-a"]._in_flight_calls
+        assert graph["cancel_states"] == [{"step": 1}]
+        assert not graph["state"]._auth_attempts
+        assert graph["state"].store.read_snapshot() == before
+    finally:
+        graph["release_auth"].set()
+        graph["release_auth_return"].set()
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_idle_auth_attempt_does_not_hold_driver_owner_during_dispose(tmp_path):
+    """A pending idle attempt is cancelled by registration cleanup after consumers drain."""
+
+    from agent.plugin_composition import FiberState
+
+    graph = await _mount_model_driver_graph(tmp_path)
+    try:
+        before = graph["state"].store.read_snapshot()
+        assert before is not None
+        receipt = await _apply_graph_start_auth(graph, "auth-idle")
+        assert receipt.status == "pending"
+        unloading = asyncio.create_task(graph["driver_fibers"]["driver-a"].dispose())
+        await graph["consumer_cleanup_started"].wait()
+        assert graph["driver_fibers"]["driver-a"].state is FiberState.UNLOADING
+        graph["release_consumer"].set()
+        await unloading
+        assert graph["cancel_states"] == [{"step": 1}]
+        assert graph["auth_callback_events"][-1] == (
+            "driver-a",
+            "cancel",
+            {"step": 1},
+        )
+        assert not graph["state"]._auth_attempts
+        assert graph["state"].store.read_snapshot() == before
+    finally:
+        graph["release_auth"].set()
+        graph["release_auth_return"].set()
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_failed_auth_cleanup_keeps_old_effect_separate_from_new_registration(tmp_path):
+    """A failed A cleanup is retried on A while a same-id B registration stays live."""
+
+    from agent.plugin_composition import FiberState, MODEL_DRIVERS, ModelDriverDefinition, PluginRuntime
+    from plugins.models.settings import CancelConnectionAuth, StartConnectionAuth
+
+    graph = await _mount_model_driver_graph(tmp_path)
+    old_fiber = None
+    old_effect = None
+    replacement = None
+    try:
+        before = graph["state"].store.read_snapshot()
+        assert before is not None
+        started = await _apply_graph_start_auth(graph, "auth-old")
+        attempt_id = started.attempt_id
+        assert attempt_id is not None
+        old_fiber = graph["driver_fibers"]["driver-a"]
+        old_effect = graph["driver_registration_effects"]["driver-a"]
+        graph["cancel_error"][0] = RuntimeError("old cancel failed")
+        unloading = asyncio.create_task(old_fiber.dispose())
+        await graph["consumer_cleanup_started"].wait()
+        graph["release_consumer"].set()
+        with pytest.raises(BaseExceptionGroup) as cleanup_error:
+            await unloading
+        assert len(cleanup_error.value.exceptions) == 1
+        failure = cleanup_error.value.exceptions[0]
+        assert isinstance(failure, RuntimeError)
+        assert str(failure) == "old cancel failed"
+        assert old_effect in old_fiber.effects
+        assert attempt_id in graph["state"]._auth_attempts
+
+        b_events = []
+        b_contexts = []
+        b_effects = []
+
+        async def b_open(descriptor, credential):
+            b_events.append(("open", descriptor.connection_id))
+            await credential.read()
+            return graph["make_live_connection"]("driver-a", "B", descriptor)
+
+        async def b_start(_input):
+            b_events.append(("start", "B"))
+            return {"state": {"tag": "B"}, "challenge": {"kind": "B"}}
+
+        async def b_cancel(state):
+            b_events.append(("cancel", dict(state)))
+
+        b_definition = ModelDriverDefinition(
+            "driver-a",
+            "test-b",
+            b_open,
+            start_auth=b_start,
+            cancel_auth=b_cancel,
+        )
+
+        async def apply_b(ctx):
+            b_contexts.append(ctx)
+            b_effects.append(await ctx.require(MODEL_DRIVERS).register(ctx, b_definition))
+
+        replacement = await graph["root"].mount(
+            apply_b,
+            name="driver-a-auth-replacement",
+            inject=(MODEL_DRIVERS,),
+            runtime=PluginRuntime(
+                "driver-a-auth-replacement",
+                "driver-a-auth-replacement:g1",
+                tmp_path,
+                tmp_path / "driver-a-auth-replacement-data",
+                tmp_path,
+                {},
+            ),
+        )
+        graph["cancel_error"][0] = None
+        await old_effect.aclose()
+        assert graph["cancel_states"] == [{"step": 1}, {"step": 1}]
+        assert attempt_id not in graph["state"]._auth_attempts
+        assert old_effect not in old_fiber.effects
+        assert graph["state"]._registrations["driver-a"].context is b_contexts[0]
+        assert b_effects[0] in replacement.effects
+        await old_fiber.dispose()
+        assert b_effects[0] in replacement.effects
+
+        b_started = await graph["state"].settings.apply(
+            StartConnectionAuth("driver-a", "auth-new", {})
+        )
+        b_cancelled = await graph["state"].settings.apply(
+            CancelConnectionAuth(b_started.attempt_id or "")
+        )
+        assert b_cancelled.status == "cancelled"
+        assert ("cancel", {"tag": "B"}) in b_events
+        assert graph["state"].store.read_snapshot() == before
+    finally:
+        graph["cancel_error"][0] = None
+        graph["release_auth"].set()
+        graph["release_auth_return"].set()
+        graph["release_consumer"].set()
+        if old_effect is not None and old_fiber is not None and old_effect in old_fiber.effects:
+            await old_effect.aclose()
+        if old_fiber is not None and old_fiber.state is not FiberState.DISPOSED:
+            await old_fiber.dispose()
+        if replacement is not None and replacement.state is not FiberState.DISPOSED:
+            await replacement.dispose()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_auth_expiry_waits_for_pending_finish_and_cancels_new_state(
+    tmp_path, monkeypatch,
+):
+    """The real expiry task waits on finish.lock and cancels its published state."""
+
+    from plugins.models.settings import FinishConnectionAuth
+
+    graph = await _mount_model_driver_graph(tmp_path)
+    original_sleep = asyncio.sleep
+    timer_entered = asyncio.Event()
+    release_timer = asyncio.Event()
+    timer_fired = asyncio.Event()
+
+    async def timer_sleep(delay, *args, **kwargs):
+        if delay == 15 * 60 and not timer_entered.is_set():
+            timer_entered.set()
+            await release_timer.wait()
+            timer_fired.set()
+            return
+        return await original_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", timer_sleep)
+    try:
+        before = graph["state"].store.read_snapshot()
+        assert before is not None
+        started = await _apply_graph_start_auth(graph, "auth-expiry")
+        attempt_id = started.attempt_id or ""
+        await timer_entered.wait()
+        graph["auth_finish_result"][0] = {
+            "status": "pending",
+            "state": {"step": 2},
+            "challenge": {"kind": "next"},
+        }
+        finish_task = asyncio.create_task(
+            graph["state"].settings.apply(
+                FinishConnectionAuth(0, attempt_id)
+            )
+        )
+        await graph["finish_started"].wait()
+        attempt = graph["state"]._auth_attempts[attempt_id]
+        expiry_task = attempt.expiry_task
+        assert expiry_task is not None
+        release_timer.set()
+        await timer_fired.wait()
+        assert attempt.cancelled
+        graph["release_finish"].set()
+        await graph["finish_returned"].wait()
+        graph["release_finish_return"].set()
+        with pytest.raises(ValueError, match="auth attempt 已取消"):
+            await finish_task
+        await expiry_task
+        assert graph["cancel_states"] == [{"step": 2}]
+        assert graph["auth_callback_events"][-1] == (
+            "driver-a",
+            "cancel",
+            {"step": 2},
+        )
+        assert not graph["state"]._auth_attempts
+        assert graph["state"].store.read_snapshot() == before
+    finally:
+        graph["release_auth"].set()
+        graph["release_auth_return"].set()
+        graph["release_finish"].set()
+        graph["release_finish_return"].set()
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_auth_pending_cancellation_keeps_new_state_before_live_check(tmp_path):
+    """A pending finish publishes its new state before cancellation observes it."""
+
+    from plugins.models.settings import CancelConnectionAuth, FinishConnectionAuth
+
+    graph = await _mount_model_driver_graph(tmp_path)
+    try:
+        before = graph["state"].store.read_snapshot()
+        assert before is not None
+        started = await _start_graph_auth(graph, "auth-pending")
+        graph["auth_finish_result"][0] = {
+            "status": "pending",
+            "state": {"step": 2},
+            "challenge": {"kind": "next"},
+        }
+        finish_task = asyncio.create_task(
+            graph["state"]._finish_auth(
+                FinishConnectionAuth(0, started.attempt_id or "")
+            )
+        )
+        await graph["finish_started"].wait()
+        cancel_started = asyncio.Event()
+
+        async def cancel_from_settings():
+            cancel_started.set()
+            return await graph["state"].settings.apply(
+                CancelConnectionAuth(started.attempt_id or "")
+            )
+
+        cancel_task = asyncio.create_task(cancel_from_settings())
+        await cancel_started.wait()
+        graph["release_finish"].set()
+        await graph["finish_returned"].wait()
+        graph["release_finish_return"].set()
+        with pytest.raises(ValueError, match="auth attempt 已取消"):
+            await finish_task
+        receipt = await cancel_task
+        assert receipt.status == "cancelled"
+        assert graph["cancel_states"] == [{"step": 2}]
+        assert graph["state"].store.read_snapshot() == before
+    finally:
+        graph["release_auth"].set()
+        graph["release_auth_return"].set()
+        graph["release_finish"].set()
+        graph["release_finish_return"].set()
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_auth_close_failure_happens_before_store_cas(tmp_path):
+    """A finish close failure retains the attempt and leaves SQLite unchanged."""
+
+    from plugins.models.settings import FinishConnectionAuth
+
+    graph = await _mount_model_driver_graph(tmp_path)
+    try:
+        before = graph["state"].store.read_snapshot()
+        assert before is not None
+        started = await _start_graph_auth(graph, "auth-close")
+        graph["fail_close_ids"].add("auth-close")
+        finish_task = asyncio.create_task(
+            graph["state"]._finish_auth(
+                FinishConnectionAuth(0, started.attempt_id or "")
+            )
+        )
+        await graph["finish_started"].wait()
+        graph["release_finish"].set()
+        await graph["finish_returned"].wait()
+        graph["release_finish_return"].set()
+        with pytest.raises(LookupError, match="auth-close close failed"):
+            await finish_task
+        assert graph["state"].store.read_snapshot() == before
+        assert graph["close_snapshot_states"] == [before]
+        assert started.attempt_id in graph["state"]._auth_attempts
+        assert graph["close_events"] == ["auth-close"]
+    finally:
+        graph["fail_close_ids"].discard("auth-close")
+        graph["release_auth"].set()
+        graph["release_auth_return"].set()
+        graph["release_finish"].set()
+        graph["release_finish_return"].set()
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_connection_with_model_probes_and_opens_once_before_cas(tmp_path):
+    """The new-connection probe, open, bind, close, and CAS share one owner scope."""
+
+    from agent.plugin_composition import CapabilitySources, ModelCapabilities, ModelKind
+    from plugins.models.settings import AddConnection, AddModel, CreateConnectionWithModel
+
+    graph = await _mount_model_driver_graph(
+        tmp_path,
+        with_driver_b_consumer=True,
+    )
+    unloading = None
+    try:
+        before = graph["state"].store.read_snapshot()
+        assert before is not None
+        connection = AddConnection(
+            expected_revision=0,
+            connection_id="created",
+            name="created",
+            driver_id="driver-b",
+            endpoint="https://example.invalid",
+            auth_identity="test",
+            credential={"token": "created"},
+        )
+        model = AddModel(
+            expected_revision=0,
+            model_id="created-model",
+            connection_id="created",
+            kind=ModelKind.CHAT,
+            model="created-model",
+            capabilities=ModelCapabilities(),
+            capability_sources=CapabilitySources(),
+        )
+        operation = asyncio.create_task(
+            graph["state"].apply_change(
+                CreateConnectionWithModel(connection, model)
+            )
+        )
+        await graph["probe_started"].wait()
+        unloading = asyncio.create_task(
+            graph["driver_fibers"]["driver-b"].dispose()
+        )
+        await graph["driver_b_consumer_cleanup_started"].wait()
+        from agent.plugin_composition import FiberState
+
+        assert graph["driver_fibers"]["driver-b"].state is FiberState.UNLOADING
+        graph["release_probe"].set()
+        receipt = await operation
+        assert receipt.status == "committed"
+        assert graph["probe_calls"] == ["created"]
+        assert graph["open_calls"] == ["created"]
+        assert graph["bind_chat_calls"] == ["created"]
+        assert graph["close_events"] == ["created"]
+        assert graph["close_snapshot_states"] == [before]
+        snapshot = graph["state"].store.read_snapshot()
+        assert snapshot is not None
+        assert snapshot.connections["created"].driver_id == "driver-b"
+        assert snapshot.models["created-model"].connection_id == "created"
+        assert snapshot.revision == before.revision + 1
+    finally:
+        graph["release_probe"].set()
+        graph["release_driver_b_consumer"].set()
+        graph["release_consumer"].set()
+        if unloading is not None:
+            await unloading
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_driver_scope_normal_exit_releases_owner_and_connection(tmp_path):
+    """A successful scope closes its connection before releasing owner calls."""
+
+    from plugins.models.state import _driver_scope
+
+    graph = await _mount_model_driver_graph(tmp_path)
+    connection = _model_test_connection("normal", "driver-a")
+    graph["release_open"].set()
+    try:
+        async with graph["model_context"].runtime_scope():
+            async with _driver_scope(graph["state"], (connection,)) as opened:
+                await graph["state"]._open_driver(connection, opened)
+        assert graph["close_events"] == ["normal"]
+        assert not graph["driver_fibers"]["driver-a"]._in_flight_calls
+    finally:
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_second_owner_admission_failure_does_not_hold_first_scope(tmp_path):
+    """A later owner admission failure releases an earlier admitted owner."""
+
+    from agent.plugin_composition import CompositionError, FiberState
+    from plugins.models.state import _driver_scope
+
+    graph = await _mount_model_driver_graph(tmp_path)
+    first = _model_test_connection("first-admission", "driver-b")
+    second = _model_test_connection("second-admission", "driver-a")
+    selected = graph["state"]._select_driver_records((first, second))
+    graph["release_open"].set()
+    unloading = asyncio.create_task(graph["driver_fibers"]["driver-a"].dispose())
+    try:
+        await graph["consumer_cleanup_started"].wait()
+        assert graph["driver_fibers"]["driver-a"].state is FiberState.UNLOADING
+        with pytest.raises(CompositionError) as excinfo:
+            async with graph["model_context"].runtime_scope():
+                async with _driver_scope(
+                    graph["state"],
+                    (first, second),
+                    selected=selected,
+                ):
+                    raise AssertionError("second owner admission must fail")
+        assert excinfo.value.code == "OWNER_UNAVAILABLE"
+        assert not graph["driver_fibers"]["driver-b"]._in_flight_calls
+        graph["release_consumer"].set()
+        await unloading
+        assert not graph["driver_fibers"]["driver-a"]._in_flight_calls
+    finally:
+        graph["release_consumer"].set()
+        graph["release_open"].set()
+        await graph["root"].dispose()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [ValueError, asyncio.CancelledError])
-async def test_driver_scope_closes_all_connections_on_failure(failure):
-    """部分绑定失败或取消仍释放全部已打开连接，包括关闭自身报错的情况。"""
-    from agent.plugin_composition import DriverConnection
+async def test_driver_scope_closes_all_connections_on_failure(tmp_path, failure):
+    """Real selected connections survive owner UNLOADING and all close attempts run."""
+
+    from agent.plugin_composition import FiberState
     from plugins.models.state import _driver_scope
 
-    closed = []
+    graph = await _mount_model_driver_graph(tmp_path)
+    try:
+        first = _model_test_connection("first", "driver-a")
+        second = _model_test_connection("second", "driver-a")
+        third = _model_test_connection("third", "driver-b")
+        graph["fail_close_ids"].add("second")
+        unrelated = graph["unrelated_fiber"]
+        unrelated_before = (
+            unrelated.context,
+            unrelated._activation_token,
+            unrelated.state,
+            tuple(graph["unrelated_events"]),
+        )
 
-    async def first():
-        closed.append("first")
+        async def use_connections():
+            async with graph["model_context"].runtime_scope():
+                async with _driver_scope(graph["state"], (first, second, third)) as opened:
+                    await graph["state"]._open_driver(first, opened)
+                    await graph["state"]._open_driver(second, opened)
+                    await graph["state"]._open_driver(third, opened)
+                    raise failure()
 
-    async def second():
-        closed.append("second")
-        raise LookupError("close failed")
+        operation = asyncio.create_task(use_connections())
+        await graph["open_started"].wait()
+        unloading = asyncio.create_task(graph["driver_fibers"]["driver-a"].dispose())
+        await graph["consumer_cleanup_started"].wait()
+        assert graph["driver_fibers"]["driver-a"].state is FiberState.UNLOADING
+        async with unrelated.context.runtime_scope():
+            unrelated_during = (
+                unrelated.context,
+                unrelated._activation_token,
+                unrelated.state,
+                tuple(graph["unrelated_events"]),
+            )
+        assert unrelated_during == unrelated_before
+        graph["release_open"].set()
+        with pytest.raises(LookupError, match="second close failed"):
+            await operation
+        assert graph["close_events"] == ["third", "second", "first"]
+        assert not graph["driver_fibers"]["driver-a"]._in_flight_calls
+        assert not graph["driver_fibers"]["driver-b"]._in_flight_calls
 
-    def unused(*_args):
-        raise AssertionError("此例只检查生命周期")
-
-    with pytest.raises(LookupError, match="close failed"):
-        async with _driver_scope() as opened:
-            opened["first"] = DriverConnection(unused, unused, close=first)
-            opened["second"] = DriverConnection(unused, unused, close=second)
-            raise failure()
-    assert closed == ["second", "first"]
+        graph["fail_close_ids"].remove("second")
+        failed_effect = next(
+            effect
+            for effect in graph["driver_fibers"]["driver-a"].effects
+            if effect.label == "model-connection:second"
+        )
+        await failed_effect.aclose()
+        assert graph["close_events"] == ["third", "second", "first", "second"]
+        assert not any(
+            effect.label == "model-connection:second"
+            for effect in graph["driver_fibers"]["driver-a"].effects
+        )
+        async with unrelated.context.runtime_scope():
+            unrelated_after = (
+                unrelated.context,
+                unrelated._activation_token,
+                unrelated.state,
+                tuple(graph["unrelated_events"]),
+            )
+        assert unrelated_after == unrelated_before
+        graph["release_consumer"].set()
+        await unloading
+    finally:
+        graph["release_open"].set()
+        graph["release_close"].set()
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scoped", [False, True])
-@pytest.mark.parametrize("close_fails", [False, True])
-async def test_driver_close_finishes_before_releasing_lease_after_repeated_cancel(
-    scoped, close_fails,
+@pytest.mark.parametrize("failed_connection", ["first", "second"])
+async def test_driver_scope_open_failure_leaves_no_connection_effect(
+    tmp_path, failed_connection,
 ):
-    """重复取消不能截断关闭，关闭失败也必须在归还租约前报告。"""
-    from agent.plugin_composition import DriverConnection
+    """A first or later open failure leaves no outer connection residue."""
+
     from plugins.models.state import _driver_scope
 
+    graph = await _mount_model_driver_graph(tmp_path)
+    try:
+        first = _model_test_connection("first", "driver-a")
+        second = _model_test_connection("second", "driver-b")
+        graph["fail_open_ids"].add(failed_connection)
+        graph["release_open"].set()
+        with pytest.raises(RuntimeError, match=f"{failed_connection} open failed"):
+            async with graph["model_context"].runtime_scope():
+                async with _driver_scope(graph["state"], (first, second)) as opened:
+                    await graph["state"]._open_driver(first, opened)
+                    await graph["state"]._open_driver(second, opened)
+        assert graph["close_events"] == ([] if failed_connection == "first" else ["first"])
+        for driver_fiber in graph["driver_fibers"].values():
+            assert not any(
+                effect.label.startswith("model-connection:")
+                for effect in driver_fiber.effects
+            )
+            assert not driver_fiber._in_flight_calls
+    finally:
+        graph["release_open"].set()
+        graph["release_close"].set()
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumer", ["new", "sync"])
+@pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
+async def test_discover_callbacks_hold_owner_until_success_error_or_cancel(
+    tmp_path, consumer, outcome,
+):
+    """Both discovery consumers drain only after the admitted callback settles."""
+
+    from agent.plugin_composition import DriverUnavailableError, FiberState
+    from plugins.models.settings import AddConnection, SyncModels
+    graph = await _mount_model_driver_graph(tmp_path)
+    command = AddConnection(
+        0,
+        "first",
+        "First",
+        "driver-a",
+        "https://example.invalid",
+        "test",
+        {"token": "fixture"},
+    )
+    if consumer == "sync":
+        graph["state"].store.add_connection(command)
+    if outcome == "error":
+        graph["discover_error"][0] = RuntimeError("discover failed")
+    try:
+        async def run_discover():
+            async with graph["model_context"].runtime_scope():
+                if consumer == "new":
+                    await graph["state"]._discover_new_connection(command)
+                else:
+                    await graph["state"]._sync_models(SyncModels(1, "first"))
+
+        operation = asyncio.create_task(run_discover())
+        await graph["discover_started"].wait()
+        unloading = asyncio.create_task(graph["driver_fibers"]["driver-a"].dispose())
+        await graph["consumer_cleanup_started"].wait()
+        assert graph["driver_fibers"]["driver-a"].state is FiberState.UNLOADING
+        if outcome == "cancel":
+            operation.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+        else:
+            graph["release_discover"].set()
+            if outcome == "error":
+                with pytest.raises(RuntimeError, match="discover failed"):
+                    await operation
+            else:
+                await operation
+        assert graph["discover_calls"] == ["first"]
+        assert not graph["driver_fibers"]["driver-a"]._in_flight_calls
+        graph["release_consumer"].set()
+        await unloading
+        with pytest.raises(DriverUnavailableError):
+            async with graph["model_context"].runtime_scope():
+                await graph["state"]._discover_new_connection(command)
+    finally:
+        graph["release_discover"].set()
+        graph["release_consumer"].set()
+        graph["release_open"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_driver_close_finishes_before_releasing_lease_after_repeated_cancel(
+    tmp_path, close_fails,
+):
+    """Repeated cancellation cannot cut off Effect cleanup or owner release."""
+
+    from plugins.models.state import _driver_scope
+
+    graph = await _mount_model_driver_graph(tmp_path, block_close=True)
     entered = asyncio.Event()
+    events = []
+    connection = _model_test_connection("test", "driver-a")
+    try:
+        graph["release_open"].set()
+        if close_fails:
+            graph["fail_close_ids"].add("test")
+
+        async def run():
+            try:
+                async with graph["model_context"].runtime_scope():
+                    async with _driver_scope(graph["state"], (connection,)) as opened:
+                        await graph["state"]._open_driver(connection, opened)
+                        entered.set()
+                        await asyncio.Event().wait()
+            finally:
+                events.append("lease released")
+
+        task = asyncio.create_task(run())
+        await entered.wait()
+        task.cancel()
+        await graph["close_started"].wait()
+        task.cancel()
+        barrier = asyncio.Event()
+        asyncio.get_running_loop().call_soon(barrier.set)
+        await barrier.wait()
+        assert not task.done()
+        assert events == []
+        graph["release_close"].set()
+        with pytest.raises(LookupError if close_fails else asyncio.CancelledError):
+            await task
+        assert events == ["lease released"]
+        assert graph["close_events"] == ["test"]
+        assert not graph["driver_fibers"]["driver-a"]._in_flight_calls
+        if close_fails:
+            graph["fail_close_ids"].remove("test")
+            failed_effect = next(
+                effect
+                for effect in graph["driver_fibers"]["driver-a"].effects
+                if effect.label == "model-connection:test"
+            )
+            await failed_effect.aclose()
+            assert graph["close_events"] == ["test", "test"]
+            assert not any(
+                effect.label == "model-connection:test"
+                for effect in graph["driver_fibers"]["driver-a"].effects
+            )
+    finally:
+        graph["release_open"].set()
+        graph["release_close"].set()
+        graph["release_consumer"].set()
+        await graph["root"].dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_public_driver_aclose_finishes_after_repeated_cancel(close_fails):
+    """Public DriverConnection.aclose preserves cancellation and close errors."""
+
+    from agent.plugin_composition import DriverConnection
+
+    started = asyncio.Event()
     closing = asyncio.Event()
-    finish_close = asyncio.Event()
+    release_close = asyncio.Event()
     events = []
 
     async def close():
         closing.set()
-        await finish_close.wait()
+        await release_close.wait()
         events.append("closed")
         if close_fails:
-            raise LookupError("close failed")
+            raise LookupError("public close failed")
 
-    def unused(*_args):
-        raise AssertionError("此例只检查生命周期")
-
-    driver = DriverConnection(unused, unused, close=close)
+    connection = DriverConnection(lambda *_args: None, lambda *_args: None, close=close)
 
     async def run():
+        started.set()
         try:
-            if scoped:
-                async with _driver_scope() as opened:
-                    opened["test"] = driver
-                    entered.set()
-                    await asyncio.Event().wait()
-            else:
-                try:
-                    entered.set()
-                    await asyncio.Event().wait()
-                finally:
-                    await driver.aclose()
+            await asyncio.Event().wait()
         finally:
+            await connection.aclose()
             events.append("lease released")
 
     task = asyncio.create_task(run())
-    await entered.wait()
+    await started.wait()
     task.cancel()
     await closing.wait()
     task.cancel()
-    # 调度屏障让第二次取消先送达，再允许底层关闭完成。
     barrier = asyncio.Event()
     asyncio.get_running_loop().call_soon(barrier.set)
     await barrier.wait()
     assert not task.done()
     assert events == []
-    finish_close.set()
+    release_close.set()
     with pytest.raises(LookupError if close_fails else asyncio.CancelledError):
         await task
-    assert events == ["closed", "lease released"]
+    assert events == ["closed"]
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@
 
 - 状态：accepted
 - 日期：2026-08-08
+- superseded by（2026-09-20，[0072](0072-single-graph-local-plugin-updates.md)）：candidate 验证 + 父 Turn 终点晋升授权、revert 撤销与 stable 提交协议已由单图局部换代取代；安装直接请求应用，不再有候选/晋升/撤销流程。普通 programmatic 调用能力保留。
 - supersedes：[0024](0024-plugin-self-validation-uses-stable-and-latest.md) 的 Agent 显式 latest/promote/discard 接口；保留其内部双快照与 session 并发机制
 - refines：[0008](0008-plugin-runtime-publishes-only-committed-snapshots.md)、[0015](0015-cleanup-does-not-own-turn-or-restart-finality.md)
 - 关联条款：PLG-010、PLG-012、PLG-013、RUN-007、CTRL-003、ERR-001、TST-001～TST-006

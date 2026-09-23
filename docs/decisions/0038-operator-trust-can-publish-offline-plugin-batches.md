@@ -2,6 +2,7 @@
 
 - 状态：accepted
 - 日期：2026-08-22
+- superseded by（2026-09-20，[0072](0072-single-graph-local-plugin-updates.md)）：本文依赖的“普通安装必须 candidate 验证后提交、stable 与 latest 写同一制品”的晋升协议由单图局部换代取代；operator 信任可离线安装 exact 批次的权限、维护锁、恢复点与真实回执责任保留。正文保留为历史记录。
 - refines：[0026](0026-plugin-rollout-is-owned-by-the-parent-turn.md)、[0037](0037-plugin-runtime-is-pure-v3.md)
 - 关联条款：PLG-013、RUN-015、ERR-001
 

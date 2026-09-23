@@ -1,10 +1,18 @@
 """验证宿主构建取消、lease 和模块关闭使用真实 owner，不创建子 Manager。"""
 import asyncio
-import contextvars
 import sys
 
 import pytest
-from agent.plugin_composition import ServiceKey
+from agent.plugin_composition import (
+    CompositionRoot,
+    MobileUiDefinition,
+    MobileUiStaleRevision,
+    PluginRuntime,
+    ServiceKey,
+    UI_SLOTS,
+)
+from agent.plugins.mobile_ui import PluginMobileUiProvider
+from plugins.ui.mobile import MobileUiSlots
 
 from tests.test_plugin_business_validation import MODULE, prepare
 from tests.test_plugin_install import _commit
@@ -40,14 +48,6 @@ async def test_validation_lease_retains_root_and_module_until_released(tmp_path)
                 host = next(iter(manager._validation_hosts.values()))
                 with pytest.raises(RuntimeError, match="禁止撤销正式 interaction"):
                     await scope.require(undo_key).undo_latest("formal")
-                ui = scope.require(ServiceKey("core.mobile_ui.v1"))
-                # 没有继承 runtime context 的请求也必须只租用验证 Store。
-                query_lease = await asyncio.create_task(
-                    ui._capture_query_lease(), context=contextvars.Context(),
-                )
-                assert query_lease.snapshot is host.snapshot_store.current
-                assert query_lease.snapshot is not manager.current_snapshot
-                await query_lease.release()
                 lease = await host.snapshot_store.acquire()
                 snapshot = lease.snapshot
                 modules = tuple(item.module_path for item in snapshot.generations.values())
@@ -68,6 +68,90 @@ async def test_validation_lease_retains_root_and_module_until_released(tmp_path)
             await lease.release()
         await manager.terminate_all()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_owner_isolation_uses_two_real_composition_roots(tmp_path):
+    """Prove Mobile lookup and revisions cannot cross two live Roots."""
+
+    left = CompositionRoot("validation-mobile-left")
+    right = CompositionRoot("validation-mobile-right")
+
+    async def provide_slots(ctx):
+        await ctx.provide(UI_SLOTS, MobileUiSlots(ctx))
+
+    def query(method, payload, *, session_id, turn_id):
+        return {"method": method, "payload": payload}
+
+    def owner_plugin():
+        async def mount_owner(ctx):
+            await ctx.require(UI_SLOTS).register_mobile(
+                ctx,
+                MobileUiDefinition(module="mobile.js"),
+                query=query,
+            )
+        return mount_owner
+
+    left_dir = tmp_path / "left"
+    right_dir = tmp_path / "right"
+    for plugin_dir in (left_dir, right_dir):
+        plugin_dir.mkdir()
+        (plugin_dir / "data").mkdir()
+        (plugin_dir / "mobile.js").write_text("export const mobile = true;\n")
+
+    left_provider = right_provider = None
+    try:
+        await left.mount(provide_slots, name="ui")
+        await right.mount(provide_slots, name="ui")
+        left_owner = await left.mount(
+            owner_plugin(),
+            name="mobile-owner",
+            inject=(UI_SLOTS,),
+            runtime=PluginRuntime(
+                plugin_id="mobile-owner", generation_id="left-owner",
+                plugin_dir=left_dir, data_dir=left_dir / "data",
+                workspace=left_dir, config={},
+            ),
+        )
+        right_owner = await right.mount(
+            owner_plugin(),
+            name="mobile-owner",
+            inject=(UI_SLOTS,),
+            runtime=PluginRuntime(
+                plugin_id="mobile-owner", generation_id="right-owner",
+                plugin_dir=right_dir, data_dir=right_dir / "data",
+                workspace=right_dir, config={},
+            ),
+        )
+        assert left_owner.state.value == "active"
+        assert right_owner.state.value == "active"
+        left_slots = left.context.require(UI_SLOTS)
+        with pytest.raises(ValueError, match="跨实际 Root"):
+            await left_slots.register_mobile(
+                right_owner.context,
+                MobileUiDefinition(module="mobile.js"),
+                query=query,
+            )
+
+        left_provider = PluginMobileUiProvider(left)
+        right_provider = PluginMobileUiProvider(right)
+        left_catalog = await left_provider.catalog()
+        right_catalog = await right_provider.catalog()
+        left_revision = left_catalog["items"][0]["revision"]
+        right_revision = right_catalog["items"][0]["revision"]
+        assert left_revision != right_revision
+        with pytest.raises(MobileUiStaleRevision):
+            await left_provider.query(
+                "mobile-owner", right_revision, "test", {},
+                session_id=None, turn_id=None,
+            )
+    finally:
+        if left_provider is not None:
+            await left_provider.aclose()
+        if right_provider is not None:
+            await right_provider.aclose()
+        await left.dispose()
+        await right.dispose()
 
 
 @pytest.mark.asyncio

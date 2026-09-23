@@ -829,7 +829,6 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     monkeypatch.setattr(Context, "spawn", observe_spawn)
     try:
         await host.load_all()
-        runtime_runner = asyncio.create_task(host.run_runtime_services())
         old_watcher = await asyncio.wait_for(watcher_started.get(), 2) if supervised else None
         stable = host.current_snapshot
         assert stable is not None
@@ -1018,9 +1017,6 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             await asyncio.gather(promotion_task, return_exceptions=True)
         if old_task is not None:
             await asyncio.gather(old_task, return_exceptions=True)
-        if "runtime_runner" in locals():
-            runtime_runner.cancel()
-            await asyncio.gather(runtime_runner, return_exceptions=True)
         await host.terminate_all()
         artifact_store.close()
         log.close()

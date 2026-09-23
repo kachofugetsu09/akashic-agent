@@ -85,23 +85,13 @@ def create_dashboard_app(
 
     if plugin_manager is not None:
         from agent.plugins.dashboard_host import (
-            PluginDashboardHost,
-            SnapshotDashboardMiddleware,
+            LiveDashboardMiddleware,
         )
 
-        dashboard_host = PluginDashboardHost(
-            core_routes=tuple(app.routes),
-        )
-        snapshot = plugin_manager.current_snapshot
-        if snapshot is not None:
-            dashboard_host.prepare_initial_snapshot(snapshot)
-        plugin_manager.bind_dashboard_preparer(
-            dashboard_host.prepare_snapshot,
-            validation_releaser=dashboard_host.release_validation,
-        )
+        plugin_manager.configure_dashboard_routes(tuple(app.routes))
         app.add_middleware(
-            SnapshotDashboardMiddleware,
-            snapshot_store=plugin_manager.snapshot_store,
+            LiveDashboardMiddleware,
+            plugin_manager=plugin_manager,
         )
 
     return app

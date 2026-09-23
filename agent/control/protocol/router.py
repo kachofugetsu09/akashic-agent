@@ -187,6 +187,8 @@ class ConnectionRouter:
                 INVALID_REQUEST, f"Unknown request fields: {', '.join(sorted(unknown))}"
             )
         method = cast(str, request["method"])
+        if method in {"plugin/promote", "plugin/discard"}:
+            raise JsonRpcError(METHOD_NOT_FOUND, f"Method not found: {method}")
         model_type = self._method_params.get(method)
         if model_type is None:
             return await self._call_plugin_method(method, request.get("params", {}))
@@ -282,10 +284,6 @@ class ConnectionRouter:
         if method == "plugin/install":
             return await self._service.install_plugin(values["source"], values["marketplace"],
                 values["ref"], values["sparse"], values["update_id"])
-        if method == "plugin/promote":
-            return await self._service.promote_plugin(values["update_id"])
-        if method == "plugin/discard":
-            return await self._service.discard_plugin(values["update_id"])
         if method == "plugin/disable-and-drain":
             return await self._service.disable_and_drain_plugin(values["plugin_id"])
         if method == "plugin/uninstall":

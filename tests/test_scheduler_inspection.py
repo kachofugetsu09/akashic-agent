@@ -217,7 +217,7 @@ async def test_client_reports_skills_unavailable_without_provider(tmp_path: Path
 
     await root.context.provide(
         RUNTIME_CATALOG,
-        lambda: {"snapshot_id": "fixture", "plugins": [], "mcp_servers": []},
+        lambda _ctx: {"snapshot_id": "fixture", "plugins": [], "mcp_servers": []},
     )
     await root.mount(apply, name="runtime-inspection")
     store = RuntimeSnapshotStore()

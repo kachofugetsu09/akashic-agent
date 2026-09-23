@@ -39,10 +39,11 @@ class _RegisteredCommand:
 
 
 class CommandRegistry:
-    """提供一个不可变命令目录及其执行入口。"""
+    """提供一次登记快照，并按 provider 与 handler owner 执行。"""
 
     def __init__(
         self,
+        provider_context: Context,
         commands: Mapping[str, CommandDefinition],
         owners: Mapping[str, str],
         descriptors: tuple[CommandDescriptor, ...],
@@ -50,6 +51,7 @@ class CommandRegistry:
         fibers: Mapping[str, str],
         contexts: Mapping[str, Context],
     ) -> None:
+        self._provider_context = provider_context
         self._commands = MappingProxyType(dict(commands))
         self._owners = MappingProxyType(dict(owners))
         self._generations = MappingProxyType(dict(generations))
@@ -108,17 +110,19 @@ class CommandRegistry:
             if definition.recover is None:
                 raise CommandRecoveryRequired(f"命令 {definition.name} 没有领域恢复回执；禁止自动重跑")
             handler = definition.recover
-        with plugin_entrypoint(
-            plugin_id=self._owners[parsed.name],
-            generation_id=self._generations[parsed.name],
-            fiber=self._fibers[parsed.name],
-            operation="command.call",
-            entrypoint=definition.name,
-        ):
-            result = handler(invocation)
-            if inspect.isawaitable(result):
-                result = await result
-            settled = _validate_result(definition.name, result)
+        async with self._provider_context.runtime_scope():
+            async with self._contexts[parsed.name].runtime_scope():
+                with plugin_entrypoint(
+                    plugin_id=self._owners[parsed.name],
+                    generation_id=self._generations[parsed.name],
+                    fiber=self._fibers[parsed.name],
+                    operation="command.call",
+                    entrypoint=definition.name,
+                ):
+                    result = handler(invocation)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    settled = _validate_result(definition.name, result)
         return CommandExecution(name=definition.name, result=settled)
 
 
@@ -130,7 +134,6 @@ class PluginCommands:
         self._next_token = 1
         self._registrations: dict[int, _RegisteredCommand] = {}
         self._names: dict[str, int] = {}
-        self._frozen: CommandRegistry | None = None
 
     async def register(
         self,
@@ -154,10 +157,10 @@ class PluginCommands:
         )
 
     def freeze(self) -> CommandRegistry:
-        """将当前注册封存为不可变目录。"""
+        """校验当前 provider 后复制现有登记为一次不可变目录。"""
 
-        if self._frozen is not None:
-            return self._frozen
+        if self._ctx.require(COMMANDS) is not self:
+            raise ValueError("Command 注册必须使用同一 Root 实际选中的 provider")
         ordered = sorted(
             self._registrations.values(),
             key=lambda item: item.token,
@@ -190,7 +193,8 @@ class PluginCommands:
                 key=lambda item: item.name,
             )
         )
-        self._frozen = CommandRegistry(
+        return CommandRegistry(
+            self._ctx,
             commands,
             owners,
             descriptors,
@@ -198,7 +202,6 @@ class PluginCommands:
             fibers,
             contexts,
         )
-        return self._frozen
 
     def _register(
         self,
@@ -211,11 +214,6 @@ class PluginCommands:
         """登记命令并返回只清理该注册的关闭操作。"""
 
         # 1. 命令名和别名共享同一命名空间。
-        if self._frozen is not None:
-            raise CompositionError(
-                "PLUGIN_COMMANDS_FROZEN",
-                "插件 Command 目录已封存，不能新增注册",
-            )
         claimed = (definition.name, *definition.aliases)
         duplicate = next((name for name in claimed if name in self._names), None)
         if duplicate is not None:

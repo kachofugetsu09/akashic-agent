@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -5,11 +6,11 @@ from typing import cast
 
 import pytest
 
-from agent.plugin_composition import CompositionRoot, PluginRuntime
-from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, lease_runtime_snapshot
+from agent.plugin_composition import CompositionRoot, PluginRuntime, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition.model import FiberState, ServiceKey
 from agent.plugin_composition.models import BoundChatModel, LLMResponse, ModelRequest
 from plugins.context.api import ContextModel, MaterialData, Materials
-from plugins.context.materials import ContextMaterials
+from plugins.context.materials import ContextMaterials, MATERIALS
 from session.message import Message
 
 
@@ -77,21 +78,33 @@ def _reference(ref: str, resolved_ref=None, retrieval_ref=None):
 @asynccontextmanager
 async def catalog(*, prompt_sources=None, summary_source=None):
     root = CompositionRoot("materials")
-    service = ContextMaterials(root.context, prompt_sources=prompt_sources or {}, summary_source=summary_source)
+    services = {}
     contexts = {}
+
+    async def provider(ctx):
+        service = ContextMaterials(
+            ctx, prompt_sources=prompt_sources or {}, summary_source=summary_source,
+        )
+        services["materials"] = service
+        await ctx.provide(MATERIALS, service, binding_contributors=service.binding_contributors)
+
     async def mounted(ctx):
+        _ = ctx.require(MATERIALS)
         contexts[ctx.runtime.plugin_id] = ctx
+
+    await root.mount(provider, name="materials-provider")
     for identity in ("trusted", "evil"):
-        await root.mount(mounted, name=identity, runtime=PluginRuntime(
-            identity, "generation", Path("/tmp"), Path("/tmp"), Path("/tmp"), {},
-        ))
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
+        await root.mount(
+            mounted,
+            name=identity,
+            inject=(MATERIALS,),
+            runtime=PluginRuntime(
+                identity, "generation", Path("/tmp"), Path("/tmp"), Path("/tmp"), {},
+            ),
+        )
     try:
-        async with lease_runtime_snapshot(store):
-            yield contexts["trusted"], service, contexts["evil"]
+        yield contexts["trusted"], services["materials"], contexts["evil"]
     finally:
-        await store.close()
         await root.dispose()
 
 
@@ -293,15 +306,14 @@ async def test_duplicate_reminder_identity_rejects_different_priorities():
 @pytest.mark.parametrize("priority", [-100, 300])
 async def test_display_priority_cannot_move_a_write_before_a_failed_preparation(tmp_path, priority):
     """优先级变化只改输出排列，不能让原本被前置错误阻止的写入发生。"""
-    import asyncio
-
     entered, release = asyncio.Event(), asyncio.Event()
     artifact = tmp_path / "prepared"
 
     async def fail(snapshot, source):
-        entered.set()
-        await release.wait()
-        raise OSError("source read failed")
+        async with ctx.runtime_scope():
+            entered.set()
+            await release.wait()
+            raise OSError("source read failed")
 
     async def write(snapshot, source):
         artifact.write_text("prepared")
@@ -310,14 +322,217 @@ async def test_display_priority_cannot_move_a_write_before_a_failed_preparation(
     async with catalog() as (ctx, service, _):
         await service.register(ctx, name="a", prepare=fail, priority=100)
         await service.register(ctx, name="z", prepare=write, priority=priority)
-        async with service.bind() as view:
-            task = asyncio.create_task(view.prepare((), "conversation"))
-            await entered.wait()
-            assert not artifact.exists()
-            release.set()
-            with pytest.raises(OSError, match="source read failed"):
-                await task
+        async def prepare_in_work_task():
+            async with service.bind() as view:
+                await view.prepare((), "conversation")
+
+        task = asyncio.create_task(prepare_in_work_task())
+        await entered.wait()
         assert not artifact.exists()
+        release.set()
+        with pytest.raises(OSError, match="source read failed"):
+            await task
+        assert not artifact.exists()
+        assert not ctx.fiber._fiber._in_flight_calls
+        assert not service._ctx.fiber._fiber._in_flight_calls
+
+
+@pytest.mark.asyncio
+async def test_material_view_keeps_source_scope_during_unload_and_filters_next_bind():
+    prepare_entered = asyncio.Event()
+    consumer_released = asyncio.Event()
+    cleanup_calls = 0
+    consumer_cleanup_calls = 0
+    scope_work = []
+    unrelated_scope_work = []
+
+    async with catalog(
+        prompt_sources={"source": "trusted"},
+        summary_source=("source", "trusted"),
+    ) as (ctx, service, unrelated):
+        root = ctx._root
+        probe_key = ServiceKey("materials.drain.probe")
+        await ctx.provide(probe_key, object())
+
+        async def hard_consumer(consumer_ctx):
+            nonlocal consumer_cleanup_calls
+            _ = consumer_ctx.require(probe_key)
+
+            def setup():
+                def cleanup():
+                    nonlocal consumer_cleanup_calls
+                    consumer_cleanup_calls += 1
+                    consumer_released.set()
+
+                return cleanup
+
+            await consumer_ctx.effect(setup, label="materials-drain-consumer")
+
+        consumer_fiber = await root.mount(
+            hard_consumer,
+            name="materials-drain-consumer",
+            inject=(probe_key,),
+            runtime=PluginRuntime(
+                "drain-consumer", "materials-drain", Path("/tmp"),
+                Path("/tmp"), Path("/tmp"), {},
+            ),
+        )
+        unrelated_state = unrelated.fiber.state
+        unrelated_activation = unrelated.fiber.activation_token
+        unrelated_events = []
+        await unrelated.on(RUNTIME_STARTED, lambda _event: unrelated_events.append("started"))
+        await unrelated.on(RUNTIME_STOPPING, lambda _event: unrelated_events.append("stopping"))
+        unrelated_events_before = tuple(unrelated_events)
+
+        def cleanup():
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+
+        await ctx.effect(lambda: cleanup, label="materials-source-resource")
+
+        async def prepare(_snapshot, _source):
+            async with ctx.runtime_scope():
+                prepare_entered.set()
+                await consumer_released.wait()
+                scope_work.append(("prepare", ctx.fiber.state))
+                return _material(
+                    system_prompt="source",
+                    summary=_summary("old", ("u1",), "old summary"),
+                )
+
+        async def secondary_prepare(_snapshot, _source):
+            async with ctx.runtime_scope():
+                scope_work.append(("secondary", ctx.fiber.state))
+                return _material()
+
+        async def reduce(_snapshot, _materials, _request, _model, _projection, *, source, force):
+            assert source == "conversation" and force
+            async with ctx.runtime_scope():
+                scope_work.append(("reduce", ctx.fiber.state))
+                return _summary("new", ("u1", "a1"), "new summary")
+
+        await service.register(ctx, name="source", prepare=prepare, prompt=True, reduce=reduce)
+        await service.register(ctx, name="secondary", prepare=secondary_prepare)
+
+        async def dispose_after_prepare():
+            await prepare_entered.wait()
+            await ctx.fiber.dispose()
+
+        dispose_task = asyncio.create_task(dispose_after_prepare())
+        try:
+            async with service.bind() as view:
+                prepared = await view.prepare((), "conversation")
+                assert ctx.fiber.state is FiberState.UNLOADING
+                assert cleanup_calls == 0
+                assert consumer_cleanup_calls == 1
+                assert scope_work == [
+                    ("secondary", FiberState.ACTIVE),
+                    ("prepare", FiberState.UNLOADING),
+                ]
+                assert len(ctx.fiber._fiber._in_flight_calls) == 1
+
+                async with unrelated.runtime_scope():
+                    unrelated_scope_work.append(unrelated.fiber.state)
+                assert unrelated_scope_work == [FiberState.ACTIVE]
+
+                with pytest.raises(ValueError, match="Prompt"):
+                    async with service.bind():
+                        pytest.fail("required source must fail while unloading")
+                async with service.bind(exclude=frozenset({"source"})) as excluded:
+                    assert await excluded.prepare((), "scheduler:job") == _material()
+                    assert len(ctx.fiber._fiber._in_flight_calls) == 1
+
+                reduced = await view.reduce(
+                    (), prepared, ModelRequest(messages=[]), _UNREACHED_MODEL,
+                    _UNREACHED_PROJECTION, source="conversation", force=True,
+                )
+                assert reduced == _summary("new", ("u1", "a1"), "new summary")
+                assert scope_work[-1] == ("reduce", FiberState.UNLOADING)
+            await dispose_task
+        finally:
+            if not dispose_task.done():
+                if not prepare_entered.is_set():
+                    prepare_entered.set()
+                consumer_released.set()
+                await dispose_task
+
+        assert ctx.fiber.state is FiberState.DISPOSED
+        assert cleanup_calls == 1
+        assert consumer_fiber.state is FiberState.PENDING
+        assert not ctx.fiber._fiber._in_flight_calls
+        assert unrelated_state is FiberState.ACTIVE
+        assert unrelated.fiber.state is unrelated_state
+        assert unrelated.fiber.activation_token is unrelated_activation
+        assert tuple(unrelated_events) == unrelated_events_before
+
+
+@pytest.mark.asyncio
+async def test_material_bind_skips_loading_sources_and_keeps_required_failure_loud(tmp_path):
+    root = CompositionRoot("materials-loading")
+    service_holder = {}
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def provider(ctx):
+        service = ContextMaterials(ctx, prompt_sources={"required": "loading"})
+        service_holder["service"] = service
+        await ctx.provide(MATERIALS, service, binding_contributors=service.binding_contributors)
+
+    async def loading(ctx):
+        service = ctx.require(MATERIALS)
+
+        async def required(_snapshot, _source):
+            calls.append("required")
+            return _material(system_prompt="required")
+
+        async def ordinary(_snapshot, _source):
+            calls.append("ordinary")
+            return _material(reminders=(_reminder("ordinary", "ordinary", 1),))
+
+        await service.register(ctx, name="required", prepare=required, prompt=True)
+        await service.register(ctx, name="ordinary", prepare=ordinary)
+
+        async def on_started(_event):
+            started.set()
+            await release.wait()
+
+        await ctx.on(RUNTIME_STARTED, on_started)
+
+    await root.mount(provider, name="materials-provider")
+    mount_task = asyncio.create_task(
+        root.mount(
+            loading,
+            name="loading-source",
+            inject=(MATERIALS,),
+            runtime=PluginRuntime(
+                "loading", "materials-loading", tmp_path, tmp_path, tmp_path, {},
+            ),
+        )
+    )
+    try:
+        await started.wait()
+        service = service_holder["service"]
+        with pytest.raises(ValueError, match="Prompt"):
+            async with service.bind():
+                pytest.fail("required LOADING source must fail closed")
+        async with service.bind(exclude=frozenset({"required"})) as view:
+            assert await view.prepare((), "scheduler:job") == _material()
+        assert calls == []
+
+        release.set()
+        loading_fiber = await mount_task
+        assert loading_fiber.state is FiberState.ACTIVE
+        async with service.bind() as view:
+            result = await view.prepare((), "conversation")
+        assert result["system_prompt"] == "required"
+        assert result["reminders"] == (_reminder("ordinary", "ordinary", 1),)
+        assert calls == ["ordinary", "required"]
+    finally:
+        release.set()
+        if not mount_task.done():
+            await mount_task
+        await root.dispose()
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from agent.plugin_composition import (
     ModelDescriptor,
     ModelKind,
 )
+from agent.plugin_composition.ui_slots import MobileUiRpcInvalidRequest
 from agent.plugin_composition.channels import (
     AttachmentKind as V3AttachmentKind,
     AttachmentRef,
@@ -242,10 +243,11 @@ async def _open_inbound_adapter(
 
 
 class _PluginUiProvider:
-    def __init__(self) -> None:
+    def __init__(self, *, query_error: Exception | None = None) -> None:
         self.queries: list[dict[str, object]] = []
+        self.query_error = query_error
 
-    def catalog(self) -> dict[str, object]:
+    async def catalog(self) -> dict[str, object]:
         return {
             "catalog_revision": "a" * 64,
             "items": [{
@@ -258,7 +260,7 @@ class _PluginUiProvider:
             }],
         }
 
-    def asset(
+    async def asset(
         self,
         plugin_id: str,
         plugin_revision: str,
@@ -283,6 +285,8 @@ class _PluginUiProvider:
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
+        if self.query_error is not None:
+            raise self.query_error
         self.queries.append({
             "plugin_id": plugin_id,
             "plugin_revision": plugin_revision,
@@ -542,6 +546,32 @@ def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
         "turn_id": "turn-1",
     }]
     assert dashboard_query.status_code == 422
+
+
+def test_web_plugin_ui_maps_shared_invalid_request_to_http_400(tmp_path: Path) -> None:
+    provider = _PluginUiProvider(
+        query_error=MobileUiRpcInvalidRequest("消息不属于请求会话"),
+    )
+    app = create_chat_app(
+        workspace=tmp_path,
+        channel=WebChatChannel(),
+        plugin_ui_provider=cast(Any, provider),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat/plugin-ui/query",
+            json={
+                "plugin_id": "akasha",
+                "plugin_revision": "revision-1",
+                "method": "recall.current",
+                "payload": {},
+                "slot": "turn.before_reasoning",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "消息不属于请求会话"}
 
 
 @pytest.mark.asyncio

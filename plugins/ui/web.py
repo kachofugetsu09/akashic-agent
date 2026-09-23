@@ -104,9 +104,10 @@ def resolve_web_module(
     )
 
 
-def freeze_web_ui_catalog(modules: tuple[WebModuleDescriptor, ...]) -> WebUiCatalog:
-    """校验本 Root 的实际注册，冻结完整浏览器目录。"""
+def build_web_ui_catalog(modules: tuple[WebModuleDescriptor, ...]) -> WebUiCatalog:
+    """校验当前注册并生成无副作用的浏览器目录投影。"""
 
+    modules = tuple(sorted(modules, key=lambda item: item.plugin_id))
     _validate_web_contracts(modules)
     total_bytes = sum(
         item.asset.module_bytes + item.asset.stylesheet_bytes for item in modules
@@ -115,17 +116,20 @@ def freeze_web_ui_catalog(modules: tuple[WebModuleDescriptor, ...]) -> WebUiCata
         raise RuntimeError(
             f"插件 web catalog 超过 {WEB_CATALOG_MAX_BYTES} bytes: {total_bytes}"
         )
-    identity_source = "\n".join(
-        "\0".join(
+    identity_source = json.dumps(
+        [
             (
                 item.plugin_id,
+                item.registration_uuid,
                 item.generation_id,
                 item.asset.module_sha256,
                 item.asset.stylesheet_sha256 or "",
                 item.asset.contract_sha256,
             )
-        )
-        for item in modules
+            for item in modules
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
     identity = hashlib.sha256(identity_source.encode("utf-8")).hexdigest()
     return WebUiCatalog(identity=identity, modules=modules)

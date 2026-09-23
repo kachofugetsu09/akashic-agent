@@ -13,6 +13,7 @@ from agent.plugin_composition import (
     CompositionError,
     CompositionRoot,
     EmitEventKey,
+    Effect,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
 )
@@ -28,6 +29,25 @@ from core.memory.events import MemoryWritten
 
 
 _MEMORY_WRITTEN_EVENT = EmitEventKey[MemoryWritten]("test.memory.written")
+
+
+@pytest.mark.asyncio
+async def test_root_registers_real_fiber_and_reports_startup_state() -> None:
+    """The mounted Fiber is an observable Root owner, not a source-text claim."""
+    root = CompositionRoot("fiber-owner")
+    started: list[str] = []
+
+    async def plugin(ctx):
+        started.append(ctx._fiber.name)  # pyright: ignore[reportPrivateUsage]
+
+    try:
+        await root.mount(plugin, name="owner")
+        receipt = root.receipt()
+        assert started == ["owner"]
+        assert len(receipt.fibers) == 1
+        assert receipt.fibers[0].state.value == "active"
+    finally:
+        await root.dispose()
 
 
 @pytest.mark.asyncio
@@ -122,6 +142,77 @@ async def test_effect_close_joins_concurrent_callers_despite_repeated_cancel():
     await second
     assert closed == ["closed"]
     assert owners == []
+
+
+@pytest.mark.asyncio
+async def test_effect_close_guard_runs_before_create_and_join() -> None:
+    """Core close guards run on each caller before one real cleanup."""
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    second_guard = asyncio.Event()
+    owners: list[Effect] = []
+    guard_tasks: list[asyncio.Task[object] | None] = []
+    cleanup_tasks: list[asyncio.Task[object] | None] = []
+    first: asyncio.Task[None] | None = None
+    second: asyncio.Task[None] | None = None
+
+    def guard() -> None:
+        guard_tasks.append(asyncio.current_task())
+        if len(guard_tasks) == 2:
+            second_guard.set()
+
+    async def cleanup() -> None:
+        cleanup_tasks.append(asyncio.current_task())
+        entered.set()
+        await release.wait()
+
+    effect = Effect(
+        label="guarded-connection",
+        remove_from_owner=owners.remove,
+        close_guard=guard,
+    )
+    owners.append(effect)
+    try:
+        await effect.start(lambda: cleanup)
+        first = asyncio.create_task(effect.aclose())
+        await entered.wait()
+        second = asyncio.create_task(effect.aclose())
+        await second_guard.wait()
+        assert guard_tasks == [first, second]
+        assert cleanup_tasks[0] not in {first, second}
+        assert len(cleanup_tasks) == 1
+        assert not second.done()
+        cleanup_task = cleanup_tasks[0]
+        assert cleanup_task is not None
+        assert not cleanup_task.done()
+        assert owners == [effect]
+        first.cancel()
+        loop = asyncio.get_running_loop()
+        first_cancel_delivered = asyncio.Event()
+        loop.call_soon(first.cancel)
+        loop.call_soon(first_cancel_delivered.set)
+        await first_cancel_delivered.wait()
+        second_cancel_delivered = asyncio.Event()
+        loop.call_soon(second_cancel_delivered.set)
+        await second_cancel_delivered.wait()
+        assert first.cancelling() >= 2
+        assert not first.done()
+        assert not second.done()
+        assert not release.is_set()
+        assert cleanup_tasks == [cleanup_task]
+        assert not cleanup_task.done()
+        assert owners == [effect]
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await second
+        assert cleanup_tasks == [cleanup_task]
+        assert owners == []
+    finally:
+        release.set()
+        tasks = [task for task in (first, second) if task is not None]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -364,10 +455,165 @@ async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
         await ctx.on(_MEMORY_WRITTEN_EVENT, observed.append)
 
     await root.mount(plugin, name="composition-observer")
-    async with _bound_root(root):
-        await EventBus().fanout(_memory_written_event())
+    bus = EventBus()
+    try:
+        async with _bound_root(root):
+            await bus.fanout(_memory_written_event())
+    finally:
+        try:
+            await bus.aclose()
+        finally:
+            await root.dispose()
 
     assert observed == []
+
+
+@pytest.mark.asyncio
+async def test_event_bus_emits_in_order_and_propagates_handler_errors() -> None:
+    bus = EventBus()
+    seen: list[tuple[str, int]] = []
+
+    async def increment(event: int) -> int:
+        seen.append(("increment", event))
+        return event + 1
+
+    def double(event: int) -> int:
+        seen.append(("double", event))
+        return event * 2
+
+    def fail(_: str) -> None:
+        raise RuntimeError("emit failed")
+
+    bus.on(int, increment)
+    bus.on(int, double)
+    bus.on(str, fail)
+    try:
+        assert await bus.emit(1) == 4
+        assert seen == [("increment", 1), ("double", 2)]
+        with pytest.raises(RuntimeError, match="emit failed"):
+            await bus.emit("bad")
+    finally:
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_event_bus_observers_isolate_errors_and_cancellation(caplog) -> None:
+    bus = EventBus()
+    observed: list[str] = []
+
+    async def bad(_: str) -> None:
+        raise RuntimeError("observer failed")
+
+    async def good(event: str) -> None:
+        observed.append(event)
+
+    self_cancelled = asyncio.Event()
+    self_cancel_wait = asyncio.Event()
+
+    async def self_cancel(_: bytes) -> None:
+        self_cancelled.set()
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()
+        await self_cancel_wait.wait()
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def wait_for_caller_cancel(_: float) -> None:
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            finished.set()
+
+    bus.on(str, bad)
+    bus.on(str, good)
+    bus.on(bytes, self_cancel)
+    bus.on(float, wait_for_caller_cancel)
+    caller: asyncio.Task[None] | None = None
+    try:
+        with caplog.at_level("ERROR", logger="bus.event_bus"):
+            await bus.observe("observe")
+            await bus.fanout("fanout")
+        assert observed == ["observe", "fanout"]
+        assert any("observer error" in record.message for record in caplog.records)
+
+        await bus.observe(b"self-cancel")
+        assert self_cancelled.is_set()
+
+        caller = asyncio.create_task(bus.observe(1.0))
+        await entered.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert finished.is_set()
+    finally:
+        release.set()
+        if caller is not None and not caller.done():
+            caller.cancel()
+        if caller is not None:
+            await asyncio.gather(caller, return_exceptions=True)
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_event_bus_enqueue_drains_callbacks_before_close() -> None:
+    bus = EventBus()
+    started = {1: asyncio.Event(), 2: asyncio.Event()}
+    release = {1: asyncio.Event(), 2: asyncio.Event()}
+    finished = {1: asyncio.Event(), 2: asyncio.Event()}
+    seen: list[int] = []
+
+    async def callback(event: int) -> None:
+        seen.append(event)
+        started[event].set()
+        try:
+            await release[event].wait()
+        finally:
+            finished[event].set()
+
+    bus.on(int, callback)
+    drain_task: asyncio.Task[None] | None = None
+    close_task: asyncio.Task[None] | None = None
+    closed = False
+    try:
+        bus.enqueue(1)
+        drain_task = asyncio.create_task(bus.drain())
+        await started[1].wait()
+        assert not drain_task.done()
+        release[1].set()
+        await drain_task
+        drain_task = None
+        assert finished[1].is_set()
+
+        bus.enqueue(2)
+        close_task = asyncio.create_task(bus.aclose())
+        await started[2].wait()
+        assert not close_task.done()
+        release[2].set()
+        await close_task
+        close_task = None
+        closed = True
+        assert finished[2].is_set()
+
+        bus.enqueue(3)
+        assert bus._observe_queue is not None
+        assert bus._observe_queue.empty()
+        await bus.drain()
+        assert seen == [1, 2]
+    finally:
+        release[1].set()
+        release[2].set()
+        if drain_task is not None:
+            drain_task.cancel()
+            await asyncio.gather(drain_task, return_exceptions=True)
+        if close_task is not None:
+            close_task.cancel()
+            await asyncio.gather(close_task, return_exceptions=True)
+        if not closed:
+            await bus.aclose()
 
 
 @pytest.mark.asyncio
@@ -389,44 +635,6 @@ async def test_runtime_snapshot_rejects_inherited_wrong_task_binding() -> None:
     finally:
         reset_runtime_snapshot(token)
         await lease.release()
-        await store.close()
-        await root.dispose()
-
-    assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["fanout", "enqueue"])
-async def test_event_bus_rejects_inherited_wrong_task_binding(
-    operation: str,
-) -> None:
-    root = CompositionRoot(f"event-bus-wrong-task-{operation}")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(_MEMORY_WRITTEN_EVENT, lambda _: None)
-
-    await root.mount(plugin, name="composition-observer")
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
-    bus = EventBus()
-    bus.bind_runtime_snapshot_store(store)
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
-    try:
-        if operation == "fanout":
-            task = asyncio.create_task(bus.fanout(_memory_written_event()))
-        else:
-
-            async def enqueue() -> None:
-                bus.enqueue(_memory_written_event())
-
-            task = asyncio.create_task(enqueue())
-        with pytest.raises(CompositionError) as caught:
-            await task
-    finally:
-        reset_runtime_snapshot(token)
-        await lease.release()
-        await bus.aclose()
         await store.close()
         await root.dispose()
 

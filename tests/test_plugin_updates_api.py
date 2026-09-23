@@ -1,143 +1,168 @@
-"""普通插件使用公开更新能力；候选不能把验证变成另一次安装。"""
+"""公开安装 API 的真实 caller scope、接纳交接和当前状态投影合同。"""
+from __future__ import annotations
+
 import asyncio
-from typing import cast
 
 import pytest
 
-from tests.fixtures.plugin_workspace import initialize_plugin_workspace
-
-from agent.plugin_composition import ServiceKey
+from agent.plugin_composition import CompositionError, ServiceKey
+from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
-from agent.plugins.install import install_git_plugin
-from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
-from bus.event_bus import EventBus
-from session.log import MessageLog
-from tests.test_plugin_install import _commit, _write_v3_plugin
+from tests.test_plugin_update_operation_lease import HEALTH_CONTROL, installed_host
 
 
-MODULE = '''
-from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
-api_version = 3
-name = "probe"
-version = "1.0.0"
-inject = (PLUGIN_UPDATES,)
-async def apply(ctx):
-    await ctx.provide(ServiceKey("test.context"), ctx)
-    await ctx.provide(ServiceKey("test.version"), lambda: "old")
-'''
+def _caller(host):
+    root = host.live_root
+    assert root is not None
+    return root.context.require(ServiceKey("test.context"))
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("finish", ["publish", "discard"])
-async def test_ordinary_update_api_checks_scope_and_isolates_validation(tmp_path, finish):
-    source, workspace, home = (tmp_path / name for name in ("source", "workspace", "home"))
-    _write_v3_plugin(source, name="probe", module_source=MODULE)
-    _commit(source)
-    install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
-    log = MessageLog(workspace / "sessions.db")
-    initialize_plugin_workspace(workspace)
-    host = PluginManager([], event_bus=EventBus(), workspace=workspace, message_log=log,
-                         installed_cache_root=home / "cache")
-    stream = None
-    notification = None
-    try:
-        await host.load_all()
-        (source / "plugin.py").write_text(MODULE.replace('lambda: "old"', 'lambda: "new"'))
-        _commit(source)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
-            api = root.require(PLUGIN_UPDATES)
-            ctx = root.require(ServiceKey("test.context"))
-            assert api.read(ctx, "request") is None
-            pointers = next(home.rglob(".pointers.json"))
-            before = pointers.read_bytes()
+async def test_public_install_hands_off_before_old_generation_drains(tmp_path):
+    """accepted 只交给宿主；旧 generation 的清理仍由同一 operation 持有。"""
+    async with installed_host(tmp_path, existing=True, changed=True) as (host, source, _, _):
+        caller = _caller(host)
+        old = host.generation("target@lab")
+        peer = host.generation("peer@builtin")
+        assert old is not None
+        assert peer is not None
+        old_fiber = old.fiber
+        assert old_fiber is not None and peer.fiber is not None
+        root = host.live_root
+        permit = old_fiber.context.fiber.acquire_call(old_fiber.context.fiber.activation_token)
+        accepted_task = asyncio.create_task(_install_in_scope(caller, "public", source))
+        operation = None
+        try:
+            accepted = await accepted_task
+            operation = host._operation
+            assert operation is not None and not operation.task.done()
+            assert accepted.state == "accepted"
+            assert accepted.input_ref is not None
+            # The caller task has left its own scope; target disposal remains owned
+            # by the host operation and is still blocked by the real OwnerCall.
+            assert accepted_task.done()
+            assert host.live_root is root
+        finally:
+            # The caller scope is gone while the real target Fiber permit blocks disposal.
+            permit.release()
+            await asyncio.gather(accepted_task, return_exceptions=True)
+            if operation is not None:
+                await asyncio.gather(operation.task, return_exceptions=True)
+        assert operation is not None
+        caller = _caller(host)
+        async with caller.runtime_scope():
+            final = caller.require(PLUGIN_UPDATES).read(caller, "public")
+            assert final is not None and final.state == "active"
+            assert final.input_ref == accepted.input_ref
+        assert host.live_root is not None
+        assert host.generation("peer@builtin") is peer
+
+
+async def _install_in_scope(caller, update_id, source):
+    """Run the public API from a child task that enters its own caller scope."""
+    async with caller.runtime_scope():
+        return await caller.require(PLUGIN_UPDATES).install(
+            caller, update_id, source=str(source), marketplace="lab",
+        )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_id_is_rejected_before_new_operation_or_row_mutation(tmp_path, monkeypatch):
+    """重复 ID 只读旧回执，不能启动 installer 或改写旧错误。"""
+    async with installed_host(tmp_path, existing=True, changed=False) as (host, source, _, _):
+        caller = _caller(host)
+        async with caller.runtime_scope():
+            api = caller.require(PLUGIN_UPDATES)
+            first = await api.install(caller, "same", source=str(source), marketplace="lab")
+            before = host._reload_journal.update("same")
+            called = False
+
+            def unexpected_install(**_kwargs):
+                nonlocal called
+                called = True
+                raise AssertionError("duplicate install reached installer")
+
+            monkeypatch.setattr("agent.plugins.manager.install_git_plugin", unexpected_install)
+            with pytest.raises(RuntimeError, match="只能查询"):
+                await api.install(caller, "same", source=str(source), marketplace="lab")
+            after = host._reload_journal.update("same")
+            assert after == before
+            assert api.read(caller, "same") == first
+            assert not called
+
+
+@pytest.mark.asyncio
+async def test_read_requires_real_caller_scope_and_ignores_stale_error_for_active_generation(tmp_path):
+    async with installed_host(tmp_path, existing=True, changed=False) as (host, source, _, _):
+        caller = _caller(host)
+        api = caller.require(PLUGIN_UPDATES)
+        with pytest.raises(CompositionError, match="OwnerCall"):
+            api.read(caller, "missing")
+        async with caller.runtime_scope():
+            status = await api.install(caller, "history", source=str(source), marketplace="lab")
+            assert status.state == "active"
+        host._reload_journal.record_update_error("history", "old recovery diagnostic")
+        async with caller.runtime_scope():
+            current = api.read(caller, "history")
+            assert current is not None
+            assert current.state == "active"
+            assert current.error == "old recovery diagnostic"
+
+
+@pytest.mark.asyncio
+async def test_required_health_failure_is_failed_and_retry_reuses_selection(tmp_path):
+    """A real required-health failure is projected and explicitly recoverable."""
+    async with installed_host(tmp_path, existing=True, changed=True) as (host, source, _, _):
+        caller = _caller(host)
+        root = host.live_root
+        peer = host.generation("peer@builtin")
+        assert root is not None
+        assert peer is not None and peer.fiber is not None
+        control = peer.fiber.context.require(HEALTH_CONTROL)
+        async with caller.runtime_scope():
+            api = caller.require(PLUGIN_UPDATES)
+            accepted = await api.install(caller, "failed-activation", source=str(source), marketplace="lab")
+            operation = host._operation
+            assert operation is not None and accepted.state in {"accepted", "active"}
+        await asyncio.gather(operation.task, return_exceptions=True)
+        # This is an independent pre-existing journal diagnostic; the following
+        # health failure and both retry attempts remain real runtime transitions.
+        host._reload_journal.record_update_error("failed-activation", "old recovery diagnostic")
+        caller = _caller(host)
+        async with caller.runtime_scope():
+            health = caller.require(ServiceKey("test.required-health"))
+            health.degrade("controlled required health failure")
+            failed = host.read_update("failed-activation")
+        assert failed.state == "failed"
+        assert failed.selection == "selected"
+        assert "required health" in failed.error
+        control["fail"] = True
+        with pytest.raises(
+            RuntimeError,
+            match=r"目标依赖未 ACTIVE: caller state=FiberState\.FAILED",
+        ):
+            await host.retry_runtime_recovery("target@lab")
+        control["fail"] = False
+        await host.retry_runtime_recovery("target@lab")
+        recovered = host.read_update("failed-activation")
+        assert recovered.state == "active"
+        assert recovered.selection == "selected"
+        assert recovered.input_ref == failed.input_ref
+        assert recovered.error == "old recovery diagnostic"
+        assert host.live_root is root
+        caller = _caller(host)
+        async with caller.runtime_scope():
+            assert caller.require(ServiceKey("test.required-health")).healthy
+
+
+@pytest.mark.asyncio
+async def test_install_rejects_invalid_ids_without_touching_selection(tmp_path):
+    async with installed_host(tmp_path, existing=True, changed=False) as (host, source, _, _):
+        caller = _caller(host)
+        selection_before = host._selection.read()
+        async with caller.runtime_scope():
+            api = caller.require(PLUGIN_UPDATES)
             for invalid in (None, False, 0, "", " padded "):
                 with pytest.raises(ValueError, match="更新 ID"):
-                    # 这些值故意越过静态类型，验证 API 的运行时 ID 校验。
-                    await api.install(ctx, cast(str, invalid), source=str(source), marketplace="lab")
-                assert host.ready_candidate is None and pointers.read_bytes() == before
-            status = await api.install(ctx, "request", source=str(source), marketplace="lab")
-            assert status.phase == "armed" and not status.publishing
-            with pytest.raises(RuntimeError, match="不能重跑安装"):
-                await api.install(ctx, "request", source=str(source), marketplace="lab")
-            async with api.open_validation(ctx, "request") as scope:
-                assert scope.require(ServiceKey("test.version"))() == "new"
-                child_api = scope.require(PLUGIN_UPDATES)
-                child_ctx = scope.require(ServiceKey("test.context"))
-                with pytest.raises(PermissionError, match="候选验证不能"):
-                    child_api.publish(child_ctx, "request")
-                with pytest.raises(RuntimeError, match="不属于当前 runtime scope"):
-                    api.read(ctx, "request")
-            if finish == "discard":
-                await api.discard(ctx, "request")
-                assert api.read(ctx, "request").phase == "rolled_back"
-            else:
-                stream = api.changes(ctx)
-                await anext(stream)
-                notification = asyncio.create_task(anext(stream))
-                api.publish(ctx, "request")
-                await asyncio.wait_for(notification, 10)
-                assert api.read(ctx, "request").publishing
-        if finish == "publish":
-            await asyncio.wait_for(host._update_publication[1], 10)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
-            api = root.require(PLUGIN_UPDATES)
-            ctx = root.require(ServiceKey("test.context"))
-            status = api.read(ctx, "request")
-            assert status.phase == ("committed" if finish == "publish" else "rolled_back")
-            assert root.require(ServiceKey("test.version"))() == ("new" if finish == "publish" else "old")
-            if finish == "publish":
-                await stream.aclose()
-                stream = api.changes(ctx)
-                await anext(stream)
-                notification = asyncio.create_task(anext(stream))
-                unchanged = await api.install(ctx, "same-artifact", source=str(source), marketplace="lab")
-                assert unchanged.phase == "committed" and not unchanged.ready
-                await asyncio.wait_for(notification, 10)
-        with pytest.raises(RuntimeError, match="实际 runtime scope"):
-            api.read(ctx, "request")
-    finally:
-        if notification is not None and not notification.done():
-            notification.cancel()
-            await asyncio.gather(notification, return_exceptions=True)
-        if stream is not None:
-            await stream.aclose()
-        await host.terminate_all()
-        log.close()
-
-
-@pytest.mark.asyncio
-async def test_queued_publication_cannot_publish_a_replacement_candidate(tmp_path, monkeypatch):
-    """发布真正取得候选锁时再核对原收据，不能只按同一插件 ID 切换。"""
-    from tests.test_plugin_update_rollback import prepare
-
-    source, home, workspace, _ = prepare(tmp_path)
-    initialize_plugin_workspace(workspace)
-    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
-    entered, release = asyncio.Event(), asyncio.Event()
-    original_publish = host._publish_update
-    async def publish(update_id, plugin_id):
-        entered.set()
-        await release.wait()
-        await original_publish(update_id, plugin_id)
-    monkeypatch.setattr(host, "_publish_update", publish)
-    try:
-        await host.load_all()
-        first, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        host.start_update_publication(first.update_id)
-        await asyncio.wait_for(entered.wait(), 10)
-        await host.discard_update(first.update_id)
-        second, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await host._update_publication[1]
-        assert host.reload_journal.update(first.update_id).phase == "rolled_back"
-        assert host.reload_journal.update(second.update_id).phase == "armed"
-        assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "old"
-        assert host.ready_candidate.reload_tx_id == host.reload_journal.update(second.update_id).reload_tx_id
-    finally:
-        release.set()
-        await host.terminate_all()
+                    await api.install(caller, invalid, source=str(source), marketplace="lab")
+        assert host._selection.read() == selection_before

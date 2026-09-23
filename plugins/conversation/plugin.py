@@ -31,7 +31,17 @@ class SourceSession(Protocol):
     async def accept(self, message_id: str, body: Input) -> Message: ...
     async def pause(self, message_id: str) -> Message: ...
     async def resume(self, message_id: str, input_id: str) -> Message: ...
+    async def complete(
+        self, program: Callable[[Task, MessageReader], Awaitable[Message]],
+    ) -> Message: ...
     async def start(self, program: Callable[[Task, MessageReader, str], Awaitable[object]]) -> Task | None: ...
+
+
+class ConversationComplete(Protocol):
+    async def __call__(
+        self, session_id: str,
+        program: Callable[[Task, MessageReader], Awaitable[Message]],
+    ) -> Message: ...
 
 
 class SessionFactory(Protocol):
@@ -64,7 +74,7 @@ version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
 inject = (COMMANDS, CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTART_GATE, MODEL_SELECTION)
 
-CONVERSATION = ServiceKey[Callable[[str], SourceSession]]("conversation.v1")
+CONVERSATION_COMPLETE = ServiceKey[ConversationComplete]("conversation.complete.v1")
 
 
 async def apply(ctx: Context) -> None:
@@ -153,11 +163,18 @@ async def apply(ctx: Context) -> None:
         return await open(session_id).accept(message_id, Input(parts))
 
     async def command(task: Task, reader: MessageReader, source: str) -> Message | None:
-        return await run_commands(ctx, task, reader, source)
+        async with ctx.runtime_scope():
+            return await run_commands(ctx, task, reader, source)
+
+    async def complete(
+        session_id: str, program: Callable[[Task, MessageReader], Awaitable[Message]],
+    ) -> Message:
+        async with ctx.runtime_scope():
+            return await open(session_id).complete(program)
 
     _ = await ctx.provide(ServiceKey("conversation.check_origin.v1"), check_origin)
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
-    _ = await ctx.provide(CONVERSATION, open)
+    _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
 

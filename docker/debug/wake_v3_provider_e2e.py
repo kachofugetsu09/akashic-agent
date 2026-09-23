@@ -27,12 +27,12 @@ from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition import (
     CHAT_MODELS,
     LLMResponse,
+    MODEL_CATALOG,
     ToolCall,
 )
+from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import PluginSelection
-from agent.plugins.model_control import RuntimeModelControl
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.artifact_store import ArtifactStore
@@ -444,14 +444,11 @@ async def run_suite(
             )
         await first.start()
         if inject_settlement_failure:
-            snapshot = first.manager.current_snapshot
-            if snapshot is None or snapshot.composition_root is None:
+            live_root = first.manager.live_root
+            if live_root is None:
                 raise GateFailure("EVENTMAIL_SETTLEMENT_SERVICE_MISSING")
-            delivery_service = cast(
-                Any,
-                snapshot.composition_root.context.require(
-                    wake_plugin_module.EVENTMAIL_DELIVERY
-                ),
+            delivery_context, delivery_service = live_root._service_provider(
+                wake_plugin_module.EVENTMAIL_DELIVERY
             )
 
             def fail_before_restart(
@@ -463,7 +460,8 @@ async def run_suite(
                 settlement_failures += 1
                 raise _FixtureSettlementInterruption()
 
-            delivery_service.settle = fail_before_restart
+            async with delivery_context.runtime_scope():
+                delivery_service.settle = fail_before_restart
         await _eventually(lambda: timer.pending_count() >= 1, "SOURCE_TIMER_NOT_ARMED")
         timer.fire_earliest()
         await _eventually(
@@ -544,16 +542,18 @@ async def run_suite(
             raise GateFailure("DELIVERY_RECIPIENT_MISMATCH")
         model_evidence: dict[str, object] = {}
         if model_plugin_dirs:
-            catalog = await RuntimeModelControl(active.manager.snapshot_store).catalog()
-            async with lease_runtime_snapshot(active.manager.snapshot_store) as snapshot:
-                composition_root = snapshot.composition_root
-                if composition_root is None:
-                    raise GateFailure("MODEL_SNAPSHOT_ROOT_MISSING")
-                chat_models = composition_root.context.require(CHAT_MODELS)
+            live_root = active.manager.live_root
+            if live_root is None:
+                raise GateFailure("MODEL_LIVE_ROOT_MISSING")
+            catalog_context, catalog = live_root._service_provider(MODEL_CATALOG)
+            async with catalog_context.runtime_scope():
+                catalog_revision = catalog.snapshot().revision
+            model_context, chat_models = live_root._service_provider(CHAT_MODELS)
+            async with model_context.runtime_scope():
                 async with chat_models.execution() as execution:
                     selected_model = execution.chat("default")
                     model_evidence = {
-                        "revision": catalog.revision,
+                        "revision": catalog_revision,
                         "model_id": selected_model.descriptor.model_id,
                         "driver_id": selected_model.descriptor.driver_id,
                         "snapshot_id": selected_model.descriptor.plugin_snapshot_id,
@@ -634,6 +634,13 @@ def _build_stack(
             "semantic_interest",
         )
     ]
+    if model_plugin_dirs:
+        # Selected Models/driver artifacts use the real UI and Models driver
+        # contribution dependencies; no marker ServiceKey or synthetic seal.
+        plugin_dirs.extend(
+            Path(__file__).resolve().parents[2] / "plugins" / name
+            for name in ("ui", "shell_ui")
+        )
     fixture_plugin = _write_e2e_fixture_plugin(root, include_models=not model_plugin_dirs)
     plugin_dirs.append(fixture_plugin)
     plugin_dirs.extend(model_plugin_dirs)
@@ -831,46 +838,30 @@ async def apply(ctx: Context):
 
 
 def _copy_selected_model_plugins(root: Path) -> tuple[Path, Path]:
-    """Copy the real model store and HTTP driver with an archive-visible edge."""
+    """Copy the real Models and provider artifacts without synthetic wiring."""
 
     external = root / "external-model-plugins"
     models = external / "models"
     provider = external / "openai_compatible"
     shutil.copytree(_SOURCE_ROOT / "plugins" / "models", models)
     shutil.copytree(_SOURCE_ROOT / "plugins" / "openai_compatible", provider)
-    marker = 'ServiceKey("wake-e2e.openai-provider.v1")'
-    plugin = models / "plugin.py"
-    text = plugin.read_text(encoding="utf-8")
-    text = text.replace(
-        "from agent.plugin_composition import (\n",
-        "from agent.plugin_composition import (\n    ServiceKey,\n",
-    )
-    text = text.replace("inject = ()", f"inject = ({marker},)")
-    plugin.write_text(text, encoding="utf-8")
-    plugin = provider / "plugin.py"
-    text = plugin.read_text(encoding="utf-8")
-    text = text.replace(
-        "from agent.plugin_composition import MODEL_DRIVERS, Context\n",
-        "from agent.plugin_composition import MODEL_DRIVERS, SNAPSHOT_SEALING, Context, ServiceKey\n",
-    )
-    text = text.replace("inject = (MODEL_DRIVERS,)", "inject = ()")
-    text = text.replace(
-        "    _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())\n",
-        "    await ctx.provide(ServiceKey(\"wake-e2e.openai-provider.v1\"), object())\n"
-        "    async def register(_event: object) -> None:\n"
-        "        _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())\n"
-        "    _ = await ctx.on(SNAPSHOT_SEALING, register)\n",
-    )
-    plugin.write_text(text, encoding="utf-8")
     return models, provider
 
 
 async def _configure_selected_model(manager: PluginManager) -> None:
     """Configure the real endpoint through the ordinary models service."""
 
-    control = RuntimeModelControl(manager.snapshot_store)
+    root = manager.live_root
+    if root is None:
+        raise RuntimeError("正式 live Root 不可用")
+    provider_context, operation = root._service_provider(
+        rpc_method_key("models/command")
+    )
+
     async def command(payload: dict[str, object]) -> dict[str, object]:
-        result = await control.invoke_rpc("models/command", payload)
+        async with provider_context.runtime_scope():
+            params = operation.params.model_validate(payload)
+            result = await operation.invoke(params, None)
         if not isinstance(result, dict) or result.get("status") != 200:
             raise RuntimeError(f"models command failed: {result!r}")
         body = result.get("body")

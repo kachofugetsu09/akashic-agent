@@ -143,7 +143,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `plugin-data/computer/screenshots/` | Computer MCP 以原子替换增加截图文件 | 普通卸载保留该有界集合 | Computer MCP 是唯一删除 owner：每次成功写入后只保留最新 32 张，并删除遗留临时文件 |
 | `plugin-data/models-builtin/litellm-capabilities.json` | 用户同步模型且远端目录通过边界校验时保存完整能力快照、schema、ETag、摘要和抓取时间 | `models` 插件以 `0600` 临时文件完成 fsync 后原子替换；刷新失败保持最近可信快照不变，读取损坏时降级到随包目录 | 普通卸载和同步失败不删除；只有名称明确的模型缓存重置或整个 workspace 删除可以减少，删除后首次离线同步会退回随包目录或 unknown |
 | `runtime/plugin-reloads.sqlite3` | 每次热重载增加 transaction 与阶段事件；首次启动 candidate/formal runtime 前固定 old/new snapshot、old/new generation、base/candidate artifact pointer 与 `runtime_owner_boot_id`；已有 candidate 时 stable watchdog 加入同一 transaction，不另建 owner | 同一 transaction 按状态机更新 phase、failure resource、recovery target/action、单调 attempt 和 retry receipt；failure 只允许 `cleanup_failed → degraded` 单调强化且 target 不可覆盖，终态只能由 exact Host retry 成功后收束；同 boot 不做进程清理，新 supervised boot 只按已记录 old boot ID 恢复 | 当前没有自动 retention；恢复和事故审计仍依赖的记录不得自动删除，artifact/Host tombstone 只在对应 retry receipt 成功后减少 |
-| `plugin_updates`（同一 reload DB） | 可见更新前增加旧完整指针、实际候选指针、该插件原启用状态；资源 reload 首次创建时同事务固定关联 | armed → committed 或 rolled_back；提交与 reload committed 同库事务，回退先恢复文件再记完成。进程死亡不重建候选或续跑安装；原资源 journal 继续拥有实际进程清理 | 无自动删除；回退不减少旧 artifact、plugin-data 或消息。新 schema 由显式 yoyo 原生备份后只增表/索引，旧 reload/events 保持不变 |
+| `plugin_updates`（同一 reload DB） | 可见更新前增加旧完整指针、实际候选指针、该插件原启用状态；新增 nullable `input_ref`，在固定 archive descriptor 后只由同一 update owner 从 NULL 填一次；资源 reload 首次创建时同事务固定关联 | `phase` 仍只记录安装恢复点；selection CAS、`accepted` 同步点和 active Fiber 是分离事实。旧行 `input_ref=NULL` 不猜测、不重放；实际错误原文保留，当前 `UpdateStatus` 读取 `input_ref`、selection、generation/Fiber，并保留当前 required-health failure；任意同一 `update_id` 重复安装拒绝。caller cancellation 只放弃等待，宿主继续结算；宿主 deadline 结束 accepted 等待并撤销迟到提交许可，但已进入的物理 installer、cleanup 和 busy owner 仍须结算并可恢复 | 无自动删除或 data reduction；回退不减少旧 artifact、plugin-data 或消息。新 schema 由显式 yoyo 原生备份、旧 schema 与 fresh/ALTER 后两种已知 schema 核对后只增列，旧 reload/events/rows 保持不变；owner 需保留唯一命名备份、`integrity_check` 与人工恢复路径，普通启动拒绝旧/未知 schema，不自动迁移或整库 downgrade |
 | `runtime/plugin-jobs/outcomes.sqlite` | generation-scoped plugin job 首次 admission INSERT semantic job/event/interval identity、exact snapshot/plugin/model generation、artifact/source/handler/lifecycle identity 与 queued 状态 | 同一 invocation 只按 queued→running→terminal/retry_pending 状态机更新 attempt、phase（handler/provider/documents）、error 与 result digest；跨 generation redelivery 复用同一 semantic key，不新建第二次 effect；documents phase 只由 ActivityHost forward recovery | 当前没有自动 retention；这是 event dedupe、取消与 crash recovery 证据，普通插件卸载、重载或日志清理不得删除。workspace 备份应以 SQLite online backup + integrity_check 保存；只有后续名称明确的 retention/插件数据管理操作可减少 |
 | `runtime/deliveries/settlements.sqlite` | Core 为每个 accepted Turn INSERT 一条 immutable delivery envelope 与 stable logical id | 只按 `prepared → provider_started → delivered → projected → settled` 前向更新 exact binding、provider receipt、Session message 与 opaque domain receipt；provider 调用中断进入 `failed`，明确拒绝进入 `rejected`；候选只读检查 `prepared/delivered/projected` 的 target service 仍可解析 | 当前没有 DELETE 或自动 retention；Core ledger 是 provider effect、Session projection 与领域 settle 的恢复证据。备份应覆盖数据库、WAL/SHM 并使用 SQLite online backup + `integrity_check`；只有后续名称明确的 delivery retention 操作可以减少 |
 | `runtime/proactive-documents/intents/<invocation-id>/` | `ProactiveDocuments.prepare_pair()` 在 DB effect 前创建，保存两份 old state（bytes 或 absent marker）、完整 new bytes、expected digest、idempotency key 与 fsync receipt | 无 DB receipt 时只允许 abort 并保持正文原状态；有 DB receipt 时只允许 ordered replace/forward recovery；partial replace 依据 old bytes 恢复两份原始状态 | commit/abort terminal receipt、目标 digest 与目录 fsync 均完成后才能删除该 intent；启动恢复不得按年龄猜测 orphan。workspace 备份必须与 outcomes.sqlite、两份 Markdown 一起覆盖该目录 |
@@ -521,10 +521,13 @@ H3 前的 `WakeStateStore` 保存以下表；H3 后旧 writer 已删除，H2 只
 
 候选插件 generation 只能修改内存中的 KV staging；校验失败不写正式 `.kv.json`，commit
 时只落盘实际发生过的修改。正式发布后，同一个 store 才转为受 generation fencing 约束的
-直接写入。卸载流程删除全局 cache 和 manifest entry，但只返回 workspace data path，
-没有删除该目录。
+直接写入。公开卸载由同一 Manager owner 按 manifest disable → selection CAS remove →
+实际 Fiber/硬消费者/draining owner close → finalizer 的顺序执行；只有资源关闭后才删除全局
+cache 和 manifest entry。finalizer 由当前 operation 通过 `complete_critical(asyncio.to_thread(...))`
+等待，调用方取消或 deadline 不得截断真实线程或提前返回 removed；manifest、selection、Fiber、
+draining、operation accepted/task 与 cache 实际存在性分别是可查询事实。它只返回 workspace data path，没有删除该目录。
 
-**F-012：** plugin-data 与插件代码生命周期分离，当前卸载会保留数据。备份系统不能只列出已知内置文件；整个目录对 core 来说必须按 opaque plugin-owned state 处理。
+**F-012：** plugin-data 与插件代码生命周期分离，当前卸载会保留数据。备份系统不能只列出已知内置文件；整个目录对 core 来说必须按 opaque plugin-owned state 处理。本轮尚未通过 T05 生产/测试验收，不能把上述实现描述当作已启用结论。
 
 ### 10.2 全局插件状态
 
@@ -551,6 +554,15 @@ V3 插件 artifact 同时可以交付 Skill 和 MCP：
 0071 的运行选择现由 `runtime/plugin-stable.json` 指向完整组合记录；启动只恢复该记录，
 不自动续跑候选。安装 `.pointers.json` 不再决定运行版本，reload journal 只保留操作和外部资源恢复事实。
 提交之前死亡使用旧选择，提交之后死亡使用新选择；数据解释由当前插件负责。
+
+首次 selection 为 null 时，Manager 只把完成静态 identity、源码 compile、archive prepare 的成功 subset 交给同一
+`PluginSelection.commit`；全失败也写入空组合选择。source-local 内容错误由 Manager 的进程内诊断 owner 保留，
+不写数据库/schema，不产生第二 failed graph；共享 boundary 错误仍 fail-loud。metadata/watch scan、source 暂失和
+重启 exact archive load 不因 load/scan 误清同一进程已有诊断；source diagnostic 是进程内投影，不承诺
+跨重启保存或恢复未选 source 错误。只有同一 source 完整 prepare+compile replacement 成功后清除。watcher/SIGHUP
+不自动安装未选 source，也不因暂失删除 selection；新增选择成员须显式 install，移除成员须显式
+disable/uninstall，已选健康 source 的更新仍走既有受控 prepare/replacement/CAS 链。
+正常不可变 archive 准备可能留下产物，首次 null 的 selection CAS 是未来运行会写入的持久选择；本开发未触碰正式 durable data，实际正式数据 delta=0，不等于产品运行无写入变化。
 下面保留旧链路作为历史证据，不再作为当前选择或 attached child 授权协议。
 
 **F-014：** [0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md) 与 [0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md) 要求插件安装 artifact 按 source revision/tree digest 不可变保存；同一版本号的新 commit 不能覆盖 stable runtime 仍引用的代码。插件目录内的原子 `.pointers.json` 拥有 stable/latest artifact descriptor；`<workspace>/runtime/plugin-reloads.sqlite3` 拥有单一未决 candidate phase、install provenance、turn lineage 与 append-only phase journal。普通 turn 只读取 stable；只有 owner parent turn 创建的 attached programmatic child 自动读取匹配 latest。候选独占服务使用 `runtime/plugin-validation/<generation>/` 的 plugin-data 副本和临时端口，提交或丢弃后删除。
@@ -724,7 +736,8 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### INT-007 plugin-data 默认保留并跨卸载复用 — 已确认
 
-确认内容：普通卸载只删除代码 cache、manifest entry 和能力投影，保留 data path；这是用户数据保护语义。
+确认内容：普通卸载只删除代码 cache、manifest entry 和能力投影，保留 data path；Message、附件、
+历史 binding、归档、Delivery/journal 历史与凭据也不随代码卸载删除；这是用户数据保护语义。
 
 已提升条款：PLG-010。卸载 UI/CLI 明确区分“卸载代码”和“连同数据永久删除”；后者需要单独确认和备份。
 
@@ -809,6 +822,16 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 | `sessions.db/message_bindings` | Message writer 在正文同一事务追加引用 | 引用不可原位替换；正常日志只追加 | 只能随明确的消息/会话管理减少，不级联删除归档或 binding descriptor |
 
 候选验证只在已选 candidate snapshot 中装配独立 Root，不调用正式启动事件，也不接入当前会话、调度或发送 owner。binding 的旧 `root_ref`/component descriptor 只保留 provenance；不为普通执行或验证复活历史 Root，归档也不拥有迁移、删除或回滚正式 plugin-data 的权限。第 06 层使用新增文件目录和既有 SQL schema，没有新增 yoyo；本任务的正式 workspace 未被改写。
+
+T-1d7e36 的 production/test review 未通过；T-5c7b99 的 production `manager.py`/runtime catalog P1-P4 已静态接受
+并冻结，T-11ad0b R2 仍不接受，T-b6731d R3 仅返修 7 个测试/文档路径，未改持久化边界。`generation.load_error` 与 `cleanup_pending` 仍只是
+进程内事实，不是本表的新持久对象：前者只由当前 generation 持有原始 pre-Fiber 错误，后者只由
+`active_generations` 与现有 `draining_generations` 中的同一对象身份推导，并额外投影当前 `archive_ref/state`。
+没有 durable writer、数据库列、schema、migration 或新的 reduction；source/cache/archive/history、selection/journal、
+Message、descriptor、`root_ref`、metadata、credentials 与正式 durable data 均不变。清理失败继续由现有
+generation/cleanup owner 保留，显式 retry 才推进，不把内存投影写成已持久化回执。T-830fd2 已实现 B 的
+source resolver/secondary compile 分类、同进程 source-error 清除和 repaired-unselected 禁止自动安装；source disappearance
+保留“不自动停用”的推荐语义。实现待主审与独立只读 review，行为测试未运行。
 
 
 ## Message 插件栈第 07 层：固定 Python 环境

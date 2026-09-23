@@ -354,14 +354,14 @@ command = [
 observes = [
   "ordinary_install_without_repository_source",
   "consumer_import_boundary",
-  "snapshot_scoped_model_resolution",
-  "runtime_model_control",
+  "live_root_exact_models_scope",
+  "models_rpc_typed_invoke",
   "execution_binding_identity",
   "nested_execution_reuse",
   "child_task_execution_rejection",
   "vision_binding",
   "akasha_embedding_binding",
-  "public_model_control_socket",
+  "public_models_rpc_control",
   "catalog_secret_redaction",
   "migration_chain",
 ]

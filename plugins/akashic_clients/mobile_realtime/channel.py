@@ -824,7 +824,7 @@ class MobileRealtimeChannel:
         provider = self._mobile_ui_provider
         if provider is None:
             return
-        catalog = provider.catalog()
+        catalog = await provider.catalog()
         identity = _mobile_ui_catalog_identity(catalog)
         if identity == self._mobile_ui_catalog_identity:
             return
@@ -1079,9 +1079,9 @@ class MobileRealtimeChannel:
 
         try:
             if frame.type == "plugin.ui.catalog":
-                return self._plugin_ui_catalog(device_id, frame)
+                return await self._plugin_ui_catalog(device_id, frame)
             if frame.type == "plugin.ui.asset.get":
-                return self._plugin_ui_asset(frame)
+                return await self._plugin_ui_asset(frame)
             if frame.type == "plugin.ui.query":
                 return await self._plugin_ui_query(device_id, frame)
             if frame.type == "plugin.ui.cancel":
@@ -1927,7 +1927,7 @@ class MobileRealtimeChannel:
         # 2. 保持插件注册顺序，便于管理高频命令的位置
         return CommandReply(type="command.list.ok", payload={"items": items})
 
-    def _plugin_ui_catalog(self, device_id: str, frame: GenericCommand) -> CommandReply:
+    async def _plugin_ui_catalog(self, device_id: str, frame: GenericCommand) -> CommandReply:
         """返回不含源码的 committed Mobile Plugin UI catalog。"""
 
         _expect_keys(frame.payload, {"subscribe", "if_revision"})
@@ -1952,7 +1952,7 @@ class MobileRealtimeChannel:
                 "items": [],
             }
         else:
-            catalog = provider.catalog()
+            catalog = await provider.catalog()
         if catalog["catalog_revision"] == if_revision:
             return CommandReply(
                 type="plugin.ui.catalog.not_modified",
@@ -1960,7 +1960,7 @@ class MobileRealtimeChannel:
             )
         return CommandReply(type="plugin.ui.catalog.ok", payload=catalog)
 
-    def _plugin_ui_asset(self, frame: GenericCommand) -> CommandReply:
+    async def _plugin_ui_asset(self, frame: GenericCommand) -> CommandReply:
         """按 revision 和摘要返回一个未缓存资源。"""
 
         _expect_keys(
@@ -1981,7 +1981,7 @@ class MobileRealtimeChannel:
             raise MobileCommandError("invalid_asset", "kind 无效")
         if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
             raise MobileCommandError("invalid_asset", "sha256 无效")
-        asset = self._require_mobile_ui_provider().asset(
+        asset = await self._require_mobile_ui_provider().asset(
             plugin_id,
             plugin_revision,
             cast(str, kind),

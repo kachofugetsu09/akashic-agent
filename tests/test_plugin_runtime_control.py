@@ -13,21 +13,19 @@ from typing import Any, cast
 import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
-from akashic_sdk import ConnectionClosedError
-
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugin_composition.context import RuntimeScope
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
-from agent.plugins.install import finalize_uninstall_plugin, set_installed_plugin_enabled
 from agent.plugins.reload_journal import ReloadJournal
 from agent.control.client import ControlClient
 from agent.control.service import ControlService
 from bootstrap.app import AppRuntime
 from bus.event_bus import EventBus
 from infra.control.socket import SocketAppServer
-from session.log import MessageCatalog, MessageLog
+from session.log import MessageCatalog, MessageLog, SessionAttributes
+from session.message import ContentPart, ContentReferences, Input
 
 
 @pytest.mark.asyncio
@@ -187,10 +185,19 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         assert old_runtime.ctx.fiber.activation_token is None
         assert old_artifact.is_dir()
 
-        # 4. 已排空 artifact 仍保留，只有显式卸载才删除 cache。
+        # 4. 已排空 artifact 仍保留，只有显式 Manager 卸载才删除 cache。
         plugin_base = old_artifact.parents[1]
         data_path = Path(str(updated["dataPath"]))
-        _ = await app._uninstall_plugin(plugin_id)
+        accepted_uninstall = await manager.uninstall(plugin_id)
+        assert accepted_uninstall["state"] == "accepted"
+        uninstall_operation = manager._operation
+        assert uninstall_operation is not None
+        uninstall_result = await asyncio.gather(
+            uninstall_operation.task, return_exceptions=True,
+        )
+        assert len(uninstall_result) == 1 and isinstance(uninstall_result[0], dict)
+        assert uninstall_result[0]["plugin_id"] == plugin_id
+        assert uninstall_result[0]["state"] == "removed"
         assert not plugin_base.exists()
         assert old_ca_bundle.is_file()
         assert data_path.is_dir()
@@ -205,44 +212,61 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
 
 
 @pytest.mark.asyncio
-async def test_socket_uninstall_waits_for_old_lease_after_client_disconnects(
+async def test_socket_uninstall_returns_accepted_before_local_owner_closes(
     tmp_path: Path,
 ) -> None:
-    """真实控制 socket 的卸载操作由服务 owner 持续到旧代排空。"""
+    """Socket receives Manager accepted; disconnect does not cancel the real owner task."""
 
-    _source, manager, _app, bus, old_artifact = await _start_runtime_mcp(tmp_path)
+    source = tmp_path / "runtime-mcp-source"
+    _write_runtime_mcp_source(source, runtime_version="v1")
+    _commit_all(source, "runtime-v1")
+    provider = tmp_path / "providers/assets"
+    shutil.copytree(
+        Path(__file__).parents[1] / "plugins/assets", provider,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    shutil.copytree(
+        Path(__file__).parents[1] / "plugins/mcp", provider.parent / "mcp",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    bus = EventBus()
+    workspace = tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
+    manager = PluginManager(
+        plugin_dirs=[provider.parent],
+        event_bus=bus,
+        workspace=workspace,
+        installed_cache_root=tmp_path / "plugins-home" / "cache",
+    )
+    installed = install_git_plugin(
+        workspace=workspace,
+        source=str(source),
+        marketplace="lab",
+        plugins_home=manager.installed_plugins_home,
+    )
+    await manager.load_all()
     plugin_id = "runtime_mcp@lab"
-    production_data = tmp_path / "workspace" / "plugin-data" / "runtime_mcp-lab"
+    artifact = installed.installed_path
+    production_data = workspace / "plugin-data" / "runtime_mcp-lab"
     production_marker = production_data / "retained.json"
     production_marker.write_text('{"keep": true}\n', encoding="utf-8")
-    old_lease = manager.snapshot_store.lease()
-    started = asyncio.Event()
-    finished = asyncio.Event()
-    outcome: dict[str, object] = {}
+    target = manager.generation(plugin_id)
+    assert target is not None and target.fiber is not None
+    target_call = target.fiber.context.fiber.acquire_call(
+        target.fiber.context.fiber.activation_token
+    )
 
-    async def uninstall(plugin: str) -> dict[str, object]:
-        assert plugin == plugin_id
-        _ = set_installed_plugin_enabled(
-            plugin, enabled=False, plugins_home=manager.installed_plugins_home,
-        )
-        started.set()
-        try:
-            await manager.reconcile_disabled_and_drain(plugin)
-            cache_path, data_path = finalize_uninstall_plugin(
-                plugin,
-                workspace=tmp_path / "workspace",
-                plugins_home=manager.installed_plugins_home,
-            )
-            outcome.update({
-                "plugin_id": plugin,
-                "cache_path": str(cache_path),
-                "data_path": str(data_path),
-            })
-            return outcome
-        finally:
-            finished.set()
-
-    message_log = MessageLog(tmp_path / "workspace" / "sessions.db")
+    message_log = MessageLog(workspace / "sessions.db")
+    message_log.ensure_session("socket-marker", SessionAttributes())
+    message_writer = message_log.writer(
+        "socket-marker", author="user", source="conversation", body_types=(Input,),
+        content={"text": lambda _part: ContentReferences()},
+    )
+    message_writer.append(
+        "socket-input", Input((ContentPart("text", "socket input"),)),
+    )
+    message_reader = message_log.reader("socket-marker")
+    messages_before = message_reader.snapshot()
 
     async def reject_accept(_session, _message_id, _incoming):
         raise AssertionError("卸载测试不应接纳消息")
@@ -253,43 +277,62 @@ async def test_socket_uninstall_waits_for_old_lease_after_client_disconnects(
 
     service = ControlService(
         MessageCatalog(message_log),
-        tmp_path / "workspace",
+        workspace,
         accept=reject_accept,
         reply_status=no_reply_status,
         attachments=lambda _ids: (),
-        plugin_uninstall=uninstall,
+        plugin_status=manager.plugin_status,
+        plugin_uninstall=manager.uninstall,
     )
     server = SocketAppServer(tmp_path / "control.sock", service)
     await server.start()
     request_task: asyncio.Task[object] | None = None
+    client = None
     try:
         client = await ControlClient.connect(str(server.endpoint))
         request_task = asyncio.create_task(
             client.request("plugin/uninstall", {"plugin_id": plugin_id})
         )
-        await asyncio.wait_for(started.wait(), 5)
-        await asyncio.sleep(0)
-        assert not request_task.done()
-        assert old_artifact.is_dir()
+        response = await request_task
+        assert response["plugin_id"] == plugin_id
+        assert response["state"] == "accepted"
+        operation = manager._operation
+        assert operation is not None and not operation.task.done()
+        assert artifact.is_dir()
+        status = await client.request("plugin/status", {})
+        builtin_status = {item["plugin_id"]: item for item in status["plugins"]}
+        assert builtin_status["assets"]["cache_exists"] is False
+        assert builtin_status["mcp"]["cache_exists"] is False
+        target_status = next(item for item in status["plugins"] if item["plugin_id"] == plugin_id)
+        assert target_status["installed"] is True
+        assert target_status["enabled"] is False
+        assert target_status["cache_exists"] is True
 
         await client.close()
-        await asyncio.sleep(0)
-        assert not finished.is_set()
-        assert request_task.done()
-        with pytest.raises(ConnectionClosedError, match="server closed connection"):
-            request_task.result()
-
-        await old_lease.release()
-        await asyncio.wait_for(finished.wait(), 10)
-        assert outcome["plugin_id"] == plugin_id
-        assert not old_artifact.exists()
+        client = None
+        assert not operation.task.done()
+        target_call.release()
+        result = await asyncio.gather(operation.task, return_exceptions=True)
+        assert len(result) == 1 and isinstance(result[0], dict)
+        assert result[0]["plugin_id"] == plugin_id
+        assert result[0]["state"] == "removed"
+        assert not artifact.exists()
         assert production_marker.read_text(encoding="utf-8") == '{"keep": true}\n'
+        assert message_reader.snapshot() == messages_before
+        client = await ControlClient.connect(str(server.endpoint))
+        status = await client.request("plugin/status", {})
+        target_status = next(item for item in status["plugins"] if item["plugin_id"] == plugin_id)
+        assert target_status["installed"] is False
+        assert target_status["cache_exists"] is False
+        assert status["operation"]["state"] == "done"
     finally:
         if request_task is not None and not request_task.done():
             request_task.cancel()
             await asyncio.gather(request_task, return_exceptions=True)
-        if old_lease.active:
-            await old_lease.release()
+        if client is not None:
+            await client.close()
+        if not target_call._released:
+            target_call.release()
         await server.stop()
         await service.shutdown()
         message_log.close()

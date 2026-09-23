@@ -144,6 +144,14 @@ def install_git_plugin(
     home = (plugins_home or plugins_root()).resolve(strict=False)
     journal = ReloadJournal(workspace)
     update_id = uuid4().hex if update_id is None else update_id
+    if not isinstance(update_id, str) or not update_id or update_id.strip() != update_id:
+        raise ValueError("插件更新 ID 必须是非空且无首尾空白的字符串")
+    try:
+        journal.update(update_id)
+    except KeyError:
+        pass
+    else:
+        raise RuntimeError("已有插件更新请求只能查询，不能重跑安装")
     _ = _validate_path_segment(marketplace, "marketplace")
     if not isinstance(source, str) or not source or source != source.strip():
         raise ValueError("插件 source 必须是非空且不含首尾空白的字符串")

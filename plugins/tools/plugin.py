@@ -22,7 +22,7 @@ from .execution import ToolExecution
 from .program import TOOL_PROGRAM, ToolProgramFactory
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
-from agent.plugin_composition.tasks import TASKS
+from agent.plugin_composition.tasks import TASKS, TaskAdmission
 
 api_version = 3
 name = "tools"
@@ -132,7 +132,8 @@ class _ToolView:
         """贡献先转换，实际工具一次接纳最终参数；授权在这之后执行。"""
         self._check_active()
         if self._preparation is not None:
-            arguments = await self._preparation.prepare(arguments)
+            async with self._preparation.context.runtime_scope():
+                arguments = await self._preparation.prepare(arguments)
             self._check_active()
         result = await self._target.prepare(arguments, source)
         self._check_active()
@@ -154,8 +155,9 @@ class _ToolView:
 class ToolCatalog:
     """普通注册表拥有工具描述、目标与参数准备；不管理消息或循环。"""
 
-    def __init__(self, ctx: Context):
+    def __init__(self, ctx: Context, task_admission: TaskAdmission):
         self._ctx = ctx
+        self._task_admission = task_admission
         self._tools: dict[str, _Registration] = {}
         self._groups: dict[str, tuple[bool, str]] = {}
 
@@ -341,9 +343,10 @@ class ToolCatalog:
         """清理 owner 等待原效果退出；终态结果不等于资源已经释放。"""
         from .api import durable_call_key
 
-        tasks = self._ctx.require(TASKS).open(self._ctx)
         for ref in calls:
-            task = await tasks.admit(("effects", durable_call_key(ref)), lambda slot: slot.current)
+            task = await self._task_admission.admit(
+                ("effects", durable_call_key(ref)), lambda slot: slot.current,
+            )
             if task is not None:
                 try:
                     _ = await task.join()
@@ -468,14 +471,15 @@ class ToolCatalog:
                 raise ValueError("工具 binding state 必须是 JSON 对象")
             state = cast(Mapping[str, object], captured)
         async with self._ctx.runtime_scope():
-            async with registration.open(state) as target:
-                if target.idempotent != description["idempotent"]:
-                    raise ValueError("工具幂等协议与固定描述不一致")
-                view = _ToolView(target, preparation)
-                try:
-                    yield view
-                finally:
-                    view.close()
+            async with registration.context.runtime_scope():
+                async with registration.open(state) as target:
+                    if target.idempotent != description["idempotent"]:
+                        raise ValueError("工具幂等协议与固定描述不一致")
+                    view = _ToolView(target, preparation)
+                    try:
+                        yield view
+                    finally:
+                        view.close()
 
     async def authorize(
         self, metadata: Mapping[str, object], arguments: Mapping[str, object]
@@ -495,7 +499,8 @@ class ToolCatalog:
         if authorization is None or metadata["authorize"] != authorization.name:
             raise ValueError("归档工具限制与 binding 不一致")
         async with self._ctx.runtime_scope():
-            return await authorization.authorize(arguments)
+            async with authorization.context.runtime_scope():
+                return await authorization.authorize(arguments)
 
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
@@ -526,7 +531,8 @@ async def bind_saved_tool(
 
 
 async def apply(ctx: Context) -> None:
-    catalog = ToolCatalog(ctx)
+    task_admission = ctx.require(TASKS).open(ctx)
+    catalog = ToolCatalog(ctx, task_admission)
     _ = await ctx.provide(ServiceKey("tools.bind-saved.v1"), bind_saved_tool)
     _ = await ctx.provide(TOOLS, catalog)
     _ = await ctx.provide(TOOL_PROGRAM, ToolProgramFactory(ctx, catalog))

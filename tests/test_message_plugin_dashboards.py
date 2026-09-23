@@ -18,9 +18,7 @@ import httpx
 import pytest
 
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import RuntimeSnapshot
 from agent.plugin_composition.ui import WebModuleDescriptor
-from bootstrap.dashboard_api import create_dashboard_app
 from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
 from plugins.delivery.history import DELIVERY_READ
 from plugins.drift.plugin import DRIFT_PROPOSALS
@@ -46,12 +44,28 @@ def _file_snapshot(path: Path) -> dict[str, tuple[int, str]]:
     return result
 
 
-def _web_headers(snapshot: RuntimeSnapshot, plugin_id: str) -> tuple[WebModuleDescriptor, dict[str, str]]:
-    catalog = snapshot.composition_root.context.require(UI).catalog()
-    assert catalog is not None
+def _dashboard_before_load(
+    workspace: Path,
+    holder: dict[str, object],
+):
+    """Build the one real Dashboard app before the Manager loads its Root."""
+
+    def before_load(log: MessageLog, host: PluginManager) -> None:
+        from bootstrap.dashboard_api import create_dashboard_app
+        holder["app"] = create_dashboard_app(workspace, plugin_manager=host)
+
+    return before_load
+
+
+def _web_headers(host: PluginManager, plugin_id: str) -> tuple[WebModuleDescriptor, dict[str, str]]:
+    """Build dashboard identity from the one live Root, never a snapshot."""
+
+    root = host.live_root
+    assert root is not None
+    catalog = root.context.require(UI).catalog()
     module = next(item for item in catalog.modules if item.plugin_id == plugin_id)
     headers = {
-        "x-akashic-web-snapshot": snapshot.snapshot_id,
+        "x-akashic-web-snapshot": root.generation_id,
         "x-akashic-web-catalog": catalog.identity,
         "x-akashic-web-module": module.plugin_id,
         "x-akashic-web-generation": module.generation_id,
@@ -65,7 +79,7 @@ def _render_compiled_module(
     payload: dict[str, object],
     marker: str,
 ) -> None:
-    """渲染 snapshot 中的编译资源，检查实际字段是否完整。"""
+    """渲染 live catalog 中的编译资源，检查实际字段是否完整。"""
     module_file = tmp_path / f"{module.plugin_id}-web_module.js"
     payload_file = tmp_path / f"{module.plugin_id}-detail.json"
     module_file.write_text(module.asset.module, encoding="utf-8")
@@ -149,11 +163,15 @@ def _seed_saved_recall(log: MessageLog, _host: PluginManager) -> None:
 async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tmp_path: Path) -> None:
     from tests.test_akasha_message_plugin import application
 
-    async with application(tmp_path, embedding_available=False, before_start=_seed_saved_recall) as (log, host):
-        snapshot = host.current_snapshot
-        assert snapshot is not None
-        module, headers = _web_headers(snapshot, "akasha")
-        app = create_dashboard_app(tmp_path / "workspace", plugin_manager=host)
+    holder: dict[str, object] = {}
+    async with application(
+        tmp_path,
+        embedding_available=False,
+        before_load=_dashboard_before_load(tmp_path / "workspace", holder),
+        before_start=_seed_saved_recall,
+    ) as (log, host):
+        module, headers = _web_headers(host, "akasha")
+        app = holder["app"]
         sessions_db = tmp_path / "sessions.db"
         assert sessions_db.is_file()
         before_db = sessions_db.read_bytes()
@@ -197,7 +215,11 @@ async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tm
 async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_path: Path) -> None:
     from tests.test_wake_messages import application, request
 
-    async with application(tmp_path) as (host, log, ctx, _source, control):
+    holder: dict[str, object] = {}
+    async with application(
+        tmp_path,
+        before_load=_dashboard_before_load(tmp_path / "workspace", holder),
+    ) as (host, log, ctx, _source, control):
         await host.start_runtime()
         runtime = cast(Runtime, control["runtime"])
         now = datetime.now(timezone.utc)
@@ -226,10 +248,8 @@ async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_pa
         target_message = log.reader(original.target.session_id).get(original.notification_id)
         assert target_message is not None
 
-        snapshot = host.current_snapshot
-        assert snapshot is not None
-        module, headers = _web_headers(snapshot, "wake")
-        app = create_dashboard_app(tmp_path / "workspace", plugin_manager=host)
+        module, headers = _web_headers(host, "wake")
+        app = holder["app"]
         state_path = runtime.state.path
         before_files = _file_snapshot(state_path)
         before_attempt = runtime.state.read_only().get_attempt(original.flow_id)
@@ -261,16 +281,18 @@ async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_pa
 async def test_wake_dashboard_get_missing_state_does_not_create_database(tmp_path: Path) -> None:
     from tests.test_wake_messages import application
 
-    async with application(tmp_path) as (host, _log, _ctx, _source, control):
+    holder: dict[str, object] = {}
+    async with application(
+        tmp_path,
+        before_load=_dashboard_before_load(tmp_path / "workspace", holder),
+    ) as (host, _log, _ctx, _source, control):
         await host.start_runtime()
         runtime = cast(Runtime, control["runtime"])
         state_path = runtime.state.path
         assert state_path.exists()
         state_path.unlink()
-        snapshot = host.current_snapshot
-        assert snapshot is not None
-        _module, headers = _web_headers(snapshot, "wake")
-        app = create_dashboard_app(tmp_path / "workspace", plugin_manager=host)
+        _module, headers = _web_headers(host, "wake")
+        app = holder["app"]
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers,
         ) as client:
@@ -323,15 +345,17 @@ async def test_wake_dashboard_reads_nonempty_state_at_exact_workspace(
     from tests.test_wake_messages import application
 
     root = tmp_path / directory
-    async with application(root) as (host, _log, _ctx, _source, control):
+    holder: dict[str, object] = {}
+    async with application(
+        root,
+        before_load=_dashboard_before_load(root / "workspace", holder),
+    ) as (host, _log, _ctx, _source, control):
         await host.start_runtime()
         state = control["runtime"].state
         state.record_screen(run_id="visible-run", owner="content", candidates_seen=0,
                             screening=(), started_at=datetime(2026, 9, 7, tzinfo=timezone.utc))
-        snapshot = host.current_snapshot
-        assert snapshot is not None
-        _, headers = _web_headers(snapshot, "wake")
-        app = create_dashboard_app(root / "workspace", plugin_manager=host)
+        _, headers = _web_headers(host, "wake")
+        app = holder["app"]
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
             base_url="http://test", headers=headers,
@@ -366,11 +390,15 @@ async def test_akasha_dashboard_filters_pages_and_returns_original_detail(tmp_pa
     """第二页不得混入另一会话；详情恢复列表截断的完整正文，读取不改变 SQL 事实。"""
     from tests.test_akasha_message_plugin import application
 
-    async with application(tmp_path, embedding_available=False, before_start=_seed_recall_pages) as (log, host):
-        snapshot = host.current_snapshot
-        assert snapshot is not None
-        _, headers = _web_headers(snapshot, "akasha")
-        app = create_dashboard_app(tmp_path / "workspace", plugin_manager=host)
+    holder: dict[str, object] = {}
+    async with application(
+        tmp_path,
+        embedding_available=False,
+        before_load=_dashboard_before_load(tmp_path / "workspace", holder),
+        before_start=_seed_recall_pages,
+    ) as (log, host):
+        _, headers = _web_headers(host, "akasha")
+        app = holder["app"]
         with closing(sqlite3.connect(tmp_path / "sessions.db")) as database:
             before = tuple(database.iterdump())
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers) as client:
@@ -405,11 +433,15 @@ async def test_akasha_page_does_not_read_bodies_outside_its_results(tmp_path: Pa
     """小页和空筛选不应展开全部历史正文；观察真实 SQLite 查询而非自己造的统计。"""
     from tests.test_akasha_message_plugin import application
 
-    async with application(tmp_path, embedding_available=False, before_start=_seed_recall_pages) as (log, host):
-        snapshot = host.current_snapshot
-        assert snapshot is not None
-        _, headers = _web_headers(snapshot, "akasha")
-        app = create_dashboard_app(tmp_path / "workspace", plugin_manager=host)
+    holder: dict[str, object] = {}
+    async with application(
+        tmp_path,
+        embedding_available=False,
+        before_load=_dashboard_before_load(tmp_path / "workspace", holder),
+        before_start=_seed_recall_pages,
+    ) as (log, host):
+        _, headers = _web_headers(host, "akasha")
+        app = holder["app"]
         queries: list[str] = []
         log._connection.set_trace_callback(queries.append)
         try:

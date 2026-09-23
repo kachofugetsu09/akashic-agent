@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from tests.fixtures.plugin_workspace import initialize_plugin_workspace
-
-from agent.plugin_composition.config_input import save_config
-
-from agent.plugin_composition import CompositionRoot, PluginRuntime
+from agent.plugin_composition import CompositionError, CompositionRoot, PluginRuntime, ServiceKey
 from agent.plugin_composition.rpc import rpc_method_key
+from agent.plugin_composition.runtime_catalog import (
+    RUNTIME_CATALOG,
+    build_runtime_catalog,
+)
+from agent.plugins.generation import PluginGeneration
+from agent.plugins.scope import PluginScope
+from agent.plugins.static_manifest import StaticPluginManifest
 from plugins.runtime_inspection import plugin
 from plugins.runtime_inspection.inspection import (
     SCHEDULER_INSPECTION,
@@ -38,6 +42,48 @@ def _rows(value: object) -> tuple[Mapping[str, object], ...]:
             raise AssertionError("inspection RPC row 必须是对象")
         rows.append(cast(Mapping[str, object], row))
     return tuple(rows)
+
+
+def test_runtime_catalog_projects_selected_pre_fiber_failure(tmp_path: Path) -> None:
+    root = CompositionRoot("selected-failed")
+    generation = PluginGeneration(
+        plugin_id="broken",
+        generation_id="broken:g1",
+        module_path="_broken",
+        source_revision="source",
+        config_revision="config",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / "data",
+        instance=None,
+        scope=PluginScope("broken", generation_id="broken:g1"),
+        static_manifest=StaticPluginManifest(
+            name="broken",
+            version="1.0.0",
+            api_version=3,
+            python=(),
+            identity_digest="identity",
+        ),
+        state="failed",
+        archive_ref="a" * 64,
+        load_error=ImportError("import blocked"),
+    )
+    catalog = build_runtime_catalog(
+        root,
+        {"broken": generation},
+        {"broken": [generation]},
+    )
+    item = next(
+        item for item in _rows(catalog["plugins"])
+        if item["id"] == "broken"
+    )
+    composition = _payload(item["composition"])
+    assert item["api_version"] == 3
+    assert item["archive_ref"] == "a" * 64
+    assert item["state"] == "failed"
+    assert item["load_error"] == "import blocked"
+    assert item["cleanup_pending"] is True
+    assert composition["ready"] is False
+    assert composition["fibers"] == []
 
 
 class _Scheduler:
@@ -148,70 +194,301 @@ async def test_runtime_inspection_provider_propagates_business_failure(
 
 
 @pytest.mark.asyncio
-async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path: Path) -> None:
-    """真实技能 owner 的租约读取经 Web/Mobile 共用的检查入口完成。"""
-    import shutil
-    from bus.event_bus import EventBus
-    from agent.plugins.manager import PluginManager
-    from infra.channels.artifacts import ChannelAttachmentArtifactStore
-    from session.artifact_store import ArtifactStore
-    from agent.plugins.snapshot import (
-        get_current_runtime_snapshot,
-        lease_runtime_snapshot,
-    )
-    from plugins.akashic_clients.runtime_inspection import ScopedRpcRuntimeInspection
+async def test_client_inspection_binds_live_probe_scope(tmp_path: Path) -> None:
+    """客户端经真实 probe Context 读取 live catalog 与技能 RPC。"""
+    from contextlib import asynccontextmanager
 
-    source = tmp_path / "plugins"
-    for name in ("assets", "content", "context", "tools", "standard_tools", "runtime_inspection"):
-        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
-                        ignore=shutil.ignore_patterns("__pycache__"))
-    asset = source / "external_assets"
-    skill = asset / "skills" / "probe"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: probe\ndescription: lease proof\n---\nRead safely.\n")
-    (asset / "plugin.py").write_text(
-        "from agent.plugin_composition import ServiceKey\n"
+    from plugins.akashic_clients.capabilities import INSPECTION_SKILLS_LIST
+    from plugins.akashic_clients.runtime_inspection import (
+        RuntimeInspectionError,
+        ScopedRpcRuntimeInspection,
+    )
+
+    for relative in ("MEMORY.md", "SELF.md", "VEDA.md"):
+        path = tmp_path / "memory" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {relative}\n", encoding="utf-8")
+    runtime = PluginRuntime(
+        plugin_id="runtime_inspection",
+        generation_id="runtime-inspection:g1",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / "plugin-data",
+        workspace=tmp_path,
+        config={},
+        workspace_files=plugin.workspace_files,
+    )
+    root = CompositionRoot("live-probe")
+    await root.context.provide(
+        RUNTIME_CATALOG,
+        lambda _ctx: build_runtime_catalog(root, {}),
+    )
+    await root.mount(plugin.apply, name=plugin.name, runtime=runtime)
+
+    async def probe_apply(ctx):
+        ctx.require(RUNTIME_CATALOG)
+        ctx.require(INSPECTION_SKILLS_LIST)
+
+    probe = await root.mount(
+        probe_apply,
+        name="inspection-probe",
+        inject=(RUNTIME_CATALOG, INSPECTION_SKILLS_LIST),
+        runtime=PluginRuntime(
+            plugin_id="inspection-probe",
+            generation_id="inspection-probe:g1",
+            plugin_dir=tmp_path,
+            data_dir=tmp_path / "probe-data",
+            workspace=tmp_path,
+            config={},
+        ),
+    )
+
+    @asynccontextmanager
+    async def open_scope():
+        async with probe.context.runtime_scope():
+            yield probe.context
+
+    service = ScopedRpcRuntimeInspection(open_scope)
+    try:
+        with pytest.raises(RuntimeInspectionError) as captured:
+            await service.list_capabilities()
+        assert captured.value.code == "mcp_provider_unavailable"
+    finally:
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_catalog_tracks_manager_replacement_without_lifecycle_side_effects(
+    tmp_path: Path,
+) -> None:
+    """The catalog follows current Fibers while rejecting raw or foreign scopes."""
+    from agent.plugins.manager import PluginManager
+    from bus.event_bus import EventBus
+    from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+    runtime_key = (
+        "from agent.plugin_composition import RUNTIME_STARTED, ServiceKey\n"
         "RUNTIME_CATALOG = ServiceKey('core.runtime_catalog.v1')\n"
-        "api_version = 3\nname = 'external_assets'\nversion = '1'\n"
-        "from agent.plugin_composition.assets import INSTALLED_ASSETS\n"
-        "inject = (RUNTIME_CATALOG, INSTALLED_ASSETS)\n"
-        "async def apply(ctx):\n"
-        "    await ctx.require(INSTALLED_ASSETS).register(ctx, 'skills', 'skills')\n")
-    (tmp_path / "workspace").mkdir()
-    configuration = tmp_path / "workspace/plugin-data/context-builtin"
-    configuration.mkdir(parents=True)
-    save_config(configuration, {"summary_source": [], "prompt_sources": {"skills": "standard_tools"}})
-    metadata = ArtifactStore(tmp_path / "workspace" / "sessions.db")
-    attachments = ChannelAttachmentArtifactStore(workspace=tmp_path / "workspace", metadata_store=metadata)
-    initialize_plugin_workspace(tmp_path / "workspace")
-    manager = PluginManager([source], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                            installed_cache_root=tmp_path / "empty-cache", channel_attachment_store=attachments)
+        "C_SERVICE = ServiceKey('probe.c-service')\n"
+        "MOUNT_B = ServiceKey('probe.mount-b')\n"
+    )
+
+    def source(version: str) -> str:
+        return (
+            "api_version = 3\n"
+            "name = 'probe'\n"
+            f"version = {version!r}\n"
+            f"{runtime_key}"
+            "inject = ()\n"
+            "async def apply(ctx):\n"
+            "    await ctx.health('probe-health', required=True)\n"
+            "    async def mount_b():\n"
+            "        async def child_c(cctx):\n"
+            "            reader = cctx.require(RUNTIME_CATALOG)\n"
+            "            async def read_from_c():\n"
+            "                async with cctx.runtime_scope():\n"
+            "                    result = reader(cctx)\n"
+            "                    if not result['plugins']:\n"
+            "                        raise RuntimeError('C runtime catalog is empty')\n"
+            "                    return result\n"
+            "            await cctx.provide(C_SERVICE, read_from_c)\n"
+            "        await ctx.mount(child_c, name='probe-c', inject=(RUNTIME_CATALOG,))\n"
+            "        async def child_b(bctx):\n"
+            "            reader = bctx.require(RUNTIME_CATALOG)\n"
+            "            read_from_c = bctx.require(C_SERVICE)\n"
+            "            async def on_started(_event):\n"
+            "                result = reader(bctx)\n"
+            "                if not result['plugins']:\n"
+            "                    raise RuntimeError('B runtime catalog is empty')\n"
+            "                c_result = await read_from_c()\n"
+            "                if not c_result['plugins']:\n"
+            "                    raise RuntimeError('C runtime catalog is empty')\n"
+            f"                bctx.report_incident('probe_loaded', 'version {version}')\n"
+            "            await bctx.on(RUNTIME_STARTED, on_started)\n"
+            "        await ctx.mount(child_b, name='probe-child', inject=(RUNTIME_CATALOG, C_SERVICE))\n"
+            "    await ctx.provide(MOUNT_B, mount_b)\n"
+        )
+
+    plugins = tmp_path / "plugins"
+    probe_dir = plugins / "probe"
+    unrelated_dir = plugins / "unrelated"
+    probe_dir.mkdir(parents=True)
+    unrelated_dir.mkdir(parents=True)
+    probe_file = probe_dir / "plugin.py"
+    probe_file.write_text(source("1.0.0"), encoding="utf-8")
+    unrelated_dir.joinpath("plugin.py").write_text(
+        "api_version = 3\nname = 'unrelated'\nversion = '1.0.0'\n"
+        "async def apply(ctx):\n    return None\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
+    manager = PluginManager(
+        [plugins],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "cache",
+    )
+    foreign = CompositionRoot("foreign")
     try:
         await manager.load_all()
-        snapshot = manager.snapshot_store.current
-        assert snapshot is not None
-        from contextlib import asynccontextmanager
+        root = manager._live_root
+        generation = manager.generation("probe")
+        unrelated = manager.generation("unrelated")
+        assert root is not None and generation is not None and generation.fiber is not None
+        assert unrelated is not None and unrelated.fiber is not None
+        unrelated_fiber = unrelated.fiber
+        unrelated_context = unrelated_fiber.context
+        old_fiber = generation.fiber
+        mount_b = old_fiber.context.require(ServiceKey("probe.mount-b"))
+        async with old_fiber.context.runtime_scope():
+            await mount_b()
+        old_child = next(
+            fiber for fiber in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+            if fiber.name == "probe-child"
+        )
+        old_c = next(
+            fiber for fiber in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+            if fiber.name == "probe-c"
+        )
+        old_child_context = old_child.context
+        reader = old_child_context.require(RUNTIME_CATALOG)
+        with pytest.raises(CompositionError) as missing_permit:
+            reader(old_child_context)
+        assert missing_permit.value.code == "OWNER_CALL_CONTEXT"
+        with pytest.raises(CompositionError) as child_missing_permit:
+            reader(old_child.context)
+        assert child_missing_permit.value.code == "OWNER_CALL_CONTEXT"
+        with pytest.raises(CompositionError) as undeclared:
+            async with old_fiber.context.runtime_scope():
+                reader(old_fiber.context)
+        assert undeclared.value.code == "UNDECLARED_SERVICE"
 
-        @asynccontextmanager
-        async def open_scope():
-            async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
-                root = snapshot.composition_root
-                if root is None:
-                    raise RuntimeError("inspection fixture 缺少 composition root")
-                yield root.context
+        before = (
+            root.frozen,
+            root._composition_revision,  # pyright: ignore[reportPrivateUsage]
+            tuple(fiber.fiber_id for fiber in root._fibers.values()),  # pyright: ignore[reportPrivateUsage]
+        )
+        async with old_child_context.runtime_scope():
+            first = reader(old_child_context)
 
-        service = ScopedRpcRuntimeInspection(open_scope)
-        for _ in range(2):
-            result = await service.list_capabilities()
-            assert set(result) == {"snapshot_id", "plugins", "skills", "mcp_servers"}
-            assert result["snapshot_id"] == snapshot.snapshot_id
-            assert [item["name"] for item in _rows(result["skills"])] == ["probe"]
-            assert "items" not in result
-            assert snapshot.lease_count == 0
-            assert get_current_runtime_snapshot() is None
+            inherited_errors: list[str] = []
+
+            async def raw_child() -> None:
+                with pytest.raises(CompositionError) as inherited:
+                    reader(old_child_context)
+                inherited_errors.append(inherited.value.code)
+
+            await asyncio.create_task(raw_child())
+            parent_after_child = reader(old_child_context)
+        assert inherited_errors == ["OWNER_CALL_CONTEXT"]
+        assert parent_after_child["snapshot_id"] == first["snapshot_id"]
+        assert not old_child._in_flight_calls  # pyright: ignore[reportPrivateUsage]
+        after = (
+            root.frozen,
+            root._composition_revision,  # pyright: ignore[reportPrivateUsage]
+            tuple(fiber.fiber_id for fiber in root._fibers.values()),  # pyright: ignore[reportPrivateUsage]
+        )
+        assert before == after
+        first_item = next(item for item in first["plugins"] if item["id"] == "probe")
+        assert first_item["composition"]["ready"] is True
+        assert first_item["composition"]["health"] == [
+            {
+                "owner": "probe",
+                "name": "probe-health",
+                "required": True,
+                "healthy": True,
+                "reason": None,
+            }
+        ]
+        assert first_item["composition"]["incident_count"] == 1
+        assert first_item["composition"]["recent_incidents"][0]["fiber_id"] == old_child.fiber_id
+        assert first["mcp_unavailable"]["code"] == "mcp_provider_unavailable"
+
+        await foreign.context.provide(RUNTIME_CATALOG, reader)
+        foreign_fiber = await foreign.mount(
+            lambda ctx: None,
+            name="foreign-probe",
+            inject=(RUNTIME_CATALOG,),
+            runtime=PluginRuntime(
+                plugin_id="foreign-probe",
+                generation_id="foreign-probe:g1",
+                plugin_dir=tmp_path,
+                data_dir=tmp_path / "foreign-data",
+                workspace=tmp_path,
+                config={},
+            ),
+        )
+        async with foreign_fiber.context.runtime_scope():
+            with pytest.raises(RuntimeError, match="不属于当前 live Root"):
+                reader(foreign_fiber.context)
+
+        same_fiber_context = old_child.context
+        await old_c.effects[0].aclose()
+
+        async def replacement_c_reader():
+            async with old_c.context.runtime_scope():
+                return old_c.context.require(RUNTIME_CATALOG)(old_c.context)
+
+        await old_c.context.provide(ServiceKey("probe.c-service"), replacement_c_reader)
+        await old_child.reconcile()
+        assert old_child.context is not same_fiber_context
+        with pytest.raises(CompositionError) as stale:
+            reader(same_fiber_context)
+        assert stale.value.code == "STALE_ACTIVATION"
+        same_reader = old_child.context.require(RUNTIME_CATALOG)
+        async with old_child.context.runtime_scope():
+            same = same_reader(old_child.context)
+        same_item = next(item for item in same["plugins"] if item["id"] == "probe")
+        assert same_item["composition"]["incident_count"] == 2
+        assert {
+            item["fiber_id"]
+            for item in same_item["composition"]["recent_incidents"]
+        } == {old_child.fiber_id}
+
+        probe_file.write_text(source("2.0.0"), encoding="utf-8")
+        await manager.reconcile_changed()
+        fresh = manager.generation("probe")
+        assert fresh is not None and fresh is not generation and fresh.fiber is not None
+        assert manager._live_root is root
+        assert manager.generation("unrelated") is unrelated
+        assert unrelated.fiber is unrelated_fiber
+        assert unrelated.fiber.context is unrelated_context
+        assert unrelated.fiber.state.value == "active"
+        assert old_fiber not in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(CompositionError) as replaced:
+            async with old_fiber.context.runtime_scope():
+                pass
+        assert replaced.value.code == "OWNER_UNAVAILABLE"
+        with pytest.raises(CompositionError) as old_child_unloaded:
+            async with old_child.context.runtime_scope():
+                pass
+        assert old_child_unloaded.value.code == "OWNER_UNAVAILABLE"
+        new_mount_b = fresh.fiber.context.require(ServiceKey("probe.mount-b"))
+        async with fresh.fiber.context.runtime_scope():
+            await new_mount_b()
+        new_child = next(
+            fiber for fiber in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+            if fiber.name == "probe-child"
+        )
+        assert old_child not in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+        assert new_child is not old_child
+        new_child_context = new_child.context
+        new_reader = new_child_context.require(RUNTIME_CATALOG)
+        async with new_child_context.runtime_scope():
+            second = new_reader(new_child_context)
+        second_item = next(item for item in second["plugins"] if item["id"] == "probe")
+        assert second_item["generation_id"] == fresh.generation_id
+        assert second_item["generation_id"] != first_item["generation_id"]
+        assert second_item["composition"]["incident_count"] == 1
+        assert second_item["composition"]["recent_incidents"][0]["fiber_id"] == new_child.fiber_id
+        assert second_item["composition"]["recent_incidents"][0]["message"] == "version 2.0.0"
+        assert {item.fiber_id for item in root.receipt().incidents} >= {
+            old_child.fiber_id,
+            new_child.fiber_id,
+        }
     finally:
+        await foreign.dispose()
         await manager.terminate_all()
-        metadata.close()
 
 
 @pytest.mark.asyncio
@@ -229,8 +506,10 @@ async def test_client_translates_runtime_catalog_unavailable() -> None:
     root = CompositionRoot("catalog-unavailable")
     await root.context.provide(
         RUNTIME_CATALOG,
-        lambda: {
-            "unavailable": {
+        lambda _ctx: {
+            "snapshot_id": "live-root:1",
+            "plugins": [],
+            "mcp_unavailable": {
                 "code": "mcp_catalog_unavailable",
                 "message": "MCP 工具目录暂不可用，声明的服务按需启动",
             }

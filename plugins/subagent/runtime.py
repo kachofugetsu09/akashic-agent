@@ -13,7 +13,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from .inputs import CONTENT, CHECK_ORIGIN
-from .inputs import CONVERSATION
+from .inputs import CONVERSATION_COMPLETE
 from .inputs import DELIVERY
 from .inputs import REPLY_PROGRAM
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
@@ -227,7 +227,7 @@ class Subagents:
                 if message is not None:
                     return message
                 return await ctx.require(REPLY_PROGRAM)(task, current, source, extra)
-            message = await ctx.require(CONVERSATION)(parent.session_id).complete(report)
+            message = await ctx.require(CONVERSATION_COMPLETE)(parent.session_id, report)
 
         # 2. 原发送成功或失败都关闭通知；失败回执保留，不重复回传。
         assert request.sink is not None

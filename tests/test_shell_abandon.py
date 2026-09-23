@@ -14,12 +14,18 @@ from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.reply_program.program import run_reply
-from plugins.standard_tools.shell import TOOL_CLEANUP
+from plugins.standard_tools.shell import SHELL_OWNERS, TOOL_CLEANUP
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
 from tests.model_plugin_fakes import build_test_chat_models
-from tests.test_standard_tools import environment, start_shell_call, _UnusedModelProvider, _unexpected_call_read
+from tests.test_standard_tools import (
+    _UnusedModelProvider,
+    _unexpected_call_read,
+    _mount_local_shell_root,
+    environment,
+    start_shell_call,
+)
 
 
 @pytest.mark.asyncio
@@ -142,15 +148,18 @@ async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tm
                 )
 
             permit = gate.acquire()
-            owner = root.require(TASKS).open(ctx)
-            task = await owner.admit("reply", lambda slot: slot.start(program, child_permit=permit.child))
+            reply_tasks = root.require(TASKS).open(ctx)
+            shell_context = root.require(SHELL_OWNERS)._ctx
+            async with shell_context.runtime_scope():
+                shell_tasks = root.require(TASKS).open(shell_context)
+            task = await reply_tasks.admit("reply", lambda slot: slot.start(program, child_permit=permit.child))
             task.on_done(permit.release)
             await asyncio.wait_for(entered.wait(), 10)
             stop = controls.append("first-stop", Control("pause" if pause_first else "abandon", reader.head()))
             task.cancel()
             await asyncio.wait_for(cleaning.wait(), 10)
             end = stop.seq if pause_first else stop.body.through_seq
-            cleanup = await owner.admit(("shell-cleanup", "shared", "conversation", 0, end), lambda slot: slot.current)
+            cleanup = await shell_tasks.admit(("shell-cleanup", "shared", "conversation", 0, end), lambda slot: slot.current)
             assert cleanup is not None
             if pause_first:
                 assert not task.done
@@ -174,3 +183,139 @@ async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tm
         await host.terminate_all()
         log.close()
         store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("abandon", [False, True])
+async def test_local_shell_cleanup_partition_keeps_external_permit_and_new_source(
+    tmp_path, monkeypatch, abandon,
+):
+    """C2: pause/cancel waits; only abandon releases the caller waiter."""
+    graph = await _mount_local_shell_root(tmp_path)
+    gate = RestartGate(boot_id="local-c2", supervised=False)
+    root_permit = gate.acquire()
+    caller_task = None
+    join_waiter = None
+    cleanup_task = None
+    release_cleanup = asyncio.Event()
+    cleaning = asyncio.Event()
+    started = asyncio.Event()
+    caller_settled = asyncio.Event()
+    cleanup_settled = asyncio.Event()
+    try:
+        async with graph["tools_ctx"].runtime_scope():
+            binding = graph["catalog"].bind(
+                graph["shell_refs"][0], graph["bindings"],
+                configuration={},
+            )
+        backend = graph["processes"]._backend()
+        original_terminate = backend.terminate_owner
+
+        async def delayed_terminate(owner):
+            cleaning.set()
+            await release_cleanup.wait()
+            return await original_terminate(owner)
+
+        monkeypatch.setattr(backend, "terminate_owner", delayed_terminate)
+        reader = graph["log"].reader("shared")
+        controls = graph["log"].writer(
+            "shared", author="user", source="conversation",
+            body_types=(Control,), content={},
+        )
+        old_id = None
+
+        async def program(task):
+            nonlocal old_id
+            cleanup = graph["caller_ctx"].require(TOOL_CLEANUP)
+            async with cleanup(
+                reader, "conversation", 0, task=task,
+                drain=graph["catalog"].drain_calls,
+            ):
+                old_id = await start_shell_call(
+                    graph["log"], graph["bindings"], graph["tools_admission"],
+                    binding, "conversation", "local-c2-old",
+                )
+                started.set()
+                await asyncio.Event().wait()
+
+        async with graph["caller_ctx"].runtime_scope():
+            admission = graph["tasks"].open(graph["caller_ctx"])
+            caller_task = await admission.admit(
+                ("reply", "local-c2"),
+                lambda slot: slot.start(program, child_permit=root_permit.child),
+            )
+        caller_task.on_done(root_permit.release)
+        caller_task.on_done(caller_settled.set)
+        await started.wait()
+        old_message = reader.get("local-c2-old")
+        assert old_message is not None
+        if abandon:
+            controls.append(
+                "local-c2-pause", Control("pause", old_message.seq)
+            )
+        caller_task.cancel()
+        await cleaning.wait()
+
+        async with graph["shell_ctx"].runtime_scope():
+            shell_admission = graph["tasks"].open(graph["shell_ctx"])
+        # The cleanup Task was admitted before the later abandon control; its
+        # key is therefore the persisted head captured at cleanup start.
+        end = reader.head()
+        cleanup_task = await shell_admission.admit(
+            ("shell-cleanup", "shared", "conversation", 0, end),
+            lambda slot: slot.current,
+        )
+        assert cleanup_task is not None and not cleanup_task.done
+        cleanup_task.on_done(cleanup_settled.set)
+        assert graph["shell_fiber"]._in_flight_calls
+
+        if abandon:
+            controls.append(
+                "local-c2-abandon", Control("abandon", old_message.seq)
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await caller_task.join()
+            await caller_settled.wait()
+            assert gate.permit_count == 1
+        else:
+            join_waiter = asyncio.create_task(caller_task.join())
+            barrier = asyncio.Event()
+            asyncio.get_running_loop().call_soon(barrier.set)
+            await barrier.wait()
+            assert not join_waiter.done()
+            assert gate.permit_count == 2
+
+        new_source = "conversation" if abandon else "wake"
+        new_id = await start_shell_call(
+            graph["log"], graph["bindings"], graph["tools_admission"],
+            binding, new_source, "local-c2-new",
+        )
+        active = await backend.active_execution_ids()
+        assert old_id in active and new_id in active
+
+        release_cleanup.set()
+        await cleanup_task.join()
+        await cleanup_settled.wait()
+        if join_waiter is not None:
+            with pytest.raises(asyncio.CancelledError):
+                await join_waiter
+        await caller_settled.wait()
+        assert graph["shell_fiber"]._in_flight_calls == {}
+        assert gate.permit_count == 0
+        assert old_id not in await backend.active_execution_ids()
+        assert new_id in await backend.active_execution_ids()
+    finally:
+        release_cleanup.set()
+        if caller_task is not None and not caller_task.done:
+            caller_task.cancel()
+            await asyncio.gather(caller_task.join(), return_exceptions=True)
+        if join_waiter is not None and not join_waiter.done():
+            await asyncio.gather(join_waiter, return_exceptions=True)
+        if cleanup_task is not None and not cleanup_task.done:
+            await asyncio.gather(cleanup_task.join(), return_exceptions=True)
+        root_permit.release()
+        await graph["root"].dispose()
+        await graph["tasks"].close()
+        await graph["processes"].close()
+        graph["log"].close()
+        graph["store"].close()

@@ -12,7 +12,7 @@ from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING,
 
 
 
-from .inputs import CONTENT, CHECK_ORIGIN, CONVERSATION, TOOL_BIND_SAVED
+from .inputs import CONTENT, CHECK_ORIGIN, CONVERSATION_COMPLETE, TOOL_BIND_SAVED
 
 from .inputs import DELIVERY
 from .inputs import DELIVERY_SENDERS
@@ -54,7 +54,7 @@ inject = (
     SESSION_ADMISSION,
     TOOLS,
     ALL_TOOLS,
-    CONVERSATION,
+    CONVERSATION_COMPLETE,
     DELIVERY,
     DELIVERY_SENDERS,
     REPLY_PROGRAM,

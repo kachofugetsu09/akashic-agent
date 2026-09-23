@@ -8,11 +8,10 @@ from pathlib import Path
 
 from agent.control.frame_book import FrameBook
 from agent.restart import RestartGate
-from agent.plugin_composition.admission import SOURCE_ADMISSION
 from agent.plugin_composition.artifacts import ArtifactImport, ArtifactRead
 from agent.plugin_composition.channel_io import InputCustody, ChannelIdentity
 from agent.plugin_composition.channels import CHANNELS, RawInbound
-from agent.plugin_composition.context import CompositionRoot, RuntimeScope
+from agent.plugin_composition.context import CompositionRoot
 from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.processes import PluginProcesses
 from agent.plugin_composition.tasks import PluginTasks
@@ -66,7 +65,6 @@ class ValidationHost:
     def __post_init__(self) -> None:
         """固定本次宿主端口；实例发布后不替换服务或数据连接。"""
         self.snapshot_store = RuntimeSnapshotStore(self._close_snapshot)
-        self.bus.bind_runtime_snapshot_store(self.snapshot_store)
         self.restart_gate = RestartGate(boot_id=self.identity, supervised=False)
         self.workspace_id = hashlib.sha256(
             str(self.workspace.resolve(strict=False)).encode("utf-8")
@@ -95,17 +93,12 @@ class ValidationHost:
         return self.identities.rollback(receipt)
 
     async def recover_input(self, raw: RawInbound) -> bool:
-        """只交回本次 Root 的当前 provider；不借主宿主或恢复特权。"""
-        snapshot = self.snapshot_store.current
-        if snapshot is None or not snapshot.accepting_leases:
+        """Route recovery through this validation host's existing Root only."""
+        root = self.root
+        if root is None:
             return False
-        lease = self.snapshot_store.lease(snapshot.snapshot_id)
-        async with RuntimeScope(lease):
-            root = lease.snapshot.composition_root
-            if root is None:
-                raise RuntimeError("验证输入恢复需要当前 Root")
-            channels = root.context.get(CHANNELS)
-            return False if channels is None else await channels.recover_inbound(raw)
+        channels = root.context.get(CHANNELS)
+        return False if channels is None else await channels.recover_inbound(raw)
 
     async def _close_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         """Store 排空 lease 后才释放实际 Root，失败保留 Store 与模块 owner。"""
@@ -119,10 +112,6 @@ class ValidationHost:
         """停止接纳和工作，再由 Store 或构建 Root 回收作用域。"""
         # 1. 本宿主从未发启动事件；没有对应的 stopping 事件可重放。
         self.snapshot_store.pause_admission()
-        if self.root is not None:
-            admission = self.root.context.get(SOURCE_ADMISSION)
-            if admission is not None:
-                admission.close()
         await self.tasks.close()
         await self.processes.close()
         # 2. Store 拒绝尚有 lease 的关闭；未发布或失败 Root 也保留实际句柄。

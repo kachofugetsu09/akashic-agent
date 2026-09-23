@@ -68,10 +68,6 @@ class PluginInstallParams(StrictModel):
     ownerTurnId: str = Field(default="", max_length=128)
 
 
-class PluginRevertParams(StrictModel):
-    ownerTurnId: str = Field(min_length=1, max_length=128)
-
-
 class SessionIdParams(StrictModel):
     session_id: str = Field(min_length=1, max_length=512)
 
@@ -133,8 +129,6 @@ METHOD_PARAMS: dict[str, type[StrictModel]] = {
     "plugin/install": InstallParams,
     "plugin/status": StrictModel,
     "plugin/update": UpdateIdParams,
-    "plugin/promote": UpdateIdParams,
-    "plugin/discard": UpdateIdParams,
     "plugin/disable-and-drain": PluginIdParams,
     "plugin/uninstall": PluginIdParams,
 }

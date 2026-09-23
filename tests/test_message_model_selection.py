@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
@@ -17,12 +18,19 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
-from plugins.conversation.plugin import CONVERSATION
+from plugins.sources.plugin import SOURCES
 from plugins.models.selection import read_saved
 from session.log import MessageLog, SessionAttributes, WriterExpired
 from session.message import ContentPart, Control, Input, Output
 from tests.test_default_reply import application
 from tests.test_message_services import write_plugins
+
+
+def _write_python_source(path: Path, source: str) -> None:
+    """Validate a generated plugin before the loader sees it."""
+    tree = ast.parse(source, filename=str(path))
+    compile(tree, str(path), "exec")
+    path.write_text(source)
 
 
 def model_provider(sources: Path) -> None:
@@ -41,39 +49,60 @@ async def apply(ctx):
 ''')
     path = sources / "test_provider/plugin.py"
     text = path.read_text()
-    text = text.replace("    class Driver:", '''    from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS, SNAPSHOT_SEALING
+    text = text.replace("    class Driver:", '''    from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS
     from agent.plugin_composition.models import (
         CapabilitySources,
         ChatModelSelection,
         ModelCapabilities,
         ModelKind,
     )
-    from plugins.models.settings import AddConnection, AddModel, MODEL_SETTINGS
-    from plugins.models.state import ModelsState
+    from plugins.models.settings import AddConnection, AddModel
     if store.read_snapshot().revision == 0:
         store.add_connection(AddConnection(0, "connection", "test", "openai-compatible", "https://example.test/v1", "fixture", {"api_key": "fixture"}))
         store.add_model(AddModel(1, "saved", "connection", ModelKind.CHAT, "fixture", ModelCapabilities(supported_reasoning_efforts=("low", "high")), CapabilitySources()))
-    model_state = ModelsState(
-        store,
-        root_instance_token=ctx.root_instance_token,
-        context=ctx,
-    )
+    model_state = settings
     await ctx.provide(MODEL_DRIVERS, model_state.drivers)
     await ctx.provide(MODEL_CATALOG, model_state.catalog)
-    await ctx.provide(MODEL_SETTINGS, model_state.settings)
-    await ctx.on(SNAPSHOT_SEALING, model_state.seal)
     selected = []
     await ctx.provide(ServiceKey("fixture.selected"), selected)
     class Driver:''')
     text = text.replace("            yield SimpleNamespace(chat=lambda role: model)", '''            model_state.validate_chat_selection(ChatModelSelection(model_id, reasoning_effort))
             selected.append((model_id, reasoning_effort))
             yield SimpleNamespace(chat=lambda role: model)''')
-    path.write_text(text)
+    text = text.replace(
+        "    await ctx.provide(CHAT_MODELS, Models())",
+        "    await ctx.provide(CHAT_MODELS, model_state.chat_models)",
+    )
+    _write_python_source(path, text)
 
 
 def inbound(metadata=None):
     return ChannelInboundMessage("test", "user", "room", "question", datetime(2026, 9, 5, tzinfo=UTC),
                                  {} if metadata is None else metadata)
+
+
+async def conversation_source(host):
+    generation = host.generation("sources")
+    if generation is None or generation.fiber is None:
+        raise AssertionError("sources generation 未建立")
+    context = generation.fiber.context
+    async with context.runtime_scope():
+        matches = tuple(item for item in context.require(SOURCES).entries()
+                        if item.name == "conversation")
+    conversation = host.generation("conversation")
+    provider = host.generation("test_provider")
+    sources_generation = host.generation("sources")
+    assert len(matches) == 1, (
+        f"conversation Source 缺失; sources={tuple(item.name for item in matches)}, "
+        f"conversation_state={None if conversation is None or conversation.fiber is None else conversation.fiber.state}, "
+        f"conversation_missing={None if conversation is None or conversation.fiber is None else conversation.fiber.missing_services}, "
+        f"conversation_error={None if conversation is None or conversation.fiber is None else conversation.fiber.error}, "
+        f"provider_state={None if provider is None or provider.fiber is None else provider.fiber.state}, "
+        f"provider_missing={None if provider is None or provider.fiber is None else provider.fiber.missing_services}, "
+        f"provider_error={None if provider is None or provider.fiber is None else provider.fiber.error}, "
+        f"sources_state={None if sources_generation is None or sources_generation.fiber is None else sources_generation.fiber.state}"
+    )
+    return matches[0]
 
 
 def saved_metadata(path: Path, raw: str | None) -> None:
@@ -156,8 +185,9 @@ async def test_invalid_selection_leaves_no_input_or_session(tmp_path, metadata):
 @pytest.mark.asyncio
 async def test_direct_conversation_uses_same_validation_and_atomic_metadata_write(tmp_path):
     async with application(tmp_path, replying=False, extra_sources=model_provider) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            conversation = snapshot.composition_root.context.require(CONVERSATION)("test:room")
+        source = await conversation_source(host)
+        async with source.context.runtime_scope():
+            conversation = source.open("test:room")
             part = ContentPart("model.selection", {"model_id": "saved", "reasoning_effort": "high"})
             with pytest.raises(ValueError, match="一次"):
                 await conversation.accept("double", Input((part, part)))

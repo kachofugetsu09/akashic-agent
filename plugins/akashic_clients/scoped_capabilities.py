@@ -82,23 +82,31 @@ class ScopedMobileUiProvider:
     def __init__(self, opener: RequestScopeOpener) -> None:
         self._opener = opener
 
-    def _sync_provider(self) -> MobileUiProvider:
-        return cast(
-            MobileUiProvider,
-            _require_active_scope("mobile UI").require(MOBILE_UI),
-        )
+    async def catalog(self) -> dict[str, object]:
+        """Read the provider while holding the current client request scope."""
 
-    def catalog(self) -> dict[str, object]:
-        return self._sync_provider().catalog()
+        scope = active_scope()
+        if scope is not None:
+            return await cast(MobileUiProvider, scope.require(MOBILE_UI)).catalog()
+        async with open_request_scope(self._opener) as scope:
+            return await cast(MobileUiProvider, scope.require(MOBILE_UI)).catalog()
 
-    def asset(
+    async def asset(
         self,
         plugin_id: str,
         plugin_revision: str,
         kind: str,
         sha256: str,
     ) -> dict[str, object]:
-        return self._sync_provider().asset(plugin_id, plugin_revision, kind, sha256)
+        scope = active_scope()
+        if scope is not None:
+            return await cast(MobileUiProvider, scope.require(MOBILE_UI)).asset(
+                plugin_id, plugin_revision, kind, sha256,
+            )
+        async with open_request_scope(self._opener) as scope:
+            return await cast(MobileUiProvider, scope.require(MOBILE_UI)).asset(
+                plugin_id, plugin_revision, kind, sha256,
+            )
 
     async def query(
         self,

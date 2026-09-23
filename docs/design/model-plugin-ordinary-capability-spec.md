@@ -1,5 +1,13 @@
 # 模型普通插件与 Provider 组合规格
 
+> **当前实现对账（T-83b918，R1 修订，待 review，未运行）：** 本文早期关于
+> `RuntimeModelControl`、Core `current_snapshot`/snapshot lease 适配、以及
+> `SNAPSHOT_SEALING` 驱动模型发布的实现段落和结构验收，已由 0072 与 Issue 750
+> 当前批次取代（superseded）；T-fa9271 原稿因测试/debug scope、错误链和文档缺口不追认为整批通过。
+> 现行消费者只通过 Models-owned public RPC、真实
+> Dashboard 或窄 provider reader 进入 live Root；本文件保留领域、持久化、配置和
+> 恢复合同，不为旧实现重新授权。
+
 - 状态：accepted / implementing
 - 日期：2026-08-29
 - 关联需求：RUN-005～RUN-012、ONB-001、CTX-001、PLG-003、PLG-006、PLG-010、PLG-014、PLG-016、SEC-005、SEC-007、TST-001～TST-006
@@ -25,7 +33,10 @@ MODEL_DRIVERS     Provider 插件注册协议实现
 
 `builtin` 只表示随发行版安装和默认启用。每个模型插件必须通过外置源码、正式 install、冷启动和真实调用 Gate；不能外置安装的实现不属于普通插件。
 
-[0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md) 已接受 owner 变化：Core 只拥有 exact runtime snapshot lease；`models` 插件拥有持久 revision，并在该 lease 内复制一次不可变执行绑定。revision 仍用于 SQLite CAS 和恢复，但不再拥有 lease、retired generation、manager 或第二套发布生命周期。
+[0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md) 已接受 owner 变化：`models`
+插件拥有持久 revision，并在实际 Models owner scope 内复制一次不可变执行绑定。revision
+仍用于 SQLite CAS 和恢复，但不再由 Core `RuntimeModelControl`、模型专用 manager、
+模型专用 lease 或第二套发布生命周期拥有。
 
 ## 2. 用户意图与设计准则
 
@@ -49,9 +60,11 @@ Onboarding：读取 catalog，通过 settings 提交修改
 
 ## 3. 当前真实状态
 
-### 3.1 当前启动顺序
+### 3.1 历史启动顺序（superseded）
 
-`bootstrap/tools.py:build_core_runtime()` 先调用 `build_model_registry()`，取得 `default`、`fast`、`agent`、`vision` role provider，再构造工具和 `AgentLoop`；之后才创建 `PluginManager`。因此模型实现当前位于插件组合根之外，不能由普通插件提供或替换。
+以下是设计形成时的历史问题记录，不是当前实现声明：`build_core_runtime()` 曾在
+`PluginManager` 之外创建模型 registry 和 role provider，因此模型不能由普通插件提供或替换。
+当前模型状态、Dashboard、RPC 和 driver registration 均由普通 `models`/Provider 插件拥有。
 
 ```text
 Config
@@ -190,9 +203,10 @@ ModelExecution
 1. `CompositionContext`：Fiber 身份/config、typed `provide/require/inject`、可撤销 `Effect`、声明式 workspace file、窄访问模式与 diagnostics 投影。`PluginRuntime` 只是 `ctx.runtime` 的数据，不是第三个原子。
 2. `RuntimeSnapshotLease`：candidate/stable publication、exact snapshot 存活保证，以及从该 snapshot 的 Root 读取 Service。它们是一个子系统，不拆成三个模型原子。
 
-实现只补两个通用组合不变量，不增加模型原子：candidate 重建沿明确 `inject` 与冻结 topology 取得完整双向连通 component，避免只重建 provider 或 consumer 的半个注册表；Root 在全部插件 mount/readiness 完成、snapshot compile 前发送一次通用 `SNAPSHOT_SEALING` 串行事件，让 contribution owner 冻结私有 registry。`models` 使用该事件冻结 driver，不要求 `RuntimeSnapshotCompiler` 识别模型。`Context.get()` 仍是即时可选查询，不声明 activation 或热更新依赖；需要随 Service 安装、升级重建的插件必须显式 `inject`。
+以下 candidate/stable、`SNAPSHOT_SEALING` 和模型冻结描述属于旧发布设计，当前模型切片已标为 superseded；保留它们只为解释通用 Core 历史边界，不能作为本批模型接线的实现依据。
 
-每个无父 lease 的 HTTP、Mobile 和设置 request boundary 先通过现有 `RuntimeSnapshotStore.acquire()` 取得 current generic lease，绑定 owner task 后才从 exact Root 读取 Service。有父 lease 的 `CHAT_MODELS.execution()` 直接通过通用 `agent.plugins.snapshot.lease_current_runtime_snapshot()` fork 当前 exact lease；模型契约不重导出第二个 lease API。没有当前 task binding 时，调用者必须按该 operation 的错误语义 fail-loud，不能自行读取 current。普通插件自行创建的 timer/worker 若要调用其他插件 Service，只能用 Core 的 `ctx.runtime_scope()` 给一次短操作绑定该插件所在的 exact Root；不得让长期 task 持有 Root lease。事件转交给异步 worker 时，在同步 listener 内 fork source lease，并由 worker 在 `finally` 中释放。三条路径都复用同一 snapshot lease，不新增 model lease、model acquire helper 或 `lease.require()`。
+当前模型入口不创建 Core snapshot lease：公开控制调用由 `build_control_service(core).resolve_method()` 从
+`manager.live_root` 解析实际 Models `RpcMethod`，并在其 provider `Context.runtime_scope()` 内校验参数和执行；Dashboard、Mobile 和内部消费者分别在自己的真实 Models contributor/provider scope 内读取窄服务。没有 live Root、provider 或 operation 时 fail-loud；不新增模型 lease、model acquire helper 或第二 registry。
 
 Core 不再为 plugin snapshot 与 model revision 增加共同 fence 或 ordered operation。删掉它成立的前提是更简单、也更严格的 driver 演进合同：
 
@@ -204,13 +218,21 @@ Core 不再为 plugin snapshot 与 model revision 增加共同 fence 或 ordered
 
 Provider 完整卸载与 settings 竞态最多使 Connection 进入 `driver unavailable`；它保留数据并 fail-loud，不产生错误 transport。真实 probe、OAuth 等待和其他网络 I/O 因此也不进入任何全局发布锁。
 
-用户写操作继续由 authenticated settings/control host 拥有认证、同源/CSRF 和请求生命周期。它在当前 snapshot lease 内调用 Models 插件注册的 `models/command` RPC；`MODEL_SETTINGS` 只在 Models artifact 内用于绑定真实 settings owner，不是 Core 的业务命令 API。同进程 Service facade 是 API/拓扑边界，不伪装成恶意插件 sandbox。未来若隔离不可信插件，应另立通用组合权限设计。Web navigation/data/action contribution 属于独立 UI 规格，不是本切片前置。
+用户写操作继续由 authenticated settings/control host 拥有认证、同源/CSRF 和请求生命周期。它通过 live Root 的 Models-owned
+`models/command` RPC 进入 `MODEL_SETTINGS`；该 Service 只在 Models artifact 内绑定真实 settings owner，不是 Core 的业务命令 API。同进程 Service facade 是 API/拓扑边界，不伪装成恶意插件 sandbox。未来若隔离不可信插件，应另立通用组合权限设计。Web navigation/data/action contribution 属于独立 UI 规格，不是本切片前置。
 
 ### 6.1.1 Core 的只读模型适配边界
 
-当前实现中的 Core host adapter 是 `agent/plugins/model_control.py:RuntimeModelControl`。它只保留三个只读入口：`call_stats(call_id)`、`read_saved(metadata)` 和 `catalog()`；每次调用先取得一个 `RuntimeSnapshotStore` 的 exact lease，再从该 lease 的 composition Root 读取 Models Service，并在 `finally` 中释放 lease。缺少 Root 或 Service 返回 typed `ModelControlUnavailable`；provider 自身的编程异常继续向调用者传播。`invoke_rpc(method, params)` 只是控制面通用 RPC transport，Core 不解析 Models 的命令 dataclass，也不拥有设置规则。
+旧实现中的 Core host adapter `agent/plugins/model_control.py:RuntimeModelControl` 及其
+`call_stats/read_saved/catalog/invoke_rpc` 入口已删除；它们曾在此处记录，但不再是当前 API。
+当前控制面只解析 live Root 的实际 `RpcMethod`，Models plugin 自己校验命令 dataclass、返回
+status/body，并继续拥有设置规则。
 
-`agent/plugin_composition/model_settings_http.py` 现在只定义这个 unavailable boundary error，不再导出 `BoundModelControl`、Core `ModelControl`、`ModelSelectionReader` 或 `MODEL_SELECTION`。Web/Mobile 在 `bootstrap/app.py` 绑定 `RuntimeModelControl` 的方法；Models Dashboard 和 RPC handler 使用 Models artifact 自己的 resolver/facade。这样读请求、设置写事务和 provider 业务实现没有第二个 Core owner。
+`BoundModelControl` 是 Models 插件自有的同一能力，同时供其 RPC handler 与 Dashboard
+contributor 使用；Core 不再绑定 `RuntimeModelControl`。Dashboard 使用 Models artifact
+自己的 resolver/facade，Mobile
+使用当前 Root 的窄 stats reader，控制端使用 Models-owned RPC，因此读请求、设置写事务和
+provider 业务实现没有第二个 Core owner。
 
 ### 6.2 Core 不提供
 
@@ -325,7 +347,10 @@ class ModelCatalog(Protocol):
 
 Snapshot 包含 revision、连接、模型、默认 binding、capability source 和 availability，并自行提供同一 revision 内的 lookup。Service 不再提供 `connection(id)`/`model(id)` 便利方法，避免一个请求混读不同 revision。Snapshot 不返回 API Key、access token、refresh token 或 credential payload。Session/Turn owner 使用 `validate_chat_selection()` 做纯校验，随后仍由 Session owner 写 `sessions.metadata`；`models` 不取得 Session write surface。
 
-Session selection 也不由 Core 集中拥有。Models 在 `plugins/models/selection.py` 定义具体的 `models.selection.v1` ServiceKey 和 `SelectionOwner`；Core 读适配器只在 `agent/plugins/model_control.py` 内声明同名的 consumer-local structural Protocol，以便在当前 lease 中调用 `read_saved`。返回的 `ChatModelSelection` 是已有 provider-neutral 值类型，没有复制第二份类型或把 Models selection 实现导出到 Core；其他消费者按自己的窄需求声明同名 key。
+Session selection 也不由 Core 集中拥有。Models 在 `plugins/models/selection.py` 定义具体的
+`models.selection.v1` ServiceKey 和 `SelectionOwner`；消费者在自己的 exact Models scope
+内读取它。返回的 `ChatModelSelection` 是已有 provider-neutral 值类型，没有复制第二份类型
+或把 Models selection 实现导出到 Core；其他消费者按自己的窄需求声明同名 key。
 
 ### 7.4 `MODEL_SETTINGS`
 
@@ -518,21 +543,24 @@ Onboarding 注入 `MODEL_CATALOG` 判断是否具备可用默认聊天模型和�
 
 本轮只要求 server/control 的 catalog/settings API 不按 Provider ID 分支，并让已有 Connection/Model 在 driver 缺失时显示 `driver unavailable`。Provider 安装状态驱动的入口增减、可创建连接类型和无连接时的动态认证面板，等待通用 Web contribution 规格定义来源无关投影后验收；当前前端可以继续显示既有三个入口，但不能把它描述成已完成的动态插件 UI。
 
-### 10.6 当前直接消费者的目标映射
+### 10.6 当前直接消费者的目标映射（历史目标表已 superseded）
+
+下表保留早期迁移目标，不能再把 `exact snapshot` 读法当作当前接线合同；当前实现统一从
+同一 live Root 取得真实 owner 的 provider Context，在各自短 `runtime_scope()` 内读取或执行。
 
 | 当前消费者 | 目标引用 | 解析时机 |
 |---|---|---|
-| `AgentLoop` / passive Turn / control execution | exact snapshot 的 `CHAT_MODELS.execution()` | Turn admission |
-| `bootstrap/chat_api.py` 模型列表与 Chat picker | exact request snapshot 的 `MODEL_CATALOG`；Session 写仍由 Chat/Session owner | 每次请求 |
-| `bootstrap/settings_api.py` | 现有 authenticated control boundary → 当前 snapshot 的 `models/command` RPC | 每个用户控制请求 |
-| `BackgroundJobActivityAdapter` 和 plugin job | exact job snapshot 的 `CHAT_MODELS` | job 真正开始时，不在 host 构造时 |
-| compaction / Markdown profile projection | exact execution snapshot 的 `CHAT_MODELS`，显式 role | 各自执行单元开始时 |
-| vision/read-image 工具 | exact Turn snapshot 的 `CHAT_MODELS`，显式 vision role | 工具调用开始且继承父 Turn lease |
+| `AgentLoop` / passive Turn / control execution | live Root 的 Models provider → `CHAT_MODELS.execution()` | Turn admission |
+| `bootstrap/chat_api.py` 模型列表与 Chat picker | live Root 的 `MODEL_CATALOG` provider；Session 写仍由 Chat/Session owner | 每次请求 |
+| `bootstrap/settings_api.py` | authenticated control boundary → live Root 的 Models `models/command` RPC | 每个用户控制请求 |
+| `BackgroundJobActivityAdapter` 和 plugin job | live Root 的 Models provider → `CHAT_MODELS` | job 真正开始时，不在 host 构造时 |
+| compaction / Markdown profile projection | live Root 的 Models provider → `CHAT_MODELS`，显式 role | 各自执行单元开始时 |
+| vision/read-image 工具 | live Root 的 Models provider → `CHAT_MODELS`，显式 vision role | 工具调用开始时 |
 | Akasha online/rebuild | `EMBEDDINGS` | 每个 embedding batch/完整 rebuild scope 开始时 |
 | Scheduler / Subagent / Wake | 继续只用 `SCOPED_TURNS` | 由 Turn runtime 间接解析 |
 | setup wizard / 无模型壳 | 通用 Plugin Installer；模型配置暂沿用现有 settings surface | 不创建临时 Core provider |
 | `bootstrap/app.py` Mobile binding | 不再接收 registry；Mobile handler 每请求从 exact UI/control Service view 读取 catalog | Mobile command admission |
-| `plugins/akashic_clients/mobile_realtime/channel.py` model catalog（历史 `infra/mobile_realtime/channel.py`） | exact request snapshot 的 `MODEL_CATALOG` | list/refresh command 开始时 |
+| `plugins/akashic_clients/mobile_realtime/channel.py` model catalog（历史 `infra/mobile_realtime/channel.py`） | live Root 的 `MODEL_CATALOG` provider | list/refresh command 开始时 |
 | `agent/config.py` | 静态 Config 不读取模型库、不派生 LLM runtime；只保留非模型启动配置 | Config load |
 | `main.py` / `bootstrap/app.py` model reload | Models RPC receipt；删除 `reload_model_config()` 直达 registry | 用户设置事务 |
 
@@ -729,7 +757,7 @@ Plugin snapshot 和 model revision 是两个正交变化轴，不强行合成一
 运行聊天模型          CHAT_MODELS.execution(...) → execution.chat(role).complete(...)
 Turn 外 embedding     EMBEDDINGS.bind(...) → embed(...)
 Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
-修改模型设置          authenticated route → current snapshot → models/command RPC
+修改模型设置          authenticated route → live Root → Models provider → models/command RPC
 ```
 
 如果调用者还必须手动刷新 generation、读取 credential、选择 transport、操作数据库或通知 PluginManager，设计失败。
@@ -761,7 +789,7 @@ Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
 
 ## 18. 验收
 
-### 18.1 结构验收
+### 18.1 结构验收（旧 RuntimeModelControl 条款 superseded）
 
 - Core 和 bootstrap 对 `openai`、`codex`、`opencode-go`、DeepSeek、DashScope 零名称分支。
 - bootstrap 在 PluginManager 之前不构造 ModelRegistry/LLMProvider。
@@ -771,7 +799,11 @@ Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
 - `models`、三个 Provider 均通过第 14 节外置安装 Gate。
 - Service topology 能显示 provider plugin → `MODEL_DRIVERS`，consumer → 对应窄 Service。
 - 五个 facade 是五个不同 Service value：Embeddings 没有 chat execution，Catalog 没有 apply，Drivers 没有 catalog/settings/execute；它们只共享私有 state。
-- Core 只剩 `RuntimeModelControl` 的三项 leased read adapter 和通用 RPC transport；不存在 Core `BoundModelControl`、`ModelControl`、`ModelSelectionReader` 或 `MODEL_SELECTION` owner。
+- 旧的“Core 只剩 `RuntimeModelControl` leased adapter”条款已 superseded。当前结构验收为：
+  `agent/plugins/model_control.py` 与 `agent/plugins/model_catalog.py` 不存在；测试/调试
+  消费者从 `build_control_service(core).resolve_method("models/command")` 取得实际
+  `RpcMethod`，或从同一 live Root 的 exact Models provider Context 取得窄 reader；
+  `BoundModelControl` 是 Models 插件同时供 RPC 与 Dashboard 使用的 owner capability，不产生 Core facade。
 - Session selection 由 Models 的 `plugins/models/selection.py` owner 提供；Core/其他消费者不复制 selection 实现或值类型。
 - `default`、`fast`、`agent`、`vision` 的持久字符串、预设校验和 fallback 全由 Models 解释；Core execution port 不包含 `ModelRole` enum 或业务角色分支。
 

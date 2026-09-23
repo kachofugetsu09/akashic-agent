@@ -27,8 +27,12 @@ def pointer_state_path(plugin_base: Path) -> Path:
     return plugin_base / ".pointers.json"
 
 
-def read_pointers(plugin_base: Path) -> ArtifactPointers | None:
-    """从一个原子状态文件读取完整 stable/latest 指针对。"""
+def read_pointers(
+    plugin_base: Path,
+    *,
+    validate_content: bool = True,
+) -> ArtifactPointers | None:
+    """读取完整指针对；关闭 content 校验时仍校验结构、路径和目标存在性。"""
 
     path = pointer_state_path(plugin_base)
     if not path.exists() and not path.is_symlink():
@@ -51,7 +55,7 @@ def read_pointers(plugin_base: Path) -> ArtifactPointers | None:
         stable=ArtifactPointer(stable_value),
         latest=ArtifactPointer(latest_value),
     )
-    _validate_pointers(plugin_base, pointers)
+    _validate_pointers(plugin_base, pointers, validate_content=validate_content)
     return pointers
 
 
@@ -85,7 +89,12 @@ def write_pointers(
     return path
 
 
-def resolve_pointer(plugin_base: Path, pointer: ArtifactPointer) -> Path | None:
+def resolve_pointer(
+    plugin_base: Path,
+    pointer: ArtifactPointer,
+    *,
+    validate_content: bool = True,
+) -> Path | None:
     """把指针解析为 plugin_base 内的不可变插件根目录。"""
 
     if pointer.path is None:
@@ -105,7 +114,8 @@ def resolve_pointer(plugin_base: Path, pointer: ArtifactPointer) -> Path | None:
             raise ValueError(f"插件 artifact pointer 不能经过符号链接: {current}")
     if not target.is_dir():
         raise FileNotFoundError(f"插件 artifact pointer 目标不存在: {target}")
-    _ = load_static_plugin_manifest(target)
+    if validate_content:
+        _ = load_static_plugin_manifest(target)
     return target
 
 
@@ -139,11 +149,21 @@ def discard_latest_pointer(plugin_base: Path) -> ArtifactPointer:
     return pointers.stable
 
 
-def _validate_pointers(plugin_base: Path, pointers: ArtifactPointers) -> None:
+def _validate_pointers(
+    plugin_base: Path,
+    pointers: ArtifactPointers,
+    *,
+    validate_content: bool = True,
+) -> None:
+    """Validate both pointer targets, optionally deferring manifest content reads."""
     if pointers.latest.path is None and pointers.stable.path is not None:
         raise ValueError(f"插件 latest 为空时 stable 也必须为空: {plugin_base}")
-    _ = resolve_pointer(plugin_base, pointers.stable)
-    _ = resolve_pointer(plugin_base, pointers.latest)
+    _ = resolve_pointer(
+        plugin_base, pointers.stable, validate_content=validate_content,
+    )
+    _ = resolve_pointer(
+        plugin_base, pointers.latest, validate_content=validate_content,
+    )
 
 
 def _safe_segment(value: str) -> bool:

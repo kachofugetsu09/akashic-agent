@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -367,7 +367,7 @@ class _GenerationAkashicAdapter:
 
     @asynccontextmanager
     async def _message_scope(self) -> AsyncIterator[MessageCatalogPort]:
-        """Resolve the message catalog only for one HTTP or WebSocket operation."""
+        """Resolve the message catalog only for one short reader acquisition."""
 
         open_scope = self._context.open_scope
         if open_scope is None:
@@ -388,14 +388,15 @@ class _GenerationAkashicAdapter:
         return self._command_catalog()
 
     async def _follow_reply_status(self, session_id: str):
-        """Keep the reply status read inside this subscription's exact scope."""
+        """Acquire the reply reader briefly, then own its long follow locally."""
 
         open_scope = self._context.open_scope
         if open_scope is None:
             raise RuntimeError("akashic reply status 缺少 host request scope")
-        async with open_scope() as scope:
+        async with self._open_request_scope() as scope:
             reader = cast(ReplyStatusPort, scope.require(REPLY_STATUS))
-            async for frame in reader.follow(session_id):
+        async with aclosing(reader.follow(session_id)) as frames:
+            async for frame in frames:
                 if isinstance(frame, Mapping):
                     yield dict(frame)
                     continue

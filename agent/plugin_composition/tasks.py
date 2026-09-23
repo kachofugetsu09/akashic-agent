@@ -18,7 +18,11 @@ from agent.restart import (
     RESTART_GATE as RESTART_GATE, RestartRejectedError as RestartRejectedError,
 )
 
-from agent.plugin_composition.context import Context, RuntimeScope
+from agent.plugin_composition.context import (
+    Context,
+    RuntimeScope,
+    _current_runtime_scope,
+)
 from uuid import uuid4
 
 from agent.plugin_composition.model import ServiceKey
@@ -42,6 +46,10 @@ class StaleTask(RuntimeError):
     """短命 handle 已不属于当前活动任务。"""
 
 
+class TaskServiceClosed(RuntimeError):
+    """Task 服务已关闭，不能再接纳工作。"""
+
+
 class Task:
     """一次短命工作及其资源；不拥有 Message、逻辑 Turn 或持久执行身份。"""
 
@@ -56,18 +64,28 @@ class Task:
         self._cancel_requested = False
         self._running = False
         self._child_permit = child_permit
-        from agent.plugins.snapshot import get_current_runtime_lease
-
-        lease = get_current_runtime_lease()
-        self._scope = None if lease is None else RuntimeScope(lease.fork())
         self._cleanup: list[Callable[[], None]] = []
         self._done_callbacks: list[Callable[[], None]] = []
-        context = contextvars.copy_context()
-        for var in _TASK_BOUND_VARS:
-            _ = context.run(var.set, None)
-        self._task = asyncio.create_task(
-            self._run(operation, admitted), context=context
-        )
+        self._scope: RuntimeScope | None = None
+        run_coroutine = None
+        try:
+            current_scope = _current_runtime_scope()
+            if current_scope is not None:
+                self._scope = current_scope.capture()
+            context = contextvars.copy_context()
+            for var in _TASK_BOUND_VARS:
+                _ = context.run(var.set, None)
+            run_coroutine = self._run(operation, admitted)
+            task = asyncio.create_task(run_coroutine, context=context)
+            run_coroutine = None
+            self._task = task
+        except BaseException:
+            if run_coroutine is not None:
+                run_coroutine.close()
+            if self._scope is not None and self._scope._entered_task is None:
+                self._scope._close()
+                self._scope = None
+            raise
         self._task.add_done_callback(self._run_done_callbacks)
 
     def child_permit(self) -> ExternalRootPermit:
@@ -132,7 +150,7 @@ class Task:
         try:
             self._close()
         finally:
-            # 尚未运行的 coroutine 也要进入 finally，归还接纳时已取得的 generation lease。
+            # 尚未运行的 coroutine 也要在取消结算时归还捕获的局部 scope。
             if self._running:
                 _ = self._task.cancel()
 
@@ -239,7 +257,7 @@ class Tasks:
         """回调只做同步准入；长操作在 Task 中运行，不能持锁跨 I/O。"""
         # 成功准入和回调不跨 await；拒绝只在回调退出后等待自己的清理。
         if self._closed:
-            raise RuntimeError("Task 服务已关闭")
+            raise TaskServiceClosed("Task 服务已关闭")
         slot = TaskSlot(self, key)
         try:
             result = callback(slot)
@@ -283,7 +301,7 @@ class Tasks:
 
     def _group(self, key: Hashable) -> _Group:
         if self._closed:
-            raise RuntimeError("Task 服务已关闭")
+            raise TaskServiceClosed("Task 服务已关闭")
         group = self._groups.setdefault(key, _Group())
         group.references += 1
         self._groups_drained.clear()
@@ -316,7 +334,7 @@ class Tasks:
             while True:
                 changed = group.changed
                 if self._closed:
-                    raise RuntimeError("Task 服务已关闭")
+                    raise TaskServiceClosed("Task 服务已关闭")
                 if not group.activity:
                     return
                 _ = await changed.wait()
@@ -334,7 +352,7 @@ class Tasks:
             while True:
                 changed = group.changed
                 if self._closed:
-                    raise RuntimeError("Task 服务已关闭")
+                    raise TaskServiceClosed("Task 服务已关闭")
                 eligible = next((item for item in group.waiting if not item[1] or not group.activity), None)
                 # 与 admit 相同：状态检查、变更和撤权都不跨 await。
                 if not group.exclusive and eligible is request:
@@ -398,8 +416,10 @@ class PluginTasks:
         self._closed = False
 
     def open(self, ctx: Context) -> TaskAdmission:
-        if not self._formal or self._closed:
+        if not self._formal:
             raise RuntimeError("当前不能接纳正式 Task")
+        if self._closed:
+            raise TaskServiceClosed("当前不能接纳正式 Task")
         owner = ctx.require_runtime_owner(TASKS, self)
         if owner not in self._owners:
             self._owners[owner] = Tasks()

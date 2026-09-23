@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from agent.plugin_composition.context import Context, FiberHandle
+from agent.plugin_composition.context import Context
+from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import (
-    FiberState,
     ServiceKey,
 )
 
@@ -56,6 +56,26 @@ class MobileUiRpcInvalidRequest(ValueError):
     """Signal a request rejected by the plugin-owned mobile projection."""
 
 
+class MobileUiPluginUnavailable(LookupError):
+    """Signal that the requested Mobile UI owner is not available."""
+
+
+class MobileUiStaleRevision(LookupError):
+    """Signal that a Mobile UI request names an old registration revision."""
+
+
+class MobileUiQueryTimeout(TimeoutError):
+    """Signal that a Mobile UI query exceeded its caller-visible deadline."""
+
+
+class MobileUiQueryOverloaded(RuntimeError):
+    """Signal that the bounded Mobile UI query admission is full."""
+
+
+class MobileUiRpcExecutionError(RuntimeError):
+    """Signal that a Mobile UI handler failed while executing its RPC."""
+
+
 @dataclass(frozen=True, slots=True)
 class MobileUiNavigation:
     label: str
@@ -85,43 +105,18 @@ class MobileUiDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class MobileUiBinding:
-    """Bind one descriptor and its handlers to one exact snapshot Root."""
+    """Bind one descriptor and its handlers to one exact contributor Context."""
 
     descriptor: MobileUiDescriptor
     asset: MobileUiAsset
     query: MobileUiQueryHandler
     available: Callable[[], bool]
-    owner_fiber: FiberHandle | None = None
-    activation_token: object | None = None
-
-    def is_live(self) -> bool:
-        """Return whether this binding still belongs to its active Fiber activation."""
-
-        if self.owner_fiber is None:
-            return True
-        return (
-            self.activation_token is not None
-            and self.owner_fiber.state is FiberState.ACTIVE
-            and self.owner_fiber.activation_token is self.activation_token
-        )
-
-
-class MobileUiRegistry(Protocol):
-    """一个实际 Root 的封存目录，只提供读取能力。"""
-
-    @property
-    def root_instance_token(self) -> object: ...
-    @property
-    def descriptors(self) -> tuple[MobileUiDescriptor, ...]: ...
-    def binding(self, plugin_id: str) -> MobileUiBinding | None: ...
-    def descriptor(self, plugin_id: str) -> MobileUiDescriptor | None: ...
-    def __getitem__(self, plugin_id: str) -> MobileUiBinding: ...
-    def __iter__(self) -> Iterator[str]: ...
-    def __len__(self) -> int: ...
+    context: Context
+    registration_uuid: str
 
 
 class UiSlots(Protocol):
-    """Mobile 贡献经实际 Context 注册，封存由所选 provider 拥有。"""
+    """Expose the current Mobile registrations owned by the UI provider."""
 
     @property
     def root_instance_token(self) -> object: ...
@@ -129,9 +124,9 @@ class UiSlots(Protocol):
     async def register_mobile(
         self, ctx: Context, definition: MobileUiDefinition, *,
         query: MobileUiQueryHandler, available: Callable[[], bool] | None = None,
-    ) -> None: ...
+    ) -> Effect: ...
 
-    def catalog(self) -> MobileUiRegistry: ...
+    def bindings(self) -> tuple[MobileUiBinding, ...]: ...
 
 
 UI_SLOTS = ServiceKey[UiSlots]("core.ui_slots")

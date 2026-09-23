@@ -1,4 +1,6 @@
 """正式 Core 构造只取得消息与资源 owner，不重开旧回复执行权。"""
+import asyncio
+
 from agent.plugin_composition.ui import UI
 from contextlib import closing
 import sqlite3
@@ -9,8 +11,9 @@ import pytest
 from agent.config_models import Config
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bootstrap import tools as bootstrap
+from bootstrap.app_server import build_control_service
 from core.net.http import SharedHttpResources
-from plugins.conversation.plugin import CONVERSATION
+from plugins.sources.plugin import SOURCES
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageCatalog, MessageLog
 from session.message import ContentPart, Input
@@ -22,15 +25,35 @@ from tests.fixtures.formal_plugins import (
 )
 
 
-async def _model_command(control, payload: dict[str, object]) -> dict[str, object]:
+async def _model_command(core, payload: dict[str, object]) -> dict[str, object]:
     """Configure the installed Models owner through its public RPC boundary."""
 
-    result = await control.invoke_rpc("models/command", payload)
+    service = build_control_service(core)
+    resolve = service.resolve_method
+    if resolve is None:
+        raise AssertionError("ControlService 未提供动态 RPC resolver")
+    async with resolve("models/command") as operation:
+        if operation is None:
+            raise AssertionError("live Root 未提供 models/command")
+        params = operation.params.model_validate(payload)
+        result = await operation.invoke(params, None)
     assert isinstance(result, dict)
     assert result.get("status") == 200, result
     body = result.get("body")
     assert isinstance(body, dict)
     return body
+
+
+async def _registered_source(manager, name):
+    generation = manager.generation("sources@fixture")
+    if generation is None or generation.fiber is None:
+        raise AssertionError("sources generation 未建立")
+    context = generation.fiber.context
+    async with context.runtime_scope():
+        matches = tuple(item for item in context.require(SOURCES).entries()
+                        if item.name == name)
+    assert len(matches) == 1
+    return matches[0]
 
 
 @pytest.mark.asyncio
@@ -45,10 +68,11 @@ async def test_core_opens_message_schema_and_real_source_without_legacy_executio
                                         plugin_dirs=[])
     try:
         await core.start()
-        async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
-            async with snapshot.composition_root.context.runtime_scope():
-                source = snapshot.composition_root.context.require(CONVERSATION)("local:one")
-                message = await source.accept("input-one", Input((ContentPart("text", "保存原始输入"),)))
+        source = await _registered_source(core.plugin_manager, "conversation")
+        async with source.context.runtime_scope():
+            message = await source.open("local:one").accept(
+                "input-one", Input((ContentPart("text", "保存原始输入"),)),
+            )
         assert isinstance(message.body, Input)
         assert MessageCatalog(core.message_log).reader("local:one").snapshot() == (message,)
         assert "conversation" in await core.inspect_modules()
@@ -96,14 +120,11 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
         await core.start()
         snapshot = core.plugin_manager.current_snapshot
         assert snapshot is not None
-        async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as lease:
-            async with lease.composition_root.context.runtime_scope():
-                conversation = lease.composition_root.context.require(CONVERSATION)(
-                    "local:one"
-                )
-                message = await conversation.accept(
-                    "input-one", Input((ContentPart("text", "尚未启动回复服务"),))
-                )
+        source = await _registered_source(core.plugin_manager, "conversation")
+        async with source.context.runtime_scope():
+            message = await source.open("local:one").accept(
+                "input-one", Input((ContentPart("text", "尚未启动回复服务"),)),
+            )
         assert MessageCatalog(core.message_log).reader("local:one").snapshot() == (
             message,
         )
@@ -168,28 +189,35 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
 async def test_saved_embedding_enables_same_root_and_space_change_preserves_graph(tmp_path, monkeypatch):
     """真实设置服务保存后启用记忆；换空间时不发请求、不改原图。"""
     from aiohttp import web
-    from agent.plugin_composition import ModelUnavailableError
-    from agent.plugins.model_control import RuntimeModelControl
-    from plugins.context.materials import MATERIALS
+    from agent.plugin_composition import MODEL_CATALOG, ModelUnavailableError
+    from agent.plugins.archive import PluginArchive
     from plugins.akasha.infrastructure.persistence import logical_state_sha256
+    from plugins.context.materials import MATERIALS
     from plugins.content.plugin import CONTENT
+    from plugins.tools.plugin import ALL_TOOLS, TOOLS
     from session.message import Output
 
-    import asyncio
     learned = asyncio.Event()
     calls = []
     authorization = []
+
     async def embeddings(request):
         body = await request.json()
         calls.append(body)
         authorization.append(request.headers.get("Authorization"))
         if "saved answer" in body["input"]:
             learned.set()
-        return web.json_response({"data": [{"index": i, "embedding": [0.6, 0.8]}
-            for i, _ in enumerate(body["input"])], "usage": {"prompt_tokens": 2, "total_tokens": 2}})
+        return web.json_response({
+            "data": [{"index": i, "embedding": [0.6, 0.8]}
+                     for i, _ in enumerate(body["input"])],
+            "usage": {"prompt_tokens": 2, "total_tokens": 2},
+        })
+
     provider = web.Application()
-    async def models(request):
+
+    async def models(_request):
         return web.json_response({"data": [{"id": "first"}, {"id": "second"}]})
+
     provider.router.add_get("/v1/models", models)
     provider.router.add_get("/changed/v1/models", models)
     provider.router.add_post("/v1/embeddings", embeddings)
@@ -211,175 +239,178 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
-        root = core.plugin_manager.current_snapshot
-        control = RuntimeModelControl(core.plugin_manager.snapshot_store)
-        await _model_command(control, {
-            "type": "add_connection",
-            "expected_revision": 0,
-            "connection_id": "local",
-            "name": "Local",
+        root = core.plugin_manager.live_root
+        assert root is not None
+        await _model_command(core, {
+            "type": "add_connection", "expected_revision": 0,
+            "connection_id": "local", "name": "Local",
             "driver_id": "openai-compatible",
             "endpoint": f"http://127.0.0.1:{port}/v1",
-            "auth_identity": "fixture",
-            "credential": {"api_key": "fixture"},
+            "auth_identity": "fixture", "credential": {"api_key": "fixture"},
         })
-        capabilities = {
-            "embedding_dimensions": 2,
-            "embedding_normalization": "unit",
-        }
-        await _model_command(control, {
-            "type": "add_model",
-            "expected_revision": 1,
-            "model_id": "first",
-            "connection_id": "local",
-            "kind": "embedding",
-            "model": "first",
-            "capabilities": capabilities,
-            "capability_sources": {},
+        capabilities = {"embedding_dimensions": 2, "embedding_normalization": "unit"}
+        await _model_command(core, {
+            "type": "add_model", "expected_revision": 1,
+            "model_id": "first", "connection_id": "local", "kind": "embedding",
+            "model": "first", "capabilities": capabilities, "capability_sources": {},
         })
-        await _model_command(control, {
-            "type": "set_default",
-            "expected_revision": 2,
-            "role": None,
-            "model_id": "first",
+        await _model_command(core, {
+            "type": "set_default", "expected_revision": 2,
+            "role": None, "model_id": "first",
         })
-        assert core.plugin_manager.current_snapshot is root
-        async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            async with ctx.runtime_scope():
-                async with ctx.require(MATERIALS).bind() as materials:
-                    await materials.prepare((), "conversation")
-                # 输入直接写 fixture Session，避免未配置聊天模型干扰本次记忆验收。
-                async with ctx.require(CONTENT).bind() as content:
-                    core.message_log.writer("fixture", author="user", source="conversation", body_types=(Input,),
-                        content=content.checks).append("u", Input((ContentPart("text", "saved memory"),)))
-                    core.message_log.writer("fixture", author="assistant", source="conversation", body_types=(Output,),
-                        content=content.checks, check_call=lambda call: None).append("a", Output((ContentPart("text", "saved answer"),), "complete"))
-                await asyncio.wait_for(learned.wait(), 10)
-                async with ctx.require(MATERIALS).bind() as materials:
-                    await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                assert any("saved answer" in call["input"] for call in calls)
-                assert all(item.healthy for item in snapshot.composition_root.receipt().health if item.owner == "akasha")
-                graph = workspace / "memory/akasha.db"
-                before = logical_state_sha256(graph)
-                from plugins.tools.plugin import ALL_TOOLS, TOOLS
-                from agent.plugins.archive import PluginArchive
-                tools = ctx.require(TOOLS)
-                binding = tools.bind(
-                    ctx.require(ALL_TOOLS)().select("recall_memory"),
-                    ctx.require(BINDINGS),
+        assert core.plugin_manager.live_root is root
+        materials_context, materials_owner = root._service_provider(MATERIALS)
+        content_context, content = root._service_provider(CONTENT)
+        tools_context, tools = root._service_provider(TOOLS)
+        async with materials_owner.bind() as materials:
+            await materials.prepare((), "conversation")
+        async with content.bind() as content_owner:
+            core.message_log.writer(
+                "fixture", author="user", source="conversation", body_types=(Input,),
+                content=content_owner.checks,
+            ).append("u", Input((ContentPart("text", "saved memory"),)))
+            core.message_log.writer(
+                "fixture", author="assistant", source="conversation", body_types=(Output,),
+                content=content_owner.checks, check_call=lambda call: None,
+            ).append("a", Output((ContentPart("text", "saved answer"),), "complete"))
+        await asyncio.wait_for(learned.wait(), 10)
+        async with materials_owner.bind() as materials:
+            await materials.prepare(
+                core.message_log.reader("fixture").snapshot(), "conversation"
+            )
+        assert any("saved answer" in call["input"] for call in calls)
+        akasha_generation = core.plugin_manager.generation("akasha@fixture")
+        assert akasha_generation is not None and akasha_generation.fiber is not None
+        akasha_fiber = akasha_generation.fiber
+        akasha_health = tuple(
+            item for item in akasha_fiber.root.receipt().health
+            if item.owner == akasha_fiber.name
+        )
+        assert len(akasha_health) == 1 and akasha_health[0].healthy
+        graph = workspace / "memory/akasha.db"
+        before = logical_state_sha256(graph)
+
+        async with tools_context.runtime_scope():
+            bindings = tools_context.require(BINDINGS)
+            all_tools = tools_context.require(ALL_TOOLS)
+            binding = tools.bind(all_tools().select("recall_memory"), bindings)
+            binding_description = bindings.describe(binding, TOOLS)
+            assert isinstance(binding_description, Mapping)
+            binding_state = binding_description.get("state")
+            assert isinstance(binding_state, Mapping)
+            saved = binding_state.get("embedding_binding")
+            assert isinstance(saved, str)
+            descriptor = core.message_log.read_binding(saved)
+            archive = PluginArchive(workspace / "runtime/plugin-archives")
+            assert isinstance(descriptor, Mapping)
+            root_ref = descriptor.get("root_ref")
+            assert isinstance(root_ref, str)
+            root_descriptor = archive.read_descriptor(root_ref)
+            components = root_descriptor.get("components")
+            assert isinstance(components, (list, tuple))
+            assert {archive.read_descriptor(ref)["plugin_id"] for ref in components} == {
+                "models@fixture", "openai-compatible@fixture",
+            }
+            outer = core.message_log.read_binding(binding)
+            assert isinstance(outer, Mapping)
+            outer_root_ref = outer.get("root_ref")
+            assert isinstance(outer_root_ref, str)
+            outer_descriptor = archive.read_descriptor(outer_root_ref)
+            outer_components = outer_descriptor.get("components")
+            assert isinstance(outer_components, (list, tuple))
+            assert "openai-compatible@fixture" not in {
+                archive.read_descriptor(ref)["plugin_id"] for ref in outer_components
+            }
+
+            async def authorize(binding, arguments):
+                return {"approved": True}
+
+            await _model_command(core, {
+                "type": "add_model", "expected_revision": 3,
+                "model_id": "second", "connection_id": "local", "kind": "embedding",
+                "model": "second", "capabilities": capabilities, "capability_sources": {},
+            })
+            await _model_command(core, {
+                "type": "set_default", "expected_revision": 4,
+                "role": None, "model_id": "second",
+            })
+            sent = len(calls)
+            async with materials_owner.bind() as materials:
+                result = await materials.prepare(
+                    core.message_log.reader("fixture").snapshot(), "conversation"
                 )
-                binding_description = ctx.require(BINDINGS).describe(binding, TOOLS)
-                assert isinstance(binding_description, Mapping)
-                binding_state = binding_description.get("state")
-                assert isinstance(binding_state, Mapping)
-                saved = binding_state.get("embedding_binding")
-                assert isinstance(saved, str)
-                descriptor = core.message_log.read_binding(saved)
-                archive = PluginArchive(workspace / "runtime/plugin-archives")
-                assert isinstance(descriptor, Mapping)
-                root_ref = descriptor.get("root_ref")
-                assert isinstance(root_ref, str)
-                root_descriptor = archive.read_descriptor(root_ref)
-                components = root_descriptor.get("components")
-                assert isinstance(components, (list, tuple))
-                assert {archive.read_descriptor(ref)["plugin_id"] for ref in components} == {
-                    "models@fixture",
-                    "openai-compatible@fixture",
-                }
-                outer = core.message_log.read_binding(binding)
-                assert isinstance(outer, Mapping)
-                outer_root_ref = outer.get("root_ref")
-                assert isinstance(outer_root_ref, str)
-                outer_descriptor = archive.read_descriptor(outer_root_ref)
-                outer_components = outer_descriptor.get("components")
-                assert isinstance(outer_components, (list, tuple))
-                assert "openai-compatible@fixture" not in {
-                    archive.read_descriptor(ref)["plugin_id"] for ref in outer_components
-                }
-                async def authorize(binding, arguments):
-                    return {"approved": True}
-                await _model_command(control, {
-                    "type": "add_model",
-                    "expected_revision": 3,
-                    "model_id": "second",
-                    "connection_id": "local",
-                    "kind": "embedding",
-                    "model": "second",
-                    "capabilities": capabilities,
-                    "capability_sources": {},
-                })
-                await _model_command(control, {
-                    "type": "set_default",
-                    "expected_revision": 4,
-                    "role": None,
-                    "model_id": "second",
-                })
-                sent = len(calls)
-                async with ctx.require(MATERIALS).bind() as materials:
-                    result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                reminders = result["reminders"]
-                assert isinstance(reminders, tuple)
-                status = next(
-                    part["text"]
-                    for part in reminders
-                    if part["name"] == "status"
+            reminders = result["reminders"]
+            assert isinstance(reminders, tuple)
+            status = next(part["text"] for part in reminders if part["name"] == "status")
+            assert "召回不可用" in status and "重建" in status
+            assert logical_state_sha256(graph) == before and len(calls) == sent
+            recalled = await tools.execution(authorize).execute(
+                "old-model-after-default-switch", binding, {"query": "saved memory"}
+            )
+            assert recalled.outcome == "success" and calls[-1]["model"] == "first"
+            assert any(part.kind == "akasha.recall" for part in recalled.parts)
+            await _model_command(core, {
+                "type": "set_default", "expected_revision": 5,
+                "role": None, "model_id": "first",
+            })
+            async with materials_owner.bind() as materials:
+                result = await materials.prepare(
+                    core.message_log.reader("fixture").snapshot(), "conversation"
                 )
-                assert "召回不可用" in status and "重建" in status
-                assert logical_state_sha256(graph) == before and len(calls) == sent
-                recalled = await tools.execution(authorize).execute("old-model-after-default-switch", binding, {"query": "saved memory"})
-                assert recalled.outcome == "success" and calls[-1]["model"] == "first"
-                assert any(part.kind == "akasha.recall" for part in recalled.parts)
-                await _model_command(control, {
-                    "type": "set_default",
-                    "expected_revision": 5,
-                    "role": None,
-                    "model_id": "first",
-                })
-                async with ctx.require(MATERIALS).bind() as materials:
-                    result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                reminders = result["reminders"]
-                assert isinstance(reminders, tuple)
-                assert not any(part["name"] == "status" for part in reminders)
-                assert all(item.healthy for item in snapshot.composition_root.receipt().health if item.owner == "akasha")
-                assert logical_state_sha256(graph) == before
-                assert core.plugin_manager.current_snapshot is root
-                # 当前同名连接配置漂移不能重定向已经准备的模型调用。
-                await _model_command(control, {
-                    "type": "update_connection",
-                    "expected_revision": 6,
-                    "connection_id": "local",
-                    "name": "Local",
-                    "auth_identity": "fixture",
-                    "endpoint": f"http://127.0.0.1:{port}/changed/v1",
-                })
-                sent = len(calls)
-                with pytest.raises(ModelUnavailableError, match="配置已变化"):
-                    await tools.execution(authorize).execute("endpoint-drift", binding, {"query": "saved memory"})
-                assert len(calls) == sent and logical_state_sha256(graph) == before
-                await _model_command(control, {
-                    "type": "update_connection",
-                    "expected_revision": 7,
-                    "connection_id": "local",
-                    "name": "Local",
-                    "auth_identity": "fixture",
-                    "endpoint": f"http://127.0.0.1:{port}/v1",
-                })
-                # 同一 auth identity 的 token 刷新是既有凭据 owner 的正常路径。
-                from plugins.models.store import ModelsStore
-                registry = ModelsStore(workspace / "model-registry.sqlite3", backup_dir=workspace / "runtime/model-backups", writable=True)
-                revision = (await control.catalog()).revision
-                await registry.credential_handle("local", "fixture").refresh({"api_key": "rotated"})
-                assert (await control.catalog()).revision == revision
-                refreshed = await tools.execution(authorize).execute("refreshed-token", binding, {"query": "saved memory"})
-                assert refreshed.outcome == "success" and authorization[-1] == "Bearer rotated"
-                assert logical_state_sha256(graph) == before
+            reminders = result["reminders"]
+            assert isinstance(reminders, tuple)
+            assert not any(part["name"] == "status" for part in reminders)
+            akasha_health = tuple(
+                item for item in akasha_fiber.root.receipt().health
+                if item.owner == akasha_fiber.name
+            )
+            assert len(akasha_health) == 1 and akasha_health[0].healthy
+            assert logical_state_sha256(graph) == before
+            assert core.plugin_manager.live_root is root
+            await _model_command(core, {
+                "type": "update_connection", "expected_revision": 6,
+                "connection_id": "local", "name": "Local", "auth_identity": "fixture",
+                "endpoint": f"http://127.0.0.1:{port}/changed/v1",
+            })
+            sent = len(calls)
+            with pytest.raises(ModelUnavailableError, match="配置已变化"):
+                await tools.execution(authorize).execute(
+                    "endpoint-drift", binding, {"query": "saved memory"}
+                )
+            assert len(calls) == sent and logical_state_sha256(graph) == before
+            update = await _model_command(core, {
+                "type": "update_connection", "expected_revision": 7,
+                "connection_id": "local", "name": "Local", "auth_identity": "fixture",
+                "endpoint": f"http://127.0.0.1:{port}/v1",
+            })
+            from plugins.models.store import ModelsStore
+            registry = ModelsStore(
+                workspace / "model-registry.sqlite3",
+                backup_dir=workspace / "runtime/model-backups", writable=True,
+            )
+            revision = update["revision"]
+            await registry.credential_handle("local", "fixture").refresh({"api_key": "rotated"})
+            refreshed = await tools.execution(authorize).execute(
+                "refreshed-token", binding, {"query": "saved memory"}
+            )
+            assert refreshed.outcome == "success" and authorization[-1] == "Bearer rotated"
+            assert logical_state_sha256(graph) == before
+
+        catalog_context, catalog = root._service_provider(MODEL_CATALOG)
+        async with catalog_context.runtime_scope():
+            assert catalog.snapshot().revision == revision
 
     finally:
-        await core.bus.aclose()
-        await core.stop()
-        await http.aclose()
-        await runner.cleanup()
+        try:
+            await core.bus.aclose()
+        finally:
+            try:
+                await core.stop()
+            finally:
+                try:
+                    await http.aclose()
+                finally:
+                    await runner.cleanup()
 
 
 def test_telegram_channel_is_the_formal_owner_and_factory_is_closed(tmp_path):
@@ -407,7 +438,6 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     import socket
     from aiohttp import web
     from akashic_sdk import AsyncAkashic
-    from agent.plugins.model_control import RuntimeModelControl
     from bootstrap.app import AppRuntime
     from bootstrap.runtime_readiness import RuntimeReadiness
 
@@ -461,8 +491,7 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
         assert app.restart_gate is not None
         assert app.core.restart_gate.boot_id == readiness.boot_id
         assert app.core.plugin_manager._host_boot_id == readiness.boot_id
-        control = RuntimeModelControl(app.core.plugin_manager.snapshot_store)
-        await _model_command(control, {
+        await _model_command(app.core, {
             "type": "add_connection",
             "expected_revision": 0,
             "connection_id": "local",
@@ -472,7 +501,7 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             "auth_identity": "fixture",
             "credential": {"api_key": "fixture"},
         })
-        await _model_command(control, {
+        await _model_command(app.core, {
             "type": "add_model",
             "expected_revision": 1,
             "model_id": "chat",
@@ -486,7 +515,7 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             },
             "capability_sources": {},
         })
-        await _model_command(control, {
+        await _model_command(app.core, {
             "type": "set_default",
             "expected_revision": 2,
             "role": "default",
@@ -510,14 +539,18 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             import httpx
             with closing(sqlite3.connect(workspace / "sessions.db")) as database:
                 before = tuple(database.iterdump())
-            snapshot = app.core.plugin_manager.current_snapshot
+            root = app.core.plugin_manager.live_root
+            assert root is not None
+            ui_context, ui = root._service_provider(UI)
+            async with ui_context.runtime_scope():
+                catalog = ui.catalog()
             module = next(
                 item
-                for item in snapshot.composition_root.context.require(UI).catalog().modules
+                for item in catalog.modules
                 if item.plugin_id == "workbench-ui@fixture"
             )
-            headers = {"x-akashic-web-snapshot": snapshot.snapshot_id,
-                "x-akashic-web-catalog": snapshot.composition_root.context.require(UI).catalog().identity,
+            headers = {"x-akashic-web-snapshot": root.generation_id,
+                "x-akashic-web-catalog": catalog.identity,
                 "x-akashic-web-module": module.plugin_id, "x-akashic-web-generation": module.generation_id}
             async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=app.dashboard_server.config.uds), base_url="http://fixture", headers=headers) as dashboard:
                 directory = await dashboard.get("/api/dashboard/sessions")

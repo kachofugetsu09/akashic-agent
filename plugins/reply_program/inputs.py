@@ -140,7 +140,6 @@ class ToolCleanup(Protocol):
 
     def __call__(
         self,
-        ctx: Context,
         reader: MessageReader,
         source: str,
         from_seq: int,

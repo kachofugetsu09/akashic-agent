@@ -170,9 +170,20 @@ async def test_apply_registers_one_formal_channel_definition() -> None:
 async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: Path) -> None:
     """Active reply status must name the snapshot that owns the scoped reader."""
 
+    reader_started = asyncio.Event()
+    release_reader = asyncio.Event()
+    reader_closed = asyncio.Event()
+    scope_exited = asyncio.Event()
+
     class ReplyRead:
         async def follow(self, _session_id: str):
-            yield ()
+            try:
+                assert scope_exited.is_set()
+                reader_started.set()
+                await release_reader.wait()
+                yield ()
+            finally:
+                reader_closed.set()
 
     class ReplyScope:
         def require(self, _key: Any) -> ReplyRead:
@@ -180,7 +191,10 @@ async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: P
 
     @asynccontextmanager
     async def open_scope():
-        yield cast(RequestContext, ReplyScope())
+        try:
+            yield cast(RequestContext, ReplyScope())
+        finally:
+            scope_exited.set()
 
     generation = "reply-status-generation"
     build_akashic_channel = build_akashic_channel_factory(AkashicClientsConfig(), tmp_path)
@@ -200,8 +214,12 @@ async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: P
         )
         adapter = build_akashic_channel(context)
         stream = adapter._follow_reply_status("akashic:session-1")
+        frame_task = asyncio.create_task(anext(stream))
         try:
-            assert await anext(stream) == {
+            await reader_started.wait()
+            assert scope_exited.is_set()
+            release_reader.set()
+            assert await frame_task == {
                 "version": 2,
                 "session_id": "akashic:session-1",
                 "snapshot_id": "reply-status-snapshot",
@@ -209,10 +227,57 @@ async def test_reply_status_sequence_keeps_channel_snapshot_identity(tmp_path: P
                 "items": [],
             }
         finally:
+            release_reader.set()
+            if not frame_task.done():
+                frame_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await frame_task
             await stream.aclose()
+            await reader_closed.wait()
     finally:
         if adapter is not None:
             await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_reply_status_reader_failure_is_not_hidden(tmp_path: Path) -> None:
+    """A real client reply follower preserves an underlying reader failure."""
+
+    class ReplyRead:
+        async def follow(self, _session_id: str):
+            raise RuntimeError("reply reader failed")
+            yield {}
+
+    class ReplyScope:
+        def require(self, _key: Any) -> ReplyRead:
+            return ReplyRead()
+
+    @asynccontextmanager
+    async def open_scope():
+        yield cast(RequestContext, ReplyScope())
+
+    from agent.plugin_composition.channels import ChannelFactoryContext
+
+    factory = build_akashic_channel_factory(AkashicClientsConfig(), tmp_path)
+    adapter = factory(
+        ChannelFactoryContext(
+            snapshot_id="reply-error-snapshot",
+            generation_id="reply-error-generation",
+            boot_id="boot-1",
+            binding_token="reply-error-binding",
+            config={},
+            ingress=None,
+            identity=None,
+            open_scope=open_scope,
+        )
+    )
+    stream = adapter._follow_reply_status("akashic:reply-error")
+    try:
+        with pytest.raises(RuntimeError, match="reply reader failed"):
+            await anext(stream)
+    finally:
+        await stream.aclose()
+        await adapter.stop()
 
 
 def test_each_apply_owns_its_adapter_until_stop(tmp_path: Path) -> None:
@@ -335,6 +400,7 @@ async def test_web_admission_close_cancels_follow_and_releases_scope() -> None:
     socket = _Socket()
     task = asyncio.create_task(channel._follow(cast(WebSocket, socket), reader.session_id, -1))
     await reader.started.wait()
+    assert scope.entered == scope.exited == 1
     channel._followers[cast(WebSocket, socket)] = (reader.session_id, task)
 
     adapter = cast(WebNativeChannelAdapter, SimpleNamespace(binding_token="binding"))

@@ -10,11 +10,13 @@ from pathlib import Path
 import pytest
 
 import agent.plugins.install as install_module
+import agent.plugins.source_resolver as source_resolver_module
 from agent.plugins.artifacts import (
     ArtifactPointer,
     discard_latest_pointer,
     read_pointer,
     resolve_pointer,
+    write_pointers,
 )
 from agent.plugins.install import (
     finalize_uninstall_plugin,
@@ -28,7 +30,7 @@ from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
     materialize_command,
 )
-from agent.plugins.source_resolver import resolve_plugin_sources
+from agent.plugins.source_resolver import resolve_plugin_sources, scan_plugin_sources
 
 
 def test_installed_pointer_loads_code_identity_without_toml(tmp_path: Path) -> None:
@@ -124,6 +126,179 @@ def test_manifest_requires_plain_root_plugin_file(tmp_path: Path, kind: str) -> 
             resolve_plugin_sources([repo])
     else:
         assert resolve_plugin_sources([repo]) == []
+
+
+def test_tolerant_source_scan_reports_content_without_fake_plugin_id(
+    tmp_path: Path,
+) -> None:
+    roots = tmp_path / "plugins"
+    _write_v3_plugin(roots / "healthy", name="healthy")
+    broken = roots / "broken"
+    broken.mkdir(parents=True)
+    (broken / "plugin.py").write_text("this is not Python !!!\n", encoding="utf-8")
+
+    scan = scan_plugin_sources([roots])
+
+    assert [source.plugin_name for source in scan.sources] == ["healthy"]
+    assert len(scan.failures) == 1
+    failure = scan.failures[0]
+    assert failure.source_root == broken.resolve()
+    assert failure.plugin_id is None
+
+
+def test_tolerant_source_scan_preserves_decode_reason(tmp_path: Path) -> None:
+    roots = tmp_path / "plugins"
+    broken = roots / "decode-broken"
+    broken.mkdir(parents=True)
+    (broken / "plugin.py").write_bytes(b'name = "broken"\n\xff\n')
+
+    scan = scan_plugin_sources([roots])
+
+    assert scan.sources == ()
+    failure = scan.failures[0]
+    assert failure.error_type == "UnicodeDecodeError"
+    assert "invalid start byte" in failure.error_text
+    assert failure.phase == "identity"
+
+
+def test_tolerant_source_scan_keeps_shared_identity_io_fail_loud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roots = tmp_path / "plugins"
+    _write_v3_plugin(roots / "healthy", name="healthy")
+
+    def fail_identity(_root: Path) -> object:
+        raise OSError("identity read failed")
+
+    monkeypatch.setattr(
+        source_resolver_module,
+        "load_static_plugin_manifest",
+        fail_identity,
+    )
+    with pytest.raises(OSError, match="identity read failed"):
+        scan_plugin_sources([roots])
+
+
+def test_installed_tolerant_scan_reads_only_selected_pointer_content(
+    tmp_path: Path,
+) -> None:
+    """The selected installed artifact is tolerant; the other pointer is not a fallback."""
+    base = tmp_path / "cache" / "lab" / "installed_snapshot"
+    stable = base / ".artifacts" / "1.0.0-stable"
+    latest = base / ".artifacts" / "2.0.0-latest"
+    stable.mkdir(parents=True)
+    latest.mkdir(parents=True)
+    (stable / "plugin.py").write_text(
+        'name = "installed_snapshot"\nversion = "1.0.0"\napi_version = 3\n',
+        encoding="utf-8",
+    )
+    (latest / "plugin.py").write_text("this is not Python !!!\n", encoding="utf-8")
+    (base / ".pointers.json").write_text(
+        json.dumps({
+            "stable": ".artifacts/1.0.0-stable",
+            "latest": ".artifacts/2.0.0-latest",
+        }),
+        encoding="utf-8",
+    )
+
+    scan = scan_plugin_sources([], installed_cache_root=tmp_path / "cache")
+
+    assert [source.plugin_root for source in scan.sources] == [stable.resolve()]
+    assert scan.failures == ()
+    with pytest.raises(ValueError, match="无法解析"):
+        resolve_plugin_sources([], installed_cache_root=tmp_path / "cache")
+
+    (stable / "plugin.py").write_text("this is not Python either !!!\n", encoding="utf-8")
+    scan = scan_plugin_sources([], installed_cache_root=tmp_path / "cache")
+    assert scan.sources == ()
+    assert scan.failures[0].source_root == stable.resolve()
+    assert scan.failures[0].error_type == "SyntaxError"
+    assert "line" in scan.failures[0].error_text
+    assert scan.failures[0].plugin_id is None
+
+
+@pytest.mark.parametrize("pointer_value", [
+    "../outside",
+    ".artifacts/missing",
+])
+def test_installed_tolerant_scan_keeps_pointer_boundary_strict(
+    tmp_path: Path,
+    pointer_value: str,
+) -> None:
+    base = tmp_path / "cache" / "lab" / "installed_snapshot"
+    base.mkdir(parents=True)
+    (base / ".pointers.json").write_text(
+        json.dumps({"stable": pointer_value, "latest": pointer_value}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, FileNotFoundError)):
+        scan_plugin_sources([], installed_cache_root=tmp_path / "cache")
+
+
+def test_installed_tolerant_scan_rejects_pointer_symlink_and_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "cache" / "lab" / "installed_snapshot"
+    artifact = base / ".artifacts" / "1.0.0"
+    artifact.mkdir(parents=True)
+    (artifact / "plugin.py").write_text(
+        'name = "other_name"\nversion = "1.0.0"\napi_version = 3\n',
+        encoding="utf-8",
+    )
+    (base / ".pointers.json").write_text(
+        json.dumps({"stable": ".artifacts/1.0.0", "latest": ".artifacts/1.0.0"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="name 不一致"):
+        scan_plugin_sources([], installed_cache_root=tmp_path / "cache")
+
+    symlink_base = tmp_path / "cache-symlink" / "lab" / "installed_snapshot"
+    symlink_base.mkdir(parents=True)
+    outside = tmp_path / "outside-artifacts"
+    outside.mkdir()
+    (symlink_base / ".artifacts").symlink_to(outside, target_is_directory=True)
+    (symlink_base / ".pointers.json").write_text(
+        json.dumps({"stable": ".artifacts/1.0.0", "latest": ".artifacts/1.0.0"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="符号链接"):
+        scan_plugin_sources([], installed_cache_root=tmp_path / "cache-symlink")
+
+
+def test_installed_scan_does_not_downgrade_when_selected_artifact_disappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = tmp_path / "home" / "cache" / "lab" / "installed_snapshot"
+    artifact = base / ".artifacts" / "1.0.0"
+    artifact.mkdir(parents=True)
+    (artifact / "plugin.py").write_text(
+        'name = "installed_snapshot"\nversion = "1.0.0"\napi_version = 3\n',
+        encoding="utf-8",
+    )
+    pointer = ArtifactPointer(".artifacts/1.0.0")
+    write_pointers(base, stable=pointer, latest=pointer)
+    real_resolve = source_resolver_module.resolve_pointer
+
+    def resolve_then_remove(
+        plugin_base: Path,
+        pointer: ArtifactPointer,
+        *,
+        validate_content: bool = True,
+    ) -> Path | None:
+        target = real_resolve(
+            plugin_base, pointer, validate_content=validate_content,
+        )
+        if target is not None:
+            import shutil
+            shutil.rmtree(target)
+        return target
+
+    monkeypatch.setattr(source_resolver_module, "resolve_pointer", resolve_then_remove)
+    with pytest.raises(FileNotFoundError):
+        scan_plugin_sources([], installed_cache_root=tmp_path / "home" / "cache")
 
 
 def test_plugins_root_honors_explicit_environment(

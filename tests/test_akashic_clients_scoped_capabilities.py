@@ -31,10 +31,10 @@ class _Scope:
             return [{"version": version, "display_only": display_only}]
 
         class Ui:
-            def catalog(self) -> dict[str, object]:
+            async def catalog(self) -> dict[str, object]:
                 return {"version": version}
 
-            def asset(
+            async def asset(
                 self,
                 _plugin_id: str,
                 _plugin_revision: str,
@@ -91,8 +91,8 @@ async def test_scoped_projections_resolve_each_operation() -> None:
     assert scope.entered == scope.exited == 5
 
     async with open_request_scope(scope):
-        assert mobile.catalog() == {"version": 2}
-        assert mobile.asset("p", "r", "module", "a" * 64) == {"version": 2}
+        assert await mobile.catalog() == {"version": 2}
+        assert await mobile.asset("p", "r", "module", "a" * 64) == {"version": 2}
         assert await mobile.query(
             "p", "r", "method", {}, session_id=None, turn_id=None
         ) == {"version": 2}
@@ -112,6 +112,8 @@ async def test_child_task_opens_its_own_message_display_scope() -> None:
     assert scope.entered == scope.exited == 2
 
 
-def test_mobile_sync_projection_requires_an_active_scope() -> None:
-    with pytest.raises(RuntimeError, match="request scope"):
-        ScopedMobileUiProvider(_Scope()).catalog()
+@pytest.mark.asyncio
+async def test_mobile_projection_opens_an_active_scope() -> None:
+    scope = _Scope()
+    assert await ScopedMobileUiProvider(scope).catalog() == {"version": 1}
+    assert scope.entered == scope.exited == 1

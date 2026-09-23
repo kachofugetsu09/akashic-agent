@@ -1,181 +1,348 @@
-"""真实安装工具、候选回复和独立完成通知，不写父 Turn terminal。"""
+"""plugin_update 只消费公开安装结果，并保留历史通知的只读身份。"""
+from __future__ import annotations
+
 import asyncio
-from contextlib import AsyncExitStack, closing
 import json
-from collections.abc import Mapping
 
 import pytest
 
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugins.snapshot import lease_runtime_snapshot
-from agent.plugins.manager import PluginManager
-from agent.plugins.selection import PluginSelection
-from bus.event_bus import EventBus
-from plugins.content.plugin import check_text
-from plugins.conversation.plugin import check_origin
-from plugins.tools.api import MessageReply
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
-from session.log import MessageLog, OwnerTransaction
-from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
-from tests.test_default_reply import application
-from tests.test_plugin_install import _commit, _write_v3_plugin
+from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
+from agent.plugin_composition.plugin_updates import UpdateStatus
+from plugins.delivery.records import DeliveryRecords, delivery_key
+from plugins.plugin_update.inputs import CONTENT, DELIVERY
+from plugins.plugin_update.plugin import result_message_id
+from plugins.plugin_update.tool import InstallInput, decode_request, receipt, update_id
+from session.message import ContentPart, Output
+
+
+REPORT_HEALTH_CONTROL = ServiceKey("test.report-health-control")
+DELIVERY_CONTROL = ServiceKey("test.delivery-control")
+
+
+def test_historical_owner_request_drops_only_retired_validation_fields():
+    """历史 OWNER_STATE 不再触发验证，未知字段仍交给严格 schema 拒绝。"""
+    request = decode_request({
+        "install": {
+            "source": "https://example.invalid/plugin.git",
+            "marketplace": "lab",
+            "ref": "main",
+            "sparse": ["plugin.py"],
+            "validation_prompt": "retired",
+            "validation_tools": ["retired_tool"],
+            "excluded_materials": ["retired-material"],
+        },
+        "session_id": "akashic:room",
+        "sink": None,
+    })
+    assert request.install.source.endswith("plugin.git")
+    assert request.install.sparse == ["plugin.py"]
+
+    with pytest.raises(ValueError):
+        InstallInput.model_validate({
+            "source": "source",
+            "marketplace": "lab",
+            "validation_prompt": "new request must reject this",
+        })
+
+    with pytest.raises(ValueError):
+        decode_request({
+            "install": {
+                "source": "source",
+                "marketplace": "lab",
+                "future_field": True,
+            },
+            "session_id": "akashic:room",
+            "sink": None,
+        })
+
+
+def test_terminal_result_ids_are_distinct_and_do_not_reuse_history():
+    """失败后重试 active 使用新结果 ID，旧 complete/problem 消息保持只读。"""
+    active = UpdateStatus(
+        "u-active", "probe@lab", "input-active", "selected", "g-active",
+        "input-active", "ACTIVE", "active", "",
+    )
+    failed = UpdateStatus(
+        "u-failed", "probe@lab", "input-failed", "selected", None,
+        None, None, "failed", "load failed",
+    )
+    assert result_message_id("plugin-update:key", active) == "plugin-update:key:result-active"
+    assert result_message_id("plugin-update:key", failed) == "plugin-update:key:result-failed"
+    assert result_message_id("plugin-update:key", active) not in {
+        "plugin-update:key:complete", "plugin-update:key:problem",
+    }
+    assert receipt(active).outcome == "success"
+    assert receipt(failed).outcome == "error"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("passed", [True, False, None])
-async def test_update_source_validates_and_reports_without_parent_terminal(tmp_path, passed, monkeypatch):
-    delivered = asyncio.Event()
-    original_save = OwnerTransaction.save
-    def save(self, key, value, **kwargs):
-        result = original_save(self, key, value, **kwargs)
-        if key.startswith("delivery:") and value.get("phase") == "delivered":
-            delivered.set()
-        return result
-    monkeypatch.setattr(OwnerTransaction, "save", save)
-    async with AsyncExitStack() as cleanup, application(
-        tmp_path, replying=False, updates=True, validation_passed=passed is not False,
-        provider_effect_data=True, start=passed is not None,
-    ) as (log, host):
-        stable = PluginSelection(tmp_path / "workspace").read()
-        source = tmp_path / "new-plugin"
-        _write_v3_plugin(source, name="probe", module_source='''
+async def test_real_plugin_update_watcher_reports_through_delivery(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Drive failed -> retry active reporting with durable send receipts."""
+    from tests.test_default_reply import application
+    from tests.test_plugin_install import _commit, _write_v3_plugin
+    from agent.plugin_composition.bindings import BINDINGS
+    from plugins.plugin_update.inputs import DELIVERY_SENDERS
+    from plugins.plugin_update.tool import InstallPlugin
+    from session.log import SessionAttributes
+
+    def extra_sources(sources):
+        _write_v3_plugin(
+            sources / "report_health_control",
+            name="report_health_control",
+            module_source=(
+                'import asyncio\n'
+                'from agent.plugin_composition import ServiceKey\n'
+                'CONTROL = ServiceKey("test.report-health-control")\n'
+                'api_version = 3\nname = "report_health_control"\nversion = "1.0.0"\n'
+                'async def apply(ctx):\n'
+                '    await ctx.provide(CONTROL, {"fail": False})\n'
+            ),
+        )
+        _write_v3_plugin(
+            sources / "report_target",
+            name="report_target",
+            module_source=(
+                'from agent.plugin_composition import ServiceKey\n'
+                'TARGET = ServiceKey("test.report-target")\n'
+                'api_version = 3\nname = "report_target"\nversion = "1.0.0"\n'
+                'async def apply(ctx):\n'
+                '    await ctx.provide(TARGET, "old")\n'
+            ),
+        )
+        _write_v3_plugin(
+            sources / "report_consumer",
+            name="report_consumer",
+            module_source=(
+                'from agent.plugin_composition import ServiceKey\n'
+                'TARGET = ServiceKey("test.report-target")\n'
+                'CONTROL = ServiceKey("test.report-health-control")\n'
+                'api_version = 3\nname = "report_consumer"\nversion = "1.0.0"\n'
+                'inject = (TARGET, CONTROL)\n'
+                'async def apply(ctx):\n'
+                '    health = await ctx.health("report-required")\n'
+                '    if ctx.require(CONTROL)["fail"]:\n'
+                '        health.degrade("controlled report health failure")\n'
+                '    _ = ctx.require(TARGET)\n'
+            ),
+        )
+        _write_v3_plugin(
+            sources / "delivery_control",
+            name="delivery_control",
+            module_source=(
+                'import asyncio\n'
+                'from agent.plugin_composition import ServiceKey\n'
+                'CONTROL = ServiceKey("test.delivery-control")\n'
+                'api_version = 3\nname = "delivery_control"\nversion = "1.0.0"\n'
+                'async def apply(ctx):\n'
+                '    await ctx.provide(CONTROL, {\n'
+                '        "started": asyncio.Event(), "release": asyncio.Event(),\n'
+                '        "finished": asyncio.Event(),\n'
+                '    })\n'
+            ),
+        )
+        (sources / "test_sender" / "plugin.py").write_text(
+            '''
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+import json
+from typing import Literal
 from agent.plugin_composition import ServiceKey
+SENDERS = ServiceKey("delivery.senders.v1")
+CONTROL = ServiceKey("test.delivery-control")
 api_version = 3
-name = "probe"
+name = "test_sender"
 version = "1.0.0"
-inject = ()
+inject = (SENDERS, CONTROL)
+
+@dataclass(frozen=True)
+class SendResult:
+    status: Literal["delivered", "rejected", "failed"]
+    provider_ids: tuple[str, ...] = ()
+    error: str | None = None
+
 async def apply(ctx):
-    await ctx.provide(ServiceKey("test.updated"), "candidate")
-''')
-        _commit(source)
-        parameters = {"source": str(source), "marketplace": "lab",
-                      "validation_prompt": "Call write_evidence and check its result.",
-                      "validation_tools": ["write_evidence"]}
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
-            tools = root.require(TOOLS)
-            binding = tools.bind(
-                root.require(ALL_TOOLS)().select("plugin_install"),
-                root.require(BINDINGS),
+    control = ctx.require(CONTROL)
+    class Sender:
+        idempotent = True
+        async def send(self, key, address, message):
+            control["started"].set()
+            await control["release"].wait()
+            path = ctx.data_root / "sent.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as file:
+                file.write(json.dumps([key, address, message.message_id, "report-sender"]) + "\\n")
+            control["finished"].set()
+            return SendResult(status="delivered", provider_ids=("report-sender",))
+        async def query(self, key, address):
+            return None
+    @asynccontextmanager
+    async def open():
+        yield Sender()
+    await ctx.require(SENDERS).register(ctx, name="test", idempotent=True, open=open)
+'''
+        )
+
+    candidate = tmp_path / "candidate"
+    _write_v3_plugin(
+        candidate,
+        name="report_target",
+        module_source=(
+            'from agent.plugin_composition import ServiceKey\n'
+            'TARGET = ServiceKey("test.report-target")\n'
+            'api_version = 3\nname = "report_target"\nversion = "2.0.0"\n'
+            'async def apply(ctx):\n    await ctx.provide(TARGET, "new")\n'
+        ),
+    )
+    _commit(candidate)
+
+    send_calls: list[tuple[str, str]] = []
+    replay_processed = asyncio.Event()
+    initial_send_count = 0
+
+    async with application(
+        tmp_path, replying=False, updates=True, extra_sources=extra_sources,
+    ) as (log, host):
+        log.ensure_session("updates", SessionAttributes())
+        generation = next(
+            item for item in host._active_generations.values()
+            if item.plugin_id.startswith("plugin_update@")
+        )
+        plugin_context = generation.fiber.context
+        identity = update_id("real-report")
+        health_control = host.live_root.context.require(REPORT_HEALTH_CONTROL)
+        delivery_control = host.live_root.context.require(DELIVERY_CONTROL)
+        historical_complete = identity + ":complete"
+        historical_problem = identity + ":problem"
+        async with plugin_context.runtime_scope():
+            actual_delivery = plugin_context.require(DELIVERY).open(plugin_context)
+            delivery_type = type(actual_delivery)
+            original_send = delivery_type.send
+
+            async def observe_send(
+                delivery, message_id: str, sink: str, *, before_start=None,
+            ):
+                result = await original_send(
+                    delivery, message_id, sink, before_start=before_start,
+                )
+                send_calls.append((message_id, sink))
+                if len(send_calls) > initial_send_count and message_id.endswith(
+                    (":result-failed", ":result-active")
+                ):
+                    replay_processed.set()
+                return result
+
+            # Patch only the archived runtime class returned by this real scope.
+            monkeypatch.setattr(delivery_type, "send", observe_send)
+            writers = plugin_context.require(MESSAGE_WRITERS)
+            content = plugin_context.require(CONTENT)
+            history_writer = writers.bind(
+                plugin_context, author="history", source="history",
+                body_types=(Output,), content={"text": content.check_text},
+            )("updates")
+            try:
+                history_writer.append(
+                    historical_complete,
+                    Output((ContentPart("text", "old complete"),), "complete"),
+                )
+                history_writer.append(
+                    historical_problem,
+                    Output((ContentPart("text", "old problem"),), "complete"),
+                )
+            finally:
+                history_writer.expire()
+            health_control["fail"] = True
+            bindings = plugin_context.require(BINDINGS)
+            senders = plugin_context.require(DELIVERY_SENDERS).bind_all(bindings)
+            tool = InstallPlugin(plugin_context, senders)
+            result = await tool.invoke(
+                "real-report",
+                {
+                    "install": {
+                        "source": str(candidate),
+                        "marketplace": "builtin",
+                        "ref": "",
+                        "sparse": [],
+                    },
+                    "session_id": "updates",
+                    "sink": {"name": "test", "binding_id": senders["test"], "address": "room"},
+                },
             )
-            reader = log.reader("test:room")
-            inputs = log.writer("test:room", author="user", source="conversation", body_types=(Input,),
-                content={"text": check_text, "channel.origin": check_origin})
-            inputs.append("user-input", Input((ContentPart("text", "update the plugin"),
-                ContentPart("channel.origin", {"channel": "test", "chat_id": "room", "sender": "user"}))))
-            output = log.writer("test:room", author="assistant", source="conversation", body_types=(Output,),
-                                content={}, check_call=lambda call: None)
-            output.append("install-call", Output((ToolCall(binding, parameters),), "continue"))
-            result_writer = log.writer("test:room", author="tool", source="conversation", body_types=(ToolResult,),
-                                       content={"text": check_text}, call_ref=CallRef("install-call", 0))
-            reply = MessageReply("install-result", CallRef("install-call", 0), reader, result_writer, lambda: None)
-            async def authorize(binding, arguments):
-                return {"approved": True}
-            result = await tools.execution(authorize).execute_call(reply)
-            assert result.outcome == "success"
-            assert isinstance(result.parts[0].value, str)
-            receipt = json.loads(result.parts[0].value)
-            assert isinstance(receipt, Mapping)
-            identity = receipt.get("update_id")
-            assert isinstance(identity, str)
-            assert receipt.get("phase") == "armed"
-            assert not host._validation_hosts
-            assert host._update_publication is None
-            if passed is not None:
-                latest_binding = tools.bind(
-                    root.require(ALL_TOOLS)().select("plugin_latest"), root.require(BINDINGS),
-                )
-                output.append("latest-call", Output((ToolCall(
-                    latest_binding, {"update_id": identity, "action": "run"},
-                ),), "continue"))
-                latest_writer = log.writer(
-                    "test:room", author="tool", source="conversation", body_types=(ToolResult,),
-                    content={"text": check_text}, call_ref=CallRef("latest-call", 0),
-                )
-                latest_reply = MessageReply(
-                    "latest-result", CallRef("latest-call", 0), reader, latest_writer, lambda: None,
-                )
-                latest_result = await tools.execution(authorize).execute_call(latest_reply)
-                assert latest_result.outcome == "success"
-                accepted = json.loads(latest_result.parts[0].value)
-                assert accepted["update_id"] == identity
-                assert accepted["candidate_id"] == host.read_update(identity).candidate_id
-                assert accepted["handle"]
-                assert PluginSelection(tmp_path / "workspace").read() == stable
-        async def restart():
-            nonlocal log, host, reader
-            await host.terminate_all()
-            log.close()
-            log = MessageLog(tmp_path / "sessions.db")
-            cleanup.callback(log.close)
-            host = PluginManager([tmp_path / "plugins"], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                                 installed_cache_root=tmp_path / "home/cache", message_log=log)
-            cleanup.push_async_callback(host.terminate_all)
-            reader = log.reader("test:room")
-            await host.load_all()
-            await host.start_runtime()
-        if passed is None:
-            (source / "plugin.py").unlink()
-            await restart()
-            assert PluginSelection(tmp_path / "workspace").read() == stable
-            assert host.ready_candidate is None
-            assert host.generation("probe@lab") is None
-        report_id = identity + (":complete" if passed else ":problem")
-        # 只等待真实追加通知；原 conversation 保持 open，没有 terminal 来驱动发布。
-        async with asyncio.timeout(20):
-            async for _ in log.catalog().follow():
-                rows = reader.snapshot()
-                reports = [row for row in rows if row.message_id == report_id]
-                if reports:
-                    break
-        assert len(reports) == 1 and reports[0].source == "plugin_update"
-        update = host.reload_journal.update(identity)
-        if passed is None:
-            # 启动不续跑候选，也不能把未结算安装冒充已回退。
-            assert update.phase == "armed"
-            assert update.error and "explicit settlement" in update.error
-        else:
-            assert update.phase == ("committed" if passed else "armed")
-            if not passed:
-                assert update.error
-        assert not any(isinstance(row.body, Output) and row.body.finish == "complete"
-                       for row in rows if row.source == "conversation")
-        databases = list((tmp_path / "workspace/runtime/plugin-update-validation").glob("*/workspace/sessions.db"))
-        assert len(databases) == (0 if passed is None else 1)
-        if databases:
-            with closing(MessageLog(databases[0])) as validation:
-                validation_rows = validation.reader("plugin-validation:" + identity).snapshot()
-                assert tuple(type(row.body) for row in validation_rows[:3]) == (Input, Output, ToolResult)
-                if passed:
-                    assert isinstance(validation_rows[-1].body, Output)
-                    assert validation_rows[-1].body.finish == "complete"
-                assert validation.reader("plugin-validation:" + identity).attributes.learning == "excluded"
-            assert host.read_validation_messages(identity, "plugin-validation:" + identity) == validation_rows
-            assert (next(databases[0].parent.rglob("effect.txt"))).read_text() == "once\n"
-        for generation in host.current_snapshot.generations.values():
-            assert not (generation.data_dir / "effect.txt").exists()
-        # 完成 Message 先提交，发送随后由实际 Delivery owner 结算。
-        from plugins.delivery.records import DeliveryRecords
-        delivery = DeliveryRecords(log.owner("plugin:delivery"), "plugin_update")
-        await asyncio.wait_for(delivered.wait(), 10)
-        await host.terminate_all()
-        assert delivery.read(report_id, "test")[1].phase == "delivered"
-        sent = [json.loads(line) for line in next((tmp_path / "workspace/plugin-data").rglob("sent.jsonl")).read_text().splitlines()]
-        assert len(sent) == 1 and sent[0][1:3] == ["room", report_id]
-        recovered_report = asyncio.Event()
-        append = OwnerTransaction.append
-        def append_report(self, writer, message_id, body, **kwargs):
-            message = append(self, writer, message_id, body, **kwargs)
-            if message_id == report_id:
-                recovered_report.set()
-            return message
-        monkeypatch.setattr(OwnerTransaction, "append", append_report)
-        await restart()
-        await asyncio.wait_for(recovered_report.wait(), 10)
-        await host.terminate_all()
-        if databases:
-            assert host.read_validation_messages(identity, "plugin-validation:" + identity) == validation_rows
-        assert len(reader.snapshot()) == len(rows)
-        assert list((tmp_path / "workspace/runtime/plugin-update-validation").glob("*/workspace/sessions.db")) == databases
-        sent_again = [json.loads(line) for line in next((tmp_path / "workspace/plugin-data").rglob("sent.jsonl")).read_text().splitlines()]
-        assert sent_again == sent
+        assert result.outcome == "success"
+        async with plugin_context.runtime_scope():
+            request_facts = plugin_context.require(OWNER_STATE).open(plugin_context).read(identity)
+            assert request_facts is not None
+        operation = host._operation
+        assert operation is not None
+        await asyncio.gather(operation.task, return_exceptions=True)
+        await asyncio.wait_for(delivery_control["started"].wait(), 5)
+        delivery_control["release"].set()
+        failed = host.read_update(identity)
+        assert failed.state == "failed"
+        failed_message = log.reader("updates").get(identity + ":result-failed")
+        assert failed_message is not None and isinstance(failed_message.body, Output)
+        assert failed_message.body.parts[0].value.startswith("插件 report_target@builtin 更新失败：")
+        await asyncio.wait_for(delivery_control["finished"].wait(), 5)
+        initial_send_count = len(send_calls)
+
+        health_control["fail"] = False
+        delivery_control["started"].clear()
+        delivery_control["finished"].clear()
+        delivery_control["release"] = asyncio.Event()
+        await host.retry_runtime_recovery("report_target@builtin")
+        active = host.read_update(identity)
+        assert active.state == "active"
+        await asyncio.wait_for(delivery_control["started"].wait(), 5)
+        delivery_control["release"].set()
+        active_message = log.reader("updates").get(identity + ":result-active")
+        assert active_message is not None and isinstance(active_message.body, Output)
+        assert active_message.body.parts[0].value == "插件 report_target@builtin 已激活。"
+        assert failed_message.body != active_message.body
+        await asyncio.wait_for(delivery_control["finished"].wait(), 5)
+        initial_send_count = len(send_calls)
+        replay_processed.clear()
+
+        assert log.reader("updates").get(historical_complete).body.parts[0].value == "old complete"
+        assert log.reader("updates").get(historical_problem).body.parts[0].value == "old problem"
+        async with plugin_context.runtime_scope():
+            assert plugin_context.require(OWNER_STATE).open(plugin_context).read(identity) == request_facts
+            delivery_admission = plugin_context.require(DELIVERY)
+            records = DeliveryRecords(
+                plugin_context.require(OWNER_STATE).open(plugin_context),
+                plugin_context.require_runtime_owner(DELIVERY, delivery_admission),
+            )
+        failed_delivery = records.read(identity + ":result-failed", "test")[1]
+        active_delivery = records.read(identity + ":result-active", "test")[1]
+        assert failed_delivery.phase == "delivered"
+        assert failed_delivery.receipt is not None
+        assert failed_delivery.receipt.provider_ids == ("report-sender",)
+        assert active_delivery.phase == "delivered"
+        assert active_delivery.receipt is not None
+        assert active_delivery.receipt.provider_ids == ("report-sender",)
+
+        sent = next(tmp_path.rglob("sent.jsonl"))
+        sent_records = [json.loads(line) for line in sent.read_text().splitlines()]
+        assert len(sent_records) == 2
+        by_message_id = {record[2]: record for record in sent_records}
+        for message_id, delivery_record in (
+            (failed_message.message_id, failed_delivery),
+            (active_message.message_id, active_delivery),
+        ):
+            sent_record = by_message_id[message_id]
+            assert sent_record[0] == delivery_key(message_id, "test")
+            assert sent_record[1] == "room"
+            assert sent_record[2] == message_id
+            assert delivery_record.receipt is not None
+            assert sent_record[3] in delivery_record.receipt.provider_ids
+
+        # A duplicate wake and a watcher restart reuse the same delivered receipts.
+        host._notify_updates()
+        await host.retry_runtime_recovery("plugin_update@builtin")
+        await asyncio.wait_for(replay_processed.wait(), 5)
+        replayed_ids = {
+            message_id for message_id, _sink in send_calls[initial_send_count:]
+        }
+        assert replayed_ids == {active_message.message_id}
+        assert len(sent.read_text().splitlines()) == 2

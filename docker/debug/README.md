@@ -273,8 +273,9 @@ fixture source ── Timer ──▶ eventmail.content_source.v1 submit
 ```
 
 真实 selected case 固定使用 `deepseek-v4-flash`。runner 从外置副本加载普通 `models` 和
-`openai-compatible` 插件，经 `RuntimeModelControl` 写连接、模型和默认 role，再由 exact
-snapshot 的 `CHAT_MODELS` 执行；Core 不读取 provider 配置。credential 只从进程环境读取，
+`openai-compatible` 插件，经 live Root 的 `models/command` RPC（实际 `RpcMethod` 与
+Models provider `Context`）写连接、模型和默认 role，再由同一 Root 的 `CHAT_MODELS`
+exact owner scope 执行；Core 不读取 provider 配置。credential 只从进程环境读取，
 不写入临时 TOML 或报告。运行前先完成确定性的 settlement crash/restart、
 ACK retry、quiet 和 empty-poll 检查，之后才允许一次真实 logical provider request：
 

@@ -40,13 +40,18 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 - 移动端用户 checkout 存在未提交 Theme diff（Theme.kt 等 5 个文件）；D2 决策（原生壳与 WebUI token 边界）完成前不得合入。
 
-## P0 · 插件普通调用与晋升
+## P0 · 单图插件系统与局部换代（Issue 750）
 
-- 按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 调整为调用程序拥有验证、provider 拥有隔离资源、底座拥有整体 stable 提交。旧 `validation_port_env`、双指针与 attached child 的 Core 特例不再是目标合同。
-- 按 [latest 普通调用](design/plugin-latest-programmatic.md) 完成非阻塞调用的过程/最终结果可见性、发起者撤销和原 owner 清理；正常完成默认请求晋升，不引入后台裁判或批准 JSON。继续核对隔离宿主的最小职责与累计消费者。
-- 普通 latest 仍需后续运行证据；模型 owner 接续现有设置和凭据、新组合使用自己的 driver、调用账写在本次调用环境的源码已通过独立静态审查。真实插件链的测试已写未跑，不能据此声明实际模型请求与晋升验收通过。
-- 独立 Fitbit source 的候选 listener 与正式资源隔离仍待该仓库交付，本轮不修改外部插件。
-- 提交前后崩溃、排空失败和真实恢复的行为证据尚缺；本轮用户要求只提 PR，不执行 Gate/CI，不能将代码交付视作这些验收已完成。
+- T-fb9a7f 已闭合 Selected-Load A 的真实 selection identity oracle，并完成 Core T02 局部行为证据：selection 1/1、Core 其余四组 25/25。详见设计文档 T-fb9a7f 段与 `/tmp/i750-core.YE9wsb/`；不外推为 Issue 750 完成，完整回归/Gate/CI/正式运行/final enable 仍为 WIP。
+
+- T-b0ab9e（T06-Models R2）上批已知事实：`reader.__self__` 替换、同路径断言、Models 生产/测试对账及文档已由主审与独立只读 review 静态接受，累计静态材料未运行行为测试；T-fa9271/T-83b918 原失败稿不追认为整批通过。生产 Models/Core/clients/Bindings/Manager 未改，持久化 delta 为 0。ModelsStore/CAS、credentials、descriptor/schema、Message、model_calls、continuation、embedding identity 与可选 chat API 注入保留；不能把静态结论写成行为验收或最终 enable。
+
+- T-d44273 的 R5 记录已由 T-a9246e 承接：R4 production 修复已由主审与独立概念 Gate 接受并冻结；R4 的两类 red 要准确区分为 C1 child CE 被 TaskGroup 忽略导致 source-local warning 缺失（未击穿 watcher），C2 sync `on_close` error 进入 TaskGroup 导致健康 peer 无法完成。R5 原 artifact `/tmp/i750-reply-r5.b4WgrJ/` 仍保留为历史事实；当前 A cleanup/oracle、Source registration wake 与真实执行证据以 T-a9246e 段为准，不写成 Issue 750、Gate、部署、正式运行或 final enable 完成。
+- Source wake 当前状态：R2 ordering、R4 tests、T-8677b9 production 与 T-a0440f 测试收尾均已接受；production hash `24aabacea42855c20f8bb0fed47f17b34f708cb32fa5672dad9f719b6fa37b18` 已过主审及独立 `gpt-5.6-terra/xhigh` 概念 Gate，T-a0440f targeted 1/1、Reply 23/23 green。Source head observation 不持久化，重启/registration replacement 仍可重读历史。T-82189d 已完成 Subagent→Conversation→Reply owner 接线与定点验证，但报告尚未通过：Reply 内 `ToolProgramFactory` 调用仍缺 Tools owner scope，局部 drain 也被 `delivery_policy` readiness failure 阻断；详见 [Issue 750 Source wake](design/issue-750-plugin-publication-simplification.md)。其它 provider/RPC/consumer、snapshot/fence、offline/candidate/freeze、T06/T07、累计 Gate、运行验收与 final enable 仍未完成。
+- Models 不再有三张运行 registration 表或 `sealed`：config 可读性、vision binding 保留在 Models 本地边界，enabled connection 的 `open+close` 延后到真实首用或显式 probe；`StoredSnapshot.revision`、CAS、credentials、descriptor/schema、Message、model_calls、continuation 与 embedding identity 不变。当前只做 AST、hash、diff 检查，未执行测试、Gate、CI、应用 import、插件安装、业务进程、正式 workspace 或部署。
+- 公开卸载实现（T05-B）与 T05-C 生产接线静态通过：同一 Manager owner 覆盖 disable、已选但无 Fiber、FAILED/active+draining、selection CAS、accepted handoff、真实 hard-consumer 排空和现有 cache/manifest finalizer；finalizer 通过 `complete_critical(to_thread(...))` 持有真实删除线程，状态目标从成功 accepted 结果推导，不新增第二套卸载 receipt/schema，不删除 plugin-data、Message、附件、历史 binding、归档或 Delivery 记录。T-129aa6 的 T05-C-R2/T05-D 测试与文档静态通过；T-9990aa 整体未通过，T-fb6d31 生产修复静态通过，T-7ff900 A1～A4/B 测试源已由主审与独立只读 review 静态通过但未运行；测试、Gate、CI、运行验收和迁移演练仍未执行。
+- T-fbf63b 已删除无生产消费者的 EventBus RuntimeSnapshot lease/store 保护层、旧 admission 等待任务与单字段 envelope，并删除 Manager/ValidationHost 的绑定调用；generic queue/dispatcher、handler Task、错误/取消隔离、drain/join 和关闭责任保留。生产删除与 Inspector 坏节点 admission oracle，以及当前累计 `tests/test_plugin_external_loader.py` 已由主审与独立只读静态接受；T-7912fd 原 R1 缺口不作为已通过稿，行为测试未运行。owner 链为：`Core/ValidationHost → EventBus queue/dispatcher → generic handler Task → drain/join`；`Plugin Context → Root EventRegistry → Fiber Effect`（独立，不桥接）。不删除 RuntimeSnapshot 其他消费者，不改持久事实；当前只做 AST、内存 compile、diff/空白、符号和哈希核验。
+- T-71cb50 修订 EventBus R1 两项测试源：self-cancel 使用未置位真实 `asyncio.Event` 交付取消，queue 关闭后核对 empty 并调用公开 `drain()`；同时删除无生产消费者的 `RuntimeMessageDisplay` wrapper 与唯一旧 snapshot generation 测试。生产展示继续只有 `app_server.py:message_display` 和 Manager `core.message_display.v1` 两个 live-Root consumer。上述 EventBus R1 尾修、RuntimeMessageDisplay 删除、T-fbf63b 生产删除与 Inspector oracle 已由主审与独立只读静态接受，行为测试未运行。T-4be90d 整体 review 未通过；T-131de5 原稿不追认为通过稿；后续修正另行记录，未运行测试。N1/N2、UI、其它 provider/RPC、scope 外 consumer、current_snapshot/fence、offline/trusted watcher、candidate/freeze、T06/T07、运行验收和 final enable 仍未完成。
 
 ## P0 · 独立语义验收
 

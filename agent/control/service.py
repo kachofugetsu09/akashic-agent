@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
 ReplyStatus = Callable[[str], AsyncGenerator[dict[str, object], None]]
 PluginInstall = Callable[[str, str, str, list[str], str], Awaitable[dict[str, object]]]
-PluginAction = Callable[[str], Awaitable[dict[str, object]]]
+PluginUninstall = Callable[[str], Awaitable[dict[str, object]]]
 
 
 class ControlService:
@@ -43,10 +43,8 @@ class ControlService:
         plugin_install: PluginInstall | None = None,
         plugin_status: Callable[[], dict[str, object]] | None = None,
         plugin_update: Callable[[str], dict[str, object]] | None = None,
-        plugin_promote: PluginAction | None = None,
-        plugin_discard: PluginAction | None = None,
         plugin_drain: Callable[[str], Awaitable[str]] | None = None,
-        plugin_uninstall: PluginAction | None = None,
+        plugin_uninstall: PluginUninstall | None = None,
         workspace_token: str | None = None, boot_id: str | None = None,
         ready: Callable[[], bool] | None = None,
         message_display: MessageDisplayReader | None = None,
@@ -63,8 +61,6 @@ class ControlService:
         self._plugin_install = plugin_install
         self._plugin_status = plugin_status
         self._plugin_update = plugin_update
-        self._plugin_promote = plugin_promote
-        self._plugin_discard = plugin_discard
         self._plugin_drain = plugin_drain
         self._plugin_uninstall = plugin_uninstall
         self._workspace_token = workspace_token
@@ -203,16 +199,6 @@ class ControlService:
         return cast(dict[str, object], await self._operate(
             self._plugin_install(source, marketplace, ref, sparse, update_id),
         ))
-
-    async def promote_plugin(self, update_id: str) -> dict[str, object]:
-        if self._plugin_promote is None:
-            raise RuntimeError("控制服务没有插件发布能力")
-        return cast(dict[str, object], await self._operate(self._plugin_promote(update_id)))
-
-    async def discard_plugin(self, update_id: str) -> dict[str, object]:
-        if self._plugin_discard is None:
-            raise RuntimeError("控制服务没有插件回退能力")
-        return cast(dict[str, object], await self._operate(self._plugin_discard(update_id)))
 
     async def disable_and_drain_plugin(self, plugin_id: str) -> dict[str, object]:
         if self._plugin_drain is None:

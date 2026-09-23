@@ -6,7 +6,8 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
-| [0071](0071-plugin-composition-and-whole-runtime-updates.md) | accepted / implementing | 插件底座只解释组合与整体换代 | PLG-001～PLG-018 |
+| [0072](0072-single-graph-local-plugin-updates.md) | accepted / 设计已确认，实现未完成 | 单张运行图与局部插件换代 | PLG-001～PLG-018、RUN-007、RUN-009、RUN-016、CTRL-003 |
+| [0071](0071-plugin-composition-and-whole-runtime-updates.md) | accepted / implementing；整图换代部分 superseded by 0072 | 插件底座只解释组合与整体换代 | PLG-001～PLG-018 |
 | [0001](0001-project-workbook-is-shared-reality.md) | superseded | 项目工作手册是协作共享现实 | WBK-001～WBK-006、COM-001～COM-004 |
 | [0002](0002-context-reduction-is-a-nondestructive-projection.md) | accepted | 上下文缩减是非破坏性投影 | CTX-001～CTX-005、SES-003 |
 | [0003](0003-core-capability-ownership-is-semantic.md) | accepted | 核心能力归属由权威语义决定 | MOB-001、GOV-001～GOV-005 |
@@ -32,7 +33,7 @@
 | [0023](0023-akashic-tokens-own-material-3-semantics.md) | superseded | Akashic Token 拥有 Material 3 设计语义 | WEBUI-001～WEBUI-007 |
 | [0024](0024-plugin-self-validation-uses-stable-and-latest.md) | superseded | 插件自验证使用 stable/latest 与 session 级并发 | RUN-007、OUT-004、PLG-013、CTRL-003、TST-001～TST-006 |
 | [0025](0025-codex-style-same-turn-input.md) | accepted | 中断后的新 Attempt 续接同一 Logical Interaction | SES-007～SES-008、MEM-010～MEM-011、RUN-008、OUT-005 |
-| [0026](0026-plugin-rollout-is-owned-by-the-parent-turn.md) | accepted | 插件发布由父 Turn 在终点统一授权 | PLG-010、PLG-012、PLG-013、RUN-007、CTRL-003、ERR-001、TST-001～TST-006 |
+| [0026](0026-plugin-rollout-is-owned-by-the-parent-turn.md) | accepted / 晋升协议 superseded by 0072 | 插件发布由父 Turn 在终点统一授权 | PLG-010、PLG-012、PLG-013、RUN-007、CTRL-003、ERR-001、TST-001～TST-006 |
 | [0030](0030-session-context-compaction-ledger.md) | accepted / implemented | Session context compaction ledger 拥有模型窗口投影 | CTX-001～CTX-007、SES-001～SES-005、MEM-002、MEM-004、MEM-008、MEM-011、MIG-001、WSP-003、TST-001～TST-006 |
 | [0027](0027-runtime-models-use-generation-leases.md) | accepted / partially superseded by 0050 | 运行时模型切换使用 execution generation lease | RUN-009～RUN-012、ONB-001、CTX-001、PLG-003 |
 | [0028](0028-model-credentials-live-with-workspace-connections.md) | accepted | 模型凭据随 workspace connection 保存 | RUN-009～RUN-012、ONB-001、WSP-001、BAK-001 |
@@ -42,9 +43,9 @@
 | [0033](0033-local-agent-instructions-are-not-project-documents.md) | accepted | 本地 Agent 指令不属于版本化项目文档 | WBK-001～WBK-006、COM-001～COM-004 |
 | [0034](0034-turn-is-the-logical-work-unit.md) | accepted | Turn 是逻辑工作单元 | CTX-003、SES-007、SES-008、MEM-011、OUT-001、OUT-004、SCH-003 |
 | [0035](0035-mobile-protocol-delivery-is-phased.md) | accepted | 移动协议交付按变更性质分阶段 | MOB-008、MOB-006、TST-007、GOV-002 |
-| [0036](0036-plugin-composition-keeps-promotion-owner.md) | accepted | 插件组合内核保留现有晋升 owner | PLG-001～PLG-013、WSP-001～WSP-005、ERR-001、TST-001～TST-007 |
+| [0036](0036-plugin-composition-keeps-promotion-owner.md) | accepted / 晋升 owner superseded by 0072 | 插件组合内核保留现有晋升 owner | PLG-001～PLG-013、WSP-001～WSP-005、ERR-001、TST-001～TST-007 |
 | [0037](0037-plugin-runtime-is-pure-v3.md) | accepted / implemented | 插件运行时收敛为 pure v3 | PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-008 |
-| [0038](0038-operator-trust-can-publish-offline-plugin-batches.md) | accepted | Operator 信任可以离线发布 exact 插件批次 | PLG-013、RUN-015、ERR-001 |
+| [0038](0038-operator-trust-can-publish-offline-plugin-batches.md) | accepted / 旧提交协议部分按 0072 调整 | Operator 信任可以离线发布 exact 插件批次 | PLG-013、RUN-015、ERR-001 |
 | [0039](0039-react-core-atoms-keep-sources-unprivileged.md) | accepted | React 原子能力留在 Core，来源保持非特权 | RUN-001～RUN-003、RUN-007～RUN-009、OUT-001～OUT-004、PLG-014、SCH-001～SCH-003、PRO-001、SEC-005、SEC-007 |
 | [0040](0040-wake-duty-gate-lives-in-scoped-react.md) | accepted | Wake duty gate 属于 Wake scoped react | RUN-003、RUN-007～RUN-009、OUT-001～OUT-003、PLG-014、PRO-001～PRO-002 |
 | [0041](0041-turn-effects-and-memory-plugins-are-orthogonal.md) | accepted / implementing | Turn 副作用与 Memory 插件保持正交 | SES-001、SES-007～SES-008、MEM-002、MEM-009～MEM-011、PLG-001～PLG-014、RUN-003、RUN-007～RUN-009 |
@@ -62,7 +63,7 @@
 | [0053](0053-plugins-declare-managed-workloads.md) | accepted / implementing | 插件声明受管 Workload | RUN-016、PLG-017、WEBUI-008、WSP-006 |
 | [0054](0054-model-sync-refreshes-public-capabilities.md) | accepted / implementing | 模型同步刷新公共能力目录 | RUN-011、ONB-001、WSP-001 |
 | [0055](0055-host-bridge-uses-typed-protobuf.md) | accepted | Host Bridge 使用 typed Protobuf V2 | RUN-013～RUN-015、SH-001～SH-003 |
-| [0056](0056-plugin-update-crashes-return-to-stable.md) | accepted / implementing | 插件更新中进程死亡时恢复旧指针，不续跑候选 | PLG-010、PLG-013、RUN-007 |
+| [0056](0056-plugin-update-crashes-return-to-stable.md) | accepted / implementing；崩溃回旧 stable superseded by 0072 | 插件更新中进程死亡时恢复旧指针，不续跑候选 | PLG-010、PLG-013、RUN-007 |
 | [0057](0057-internal-source-messages.md) | accepted | Subagent 与 Wake 保留完整内部消息 | SES-003～SES-005、MEM-001～MEM-002 |
 | [0058](0058-scheduler-keeps-internal-messages.md) | accepted | Scheduler 保留可恢复的内部消息 | SCH-001～SCH-003、SES-003～SES-005、MEM-001～MEM-002 |
 | [0059](0059-abandon-settles-tool-calls.md) | accepted | 明确放弃结算工具调用，不等待物理清理 | RUN-003、RUN-008、SES-003～SES-005、SH-002 |

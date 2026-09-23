@@ -153,15 +153,12 @@ class ReloadJournal:
 
     def __init__(self, workspace: Path) -> None:
         self.path = workspace / "runtime" / "plugin-reloads.sqlite3"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         new = not self.path.exists()
-        self._initialize()
         if new:
-            with self._connect() as conn:
-                _ = conn.execute("BEGIN IMMEDIATE")
-                if not update_rollback.check_schema(conn):
-                    for statement in update_rollback.SCHEMA.values():
-                        _ = conn.execute(statement)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._initialize()
+        else:
+            self._check_existing_schema()
 
     def arm_update(
         self, *, update_id: str, plugin_id: str, plugin_base: Path,
@@ -176,6 +173,12 @@ class ReloadJournal:
     def update(self, update_id: str) -> update_rollback.UpdateRollback:
         with self._connect() as conn:
             return update_rollback.read(conn, update_id)
+
+    def set_input_ref(self, update_id: str, input_ref: str) -> None:
+        """Persist the fixed archive input before selection CAS."""
+        with self._connect() as conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            update_rollback.set_input_ref(conn, update_id=update_id, input_ref=input_ref)
 
     def update_for_reload(self, tx_id: str) -> update_rollback.UpdateRollback | None:
         """有更新恢复点时，完整旧指针对只由该记录恢复。"""
@@ -810,26 +813,61 @@ class ReloadJournal:
                 CREATE INDEX IF NOT EXISTS idx_reload_events_tx
                 ON reload_events(tx_id, sequence);
                 """)
-            columns = {
-                str(row[1])
-                for row in conn.execute("PRAGMA table_info(reload_transactions)")
+
+            for statement in update_rollback.SCHEMA.values():
+                _ = conn.execute(statement)
+
+    def _check_existing_schema(self) -> None:
+        """Read an existing journal without creating or altering any object."""
+        uri = f"file:{self.path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            try:
+                shape = update_rollback.plugin_update_schema_state(conn)
+            except ValueError as error:
+                raise RuntimeError(f"runtime/plugin-reloads.sqlite3 schema 无法识别: {error}") from error
+            if shape == "old":
+                raise RuntimeError(
+                    "runtime/plugin-reloads.sqlite3 使用旧 plugin_updates schema；"
+                    "请先执行 Core migration，不会由普通启动自动迁移"
+                )
+            if shape == "missing":
+                raise RuntimeError(
+                    "runtime/plugin-reloads.sqlite3 缺少 plugin_updates；"
+                    "不会由普通启动补造历史表"
+                )
+            required = {
+                "reload_transactions": {
+                    "tx_id", "plugin_id", "base_snapshot_id", "candidate_snapshot_id",
+                    "base_generation_id", "generation_id", "source_revision", "config_revision",
+                    "phase", "started_at", "updated_at", "error", "formal_effects_json",
+                    "failure_resource", "recovery_action", "attempt_count",
+                    "runtime_owner_boot_id", "base_artifact_pointer", "candidate_artifact_pointer",
+                    "recovery_target",
+                },
+                "reload_events": {"sequence", "tx_id", "phase", "details_json", "created_at"},
             }
-            additions = {
-                "base_generation_id": "TEXT",
-                "formal_effects_json": "TEXT NOT NULL DEFAULT '[]'",
-                "failure_resource": "TEXT",
-                "recovery_action": "TEXT",
-                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
-                "runtime_owner_boot_id": "TEXT",
-                "base_artifact_pointer": "TEXT",
-                "candidate_artifact_pointer": "TEXT",
-                "recovery_target": "TEXT",
-            }
-            for name, definition in additions.items():
-                if name not in columns:
-                    conn.execute(
-                        f"ALTER TABLE reload_transactions ADD COLUMN {name} {definition}"
+            for table, columns in required.items():
+                actual = {
+                    str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+                if actual != columns:
+                    raise RuntimeError(
+                        f"runtime/plugin-reloads.sqlite3 缺少或包含未知 {table} 列；"
+                        "请先执行对应 Core migration"
                     )
+            indexes = {
+                str(row[1]) for row in conn.execute("PRAGMA index_list(reload_transactions)")
+            }
+            event_indexes = {
+                str(row[1]) for row in conn.execute("PRAGMA index_list(reload_events)")
+            }
+            if "idx_reload_transactions_phase" not in indexes or "idx_reload_events_tx" not in event_indexes:
+                raise RuntimeError(
+                    "runtime/plugin-reloads.sqlite3 缺少当前索引；请先执行 Core migration"
+                )
+        finally:
+            conn.close()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

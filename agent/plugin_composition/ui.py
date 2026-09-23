@@ -37,6 +37,7 @@ class WebModuleAsset:
 @dataclass(frozen=True)
 class WebModuleDescriptor:
     plugin_id: str
+    registration_uuid: str
     generation_id: str
     asset: WebModuleAsset
 
@@ -85,12 +86,12 @@ class DashboardBinding:
     plugin_id: str
     app: FastAPI
     routes: tuple[DashboardRoute, ...]
-    generation_id: str = ""
-    has_web: bool = False
-    runtime_workspace: Path | None = None
-    runtime_data_root: Path | None = None
-    validation: bool = False
-    module_name: str = ""
+    context: Context
+    generation_id: str
+    has_web: bool
+    runtime_workspace: Path
+    runtime_data_root: Path
+    module_name: str
 
     def matches(self, scope: dict[str, Any]) -> bool:
         return any(route.matches(scope)[0] is Match.FULL for route in self.routes)
@@ -110,13 +111,6 @@ class UiRegistry(Protocol):
 
     def bindings(self) -> tuple[DashboardBinding, ...]: ...
 
-    def prepare_dashboard(
-        self, *, core_routes: tuple[object, ...],
-        validation_owners: frozenset[str], tolerate_failures: bool,
-    ) -> None: ...
-
-    async def release_validation(self) -> None: ...
-
 
 class WebUiProvider(Protocol):
     async def bootstrap(self) -> bytes: ...
@@ -126,3 +120,4 @@ class WebUiProvider(Protocol):
 
 UI = ServiceKey[UiRegistry]("ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("core.web_ui.v1")
+DASHBOARD_ROUTES = ServiceKey[tuple[object, ...]]("core.dashboard_routes.v1")

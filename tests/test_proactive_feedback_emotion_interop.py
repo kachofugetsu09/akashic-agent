@@ -18,8 +18,7 @@ from aiohttp import web
 from agent.config_models import Config
 from agent.plugin_contracts import ContentPart, Input, Output
 from agent.plugins.install import PluginInstallResult, install_git_plugin
-from agent.plugins.model_control import RuntimeModelControl
-from agent.plugins.snapshot import lease_runtime_snapshot
+from bootstrap.app_server import build_control_service
 from bootstrap.tools import build_core_runtime
 from core.net.http import SharedHttpResources
 from plugins.content.plugin import CONTENT
@@ -83,11 +82,19 @@ def _install_external_plugins(
 
 
 async def _model_command(
-    control: RuntimeModelControl, payload: dict[str, object]
+    core, payload: dict[str, object]
 ) -> dict[str, object]:
     """通过 Models 插件的公开 RPC 配置真实 embedding provider。"""
 
-    result = await control.invoke_rpc("models/command", payload)
+    service = build_control_service(core)
+    resolve = service.resolve_method
+    if resolve is None:
+        raise AssertionError("ControlService 未提供动态 RPC resolver")
+    async with resolve("models/command") as operation:
+        if operation is None:
+            raise AssertionError("live Root 未提供 models/command")
+        params = operation.params.model_validate(payload)
+        result = await operation.invoke(params, None)
     assert isinstance(result, dict)
     assert result.get("status") == 200, result
     body = result.get("body")
@@ -167,8 +174,11 @@ async def _append_followup(
 ) -> None:
     """经正式 MessageLog 与当前 Content owner 追加完整 Wake follow-up。"""
 
-    async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
-        content = snapshot.composition_root.context.require(CONTENT)
+    root = core.plugin_manager.live_root
+    if root is None:
+        raise RuntimeError("正式 live Root 不可用")
+    content_context, content = root._service_provider(CONTENT)
+    async with content_context.runtime_scope():
         checks = {"text": content.check_text}
         log = core.message_log
         _ = log.ensure_session(session_id, SessionAttributes())
@@ -243,7 +253,7 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
         await core.start()
         host = core.plugin_manager
         expected = {"proactive_feedback@interop", "emotion@interop"}
-        assert expected <= set(host.current_snapshot.generations)
+        assert host.live_root is not None
         for plugin_id in expected:
             generation = host.generation(plugin_id)
             assert generation is not None
@@ -255,9 +265,8 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
             assert not loaded.is_relative_to(source)
 
         await host.start_runtime()
-        control = RuntimeModelControl(host.snapshot_store)
         await _model_command(
-            control,
+            core,
             {
                 "type": "add_connection",
                 "expected_revision": 0,
@@ -270,7 +279,7 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
             },
         )
         await _model_command(
-            control,
+            core,
             {
                 "type": "add_model",
                 "expected_revision": 1,
@@ -286,7 +295,7 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
             },
         )
         await _model_command(
-            control,
+            core,
             {
                 "type": "set_default",
                 "expected_revision": 2,

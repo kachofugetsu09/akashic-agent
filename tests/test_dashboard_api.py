@@ -4,9 +4,14 @@ import hashlib
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from agent.plugins.artifacts import ArtifactPointer, write_pointers
+from agent.plugins.manager import PluginManager
+from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.dashboard_api import create_dashboard_app
+from bus.event_bus import EventBus
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
 def test_retired_proactive_dashboard_routes_do_not_open_legacy_database(
@@ -90,3 +95,29 @@ def test_standalone_dashboard_does_not_import_plugin_backend(
     assert response.status_code == 404
     assert not (plugin_dir / "backend-imported").exists()
     assert _test_tree_digest(plugin_dir) == source_before
+
+
+@pytest.mark.asyncio
+async def test_dashboard_server_supplies_same_app_routes_to_real_manager(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
+    manager = PluginManager(
+        [],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home",
+    )
+    try:
+        server = build_dashboard_server(workspace=workspace, plugin_manager=manager)
+        app = server.config.app
+        assert manager._dashboard_routes == tuple(app.routes)  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(RuntimeError, match="Dashboard host routes 不能重复配置"):
+            manager.configure_dashboard_routes(tuple(app.routes))
+        await manager.load_all()
+        assert manager.live_root is not None
+        with pytest.raises(RuntimeError, match="Dashboard host routes 必须在 live Root 前配置"):
+            manager.configure_dashboard_routes(tuple(app.routes))
+    finally:
+        await manager.terminate_all()

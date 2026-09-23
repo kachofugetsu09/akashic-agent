@@ -63,7 +63,7 @@ async def run_reply(
         chosen = ctx.require(MODEL_SELECTION).read_saved(reader.metadata() or {})
     from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
     async with (
-        cleanup(ctx, reader, source, from_seq, task=task, drain=tools.drain_calls),
+        cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
         materials.bind(exclude=exclude_materials) as material_view,

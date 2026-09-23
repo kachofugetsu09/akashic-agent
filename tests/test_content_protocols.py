@@ -1,4 +1,5 @@
 from session.message import ContentReferences
+import asyncio
 import json
 import re
 from collections.abc import Mapping
@@ -6,17 +7,11 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from agent.plugin_composition.model import PluginRuntime
 
 import pytest
 
-from agent.plugin_composition import CompositionRoot
-from agent.plugins.snapshot import (
-    RuntimeSnapshotCompiler,
-    RuntimeSnapshotStore,
-    bind_runtime_snapshot,
-    reset_runtime_snapshot,
-)
+from agent.plugin_composition import CompositionRoot, RUNTIME_STARTED
+from agent.plugin_composition.model import FiberState, PluginRuntime
 from plugins.content.plugin import (
     CONTENT,
     ContentSchema,
@@ -30,7 +25,7 @@ from session.message import ContentPart, Output
 
 @asynccontextmanager
 async def bound_content(definitions):
-    """通过公共注册与绑定接口取得真实 generation lease。"""
+    """通过公共注册与绑定接口取得真实本地 owner scopes。"""
     root = CompositionRoot("content-test")
     temporary = TemporaryDirectory(prefix="content-protocol-")
     path = Path(temporary.name)
@@ -38,7 +33,6 @@ async def bound_content(definitions):
     async def provider(ctx):
         await apply(ctx)
 
-    store = RuntimeSnapshotStore()
     try:
         await root.mount(provider, name="content-provider")
         for definition in definitions:
@@ -46,17 +40,9 @@ async def bound_content(definitions):
                 await ctx.require(CONTENT).register(ctx, definition)
             await root.mount(consumer, name=definition.name, inject=(CONTENT,),
                              runtime=PluginRuntime(definition.name, "content-test", path, path, path, {}))
-        store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
-        lease = store.lease()
-        token = bind_runtime_snapshot(lease)
-        try:
-            async with root.context.require(CONTENT).bind() as view:
-                yield view
-        finally:
-            reset_runtime_snapshot(token)
-            await lease.release()
+        async with root.context.require(CONTENT).bind() as view:
+            yield view
     finally:
-        await store.close()
         await root.dispose()
         temporary.cleanup()
 
@@ -245,7 +231,7 @@ async def test_saved_output_retry_keeps_the_same_image_and_expired_checks_reject
 
 
 @pytest.mark.asyncio
-async def test_external_identity_registers_via_ordinary_effect_and_real_runtime_lease(tmp_path):
+async def test_external_identity_registers_via_ordinary_effect_and_real_local_scope(tmp_path):
     root = CompositionRoot("content-generation")
 
     async def provider(ctx):
@@ -255,27 +241,23 @@ async def test_external_identity_registers_via_ordinary_effect_and_real_runtime_
         await ctx.require(CONTENT).register(ctx, meme_protocol([]))
 
     await root.mount(provider, name="independent-content-provider")
-    await root.mount(external, name="external-meme", inject=(CONTENT,),
-                     runtime=PluginRuntime("external-meme", "content-generation", tmp_path, tmp_path, tmp_path, {}))
-    store = RuntimeSnapshotStore()
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    store.install(snapshot)
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
+    await root.mount(
+        external,
+        name="external-meme",
+        inject=(CONTENT,),
+        runtime=PluginRuntime(
+            "external-meme", "content-generation", tmp_path, tmp_path, tmp_path, {}
+        ),
+    )
     try:
         async with root.context.require(CONTENT).bind() as view:
-            assert snapshot.lease_count == 2
             assert view.prompts == ("可用表情类别：happy",)
             parts, metadata = await view.decode("<meme:happy>")
             assert parts == (ContentPart("artifact_ref", "image-0"),)
             assert metadata == {"external-meme": {"category": "happy"}}
-        assert snapshot.lease_count == 1
         with pytest.raises(RuntimeError, match="lease"):
             await view.decode("<meme:happy>")
     finally:
-        reset_runtime_snapshot(token)
-        await lease.release()
-        await store.close()
         await root.dispose()
 
 
@@ -352,7 +334,6 @@ async def test_inline_code_cannot_cross_paragraph_boundaries():
 @pytest.mark.asyncio
 async def test_dynamic_protocol_freezes_prompt_and_decoder_until_next_bind(tmp_path):
     root = CompositionRoot("dynamic-protocol")
-    store = RuntimeSnapshotStore()
     current = ["first"]
     prepared = []
 
@@ -374,24 +355,210 @@ async def test_dynamic_protocol_freezes_prompt_and_decoder_until_next_bind(tmp_p
         await root.mount(consumer, name="dynamic", inject=(CONTENT,), runtime=PluginRuntime(
             "dynamic", "dynamic-test", tmp_path, tmp_path, tmp_path, {},
         ))
-        store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
-        lease = store.lease()
-        token = bind_runtime_snapshot(lease)
-        try:
-            content = root.context.require(CONTENT)
-            async with content.bind() as first:
-                assert first.prompts == ("first",)
-                current[0] = "second"
-                assert first.prompts == ("first",)
-                assert cast(Mapping[str, object], (await first.decode("reply"))[1]["dynamic"])["selected"] == "first"
-                async with content.bind() as second:
-                    assert second.prompts == ("second",)
-                    assert cast(Mapping[str, object], (await second.decode("reply"))[1]["dynamic"])["selected"] == "second"
-                assert cast(Mapping[str, object], (await first.decode("reply"))[1]["dynamic"])["selected"] == "first"
-            assert prepared == ["first", "first", "second"]
-        finally:
-            reset_runtime_snapshot(token)
-            await lease.release()
+        content = root.context.require(CONTENT)
+        async with content.bind() as first:
+            assert first.prompts == ("first",)
+            current[0] = "second"
+            assert first.prompts == ("first",)
+            assert cast(Mapping[str, object], (await first.decode("reply"))[1]["dynamic"])["selected"] == "first"
+            async with content.bind() as second:
+                assert second.prompts == ("second",)
+                assert cast(Mapping[str, object], (await second.decode("reply"))[1]["dynamic"])["selected"] == "second"
+            assert cast(Mapping[str, object], (await first.decode("reply"))[1]["dynamic"])["selected"] == "first"
+        assert prepared == ["first", "first", "second"]
     finally:
-        await store.close()
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_content_view_retains_old_contributor_but_new_bind_excludes_unloading(
+    tmp_path,
+):
+    root = CompositionRoot("content-local-drain")
+    prepare_calls = []
+    cleanup_calls = 0
+    unrelated_contexts = []
+    unrelated_events = []
+
+    async def provider(ctx):
+        await apply(ctx)
+
+    async def unrelated(ctx):
+        unrelated_contexts.append(ctx)
+        await ctx.on(RUNTIME_STARTED, lambda _event: unrelated_events.append("started"))
+
+    unrelated_fiber = await root.mount(
+        unrelated,
+        name="unrelated-content",
+        runtime=PluginRuntime(
+            "unrelated-content", "content-local-drain", tmp_path, tmp_path, tmp_path, {}
+        ),
+    )
+    unrelated_context = unrelated_contexts[0]
+    unrelated_events_before = tuple(unrelated_events)
+
+    def prepare():
+        prepare_calls.append("prepare")
+
+        async def decode(_source, _references):
+            return (), {"selected": "old"}
+
+        return TextProtocol(name="dynamic", prompt="old", decode=decode, content={})
+
+    async def contributor(ctx):
+        nonlocal cleanup_calls
+
+        def cleanup():
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+
+        await ctx.effect(lambda: cleanup, label="content-contributor-resource")
+        await ctx.require(CONTENT).register(ctx, prepare(), prepare=prepare)
+        await ctx.require(CONTENT).register(
+            ctx,
+            ContentSchema(name="structured", content={"other": lambda _part: ContentReferences()}),
+        )
+
+    await root.mount(provider, name="content-provider")
+    contributor_fiber = await root.mount(
+        contributor,
+        name="contributor",
+        inject=(CONTENT,),
+        runtime=PluginRuntime(
+            "contributor", "content-local-drain", tmp_path, tmp_path, tmp_path, {}
+        ),
+    )
+    content = root.context.require(CONTENT)
+    try:
+        async with content.bind() as old_view:
+            assert old_view.prompts == ("old",)
+            assert len(contributor_fiber.context.fiber._fiber._in_flight_calls) == 1
+            assert cleanup_calls == 0
+            dispose_task = asyncio.create_task(contributor_fiber.dispose())
+            drain_started = asyncio.Event()
+            asyncio.get_running_loop().call_soon(drain_started.set)
+            await drain_started.wait()
+            assert contributor_fiber.state is FiberState.UNLOADING
+
+            assert old_view.checks["other"](ContentPart("other", "value")) == ContentReferences()
+            assert await old_view.decode("old") == (
+                (ContentPart("text", "old"),),
+                {"contributor": {"selected": "old"}},
+            )
+            async with content.bind() as new_view:
+                assert new_view.prompts == ()
+                assert "other" not in new_view.checks
+                assert await new_view.decode("new") == ((ContentPart("text", "new"),), {})
+        await dispose_task
+        assert contributor_fiber.state is FiberState.DISPOSED
+        assert not content._definitions
+        assert cleanup_calls == 1
+        assert prepare_calls == ["prepare", "prepare"]
+        assert unrelated_fiber.state is FiberState.ACTIVE
+        assert unrelated_fiber.context is unrelated_context
+        assert tuple(unrelated_events) == unrelated_events_before
+    finally:
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_content_bind_excludes_loading_contributor_until_started(tmp_path):
+    root = CompositionRoot("content-local-loading")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    prepare_calls = []
+
+    async def provider(ctx):
+        await apply(ctx)
+
+    def prepare():
+        prepare_calls.append("prepare")
+
+        async def decode(_source, _references):
+            return (), {}
+
+        return TextProtocol(name="loading", prompt="ready", decode=decode, content={})
+
+    async def contributor(ctx):
+        await ctx.require(CONTENT).register(ctx, prepare(), prepare=prepare)
+
+        async def on_started(_event):
+            started.set()
+            await release.wait()
+
+        await ctx.on(RUNTIME_STARTED, on_started)
+
+    await root.mount(provider, name="content-provider")
+    mount_task = asyncio.create_task(
+        root.mount(
+            contributor,
+            name="loading-contributor",
+            inject=(CONTENT,),
+            runtime=PluginRuntime(
+                "loading-contributor", "content-local-loading", tmp_path, tmp_path, tmp_path, {}
+            ),
+        )
+    )
+    content = root.context.require(CONTENT)
+    try:
+        await started.wait()
+        assert {
+            view.name: view.state for view in root.receipt().fibers
+        }["loading-contributor"] is FiberState.LOADING
+        async with content.bind() as view:
+            assert view.prompts == ()
+            assert prepare_calls == ["prepare"]
+        release.set()
+        await mount_task
+        async with content.bind() as view:
+            assert view.prompts == ("ready",)
+        assert prepare_calls == ["prepare", "prepare"]
+    finally:
+        release.set()
+        await mount_task
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_content_bind_prepare_failure_releases_local_scopes(tmp_path):
+    root = CompositionRoot("content-local-failure")
+    provider_contexts = []
+    contributor_contexts = []
+    prepare_calls = 0
+
+    async def provider(ctx):
+        provider_contexts.append(ctx)
+        await apply(ctx)
+
+    def prepare():
+        nonlocal prepare_calls
+        prepare_calls += 1
+        if prepare_calls > 1:
+            raise ValueError("dynamic prepare failed")
+
+        async def decode(_source, _references):
+            return (), {}
+
+        return TextProtocol(name="failure", prompt="failure", decode=decode, content={})
+
+    async def contributor(ctx):
+        contributor_contexts.append(ctx)
+        await ctx.require(CONTENT).register(ctx, prepare(), prepare=prepare)
+
+    await root.mount(provider, name="content-provider")
+    await root.mount(
+        contributor,
+        name="failing-contributor",
+        inject=(CONTENT,),
+        runtime=PluginRuntime(
+            "failing-contributor", "content-local-failure", tmp_path, tmp_path, tmp_path, {}
+        ),
+    )
+    try:
+        with pytest.raises(ValueError, match="dynamic prepare failed"):
+            async with root.context.require(CONTENT).bind():
+                pytest.fail("prepare failure must abort bind")
+        assert not provider_contexts[0].fiber._fiber._in_flight_calls
+        assert not contributor_contexts[0].fiber._fiber._in_flight_calls
+    finally:
         await root.dispose()

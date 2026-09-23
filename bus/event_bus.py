@@ -4,11 +4,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast
-
-if TYPE_CHECKING:
-    from agent.plugins.snapshot import RuntimeSnapshotLease, RuntimeSnapshotStore
+from typing import TypeAlias, TypeVar, cast
 
 logger = logging.getLogger(__name__)
 
@@ -16,28 +12,17 @@ E = TypeVar("E")
 Handler: TypeAlias = Callable[[E], Awaitable[E | None] | E | None]
 
 
-@dataclass(frozen=True)
-class _QueuedEvent:
-    event: object
-    snapshot_lease: RuntimeSnapshotLease | None
-
-
 class EventBus:
     """提供 observe 隔离、fanout 并行和 ordered intercept 生命周期语义。"""
 
     def __init__(self) -> None:
         self._handlers: dict[type[object], list[Handler[object]]] = {}
-        self._observe_queue: asyncio.Queue[_QueuedEvent] | None = None
+        self._observe_queue: asyncio.Queue[object] | None = None
         self._observe_task: asyncio.Task[None] | None = None
         self._closed = False
-        self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
-        self._pending_enqueue_tasks: set[asyncio.Task[None]] = set()
         self._dispatcher_failures: list[BaseException] = []
         self._dispatcher_failure_tasks: set[asyncio.Task[None]] = set()
         self._dispatcher_stopping = False
-
-    def bind_runtime_snapshot_store(self, store: RuntimeSnapshotStore) -> None:
-        self._runtime_snapshot_store = store
 
     def on(
         self,
@@ -73,16 +58,6 @@ class EventBus:
         self,
         event: E,
     ) -> E:
-        lease = await self._runtime_lease()
-        if lease is not None:
-            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
-
-            async with lease:
-                token = bind_runtime_snapshot(lease)
-                try:
-                    return await self.emit(event)
-                finally:
-                    reset_runtime_snapshot(token)
         # 1. 依次执行干预链，handler 返回新事件时替换当前事件。
         for raw_handler in self._handlers_for(cast(type[object], type(event))):
             handler = cast(Handler[E], raw_handler)
@@ -96,18 +71,7 @@ class EventBus:
     async def observe(
         self,
         event: object,
-        ) -> None:
-        lease = await self._runtime_lease()
-        if lease is not None:
-            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
-
-            async with lease:
-                token = bind_runtime_snapshot(lease)
-                try:
-                    await self.observe(event)
-                    return
-                finally:
-                    reset_runtime_snapshot(token)
+    ) -> None:
         # 1. 依次执行观察者，单个观察者失败不打断主流程。
         for handler in self._handlers_for(type(event)):
             _ = await self._run_observer(event, handler)
@@ -116,26 +80,12 @@ class EventBus:
         self,
         event: object,
     ) -> None:
-        lease = await self._runtime_lease()
-        if lease is not None:
-            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
-
-            async with lease:
-                token = bind_runtime_snapshot(lease)
-                try:
-                    await self.fanout(event)
-                    return
-                finally:
-                    reset_runtime_snapshot(token)
         # 1. 并发执行观察者；每个观察者自己记录异常，fanout 只汇总失败数量。
         handlers = self._handlers_for(type(event))
         if handlers:
-            from agent.plugins.snapshot import get_current_runtime_lease
-
-            source_lease = get_current_runtime_lease()
             results = await asyncio.gather(
                 *(
-                    self._run_observer(event, handler, source_lease)
+                    self._run_observer(event, handler)
                     for handler in handlers
                 )
             )
@@ -156,63 +106,8 @@ class EventBus:
         if self._closed:
             logger.warning("event enqueue ignored after close: %s", type(event).__name__)
             return
-        from agent.plugins.snapshot import (
-            get_lifecycle_runtime_snapshot,
-            lease_current_runtime_snapshot,
-        )
-
-        _ = get_lifecycle_runtime_snapshot()
         queue = self._ensure_observe_queue()
-        snapshot_lease = lease_current_runtime_snapshot()
-        if snapshot_lease is None and self._runtime_snapshot_store is not None:
-            snapshot = self._runtime_snapshot_store.current
-            if snapshot is not None and not snapshot.accepting_leases:
-                task = asyncio.create_task(
-                    self._enqueue_after_admission(event, queue),
-                    name=f"event_enqueue_admission:{type(event).__name__}",
-                )
-                self._pending_enqueue_tasks.add(task)
-                task.add_done_callback(self._on_enqueue_task_done)
-                return
-            snapshot_lease = self._runtime_snapshot_store.lease()
-        queue.put_nowait(
-            _QueuedEvent(
-                event=event,
-                snapshot_lease=snapshot_lease,
-            )
-        )
-
-    async def _enqueue_after_admission(
-        self,
-        event: object,
-        queue: asyncio.Queue[_QueuedEvent],
-    ) -> None:
-        assert self._runtime_snapshot_store is not None
-        lease = await self._runtime_snapshot_store.acquire()
-        queue.put_nowait(_QueuedEvent(event=event, snapshot_lease=lease))
-
-    def _on_enqueue_task_done(self, task: asyncio.Task[None]) -> None:
-        self._pending_enqueue_tasks.discard(task)
-        if task.cancelled():
-            return
-        error = task.exception()
-        if error is not None:
-            logger.error(
-                "event enqueue admission failed: task=%s",
-                task.get_name(),
-                exc_info=(type(error), error, error.__traceback__),
-            )
-
-    async def _runtime_lease(self) -> RuntimeSnapshotLease | None:
-        from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
-
-        if get_lifecycle_runtime_snapshot() is not None:
-            return None
-        if self._runtime_snapshot_store is None:
-            return None
-        if self._runtime_snapshot_store.current is None:
-            return None
-        return await self._runtime_snapshot_store.acquire()
+        queue.put_nowait(event)
 
     async def drain(
         self,
@@ -229,29 +124,14 @@ class EventBus:
     async def aclose(
         self,
     ) -> None:
-        """停止 admission、排空队列并关闭 dispatcher，同时保留所有清理错误。"""
+        """关闭接纳、排空队列并关闭 dispatcher，同时保留清理错误。"""
 
         errors: list[BaseException] = []
 
-        # 1. 关闭 admission，已创建但尚未入队的事件不再进入已关闭总线。
+        # 1. 关闭 admission，后续事件不再进入已关闭总线。
         self._closed = True
-        pending_enqueue_tasks = tuple(self._pending_enqueue_tasks)
-        for task in pending_enqueue_tasks:
-            _ = task.cancel()
-        if pending_enqueue_tasks:
-            results = await asyncio.gather(
-                *pending_enqueue_tasks,
-                return_exceptions=True,
-            )
-            errors.extend(
-                result
-                for result in results
-                if isinstance(result, BaseException)
-                and not isinstance(result, asyncio.CancelledError)
-            )
-        self._pending_enqueue_tasks.clear()
 
-        # 2. 先排空已有 envelope，确保每个 snapshot lease 都由队列 owner 释放。
+        # 2. 先排空已有事件，确保队列 owner 等待每个 callback 完成。
         try:
             await self.drain()
         except BaseException as error:
@@ -282,17 +162,13 @@ class EventBus:
         self,
         event: object,
         handler: Handler[object],
-        source_lease: RuntimeSnapshotLease | None = None,
     ) -> bool:
         """在隔离 task 中运行单个 observer，并区分 observer 与调用方取消。"""
 
-        from agent.plugins.snapshot import get_current_runtime_lease
         from agent.plugin_composition.channels import (
             get_current_channel_turn_binding,
         )
 
-        source_lease = source_lease or get_current_runtime_lease()
-        snapshot_lease = source_lease.fork() if source_lease is not None else None
         channel_binding = get_current_channel_turn_binding()
         caller_task = asyncio.current_task()
         caller_cancelling = (
@@ -302,7 +178,6 @@ class EventBus:
             self._invoke_observer(
                 handler,
                 event,
-                snapshot_lease,
                 channel_binding,
             ),
             name=f"event_observer:{_handler_name(handler)}",
@@ -335,15 +210,11 @@ class EventBus:
                 _handler_name(handler),
             )
             return False
-        finally:
-            if snapshot_lease is not None and snapshot_lease.active:
-                await snapshot_lease.release()
 
     async def _invoke_observer(
         self,
         handler: Handler[object],
         event: object,
-        snapshot_lease: RuntimeSnapshotLease | None,
         channel_binding: object | None,
     ) -> None:
         channel_token = None
@@ -354,19 +225,6 @@ class EventBus:
 
             channel_token = bind_channel_turn_binding(channel_binding)
         try:
-            if snapshot_lease is not None:
-                from agent.plugins.snapshot import (
-                    bind_runtime_snapshot,
-                    reset_runtime_snapshot,
-                )
-
-                async with snapshot_lease:
-                    token = bind_runtime_snapshot(snapshot_lease)
-                    try:
-                        await self._invoke_observer(handler, event, None, None)
-                    finally:
-                        reset_runtime_snapshot(token)
-                return
             result = handler(event)
             if inspect.isawaitable(result):
                 await result
@@ -380,7 +238,7 @@ class EventBus:
 
     def _ensure_observe_queue(
         self,
-    ) -> asyncio.Queue[_QueuedEvent]:
+    ) -> asyncio.Queue[object]:
         if self._observe_queue is None:
             self._observe_queue = asyncio.Queue()
         self._ensure_observe_task()
@@ -408,9 +266,9 @@ class EventBus:
                 queue = self._observe_queue
                 if queue is None:
                     return
-                envelope = await queue.get()
+                event = await queue.get()
                 try:
-                    await self._fanout_queued(envelope)
+                    await self.fanout(event)
                 finally:
                     queue.task_done()
         except asyncio.CancelledError:
@@ -423,20 +281,6 @@ class EventBus:
         except Exception as error:
             self._record_dispatcher_failure(error, task=asyncio.current_task())
             raise
-
-    async def _fanout_queued(self, envelope: _QueuedEvent) -> None:
-        lease = envelope.snapshot_lease
-        if lease is None:
-            await self.fanout(envelope.event)
-            return
-        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
-
-        async with lease:
-            token = bind_runtime_snapshot(lease)
-            try:
-                await self.fanout(envelope.event)
-            finally:
-                reset_runtime_snapshot(token)
 
     def _handlers_for(self, event_type: type[object]) -> list[Handler[object]]:
         return list(self._handlers.get(event_type, []))
