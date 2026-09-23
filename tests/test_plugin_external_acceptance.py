@@ -49,6 +49,7 @@ def _git_commit(source: Path, message: str = "fixture") -> None:
 def _write_plugin_source(
     root: Path, *, name: str, version: str, module: str
 ) -> Path:
+    compile(module, str(root / "plugin.py"), "exec")
     root.mkdir(parents=True)
     (root / "plugin.py").write_text(module, encoding="utf-8")
     _git_commit(root, f"{name}-{version}")
@@ -347,9 +348,9 @@ def test_core_probe_records_real_start_and_stop_contract(
     calls: list[str] = []
 
     class Manager:
-        current_snapshot = SimpleNamespace(
-            snapshot_id="snapshot", generations={},
-            composition_root=SimpleNamespace(context=SimpleNamespace(get=lambda _key: object())),
+        live_root = SimpleNamespace(
+            generation_id="live-root",
+            context=SimpleNamespace(get=lambda _key: object()),
         )
 
     class Core:
@@ -369,7 +370,7 @@ def test_core_probe_records_real_start_and_stop_contract(
         async def shutdown(self) -> None:
             calls.append("stop")
             self._shutdown = True
-            self.core.plugin_manager.current_snapshot = None
+            self.core.plugin_manager.live_root = None
 
     async def start(**kwargs):
         calls.append("start")
@@ -380,7 +381,7 @@ def test_core_probe_records_real_start_and_stop_contract(
                     "bootstrap_start_returned": True,
                     "runtime_started": True,
                     "core_runtime_created": True,
-                    "stable_snapshot_published": True,
+                    "live_root_available": True,
                     "channel_host_started": True,
                     "app_server_started": True,
                     "checkout_invisible": True,
@@ -406,7 +407,7 @@ def test_core_probe_records_real_start_and_stop_contract(
 
     assert result["status"] == "passed"
     assert calls == ["start", "stop"]
-    assert result["bootstrap"]["checks"]["stable_snapshot_drained"] is True
+    assert result["bootstrap"]["checks"]["live_root_closed"] is True
 
 
 @pytest.mark.asyncio
@@ -520,7 +521,11 @@ async def test_business_composition_writes_reads_and_replaces_provider_from_new_
         "replacement:new-lease",
     )
     assert replacement["old_generation_id"] != replacement["new_generation_id"]
-    assert replacement["checks"]["consumer_read_under_new_snapshot"] is True
+    assert replacement["checks"]["install_waited_for_old_consumer"] is True
+    assert replacement["checks"]["consumer_reactivated_after_provider_change"] is True
+    assert replacement["old_consumer_call"]["live_root_id"] == (
+        replacement["new_consumer_call"]["live_root_id"]
+    )
     assert replacement["checks"]["replacement_module_from_new_artifact"] is True
     assert replacement["checks"]["replacement_module_not_old_artifact"] is True
     assert replacement["checks"]["original_source_not_required"] is True

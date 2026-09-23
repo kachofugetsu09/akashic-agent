@@ -228,6 +228,8 @@ manifest 和 stable artifact，不重新安装、启用默认 profile 或覆盖�
 发布验收还必须单独证明 Core-only 启停。下面的命令把分发制品写到仓库外；runner 会先从 `core.tar`
 启动并停止无业务源码的 Core，再执行 bundle 组合。检查报告中的 `core_bootstrap.status` 与 stop 证据；
 这一步证明 Core tar 不依赖 checkout 或业务源码，不等于默认 profile 的全量业务验收。
+组合 runner 通过 `Manager.live_root` 调用精确能力 oracle，并用正常 `Manager.install` 验证运行中替换；
+报告分别记录 artifact 来源、持久消息回读、旧 Consumer Fiber 排空、新代际重激活和 runtime 资源关闭。
 
 ```bash
 release_dir="$(mktemp -d /var/tmp/akashic-distribution.XXXXXX)"

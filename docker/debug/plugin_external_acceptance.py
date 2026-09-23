@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 
@@ -562,7 +562,7 @@ async def _start_app_runtime(
             "bootstrap_start_returned": False,
             "runtime_started": False,
             "core_runtime_created": False,
-            "stable_snapshot_published": False,
+            "live_root_available": False,
             "channel_host_started": False,
             "app_server_started": False,
             "checkout_invisible": False,
@@ -602,30 +602,32 @@ async def _start_app_runtime(
         return runtime, evidence, previous_environment
 
     manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
-    snapshot = None if manager is None else manager.current_snapshot
+    live_root = None if manager is None else manager.live_root
+    live_generation_count = 0
+    if manager is not None:
+        plugin_rows = cast(list[dict[str, object]], manager.plugin_status()["plugins"])
+        live_generation_count = sum(
+            1
+            for plugin in plugin_rows
+            if plugin["state"] == "active" and plugin["fiber_state"] == "active"
+        )
     evidence.update(
         {
-            "snapshot_id": None if snapshot is None else snapshot.snapshot_id,
-            "generation_count": (
-                0
-                if snapshot is None
-                else len(getattr(snapshot, "generations", {}))
-            ),
+            "live_root_id": None if live_root is None else live_root.generation_id,
+            "live_generation_count": live_generation_count,
             "checkout_modules_visible": _visible_checkout_modules(repo_root, None),
             "core_module_violations": _core_module_violations(core_root),
         }
     )
     checks = evidence["checks"]
-    plugin_manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
     from agent.plugin_composition.channels import CHANNELS
-    root = None if snapshot is None else snapshot.composition_root
-    channel_provider = None if root is None else root.context.get(CHANNELS)
+    channel_provider = None if live_root is None else live_root.context.get(CHANNELS)
     checks.update(
         {
             "bootstrap_start_returned": True,
             "runtime_started": bool(getattr(runtime, "_started", False)),
             "core_runtime_created": getattr(runtime, "core", None) is not None,
-            "stable_snapshot_published": snapshot is not None,
+            "live_root_available": live_root is not None,
             "channel_host_started": channel_provider is not None,
             "app_server_started": getattr(runtime, "app_server", None) is not None,
             "checkout_invisible": not evidence["checkout_modules_visible"],
@@ -663,8 +665,8 @@ async def _stop_app_runtime(
     checks.update(
         {
             "runtime_shutdown": bool(getattr(runtime, "_shutdown", False)),
-            "stable_snapshot_drained": (
-                manager is not None and manager.current_snapshot is None
+            "live_root_closed": (
+                manager is not None and manager.live_root is None
             ),
             "app_server_socket_removed": not socket_path.exists(),
             "workload_controller_socket_removed": not (
@@ -1103,8 +1105,8 @@ async def _exercise(
         evidence["bootstrap"] = startup
         manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
         evidence["load_error"] = startup.get("start_error")
-        snapshot = None if manager is None else manager.current_snapshot
-        generation = None if snapshot is None else snapshot.generations.get(plugin_id)
+        live_root = None if manager is None else manager.live_root
+        generation = None if manager is None else manager.generation(plugin_id)
         if generation is not None:
             evidence.update(
                 _generation_evidence(
@@ -1119,7 +1121,7 @@ async def _exercise(
             evidence["checks"]["apply"] = False
             evidence["error"] = (
                 startup.get("start_error")
-                or "formal install 后未形成 stable generation/module"
+                or "formal install 后未形成 live generation/module"
             )
         visible = _visible_checkout_modules(repo_root, source_checkout)
         evidence["checkout_modules_visible"] = visible
@@ -1142,18 +1144,16 @@ async def _exercise(
             }
             if generation is None:
                 evidence["capability_call"]["error"] = "apply 未成功，不能调用能力"
+            elif live_root is None:
+                evidence["capability_call"]["error"] = "Manager 未提供 live Root"
+                evidence["checks"]["capability_call"] = False
             else:
-                from agent.plugins.snapshot import lease_runtime_snapshot
-
                 try:
-                    async with lease_runtime_snapshot(manager.snapshot_store) as leased:
-                        if leased.composition_root is None:
-                            raise RuntimeError("snapshot 缺少 composition root")
-                        evidence["capability_call"] = await _invoke_capability(
-                            root=leased.composition_root,
-                            plugin_id=plugin_id,
-                            spec=capability_spec,
-                        )
+                    evidence["capability_call"] = await _invoke_capability(
+                        root=live_root,
+                        plugin_id=plugin_id,
+                        spec=capability_spec,
+                    )
                     evidence["checks"]["capability_call"] = True
                 except Exception as error:
                     evidence["capability_call"] = {
@@ -1309,12 +1309,12 @@ async def _exercise_fleet(
         manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
         if startup.get("start_error"):
             load_error = str(startup["start_error"])
-        snapshot = None if manager is None else manager.current_snapshot
+        live_root = None if manager is None else manager.live_root
         visible = _visible_checkout_modules(repo_root, None)
         core_violations = _core_module_violations(core_root)
         for row in installed:
             plugin_id = row["plugin_id"]
-            generation = None if snapshot is None else snapshot.generations.get(plugin_id)
+            generation = None if manager is None else manager.generation(plugin_id)
             if generation is not None:
                 row["checks"]["apply_attempted"] = True
                 row.update(
@@ -1332,7 +1332,7 @@ async def _exercise_fleet(
                 row["checks"]["apply_attempted"] = None
                 row["error"] = (
                     load_error
-                    or "formal install 后未形成 stable generation/module"
+                    or "formal install 后未形成 live generation/module"
                 )
             row["checkout_modules_visible"] = visible
             row["checks"]["checkout_invisible"] = not visible
@@ -1351,56 +1351,58 @@ async def _exercise_fleet(
         ]
         if require_capability:
             calls_to_run = installed
-        if calls_to_run and snapshot is not None and manager is not None:
-            from agent.plugins.snapshot import lease_runtime_snapshot
-
-            async with lease_runtime_snapshot(manager.snapshot_store) as leased:
-                if leased.composition_root is None:
-                    raise RuntimeError("snapshot 缺少 composition root")
-                for row in calls_to_run:
-                    plugin_id = row["plugin_id"]
-                    generation = snapshot.generations.get(plugin_id)
-                    spec = _capability_for(
-                        capability_calls,
-                        str(row.get("plugin")),
-                        plugin_id,
-                        plugin_id.split("@", 1)[0],
-                    )
-                    if generation is None:
+        if calls_to_run and manager is not None:
+            for row in calls_to_run:
+                plugin_id = row["plugin_id"]
+                generation = manager.generation(plugin_id)
+                spec = _capability_for(
+                    capability_calls,
+                    str(row.get("plugin")),
+                    plugin_id,
+                    plugin_id.split("@", 1)[0],
+                )
+                if generation is None:
+                    row["capability_call"] = {
+                        "status": "not_run",
+                        "call_executed": False,
+                        "error": "apply 未成功，不能调用能力",
+                    }
+                    row["checks"]["capability_call"] = False
+                elif spec is None:
+                    row["capability_call"] = {
+                        "status": "unverified",
+                        "call_executed": False,
+                        "error": "缺少精确 capability oracle",
+                    }
+                    row["checks"]["capability_call"] = False
+                elif live_root is None:
+                    row["capability_call"] = {
+                        "status": "failed",
+                        "call_executed": False,
+                        "error": "Manager 未提供 live Root",
+                    }
+                    row["checks"]["capability_call"] = False
+                else:
+                    try:
+                        row["capability_call"] = await _invoke_capability(
+                            root=live_root,
+                            plugin_id=plugin_id,
+                            spec=spec,
+                        )
+                        row["checks"]["capability_call"] = True
+                    except Exception as error:
                         row["capability_call"] = {
-                            "status": "not_run",
+                            "status": "failed",
                             "call_executed": False,
-                            "error": "apply 未成功，不能调用能力",
+                            "error": f"{type(error).__name__}: {error}",
                         }
                         row["checks"]["capability_call"] = False
-                    elif spec is None:
-                        row["capability_call"] = {
-                            "status": "unverified",
-                            "call_executed": False,
-                            "error": "缺少精确 capability oracle",
-                        }
-                        row["checks"]["capability_call"] = False
-                    else:
-                        try:
-                            row["capability_call"] = await _invoke_capability(
-                                root=leased.composition_root,
-                                plugin_id=plugin_id,
-                                spec=spec,
-                            )
-                            row["checks"]["capability_call"] = True
-                        except Exception as error:
-                            row["capability_call"] = {
-                                "status": "failed",
-                                "call_executed": False,
-                                "error": f"{type(error).__name__}: {error}",
-                            }
-                            row["checks"]["capability_call"] = False
         elif require_capability:
             for row in installed:
                 row["capability_call"] = {
                     "status": "unverified",
                     "call_executed": False,
-                    "error": "缺少精确 capability oracle 或 stable generation",
+                    "error": "缺少精确 capability oracle 或 live generation",
                 }
                 row["checks"]["capability_call"] = False
         for row in installed:
@@ -1538,8 +1540,7 @@ async def _exercise_business_composition(
             plugin_id=plugin_id,
             spec=spec,
         )
-        evidence["selector"] = "live"
-        evidence["snapshot_id"] = root.generation_id
+        evidence["live_root_id"] = root.generation_id
         evidence["generation_id"] = generation.generation_id
         return evidence
 
@@ -1614,8 +1615,8 @@ async def _exercise_business_composition(
         for row in reports:
             row["checkout_modules_visible"] = visible_checkout_modules
             row["checks"]["checkout_invisible"] = not visible_checkout_modules
-        # 2. Every declared capability is called while its real generation is
-        # leased.  Calls that only enumerate services never reach this path.
+        # 2. Every declared capability runs through the current live Root.
+        # Calls that only enumerate services never reach this path.
         for row in reports:
             plugin_id = row.get("plugin_id")
             if not isinstance(plugin_id, str):
@@ -1623,7 +1624,7 @@ async def _exercise_business_composition(
             generation = initial_generations.get(plugin_id)
             row["checks"]["apply"] = generation is not None
             if generation is None:
-                row["error"] = row.get("error", "apply 后缺少 stable generation")
+                row["error"] = row.get("error", "apply 后缺少 live generation")
                 continue
             source_checkout = _source_checkout(str(row["source"]), repo_root)
             row["generation"] = _generation_evidence(
@@ -1665,9 +1666,9 @@ async def _exercise_business_composition(
                 }
 
         if replacement is not None:
-            # 3. Keep the old stable lease while the manager stages the new
-            # artifact.  Release it only after the normal publication task has
-            # been started, then call the same consumer under the new lease.
+            # 3. Keep the old Consumer Fiber scope open while Manager.install
+            # waits to replace its provider, then call the same consumer from
+            # the new generation through the unchanged live Root.
             provider_name = str(replacement.get("plugin", ""))
             consumer_name = str(replacement.get("consumer", ""))
             if not provider_name or not consumer_name:
@@ -1724,7 +1725,7 @@ async def _exercise_business_composition(
                 old_consumer_call = await _invoke_capability(
                     root=initial_root, plugin_id=consumer_id, spec=before_spec,
                 )
-                old_consumer_call["snapshot_id"] = initial_root.generation_id
+                old_consumer_call["live_root_id"] = initial_root.generation_id
                 old_consumer_call["generation_id"] = old_consumer_generation_id
                 installation = asyncio.create_task(manager.install(
                     source=replacement_source, marketplace=marketplace,
@@ -1781,11 +1782,11 @@ async def _exercise_business_composition(
                 "old_artifact": str(old_provider_artifact),
                 "checks": {
                     "publication_committed": update_status.state == "active" and accepted.selection == "selected",
-                    "publication_waited_for_old_lease": waited_for_old,
+                    "install_waited_for_old_consumer": waited_for_old,
                     "provider_generation_changed": (
                         old_provider_generation_id != new_provider.generation_id
                     ),
-                    "consumer_read_under_new_snapshot": (
+                    "consumer_reactivated_after_provider_change": (
                         new_consumer.fiber is not None
                         and new_consumer.fiber.context.fiber.activation_token is not old_consumer_token
                     ),
