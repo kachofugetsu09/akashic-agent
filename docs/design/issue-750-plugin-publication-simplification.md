@@ -1,5 +1,113 @@
 # Issue 750：单图插件系统与局部换代任务拆分
 
+## 2026-09-23 · WIP 基线与并行交接
+
+本次只冻结累计源码、准备隔离工作区并交付 Draft PR，随后暂停；没有修复
+T-82189d 的新失败，也没有分发后续任务。下述记录是当前交接状态，不把后文各批
+历史通过项提升为系统通过。Draft PR 用于累计审查，不关闭 Issue 750、不允许合并或部署。
+
+### 基线与已知失败
+
+- 累计源码检查点：`e34161c728d54429ce36ef06cada75f7a89c3819`，基于
+  `69a67e7f3d464d1bd749d738d2d31402229fde60`。它保存 173 个累计变更路径，
+  包含 T-82189d 未验收实现；旧 worktree 的 `.done` 保留但不提交。
+- 各新工作区从上述检查点之后的同一个交接文档提交创建；准确 HEAD、tree、路径和
+  分支由本机 `/mnt/data/issue750-parallel-baseline-20260923.RXUmH9/environments.json`
+  记录。原 `feature/issue750-local-plugin-graph` 保留为交接基线，不再作为并行 writer 目录。
+- T-82189d：Subagent 1 passed / 11 failed；Reply follower 23/23；Message Commands
+  10/10；八项定点 consumer 测试 5 passed / 3 failed。Tools owner scope、
+  `delivery_policy` 启动 owner 和 Core 旧 snapshot oracle 尚未闭合。局部 drain 没有证明
+  更新成功；被中止、无 JUnit 的探索运行不计入验收。
+- 本次仅执行累计 Python 源的 AST/内存 compile（150 个通过），没有重跑行为测试或 Gate。
+  累计 staged diff 检查仍有 `agent/plugin_composition/host.py` 文件末尾空行告警；
+  为保持源码检查点原样，没有顺手修改该生产文件。
+
+### 主线同步不是自动通过
+
+预检目标为 `origin/main@ae444d47281b5b25bb467a76dd25eab02c95ec08`，比原基线多七个
+提交。`git merge-tree --write-tree --name-only` 报告以下 26 个冲突路径；它只生成
+预览对象，没有修改任何 checkout/index，也没有留下未完成的 merge：
+
+```text
+agent/plugin_composition/admission.py
+agent/plugin_composition/context.py
+agent/plugin_composition/runtime_catalog.py
+agent/plugins/manager.py
+agent/plugins/reload_journal.py
+bus/queue.py
+docker/debug/wake_v3_provider_e2e.py
+plugins/channels/provider.py
+plugins/models/state.py
+plugins/reply/follow.py
+plugins/stable_view/plugin.py
+tests/test_channel_input.py
+tests/test_commands_provider.py
+tests/test_mcp_binding_scope.py
+tests/test_message_bus_admission.py
+tests/test_message_model_selection.py
+tests/test_mobile_ui_provider.py
+tests/test_plugin_hot_reload.py
+tests/test_plugin_latest_models.py
+tests/test_plugin_runtime_control.py
+tests/test_plugin_uninstall_root_drain.py
+tests/test_plugin_update_source.py
+tests/test_plugin_updates_api.py
+tests/test_reply_follow.py
+tests/test_stable_view_plugin.py
+tests/test_subagent_messages.py
+```
+
+下一轮先由唯一集成 owner 处理主线语义差异，再冻结新的共同起点并下发任务。
+不得让多个 worker 各自解决这 26 个冲突；不得用整文件 ours/theirs 覆盖主线修复。
+当前新工作区可隔离检查，但不代表已经与最新 main 集成或可发布。
+
+### 工作区与写入规则
+
+全部目录位于 `/mnt/data/coding/`；本轮只创建环境，不启动 agent 或分派代码任务。
+
+| 用途 | worktree 目录 | 分支或模式 |
+|---|---|---|
+| 集成与 Draft PR | `akasic-agent-issue750-integration-20260923` | `codex/issue750-integration-20260923` |
+| 实现槽 A | `akasic-agent-issue750-worker-a-20260923` | `codex/issue750-worker-a-20260923` |
+| 实现槽 B | `akasic-agent-issue750-worker-b-20260923` | `codex/issue750-worker-b-20260923` |
+| 实现槽 C | `akasic-agent-issue750-worker-c-20260923` | `codex/issue750-worker-c-20260923` |
+| 独立只读评审 | `akasic-agent-issue750-review-20260923` | detached HEAD；合同禁止写入 |
+
+```text
+冻结的共同起点
+├─ 实现 A ─┐
+├─ 实现 B ─┼─ 各自提交与证据 → 唯一集成 owner → 累计验证 → Draft PR
+├─ 实现 C ─┘                                      │
+└─ 独立 reviewer ← 精确待审 SHA ────────────────────┘
+```
+
+1. 一个 worktree 同时只有一个 writer；任务必须固定起始 SHA、允许路径和验收范围。
+   模型与任务分配留待下一轮，不因有空闲槽就同时修改同一接口。
+2. Core/Manager/公共接口有唯一责任人；共享 API 变化先集成，再更新依赖任务起点。
+   `NOW`、本设计、决策与产品规则由集成 owner 唯一写入，worker 只在回执提出文档变更。
+3. worker 不直接推 Draft PR head。集成 owner 按依赖顺序接收精确提交、审查 diff 并运行
+   累计测试；Git 无冲突不等于行为兼容。不得跨 worktree 复制未提交文件当成合并。
+4. 仅在依赖文件 hash 相同时复用现有虚拟环境作只读解释器，不安装或升级共享依赖。
+   每次运行使用独立 TMPDIR、plugin home、workspace、basetemp 和实际分配的端口；
+   清除继承的 `AKASHIC_*` 和测试 Git 配置。依赖变更必须独立建环境，不能污染其他槽。
+5. `/mnt/data/issue750-parallel-baseline-20260923.RXUmH9/run-python.py` 提供本机隔离
+   Python 入口；它不自动运行测试。测试仍须显式选 nodeid、超时与证据目录，禁止指向正式
+   workspace/cache。只读 review 通过合同和前后 hash 核验约束，不声称 detached HEAD
+   本身提供文件系统只读权限。
+6. 任何 must-fix、冲突或未通过测试都留在 Draft 状态；完整 Gate、CI、运行验收和
+   final enable 另行完成。创建 PR 不授权 merge、auto-merge、release 或 deploy。
+
+### 恢复与停止点
+
+本次恢复目录为 `/mnt/data/issue750-parallel-baseline-20260923.RXUmH9`：保存原 HEAD
+bundle、binary patch、index、174 项原始状态（含 `.done` 和删除记录）、副本 hash、
+主线合并预览，以及 T-82189d 最终 console/JUnit 等证据。新增环境与 Git 提交不改正式
+workspace 或数据库；恢复应在新目录按 manifest 重建，不覆盖用户 checkout。
+旧 worktree 中还观察到一个此前启动的 `test_task_scopes.py` pytest 进程，未确认清理
+归属，因此未擅自终止；新环境不复用其 TMPDIR 或运行 workspace。没有开启新业务进程。
+
+本轮交付后停下，等待下一轮明确拆分与 hgt 派遣。
+
 - T-750784 → T-d80010 → T-673b11（Reply-Source owner R1→R2→R3）：R1 整批不接受，仅保留
   `TaskServiceClosed`/`formal=False` 的窄事实与 typed 接纳方向；R1 没有新增 follower 回归，
   前置 red 也没有原始 command/console/JUnit/exit 产物。R2 收敛 `follow.py` 的真实取消结算：

@@ -42,6 +42,8 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 ## P0 · 单图插件系统与局部换代（Issue 750）
 
+- 当前暂停在[WIP 基线与并行交接](design/issue-750-plugin-publication-simplification.md#2026-09-23--wip-基线与并行交接)：累计源码检查点 `e34161c7` 已保存，Draft PR 与独立集成/worker/review 环境仅用于后续接手，本轮不分发任务。T-82189d 的 Tools/Delivery owner 与 Core snapshot 失败仍未闭合；最新 main 的合并预览存在 26 个冲突路径，下一轮先由唯一集成 owner 收口并冻结共同起点，不能把当前环境写成主线已同步、系统验收通过或 final enable。
+
 - T-fb9a7f 已闭合 Selected-Load A 的真实 selection identity oracle，并完成 Core T02 局部行为证据：selection 1/1、Core 其余四组 25/25。详见设计文档 T-fb9a7f 段与 `/tmp/i750-core.YE9wsb/`；不外推为 Issue 750 完成，完整回归/Gate/CI/正式运行/final enable 仍为 WIP。
 
 - T-b0ab9e（T06-Models R2）上批已知事实：`reader.__self__` 替换、同路径断言、Models 生产/测试对账及文档已由主审与独立只读 review 静态接受，累计静态材料未运行行为测试；T-fa9271/T-83b918 原失败稿不追认为整批通过。生产 Models/Core/clients/Bindings/Manager 未改，持久化 delta 为 0。ModelsStore/CAS、credentials、descriptor/schema、Message、model_calls、continuation、embedding identity 与可选 chat API 注入保留；不能把静态结论写成行为验收或最终 enable。
