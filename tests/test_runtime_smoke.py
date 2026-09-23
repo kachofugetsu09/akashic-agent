@@ -3003,3 +3003,461 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
     assert self_path not in summary_force.created + summary_force.overwritten
     assert veda_path not in summary_force.created + summary_force.overwritten
+
+
+@pytest.mark.asyncio
+async def test_real_app_durable_inbound_recovers_through_current_channel_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Real AppRuntime recovery keeps a handoff through local Channel replacement."""
+
+    import shutil
+    from datetime import UTC, datetime
+
+    from agent.plugin_composition.channels import (
+        ChannelInboundMessage,
+        RawInbound,
+    )
+    from agent.plugins.watcher import PluginWatcher
+    from session.log import SessionAttributes
+    from session.message import Input
+
+    config_path, socket_path = _prepare_real_host_fixture(monkeypatch, tmp_path)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'disabled_builtin = ["akasha", "wake"]',
+            "disabled_builtin = []",
+        ),
+        encoding="utf-8",
+    )
+    source_root = tmp_path / "plugins"
+    repo_plugins = Path(__file__).parents[1] / "plugins"
+    for name in ("commands", "ui", "content", "models", "conversation", "sources", "channels"):
+        shutil.copytree(
+            repo_plugins / name,
+            source_root / name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+            dirs_exist_ok=True,
+        )
+
+    def write_plugin(path: Path, source: str) -> None:
+        """Parse and compile one generated plugin before writing it."""
+
+        source = source.strip() + "\n"
+        tree = ast.parse(source, filename=str(path))
+        compile(tree, str(path), "exec")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+    channel_source = """
+import asyncio
+from agent.plugin_composition import (
+    CHANNELS, ChannelCapability, ChannelDefinition, InboundIdentity,
+)
+from agent.plugin_composition.channels import (
+    CHANNEL_INPUT, ChannelReady, StopReceipt,
+)
+
+api_version = 3
+name = "c1-channel"
+version = "1.0.0"
+REVISION = __REVISION__
+inject = (CHANNELS, CHANNEL_INPUT)
+OPENED = asyncio.Event()
+STOP_ENTERED = asyncio.Event()
+STOP_RELEASE = asyncio.Event()
+STOP_RELEASE.set()
+ADAPTERS = []
+
+
+class Adapter:
+    def __init__(self, context):
+        self.context = context
+        self.ports = None
+        ADAPTERS.append(self)
+
+    def attach_runtime(self, ports):
+        self.ports = ports
+
+    def open_admission(self):
+        OPENED.set()
+
+    def close_admission(self):
+        pass
+
+    async def start(self):
+        return ChannelReady(self.context.binding_token)
+
+    async def stop(self):
+        if REVISION == 1:
+            STOP_ENTERED.set()
+            await STOP_RELEASE.wait()
+        return StopReceipt(self.context.binding_token, True)
+
+    async def deliver(self, _request):
+        raise AssertionError("this test does not send channel output")
+
+
+async def apply(ctx):
+    await ctx.require(CHANNELS).register(ctx, ChannelDefinition(
+        name="c1-durable",
+        capabilities=frozenset({
+            ChannelCapability.INBOUND,
+            ChannelCapability.DURABLE_INBOUND,
+        }),
+        factory=Adapter,
+        inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
+        config={"revision": REVISION},
+    ))
+"""
+
+    def write_channel_plugin(revision: int) -> None:
+        write_plugin(
+            source_root / "c1-channel" / "plugin.py",
+            channel_source.replace("__REVISION__", str(revision)),
+        )
+
+    write_channel_plugin(1)
+    write_plugin(
+        source_root / "c1-peer" / "plugin.py",
+        """
+from agent.plugin_composition import ServiceKey
+
+api_version = 3
+name = "c1-peer"
+version = "1.0.0"
+inject = ()
+PEER = ServiceKey("c1.peer.v1")
+VALUE = object()
+
+
+async def apply(ctx):
+    await ctx.provide(PEER, VALUE)
+""",
+    )
+
+    observed: dict[str, object] = {}
+    _capture_real_app_runtime(monkeypatch, observed, plugin_dirs=(source_root,))
+    dashboard_started = asyncio.Event()
+    watcher_started = asyncio.Event()
+    real_build_dashboard_server = bootstrap_app.build_dashboard_server
+
+    def build_dashboard_server(**kwargs: Unpack[_DashboardKwargs]) -> object:
+        server = real_build_dashboard_server(**kwargs)
+        observed["dashboard_server"] = server
+        real_serve = server.serve
+
+        async def observe_serve() -> None:
+            dashboard_started.set()
+            await real_serve()
+
+        monkeypatch.setattr(server, "serve", observe_serve)
+        return server
+
+    monkeypatch.setattr(bootstrap_app, "build_dashboard_server", build_dashboard_server)
+    real_watcher_run = PluginWatcher.run
+
+    async def observe_watcher_run(watcher: PluginWatcher) -> None:
+        watcher_started.set()
+        await real_watcher_run(watcher)
+
+    monkeypatch.setattr(PluginWatcher, "run", observe_watcher_run)
+    config = Config.load(config_path, workspace=tmp_path)
+    runtime = bootstrap_app.build_app_runtime(config, tmp_path)
+    observed["app_runtime"] = runtime
+
+    runner: asyncio.Task[None] | None = None
+    runner_result_consumed = False
+    old_stop_release: asyncio.Event | None = None
+    observer_tasks: set[asyncio.Task[bool]] = set()
+    cleanup_errors: list[BaseException] = []
+    body_error: BaseException | None = None
+
+    async def wait_event(event: asyncio.Event, *, name: str) -> None:
+        """Observe a gate with a timeout that leaves its owner untouched."""
+
+        task = asyncio.create_task(event.wait(), name=name)
+        observer_tasks.add(task)
+        done, _ = await asyncio.wait((task,), timeout=20)
+        if task not in done:
+            raise AssertionError(f"timed out waiting for {name}")
+        observer_tasks.remove(task)
+        assert task.result()
+
+    try:
+        runner = asyncio.create_task(runtime.run(), name="real-app-durable-recovery")
+        await wait_event(dashboard_started, name="c1-dashboard-started")
+        await wait_event(watcher_started, name="c1-plugin-watcher-started")
+        assert not runner.done()
+
+        core = cast(Any, observed["core"])
+        manager = core.plugin_manager
+        root = manager.live_root
+        assert root is not None
+        peer = manager.generation("c1-peer")
+        channel = manager.generation("c1-channel")
+        assert peer is not None and peer.fiber is not None
+        assert channel is not None and channel.fiber is not None
+        peer_fiber = peer.fiber
+        peer_context = peer_fiber.context
+        peer_activation = peer_context.fiber.activation_token
+        peer_module = cast(Any, peer.instance.module)
+        peer_value = peer_module.VALUE
+
+        async with peer_context.runtime_scope():
+            assert peer_context.require(peer_module.PEER) is peer_value
+
+        old_module = cast(Any, channel.instance.module)
+        await wait_event(old_module.OPENED, name="c1-first-channel-opened")
+        assert len(old_module.ADAPTERS) == 1
+        old_adapter = cast(Any, old_module.ADAPTERS[0])
+        durable = old_adapter.ports.durable_inbound
+        assert durable is not None
+
+        session_id = "c1-durable:room"
+        core.message_log.ensure_session(session_id, SessionAttributes())
+        message_id = "c1-provider-message-1"
+        handoff_id = "c1-handoff-1"
+        raw = RawInbound(
+            message_id,
+            ChannelInboundMessage(
+                channel="c1-durable",
+                sender="provider-user",
+                chat_id="room",
+                content="durable payload",
+                timestamp=datetime(2026, 9, 23, tzinfo=UTC),
+                metadata={
+                    "session_key_override": session_id,
+                    "provider_message_id": message_id,
+                    "durable_inbound": True,
+                    "durable_handoff_id": handoff_id,
+                },
+            ),
+            provider_identity="c1-provider",
+            recipient="room",
+        )
+        assert await durable.reserve(raw) is True
+        assert await durable.defer(handoff_id) is None
+        pending_before = core.inbound_store.list_inbound_handoffs()
+        assert len(pending_before) == 1
+        pending_row = dict(pending_before[0])
+        assert pending_row["handoff_id"] == handoff_id
+        assert pending_row["channel"] == "c1-durable"
+        assert pending_row["session_key"] == session_id
+        assert pending_row["content"] == "durable payload"
+        stored_metadata = json.loads(cast(str, pending_row["metadata_json"]))
+        assert stored_metadata["provider_message_id"] == message_id
+        assert stored_metadata["durable_handoff_id"] == handoff_id
+        assert core.message_log.reader(session_id).snapshot() == ()
+
+        reconcile_started = asyncio.Event()
+        reconcile_finished = asyncio.Event()
+        reconcile_results: list[list[dict[str, object]]] = []
+        reconcile_errors: list[BaseException] = []
+        real_reconcile = manager.reconcile_changed
+
+        async def observe_reconcile() -> list[dict[str, object]]:
+            """Observe the real public watcher call without replacing it."""
+
+            reconcile_started.set()
+            try:
+                result = await real_reconcile()
+            except BaseException as error:
+                reconcile_errors.append(error)
+                raise
+            else:
+                reconcile_results.append(result)
+                return result
+            finally:
+                reconcile_finished.set()
+
+        monkeypatch.setattr(manager, "reconcile_changed", observe_reconcile)
+        watcher = runtime.plugin_watcher
+        assert watcher is not None
+        old_stop_release = old_module.STOP_RELEASE
+        old_stop_release.clear()
+        write_channel_plugin(2)
+        watcher.wake()
+        await wait_event(reconcile_started, name="c1-reconcile-started")
+        await wait_event(old_module.STOP_ENTERED, name="c1-channel-stop-entered")
+
+        assert manager.live_root is root
+        await core.bus.recover_durable_inbounds()
+        assert core.inbound_store.list_inbound_handoffs() == [pending_row]
+        assert core.message_log.reader(session_id).snapshot() == ()
+
+        assert manager.generation("c1-peer") is peer
+        assert peer.fiber is peer_fiber
+        assert peer_context.fiber.activation_token is peer_activation
+        assert peer_fiber.state is FiberState.ACTIVE
+        async with peer_context.runtime_scope():
+            assert peer_context.require(peer_module.PEER) is peer_value
+
+        old_stop_release.set()
+        await wait_event(reconcile_finished, name="c1-reconcile-finished")
+        assert not reconcile_errors, [str(error) for error in reconcile_errors]
+        assert len(reconcile_results) == 1
+        assert any(
+            item.get("plugin_id") == "c1-channel"
+            and item.get("publication_state") == "active"
+            for item in reconcile_results[0]
+        )
+
+        current_channel = manager.generation("c1-channel")
+        assert current_channel is not None and current_channel is not channel
+        assert current_channel.fiber is not None and current_channel.fiber is not channel.fiber
+        assert current_channel.fiber.state is FiberState.ACTIVE
+        current_module = cast(Any, current_channel.instance.module)
+        assert current_module.REVISION == 2
+        assert manager.live_root is root
+        assert manager.generation("c1-peer") is peer
+
+        await wait_event(current_module.OPENED, name="c1-next-channel-opened")
+        await core.bus.recover_durable_inbounds()
+        messages = core.message_log.reader(session_id).snapshot()
+        assert len(messages) == 1
+        accepted = messages[0]
+        assert isinstance(accepted.body, Input)
+        assert accepted.message_id == message_id
+        assert accepted.source == "conversation"
+        assert accepted.body.parts[0].value == {
+            "channel": "c1-durable",
+            "chat_id": "room",
+            "sender": "provider-user",
+        }
+        assert [part.value for part in accepted.body.parts if part.kind == "text"] == [
+            "durable payload"
+        ]
+        assert core.identities.resolve("c1-durable", "c1-provider") == "room"
+        assert core.inbound_store.list_inbound_handoffs() == []
+
+        await core.bus.recover_durable_inbounds()
+        assert core.message_log.reader(session_id).snapshot() == messages
+        assert core.inbound_store.list_inbound_handoffs() == []
+
+        cast(Any, observed["dashboard_server"]).should_exit = True
+        done, _ = await asyncio.wait((runner,), timeout=20)
+        assert runner in done
+        try:
+            runner.result()
+        finally:
+            runner_result_consumed = True
+    except BaseException as error:
+        body_error = error
+        raise
+    finally:
+        # 1. Release the held lifecycle gate before settling AppRuntime.
+        if old_stop_release is not None:
+            try:
+                old_stop_release.set()
+            except BaseException as error:
+                cleanup_errors.append(error)
+        server = observed.get("dashboard_server")
+        if server is not None:
+            try:
+                cast(Any, server).should_exit = True
+            except BaseException as error:
+                cleanup_errors.append(error)
+
+        # 2. Settle each observer independently; preserve its real result.
+        for task in tuple(observer_tasks):
+            cancel_requested = False
+            cancellations_before = task.cancelling()
+            if not task.done():
+                cancel_requested = task.cancel()
+            wait_failed = False
+            try:
+                done, _ = await asyncio.wait((task,), timeout=10)
+            except BaseException as error:
+                cleanup_errors.append(error)
+                wait_failed = True
+                done = set()
+            if task not in done:
+                if not wait_failed:
+                    cleanup_errors.append(
+                        AssertionError(
+                            "observer task did not settle within 10 seconds: "
+                            f"{task.get_name()}"
+                        )
+                    )
+                try:
+                    await asyncio.wait((task,))
+                except BaseException as error:
+                    cleanup_errors.append(error)
+            if task.done():
+                try:
+                    task.result()
+                except asyncio.CancelledError as error:
+                    if not (
+                        cancel_requested
+                        and cancellations_before == 0
+                        and error.__cause__ is None
+                    ):
+                        cleanup_errors.append(error)
+                except BaseException as error:
+                    cleanup_errors.append(error)
+            else:
+                cleanup_errors.append(AssertionError(
+                    f"observer task remains unsettled: {task.get_name()}"
+                ))
+            observer_tasks.remove(task)
+
+        # 3. Settle the exact AppRuntime owner, consume its result once, then
+        #    check physical cleanup even if an observer already failed.
+        if runner is not None and not runner_result_consumed:
+            cancel_requested = False
+            cancellations_before = runner.cancelling()
+            if not runner.done():
+                cancel_requested = runner.cancel()
+            wait_failed = False
+            try:
+                done, _ = await asyncio.wait((runner,), timeout=30)
+            except BaseException as error:
+                cleanup_errors.append(error)
+                wait_failed = True
+                done = set()
+            if runner not in done:
+                if not wait_failed:
+                    cleanup_errors.append(
+                        AssertionError(
+                            "AppRuntime owner task did not settle within 30 seconds"
+                        )
+                    )
+                try:
+                    await asyncio.wait((runner,))
+                except BaseException as error:
+                    cleanup_errors.append(error)
+            if runner.done():
+                try:
+                    runner.result()
+                except asyncio.CancelledError as error:
+                    if not (
+                        cancel_requested
+                        and cancellations_before == 0
+                        and error.__cause__ is None
+                    ):
+                        cleanup_errors.append(error)
+                except BaseException as error:
+                    cleanup_errors.append(error)
+                finally:
+                    runner_result_consumed = True
+            else:
+                cleanup_errors.append(
+                    AssertionError("AppRuntime owner task remains unsettled")
+                )
+        if runner is not None and runner.done() and "core" in observed:
+            try:
+                _assert_real_app_closed(observed, tmp_path, socket_path)
+            except BaseException as error:
+                cleanup_errors.append(error)
+        if cleanup_errors:
+            errors = ([body_error] if body_error is not None else []) + cleanup_errors
+            if len(errors) == 1:
+                raise errors[0]
+            message = (
+                "AppRuntime test body and cleanup failures"
+                if body_error is not None
+                else "AppRuntime cleanup failures"
+            )
+            raise BaseExceptionGroup(message, errors) from None

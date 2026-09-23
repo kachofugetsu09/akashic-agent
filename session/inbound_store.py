@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -17,17 +18,79 @@ _SCHEMA = {
     "idx_inbound_handoffs_session": """CREATE INDEX IF NOT EXISTS idx_inbound_handoffs_session ON inbound_handoffs(session_key, created_at)""",
 }
 
+HANDOFF_PROVIDER_IDENTITY_KEY = "_akashic_durable_provider_identity"
+_HANDOFF_PROVIDER_IDENTITY_VERSION = 1
+
+
+def add_handoff_provider_identity(
+    metadata: Mapping[str, object],
+    provider_identity: str | None,
+    recipient: str | None,
+) -> dict[str, object]:
+    """Copy business metadata and add the reserved durable identity record."""
+
+    if HANDOFF_PROVIDER_IDENTITY_KEY in metadata:
+        raise ValueError("durable handoff metadata uses a reserved identity key")
+    persisted = dict(metadata)
+    persisted[HANDOFF_PROVIDER_IDENTITY_KEY] = {
+        "version": _HANDOFF_PROVIDER_IDENTITY_VERSION,
+        "provider_identity": provider_identity,
+        "recipient": recipient,
+    }
+    return persisted
+
+
+def read_handoff_provider_identity(
+    metadata: Mapping[str, object],
+) -> tuple[str | None, str | None] | None:
+    """Decode one versioned identity record; None means an old handoff row."""
+
+    if HANDOFF_PROVIDER_IDENTITY_KEY not in metadata:
+        return None
+    value = metadata[HANDOFF_PROVIDER_IDENTITY_KEY]
+    if not isinstance(value, dict) or set(value) != {
+        "version",
+        "provider_identity",
+        "recipient",
+    }:
+        raise ValueError("durable handoff provider identity shape invalid")
+    version = value["version"]
+    provider_identity = value["provider_identity"]
+    recipient = value["recipient"]
+    if type(version) is not int or version != _HANDOFF_PROVIDER_IDENTITY_VERSION:
+        raise ValueError("durable handoff provider identity version unsupported")
+    if (provider_identity is not None and not isinstance(provider_identity, str)) or (
+        recipient is not None and not isinstance(recipient, str)
+    ):
+        raise ValueError("durable handoff provider identity values invalid")
+    if (provider_identity is None) != (recipient is None):
+        raise ValueError("durable handoff provider identity pair incomplete")
+    return provider_identity, recipient
+
+
+def strip_handoff_provider_identity(
+    metadata: Mapping[str, object],
+) -> dict[str, object]:
+    """Copy message metadata without its internal handoff identity record."""
+
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key != HANDOFF_PROVIDER_IDENTITY_KEY
+    }
+
 
 def _project_handoff_metadata(metadata_json: str) -> str:
     """Project historical handoff metadata onto the neutral durable contract."""
 
     try:
         value = json.loads(metadata_json)
-    except (TypeError, ValueError):
+    except json.JSONDecodeError:
         return metadata_json
     if not isinstance(value, dict):
         return metadata_json
     projected = dict(value)
+    _ = read_handoff_provider_identity(projected)
     if projected.get("durable_inbound") is not True and projected.get(
         "mobile_v3_handoff"
     ) is True:
@@ -49,6 +112,39 @@ def _project_handoff_metadata(metadata_json: str) -> str:
     return json.dumps(projected, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def _handoff_metadata_matches(
+    stored_json: str,
+    requested_json: str,
+    *,
+    sender: str,
+    chat_id: str,
+) -> bool:
+    """Compare projected metadata, allowing only a matching old identity fallback."""
+
+    stored_projected = _project_handoff_metadata(stored_json)
+    requested_projected = _project_handoff_metadata(requested_json)
+    try:
+        stored = json.loads(stored_projected)
+        requested = json.loads(requested_projected)
+    except (TypeError, ValueError):
+        return stored_projected == requested_projected
+    if not isinstance(stored, dict) or not isinstance(requested, dict):
+        return stored == requested
+
+    stored_has_identity = HANDOFF_PROVIDER_IDENTITY_KEY in stored
+    requested_has_identity = HANDOFF_PROVIDER_IDENTITY_KEY in requested
+    if stored_has_identity == requested_has_identity:
+        return stored == requested
+    if stored_has_identity or not requested_has_identity:
+        return False
+
+    requested_identity = read_handoff_provider_identity(requested)
+    if requested_identity != (sender, chat_id):
+        return False
+    requested.pop(HANDOFF_PROVIDER_IDENTITY_KEY)
+    return stored == requested
+
+
 def _project_handoff_row(row: sqlite3.Row) -> dict[str, str | None]:
     """Return one row without modifying its authoritative SQLite bytes."""
 
@@ -67,7 +163,7 @@ def _row_provider_message_id(row: sqlite3.Row) -> str | None:
         return None
     try:
         metadata = json.loads(_project_handoff_metadata(metadata_json))
-    except (TypeError, ValueError):
+    except json.JSONDecodeError:
         return None
     value = metadata.get("provider_message_id") if isinstance(metadata, dict) else None
     return value if isinstance(value, str) and value else None
@@ -78,7 +174,7 @@ def _provider_message_id_from_json(metadata_json: str) -> str | None:
 
     try:
         metadata = json.loads(_project_handoff_metadata(metadata_json))
-    except (TypeError, ValueError):
+    except json.JSONDecodeError:
         return None
     value = metadata.get("provider_message_id") if isinstance(metadata, dict) else None
     return value if isinstance(value, str) and value else None
@@ -186,15 +282,12 @@ class InboundHandoffStore:
                     continue
                 actual = row[column]
                 if column == "metadata_json" and isinstance(actual, str):
-                    try:
-                        actual_value = json.loads(_project_handoff_metadata(actual))
-                        expected_value = json.loads(
-                            _project_handoff_metadata(cast(str, expected))
-                        )
-                    except (TypeError, ValueError):
-                        actual_value = _project_handoff_metadata(actual)
-                        expected_value = expected
-                    if actual_value != expected_value:
+                    if not _handoff_metadata_matches(
+                        actual,
+                        cast(str, expected),
+                        sender=cast(str, row["sender"]),
+                        chat_id=cast(str, row["chat_id"]),
+                    ):
                         raise RuntimeError(
                             "inbound handoff identity conflict: "
                             f"handoff_id={handoff_id} field={column}"

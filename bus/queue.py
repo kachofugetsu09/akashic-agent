@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Protocol, TypeVar, cast
 from uuid import uuid4
 
+from agent.plugin_contracts import json_value
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
@@ -18,9 +19,15 @@ from agent.plugin_composition.channels import (
     InboundEnvelope,
     InboundOwner,
     InboundState,
+    JsonValue,
     RawInbound,
 )
 from bus.events import InboundItem, InboundMessage
+from session.inbound_store import (
+    add_handoff_provider_identity,
+    read_handoff_provider_identity,
+    strip_handoff_provider_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -227,17 +234,23 @@ def _raw_durable_from_handoff(row: dict[str, str | None]) -> RawInbound | None:
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("durable attachment handoff invalid") from error
+    provider_identity = read_handoff_provider_identity(metadata)
+    message_metadata = strip_handoff_provider_identity(metadata)
+    if provider_identity is None:
+        provider_identity_value, recipient_value = legacy.sender, legacy.chat_id
+    else:
+        provider_identity_value, recipient_value = provider_identity
     return RawInbound(
         message_id=provider_message_id,
-        provider_identity=legacy.sender,
-        recipient=legacy.chat_id,
+        provider_identity=provider_identity_value,
+        recipient=recipient_value,
         message=ChannelInboundMessage(
             channel=legacy.channel,
             sender=legacy.sender,
             chat_id=legacy.chat_id,
             content=legacy.content,
             timestamp=legacy.timestamp,
-            metadata=metadata,
+            metadata=cast(Mapping[str, JsonValue], message_metadata),
             attachments=tuple(refs),
         ),
     )
@@ -461,10 +474,7 @@ class MessageBus:
                 # 伪装成新的 owner；调用方保留自己的 duplicate 语义。
                 return False
             try:
-                persisted_id, created = self._reserve_durable_handoff(
-                    raw.message_id,
-                    raw.message,
-                )
+                persisted_id, created = self._reserve_durable_handoff(raw)
             except BaseException:
                 if acquired:
                     self._release_new_durable_admission(handoff_id)
@@ -668,11 +678,12 @@ class MessageBus:
 
     def _reserve_durable_handoff(
         self,
-        message_id: str,
-        message: ChannelInboundMessage,
+        raw: RawInbound,
     ) -> tuple[str, bool]:
         """Persist one exact durable identity while the durable lock is held."""
 
+        message = raw.message
+        message_id = raw.message_id
         metadata = dict(message.metadata)
         handoff_id = metadata.get(DURABLE_HANDOFF_ID)
         provider_message_id = _provider_message_id(metadata)
@@ -689,7 +700,11 @@ class MessageBus:
         store = self._durable_inbound_store
         if store is None:
             raise RuntimeError("durable inbound durable handoff store 未绑定")
-        persisted_metadata: dict[str, object] = dict(metadata)
+        persisted_metadata = add_handoff_provider_identity(
+            metadata,
+            raw.provider_identity,
+            raw.recipient,
+        )
         persisted_metadata[DURABLE_PROVIDER_MESSAGE_ID] = message_id
         persisted_metadata[DURABLE_ATTACHMENT_REFS] = [
             {
@@ -713,7 +728,7 @@ class MessageBus:
             timestamp=message.timestamp.astimezone(timezone.utc).isoformat(),
             media_json="[]",
             metadata_json=json.dumps(
-                persisted_metadata,
+                json_value(persisted_metadata),
                 ensure_ascii=False,
                 separators=(",", ":"),
                 sort_keys=True,
