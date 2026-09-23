@@ -230,7 +230,7 @@ scenarios = ["contract_catalog", "plugin_generation_contract", "plugin_domain_ob
 [groups.events]
 priority = "p1"
 requirements = ["RUN-001", "OUT-001"]
-paths = ["bus/**", "agent/tools/events.py", "agent/tools/executor.py"]
+paths = ["bus/**", "agent/tools/events.py"]
 depends_on = []
 scenarios = ["contract_catalog", "plugin_domain_observe_events"]
 
@@ -400,6 +400,11 @@ requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
 paths = [
   "agent/tools/base.py",
   "agent/tool_runtime.py",
+  "plugins/tools/**",
+  "tests/test_tool_execution_receipts.py",
+  "tests/test_standard_tools.py",
+  "tests/test_message_push_plugin.py",
+  "tests/test_subagent_messages.py",
   "agent/plugin_composition/messages.py",
   "plugins/turn_projection/**",
   "agent/plugin_composition/tasks.py",
@@ -407,7 +412,7 @@ paths = [
   "plugins/reply/**",
   "agent/turns/outbound.py",
 ]
-deleted_paths = ["agent/looping/handlers.py", "agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py"]
+deleted_paths = ["agent/looping/handlers.py", "agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py", "tests/test_tool_executor.py"]
 depends_on = ["memory", "channel"]
 scenarios = ["companion_tool_context_contract"]
 

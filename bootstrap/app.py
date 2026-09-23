@@ -499,37 +499,6 @@ class AppRuntime:
         await manager.reconcile_disabled_and_drain(plugin_id)
         return f"插件已停用并排空: {plugin_id}"
 
-    def _plugin_status(
-        self,
-        status: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-        resolved_status = manager.candidate_status() if status is None else status
-        return {
-            "stableSnapshotId": resolved_status["stable_snapshot_id"],
-            "latestSnapshotId": resolved_status["latest_snapshot_id"],
-            "candidatePluginId": resolved_status["candidate_plugin_id"],
-            "candidateGenerationId": resolved_status["candidate_generation_id"],
-            "candidateState": resolved_status["candidate_state"],
-            "candidateRuntimeRevision": resolved_status["candidate_source_revision"],
-            "candidateReloadTransactionId": resolved_status["candidate_reload_tx_id"],
-            "candidateError": resolved_status["candidate_error"],
-        }
-
-    async def _promote_plugin(self, plugin_id: str) -> dict[str, object]:
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-        return await manager.switch_ready(plugin_id)
-
-    async def _discard_plugin(self, plugin_id: str) -> dict[str, object]:
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-        return await manager.drop_candidate(plugin_id)
-
     def _plugin_candidate_scan_done(self, task: asyncio.Task[Any]) -> None:
         self._plugin_candidate_tasks.discard(task)
         if task.cancelled():

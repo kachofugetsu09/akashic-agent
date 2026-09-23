@@ -77,7 +77,7 @@
 | 预算收尾、空回复修复、结构化终态、工具名特判 | 同文件 `DefaultReasoner.run`，1506 行；`tool_search` 和 `message_push` 分支约 2064 行 |
 | provider overflow 后强制 compaction、continuation 与 usage | 同文件 `_call_provider`，2698 行 |
 | Prompt 合并、记忆/Skill frame、渠道 envelope | `PromptAssembler.assemble`（`agent/prompting/assembler.py`）；`ContextBuilder` 与 `prompt_render`（历史删除） |
-| 单次工具 prepare、authorize、execute、observe | [`ToolExecutor`](../../agent/tools/executor.py) |
+| 单次工具 prepare、authorize、execute、observe | [`ToolExecution`](../../plugins/tools/execution.py) |
 | reasoning 后暂存 user，最后批量追加 user/assistant | `_PersistUserMessageModule / _AppendMessagesModule`（历史删除：`agent/lifecycle/phases/after_reasoning.py`），257、413 行 |
 | 观察者先于出站的固定顺序 | `_FanoutTurnCommittedModule / _DispatchOutboundModule`（历史删除：`agent/lifecycle/phases/after_turn.py`），243、346 行 |
 | 连续 control ID 与 proactive 特殊分组 | [`logical_history_unit_ranges`](../../session/manager.py)，190 行 |

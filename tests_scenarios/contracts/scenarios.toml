@@ -497,7 +497,7 @@ requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
 groups = ["companion_tool_context"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_tool_context_rejects_origin_override_mutant", "tests/test_tool_executor.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_tool_context_rejects_origin_override_mutant", "tests/test_tool_execution_receipts.py", "tests/test_standard_tools.py::test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifact", "tests/test_message_push_plugin.py", "tests/test_subagent_messages.py::test_sync_spawn_persists_internal_flow_and_replays_original_result"]
 observes = ["tool_execution_context", "schema_rejection", "outbound_target", "memory_provenance", "failure_semantics"]
 mutants = ["companion_tool_context_origin_override"]
 
