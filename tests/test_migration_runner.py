@@ -180,7 +180,9 @@ def _write_bundle(
     )
     (migration_root / "__init__.py").write_text("\n", encoding="utf-8")
     for migration_id, (_depends, source) in migrations.items():
-        (migration_root / f"{migration_id}.py").write_text(
+        path = migration_root / f"{migration_id}.py"
+        compile(source, str(path), "exec")
+        path.write_text(
             source,
             encoding="utf-8",
         )
@@ -235,7 +237,7 @@ def test_empty_core_and_catalog_establish_current_baseline(tmp_path: Path) -> No
     assert _applied_ids(runner.ledger_path) == ()
 
 
-def test_stable_installed_cache_pointer_is_loaded_without_plugin_dir(
+def test_equal_installed_cache_pointer_runs_once_without_plugin_dir(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "state"
@@ -254,30 +256,68 @@ def test_stable_installed_cache_pointer_is_loaded_without_plugin_dir(
         package_name="stable_migrations",
         manifest_name="installed_plugin",
     )
+    write_pointers(
+        plugin_base,
+        stable=relative_artifact_pointer(plugin_base, stable),
+        latest=relative_artifact_pointer(plugin_base, stable),
+    )
+
+    runner = _runner(root, repo)
+    outcome = runner.run()
+
+    assert outcome.migrations == ("stable_step",)
+    marker = tmp_path / "stable.marker"
+    assert marker.read_text(encoding="utf-8") == "attempted"
+    assert _applied_ids(runner.ledger_path) == ("stable_step",)
+    ledger_rows = _ledger_rows(runner.ledger_path)
+    marker.unlink()
+
+    second = runner.run()
+
+    assert (second.state, second.migrations) == ("current", ())
+    assert not marker.exists()
+    assert _ledger_rows(runner.ledger_path) == ledger_rows
+
+
+def test_unequal_installed_cache_pointers_block_migration_without_rewriting(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    repo = _empty_repo(tmp_path)
+    plugin_base = root / "plugin-cache/marketplace/installed_plugin"
+    artifacts = plugin_base / ".artifacts"
+    stable = _write_bundle(
+        artifacts,
+        {"stable_step": ((), _migration_source(tmp_path / "stable.marker"))},
+        bundle_id="stable_release",
+        package_name="stable_migrations",
+        manifest_name="installed_plugin",
+    )
     candidate = _write_bundle(
         artifacts,
-        {
-            "candidate_step": (
-                (),
-                _migration_source(tmp_path / "candidate.marker"),
-            )
-        },
+        {"candidate_step": ((), _migration_source(tmp_path / "candidate.marker"))},
         bundle_id="candidate_release",
         package_name="candidate_migrations",
         manifest_name="installed_plugin",
     )
-    write_pointers(
+    pointer_path = write_pointers(
         plugin_base,
         stable=relative_artifact_pointer(plugin_base, stable),
         latest=relative_artifact_pointer(plugin_base, candidate),
     )
+    pointer_bytes = pointer_path.read_bytes()
+    runner = _runner(root, repo)
 
-    outcome = _runner(root, repo).run()
+    with pytest.raises(RuntimeError, match="Yoyo 迁移失败") as raised:
+        runner.run()
 
-    assert outcome.migrations == ("stable_step",)
-    assert (tmp_path / "stable.marker").read_text(encoding="utf-8") == "attempted"
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert "插件仍有历史候选指针对，须先处理未决更新" in str(raised.value.__cause__)
+    assert "历史候选指针对" in str(raised.value)
+    assert not (tmp_path / "stable.marker").exists()
     assert not (tmp_path / "candidate.marker").exists()
-    assert _runner(root, repo).run().state == "current"
+    assert pointer_path.read_bytes() == pointer_bytes
+    assert _applied_ids(runner.ledger_path) == ()
 
 
 def test_future_core_step_runs_after_installed_bundle_is_applied(
