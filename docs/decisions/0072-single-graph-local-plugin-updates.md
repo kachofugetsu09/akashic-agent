@@ -418,8 +418,11 @@ CAS 冲突不冒充成功、CAS 后失败保留 B、取消不虚报回滚、清�
 旧 oracle 与当前用例的逐项关系见
 [测试清理 ledger](../refactor/test-gate-cleanup-ledger.md)，具体执行结果见
 `/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md`。T-71d1a1 对当时
-Gate 模型影响映射提出 request-changes；本次改正待独立复审。先前本地测试结果
-仍是历史证据，不构成共同基线批准、远端 CI、部署或 Issue 750 完成。
+Gate 模型影响映射提出 request-changes；T-3ed982 修正后，T-a1ea29 接受
+`3d72a597` 为开发基线。T-a03bcb 随后独立接受 A1 的不可达私有函数删除与
+B1 的真实 distribution/selection 回归进入集成；二者不改变本决定的运行与持久语义。
+分支证据、联合验收及未完成边界见[单图设计](../design/issue-750-plugin-publication-simplification.md)。
+开发基线批准不等于远端 CI、部署或 Issue 750 完成。
 
 ## 理由
 

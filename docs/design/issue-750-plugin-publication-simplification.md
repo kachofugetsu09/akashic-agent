@@ -1,5 +1,33 @@
 # Issue 750：单图插件系统与局部换代任务拆分
 
+## 2026-09-23 · 开发基线与 A1/B1 集成
+
+T-3ed982 修复 Gate 模型影响映射后，独立 `gpt-5.6-terra/xhigh` 的 T-a1ea29
+接受 `3d72a597` 为开发基线，不代表最终发布。下方“本地集成继续执行”和“WIP 基线”
+是此前阶段的历史记录；当时的 Tools owner、DeliveryPolicy readiness 和旧测试入口
+阻塞已被 T-e69982 的集成修复及最终验证覆盖，不应继续作为当前缺陷。
+
+三条 lane 从该基线隔离开发，主审串行集成。T-a03bcb 独立接受以下相邻改动：
+
+- A1 `e280d323`：只删除 Manager 五个无消费者的私有候选函数，共209行；
+  公共拒绝入口、当前 live Root、选择与真实清理责任不变。基线与 A1 的同四项
+  原生对照各通过；A1 干净提交累计 Gate 27/27 通过且无资源残留。
+- B1 `9752a356`：真实 distribution A/B 回归证明普通 `ensure_profile` 保持 A，
+  显式公开在线安装才选择并运行 B，重启仍读 B 归档，peer、旧 receipt/归档与用户数据
+  保持。主审原生三模块33项通过；不以 worker 的 selector 诊断运行作为验收。
+
+主审在 integration 上先快进 A1，再以 `e4ed9e73` 导入 B1；两个 lane 的绿色结果
+不替代联合树。当前联合验证、最终 HEAD/tree、源码与计划摘要、逐项 Gate 和恢复材料
+记录在 `/mnt/data/issue750-ab1-integration-20260923.3z1ln0/`。
+该目录中的命令结果才表示本次联合验收，不把待运行项写成通过。
+共享历史基线 tag 保持不动；未 push、修改 PR、部署或触碰正式 workspace。
+
+剩余工作是 T06 其余可达性/持久清理边界、T07 显式离线发布和消费者恢复验收。
+C1 的原生组合测试发现 Bus 持久恢复未保留独立的 RawInbound provider identity；
+这与测试清理缺陷分开处理，生产修复不得改弱身份断言。
+普通换镜像重启仍按既有 selection 读取旧归档，不能声称自动采用新版 Akasha。
+远端 CI、真实发布/恢复和 final enable 仍未验收。
+
 ## 2026-09-23 · R1 语义与验收映射
 
 本轮从集成分支 `33bd6d41` 和固定 `main@ae444d47` 继续。执行者只有一个
@@ -7,7 +35,8 @@
 恢复归档、隔离测试的 argv/JUnit/source hash 和 Gate 报告在
 `/mnt/data/issue750-green-r1-20260923.68KJfw/`，最终本地验收状态由
 `/home/huashen/.huagenteam/team/tasks/T-e69982/reply.md` 与其中指向的结果文件确定。
-T-71d1a1 对 Gate 模型影响映射提出 request-changes；本次改正仍待独立复审。
+T-71d1a1 对 Gate 模型影响映射提出 request-changes；随后 T-3ed982 修正，
+T-a1ea29 已独立接受修复后的开发基线，准确边界见上节。
 先前本地测试结果保留，远端 CI、正式部署与 Issue 750 最终验收未完成。
 
 R1 继续保持 0072 的单一 live Root：selection CAS 是持久选择，运行中的 Fiber 是
