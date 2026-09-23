@@ -140,7 +140,7 @@ async def test_task_cancel_before_first_instruction_releases_admission_lease(tmp
 
 
 @pytest.mark.asyncio
-async def test_retired_candidate_entry_leaves_formal_services_on_live_root(tmp_path):
+async def test_local_update_keeps_formal_message_owner_on_live_root(tmp_path):
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
@@ -151,12 +151,34 @@ async def test_retired_candidate_entry_leaves_formal_services_on_live_root(tmp_p
         await host.load_all()
         root = host.live_root
         assert root is not None
-        with pytest.raises(RuntimeError, match="候选发布入口已停用"):
-            await host.prepare_candidate("one")
+        one = root.context.require(ServiceKey("probe.one"))
+        two = root.context.require(ServiceKey("probe.two"))
+        writers = root.context.require(MESSAGE_WRITERS)
+        state = root.context.require(OWNER_STATE)
+        async with one.runtime_scope():
+            state.open(one).transact(lambda tx: tx.save("entry", {"value": 1}, expected_version=None))
+            writer = writers.bind(one, author="user", source="chat", body_types=(Input,), content={})("s")
+            writer.append("before", Input(()))
+        (sources / "one/plugin.py").write_text((sources / "one/plugin.py").read_text() + "\nmarker = 'updated'\n")
+        result = await host.reconcile_changed()
+        assert result[0]["publication_state"] == "active"
         assert host.live_root is root
         assert root.receipt().ready
-        assert root.context.require(MESSAGE_CATALOG).snapshot_heads() == {}
-        assert log.catalog().snapshot_heads() == {}
+        updated = root.context.require(ServiceKey("probe.one"))
+        assert updated is not one
+        assert root.context.require(ServiceKey("probe.two")) is two
+        async with updated.runtime_scope():
+            assert state.open(updated).read("entry").value == {"value": 1}
+            with pytest.raises(CompositionError, match="OwnerCall"):
+                writers.bind(one, author="user", source="chat", body_types=(Input,), content={})
+            writer = writers.bind(updated, author="user", source="chat", body_types=(Input,), content={})("s")
+            writer.append("after", Input(()))
+        async with two.runtime_scope():
+            assert state.open(two).read("entry") is None
+        assert root.context.require(MESSAGE_CATALOG).snapshot_heads() == {"s": 1}
+        assert log.catalog().snapshot_heads() == {"s": 1}
+        assert log.reader("s").get("before") is not None
+        assert log.reader("s").get("after") is not None
     finally:
         await host.terminate_all()
         log.close()
@@ -197,9 +219,11 @@ async def apply(ctx):
         else:
             await host.load_all()
             await host.start_runtime()
+            await host.start_runtime()
             root = host.live_root
             assert root is not None
             assert root.context.require(ServiceKey("started")) == {"s": 0}
+            assert log.catalog().snapshot_heads() == {"s": 0}
     finally:
         await host.terminate_all()
         if log is not None:

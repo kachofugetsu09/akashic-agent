@@ -100,15 +100,31 @@ async def test_credential_binding_rejects_config_drift_after_restart(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_retired_candidate_entry_cannot_open_credential_consumer(tmp_path):
+async def test_local_update_keeps_credential_access_on_formal_owner(tmp_path):
     source, config, log, host = environment(tmp_path)
     try:
         await host.load_all()
-        (source / "plugin.py").write_text(MODULE + "\nmarker = 'candidate'\n")
         root = host.live_root
-        with pytest.raises(RuntimeError, match="候选发布入口已停用"):
-            await host.prepare_candidate("secret_reader")
+        assert root is not None
+        old_context = root.context.require(ServiceKey("test.credential_context"))
+        async with old_context.runtime_scope():
+            assert await old_context.require(PROBE).read() == "fixture-private-token"
+            async with old_context.require(CREDENTIALS).open(
+                old_context, {"token": old_context.config["token"]}
+            ) as client:
+                assert client.credential(old_context.config["token"]) == "fixture-private-token"
+            with pytest.raises(RuntimeError, match="已关闭"):
+                client.credential(old_context.config["token"])
+        (source / "plugin.py").write_text(MODULE + "\nmarker = 'updated'\n")
+        result = await host.reconcile_changed()
+        assert result[0]["publication_state"] == "active"
         assert host.live_root is root
+        new_context = root.context.require(ServiceKey("test.credential_context"))
+        assert new_context is not old_context
+        async with new_context.runtime_scope():
+            assert await new_context.require(PROBE).read() == "fixture-private-token"
+            with pytest.raises(RuntimeError, match="frozen plugin"):
+                await new_context.require(PROBE).undeclared()
         assert "fixture-private-token" not in config.read_text()
     finally:
         await host.terminate_all()
@@ -180,6 +196,8 @@ async def apply(ctx):
                          installed_cache_root=tmp_path / "installed/cache", message_log=log)
     try:
         await host.load_all()
+        root = host.live_root
+        assert root is not None
         (plain / "plugin.py").write_text((plain / "plugin.py").read_text() + '\nmarker="candidate"\n')
         _commit(plain)
         before = tuple(log._connection.iterdump())
@@ -191,7 +209,7 @@ async def apply(ctx):
         operation = host._operation
         assert operation is not None
         await operation.task
-        assert not host._validation_hosts
+        assert host.live_root is root
         assert (config.parent / "notes.txt").read_text() == "preserved history"
         for path in host._archive.path.rglob("*"):
             if path.is_file():

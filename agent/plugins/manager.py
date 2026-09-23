@@ -58,10 +58,6 @@ from agent.plugin_composition import (
     PluginRuntime,
     PluginTimers,
     ServiceKey,
-    RUNTIME_STARTED,
-    RUNTIME_STOPPING,
-    RuntimeStarted,
-    RuntimeStopping,
 )
 from agent.plugin_composition.host import HOST_INFO, HostInfo
 from agent.plugin_composition.ui import DASHBOARD_ROUTES
@@ -368,7 +364,7 @@ class PluginManager:
         )
 
     async def _start_runtime(self) -> None:
-        """Start the one live Root once and retain a failed start for cleanup."""
+        """Record host startup after each live Fiber has completed its own start."""
         self._check_operation_commit()
         root = self._live_root
         if root is None:
@@ -377,43 +373,14 @@ class PluginManager:
             if root is not self._live_root or root.instance_token in self._runtime_started_roots:
                 return
             self._runtime_started_roots.add(root.instance_token)
-            try:
-                result, cancelled = await _complete_critical(
-                    root.context.serial(RUNTIME_STARTED, RuntimeStarted())
-                )
-                if result is not None:
-                    raise CompositionError(
-                        "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
-                        "runtime.started 接入点不接受 Bail",
-                    )
-            except BaseException as error:
-                try:
-                    await self._stop_runtime_root_locked(root)
-                except BaseException as cleanup_error:
-                    raise BaseExceptionGroup("启动与资源清理失败", [error, cleanup_error]) from None
-                raise
-        if cancelled:
-            raise asyncio.CancelledError
 
     async def _stop_runtime_root(self, root: CompositionRoot) -> None:
-        """Stop the real started Root before disposing its plugin effects."""
+        """Clear host startup state; each Fiber closes its own lifecycle."""
         async with self._runtime_lifecycle_lock:
             await self._stop_runtime_root_locked(root)
 
     async def _stop_runtime_root_locked(self, root: CompositionRoot) -> None:
-        if root.instance_token not in self._runtime_started_roots:
-            return
-        result, cancelled = await _complete_critical(
-            root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
-        )
-        if result is not None:
-            raise CompositionError(
-                "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
-                "runtime.stopping 接入点不接受 Bail",
-            )
         self._runtime_started_roots.discard(root.instance_token)
-        if cancelled:
-            raise asyncio.CancelledError
 
 
 
