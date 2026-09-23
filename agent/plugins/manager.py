@@ -19,13 +19,13 @@ from typing import Any, Literal, TypeVar, cast
 from uuid import uuid4
 
 
-from agent.plugins.archive import PluginArchive, decode_config, encode_config
+from agent.plugins.archive import PluginArchive, decode_config
 from agent.plugins._operation import (
     ManagerOperation, OperationBusyError, OperationTimeoutError,
     complete_critical as _complete_critical, current_operation,
     observe_operation, revoke_on_cancel, run_operation,
 )
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.validation import ValidationHost
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, PluginUpdates, UpdateStatus
 from session.artifact_store import ArtifactStore
@@ -94,7 +94,13 @@ from agent.plugins.manifest import (
     load_plugin_manifest,
     plugins_root,
     validate_workspace_plugin_data_path,
-    workspace_plugin_data_dir,
+)
+from agent.plugins.input_preparation import (
+    PLUGIN_ARCHIVE_BINDING_API,
+    _resolve_plugin_data_dir,
+    _resolve_plugin_id,
+    _source_revision,
+    prepare_plugin_input,
 )
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
@@ -122,7 +128,6 @@ from agent.plugins.install import (
 from agent.plugins.static_manifest import (
     PluginSourceCompileError,
     PluginSourceContentError,
-    StaticPluginManifest,
     load_static_plugin_manifest,
     source_error_details,
     command_python_runtime,
@@ -148,7 +153,6 @@ from agent.plugins.snapshot import (
 from bus.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
-PLUGIN_ARCHIVE_BINDING_API = 3
 U = TypeVar("U")
 
 
@@ -3358,67 +3362,22 @@ class PluginManager:
             return self._active_generations[plugin_id]
         if load_plugin_manifest(_plugins_home(self._installed_cache_root)).get(plugin_id, True) is False:
             return None
-        plugin_dir = Path(mod["plugin_root"])
-        entry = plugin_dir / "plugin.py"
-        if Path(mod["module_path"]).absolute() != entry.absolute():
-            raise RuntimeError("source discovery module path 与制品 plugin.py 不一致")
-        if entry.is_symlink() or not entry.is_file():
-            raise ValueError(f"插件 plugin.py 必须是普通文件: {entry}")
-        identity = load_static_plugin_manifest(plugin_dir)
-        if mod.get("manifest_digest", "") != identity.identity_digest:
-            raise RuntimeError("source discovery identity 已漂移")
-        revision = _source_revision(plugin_dir)
-        data_dir = _resolve_plugin_data_dir(mod["name"], mod, self._workspace)
-        validate_workspace_plugin_data_path(data_dir, self._workspace)
-        config, config_revision = load_config(data_dir)
-        code_ref = self._archive.save(
-            plugin_dir, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
+        prepared = prepare_plugin_input(
+            mod, workspace=self._workspace, archive=self._archive,
         )
-        code_dir = self._archive.open(code_ref)
-        try:
-            archived_identity = load_static_plugin_manifest(code_dir)
-        except PluginSourceContentError as error:
-            raise RuntimeError("插件归档静态身份损坏") from error
-        if _source_revision(code_dir) != revision or archived_identity != identity:
-            raise RuntimeError("插件源码或安装身份在归档前发生变化")
-        # Compile every plugin-owned Python source; this never executes module code.
-        for source_path in sorted(code_dir.rglob("*.py")):
-            if any(part in {"__pycache__", ".venv", "node_modules"} for part in source_path.parts):
-                continue
-            try:
-                source_text = source_path.read_text(encoding="utf-8")
-                compile(source_text, str(source_path), "exec")
-            except (SyntaxError, UnicodeError) as error:
-                raise PluginSourceCompileError(
-                    f"插件源码无法编译: {source_path}"
-                ) from error
-        environments: dict[str, str] = {}
-        if identity.python:
-            if (plugin_dir / ENVIRONMENT_FILE).exists():
-                environments = read_environment_refs(plugin_dir, identity)
-            elif mod["source_type"] == "installed":
-                raise RuntimeError("插件尚未准备固定 Python 环境；请通过安装流程重建")
-
+        plugin_id = prepared.plugin_id
         # 1. Preparation owns only the returned generation; no candidate Root is built.
         namespace = secrets.token_hex(12)
         module_path = f"_akashic_input_{namespace}"
         generation_id = f"{plugin_id}:input:{namespace}"
         scope = PluginScope(plugin_id, generation_id=generation_id)
-        ref = self._archive.save_descriptor({
-            "version": 4, "code": code_ref, "python_environments": environments,
-            "plugin_id": plugin_id, "source_revision": revision,
-            "config_revision": config_revision, "config": encode_config(config),
-            "source_type": mod["source_type"],
-            "data_dir": data_dir.resolve().relative_to(self._workspace.resolve()).as_posix(),
-            "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
-        })
         source = PluginGeneration(
             plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
-            source_revision=revision, config_revision=config_revision,
-            plugin_dir=plugin_dir, data_dir=data_dir, instance=None, scope=scope,
-            config_projection=config, archive_ref=ref, static_manifest=identity,
-            code_dir_path=code_dir,
-            source_type=cast(Literal["builtin", "installed"], mod["source_type"]),
+            source_revision=prepared.source_revision, config_revision=prepared.config_revision,
+            plugin_dir=prepared.plugin_dir, data_dir=prepared.data_dir, instance=None, scope=scope,
+            config_projection=prepared.config, archive_ref=prepared.archive_ref,
+            static_manifest=prepared.static_manifest,
+            code_dir_path=prepared.code_dir, source_type=prepared.source_type,
             state="prepared",
         )
         if stage_stable:
@@ -4365,27 +4324,6 @@ class PluginManager:
             raise asyncio.CancelledError
 
 
-def _resolve_plugin_id(mod: dict[str, str]) -> str:
-    name = mod["name"]
-    marketplace = mod.get("marketplace", "").strip()
-    if not marketplace:
-        return name
-    return f"{name}@{marketplace}"
-
-
-def _resolve_plugin_data_dir(
-    name: str,
-    mod: dict[str, str],
-    workspace: Path,
-) -> Path:
-    """把插件可写数据固定到当前 workspace 的独立目录。"""
-
-    # 1. 交给统一路径边界校验插件身份
-    marketplace = mod.get("marketplace", "").strip()
-    suffix = marketplace or "builtin"
-    return workspace_plugin_data_dir(workspace, name, suffix)
-
-
 def _plugins_home(installed_cache_root: Path | None) -> Path:
     if installed_cache_root is not None:
         return installed_cache_root.parent
@@ -4459,51 +4397,6 @@ async def _copy_in_thread(copy_files: Callable[..., U], *args: Any, **kwargs: An
     return result
 
 
-
-
-def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
-    try:
-        _ = path.relative_to(plugin_dir)
-    except ValueError as error:
-        raise RuntimeError(f"插件 {label} 越界: {path}") from error
-
-
-def _source_revision(plugin_dir: Path) -> str:
-    digest = hashlib.sha256()
-    root = plugin_dir.resolve(strict=False)
-    excluded = {
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".venv",
-        "__pycache__",
-        "node_modules",
-        ENVIRONMENT_FILE,
-    }
-    for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
-        directories[:] = sorted(name for name in directories if name not in excluded)
-        current_path = Path(current)
-        for name in [*directories, *sorted(filenames)]:
-            if name in excluded:
-                continue
-            path = current_path / name
-            relative = path.relative_to(plugin_dir)
-            if path.is_symlink():
-                resolved = path.resolve(strict=False)
-                _require_plugin_path(root, resolved, "源码符号链接")
-                digest.update(str(relative).encode())
-                digest.update(os.readlink(path).encode())
-                if resolved.is_file():
-                    digest.update(resolved.read_bytes())
-                continue
-            if not path.is_file():
-                continue
-            resolved = path.resolve(strict=False)
-            _require_plugin_path(root, resolved, "源码文件")
-            digest.update(str(relative).encode())
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
 
 
 def _source_failure_key(failure: PluginSourceFailure) -> str:
