@@ -205,10 +205,13 @@ async def read_programmatic(parent: Path, monkeypatch) -> dict[str, object]:
             validation_writer = core.message_log.writer(child_id, author="assistant", source="programmatic", body_types=(Output,), content={"text": check_text})
             validation_writer.append("validation-output", Output((ContentPart("text", "ready"),), "complete"))
             validation = await client.request("programmatic/message/result", {"session_id": child_id, "input_id": "validation-input"})
+            assert isinstance(validation, Mapping)
             parent_open = await client.request("programmatic/message/result", {"session_id": parent_id, "input_id": "parent-input"})
+            assert isinstance(parent_open, Mapping)
             parent_writer = core.message_log.writer(parent_id, author="assistant", source="programmatic", body_types=(Output,), content={"text": check_text})
             parent_writer.append("parent-output", Output((ContentPart("text", "done"),), "complete"))
             parent_done = await client.request("programmatic/message/result", {"session_id": parent_id, "input_id": "parent-input"})
+            assert isinstance(parent_done, Mapping)
         log = core.message_log
         child_rows = log.reader(child_id).snapshot()
         return {
