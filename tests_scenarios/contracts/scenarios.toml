@@ -301,6 +301,7 @@ command = [
   "-q",
   "tests/semantic/test_contract_oracles.py::test_plugin_publication_oracle_rejects_early_switch_mutant",
   "tests/test_plugin_composition_lifecycle.py",
+  "tests/test_plugin_composition_experiment.py",
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_install.py",
 ]
