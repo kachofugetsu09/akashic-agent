@@ -421,6 +421,10 @@ CAS 冲突不冒充成功、CAS 后失败保留 B、取消不虚报回滚、清�
 Gate 模型影响映射提出 request-changes；T-3ed982 修正后，T-a1ea29 接受
 `3d72a597` 为开发基线。T-a03bcb 随后独立接受 A1 的不可达私有函数删除与
 B1 的真实 distribution/selection 回归进入集成；二者不改变本决定的运行与持久语义。
+T-8555a8 接受共享固定输入准备提取：完整组件归档仍是唯一输入事实，准备与运行实例
+构造分开，离线调用不创建第二张运行图。T-369cac 接受 durable inbound 身份修复：
+新 handoff 保存实际身份对，旧行不回填，恢复由当前 Channel owner 接纳；临时不可用
+继续保留 pending，不能用展示身份代替新输入的 provider identity。
 分支证据、联合验收及未完成边界见[单图设计](../design/issue-750-plugin-publication-simplification.md)。
 开发基线批准不等于远端 CI、部署或 Issue 750 完成。
 

@@ -52,9 +52,6 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
   保留禁用项、外部替换、用户配置和历史归档，用完整 selection CAS 发布。
   普通 restart/ensure_profile 不自动采用新 bundle；默认 profile 不含 Akasha，
   通用机制验证不能替代真实 Akasha 发行输入与功能验收。
-- **消费者恢复**：完成真实 Core/Bus/Channel durable handoff 组合验收。
-  当前新例发现恢复时 provider identity 被消息 sender 替代；保留原始身份断言，
-  收口测试物理清理后再按持久边界修复，不能通过对齐 fixture 身份掩盖问题。
 - **联合验收**：各 lane 经独立 review 后串行集成，在最终干净 HEAD 上核对累计
   Gate 与源码摘要；远端 CI、正式运行/恢复、发布和 final enable 仍未完成。
 

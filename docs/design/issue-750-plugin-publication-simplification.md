@@ -17,14 +17,30 @@ T-3ed982 修复 Gate 模型影响映射后，独立 `gpt-5.6-terra/xhigh` 的 T-
   保持。主审原生三模块33项通过；不以 worker 的 selector 诊断运行作为验收。
 
 主审在 integration 上先快进 A1，再以 `e4ed9e73` 导入 B1；两个 lane 的绿色结果
-不替代联合树。当前联合验证、最终 HEAD/tree、源码与计划摘要、逐项 Gate 和恢复材料
+不替代联合树。这批联合验证、最终 HEAD/tree、源码与计划摘要、逐项 Gate 和恢复材料
 记录在 `/mnt/data/issue750-ab1-integration-20260923.3z1ln0/`。
 该目录中的命令结果才表示本次联合验收，不把待运行项写成通过。
 共享历史基线 tag 保持不动；未 push、修改 PR、部署或触碰正式 workspace。
 
-剩余工作是 T06 其余可达性/持久清理边界、T07 显式离线发布和消费者恢复验收。
-C1 的原生组合测试发现 Bus 持久恢复未保留独立的 RawInbound provider identity；
-这与测试清理缺陷分开处理，生产修复不得改弱身份断言。
+后续已审查源码继续串行纳入 integration：
+
+- A 的共享固定输入准备最终提交 `d1f5a99f` 经 T-8555a8 接受。Manager 与未来离线
+  采用入口复用同一 archive/config/identity/compile/environment 准备算法，返回完整
+  `archive_ref`，不另暴露裸 code 引用；离线准备不执行插件或构造 Root/Fiber/Scope。
+  原生98项及两份类型检查通过；集成对应提交为 `cf445133`、`a9ccf34b`。
+- C1 真实组合测试曾发现 RawInbound 的 provider identity 在 handoff 中丢失。
+  C2 `97cb8e14` 保留原断言并修复生产，经 T-369cac 接受，集成为 `1ac8d5ff`。
+  新 handoff 在既有 metadata_json 内保存版本化身份对，含显式 `(None, None)`；
+  恢复前剥离内部字段。缺字段的旧行只保持原 sender/chat_id 解释，不回填或声称找回
+  原始身份。重投仅在身份及其余字段精确等价时幂等；坏新格式 fail-loud，不改 schema、
+  既有 row 或物理删除权限。C1/C2 关键38项、Channel34项、Store/Mobile等65项及
+  两份类型检查均原生通过；组间有重复控制，不合称137个不同测试。
+
+两批的分支绿证据不替代新联合树。此次原件备份、精确来源、联合命令与最终结果统一在
+`/mnt/data/issue750-ac-integration-20260923.JAkW3G/`；其中绑定最终源码的命令结果
+才是联合验收结论。未运行的 Gate、远端 CI 或正式状态不得由分支结果代替。
+
+剩余工作是 T06 其余可达性/持久清理边界、T07 显式离线发布和最终联合验收。
 普通换镜像重启仍按既有 selection 读取旧归档，不能声称自动采用新版 Akasha。
 远端 CI、真实发布/恢复和 final enable 仍未验收。
 
