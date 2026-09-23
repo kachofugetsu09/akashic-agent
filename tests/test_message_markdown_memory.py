@@ -297,11 +297,11 @@ def test_legacy_effect_reader_rejects_unproven_or_ambiguous_metadata(raw, digest
         legacy_post_commit_effect(row)
 
 
-def publish(log, reference, parent=None, *, summarized=None, omitted=()):
-    source_message_ids = tuple(message.message_id for message in log.reader("s").snapshot())
+def publish(log, reference, parent=None, *, summarized=None, omitted=(), session_id="s"):
+    source_message_ids = tuple(message.message_id for message in log.reader(session_id).snapshot())
     parent_size = 0 if parent is None else len(parent.source_message_ids)
     added = source_message_ids[parent_size:]
-    record = SummaryRecord(reference=reference, session_id="s", generation=1 if parent is None else parent.generation + 1,
+    record = SummaryRecord(reference=reference, session_id=session_id, generation=1 if parent is None else parent.generation + 1,
         parent=None if parent is None else parent.reference,
         source_message_ids=source_message_ids,
         summary_message_ids=added if summarized is None else summarized,
@@ -309,14 +309,14 @@ def publish(log, reference, parent=None, *, summarized=None, omitted=()):
         content="actual summary", model_call_ids=("summary-model:" + reference,), trigger="soft_limit",
         context_window=32000, max_output_tokens=4096, keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000)
     return SummaryRecords(log.owner("plugin:compaction")).publish(
-        record, log.reader("s"), parent=parent, summary_range=ContextBuilder.summary_range,
+        record, log.reader(session_id), parent=parent, summary_range=ContextBuilder.summary_range,
     )
 
 
 async def record_use(
     log, host, record, identity,
     finish: Literal["continue", "complete", "quiet"] = "continue",
-    source="conversation",
+    source="conversation", session_id="s",
 ):
     async with live_root(host) as root:
         generation = host.generation("compaction")
@@ -325,7 +325,7 @@ async def record_use(
         async with ctx.runtime_scope():
             binding = ctx.require(BINDINGS).bind(COMPACTION_SUMMARIES,
                 {"record_ref": record.reference, "session_id": record.session_id})
-    return log.writer("s", author="assistant", source=source, body_types=(Output,),
+    return log.writer(session_id, author="assistant", source=source, body_types=(Output,),
         content={"text": check_text, "context.summary": check_summary}).append(identity,
             Output((ContentPart("text", "successful response"), ContentPart("context.summary", {"reference": binding})), finish))
 

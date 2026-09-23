@@ -3,6 +3,8 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -65,6 +67,126 @@ async def test_programmatic_admission_is_immutable_and_ack_retries_recover_same_
             assert response_data(await client.request("programmatic/message/result", query))["status"] == "open"
         assert core.message_log.catalog().attributes(session) == SessionAttributes("internal", "excluded")
         assert sum(isinstance(row.body, Input) for row in core.message_log.reader(session).snapshot()) == 1
+
+
+@pytest.mark.asyncio
+async def test_public_programmatic_learning_policy_reaches_akasha_and_markdown(tmp_path, monkeypatch):
+    """Public admission fixes eligibility before either real learning owner reads the log."""
+    from agent.plugin_composition import CHAT_MODELS, ServiceKey
+    from agent.plugin_composition.bindings import BINDINGS
+    from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
+    from plugins.akasha.infrastructure.persistence import load_consumption
+    from plugins.markdown_memory.plugin import Config as MarkdownConfig, project
+    from plugins.markdown_memory._boundaries import CONTENT, CONTEXT, TURN_PROJECTION, COMPACTION_READER
+    from plugins.compaction.records import COMPACTION_SUMMARIES
+    from tests.test_akasha_message_plugin import application as akasha_application
+    from tests.test_message_markdown_memory import (
+        application as markdown_application, profile_store, publish, record_use,
+    )
+
+    admission_root = tmp_path / "admission"
+    admission_root.mkdir()
+    sessions = (
+        ("programmatic:default-excluded", None, "private default fact"),
+        ("programmatic:false-excluded", False, "private false fact"),
+        ("programmatic:eligible", True, "fact-one learned answer"),
+    )
+    # 1. Admit and send through the public control boundary.
+    async with endpoint(admission_root, monkeypatch) as (address, core):
+        async with await AsyncAkashic.connect(address) as client:
+            for session, persist_memory, text in sessions:
+                input_id = f"{session}:input"
+                params: dict[str, object] = {"session_id": session}
+                if persist_memory is not None:
+                    params["persist_memory"] = persist_memory
+                admitted = await client.request("programmatic/session/admit", params)
+                assert admitted == await client.request("programmatic/session/admit", params)
+                assert response_data(admitted)["learning"] == ("eligible" if persist_memory else "excluded")
+                with pytest.raises(RemoteError):
+                    await client.request("programmatic/session/admit", {
+                        "session_id": session, "persist_memory": not bool(persist_memory),
+                    })
+                await client.request("programmatic/message/send", {
+                    "session_id": session, "message_id": input_id, "text": text,
+                })
+                assert response_data(await client.request("programmatic/message/result", {
+                    "session_id": session, "input_id": input_id,
+                }))["status"] == "open"
+                assert [type(row.body) for row in core.message_log.reader(session).snapshot()] == [Input]
+                assert core.message_log.catalog().attributes(session) == SessionAttributes(
+                    "internal", "eligible" if persist_memory else "excluded")
+
+    source_db = admission_root / "workspace/sessions.db"
+
+    def copy_log(source_db: Path, target: Path) -> None:
+        target.mkdir()
+        with closing(sqlite3.connect(source_db)) as source, closing(sqlite3.connect(target / "sessions.db")) as saved:
+            source.backup(saved)
+
+    akasha_root = tmp_path / "akasha"
+    copy_log(source_db, akasha_root)
+    # 2. Close the original turns while the actual Akasha owner watches this log.
+    async with akasha_application(akasha_root) as (log, host):
+        root = host.live_root
+        assert root is not None
+        for session, persist_memory, _ in sessions:
+            log.writer(session, author="assistant", source="programmatic",
+                body_types=(Output,), content={"text": check_text}).append(
+                    f"{session}:answer", Output((ContentPart("text", "learned answer" if persist_memory else "private answer"),),
+                                     "complete"))
+        await asyncio.wait_for(root.context.require(ServiceKey("fixture.embedded")).wait(), 5)
+        embedded = (akasha_root / "embedding-calls.txt").read_text()
+        assert "fact-one" in embedded and "learned answer" in embedded
+        assert "private default fact" not in embedded and "private false fact" not in embedded
+        learning = root.context.require(AKASHA_LEARNING)
+        blocked = LearningConfig(embedding_model="fixture", dimension=2, sources=("conversation",))
+        assert learning.samples(log.catalog(), blocked, heads=log.catalog().snapshot_heads()) == ()
+        for session, _, _ in sessions:
+            assert [type(row.body) for row in log.reader(session).snapshot()] == [Input, Output]
+    learned = load_consumption(akasha_root / "workspace/memory/akasha.db")
+    assert learned is not None
+    assert [(entry.session_id, entry.ending[1]) for entry in learned.applied] == [
+        ("programmatic:eligible", "programmatic:eligible:answer")]
+
+    markdown_root = tmp_path / "markdown"
+    copy_log(akasha_root / "sessions.db", markdown_root)
+    # 3. Use real summary receipts to drive Markdown's source and session gates.
+    async with markdown_application(markdown_root) as (log, host):
+        root = host.live_root
+        assert root is not None
+        ctx = root.context
+        store = profile_store(markdown_root)
+
+        async def consume(session: str, identity: str, sources: tuple[str, ...]):
+            summary = publish(log, identity + "-summary", session_id=session)
+            used = await record_use(log, host, summary, identity + "-use", source="programmatic",
+                                    session_id=session)
+            await project(used, reader=log.reader(session), bindings=ctx.require(BINDINGS), store=store,
+                models=ctx.require(CHAT_MODELS), lock_path=markdown_root / "workspace/memory/markdown-profile.lock",
+                sources=sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT),
+                context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES),
+                compaction=ctx.require(COMPACTION_READER))
+            return summary.reference, used
+
+        for session, _, _ in sessions[:2]:
+            reference, _ = await consume(session, session.split(":")[-1], MarkdownConfig().sources)
+            assert not store.is_applied(reference)
+        assert not (markdown_root / "requests.jsonl").exists()
+        eligible = sessions[2][0]
+        blocked_ref, eligible_use = await consume(eligible, "eligible", ("conversation",))
+        assert not store.is_applied(blocked_ref)
+        assert not (markdown_root / "requests.jsonl").exists()
+        await project(eligible_use, reader=log.reader(eligible), bindings=ctx.require(BINDINGS), store=store,
+            models=ctx.require(CHAT_MODELS), lock_path=markdown_root / "workspace/memory/markdown-profile.lock",
+            sources=MarkdownConfig().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT),
+            context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES),
+            compaction=ctx.require(COMPACTION_READER))
+        assert store.is_applied(blocked_ref)
+        assert "fact-one" in store.read_memory()
+        payload = (markdown_root / "requests.jsonl").read_text()
+        assert "private default fact" not in payload and "private false fact" not in payload
+        for session, _, _ in sessions:
+            assert isinstance(log.reader(session).get(f"{session}:input").body, Input)
 
 
 @pytest.mark.asyncio
