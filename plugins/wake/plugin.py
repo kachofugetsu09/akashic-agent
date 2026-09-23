@@ -65,6 +65,20 @@ inject = (UI,
 WAKE_DASHBOARD = ServiceKey[Callable[[], DashboardView | None]]("wake.dashboard.v1")
 
 
+async def _stop_watcher(watcher: asyncio.Task[None]) -> None:
+    """Drain a watcher without replaying a completed business failure as stop failure."""
+
+    cancel_requested = watcher.cancel() if not watcher.done() else False
+    try:
+        await watcher
+    except asyncio.CancelledError:
+        if asyncio.current_task().cancelling():
+            raise
+    except Exception:
+        if cancel_requested:
+            raise
+
+
 async def apply(ctx: Context) -> None:
     """归档注册原程序和私有决定工具；消息与领域状态仅在正式来源执行时打开。"""
     await ctx.require(UI).register(
@@ -133,11 +147,7 @@ async def apply(ctx: Context) -> None:
     async def stop(_event: object) -> None:
         nonlocal dashboard, runtime
         if watcher is not None:
-            _ = watcher.cancel()
-            try:
-                await watcher
-            except asyncio.CancelledError:
-                pass
+            await _stop_watcher(watcher)
         dashboard = None
         runtime = None
 

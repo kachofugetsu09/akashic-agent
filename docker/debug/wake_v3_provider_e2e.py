@@ -11,7 +11,7 @@ import shutil
 import sqlite3
 import sys
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -32,6 +32,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugins.manager import PluginManager
+from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.selection import PluginSelection
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
@@ -39,6 +40,7 @@ from session.artifact_store import ArtifactStore
 from session.log import MessageLog
 from plugins.wake.request import Request, read_request
 from plugins.wake.source import Pointer
+from plugins.wake.state import WakeState
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 from tests.model_plugin_fakes import (
     register_test_model_provider,
@@ -339,10 +341,8 @@ class RuntimeStack:
     artifact_metadata: ArtifactStore
     after_load: Callable[[], Awaitable[None]] | None = None
     uses_test_model: bool = True
-    _base_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
 
     async def start(self) -> None:
-        self._base_tasks = asyncio.all_tasks()
         selection = PluginSelection(self.workspace)
         stable = selection.read()
         await self.manager.load_all()
@@ -361,23 +361,6 @@ class RuntimeStack:
         self.artifact_metadata.close()
         if self.uses_test_model:
             unregister_test_model_provider(self.workspace)
-
-    async def abort_after_fault(self) -> None:
-        """End this isolated process stand-in after its injected fatal fault."""
-
-        # The faulted Root cannot claim clean stop. A real process restart drops
-        # its tasks; close only tasks created since this stack started.
-        pending = [task for task in asyncio.all_tasks() - self._base_tasks if not task.done()]
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        await self.event_bus.aclose()
-        self.message_log.close()
-        self.artifact_metadata.close()
-        if self.uses_test_model:
-            unregister_test_model_provider(self.workspace)
-
 
 async def run_suite(
     root: Path,
@@ -417,6 +400,10 @@ async def run_suite(
     original_timer = plugin_manager_module.AsyncioOneShotTimer
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
     settlement_failures = 0
+    first_incident_count = 0
+    first_failed_attempt_count = 0
+    first_pending_source_count = 0
+    first_cleanup_recovery_count = 0
 
     first: RuntimeStack | None = None
     restarted: RuntimeStack | None = None
@@ -494,17 +481,47 @@ async def run_suite(
             ),
         )
 
-        # 3. A projected interruption restarts the formal stack and only moves forward.
+        # 3. The failed business task stays recorded; stop must actually release
+        # the first Root before a new stack opens the same durable workspace.
         if inject_settlement_failure:
-            try:
-                await first.close()
-            except BaseException as error:
-                # The injected domain failure is surfaced by the Wake watcher during stop;
-                # its durable owner records remain the recovery evidence.
-                if not _is_fixture_settlement_failure(error):
-                    raise
-                await first.abort_after_fault()
+            first_root = first.manager.live_root
+            if first_root is None:
+                raise GateFailure("RECOVERY_FIRST_ROOT_MISSING")
+            closing = first
             first = None
+            await closing.close()
+            if closing.manager.live_root is not None or closing.manager.cleanup_failures:
+                raise GateFailure("RECOVERY_FIRST_ROOT_NOT_CLOSED")
+            first_cleanup_recovery_count = len(
+                ReloadJournal(workspace).pending_recovery()
+            )
+            if first_cleanup_recovery_count:
+                raise GateFailure("RECOVERY_FALSE_CLEANUP_OWNER")
+            first_incident_count = sum(
+                item.kind == "task_failure" and item.owner == "wake"
+                for item in first_root.recent_incidents()
+            )
+            if first_incident_count != 1:
+                raise GateFailure("RECOVERY_WAKE_INCIDENT_MISSING")
+            attempts = WakeState(
+                workspace / "plugin-data" / "wake-builtin" / "wake.sqlite3"
+            ).list_attempts()
+            first_failed_attempt_count = sum(
+                item["outcome"] == "failed" for item in attempts
+            )
+            if first_failed_attempt_count != 1:
+                raise GateFailure("RECOVERY_FAILED_ATTEMPT_MISSING")
+            pending_rows = _read_failure_rows(
+                workspace / "sessions.db", "owner_records",
+                "SELECT value FROM owner_records WHERE owner = ? AND key LIKE 'flow:%'",
+                ("plugin:wake",),
+            )
+            first_pending_source_count = sum(
+                not Pointer.model_validate(json.loads(str(row[0]))).settled
+                for row in pending_rows
+            )
+            if first_pending_source_count != 1:
+                raise GateFailure("RECOVERY_PENDING_SOURCE_MISSING")
             restarted = _build_stack(
                 workspace,
                 root,
@@ -573,7 +590,7 @@ async def run_suite(
                         "driver_id": selected_model.descriptor.driver_id,
                         "snapshot_id": selected_model.descriptor.plugin_snapshot_id,
                     }
-        return {
+        result: dict[str, object] = {
             "model": MODEL,
             "logical_provider_requests": counted.logical_requests,
             "delivery_count": len(channel_rows),
@@ -598,6 +615,15 @@ async def run_suite(
             "restart_count": int(inject_settlement_failure),
             "model_binding": model_evidence,
         }
+        if inject_settlement_failure:
+            result.update({
+                "first_stop_complete": True,
+                "first_incident_count": first_incident_count,
+                "first_failed_attempt_count": first_failed_attempt_count,
+                "first_pending_source_count": first_pending_source_count,
+                "first_cleanup_recovery_count": first_cleanup_recovery_count,
+            })
+        return result
     finally:
         plugin_manager_module.AsyncioOneShotTimer = original_timer
         if first is not None:
@@ -1117,16 +1143,6 @@ def _content_state_counts(workspace: Path) -> dict[str, int]:
         "SELECT status, COUNT(*) FROM items GROUP BY status ORDER BY status",
     )
     return {str(row[0]): _evidence_int(row[1]) for row in rows}
-
-
-def _is_fixture_settlement_failure(error: BaseException) -> bool:
-    """Accept only the exact injected interruption during the recovery exercise."""
-
-    if isinstance(error, BaseExceptionGroup):
-        return bool(error.exceptions) and all(
-            _is_fixture_settlement_failure(item) for item in error.exceptions
-        )
-    return type(error) is _FixtureSettlementInterruption
 
 
 def _wake_request(log: MessageLog) -> tuple[Request, Pointer]:
