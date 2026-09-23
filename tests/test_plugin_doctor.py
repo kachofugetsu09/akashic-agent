@@ -34,10 +34,13 @@ def test_doctor_does_not_import_plugin_and_defers_runtime_checks(tmp_path: Path,
     home = installed_artifact(tmp_path, source, candidate=candidate)
     report = run_plugin_doctor(workspace=tmp_path / "workspace", plugins_home=home)
     assert not marker.exists()
-    assert report["status"] == "degraded"
+    assert report["status"] == ("broken" if candidate else "degraded")
     checks = report["plugins"][0]["checks"]
-    assert any(check["name"] == ("candidate_runtime" if candidate else "runtime")
-               and check["status"] == "deferred" for check in checks)
+    if candidate:
+        assert report["status"] == "broken"
+        assert any(check["name"] == "install" and check["status"] == "error" for check in checks)
+    else:
+        assert any(check["name"] == "runtime" and check["status"] == "deferred" for check in checks)
     assert not (tmp_path / "workspace").exists()
 
 

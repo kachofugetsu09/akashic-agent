@@ -353,17 +353,6 @@ async def test_live_rpc_resolution_holds_exact_provider_scope_during_local_repla
         old_module.CANCEL = False
         old_module.CLEANUP.clear()
 
-        async def reject_snapshot_entry(*args, **kwargs):
-            raise AssertionError("局部换代不得取得 snapshot lease")
-
-        def reject_snapshot_compile(
-            generations, *, snapshot_revision="", composition_root=None,
-        ):
-            raise AssertionError("局部换代不得编译 snapshot")
-
-        monkeypatch.setattr(manager.snapshot_store, "acquire", reject_snapshot_entry)
-        monkeypatch.setattr(manager._snapshot_compiler, "compile", reject_snapshot_compile)
-
         _write_live_rpc_plugin(target_source, version="new")
         _commit(target_source)
         accepted = await manager.install(

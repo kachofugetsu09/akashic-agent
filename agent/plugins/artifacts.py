@@ -3,12 +3,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import cast
 
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from infra.persistence.json_store import atomic_save_json, load_json
 
-ArtifactSelector = Literal["stable", "latest"]
 _SAFE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
@@ -57,16 +56,6 @@ def read_pointers(
     )
     _validate_pointers(plugin_base, pointers, validate_content=validate_content)
     return pointers
-
-
-def read_pointer(
-    plugin_base: Path,
-    selector: ArtifactSelector,
-) -> ArtifactPointer | None:
-    """从原子指针对中读取一个 selector。"""
-
-    pointers = read_pointers(plugin_base)
-    return None if pointers is None else getattr(pointers, selector)
 
 
 def write_pointers(
@@ -128,25 +117,6 @@ def relative_artifact_pointer(
     pointer = ArtifactPointer(relative)
     _ = resolve_pointer(plugin_base, pointer)
     return pointer
-
-
-def discard_latest_pointer(plugin_base: Path) -> ArtifactPointer:
-    pointers = read_pointers(plugin_base)
-    if pointers is None:
-        raise RuntimeError(f"插件缺少 stable artifact pointer: {plugin_base}")
-    if pointers.stable.path is None:
-        _ = write_pointers(
-            plugin_base,
-            stable=pointers.stable,
-            latest=pointers.stable,
-        )
-        return pointers.stable
-    _ = write_pointers(
-        plugin_base,
-        stable=pointers.stable,
-        latest=pointers.stable,
-    )
-    return pointers.stable
 
 
 def _validate_pointers(

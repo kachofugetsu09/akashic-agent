@@ -59,7 +59,7 @@ async def test_core_starts_with_no_checkout_plugins_and_keeps_manager_usable(
         root = core.plugin_manager.live_root
         assert root is not None
         assert core.plugin_manager.discover() == []
-        assert core.plugin_manager.current_snapshot is None
+        assert core.plugin_manager.live_root is root
         first = await core.inspect_modules()
         assert core.plugin_manager.live_root is root
         assert "identity:" in first
@@ -89,7 +89,7 @@ async def test_core_inspection_cold_starts_one_live_root(
         first = await core.inspect_modules()
         root = core.plugin_manager.live_root
         assert root is not None
-        assert core.plugin_manager.current_snapshot is None
+        assert core.plugin_manager.live_root is root
         assert await core.inspect_modules() == first
         assert core.plugin_manager.live_root is root
     finally:
@@ -194,20 +194,10 @@ async def test_warm_core_inspection_tracks_live_fibers_and_local_failure(
         async def reject_load_all() -> None:
             raise AssertionError("warm inspection must not reload the formal Root")
 
-        async def reject_snapshot_acquire(snapshot_id=None, *, selector="stable"):
-            raise AssertionError("warm inspection must not acquire a snapshot lease")
-
-        def reject_snapshot_compile(
-            generations, *, snapshot_revision="", composition_root=None,
-        ):
-            raise AssertionError("warm inspection must not compile a snapshot")
-
         def reject_ready_gate():
             raise AssertionError("warm inspection must not gate on the Root receipt")
 
         monkeypatch.setattr(manager, "load_all", reject_load_all)
-        monkeypatch.setattr(manager.snapshot_store, "acquire", reject_snapshot_acquire)
-        monkeypatch.setattr(manager._snapshot_compiler, "compile", reject_snapshot_compile)
         monkeypatch.setattr(root, "receipt", reject_ready_gate)
 
         inspected = await core.inspect_modules()

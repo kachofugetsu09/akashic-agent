@@ -13,8 +13,7 @@ import agent.plugins.install as install_module
 import agent.plugins.source_resolver as source_resolver_module
 from agent.plugins.artifacts import (
     ArtifactPointer,
-    discard_latest_pointer,
-    read_pointer,
+    read_pointers,
     resolve_pointer,
     write_pointers,
 )
@@ -24,7 +23,6 @@ from agent.plugins.install import (
     set_installed_plugin_enabled,
 )
 from agent.plugins.manifest import plugins_root
-from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
@@ -183,21 +181,18 @@ def test_tolerant_source_scan_keeps_shared_identity_io_fail_loud(
 def test_installed_tolerant_scan_reads_only_selected_pointer_content(
     tmp_path: Path,
 ) -> None:
-    """The selected installed artifact is tolerant; the other pointer is not a fallback."""
+    """A single selected artifact is tolerant of invalid source content."""
     base = tmp_path / "cache" / "lab" / "installed_snapshot"
     stable = base / ".artifacts" / "1.0.0-stable"
-    latest = base / ".artifacts" / "2.0.0-latest"
     stable.mkdir(parents=True)
-    latest.mkdir(parents=True)
     (stable / "plugin.py").write_text(
         'name = "installed_snapshot"\nversion = "1.0.0"\napi_version = 3\n',
         encoding="utf-8",
     )
-    (latest / "plugin.py").write_text("this is not Python !!!\n", encoding="utf-8")
     (base / ".pointers.json").write_text(
         json.dumps({
             "stable": ".artifacts/1.0.0-stable",
-            "latest": ".artifacts/2.0.0-latest",
+            "latest": ".artifacts/1.0.0-stable",
         }),
         encoding="utf-8",
     )
@@ -206,8 +201,8 @@ def test_installed_tolerant_scan_reads_only_selected_pointer_content(
 
     assert [source.plugin_root for source in scan.sources] == [stable.resolve()]
     assert scan.failures == ()
-    with pytest.raises(ValueError, match="无法解析"):
-        resolve_plugin_sources([], installed_cache_root=tmp_path / "cache")
+    resolved = resolve_plugin_sources([], installed_cache_root=tmp_path / "cache")
+    assert [source.plugin_root for source in resolved] == [stable.resolve()]
 
     (stable / "plugin.py").write_text("this is not Python either !!!\n", encoding="utf-8")
     scan = scan_plugin_sources([], installed_cache_root=tmp_path / "cache")
@@ -216,6 +211,23 @@ def test_installed_tolerant_scan_reads_only_selected_pointer_content(
     assert scan.failures[0].error_type == "SyntaxError"
     assert "line" in scan.failures[0].error_text
     assert scan.failures[0].plugin_id is None
+
+
+def test_installed_scan_rejects_unsettled_historical_pointers(tmp_path: Path) -> None:
+    """A historical pending pair needs its update owner before a new scan."""
+    base = tmp_path / "cache" / "lab" / "demo"
+    base.mkdir(parents=True)
+    for name in ("old", "new"):
+        artifact = base / ".artifacts" / name
+        artifact.mkdir(parents=True)
+        (artifact / "plugin.py").write_text(
+            'name = "demo"\nversion = "1.0.0"\napi_version = 3\n',
+        )
+    (base / ".pointers.json").write_text(json.dumps({
+        "stable": ".artifacts/old", "latest": ".artifacts/new",
+    }))
+    with pytest.raises(RuntimeError, match="历史候选指针对"):
+        scan_plugin_sources([], installed_cache_root=tmp_path / "cache")
 
 
 @pytest.mark.parametrize("pointer_value", [
@@ -343,7 +355,6 @@ def test_install_git_plugin_uses_static_v3_manifest(tmp_path: Path) -> None:
     )
     assert result.installed_path.name.startswith("1.0.0-")
     assert result.source_revision == _git_output(repo, "rev-parse", "HEAD")
-    assert result.staged_candidate is False
     pointer_state = result.installed_path.parents[1] / ".pointers.json"
     assert pointer_state.is_file()
     assert not (pointer_state.parent / ".stable.json").exists()
@@ -482,27 +493,23 @@ def test_retry_reuses_artifact_and_fixed_python_environment(
         encoding="utf-8",
     )
     _commit(repo)
-    candidate = install_git_plugin(
+    installed = install_git_plugin(
         workspace=workspace,
         source=str(repo),
         marketplace="lab",
         plugins_home=home,
-        stage_candidate=True,
     )
-    ReloadJournal(workspace).rollback_updates(home, update_id=candidate.update_id, error="explicit discard")
 
     retried = install_git_plugin(
         workspace=workspace,
         source=str(repo),
         marketplace="lab",
         plugins_home=home,
-        stage_candidate=True,
     )
 
-    assert retried.installed_path == candidate.installed_path
-    assert retried.staged_candidate is True
+    assert retried.installed_path == installed.installed_path
     assert (retried.installed_path / ENVIRONMENT_FILE).read_text() == (
-        candidate.installed_path / ENVIRONMENT_FILE
+        installed.installed_path / ENVIRONMENT_FILE
     ).read_text()
 
 
@@ -641,7 +648,8 @@ def test_install_failure_restores_previous_cache_and_manifest(
         encoding="utf-8"
     ) == old_content
     plugin_base = home / "cache" / "lab" / "feed"
-    assert read_pointer(plugin_base, "stable") == read_pointer(plugin_base, "latest")
+    pointers = read_pointers(plugin_base)
+    assert pointers is not None and pointers.stable == pointers.latest
     assert tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8")) == {
         "plugins": {"feed@lab": {"enabled": True}}
     }
@@ -690,94 +698,8 @@ def test_install_rejects_unsafe_path_metadata(tmp_path: Path) -> None:
         )
 
 
-def test_install_can_stage_one_latest_without_changing_stable(tmp_path: Path) -> None:
-    repo = tmp_path / "feed"
-    plugin_path = repo / "plugin.py"
-    _write_v3_plugin(repo, name="feed", marker="stable")
-    _commit(repo)
-    home = tmp_path / "plugins-home"
-    first = install_git_plugin(
-        workspace=tmp_path / "workspace",
-        source=str(repo),
-        marketplace="lab",
-        plugins_home=home,
-    )
-    plugin_path.write_text(
-        plugin_path.read_text(encoding="utf-8").replace("stable", "latest"),
-        encoding="utf-8",
-    )
-    _commit(repo)
-
-    second = install_git_plugin(
-        workspace=tmp_path / "workspace",
-        source=str(repo),
-        marketplace="lab",
-        plugins_home=home,
-        stage_candidate=True,
-    )
-
-    stable = resolve_plugin_sources([], installed_cache_root=home / "cache")[0]
-    latest = resolve_plugin_sources(
-        [],
-        installed_cache_root=home / "cache",
-        installed_selector="latest",
-    )[0]
-    assert stable.plugin_root == first.installed_path
-    assert latest.plugin_root == second.installed_path
-    assert first.installed_path.exists()
-    assert second.installed_path.exists()
-    assert second.staged_candidate is True
-    with pytest.raises(RuntimeError, match="等待 promote/discard"):
-        install_git_plugin(
-            workspace=tmp_path / "workspace",
-            source=str(repo),
-            marketplace="lab",
-            plugins_home=home,
-            stage_candidate=True,
-        )
 
 
-def test_first_staged_install_has_no_stable_until_promotion(tmp_path: Path) -> None:
-    repo = tmp_path / "feed"
-    _write_v3_plugin(repo, name="feed")
-    _commit(repo)
-    home = tmp_path / "plugins-home"
-
-    result = install_git_plugin(
-        workspace=tmp_path / "workspace",
-        source=str(repo),
-        marketplace="lab",
-        plugins_home=home,
-        stage_candidate=True,
-    )
-
-    assert resolve_plugin_sources([], installed_cache_root=home / "cache") == []
-    assert (
-        resolve_plugin_sources(
-            [],
-            installed_cache_root=home / "cache",
-            installed_selector="latest",
-        )[0].plugin_root
-        == result.installed_path
-    )
-
-    _ = discard_latest_pointer(result.installed_path.parents[1])
-
-    assert read_pointer(result.installed_path.parents[1], "stable") == ArtifactPointer(
-        None
-    )
-    assert read_pointer(result.installed_path.parents[1], "latest") == ArtifactPointer(
-        None
-    )
-    assert resolve_plugin_sources([], installed_cache_root=home / "cache") == []
-    assert (
-        resolve_plugin_sources(
-            [],
-            installed_cache_root=home / "cache",
-            installed_selector="latest",
-        )
-        == []
-    )
 
 
 def test_default_update_keeps_immediate_stable_compatibility(tmp_path: Path) -> None:
@@ -807,7 +729,6 @@ def test_default_update_keeps_immediate_stable_compatibility(tmp_path: Path) -> 
 
     resolved = resolve_plugin_sources([], installed_cache_root=home / "cache")
     assert resolved[0].plugin_root == second.installed_path
-    assert second.staged_candidate is False
     assert first.installed_path.exists()
 
 

@@ -29,12 +29,6 @@ class RuntimeStopping:
     后续清理失败的重试不重发；不接受 Bail。"""
 
 
-@dataclass(frozen=True, slots=True)
-class SnapshotSealing:
-    """Signal that a ready candidate must freeze its private registries."""
-
-
 RUNTIME_STARTING = SerialEventKey[RuntimeStarting, object]("runtime.starting")
 RUNTIME_STARTED = SerialEventKey[RuntimeStarted, object]("runtime.started")
 RUNTIME_STOPPING = SerialEventKey[RuntimeStopping, object]("runtime.stopping")
-SNAPSHOT_SEALING = SerialEventKey[SnapshotSealing, object]("snapshot.sealing")

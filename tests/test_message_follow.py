@@ -284,18 +284,7 @@ async def test_build_control_service_reply_status_uses_live_root_not_snapshot(tm
         root = manager.live_root
         assert root is not None
 
-        async def reject_snapshot_entry(*args, **kwargs):
-            raise AssertionError("reply follow must not acquire the old snapshot")
-
-        def reject_snapshot_compile(*args, **kwargs):
-            raise AssertionError("reply follow must not compile the old snapshot")
-
-        # 真实 service 已在 core.start 前构造；负控覆盖 cold-start 后仍不能走旧入口。
-        monkeypatch.setattr(manager.snapshot_store, "acquire", reject_snapshot_entry)
-        monkeypatch.setattr(
-            manager.snapshot_store, "wait_for_stable_change", reject_snapshot_entry,
-        )
-        monkeypatch.setattr(manager._snapshot_compiler, "compile", reject_snapshot_compile)
+        # 真实 service 已在 core.start 前构造；cold-start 后继续读取同一 Root。
         async with aclosing(service.follow("s", -1)) as stream:
             frame = await anext(stream)
             if frame["type"] != "reply.status":

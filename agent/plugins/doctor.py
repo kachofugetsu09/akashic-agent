@@ -60,56 +60,30 @@ def _inspect_plugin(
     ]
     resolution_error: str | None = None
     try:
-        stable_root, latest_root = _find_plugin_roots(
+        installed_root = _find_plugin_root(
             plugin_id,
             plugins_home,
         )
-    except (RuntimeError, ValueError) as error:
-        stable_root, latest_root = None, None
+    except (OSError, RuntimeError, ValueError) as error:
+        installed_root = None
         resolution_error = str(error)
     if resolution_error is not None:
         checks.append(_check("install", "error", resolution_error))
-    elif stable_root is not None:
+    elif installed_root is not None:
         checks.append(
             _check(
                 "install",
                 "ok",
-                f"stable plugin.py: {stable_root}",
+                f"installed plugin.py: {installed_root}",
             )
         )
         try:
-            load_static_plugin_manifest(stable_root)
+            load_static_plugin_manifest(installed_root)
             checks.append(_check("runtime", "deferred", "运行能力由实际装配确定"))
         except (OSError, RuntimeError, ValueError) as e:
             checks.append(_check("declaration", "error", str(e)))
-    elif latest_root is None:
-        checks.append(_check("install", "error", "未找到插件目录"))
     else:
-        checks.append(
-            _check(
-                "install",
-                "ok",
-                f"latest candidate plugin.py: {latest_root}",
-            )
-        )
-        try:
-            load_static_plugin_manifest(latest_root)
-            checks.append(_check("candidate_runtime", "deferred", "运行能力由实际装配确定"))
-        except (OSError, RuntimeError, ValueError) as e:
-            checks.append(_check("declaration", "error", str(e)))
-    if (
-        resolution_error is None
-        and latest_root is not None
-        and latest_root != stable_root
-    ):
-        checks.append(
-            _check(
-                "candidate",
-                "deferred",
-                "latest 候选尚未 promote；运行时继续以 stable 为准"
-                f" (stable={stable_root}, latest={latest_root})",
-            )
-        )
+        checks.append(_check("install", "error", "未找到插件目录"))
     return {
         "plugin_id": plugin_id,
         "status": _merge_status(check["status"] for check in checks),
@@ -117,26 +91,24 @@ def _inspect_plugin(
     }
 
 
-def _find_plugin_roots(
+def _find_plugin_root(
     plugin_id: str,
     plugins_home: Path | None,
-) -> tuple[Path | None, Path | None]:
-    """只读取正式安装的 stable/latest，不从 checkout 补齐缺少的插件。"""
+) -> Path | None:
+    """Read one exact installed artifact without scanning checkout sources."""
 
     name, separator, marketplace = plugin_id.partition("@")
     if not separator:
-        return None, None
+        return None
 
     base = plugins_root(plugins_home) / "cache" / marketplace / name
     pointers = read_pointers(base)
     if pointers is not None:
-        return (
-            resolve_pointer(base, pointers.stable),
-            resolve_pointer(base, pointers.latest),
-        )
+        if pointers.stable != pointers.latest:
+            raise RuntimeError(f"插件仍有历史候选指针对，须先处理未决更新: {base}")
+        return resolve_pointer(base, pointers.stable)
 
-    # 3. 外部插件只认原子 pointer，不扫描旧版可见目录。
-    return None, None
+    return None
 
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:

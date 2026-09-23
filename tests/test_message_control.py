@@ -241,17 +241,6 @@ async def test_message_send_uses_live_channel_owner_during_local_replace(
                 await peer_scope_release.wait()
                 peer_scope_finished.set()
 
-        async def reject_snapshot_entry(*args, **kwargs):
-            raise AssertionError("live message/send path must not acquire snapshot lease")
-
-        def reject_snapshot_compile(
-            generations, *, snapshot_revision="", composition_root=None,
-        ):
-            raise AssertionError("live message/send path must not compile snapshot")
-
-        monkeypatch.setattr(manager.snapshot_store, "acquire", reject_snapshot_entry)
-        monkeypatch.setattr(manager._snapshot_compiler, "compile", reject_snapshot_compile)
-
         old_module = target.instance.module
         old_module.ENTERED = asyncio.Event()
         old_module.RELEASE = release

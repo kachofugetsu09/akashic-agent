@@ -12,7 +12,6 @@ from agent.plugin_composition import (
     BoundChatModel,
     CapabilitySources,
     ChatModels,
-    CompositionRoot,
     LLMResponse,
     ModelCapabilities,
     ModelContinuation,
@@ -20,18 +19,10 @@ from agent.plugin_composition import (
     ModelRequest,
     ModelUnavailableError,
     ModelUsage,
-    ServiceKey,
     ToolCall,
     UsageCoverage,
 )
 from agent.plugin_composition import CHAT_MODELS, MODEL_CATALOG
-from agent.plugins.snapshot import (
-    RuntimeSnapshot,
-    RuntimeSnapshotCompiler,
-    RuntimeSnapshotStore,
-    bind_runtime_snapshot,
-    reset_runtime_snapshot,
-)
 
 _MODEL_PROVIDERS: dict[Path, object] = {}
 
@@ -227,61 +218,3 @@ async def provide_test_model_services(ctx: object) -> None:
         raise RuntimeError(f"test model provider 未注册: {workspace}")
     _ = await ctx.provide(CHAT_MODELS, _TestChatModels(provider))  # type: ignore[attr-defined]
     _ = await ctx.provide(MODEL_CATALOG, _TestModelCatalog())  # type: ignore[attr-defined]
-
-
-@asynccontextmanager
-async def bind_test_model_snapshot(
-    provider: object,
-    *,
-    chat_models: object | None = None,
-) -> AsyncIterator[None]:
-    """Bind the two public model services for AgentLoop contract tests."""
-
-    store = build_test_model_store(provider, chat_models=chat_models)
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
-    try:
-        yield
-    finally:
-        reset_runtime_snapshot(token)
-        await lease.release()
-
-
-def build_test_model_snapshot(
-    provider: object,
-    *,
-    chat_models: object | None = None,
-) -> RuntimeSnapshot:
-    root = _TestCompositionRoot("test-model-snapshot")
-    root.provide_test_service(
-        CHAT_MODELS,
-        chat_models or _TestChatModels(provider),
-    )
-    root.provide_test_service(MODEL_CATALOG, _TestModelCatalog())
-    return RuntimeSnapshotCompiler().compile(
-        {},
-        snapshot_revision="test-model-snapshot",
-        composition_root=root,
-    )
-
-
-class _TestCompositionRoot(CompositionRoot):
-    """Build a real snapshot root with deterministic model services."""
-
-    def provide_test_service(
-        self,
-        key: ServiceKey[object],
-        value: object,
-    ) -> None:
-        self._register_provider(key, value, self.root_fiber)
-
-
-def build_test_model_store(
-    provider: object,
-    *,
-    chat_models: object | None = None,
-) -> RuntimeSnapshotStore:
-    snapshot = build_test_model_snapshot(provider, chat_models=chat_models)
-    store = RuntimeSnapshotStore()
-    store.install(snapshot)
-    return store

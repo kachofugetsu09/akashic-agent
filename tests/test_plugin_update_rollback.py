@@ -9,12 +9,13 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from uuid import uuid4
 
 import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition import ServiceKey
-from agent.plugins.artifacts import ArtifactPointer, read_pointers, write_pointers
+from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, read_pointers, write_pointers
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import load_plugin_manifest, set_plugin_enabled, write_plugin_manifest
@@ -73,6 +74,23 @@ async def apply(ctx):
     return source, home, workspace, old
 
 
+def arm_historical_update(source, home, workspace, previous, previous_enabled):
+    """Build a real artifact, then record the legacy pending rollback input."""
+    installed = install_git_plugin(
+        workspace=workspace, source=str(source), marketplace="lab", plugins_home=home,
+    )
+    base = installed.installed_path.parents[1]
+    pointers = read_pointers(base)
+    assert pointers is not None and pointers.stable == pointers.latest
+    update_id = "historical-" + uuid4().hex
+    ReloadJournal(workspace).arm_update(
+        update_id=update_id, plugin_id=f"{installed.plugin_name}@lab",
+        plugin_base=base, previous=previous, candidate=pointers.stable,
+        previous_enabled=previous_enabled,
+    )
+    return installed, update_id
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cut", ["before", "after"])
 async def test_killed_update_boots_exact_selected_archive(tmp_path: Path, cut: str) -> None:
@@ -113,21 +131,23 @@ def test_rollback_keeps_prior_disabled_state_and_unrelated_manifest_entries(tmp_
     entries = load_plugin_manifest(home)
     entries["other@lab"] = False
     write_plugin_manifest(entries, plugins_home=home)
-    staged = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    previous = read_pointers(old.installed_path.parents[1])
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, False)
     assert load_plugin_manifest(home)["probe@lab"] is True
     journal = ReloadJournal(workspace)
     journal.rollback_updates(home)
     journal.rollback_updates(home)
-    assert journal.update(staged.update_id).phase == "rolled_back"
+    assert journal.update(update_id).phase == "rolled_back"
     assert load_plugin_manifest(home) == {"probe@lab": False, "other@lab": False}
     assert (old.data_path / "history.txt").read_text() == "existing durable data"
 
 
 def test_unknown_pointer_is_not_overwritten_by_startup_rollback(tmp_path):
     source, home, workspace, old = prepare(tmp_path)
-    staged = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    previous = read_pointers(old.installed_path.parents[1])
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
     base = old.installed_path.parents[1]
     other = base / ".artifacts/third"
     shutil.copytree(old.installed_path, other)
@@ -137,7 +157,7 @@ def test_unknown_pointer_is_not_overwritten_by_startup_rollback(tmp_path):
     with pytest.raises(RuntimeError, match="其他操作改变"):
         journal.rollback_updates(home)
     assert (base / ".pointers.json").read_bytes() == before
-    assert journal.update(staged.update_id).phase == "armed"
+    assert journal.update(update_id).phase == "armed"
 
 
 @pytest.mark.parametrize("empty_pointer", [False, True])
@@ -150,8 +170,8 @@ def test_first_install_rollback_restores_absent_pointer_and_manifest_entry(tmp_p
     if empty_pointer:
         base.mkdir(parents=True)
         write_pointers(base, stable=ArtifactPointer(None), latest=ArtifactPointer(None))
-    result = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    previous = ArtifactPointers(ArtifactPointer(None), ArtifactPointer(None)) if empty_pointer else None
+    result, _ = arm_historical_update(source, home, workspace, previous, None)
     journal = ReloadJournal(workspace)
     journal.rollback_updates(home)
     pointers = read_pointers(result.installed_path.parents[1])
@@ -168,8 +188,7 @@ def test_first_install_rollback_rejects_existing_nonobject_pointer(tmp_path, inv
     _write_v3_plugin(source, name="new")
     _commit(source)
     home, workspace = tmp_path / "home", tmp_path / "workspace"
-    result = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    result, update_id = arm_historical_update(source, home, workspace, None, None)
     path = result.installed_path.parents[1] / ".pointers.json"
     path.write_text(invalid)
     before_manifest = load_plugin_manifest(home)
@@ -178,19 +197,20 @@ def test_first_install_rollback_rejects_existing_nonobject_pointer(tmp_path, inv
         journal.rollback_updates(home)
     assert path.read_text() == invalid
     assert load_plugin_manifest(home) == before_manifest
-    assert journal.update(result.update_id).phase == "armed"
+    assert journal.update(update_id).phase == "armed"
 
 
 def test_reload_link_and_commit_are_atomic_with_update_guard(tmp_path):
     source, home, workspace, old = prepare(tmp_path)
-    staged = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    previous = read_pointers(old.installed_path.parents[1])
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
     journal = ReloadJournal(workspace)
-    update = journal.update(staged.update_id)
+    update = journal.update(update_id)
     with pytest.raises(RuntimeError, match="换候选"):
         journal.begin(plugin_id="probe@lab", base_snapshot_id=None, generation_id="bad",
             source_revision="source", config_revision="config", candidate_artifact_pointer="wrong")
-    assert journal.update(staged.update_id).reload_tx_id is None
+    assert journal.update(update_id).reload_tx_id is None
     tx = journal.begin(plugin_id="probe@lab", base_snapshot_id=None, generation_id="candidate",
         source_revision="source", config_revision="config", candidate_artifact_pointer=update.candidate.path)
     for phase in ("prepared", "validating", "commit_started", "latest_ready", "promoting"):
@@ -201,4 +221,4 @@ def test_reload_link_and_commit_are_atomic_with_update_guard(tmp_path):
     with pytest.raises(sqlite3.IntegrityError, match="injected cut"):
         journal.advance(tx, "committed")
     assert journal.get(tx).phase == "promoting"
-    assert journal.update(staged.update_id).phase == "armed"
+    assert journal.update(update_id).phase == "armed"

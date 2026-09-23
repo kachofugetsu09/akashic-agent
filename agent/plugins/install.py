@@ -48,7 +48,6 @@ class PluginInstallResult:
     installed_path: Path
     data_path: Path
     source_revision: str
-    staged_candidate: bool
     update_id: str = ""
 
 
@@ -137,7 +136,6 @@ def install_git_plugin(
     ref_name: str = "",
     sparse_paths: list[str] | None = None,
     plugins_home: Path | None = None,
-    stage_candidate: bool = False,
     refresh_existing_artifact: bool = False,
     update_id: str | None = None,
 ) -> PluginInstallResult:
@@ -207,7 +205,6 @@ def install_git_plugin(
             data_root=workspace.resolve(strict=False) / "plugin-data",
             workspace=workspace,
             source_revision=source_revision,
-            stage_candidate=stage_candidate,
             refresh_existing_artifact=refresh_existing_artifact,
             journal=journal, update_id=update_id,
             previous_enabled=previous_enabled,
@@ -223,9 +220,8 @@ def install_git_plugin(
         except BaseException:
             activation.rollback()
             raise
-        if not stage_candidate or (not activation.result.staged_candidate and previous_enabled is True):
-            journal.commit_update(update_id)
-            activation.finalize()
+        journal.commit_update(update_id)
+        activation.finalize()
     return activation.result
 
 
@@ -302,11 +298,10 @@ def _activate_plugin_version(
     data_root: Path,
     workspace: Path,
     source_revision: str,
-    stage_candidate: bool,
     refresh_existing_artifact: bool,
     journal: ReloadJournal, update_id: str, previous_enabled: bool | None,
 ) -> _CacheActivation:
-    """Prepare one immutable artifact and publish it as latest."""
+    """Prepare one immutable artifact and publish its direct install pointer."""
 
     # 1. 校验正式数据身份，但在依赖 staging 成功前不创建它。
     data_path = data_root / f"{plugin_name}-{marketplace}"
@@ -322,15 +317,12 @@ def _activate_plugin_version(
         previous_pointers is not None
         and previous_pointers.stable != previous_pointers.latest
     ):
-        raise RuntimeError(
-            f"插件已有 latest 等待 promote/discard: {plugin_name}@{marketplace}"
-        )
+        raise RuntimeError(f"插件有未决历史指针对，须先恢复: {plugin_name}@{marketplace}")
     stable = (
         previous_pointers.stable
         if previous_pointers is not None
         else ArtifactPointer(None)
     )
-    stage_latest = stage_candidate
 
     artifacts_root = plugin_base / ".artifacts"
     _ensure_directory(artifacts_root)
@@ -397,21 +389,20 @@ def _activate_plugin_version(
             created_artifact = True
         created_data_dir = not data_path.exists()
         ensure_workspace_plugin_data_dir(data_path, workspace)
-        latest = relative_artifact_pointer(plugin_base, target_root)
-        candidate_staged = stage_latest and stable != latest
+        installed = relative_artifact_pointer(plugin_base, target_root)
         # 新指针可见之前，先让代码目录与旧状态的恢复点耐久。
         _sync_artifact_tree(target_root)
         sync_directory(artifacts_root)
         sync_directory(plugin_base)
         journal.arm_update(
             update_id=update_id, plugin_id=f"{plugin_name}@{marketplace}", plugin_base=plugin_base,
-            previous=previous_pointers, candidate=latest, previous_enabled=previous_enabled,
+            previous=previous_pointers, candidate=installed, previous_enabled=previous_enabled,
         )
         armed = True
         _ = write_pointers(
             plugin_base,
-            stable=stable if stage_latest else latest,
-            latest=latest,
+            stable=installed,
+            latest=installed,
         )
     except BaseException:
         if armed:
@@ -431,7 +422,6 @@ def _activate_plugin_version(
         installed_path=target_root,
         data_path=data_path,
         source_revision=source_revision,
-        staged_candidate=candidate_staged,
         update_id=update_id,
     )
     return _CacheActivation(

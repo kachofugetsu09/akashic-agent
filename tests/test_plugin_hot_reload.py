@@ -33,7 +33,7 @@ from starlette.types import Message as ASGIMessage
 
 from agent.plugin_composition import CompositionError, CompositionRoot, FiberState, ServiceKey
 from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
-from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
+from agent.plugins.artifacts import ArtifactPointer, read_pointers, write_pointers
 from plugins.ui.dashboard import (
     _plugin_routes,
     _require_routes_available,
@@ -43,12 +43,6 @@ from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.selection import SelectionConflictError
 from agent.plugins.manifest import write_plugin_manifest
 from agent.plugins.install import install_git_plugin
-from agent.plugins.snapshot import (
-    RuntimeSnapshot,
-    RuntimeSnapshotCompiler,
-    RuntimeSnapshotStore,
-    lease_runtime_snapshot,
-)
 from agent.plugins.watcher import PluginWatcher
 from plugins.standard_tools.skill_catalog import SkillCatalogParser
 from bootstrap.dashboard_api import create_dashboard_app
@@ -625,7 +619,7 @@ async def test_source_symlink_cannot_escape_plugin_root(tmp_path: Path):
     try:
         with pytest.raises(RuntimeError, match="源码符号链接.*越界"):
             await manager.load_all()
-        assert manager.current_snapshot is None
+        assert manager.live_root is None
     finally:
         await manager.terminate_all()
 
@@ -818,7 +812,7 @@ async def test_disabled_installed_plugin_is_not_part_of_boot_selection(tmp_path:
         }
         assert selected == {"selected"}
         assert manager.generation("installed_snapshot@lab") is None
-        assert read_pointer(plugin_base, "stable") == pointer
+        assert read_pointers(plugin_base).stable == pointer
     finally:
         await manager.terminate_all()
 
@@ -844,12 +838,12 @@ async def test_installed_update_requires_explicit_install_and_fixed_selection(tm
         selected_a = manager._selection.read()
         assert old is not None and old.instance.version == "release-a"
         base = tmp_path / "home" / "cache" / "lab" / "installed_snapshot"
-        pointer = read_pointer(base, "stable")
+        pointer = read_pointers(base).stable
         _save_installed_source(repo, _installed_snapshot_source("release-b"))
         assert await manager.reconcile_changed() == []
         assert manager._selection.read() == selected_a
         assert manager.generation("installed_snapshot@lab") is old
-        assert read_pointer(base, "stable") == pointer
+        assert read_pointers(base).stable == pointer
 
         accepted = await _install_new_revision(manager, repo, "installed-b")
         current = manager.generation("installed_snapshot@lab")
@@ -1058,9 +1052,9 @@ async def test_restart_keeps_stable_when_legacy_candidate_pointers_drift(
     # 旧记录没有完整 selection 转换证据，保持未知，不伪造 recovered/aborted。
     assert manager.reload_journal.get(tx_id).phase == "promoting"
     assert manager.generation("installed_snapshot@lab").instance.version == "release-a"  # type: ignore[union-attr]
-    assert manager.ready_candidate is None
+    assert manager.live_root is not None
     assert stable_root.exists()
-    assert read_pointer(plugin_base, "latest") == latest_pointer
+    assert read_pointers(plugin_base).latest == latest_pointer
     await manager.terminate_all()
 
 
@@ -1123,52 +1117,8 @@ async def test_live_admission_waits_for_held_owner_call_during_update(tmp_path: 
         await manager.terminate_all()
 
 
-@pytest.mark.asyncio
-async def test_snapshot_cleanup_failure_requires_another_explicit_close() -> None:
-    """失败资源留在原快照，不在同次关闭中自动重放。"""
-    attempts = 0
-
-    async def drain(snapshot):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise OSError("still open")
-
-    store = RuntimeSnapshotStore(drain)
-    snapshot = RuntimeSnapshotCompiler().compile({})
-    store.install(snapshot)
-    with pytest.raises(RuntimeError, match="drain 失败"):
-        await store.close()
-    assert attempts == 1
-    assert snapshot.snapshot_id in store.retained_snapshot_ids
-    await store.close()
-    assert attempts == 2
-    assert store.retained_snapshot_ids == ()
 
 
-@pytest.mark.asyncio
-async def test_snapshot_cleanup_join_survives_repeated_caller_cancel() -> None:
-    """取消等待者不能取消实际 snapshot 资源回收。"""
-    entered, release = asyncio.Event(), asyncio.Event()
-    closed = []
-
-    async def drain(snapshot):
-        entered.set()
-        await release.wait()
-        closed.append(snapshot.snapshot_id)
-
-    store = RuntimeSnapshotStore(drain)
-    snapshot = RuntimeSnapshotCompiler().compile({})
-    store.install(snapshot)
-    closing = asyncio.create_task(store.close())
-    await entered.wait()
-    closing.cancel()
-    asyncio.get_running_loop().call_soon(closing.cancel)
-    asyncio.get_running_loop().call_soon(release.set)
-    with pytest.raises(asyncio.CancelledError):
-        await closing
-    assert closed == [snapshot.snapshot_id]
-    assert store.retained_snapshot_ids == ()
 
 
 @pytest.mark.asyncio
@@ -1209,78 +1159,6 @@ async def test_live_selection_compile_abort_then_commit(tmp_path: Path) -> None:
         await manager.terminate_all()
 
 
-@pytest.mark.asyncio
-async def test_runtime_snapshot_latest_closes_before_fresh_formal_publication(
-    tmp_path: Path,
-) -> None:
-    from agent.plugin_composition import CompositionRoot
-
-    compiler = RuntimeSnapshotCompiler()
-    drained: list[str] = []
-    closed: list[str] = []
-
-    async def build(revision: str) -> RuntimeSnapshot:
-        root = CompositionRoot(revision)
-        async def apply(ctx):
-            await ctx.effect(lambda: lambda: closed.append(revision))
-        await root.mount(apply, name="snapshot_selector")
-        return compiler.compile({}, snapshot_revision=revision, composition_root=root)
-
-    stable = await build("stable")
-    latest = await build("latest")
-
-    async def on_drained(snapshot: RuntimeSnapshot) -> None:
-        await snapshot.composition_root.dispose()
-        drained.append(snapshot.snapshot_id)
-
-    store = RuntimeSnapshotStore(on_drained)
-    store.install(stable)
-    latest_transaction = store.begin_publish(latest)
-    await store.commit_latest(latest_transaction)
-    stable_lease = store.lease()
-    latest_lease = store.lease(selector="latest")
-    assert stable_lease.snapshot is stable
-    assert latest_lease.snapshot is latest
-    with pytest.raises(RuntimeError, match="等待 promote/discard"):
-        store.begin_publish(
-            compiler.compile({}, snapshot_revision="next")
-        )
-    store.pause_candidate_admission(latest)
-    await latest_lease.release()
-    await store.wait_for_no_leases(latest)
-    store.seal_candidate_validation(latest)
-    with pytest.raises(RuntimeError, match="publication target 已失效"):
-        store.retain_publication_target(latest_transaction)
-    assert latest.lease_count == 0
-    await store.discard_latest(latest)
-    assert drained == [latest.snapshot_id]
-    assert closed == ["latest"]
-    assert store.current is stable
-    assert stable_lease.snapshot is stable
-    formal = await build("fresh-formal")
-    transaction = store.begin_publish(formal)
-    publication_lease = store.retain_publication_target(transaction)
-    assert publication_lease.snapshot is formal
-    await store.commit_provisional(transaction)
-    assert store.current is stable
-    provisional_lease = store.retain_publication_target(transaction)
-    assert provisional_lease.snapshot is formal
-    await provisional_lease.release()
-    await publication_lease.release()
-    await store.finalize_provisional(transaction)
-    with pytest.raises(RuntimeError, match="publication target 已失效"):
-        store.retain_publication_target(transaction)
-    assert formal.lease_count == 0
-    assert transaction.previous is stable
-    assert store.current is formal
-    assert formal is not latest
-    assert formal.composition_root is not latest.composition_root
-    assert drained == [latest.snapshot_id]
-    await stable_lease.release()
-    await store.retry_drains()
-    assert drained == [latest.snapshot_id, stable.snapshot_id]
-    await store.close()
-    assert closed == ["latest", "stable", "fresh-formal"]
 
 
 @pytest.mark.asyncio

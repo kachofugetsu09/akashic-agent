@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, cast
+from typing import Any, cast
 
 import pytest
 
@@ -19,12 +18,6 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
 )
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import (
-    RuntimeSnapshotCompiler,
-    RuntimeSnapshotStore,
-    bind_runtime_snapshot,
-    reset_runtime_snapshot,
-)
 from bus.event_bus import EventBus
 from core.memory.events import MemoryWritten
 
@@ -242,21 +235,6 @@ async def test_mount_and_cleanup_failure_keep_both_errors_and_owner():
     assert root.receipt().fibers == ()
 
 
-@asynccontextmanager
-async def _bound_root(root: CompositionRoot) -> AsyncIterator[None]:
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
-    try:
-        yield
-    finally:
-        reset_runtime_snapshot(token)
-        await lease.release()
-        await store.close()
-        await root.dispose()
-
-
 @pytest.mark.asyncio
 async def test_runtime_lifecycle_bail_fails_loud(tmp_path) -> None:
     calls: list[str] = []
@@ -316,9 +294,11 @@ async def test_emit_event_listener_failure_is_fail_loud() -> None:
         await ctx.on(EmitEventKey[object]("test.emit.failure"), fail)
 
     await root.mount(plugin, name="failing-emit-plugin")
-    async with _bound_root(root):
+    try:
         with pytest.raises(RuntimeError, match="observe failed"):
             root.context.emit(EmitEventKey[object]("test.emit.failure"), object())
+    finally:
+        await root.dispose()
 
 
 @pytest.mark.asyncio
@@ -332,8 +312,7 @@ async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
     await root.mount(plugin, name="composition-observer")
     bus = EventBus()
     try:
-        async with _bound_root(root):
-            await bus.fanout(_memory_written_event())
+        await bus.fanout(_memory_written_event())
     finally:
         try:
             await bus.aclose()
@@ -516,29 +495,6 @@ async def test_event_bus_enqueue_drains_callbacks_before_close() -> None:
             await bus.aclose()
 
 
-@pytest.mark.asyncio
-async def test_runtime_snapshot_rejects_inherited_wrong_task_binding() -> None:
-    from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
-
-    root = CompositionRoot("runtime-snapshot-wrong-task")
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
-    try:
-        async def read_snapshot() -> object:
-            return get_lifecycle_runtime_snapshot()
-
-        task = asyncio.create_task(read_snapshot())
-        with pytest.raises(CompositionError) as caught:
-            await task
-    finally:
-        reset_runtime_snapshot(token)
-        await lease.release()
-        await store.close()
-        await root.dispose()
-
-    assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
 
 
 def _memory_written_event() -> MemoryWritten:
@@ -642,7 +598,8 @@ async def test_terminate_joins_untransferred_root_without_generations(tmp_path, 
 
     monkeypatch.setattr(manager, "_provide_composition_services", provide)
     with pytest.raises(BaseExceptionGroup):
-        await manager._resolve_composition_root({})
+        initialize_plugin_workspace(tmp_path / "workspace")
+        await manager.load_all()
     assert attempts == 1
     assert len(manager._building_roots) == 1
     first = asyncio.create_task(manager.terminate_all())
@@ -654,12 +611,9 @@ async def test_terminate_joins_untransferred_root_without_generations(tmp_path, 
     if fail_close:
         with pytest.raises(asyncio.CancelledError):
             await first
-        # 同一已撤销操作的观察者如实收到 取消+真实失败 的组合证据。
-        with pytest.raises(BaseExceptionGroup) as caught:
+        # 第二观察者直接收到实际关闭失败；已取消的第一观察者保留取消结果。
+        with pytest.raises(OSError, match="still open on explicit retry"):
             await second
-        leaves = _error_leaves(caught.value)
-        assert any(isinstance(error, asyncio.CancelledError) for error in leaves)
-        assert any(isinstance(error, OSError) for error in leaves)
         assert attempts == 2
         assert len(manager._building_roots) == 1
         await manager.terminate_all()
@@ -672,54 +626,6 @@ async def test_terminate_joins_untransferred_root_without_generations(tmp_path, 
     assert manager._building_roots == {}
 
 
-@pytest.mark.asyncio
-async def test_compiled_root_rejects_binding_changes_without_restarting_work():
-    """编译后拒绝全部绑定入口，已有消费者继续使用原实例和激活身份。"""
-    from agent.plugin_composition import ServiceKey
-
-    root = CompositionRoot("fixed-bindings")
-    service = ServiceKey[list[str]]("test.fixed.service")
-    values = ["original"]
-    contexts = []
-    calls = []
-
-    async def provider(ctx):
-        await ctx.provide(service, values)
-
-    async def consumer(ctx):
-        contexts.append(ctx)
-        calls.append(ctx.require(service))
-
-    provider_fiber = await root.mount(provider, name="provider")
-    fiber = await root.mount(consumer, name="consumer", inject=(service,))
-    context = contexts[0]
-    token = context.fiber.activation_token
-    missing = ServiceKey("test.new.service")
-    await root.context.inject((missing,), lambda ctx: calls.append("late activation"))
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    assert snapshot.composition_root is root and root.frozen
-    changes = (
-        lambda: root.mount(lambda ctx: None, name="late-root-child"),
-        lambda: context.mount(lambda ctx: None, name="late-child"),
-        lambda: context.inject((service,), lambda ctx: None, name="late-inject"),
-        lambda: context.provide(service, ["replacement"]),
-        lambda: context.provide(missing, object()),
-        context.fiber.dispose,
-        provider_fiber.context.fiber.dispose,
-    )
-    for change in changes:
-        with pytest.raises(CompositionError) as caught:
-            await change()
-        assert caught.value.code == "COMPOSITION_FROZEN"
-    # 服务内部状态仍可变化；协调通知不能产生新实例。
-    values.append("client retry completed")
-    await fiber.reconcile()
-    assert calls == [values]
-    assert context.require(service) is values
-    assert context.fiber.activation_token is token
-    assert root.topology_view() == snapshot.composition_topology
-    await root.dispose()
-    assert root.frozen
 
 
 @pytest.mark.asyncio
@@ -744,120 +650,5 @@ async def test_pending_initial_dependency_resolves_then_frozen_teardown_closes_c
     assert events == []
     await root.mount(provider, name="provider")
     assert events == ["consumer-start"]
-    RuntimeSnapshotCompiler().compile({}, composition_root=root)
     await root.dispose()
     assert events == ["consumer-start", "consumer-close", "provider-close"]
-
-
-@pytest.mark.asyncio
-async def test_frozen_binding_removal_requires_whole_root_teardown():
-    """手动移除不改变已发布组合；被拒绝的 Effect 留给整个 Root 退出。"""
-    from agent.plugin_composition import ServiceKey
-
-    root = CompositionRoot("fixed-service-removal")
-    service = ServiceKey[object]("test.removal.service")
-    value = object()
-    registration = await root.context.provide(service, value)
-    attempts = 0
-    starts, resource_closes = [], []
-    resource = await root.context.effect(lambda: lambda: resource_closes.append("closed"))
-
-    async def consumer(ctx):
-        starts.append(ctx.require(service))
-        def close():
-            nonlocal attempts
-            attempts += 1
-            assert ctx.require(service) is value
-            if attempts == 1:
-                raise OSError("consumer connection still open")
-        await ctx.effect(lambda: close)
-
-    fiber = await root.mount(consumer, name="consumer", inject=(service,))
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    store = RuntimeSnapshotStore()
-    store.install(snapshot)
-    topology = root.topology_view()
-    try:
-        for operation in (registration.aclose, fiber.context.fiber.dispose):
-            with pytest.raises(CompositionError) as caught:
-                await operation()
-            assert caught.value.code == "COMPOSITION_FROZEN"
-        assert store.current is snapshot and snapshot.state == "committed"
-        assert root.context.require(service) is value
-        assert root.topology_view() == topology
-        assert registration in root.root_fiber.effects
-        assert attempts == 0 and starts == [value]
-
-        # 普通资源 Effect 不拥有服务绑定或挂载树，可以独立关闭。
-        await resource.aclose()
-        assert resource_closes == ["closed"]
-        assert root.topology_view().identity == topology.identity
-        assert root.context.require(service) is value
-        await store.close()
-
-        with pytest.raises(BaseExceptionGroup):
-            await root.dispose()
-        assert attempts == 1
-        assert registration in root.root_fiber.effects
-        assert service.name in root.receipt().services
-        # 退出失败也不能补挂、替换服务或重新激活旧工作。
-        for operation, code in (
-            (lambda: root.context.provide(service, object()), "INACTIVE_EFFECT"),
-            (lambda: root.mount(lambda ctx: None, name="replacement"), "COMPOSITION_FROZEN"),
-        ):
-            with pytest.raises(CompositionError) as caught:
-                await operation()
-            assert caught.value.code == code
-        await root.dispose()
-        assert attempts == 2 and starts == [value]
-        assert registration not in root.root_fiber.effects
-        assert root.receipt().services == ()
-        assert root.receipt().fibers == ()
-        # 已完成的句柄再次关闭没有结构变化。
-        await registration.aclose()
-        await fiber.context.fiber.dispose()
-        assert resource_closes == ["closed"]
-    finally:
-        await store.close()
-        await root.dispose()
-
-
-@pytest.mark.asyncio
-async def test_freeze_rejects_incomplete_mount_without_caching_assembly_status():
-    """已有 Fiber 过渡锁覆盖 apply 的异步等待。"""
-    root = CompositionRoot("freeze-during-mount")
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def plugin(ctx):
-        entered.set()
-        await release.wait()
-
-    mount = asyncio.create_task(root.mount(plugin, name="mounting"))
-    await entered.wait()
-    with pytest.raises(CompositionError) as caught:
-        root.freeze()
-    assert caught.value.code == "COMPOSITION_NOT_SETTLED"
-    assert not root.frozen
-    release.set()
-    await mount
-    root.freeze()
-    await root.dispose()
-
-
-@pytest.mark.asyncio
-async def test_failed_compilation_does_not_freeze_root():
-    """缺失依赖的组合不能冻结，初始化 owner 仍可继续装配。"""
-    from agent.plugin_composition import ServiceKey
-
-    root = CompositionRoot("failed-compile-not-frozen")
-    service = ServiceKey("test.after.failed.compile")
-
-    async def plugin(ctx):
-        ctx.require(service)
-
-    await root.mount(plugin, name="missing-dependency", inject=(service,))
-    with pytest.raises(RuntimeError, match="组合拓扑未就绪"):
-        RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    assert not root.frozen
-    await root.context.provide(service, object())
-    await root.dispose()

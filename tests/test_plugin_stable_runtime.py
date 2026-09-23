@@ -50,7 +50,7 @@ async def test_boot_requires_explicit_valid_selection(tmp_path, monkeypatch, raw
     monkeypatch.setattr(owner, "discover", forbidden)
     with pytest.raises(SelectionFormatError):
         await owner.load_all()
-    assert owner.current_snapshot is None
+    assert owner.live_root is None
     await owner.terminate_all()
 
 
@@ -91,7 +91,7 @@ async def test_boot_restores_complete_archives_and_ignores_live_inputs(tmp_path,
         assert restored is not before
         assert all(item.plugin_dir == item.code_dir for item in second._active_generations.values())
         assert selection.read() == ref
-        assert second.ready_candidate is None
+        assert restored is second.live_root
     finally:
         await second.terminate_all()
 
@@ -156,7 +156,7 @@ async def test_boot_settles_exact_transition_without_resuming_or_rolling_back_in
     await second.load_all()
     try:
         assert selection.read() == selected
-        assert second.ready_candidate is None
+        assert second.live_root is not None
         assert tuple(item.archive_ref for item in second._active_generations.values()) == selection.archive.read_descriptor(selected)["components"]
         phase = second._reload_journal.get(tx_id).phase
         assert phase == ("recovered" if committed else "promoting" if transition == "unknown" else "aborted")

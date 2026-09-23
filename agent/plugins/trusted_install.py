@@ -103,7 +103,6 @@ def install_trusted_plugin_batch(
                 ref_name=source.ref,
                 sparse_paths=list(source.sparse),
                 plugins_home=plugins_home,
-                stage_candidate=False,
                 refresh_existing_artifact=True,
             )
         except (OSError, RuntimeError, ValueError) as exc:

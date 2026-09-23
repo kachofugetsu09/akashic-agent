@@ -140,7 +140,6 @@ def discover_migration_bundles(
     sources = resolve_plugin_sources(
         plugin_dirs,
         installed_cache_root=installed_cache_root,
-        installed_selector="stable",
     )
     bundles: list[MigrationBundle] = []
     seen_bundles: set[str] = set()

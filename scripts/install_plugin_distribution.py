@@ -924,7 +924,7 @@ def adopt_bundled_distribution(
                     installed = install_git_plugin(
                         workspace=workspace, source=str(bundle), marketplace=marketplace,
                         ref_name=str(row["source_revision"]), plugins_home=plugins_home,
-                        stage_candidate=False, refresh_existing_artifact=False,
+                        refresh_existing_artifact=False,
                         update_id=uuid4().hex,
                     )
                     if f"{installed.plugin_name}@{installed.marketplace}" != plugin_id or installed.source_revision != row["source_revision"]:
