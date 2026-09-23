@@ -118,8 +118,8 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
     core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[])
     try:
         await core.start()
-        snapshot = core.plugin_manager.current_snapshot
-        assert snapshot is not None
+        root = core.plugin_manager.live_root
+        assert root is not None
         source = await _registered_source(core.plugin_manager, "conversation")
         async with source.context.runtime_scope():
             message = await source.open("local:one").accept(
@@ -130,24 +130,21 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
         )
         from plugins.tools.plugin import ALL_TOOLS, TOOLS
 
-        async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as lease:
-            ctx = lease.composition_root.context
-            async with ctx.runtime_scope():
-                tools = ctx.require(TOOLS)
-                binding = tools.bind(
-                    ctx.require(ALL_TOOLS)().select("message_push"),
-                    ctx.require(BINDINGS),
-                )
-
-                async def authorize(binding, arguments):
-                    return {"approved": True}
-                result = await tools.execution(authorize).execute("offline-push", binding,
-                    {"target_channel": "akashic", "target_chat_id": "room", "message": "离线时也保存"})
-                assert result.outcome == "success"
+        tools_context, tools = root._service_provider(TOOLS)
+        view_context, all_tools = root._service_provider(ALL_TOOLS)
+        async with view_context.runtime_scope():
+            push = all_tools().select("message_push")
+        binding = await tools.bind_scoped(push, tools_context.require(BINDINGS))
+        async with tools_context.runtime_scope():
+            async def authorize(binding, arguments):
+                return {"approved": True}
+            result = await tools.execution(authorize).execute("offline-push", binding,
+                {"target_channel": "akashic", "target_chat_id": "room", "message": "离线时也保存"})
+            assert result.outcome == "success"
         pushed = MessageCatalog(core.message_log).reader("akashic:room").snapshot()
         assert len(pushed) == 1 and pushed[0].body.parts[0].value == "离线时也保存"
         from plugins.context.materials import MATERIALS
-        assert snapshot.composition_root.context.require(MATERIALS) is not None
+        assert root.context.require(MATERIALS) is not None
     finally:
         await core.bus.aclose()
         await core.stop()

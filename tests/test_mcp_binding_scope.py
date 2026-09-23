@@ -510,7 +510,7 @@ for raw in sys.stdin:
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_scoped_mcp_waits_for_eof_grace_and_process_group_cleanup(tmp_path, monkeypatch, cancel):
     """成功调用后，忽略 EOF 的真实进程仍完成 TERM 回收，取消不遗留资源。"""
-    import agent.mcp.client as client_module
+    import plugins.mcp.client as client_module
     from utils.process_group import process_group_exists
 
     plugins = tmp_path / "plugins"

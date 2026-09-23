@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -150,7 +151,7 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
     monkeypatch.setattr(manager, "_remove_module_tree", remove)
 
     with pytest.raises((OSError, RuntimeError), match="still open"):
-        await manager._dispose_generation(generation, state="discarded")
+        await manager._dispose_generation(cast(Any, generation), state="discarded")
     assert manager._draining_generations["owner"] == [generation]
     assert manager._draining_generations["owner"][0].scope is scope
     assert generation.state == "prepared"
@@ -161,7 +162,7 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
         cleanup.assert_not_called()
 
     dispose_root.side_effect = cleanup.side_effect = None
-    await manager._dispose_generation(generation, state="discarded")
+    await manager._dispose_generation(cast(Any, generation), state="discarded")
     assert manager._draining_generations == {}
     assert scope.closed
     assert generation.state == "discarded"

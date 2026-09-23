@@ -8,8 +8,9 @@ from typing import Any, cast
 
 import pytest
 
-import agent.mcp.client as client_module
-from agent.mcp.client import McpClient, McpToolInfo
+import plugins.mcp.client as client_module
+from plugins.mcp.client import McpClient, McpToolInfo
+from tests.process_spawner import LocalProcessSpawner
 
 
 def _write_restarting_server(path: Path) -> None:
@@ -75,10 +76,13 @@ async def test_mcp_client_recovers_process_epoch_and_keeps_logical_contract(
     counter = tmp_path / "counter"
     _write_restarting_server(script)
     monkeypatch.setattr(client_module, "_RECOVERY_DELAYS", (0.01, 0.01, 0.01))
+    spawner = LocalProcessSpawner()
     client = McpClient(
         "recovering",
-        [sys.executable, str(script)],
-        env={"COUNTER": str(counter)},
+        prepared=spawner.prepare_process(
+            (sys.executable, str(script)), env={"COUNTER": str(counter)},
+        ),
+        spawner=spawner,
     )
 
     try:
@@ -111,10 +115,13 @@ async def test_mcp_client_real_drift_epochs_are_cleaned_before_fatal(
     counter = tmp_path / "counter"
     _write_drifting_server(script)
     monkeypatch.setattr(client_module, "_RECOVERY_DELAYS", (0.01, 0.01, 0.01))
+    spawner = LocalProcessSpawner()
     client = McpClient(
         "drifting",
-        [sys.executable, str(script)],
-        env={"COUNTER": str(counter)},
+        prepared=spawner.prepare_process(
+            (sys.executable, str(script)), env={"COUNTER": str(counter)},
+        ),
+        spawner=spawner,
     )
 
     await client.connect()
@@ -134,7 +141,10 @@ async def test_mcp_client_real_drift_epochs_are_cleaned_before_fatal(
 async def test_mcp_client_exhausts_three_backoffs_on_contract_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = McpClient("drift", ["server"])
+    spawner = LocalProcessSpawner()
+    client = McpClient(
+        "drift", prepared=spawner.prepare_process(("server",)), spawner=spawner,
+    )
     client._expected_tool_contract = client._tool_contract(
         [McpToolInfo("ping", "stable", {"type": "object"})]
     )
@@ -158,7 +168,10 @@ async def test_mcp_client_exhausts_three_backoffs_on_contract_drift(
 
 @pytest.mark.asyncio
 async def test_mcp_client_call_gate_waits_for_recovery_and_disconnect_cancels_it() -> None:
-    client = McpClient("waiting", ["server"])
+    spawner = LocalProcessSpawner()
+    client = McpClient(
+        "waiting", prepared=spawner.prepare_process(("server",)), spawner=spawner,
+    )
 
     class ConnectedProcess:
         returncode = None
@@ -195,7 +208,10 @@ async def test_mcp_client_call_gate_waits_for_recovery_and_disconnect_cancels_it
 @pytest.mark.asyncio
 async def test_mcp_client_resets_crash_budget_only_after_stable_epoch() -> None:
     assert client_module._RECOVERY_DELAYS == (0.25, 1.0, 3.0)
-    client = McpClient("stable", ["server"])
+    spawner = LocalProcessSpawner()
+    client = McpClient(
+        "stable", prepared=spawner.prepare_process(("server",)), spawner=spawner,
+    )
 
     class ExitedProcess:
         returncode = 17
@@ -273,10 +289,14 @@ for line in sys.stdin:
     monkeypatch.setenv("AKASHIC_BOOT_ID", "real-test-boot")
     monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
     monkeypatch.setenv("CANDIDATE_MARKER", "inherited-only")
+    spawner = LocalProcessSpawner()
     client = McpClient(
-        "boot-owner", [sys.executable, str(script)],
-        env={"AKASHIC_BOOT_ID": "fake", "EXPLICIT_VALUE": "keep"},
-        env_scrub_keys=frozenset({"AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED", "CANDIDATE_MARKER", "EXPLICIT_VALUE"}),
+        "boot-owner",
+        prepared=spawner.prepare_process(
+            (sys.executable, str(script)),
+            env={"AKASHIC_BOOT_ID": "fake", "EXPLICIT_VALUE": "keep"},
+        ),
+        spawner=spawner,
     )
     try:
         await client.connect()

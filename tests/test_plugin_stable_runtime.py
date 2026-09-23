@@ -34,6 +34,7 @@ def manager(tmp_path: Path) -> PluginManager:
 
 
 def initialize(tmp_path: Path) -> PluginSelection:
+    (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
     selection = PluginSelection(tmp_path / "workspace")
     selection.initialize()
     return selection
@@ -168,6 +169,7 @@ async def test_post_commit_failure_keeps_new_closed_owner(tmp_path, monkeypatch)
         await replace_root(owner, previous)
     target = selection.read()
     assert target != previous
+    assert target is not None
     assert selection.archive.read_descriptor(target)["previous"] == previous
     assert owner._publication.selection_result == target
     assert owner.current_snapshot is owner._publication.candidate
@@ -216,7 +218,9 @@ async def test_stale_aba_is_rejected_before_closing_live_root(tmp_path):
     owner = manager(tmp_path)
     await owner.load_all()
     first, root = selection.read(), owner.current_snapshot
+    assert first is not None
     components = selection.archive.read_descriptor(first)["components"]
+    assert isinstance(components, tuple)
     second = selection.commit((), expected_ref=first)
     third = selection.commit(components, expected_ref=second)
     with pytest.raises(SelectionConflictError):
@@ -360,7 +364,9 @@ async def test_boot_settles_exact_transition_without_resuming_or_rolling_back_in
     first = manager(tmp_path)
     await first.load_all()
     base = selection.read()
+    assert base is not None
     components = selection.archive.read_descriptor(base)["components"]
+    assert isinstance(components, tuple)
     await first.terminate_all()
     journal = first._reload_journal
     install_base = tmp_path / "installation-not-opened"
@@ -384,6 +390,7 @@ async def test_boot_settles_exact_transition_without_resuming_or_rolling_back_in
         later_base = selection.commit(components, expected_ref=base)
         selection.commit((), expected_ref=later_base)
     selected = selection.read()
+    assert selected is not None
     second = manager(tmp_path)
     monkeypatch.setattr(second, "discover", forbidden)
     monkeypatch.setattr(second._reload_journal, "rollback_updates", forbidden)

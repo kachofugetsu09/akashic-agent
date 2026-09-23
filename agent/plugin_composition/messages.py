@@ -109,10 +109,24 @@ class OwnerState:
     def __init__(self, log: _MessageLog | None):
         self._log = log
 
+    @property
+    def available(self) -> bool:
+        """Tell providers whether this Root has formal owner storage."""
+        return self._log is not None
+
     def open(self, ctx: Context) -> OwnerStore:
         if self._log is None:
             raise RuntimeError("candidate 验证期禁止访问正式 owner state")
         return self._log.owner("plugin:" + ctx.require_runtime_owner(OWNER_STATE, self))
+
+    def open_scoped(self, ctx: Context, scope: str) -> OwnerStore:
+        """同一 owner 的独立子空间；其他消费者的 key 扫描互不可见。"""
+        if self._log is None:
+            raise RuntimeError("candidate 验证期禁止访问正式 owner state")
+        if not isinstance(scope, str) or not scope or ":" in scope:
+            raise ValueError("owner state 子空间名必须是非空且不含冒号的字符串")
+        owner = ctx.require_runtime_owner(OWNER_STATE, self)
+        return self._log.owner(f"plugin:{owner}:{scope}")
 
 
 class SessionAdmission:

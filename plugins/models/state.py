@@ -6,7 +6,9 @@ import json
 import logging
 import math
 import secrets
-from contextlib import asynccontextmanager
+import threading
+import time
+from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from time import monotonic_ns
@@ -75,9 +77,23 @@ from .settings import (
     SyncModels,
     UpdateConnection,
 )
-from .store import MODEL_ROLES, ModelsStore, StoredConnection, StoredModel, StoredSnapshot
+from agent.plugin_composition.models import ModelContinuation, ModelUsage, ToolCall
+from .store import (
+    MODEL_ROLES,
+    ModelsStore,
+    StoredConnection,
+    StoredModel,
+    StoredSnapshot,
+    _request_digest,
+)
 
 logger = logging.getLogger(__name__)
+_PROCESS_INSTANCE = secrets.token_hex(8)
+_LOCAL_ROOT = secrets.token_hex(8)
+# 本进程存活的 attempt 登记先于 started 记录返回，Task 退出时注销；
+# 同 key 的 started 记录只有不属于任何活 attempt 才算孤儿。
+_LIVE_CALLS: set[str] = set()
+_RUN_ADMISSION = threading.Lock()
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 _DEFAULT_ROLE = "default"
 _AGENT_ROLE = "agent"
@@ -93,16 +109,54 @@ class _CapabilityCatalog(Protocol):
     ) -> tuple[DiscoveredModel, ...]: ...
 
 
+def _decode_response(payload: object) -> LLMResponse:
+    """从调用账重建可重放响应；损坏的持久正文在边界明确失败。"""
+    if not isinstance(payload, Mapping):
+        raise ValueError("Model 响应记录损坏")
+    data = cast(Mapping[str, Any], payload)
+    continuation = data.get("continuation")
+    if continuation is not None and not isinstance(continuation, Mapping):
+        raise ValueError("Model continuation 记录损坏")
+    calls = data.get("tool_calls") or ()
+    if not isinstance(calls, Sequence) or isinstance(calls, str):
+        raise ValueError("Model tool_calls 记录损坏")
+    return LLMResponse(
+        cast(str | None, data.get("content")),
+        tool_calls=[
+            ToolCall(
+                cast(str, item["id"]), cast(str, item["name"]),
+                cast(Mapping[str, Any], item["arguments"]),
+            )
+            for item in cast(Sequence[Mapping[str, Any]], calls)
+        ],
+        thinking=cast(str | None, data.get("thinking")),
+        finish_reason=cast(str | None, data.get("finish_reason")),
+        continuation=(
+            None
+            if continuation is None
+            else ModelContinuation(
+                cast(str, continuation["binding_id"]),
+                cast(Mapping[str, Any], continuation["payload"]),
+            )
+        ),
+    )
+
+
 class _BoundChat:
     def __init__(
         self,
         descriptor: BoundModelDescriptor,
         driver: DriverChatModel,
         store: ModelsStore,
+        *,
+        root_instance: str = _LOCAL_ROOT,
+        max_attempts: int = 1,
     ) -> None:
         self._descriptor = descriptor
         self._driver = driver
         self._store = store
+        self._root_instance = root_instance
+        self._max_attempts = max(1, max_attempts)
 
     @property
     def descriptor(self) -> BoundModelDescriptor:
@@ -110,54 +164,271 @@ class _BoundChat:
 
     async def complete(self, request: ModelRequest) -> LLMResponse:
         """先登记真实调用，再计时并按实际响应结算。"""
-        # 1. 同一 binding 接续历史；调用账必须先于 provider I/O。
         continuation = request.continuation
         if (
             continuation is not None
             and continuation.binding_id != self._descriptor.binding_id
         ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
-        call_id = self._store.start_call(self._descriptor, request)
-        started: int | None = None
-        first_token = False
-
-        async def delta(value: dict[str, str]) -> None:
-            nonlocal first_token
-            assert started is not None
-            if not first_token and (
-                value.get("content_delta") or value.get("thinking_delta")
-            ):
-                self._store.record_first_token(
-                    call_id, (monotonic_ns() - started) / 1_000_000
+        digest = _request_digest(request)
+        if request.request_key is None:
+            # 无 key 调用是独立效果身份：单次尝试记账，不共享回执也不占用重试预算。
+            return await self._attempts(
+                request, f"anonymous:{secrets.token_hex(8)}", digest, budget=1
+            )
+        request_key = request.request_key
+        # 活 run 合并只发生在同一权威账本内；不同 store 的同 key 是独立调用。
+        live_runs = cast(
+            "dict[tuple[str, str], tuple[asyncio.Future[LLMResponse], str]]",
+            self._store.live_runs,
+        )
+        run_key = (request_key, self._descriptor.binding_id)
+        owner = False
+        shared: asyncio.Future[LLMResponse]
+        with _RUN_ADMISSION:
+            entry = live_runs.get(run_key)
+            if entry is not None and not entry[0].done():
+                if entry[1] != digest:
+                    raise ValueError("同一模型请求 key 的请求内容不一致")
+                shared = entry[0]
+            else:
+                replayed = self._scan(request_key, digest)
+                if replayed is not None:
+                    return replayed
+                # attempt owner 内联执行 provider 调用，取消如实送达当前 await；
+                # 并发同 key 等待者只分享同一个记账结果，不杀死真实 attempt。
+                shared = asyncio.get_running_loop().create_future()
+                shared.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
                 )
-                first_token = True
-            if request.on_delta is not None:
-                await request.on_delta(value)
-
-        # 2. 通知调用身份后才开始计时，首段与总耗时使用同一单调时钟。
+                live_runs[run_key] = (shared, digest)
+                owner = True
+        if not owner:
+            return await asyncio.shield(shared)
         try:
-            driver_request = request if request.on_delta is None else replace(request, on_delta=delta)
-            if request.on_delta is not None:
-                await request.on_delta({"call_record_id": call_id})
-            started = monotonic_ns()
-            response = await self._driver.complete(driver_request)
-        except BaseException as failure:
-            # 网络请求可能已经到达 provider；本地异常不证明没有计费。
+            result = await self._attempts(request, request_key, digest)
+        except BaseException as error:
+            if not shared.done():
+                shared.set_exception(error)
+            raise
+        else:
+            if not shared.done():
+                shared.set_result(result)
+            return result
+        finally:
+            live_runs.pop(run_key, None)
+
+    def key_recovery(self, request_key: str) -> str:
+        """同 key 最近耐久记录的恢复裁决，Models 独占分类、调用方只消费决定：
+
+        - "open"：无终结结算（无记录、成功、在途或仍有耐久退避额度）；
+        - "rejected"：provider 明确容量拒绝（ContextLengthError），可证明
+          该请求未被处理——本代可续跑有界缩减，真实 resume 也可开新准备；
+        - "answered"：其他可证明失败——provider 明确应答或请求可证明
+          未发出，真实 resume 后允许新准备如实付费；
+        - "uncertain"：取消、孤儿、传输/超时与一切未知名目——远端效果
+          不可证，resume 不得据此重付，只有新 Input 作为真正新工作可运行。
+
+        终结（rejected/answered/uncertain）的 key 不因重启/重调获得新预算。
+        send_evidence 是发送边界的正面证据：provider 明确 HTTP 拒绝应答
+        记 "rejected"，连接未建立/发送前校验失败记 "unsent"；缺失（含
+        旧记录）一律按远端效果不确定处理——异常名与"未见 delta"都不能
+        充当未处理证明。"""
+        records = self._store.calls_for_key(request_key)
+        if not records:
+            return "open"
+        last = records[-1]
+        if last["state"] != "error":
+            return "open"
+        if last.get("next_attempt_at") is not None and len(records) < self._max_attempts:
+            return "open"
+        evidence = last.get("send_evidence")
+        failure = last.get("failure")
+        if evidence == "rejected":
+            # provider 明确拒绝应答是可证明失败；容量拒绝额外保留有界缩减。
+            return "rejected" if failure == "ContextLengthError" else "answered"
+        if evidence == "unsent":
+            # 连接未建立/发送前校验失败：可证明请求从未到达 provider。
+            return "answered"
+        return "uncertain"
+
+    def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
+        """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
+        records = self._store.calls_for_key(request_key)
+        orphan_found = False
+        for record in records:
+            if record["request_digest"] != digest:
+                raise ValueError("同一模型请求 key 的请求内容不一致")
+            binding = record["binding"]
+            if not isinstance(binding, Mapping) or (
+                binding.get("binding_id") != self._descriptor.binding_id
+            ):
+                raise ValueError("同一模型请求 key 的 binding 不一致")
+            if record["state"] == "success" and record.get("response") is not None:
+                replayed = _decode_response(record["response"])
+                replayed.call_record_id = cast(str, record["id"])
+                replayed.usage = (
+                    None if record.get("usage") is None else ModelUsage(**record["usage"])
+                )
+                return replayed
+            if record["state"] != "started":
+                continue
+            call_id = cast(str, record["id"])
+            if call_id in _LIVE_CALLS:
+                raise ModelUnavailableError("同一请求的活 attempt 正在结算，请稍后显式重试")
+            if not self._owner_dead(record):
+                raise ModelUnavailableError("无法确认先前调用的执行 owner 已死亡，结果不确定")
             try:
                 self._store.finish_call(
-                    call_id, usage=None, failure=type(failure).__name__,
-                    duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
+                    call_id, usage=None,
+                    failure="orphaned: 原执行 owner 已退出，真实结果不确定",
                 )
-            except Exception as record_failure:
-                raise failure from record_failure
-            raise
-        # 3. 结算失败继续向上传播，不能把未记账的响应交给 Message writer。
-        self._store.finish_call(
-            call_id, usage=response.usage, failure=None,
-            duration_ms=(monotonic_ns() - started) / 1_000_000,
-        )
-        response.call_record_id = call_id
-        return response
+            except Exception:
+                logger.warning("孤儿 Model 调用结算失败 call_id=%s", call_id, exc_info=True)
+            orphan_found = True
+        if orphan_found:
+            raise ModelUnavailableError(
+                "同一请求的先前调用结果不确定；孤儿记录已结算，请显式重试"
+            )
+        return None
+
+    def _owner_dead(self, record: Mapping[str, Any]) -> bool:
+        """owner 身份为 epoch:进程:Root:attempt；只凭真实死亡证据结算。
+
+        更早 host_epoch 的 owner 在本 store 持有独占宿主锁时可证明死亡；
+        同纪元内只有本进程签发且 attempt 无活登记者仍属不明，异构或
+        其他进程 token 一律不当作死亡证据。
+        """
+        owner = record.get("owner_id")
+        if not isinstance(owner, str):
+            return False
+        parts = owner.split(":")
+        if len(parts) != 4:
+            return False
+        try:
+            record_epoch = int(parts[0])
+        except ValueError:
+            return False
+        host_epoch = self._store.host_epoch
+        if host_epoch is not None and record_epoch < host_epoch:
+            # 独占宿主锁成立时，旧纪元的写方已经退出，started 永不再结算。
+            return self._store.holds_host_lock
+        return False
+
+    async def _attempts(
+        self, request: ModelRequest, request_key: str, digest: str, *,
+        budget: int | None = None,
+    ) -> LLMResponse:
+        """Models 独占重试预算：一次 complete 内有界自动重试；每个真实 attempt
+        先记账再结算，失败写耐久 next_attempt_at，重试前重新核对准入与孤儿。"""
+        budget = self._max_attempts if budget is None else max(1, budget)
+        while True:
+            replayed = self._scan(request_key, digest)
+            if replayed is not None:
+                return replayed
+            records = self._store.calls_for_key(request_key)
+            # 预算是耐久事实：连续 complete、关闭重开、进程重启都不刷新；
+            # 显式恢复只能以新准备身份（新 key）进入，同 key 重入不重新付费。
+            if len(records) >= budget:
+                raise ModelUnavailableError("模型调用重试预算耗尽")
+            last = records[-1] if records else None
+            if (
+                last is not None
+                and last["state"] == "error"
+                and last.get("next_attempt_at") is None
+            ):
+                # 不可重试/取消的失败是终结裁决：取消只证明本地等待被取消，
+                # 不能证明 provider 未接收或未计费；同 key 重调不得再发送，
+                # 恢复只能由调用方以新请求身份（新业务边界）显式进入。
+                raise ModelUnavailableError(
+                    "该请求 key 的最近调用已终结失败，同 key 不得重新付费"
+                )
+            next_at = None if last is None else last.get("next_attempt_at")
+            if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
+                delay = float(next_at) - time.time()
+                if delay > 0:
+                    # 退避可取消；取消后 attempt 记录保持 started，结果不确定。
+                    await asyncio.sleep(delay)
+            call_id = self._store.resume_call(
+                self._descriptor, request,
+                request_key=request_key,
+                owner_id=(
+                    f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
+                    f":{self._root_instance}:{secrets.token_hex(8)}"
+                ),
+            )
+            _LIVE_CALLS.add(call_id)
+            started: int | None = None
+            first_token = False
+
+            async def delta(value: dict[str, str]) -> None:
+                nonlocal first_token
+                assert started is not None
+                if not first_token and (
+                    value.get("content_delta") or value.get("thinking_delta")
+                ):
+                    self._store.record_first_token(
+                        call_id, (monotonic_ns() - started) / 1_000_000
+                    )
+                    first_token = True
+                if request.on_delta is not None:
+                    await request.on_delta(value)
+
+            try:
+                try:
+                    # driver 恒单次尝试：accounted 调用统一置 key，重试预算只由 Models 持有。
+                    driver_request = replace(
+                        request, on_delta=None if request.on_delta is None else delta,
+                        request_key=request_key,
+                    )
+                    if request.on_delta is not None:
+                        await request.on_delta({"call_record_id": call_id})
+                    started = monotonic_ns()
+                    response = await self._driver.complete(driver_request)
+                except BaseException as failure:
+                    # 网络请求可能已经到达 provider；本地异常不证明没有计费。
+                    # 重发只允许建立在发送边界的正面证据上：driver 明确置位
+                    # send_evidence="rejected"（provider HTTP 拒绝应答）或
+                    # "unsent"（连接未建立/发送前校验失败）才可进入自动重试；
+                    # HTTP 200 流内失败、读/写错误、超时、取消一律无证据，
+                    # 无论是否观察到 delta 都不得重发同一请求。
+                    partial = bool(getattr(failure, "response_delta_seen", False))
+                    evidence = getattr(failure, "send_evidence", None)
+                    retryable = evidence in ("rejected", "unsent") and bool(
+                        getattr(failure, "retry_safe", False)
+                        or getattr(failure, "retryable", False)
+                    )
+                    retry_at = None
+                    if retryable and len(records) + 1 < budget:
+                        # Retry-After 优先于本地退避，且随失败记录耐久保存。
+                        hint = getattr(failure, "retry_after", None)
+                        retry_at = time.time() + (
+                            float(hint)
+                            if isinstance(hint, (int, float)) and not isinstance(hint, bool)
+                            else min(8.0, 0.5 * (2 ** (len(records) + 1)))
+                        )
+                    try:
+                        self._store.finish_call(
+                            call_id, usage=None, failure=type(failure).__name__,
+                            duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
+                            next_attempt_at=retry_at,
+                            partial_response=partial,
+                            send_evidence=evidence,
+                        )
+                    except Exception as record_failure:
+                        raise failure from record_failure
+                    if retry_at is None:
+                        raise
+                    continue
+                self._store.finish_call(
+                    call_id, usage=response.usage, failure=None,
+                    duration_ms=(monotonic_ns() - started) / 1_000_000,
+                    response=response,
+                )
+                response.call_record_id = call_id
+                return response
+            finally:
+                _LIVE_CALLS.discard(call_id)
 
     def estimate_context_tokens(
         self,
@@ -506,6 +777,8 @@ class ModelsState:
         self.catalog = _CatalogView(self)
         self.settings = _SettingsView(self)
         self._auth_attempts: dict[str, _AuthAttempt] = {}
+        # Root 实例身份进入每次真实 attempt 的 owner_id，进程重启后不再继承。
+        self._root_instance = secrets.token_hex(8)
 
     async def register_driver(
         self,
@@ -954,10 +1227,15 @@ class ModelsState:
             capability_sources=model.capability_sources,
             capability_digest=capability_digest,
         )
+        # Models 重试预算集中在连接配置边界解析：显式 max_attempts 优先；
+        # 旧 max_retries 迁移为 N+1 次 attempt；非法值 fail-loud，不静默回 1。
+        max_attempts = _retry_budget(connection.driver_config)
         return _BoundChat(
             descriptor,
             driver.bind_chat(descriptor, model.driver_config),
             self.store,
+            root_instance=self._root_instance,
+            max_attempts=max_attempts,
         )
 
     async def _bind_embedding(
@@ -1572,6 +1850,22 @@ def _driver_connection_descriptor(
         auth_identity=connection.auth_identity,
         config=connection.driver_config,
     )
+
+
+def _retry_budget(config: Mapping[str, Any]) -> int:
+    """连接配置中的 Models 重试预算：max_attempts 显式优先，旧 max_retries
+    迁移为 N+1 次 attempt（N 次重试 = 首次 + N 次重试）；非法值直接报错。"""
+    configured = config.get("max_attempts")
+    if configured is not None:
+        if not isinstance(configured, int) or isinstance(configured, bool) or configured < 1:
+            raise ValueError("max_attempts must be a positive integer")
+        return configured
+    legacy = config.get("max_retries")
+    if legacy is None:
+        return 1
+    if not isinstance(legacy, int) or isinstance(legacy, bool) or legacy < 0:
+        raise ValueError("max_retries must be a non-negative integer")
+    return legacy + 1
 
 
 def _capability_provider_id(

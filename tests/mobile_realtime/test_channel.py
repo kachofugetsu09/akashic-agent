@@ -638,7 +638,7 @@ def _native_context(
         config={},
         ingress=None,
         identity=None,
-        attachment_read=read_port,
+        attachment_read=read_port,  # pyright: ignore[reportArgumentType] - partial test port
     )
 
 

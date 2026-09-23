@@ -11,6 +11,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_composition.model import CompositionError
 from agent.plugin_composition.tasks import RestartGate, Task, TaskServiceClosed
+from agent.plugin_contracts import Control, Input, Output
 
 logger = logging.getLogger(__name__)
 Program = Callable[[Task, MessageReader, str], Awaitable[object]]
@@ -18,6 +19,7 @@ Program = Callable[[Task, MessageReader, str], Awaitable[object]]
 
 class SourceSession(Protocol):
     async def start(self, program: Program) -> Task | None: ...
+    async def record_failure(self, error: BaseException, *, boundary: int | None = None) -> None: ...
 
 
 class Source(Protocol):
@@ -39,6 +41,7 @@ class Sources(Protocol):
 class _Wake:
     source: Source | None = None
     changed: bool = True
+    event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(slots=True)
@@ -70,6 +73,7 @@ class _Iteration:
     cleanup_errors: list[BaseException] = field(default_factory=list)
     source_settlement_errors: list[BaseException] = field(default_factory=list)
     stop_drive: bool = False
+    detached: bool = False
 
 
 async def follow(
@@ -231,6 +235,22 @@ async def follow(
                     wake.changed = True
                     continue
                 state = _Iteration()
+                session: SourceSession | None = None
+                admission_boundary = catalog.reader(session_id).head(source=source.name)
+
+                def terminal_committed() -> bool:
+                    """A later Input may use a saved terminal while old cleanup runs."""
+                    terminal = False
+                    for message in catalog.reader(session_id).snapshot(after_seq=admission_boundary):
+                        if message.source != source.name:
+                            continue
+                        if isinstance(message.body, Output) and message.body.finish != "continue":
+                            terminal = True
+                        if isinstance(message.body, Control):
+                            terminal = True
+                        if terminal and isinstance(message.body, Input):
+                            return True
+                    return False
                 restart_after_cleanup = False
                 current_drive = asyncio.current_task()
                 if current_drive is None:
@@ -319,7 +339,25 @@ async def follow(
                             restart_gate is not None and not restart_gate.accepting
                         )
                     elif state.task is not None:
-                        await wait_task(state)
+                        joined = asyncio.create_task(wait_task(state))
+                        notified = asyncio.create_task(wake.event.wait())
+                        try:
+                            done, _ = await asyncio.wait(
+                                (joined, notified), return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if joined in done:
+                                await joined
+                            elif wake.source is source and current_source(source.name) is source and terminal_committed():
+                                state.detached = True
+                                state.task.cancel()
+                            else:
+                                await joined
+                        finally:
+                            wake.event.clear()
+                            for waiter in (joined, notified):
+                                if not waiter.done():
+                                    waiter.cancel()
+                            await asyncio.gather(joined, notified, return_exceptions=True)
                         wake.changed = True
                 except asyncio.CancelledError as error:
                     if not consume_internal_cancel(state, error):
@@ -342,13 +380,37 @@ async def follow(
                         await close_scope(state, state.source_scope)
                     # monitor 只保护 admission；captured scope 归还后，
                     # exact Source Task 才进入独立的 physical join。
-                    try:
-                        await settle_task(state)
-                    except asyncio.CancelledError as error:
-                        if not consume_internal_cancel(state, error):
-                            save_caller_cancel(state, error)
-                    except BaseException as error:
-                        state.cleanup_errors.append(error)
+                    if state.detached:
+                        create_owned(settle_task(state), name=f"reply-settle:{session_id}:{source.name}")
+                    else:
+                        try:
+                            await settle_task(state)
+                        except asyncio.CancelledError as error:
+                            if not consume_internal_cancel(state, error):
+                                save_caller_cancel(state, error)
+                        except BaseException as error:
+                            state.cleanup_errors.append(error)
+
+                failure = next((error for error in state.pending_errors if isinstance(error, Exception)), None)
+                if failure is None and isinstance(state.task_error, Exception):
+                    failure = state.task_error
+                if failure is not None:
+                    reader = catalog.reader(session_id)
+                    if session is None:
+                        logger.warning("来源打开失败，封闭当前回复 lane", exc_info=failure)
+                        state.pending_errors.clear()
+                        state.stop_drive = True
+                    else:
+                        boundary = state.task.boundary_hint if state.task is not None else admission_boundary
+                        if not isinstance(boundary, int):
+                            boundary = admission_boundary
+                        try:
+                            await session.record_failure(failure, boundary=boundary)
+                        except Exception as error:
+                            state.pending_errors = [RuntimeError(f"回复驱动没有持久进展 (no progress): {error}")]
+                        else:
+                            state.pending_errors.clear()
+                            state.stop_drive = True
 
                 follower_errors: list[BaseException] = [
                     *state.pending_errors,
@@ -445,6 +507,7 @@ async def follow(
             else:
                 wake.source = source
                 wake.changed = True
+                wake.event.set()
 
         while True:
             await wake_event.wait()

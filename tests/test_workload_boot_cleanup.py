@@ -11,7 +11,7 @@ from agent.plugins._operation import OperationBusyError, OperationTimeoutError
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import SelectionFormatError
 from agent.workloads.client import WorkloadEffectUnknown
-from agent.workloads.model import WorkloadLease, WorkloadStopReceipt
+from agent.plugin_composition.execution import WorkloadLease, WorkloadStopReceipt
 from bus.event_bus import EventBus
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
@@ -82,6 +82,7 @@ async def test_new_boot_cleans_once_before_apply_and_root_changes_do_not(tmp_pat
         with pytest.raises(RuntimeError, match="不能重复启动"):
             await owner.load_all()
         ref = owner._selection.read()
+        assert ref is not None
         await owner._run_operation(lambda: owner._replace_formal_root(
             owner._selection_components(ref), expected_ref=ref,
         ))

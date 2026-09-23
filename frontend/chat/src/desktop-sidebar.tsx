@@ -21,7 +21,6 @@ export interface DesktopSidebarProps {
   chatReady: boolean;
   themeLabel: string;
   onSelectSession: (sessionId: string) => void;
-  onOpenRuntime: () => void;
   onCycleTheme: () => void;
   onOpenPairing: () => void;
   onNewChat: () => void;

@@ -176,6 +176,7 @@ async def test_control_ack_unknown_effect_is_not_replayed(tmp_path):
         raw = RawInbound("stop-1", ChannelInboundMessage(
             channel="probe", sender="user", chat_id="room", content="/stop",
             timestamp=datetime(2026, 9, 15, tzinfo=UTC),
+            metadata={},
         ))
         control = contexts[0].control
         bodies = ControlResponseBodies(interrupted="stopped", idle="idle")

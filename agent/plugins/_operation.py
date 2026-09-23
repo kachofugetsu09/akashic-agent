@@ -19,6 +19,7 @@ class ManagerOperation:
     task: asyncio.Task[Any] = field(init=False)
     revoked: bool = False
     committed: object | None = None
+    candidate_shared: bool = False
 
     def revoke(self, *, cancel: bool = True) -> None:
         """先永久撤销许可；最多向操作任务发送一次取消。"""

@@ -20,7 +20,7 @@ import signal
 import sys
 import tomllib
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 _DEFAULT_WORKSPACE = "~/.akashic/workspace"
@@ -288,6 +288,10 @@ def _prepare_startup_migrations(
         "dashboard",
     }:
         return None
+    if command == "init" and not workspace.exists():
+        # 新建 workspace 由 init_workspace 独占建立基线与空选择；启动迁移
+        # 先落 migrations.sqlite3 会把新目录误判成既有 workspace。
+        return None
     if command == "gateway" and os.environ.get("AKASHIC_SUPERVISED") == "1":
         return None
     outcome = migrate_installation(config_path, workspace)
@@ -544,7 +548,7 @@ async def serve(config_path: str, workspace: Path) -> int:
     settings_restart_event = asyncio.Event()
     watched_signals = (signal.SIGINT, signal.SIGTERM)
     registered_signal_handlers: set[int] = set()
-    fallback_signal_handlers: dict[int, object] = {}
+    fallback_signal_handlers: dict[int, Any] = {}
     for sig in watched_signals:
         try:
             loop.add_signal_handler(sig, stop_event.set)

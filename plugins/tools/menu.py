@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
+import inspect
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -94,7 +95,7 @@ class ToolMenu:
         catalog: ToolCatalog,
         bindings: Bindings,
         execution: ToolExecution,
-        reply: Callable[[CallRef], MessageReply],
+        reply: Callable[[CallRef], MessageReply | Awaitable[MessageReply]],
         *,
         view: ToolView | None = None,
         limit: int | None = None,
@@ -188,8 +189,18 @@ class ToolMenu:
             raise PermissionError("工具请求不属于本次获授 view")
 
     async def execute(self, call: CallRef) -> Result:
-        reply = self._reply(call)
+        opened = self._reply(call)
+        reply = await opened if inspect.isawaitable(opened) else opened
         try:
             return await self._execution.execute_call(reply)
+        finally:
+            reply.writer.expire()
+
+    async def settle_abandoned(self, call: CallRef) -> Result:
+        """持久 abandon 区内缺回执的调用直接结算；与 watcher 共用同一幂等入口。"""
+        opened = self._reply(call)
+        reply = await opened if inspect.isawaitable(opened) else opened
+        try:
+            return await self._execution.settle_abandoned(reply)
         finally:
             reply.writer.expire()

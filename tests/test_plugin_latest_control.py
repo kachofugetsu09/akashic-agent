@@ -58,7 +58,9 @@ async def apply(ctx):
             installed = await call("plugin_install", {"source": str(source), "marketplace": "lab",
                 "validation_prompt": "Call write_evidence and report its result.", "validation_tools": ["write_evidence"]})
             assert installed.outcome == "success"
-            identity = json.loads(installed.parts[0].value)["update_id"]
+            installed_value = installed.parts[0].value
+            assert isinstance(installed_value, str)
+            identity = json.loads(installed_value)["update_id"]
             yield host, snapshot, identity, call
 
 
@@ -96,13 +98,17 @@ async def test_sequential_run_status_and_revert_keep_real_results(tmp_path, monk
         try:
             started = await call("plugin_latest", {"update_id": identity, "action": "run"})
             assert started.outcome == "success"
-            accepted = json.loads(started.parts[0].value)
+            started_value = started.parts[0].value
+            assert isinstance(started_value, str)
+            accepted = json.loads(started_value)
             assert accepted["update_id"] == identity and accepted["handle"]
             await entered.wait()
             assert not release.is_set() and not publication.is_set()
 
             status = await call("plugin_latest", {"update_id": identity, "action": "status"})
-            process = json.loads(status.parts[0].value)
+            status_value = status.parts[0].value
+            assert isinstance(status_value, str)
+            process = json.loads(status_value)
             assert process["call"] == accepted
             assert process["task"]["active"] and not process["task"]["done"]
             assert process["messages"]
@@ -130,7 +136,9 @@ async def test_sequential_run_status_and_revert_keep_real_results(tmp_path, monk
 
             assert not host._validation_hosts
             finished = await call("plugin_latest", {"update_id": identity, "action": "status"})
-            result = json.loads(finished.parts[0].value)
+            finished_value = finished.parts[0].value
+            assert isinstance(finished_value, str)
+            result = json.loads(finished_value)
             assert result["call"] == accepted
             assert result["task"] is None
             assert result["messages"][:len(process["messages"])] == process["messages"]

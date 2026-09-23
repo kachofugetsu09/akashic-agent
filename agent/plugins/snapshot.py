@@ -147,6 +147,11 @@ class RuntimeSnapshotLease:
         self._released = False
 
     @property
+    def snapshot_id(self) -> str:
+        """Opaque 身份面：组合合同只读到此，不暴露 snapshot 本体。"""
+        return self.snapshot.snapshot_id
+
+    @property
     def active(self) -> bool:
         return not self._released
 

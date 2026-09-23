@@ -21,6 +21,7 @@ _EXEC_BITS = 0o111
 
 def resolve_runtime_owner(
     *,
+    installed_unit: Path | None,
     runtime_env: Path | None,
     environ: Mapping[str, str],
     fallback_uid: int,
@@ -32,7 +33,7 @@ def resolve_runtime_owner(
     """
 
     user, group, home = resolve_service_account(
-        installed_unit=None,
+        installed_unit=installed_unit,
         runtime_env=runtime_env,
         environ=environ,
         fallback_uid=fallback_uid,
@@ -51,6 +52,16 @@ def operator_environment(owner_home: Path) -> dict[str, str]:
     if not data_home or data_home.startswith("/root"):
         environment["XDG_DATA_HOME"] = str(owner_home / ".local" / "share")
     return environment
+
+
+def runtime_user_prefix(
+    *, user: str, owner_uid: int, invoking_uid: int
+) -> tuple[str, ...]:
+    """Return a sudo prefix when preparation must run as the runtime user."""
+
+    if invoking_uid == owner_uid:
+        return ()
+    return ("sudo", "-H", "-u", user, "--")
 
 
 def release_to_owner(path: Path, *, uid: int, gid: int) -> None:

@@ -51,9 +51,7 @@ async def apply(ctx):
     text = path.read_text()
     text = text.replace("    class Driver:", '''    from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS
     from agent.plugin_composition.models import (
-        CapabilitySources,
         ChatModelSelection,
-        ModelCapabilities,
         ModelKind,
     )
     from plugins.models.settings import AddConnection, AddModel
@@ -66,7 +64,7 @@ async def apply(ctx):
     selected = []
     await ctx.provide(ServiceKey("fixture.selected"), selected)
     class Driver:''')
-    text = text.replace("            yield SimpleNamespace(chat=lambda role: model)", '''            model_state.validate_chat_selection(ChatModelSelection(model_id, reasoning_effort))
+    text = text.replace("            yield SimpleNamespace(chat=lambda role: model)", '''            settings.validate_chat_selection(ChatModelSelection(model_id, reasoning_effort))
             selected.append((model_id, reasoning_effort))
             yield SimpleNamespace(chat=lambda role: model)''')
     text = text.replace(

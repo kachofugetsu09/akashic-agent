@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import grp
 import os
 import pwd
-import grp
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -162,6 +163,39 @@ def test_operator_environment_points_mise_at_the_owner_home(tmp_path: Path) -> N
     assert not environment.get("XDG_DATA_HOME", "").startswith("/root")
 
 
+def test_bridge_preparation_runs_every_tool_as_the_runtime_user(tmp_path: Path) -> None:
+    """sudo 安装时 mise 与 uv 都必须使用 systemd 的运行身份。"""
+
+    from scripts.akashic_release.bridge import prepare_bridge_venv
+    from scripts.akashic_release.ownership import runtime_user_prefix
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    target = tmp_path / "bridge-venv"
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[-3:] == ["which", "python"]:
+            return subprocess.CompletedProcess(command, 0, stdout="/home/operator/python\n")
+        if "venv" in command:
+            (target / "bin").mkdir(parents=True, exist_ok=True)
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    prefix = runtime_user_prefix(user="operator", owner_uid=1000, invoking_uid=0)
+    prepare_bridge_venv(
+        checkout=checkout,
+        target=target,
+        mise=Path("/opt/mise"),
+        run=run,
+        command_prefix=prefix,
+    )
+
+    assert prefix == ("sudo", "-H", "-u", "operator", "--")
+    assert len(commands) == 4
+    assert all(tuple(command[: len(prefix)]) == prefix for command in commands)
+
+
 def test_release_to_owner_keeps_exec_bits_and_grants_read(tmp_path: Path) -> None:
     from scripts.akashic_release.ownership import release_to_owner
 
@@ -181,14 +215,25 @@ def test_release_to_owner_keeps_exec_bits_and_grants_read(tmp_path: Path) -> Non
     assert data.stat().st_mode & 0o044
 
 
-def test_resolve_runtime_owner_matches_the_unit_identity(tmp_path: Path) -> None:
+def test_resolve_runtime_owner_matches_the_installed_unit(tmp_path: Path) -> None:
     from scripts.akashic_release.ownership import resolve_runtime_owner
 
     env = tmp_path / "runtime.env"
     env.write_text("A=1\n", encoding="utf-8")
+    unit = tmp_path / "akashic-host-bridge.service"
+    unit.write_text(
+        _unit(
+            "bridge",
+            user=ACCOUNT.pw_name,
+            group=GROUP,
+            env=str(env),
+        ),
+        encoding="utf-8",
+    )
     user, uid, gid, home = resolve_runtime_owner(
+        installed_unit=unit,
         runtime_env=env,
-        environ={"SUDO_USER": "root"},
+        environ={"SUDO_USER": "different-user"},
         fallback_uid=0,
         fallback_gid=0,
     )

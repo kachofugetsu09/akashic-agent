@@ -80,7 +80,7 @@ def _v3_inbound(
             metadata=metadata or {},
             attachments=attachments,
         ),
-        lease=lease,
+        lease=lease,  # pyright: ignore[reportArgumentType] - focused inbound lease fake
     )
     return envelope, lease
 

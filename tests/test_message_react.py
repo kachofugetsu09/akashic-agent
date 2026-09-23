@@ -35,7 +35,8 @@ from session.message import (
 
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
-                  reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset()):
+                  reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset(),
+                  state_owner=None, model_max_attempts=1):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
@@ -55,7 +56,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         def estimate_appended_message_tokens(self, messages):
             return 0
         max_tool_schemas = None
-    model = _BoundChat(descriptor, Driver(), store)
+    model = _BoundChat(descriptor, Driver(), store, max_attempts=model_max_attempts)
     log.save_binding("tool", {"target": "test-file-effect"})
     def writer(body, call_ref=None):
         return log.writer(
@@ -111,6 +112,16 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
                 log.reader("s"), writer(ToolResult, call), self.check_start,
             ))
 
+        async def settle_abandoned(self, call: CallRef) -> Result:
+            reply = MessageReply(
+                "result:" + call.message_id + ":" + str(call.part_index), call,
+                log.reader("s"), writer(ToolResult, call), self.check_start,
+            )
+            try:
+                return await execution.settle_abandoned(reply)
+            finally:
+                reply.writer.expire()
+
         def check_start(self) -> None:
             if not self.task.active:
                 raise asyncio.CancelledError
@@ -137,7 +148,8 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
             return await react(reader, output, model=model, context=ContextBuilder(),
                                projection=projection, materials=materials, content=Content(), tools=Menu(task),
-                               max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools)
+                               max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools,
+                               state=None if state_owner is None else log.owner(state_owner))
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
     @asynccontextmanager
@@ -158,6 +170,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         watcher.cancel()
         await asyncio.gather(watcher, return_exceptions=True)
         await tasks.close()
+        store.close()
         log.close()
 
 
@@ -500,7 +513,9 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
     async def complete(request):
         requests.append(request)
         if case == "no_progress" or case == "second_overflow" or (case == "provider" and len(requests) == 1):
-            raise ContextLengthError("provider rejected actual payload")
+            rejected = ContextLengthError("provider rejected actual payload")
+            rejected.send_evidence = "rejected"
+            raise rejected
         assert state.read("published").value["summary"] == "durable old history"
         assert "old verbatim" not in str(request.messages)
         assert "current input" in str(request.messages)

@@ -19,9 +19,9 @@ from agent.plugin_composition.config_input import save_config
 
 from agent.media import encode_image_data_uri
 from agent.plugin_composition import CompositionError, PROCESSES, PluginProcesses, ServiceKey
-from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.context import CompositionRoot
-from agent.plugin_composition.messages import BINDINGS, OWNER_STATE, OwnerState
+from agent.plugin_composition.messages import OWNER_STATE, OwnerState
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from agent.process_runtime import (
     ExecutionCleanupFailure,

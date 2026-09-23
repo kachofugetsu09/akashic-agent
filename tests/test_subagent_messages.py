@@ -17,7 +17,7 @@ from agent.plugin_composition.tasks import RestartGate, Task, Tasks
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from session.log import MessageLog, MessageWriter, OwnerTransaction
+from session.log import MessageLog, MessageWriter, OwnerStore, OwnerTransaction
 from session.artifact_store import ArtifactStore
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
@@ -25,7 +25,7 @@ from plugins.sources.plugin import SOURCES
 from plugins.tools.api import MessageReply
 from plugins.tools.execution import ToolExecution
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
-from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
+from session.message import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
@@ -46,6 +46,7 @@ class ModelControl:
     reply_context: object | None = None
     reply_owner: tuple[object, object] | None = None
     report_owner_checks: int = 0
+    host: PluginManager | None = None
 
 
 CONTROLS: dict[str, ModelControl] = {}
@@ -89,6 +90,20 @@ async def _capture_report_owners(host: PluginManager, control: ModelControl) -> 
     control.conversation_owner = conversation_owner
     control.reply_context = reply
     control.reply_owner = reply_owner
+    control.host = host
+
+
+def _check_report_owners(control: ModelControl) -> None:
+    """Check the current generation's owner calls during each report model request."""
+    from plugins.conversation.plugin import CONVERSATION_COMPLETE
+    from plugins.reply.api import REPLY_PROGRAM
+
+    host = control.host
+    assert host is not None
+    for plugin_id, key in (("conversation", CONVERSATION_COMPLETE), ("reply", REPLY_PROGRAM)):
+        context = _provider_context(host, plugin_id)
+        context.require_runtime_owner(key, context.require(key))
+    control.report_owner_checks += 1
 
 
 async def _bind_tool(host: PluginManager, name: str) -> str:
@@ -231,9 +246,9 @@ async def apply(ctx):
         control.release.set()
     CONTROLS[str(tmp_path)] = control
     module = provider / "plugin.py"
-    text = provider_source.replace("async def apply(ctx):", "from " + __name__ + " import CONTROLS\nasync def apply(ctx):")
+    text = provider_source.replace("async def apply(ctx):", "from " + __name__ + " import CONTROLS, _check_report_owners\nasync def apply(ctx):")
     text = text.replace("CONTROL_PATH", repr(str(tmp_path)))
-    text = text.replace("        async def complete(self, request):", "        async def complete(self, request):\n            control = CONTROLS[" + repr(str(tmp_path)) + "]\n            if '## 后台任务结果' in str(request.messages):\n                control.main_calls += 1\n                control.main_entered.put_nowait(request)\n                assert control.conversation_context is not None and control.conversation_owner is not None\n                control.conversation_context.require_runtime_owner(*control.conversation_owner)\n                assert control.reply_context is not None and control.reply_owner is not None\n                control.reply_context.require_runtime_owner(*control.reply_owner)\n                control.report_owner_checks += 1\n                await control.main_release.wait()\n                if control.main_tool and 'main-report.txt' not in str(request.messages[:-1]):\n                    return LLMResponse(None, [ToolCall('main-write', 'write_file', {'path': CONTROL_REPORT_PATH, 'content': 'main result'})])\n                summary = ('new provider result' if 'new provider result' in str(request.messages[-1])\n                           else 'cancelled' if 'cancelled' in str(request.messages[-1])\n                           else 'child finished')\n                return LLMResponse('main summary: ' + summary)\n            if '[human followup]' in str(request.messages):\n                return LLMResponse('human answer')\n            control.calls += 1\n            control.entered.put_nowait(request)\n            await control.release.wait()")
+    text = text.replace("        async def complete(self, request):", "        async def complete(self, request):\n            control = CONTROLS[" + repr(str(tmp_path)) + "]\n            if '## 后台任务结果' in str(request.messages):\n                control.main_calls += 1\n                control.main_entered.put_nowait(request)\n                _check_report_owners(control)\n                await control.main_release.wait()\n                if '状态：failed' in str(request.messages):\n                    return LLMResponse('main summary: failed')\n                if control.main_tool and 'main-report.txt' not in str(request.messages[:-1]):\n                    return LLMResponse(None, [ToolCall('main-write', 'write_file', {'path': CONTROL_REPORT_PATH, 'content': 'main result'})])\n                summary = ('new provider result' if 'new provider result' in str(request.messages[-1])\n                           else 'cancelled' if 'cancelled' in str(request.messages[-1])\n                           else 'child finished')\n                return LLMResponse('main summary: ' + summary)\n            if '[human followup]' in str(request.messages):\n                return LLMResponse('human answer')\n            control.calls += 1\n            control.entered.put_nowait(request)\n            await control.release.wait()")
     text = text.replace("CONTROL_REPORT_PATH", repr(str(tmp_path / "workspace/main-report.txt")))
     _write_python_source(module, text)
     event_bus = EventBus()
@@ -592,16 +607,33 @@ async def test_capacity_and_cancel_hold_until_original_child_is_drained(tmp_path
 @pytest.mark.parametrize("stage", ["started", "finished", "announced"])
 async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_once(tmp_path, monkeypatch, stage):
     fault = asyncio.Event()
-    original_append = MessageWriter.append
-    def append(writer, identity, body, **kwargs):
-        if writer.session_id == "test:parent" and writer.source.startswith("subagent:") and isinstance(body, Output) and body.finish == "complete":
-            if stage == "announced":
-                original_append(writer, identity, body, **kwargs)
+    original_append = OwnerTransaction.append
+    original_transact = OwnerStore.transact
+
+    def is_parent_report(message):
+        return (isinstance(message, Message) and message.session_id == "test:parent"
+                and message.source.startswith("subagent:")
+                and isinstance(message.body, Output) and message.body.finish == "complete")
+
+    def append(transaction, writer, identity, body, **kwargs):
+        if (stage == "finished" and writer.session_id == "test:parent"
+                and writer.source.startswith("subagent:") and isinstance(body, Output)
+                and body.finish == "complete"):
             fault.set()
             raise OSError("crash at parent handoff")
-        return original_append(writer, identity, body, **kwargs)
-    if stage != "started":
-        monkeypatch.setattr(MessageWriter, "append", append)
+        return original_append(transaction, writer, identity, body, **kwargs)
+
+    def transact(store, callback):
+        result = original_transact(store, callback)
+        if stage == "announced" and is_parent_report(result):
+            fault.set()
+            raise OSError("crash after parent handoff commit")
+        return result
+
+    if stage == "finished":
+        monkeypatch.setattr(OwnerTransaction, "append", append)
+    elif stage == "announced":
+        monkeypatch.setattr(OwnerStore, "transact", transact)
     async with application(
         tmp_path, background=True, block=stage == "started", main_tool=stage == "started",
     ) as (host, log, execution, reply):
@@ -612,7 +644,8 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
             await asyncio.wait_for(control.entered.get(), 10)
         else:
             await asyncio.wait_for(fault.wait(), 10)
-            monkeypatch.setattr(MessageWriter, "append", original_append)
+            monkeypatch.setattr(OwnerTransaction, "append", original_append)
+            monkeypatch.setattr(OwnerStore, "transact", original_transact)
         assert receipt.outcome == "success"
         session_id = next(key for key in log.catalog().snapshot_heads() if key.startswith("subagent:"))
         original = log.reader(session_id).snapshot()
@@ -626,12 +659,15 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
         control.release.set()
         # 当前插件处理原已接纳事实；已完成结果不因源码变化重算。
         provider = tmp_path / "plugins/models_fixture/plugin.py"
-        _write_python_source(
-            provider,
-            provider.read_text().replace('LLMResponse("child finished")', 'LLMResponse("new provider result")')
-            .replace('control.sent.put_nowait((key, address, message))',
-                     'raise RuntimeError("current sender must not replace the original")'),
+        changed_provider = provider.read_text().replace(
+            'LLMResponse("child finished")', 'LLMResponse("new provider result")',
         )
+        if stage != "started":
+            changed_provider = changed_provider.replace(
+                'control.sent.put_nowait((key, address, message))',
+                'raise RuntimeError("current sender must not replace the original")',
+            )
+        _write_python_source(provider, changed_provider)
         files = tmp_path / "plugins/standard_tools/files.py"
         _write_python_source(
             files,
@@ -653,6 +689,7 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                                 installed_cache_root=tmp_path / "cache", message_log=reopened,
                                 channel_attachment_store=artifacts, restart_gate=resumed_gate)
         try:
+            control.host = resumed
             await resumed.load_all()
             restored_model = resumed.generation("models_fixture")
             restored_tools = resumed.generation("standard_tools")
@@ -669,6 +706,37 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
             assert current_model is not None and current_model.archive_ref != stable_model
             assert current_tools is not None and current_tools.archive_ref != stable_tools
             await _capture_report_owners(resumed, control)
+            if stage == "started":
+                # The provider request was cancelled after admission. Its remote
+                # effect is unknown, so a new process must not pay for it again.
+                async def failed_child():
+                    async for _ in reopened.catalog().follow():
+                        rows = reopened.reader(session_id).snapshot()
+                        if any(isinstance(row.body, Control) and row.body.action == "failure" for row in rows):
+                            return rows
+
+                rows = await asyncio.wait_for(failed_child(), 10)
+                assert rows is not None
+                assert [type(row.body) for row in rows] == [Input, Control]
+                failure = rows[-1].body
+                assert isinstance(failure, Control) and "远端效果不确定" in failure.reason
+                assert control.calls == 1
+                async def failed_report():
+                    async for _ in reopened.catalog().follow():
+                        reports = [row for row in reopened.reader("test:parent").snapshot()
+                                   if row.source.startswith("subagent:") and isinstance(row.body, Output)
+                                   and row.body.finish == "complete"]
+                        if reports:
+                            return reports
+
+                reports = await asyncio.wait_for(failed_report(), 10)
+                assert reports is not None and len(reports) == 1
+                assert "main summary: failed" in text_part(reports[0].body.parts[0])
+                _key, address, delivered = await asyncio.wait_for(control.sent.get(), 10)
+                assert address == "parent" and delivered == reports[0]
+                assert control.main_calls == 1 and control.report_owner_checks == 1
+                assert not (workspace / "main-report.txt").exists()
+                return
             async def completed():
                 async for _ in reopened.catalog().follow():
                     messages = reopened.reader("test:parent").snapshot()
@@ -680,9 +748,12 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
             assert returned is not None
             expected_result = "new provider result" if stage == "started" else "child finished"
             assert len(returned) == 1 and f"main summary: {expected_result}" in text_part(returned[0].body.parts[0])
-            # 当前 sender 报错时保留原任务事实，不伪造送达。
-            assert CONTROLS[str(tmp_path)].sent.empty()
-            expected_main_calls = 2 if stage in {"started", "finished"} else 1
+            # 原 sender 只交付一次；当前源码换代不能替换已选中的发送 owner。
+            assert control.sent.qsize() == 1
+            _key, address, delivered = control.sent.get_nowait()
+            assert address == "parent" and delivered == returned[0]
+            # 已结算的模型响应按同一请求重放，不向 provider 重付。
+            expected_main_calls = 2 if stage == "started" else 1
             assert CONTROLS[str(tmp_path)].main_calls == expected_main_calls
             assert CONTROLS[str(tmp_path)].report_owner_checks == expected_main_calls
             assert ("new provider result" in text_part(returned[0].body.parts[0])) == (stage == "started")
@@ -767,13 +838,21 @@ async def test_background_main_program_keeps_tools_and_new_input_interrupts_it(t
             ),
         )
         control.main_release.set()
-        _, address, result = await asyncio.wait_for(control.sent.get(), 10)
-        assert address == "parent" and "main summary" in text_part(result.body.parts[0])
+        # 中断只证明本地等待被取消，不能证明 provider 未计费：subagent 汇报
+        # lane 的旧调用按未知结算终结，没有同来源 Input/resume 时如实停摆，
+        # 不得借 conversation 的新 Input 换 key 重付；conversation lane 独立
+        # 应答 human-followup（旧回复被取代，不再产出 main summary），且其
+        # 已提交 Output 沿 channel.origin 真实交付给 parent sink。
+        key, address, message = await asyncio.wait_for(control.sent.get(), 10)
+        assert "human answer" in str(message), (
+            "conversation 的 human answer 必须经 delivery 发送到 parent"
+        )
+        assert "parent" in str(address)
         rows = log.reader("test:parent").snapshot()
         assert [item.message_id for item in rows if isinstance(item.body, Input)] == ["parent-input", "human-followup"]
         assert any(item.source == "conversation" and isinstance(item.body, Output) and item.body.finish == "complete" for item in rows)
         report = [item for item in rows if item.source.startswith("subagent:")]
-        assert [type(item.body) for item in report] == [Output, ToolResult, Output]
-        assert control.main_calls == 3
+        assert report == []
+        assert control.main_calls == 1
         assert control.report_owner_checks == control.main_calls
-        assert (tmp_path / "workspace/main-report.txt").read_text() == "main result"
+        assert not (tmp_path / "workspace/main-report.txt").exists()

@@ -35,6 +35,9 @@ class _UnreachedModel:
 
     max_tool_schemas = None
 
+    def key_recovery(self, request_key: str) -> str:
+        raise AssertionError(f"closed MaterialView must not recover {request_key}")
+
 
 class _UnreachedProjection:
     context_window = None

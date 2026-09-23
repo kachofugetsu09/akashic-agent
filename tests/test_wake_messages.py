@@ -709,8 +709,10 @@ async def test_runtime_stop_drains_its_active_source_before_returning(tmp_path, 
         assert runtime.state.list_attempts()[0]["outcome"] == "cancelled_after_fire"
         control["release"].set()
         flow_id = runtime.source.pending()[0]
-        assert await runtime._run(flow_id) == "shared"
-        assert len(control["calls"]) == 2 and len(control["sent"]) == 1
+        # 取消只证明本地等待被取消，不能证明 provider 未计费：无新
+        # Input/resume 来源事实时同一边界如实停摆，不得自动重付。
+        assert await runtime._run(flow_id) == "model_skip"
+        assert len(control["calls"]) == 1 and not control["sent"]
 
 
 @pytest.mark.asyncio

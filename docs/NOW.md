@@ -42,7 +42,7 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 ## P0 · 单图插件系统与局部换代（Issue 750）
 
-- 当前暂停在[WIP 基线与并行交接](design/issue-750-plugin-publication-simplification.md#2026-09-23--wip-基线与并行交接)：累计源码检查点 `e34161c7` 已保存，Draft PR 与独立集成/worker/review 环境仅用于后续接手，本轮不分发任务。T-82189d 的 Tools/Delivery owner 与 Core snapshot 失败仍未闭合；最新 main 的合并预览存在 26 个冲突路径，下一轮先由唯一集成 owner 收口并冻结共同起点，不能把当前环境写成主线已同步、系统验收通过或 final enable。
+- 唯一集成 worker 已按[本地集成记录](design/issue-750-plugin-publication-simplification.md#2026-09-23--本地集成继续执行)继续处理固定 main 的 26 个冲突和 T-82189d owner 失败；Subagent 12/12、Reply follow 23/23、Reply liveness 31/31、消息命令 10/10、扩展验收 8/8 已在隔离环境通过。全量 Python、测试类型、插件边界、控制 schema 与 Gate 尚未全绿；具体红项和恢复材料保存在本轮 hgt 任务证据中。不得据此冻结共同起点、推送 PR、分发三路任务或称 final enable 完成。实施模型为 gpt-6-sol/high；后续 Luna 槽为 gpt-6-luna/xhigh，独立概念 review 仍按 WORKFLOW 执行。
 
 - T-fb9a7f 已闭合 Selected-Load A 的真实 selection identity oracle，并完成 Core T02 局部行为证据：selection 1/1、Core 其余四组 25/25。详见设计文档 T-fb9a7f 段与 `/tmp/i750-core.YE9wsb/`；不外推为 Issue 750 完成，完整回归/Gate/CI/正式运行/final enable 仍为 WIP。
 

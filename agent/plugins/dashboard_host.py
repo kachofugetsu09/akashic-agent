@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import MutableMapping
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -175,7 +176,7 @@ async def _run_dashboard_websocket(
     caller_cancelled = False
     errors: list[BaseException] = []
 
-    async def tracked_send(message: dict[str, Any]) -> None:
+    async def tracked_send(message: MutableMapping[str, Any]) -> None:
         nonlocal closed
         if message.get("type") == "websocket.close":
             closed = True

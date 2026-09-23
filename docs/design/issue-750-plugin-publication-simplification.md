@@ -1,5 +1,21 @@
 # Issue 750：单图插件系统与局部换代任务拆分
 
+## 2026-09-23 · 本地集成继续执行
+
+用户恢复了唯一集成 worker 的执行授权：在隔离集成 worktree 上正常合入固定
+`main@ae444d47281b5b25bb467a76dd25eab02c95ec08`，修复 T-82189d 暴露的 Tools、
+DeliveryPolicy 和 live Root consumer，以及主干 Reply 存活性回归。实施指定
+`gpt-6-sol/high`；后续 Luna 实现槽指定 `gpt-6-luna/xhigh`。本轮不分发三路任务，
+独立概念 review 仍按 WORKFLOW 保留。
+
+隔离验收中 Subagent 12/12、Reply follow 23/23、主干 Reply liveness 31/31、
+消息命令 10/10、扩展 consumer 8/8、Web 101/101 和 SDK 2/2 已通过。全量 Python、
+测试类型检查与结构/Gate 尚未通过：旧 candidate/snapshot 测试仍需逐项迁移；
+`plugin_boundary.toml`、`schema/app-server-v2.json` 与 Gate inventory/baseline
+需要超出本轮手工修改范围的决定。准确运行产物、每个冲突的取舍和恢复目录保存在
+`/mnt/data/issue750-green-integration-20260923.3dXxg9/`。这些局部结果不构成
+共同绿色基线、远端 CI、正式状态验收或 final enable。
+
 ## 2026-09-23 · WIP 基线与并行交接
 
 本次只冻结累计源码、准备隔离工作区并交付 Draft PR，随后暂停；没有修复

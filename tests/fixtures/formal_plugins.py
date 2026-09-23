@@ -32,7 +32,7 @@ FULL_RUNTIME_PLUGINS = (
     "conversation", "conversation_ui", "delivery", "delivery_policy", "drift",
     "eventmail", "markdown_memory", "message_push", "models",
     "openai_compatible", "opencode_go", "plugin_update", "programmatic", "prompt",
-    "qq_sender", "react", "reply", "reply_program", "runtime_inspection", "runtime_ui",
+    "qq_sender", "react", "reply", "reply_program", "runtime_inspection",
     "scheduler", "shell_ui", "sources", "standard_tools", "standard_web", "subagent",
     "telegram_sender", "tool_search", "tools", "turn_projection", "wake", "workbench_ui",
 )

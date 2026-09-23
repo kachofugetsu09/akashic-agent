@@ -8,7 +8,7 @@ import hashlib
 import inspect
 import json
 from collections import deque
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,7 +66,7 @@ _lifecycle_binding: contextvars.ContextVar[
 
 
 @contextmanager
-def _lifecycle_bound(context: Context) -> Iterable[None]:
+def _lifecycle_bound(context: Context) -> Iterator[None]:
     """Core-only：把 (Context, 实际执行 Task) 生命周期借用显式绑到当前 Task。
 
     ContextVar 值会随 create_task 继承，但借用要求 binding 里的 Task
@@ -74,7 +74,10 @@ def _lifecycle_bound(context: Context) -> Iterable[None]:
     回调的 Task 建立并 finally reset，不做隐式授权传播。
     """
 
-    token = _lifecycle_binding.set((context, asyncio.current_task()))
+    task = asyncio.current_task()
+    if task is None:
+        raise RuntimeError("生命周期借用需要实际 Task")
+    token = _lifecycle_binding.set((context, task))
     try:
         yield
     finally:
@@ -740,7 +743,7 @@ class RuntimeScope:
             )
         self._call = call
         self._entered_task: asyncio.Task[object] | None = None
-        self._binding_token: contextvars.Token[object] | None = None
+        self._binding_token: contextvars.Token[RuntimeScope | None] | None = None
         self._closed = False
 
     def capture(self) -> "RuntimeScope":
@@ -1142,18 +1145,22 @@ class Fiber:
                 self._lifecycle_started = True
                 # 生命周期事件按准确 owner 派发（LOADING 中不经普通过滤）；
                 # 不接受 Bail，同一 activation 只发一次。
-                for key, payload in (
-                    (RUNTIME_STARTING, RuntimeStarting()),
-                    (RUNTIME_STARTED, RuntimeStarted()),
-                ):
-                    result = await self.root._events.serial_for_owner(
-                        self, key, payload
+                starting = await self.root._events.serial_for_owner(
+                    self, RUNTIME_STARTING, RuntimeStarting(),
+                )
+                if starting is not None:
+                    raise CompositionError(
+                        "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
+                        f"{RUNTIME_STARTING.name} 不接受 Bail",
                     )
-                    if result is not None:
-                        raise CompositionError(
-                            "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
-                            f"{key.name} 不接受 Bail",
-                        )
+                started = await self.root._events.serial_for_owner(
+                    self, RUNTIME_STARTED, RuntimeStarted(),
+                )
+                if started is not None:
+                    raise CompositionError(
+                        "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
+                        f"{RUNTIME_STARTED.name} 不接受 Bail",
+                    )
                 self.root._check_required_health(self)
                 task = asyncio.current_task()
                 if task is not None and task.cancelling():

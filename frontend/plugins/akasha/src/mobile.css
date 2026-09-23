@@ -1,9 +1,5 @@
 @import "../../../../plugins/akasha/mobile_ui.css";
 
-.akasha-mobile-inspector .akasha-mobile-memories li {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .akasha-mobile-inspector .akasha-mobile-memories li > div {
   min-width: 0;
 }

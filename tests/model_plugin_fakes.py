@@ -85,6 +85,10 @@ class BoundChatModelFake:
         value = getattr(self.provider, "max_tool_schemas", None)
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
+    def key_recovery(self, request_key: str) -> str:
+        del request_key
+        return "open"
+
     def estimate_context_tokens(
         self,
         messages: Sequence[Mapping[str, Any]],

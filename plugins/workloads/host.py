@@ -15,16 +15,15 @@ from .definitions import (
     WorkloadBinding,
     WorkloadDescriptor,
 )
-from agent.workloads.client import WorkloadEffectUnknown
-from agent.workloads.model import (
+from agent.plugin_composition.execution import (
+    WorkloadEffectUnknown,
     WorkloadLease,
+    WorkloadMode,
     WorkloadStartRequest,
     WorkloadStartReceipt,
     WorkloadStopReceipt,
     workload_spec_digest,
 )
-
-WorkloadMode = Literal["candidate", "formal"]
 HealthCallback = Callable[[str, str, bool, str], Awaitable[None] | None]
 IncidentCallback = Callable[[str, str, str, str], Awaitable[None] | None]
 
@@ -544,7 +543,7 @@ def _check_stop_receipt(
     lease: WorkloadLease,
     receipt: object,
 ) -> None:
-    from agent.workloads.model import WorkloadStopReceipt
+    from agent.plugin_composition.execution import WorkloadStopReceipt
 
     if not isinstance(receipt, WorkloadStopReceipt) or receipt.lease != lease:
         raise RuntimeError("Workload Controller stop receipt identity 不匹配")

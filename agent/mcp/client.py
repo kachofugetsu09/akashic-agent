@@ -1,3 +1,5 @@
+"""冻结的 MCP client 迁移桥，仅供已提交的旧插件归档启动。"""
+
 """McpClient: 管理单个 MCP server 的 stdio 子进程连接和 JSON-RPC 通信。"""
 
 import asyncio
@@ -9,12 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from agent.host_bridge.plugin_execution import spawn_process
-from utils.process_group import (
-    OwnedProcessGroup,
-    owned_process_env,
-    process_group_spawn_kwargs,
-)
+from agent.plugin_composition.execution import ChildProcess, PreparedProcess, ProcessSpawner
 
 logger = logging.getLogger(__name__)
 
@@ -78,17 +75,18 @@ class McpClient:
     def __init__(
         self,
         name: str,
-        command: list[str],
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-        env_scrub_keys: frozenset[str] | None = None,
+        *,
+        prepared: PreparedProcess,
+        spawner: ProcessSpawner,
     ) -> None:
+        if type(prepared) is not PreparedProcess:
+            raise TypeError("MCP client 只消费 spawner 签发的 PreparedProcess")
         self.name = name
-        self.command = command
-        self.env = env or {}
-        self.env_scrub_keys = env_scrub_keys or frozenset()
-        # cwd 未指定时从 command 中推断，避免子进程继承 agent 工作目录
-        self.cwd = cwd or _infer_cwd(command)
+        self.command = list(prepared.command)
+        self.env = dict(prepared.env)
+        self.cwd = prepared.cwd
+        self._prepared = prepared
+        self._spawner = spawner
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._call_lock = asyncio.Lock()
@@ -97,7 +95,7 @@ class McpClient:
         self._recent_stdout: deque[str] = deque(maxlen=8)
         self._recent_stderr: deque[str] = deque(maxlen=8)
         self._stderr_task: asyncio.Task[None] | None = None
-        self._process_group: OwnedProcessGroup | None = None
+        self._process_group: ChildProcess | None = None
         self._process_watch_task: asyncio.Task[None] | None = None
         self._disconnect_task: asyncio.Task[None] | None = None
         self._disconnecting = False
@@ -144,21 +142,17 @@ class McpClient:
 
     async def _connect_impl(self) -> list[McpToolInfo]:
         """启动子进程，完成握手，获取工具列表。"""
-        # 环境由绑定 Context 的宿主授权提供；不再次继承整个 agent 环境。
-        # 仍使用公共 helper 固定 Supervisor 身份，保留进程归属与清理链。
-        proc_env = owned_process_env(self.env, scrub_keys=frozenset(os.environ) | self.env_scrub_keys)
+        # 环境经宿主授权 scrub；进程组终止语义不出 ExecutionGrant 边界。
         logger.debug("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
-        self._process, spawn_cancelled = await spawn_process(
-            *self.command,
+        child, spawn_cancelled = await self._spawner.spawn(
+            self._prepared,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=proc_env,
-            cwd=self.cwd,
             limit=_STREAM_LIMIT,
-            **process_group_spawn_kwargs(),
         )
-        self._process_group = OwnedProcessGroup.from_process(self._process)
+        self._process = child.process
+        self._process_group = child
         if spawn_cancelled:
             raise asyncio.CancelledError
         self._stderr_task = asyncio.create_task(
@@ -452,8 +446,12 @@ class McpClient:
         process = self._process
         if process is None:
             return
-        process_group = self._process_group or OwnedProcessGroup.from_process(process)
-        self._process_group = process_group
+        process_group = self._process_group
+        if process_group is None:
+            raise RuntimeError(
+                f"MCP server {self.name!r} 持有 process 但缺 spawn 回执句柄，"
+                "不变量损坏；不得凭 PID 重建进程组 ownership"
+            )
         self._disconnecting = True
         errors: list[BaseException] = []
         hard_kill = False
@@ -514,7 +512,7 @@ class McpClient:
     async def _watch_process_exit(
         self,
         process: asyncio.subprocess.Process,
-        process_group: OwnedProcessGroup,
+        process_group: ChildProcess,
     ) -> None:
         """leader 意外退出后回收当前 epoch，并启动有界恢复。"""
         while process.returncode is None:
@@ -636,7 +634,12 @@ class McpClient:
         process = self._process
         if process is None:
             return
-        process_group = self._process_group or OwnedProcessGroup.from_process(process)
+        process_group = self._process_group
+        if process_group is None:
+            raise RuntimeError(
+                f"MCP server {self.name!r} 持有 process 但缺 spawn 回执句柄，"
+                "不变量损坏；不得凭 PID 重建进程组 ownership"
+            )
         stderr_task = self._stderr_task
         self._disconnecting = True
         try:

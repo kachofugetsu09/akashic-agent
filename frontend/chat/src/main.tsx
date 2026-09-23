@@ -9,7 +9,6 @@ export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlo
 
 const entryParams = new URLSearchParams(window.location.search);
 const embeddedShell = entryParams.get("embedded") === "1";
-const embeddedRuntime = embeddedShell && entryParams.get("surface") === "runtime";
 if (embeddedShell) document.documentElement.dataset.embeddedShell = "true";
 initializeTheme();
 startCrossPortThemeSync();
@@ -27,7 +26,7 @@ if (embeddedShell) {
 }
 
 function rootContent() {
-  return <DesktopChatApp embeddedShell={embeddedShell} embeddedRuntime={embeddedRuntime} />;
+  return <DesktopChatApp embeddedShell={embeddedShell} />;
 }
 
 createRoot(document.getElementById("root")!).render(

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from agent.plugins.manager import PluginManager
 
 import uvicorn
 from fastapi import FastAPI
@@ -91,7 +95,7 @@ def create_dashboard_app(
         plugin_manager.configure_dashboard_routes(tuple(app.routes))
         app.add_middleware(
             LiveDashboardMiddleware,
-            plugin_manager=plugin_manager,
+            plugin_manager=cast("PluginManager", plugin_manager),
         )
 
     return app

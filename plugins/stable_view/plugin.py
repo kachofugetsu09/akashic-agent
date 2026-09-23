@@ -117,11 +117,11 @@ def format_stable_catalog(catalog: Mapping[str, object]) -> str:
         for index, server in enumerate(entries):
             label = server.get("name") if isinstance(server, Mapping) else server
             lines.append(f"   {'└─' if index == len(entries) - 1 else '├─'} {label}")
-    mcp_unavailable = catalog.get("mcp_unavailable")
-    if isinstance(mcp_unavailable, Mapping):
+    unavailable = catalog.get("unavailable")
+    if isinstance(unavailable, Mapping):
         lines.append(
             "mcp_servers  (按调用打开，无持久会话目录"
-            f" [{mcp_unavailable.get('code')}])"
+            f" [{unavailable.get('code')}])"
         )
     return "\n".join(lines)
 

@@ -612,6 +612,7 @@ def _build_stack(
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
         for name in (
+            "assets",
             "content",
             "context",
             "delivery",
@@ -624,6 +625,7 @@ def _build_stack(
             "standard_tools",
             "tools",
             "turn_projection",
+            "ui",
             "wake",
         )
     ] + [

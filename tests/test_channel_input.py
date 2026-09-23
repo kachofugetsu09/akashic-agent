@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 import shutil
 
 import pytest
@@ -109,6 +110,7 @@ class Custody(MessageBus):
         await self.complete_gate.wait()
         await super().complete_channel_input(envelope)
         self.completed += 1
+        self.finished.set()
 
 
 @asynccontextmanager
@@ -156,15 +158,23 @@ async def apply(ctx):
     if inbound_store is not None:
         capabilities = "[ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND]"
     (probe / "plugin.py").write_text(probe_source.replace("CHANNEL_NAME", repr(channel_name)).replace("CAPABILITIES", capabilities))
+    # 插件在提交开放时自启一轮恢复；先挡住它，由本 fixture 的同步 recover 完成
+    # 初次结算，避免断言与异步 claim 竞争。放行后 auto 恢复路径仍归插件。
+    spawned_recovery_gate = asyncio.Event()
+
+    async def gated_recover_durable_inbounds():
+        await spawned_recovery_gate.wait()
+        await custody.recover_durable_inbounds()
+
     host = PluginManager(
         [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home", message_log=log,
         channel_attachment_store=artifacts, channel_identities=identity_store,
         input_custody=InputCustody(
             custody.prepare_channel_input, custody.complete_channel_input, custody.retain_channel_input,
-            custody.reserve_durable_inbound, custody.defer_durable_inbound,
+            lambda raw: custody.reserve_durable_inbound(raw), custody.defer_durable_inbound,
             custody.settle_rejected_inbound, custody.has_pending_durable_inbound,
-            custody.pending_durable_attachment_refs, custody.recover_durable_inbounds,
+            custody.pending_durable_attachment_refs, gated_recover_durable_inbounds,
         ),
     )
 
@@ -195,6 +205,7 @@ async def apply(ctx):
         await asyncio.wait_for(adapter.opened.wait(), 5)
         if inbound_store is not None and recover:
             await custody.recover_durable_inbounds()
+        spawned_recovery_gate.set()
         yield log, host, custody, identities, rollbacks, adapters[-1]
     finally:
         custody.prepare_gate.set()
@@ -709,6 +720,7 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
         admissions.close()
 
     # 2. 分别模拟正文提交前与提交后进程结束，重开都不能重复正文。
+    initialize_plugin_workspace(tmp_path / "workspace")
     if committed:
         initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic") as (log, host, *rest):

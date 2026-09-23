@@ -11,7 +11,7 @@ import secrets
 import shutil
 import sys
 from dataclasses import asdict, dataclass
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import Context as TaskContext
 from pathlib import Path
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
@@ -46,7 +46,7 @@ from agent.plugin_composition.tasks import TASKS, PluginTasks
 from session.log import MessageCatalog, MessageLog, MessagePage, read_persisted_messages
 from session.message import Message
 from session.embedding_store import MessageEmbeddings
-from agent.plugin_composition.context import Context, Fiber, RuntimeScope
+from agent.plugin_composition.context import Context, Fiber
 from agent.restart import RESTART_GATE, RestartGate
 from agent.control.frame_book import CONTROL_FRAMES, FrameBook
 
@@ -142,12 +142,25 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
     SnapshotTransaction,
+    bind_runtime_snapshot,
+    reset_runtime_snapshot,
 )
 from bus.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 PLUGIN_ARCHIVE_BINDING_API = 3
 U = TypeVar("U")
+
+
+@asynccontextmanager
+async def _snapshot_lease_scope(lease: RuntimeSnapshotLease) -> AsyncGenerator[None]:
+    """Bind a legacy snapshot lease to this Task and release its exact claim."""
+    token = bind_runtime_snapshot(lease)
+    try:
+        yield
+    finally:
+        reset_runtime_snapshot(token)
+        await lease.aclose()
 
 
 def _snapshot_command_catalog(
@@ -423,7 +436,7 @@ class PluginManager:
             async def scoped_work() -> U:
                 # 任务取得自己的真实租约；调用者超时退出不能释放仍在工作的 scope。
                 self._check_operation_commit()
-                async with RuntimeScope(lease.fork()):
+                async with _snapshot_lease_scope(lease.fork()):
                     return await work()
 
             operation = self._start_operation(scoped_work, commit_timeout=commit_timeout)
@@ -447,7 +460,7 @@ class PluginManager:
             if root.instance_token not in self._runtime_starting_roots:
                 raise RuntimeError("Root 尚未完成发布前准备，须经正式发布后启动")
             async def start() -> None:
-                async with RuntimeScope(self._snapshot_store.lease(snapshot.snapshot_id)):
+                async with _snapshot_lease_scope(self._snapshot_store.lease(snapshot.snapshot_id)):
                     result = await root.context.serial(RUNTIME_STARTED, RuntimeStarted())
                     if result is not None:
                         raise CompositionError(
@@ -503,7 +516,7 @@ class PluginManager:
         async def stop() -> object:
             if lease is None:
                 return await root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
-            async with RuntimeScope(lease.fork()):
+            async with _snapshot_lease_scope(lease.fork()):
                 return await root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
 
         result, cancelled = await _complete_critical(stop())
@@ -715,7 +728,10 @@ class PluginManager:
         phase: str,
         plugin_id: str | None,
     ) -> PluginSourceFailure:
-        error_type, error_text = source_error_details(error)
+        if isinstance(error, PluginSourceContentError):
+            error_type, error_text = source_error_details(error)
+        else:
+            error_type, error_text = type(error).__name__, str(error) or type(error).__name__
         return PluginSourceFailure(
             source_root=Path(mod["plugin_root"]).resolve(strict=False),
             source_type=cast(Literal["builtin", "installed"], mod["source_type"]),
@@ -1672,6 +1688,8 @@ class PluginManager:
             )
             if generation is None:
                 raise RuntimeError(f"安装目标未进入 live generation: {result.plugin_name}@{result.marketplace}")
+            if generation.archive_ref is None:
+                raise RuntimeError("安装目标没有归档引用")
             self._reload_journal.set_input_ref(result.update_id, generation.archive_ref)
             expected_ref = self._selection.read()
             previous = self._active_generations.get(generation.plugin_id)
@@ -2314,7 +2332,7 @@ class PluginManager:
             if root is None:
                 return
             await self._prepare_runtime_snapshot(lease)
-            async with RuntimeScope(lease.fork()):
+        async with _snapshot_lease_scope(lease.fork()):
                 result = await root.context.serial(RUNTIME_STARTED, RuntimeStarted())
                 if result is not None:
                     raise CompositionError(
@@ -3614,8 +3632,7 @@ class PluginManager:
             item.runtime_snapshot = snapshot
         return snapshot
 
-    @asynccontextmanager
-    async def open_validation(self, update_id: str) -> AsyncGenerator[BindingScope]:
+    def open_validation(self, update_id: str) -> AbstractAsyncContextManager[BindingScope]:
         """Reject the retired candidate validation owner."""
         raise RuntimeError("候选验证入口已停用；T05 consumer migration pending")
 
@@ -3635,7 +3652,7 @@ class PluginManager:
         lease = self._snapshot_store.lease(ready.snapshot.snapshot_id)
         host: ValidationHost | None = None
         scope: BindingScope | None = None
-        async with RuntimeScope(lease):
+        async with _snapshot_lease_scope(lease):
             try:
                 host = await self._build_validation_host(lease)
                 host.task = caller

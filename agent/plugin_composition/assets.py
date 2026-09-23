@@ -32,7 +32,7 @@ class InstalledAsset:
 class InstalledAssets(Protocol):
     """读取精确作用域的资产，或登记调用方自己的代码目录。"""
 
-    def __call__(self) -> tuple[InstalledAsset, ...]: ...
+    def __call__(self, consumer: Context) -> tuple[InstalledAsset, ...]: ...
 
     async def register(
         self, ctx: Context, category: str, relative_path: str,

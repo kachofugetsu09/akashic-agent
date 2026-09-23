@@ -4,6 +4,7 @@ from functools import partial
 from agent.plugin_composition import CHAT_MODELS, Context, ServiceKey
 from agent.plugin_contracts import Message
 
+from agent.plugin_composition.messages import OWNER_STATE
 from .inputs import (
     SOURCE_CHECK, CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, MODEL_CHECKS, MODEL_CONTENT, MODEL_PROJECTION,
     MODEL_SELECTION, REACT, TOOL_CLEANUP, TOOL_PROGRAM, TOOLS, TURN_PROJECTION,
@@ -16,7 +17,7 @@ version = "1.0.0"
 desc = "一次回复的资源与执行组合；不拥有来源策略或后台监听"
 inject = (SOURCE_CHECK, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, MODEL_CHECKS,
           MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION, REACT, TOOL_CLEANUP,
-          TOOL_PROGRAM, TOOLS, TURN_PROJECTION)
+          TOOL_PROGRAM, TOOLS, TURN_PROJECTION, OWNER_STATE)
 REPLY_EXECUTE = ServiceKey[Callable[..., Awaitable[Message]]]("reply.execute.v1")
 
 

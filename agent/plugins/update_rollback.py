@@ -188,11 +188,55 @@ def link(conn: sqlite3.Connection, *, tx_id: str, plugin_id: str, candidate_poin
 
 
 def commit(conn: sqlite3.Connection, tx_id: str, now: str) -> None:
-    if check_schema(conn):
-        _ = conn.execute(
-            "UPDATE plugin_updates SET phase='committed',updated_at=?,error='' WHERE reload_tx_id=? AND phase='armed'",
-            (now, tx_id),
-        )
+    """晋升提交与回退同属安装 owner：先把 stable 推进到已验证候选，再记录提交完成。"""
+    if not check_schema(conn):
+        return
+    row = conn.execute(
+        "SELECT update_id,plugin_id,plugin_base,previous_pointers_json,candidate_pointer"
+        " FROM plugin_updates WHERE reload_tx_id=? AND phase='armed'",
+        (tx_id,),
+    ).fetchone()
+    if row is None:
+        return
+    update_id, plugin_id, plugin_base_raw, previous_raw, candidate_raw = row
+    plugin_base = Path(cast(str, plugin_base_raw))
+    candidate = ArtifactPointer(cast(str, candidate_raw))
+    base = None
+    if previous_raw is not None:
+        previous = json.loads(cast(str, previous_raw))
+        if not isinstance(previous, dict) or not isinstance(previous.get('stable'), str):
+            raise ValueError("旧插件指针记录损坏")
+        base = cast(dict[str, object], previous)['stable']
+    path = pointer_state_path(plugin_base)
+    if path.is_symlink():
+        raise ValueError("插件指针提交目标不能是符号链接")
+    if path.exists() and not path.is_file():
+        raise ValueError("插件指针提交目标必须是普通文件")
+    missing = object()
+    current = load_json(path, default=missing, domain='plugin_update_rollback')
+    if current is missing:
+        if previous_raw is None:
+            # 没有安装指针状态可结算：只提交 journal 记录，不凭空创建文件。
+            _ = conn.execute(
+                "UPDATE plugin_updates SET phase='committed',updated_at=?,error='' WHERE update_id=? AND phase='armed'",
+                (now, update_id),
+            )
+            return
+        raise RuntimeError("插件指针已被其他操作改变，不能覆盖")
+    if not isinstance(current, dict):
+        raise ValueError("插件指针提交目标必须是对象")
+    staged = {'stable': base, 'latest': candidate.path}
+    collapsed = {'stable': candidate.path, 'latest': candidate.path}
+    if current not in (staged, collapsed):
+        raise RuntimeError("插件指针已被其他操作改变，不能覆盖")
+    # 1. 指针文件先于 phase 落账：中途死亡留下 armed 恢复点，rollback_updates 可再次恢复。
+    if current != collapsed:
+        _ = write_pointers(plugin_base, stable=candidate, latest=candidate)
+    # 2. 保留新 artifact 与全部 plugin-data；只更新本恢复点的完成事实。
+    _ = conn.execute(
+        "UPDATE plugin_updates SET phase='committed',updated_at=?,error='' WHERE update_id=? AND phase='armed'",
+        (now, update_id),
+    )
 
 
 def rollback(conn: sqlite3.Connection, update: UpdateRollback, plugins_home: Path, *, now: str, error: str) -> None:

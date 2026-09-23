@@ -70,7 +70,7 @@ def test_format_stable_catalog_renders_tree() -> None:
 def test_format_stable_catalog_mcp_unavailable() -> None:
     catalog = _catalog()
     catalog.pop("mcp_servers")
-    catalog["mcp_unavailable"] = {
+    catalog["unavailable"] = {
         "code": "mcp_catalog_unavailable", "message": "no session",
     }
     text = format_stable_catalog(catalog)

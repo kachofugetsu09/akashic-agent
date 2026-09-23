@@ -23,17 +23,13 @@ import type { DesktopChatController } from "./use-desktop-chat-controller";
 const LazyMobilePairingDialog = lazy(() =>
   import("./mobile-pairing-dialog").then(({ MobilePairingDialog }) => ({ default: MobilePairingDialog })),
 );
-const LazyRuntimeDashboard = lazy(() =>
-  import("./runtime-dashboard").then(({ RuntimeDashboard }) => ({ default: RuntimeDashboard })),
-);
 
 interface DesktopChatViewProps {
   embeddedShell: boolean;
-  embeddedRuntime: boolean;
   controller: DesktopChatController;
 }
 
-export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: DesktopChatViewProps) {
+export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewProps) {
   const theme = useTheme();
   const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
   const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
@@ -42,7 +38,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
-    activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
+    activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
   } = controller;
@@ -53,43 +49,34 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
   const shellClass = [
     "chat-shell",
     embeddedShell ? "is-embedded" : "is-standalone-l",
-    embeddedRuntime ? "embedded-runtime" : "",
   ].filter(Boolean).join(" ");
 
   return (
     <main className={shellClass}>
-      {!embeddedShell && !embeddedRuntime ? (
+      {!embeddedShell ? (
         <ChatProductBand
-          surface={surface}
           chatReady={chatReady}
           themeLabel={theme.label}
-          onOpenRuntime={openRuntime}
           onCycleTheme={cycleTheme}
         />
       ) : null}
 
       <div className="chat-shell-body">
-        {!embeddedRuntime ? <>
-          <DesktopSidebar
+        <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
+            themeLabel={theme.label} onSelectSession={activateSession}
             onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
           />
+
+        <section className="chat-main">
+        <header className="conversation-heading">
           <DesktopMobileNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
+            themeLabel={theme.label} onSelectSession={activateSession}
             onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
           />
-        </> : null}
-
-        {surface === "runtime" ? (
-          <Suspense fallback={<section className="runtime-dashboard" aria-busy="true">正在加载知识与运行…</section>}>
-            <LazyRuntimeDashboard />
-          </Suspense>
-        ) : <section className="chat-main">
-        <header className="conversation-heading">
           <h1 title={sidebarSessions.find((s) => s.active)?.title || "新会话"}>{sidebarSessions.find((session) => session.active)?.title || "新会话"}</h1>
         </header>
         <Conversation className="conversation" resize="instant">
@@ -135,7 +122,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
             <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton>
           </div> : null}
         </div>
-      </section>}
+      </section>
       </div>
       {mobilePairingOpen ? <Suspense fallback={null}>
         <LazyMobilePairingDialog open onOpenChange={setMobilePairingOpen} />

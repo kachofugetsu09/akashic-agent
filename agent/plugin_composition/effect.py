@@ -119,7 +119,7 @@ class Effect:
         self._remove_from_owner(self)
 
 
-async def _join_cleanup(task: asyncio.Task[None]) -> None:
+async def _join_cleanup(task: asyncio.Task[object]) -> None:
     """等待同一关闭操作，重复取消也不能中断资源 owner。"""
 
     if task is asyncio.current_task():

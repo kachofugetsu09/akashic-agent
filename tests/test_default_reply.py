@@ -73,6 +73,7 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
     provider.mkdir()
     (provider / "plugin.py").write_text('''
 from contextlib import asynccontextmanager
+from functools import partial
 from types import SimpleNamespace
 from pathlib import Path
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
@@ -84,13 +85,15 @@ from plugins.models.state import _BoundChat, ModelsState
 from plugins.models.settings import MODEL_SETTINGS
 from plugins.models.store import ModelsStore
 from plugins.tools.api import Result
-from plugins.standard_tools.shell import shell_cleanup
+from plugins.standard_tools.shell import ShellOwners, shell_cleanup
+from agent.plugin_composition.tasks import TASKS
+from agent.plugin_composition.bindings import BINDINGS
 from plugins.tools.plugin import TOOLS
 from session.message import ContentPart
 api_version = 3
 name = "test_provider"
 version = "1.0.0"
-inject = (TOOLS,)
+inject = (TOOLS, TASKS, BINDINGS)
 async def apply(ctx):
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
@@ -134,7 +137,9 @@ async def apply(ctx):
     await ctx.require(TOOLS).declare_group(ctx, always_on=True)
     await ctx.require(TOOLS).register(ctx, name="write_evidence", description="record local test evidence",
         parameters={"type":"object"}, open=open)
-    await ctx.provide(ServiceKey("tools.cleanup.v1"), shell_cleanup)
+    await ctx.provide(ServiceKey("tools.cleanup.v1"), partial(
+        shell_cleanup, ctx, ShellOwners(ctx), ctx.require(TASKS).open(ctx),
+    ))
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
     await ctx.provide(MODEL_PROJECTION, ProjectionOwner())

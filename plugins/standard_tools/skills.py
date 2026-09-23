@@ -111,7 +111,7 @@ async def register_skills(ctx: Context) -> ToolRef:
     def read_catalog() -> tuple[SkillRecord, ...]:
         """每次先取得当前租约的资产；缓存不能绕过作用域或保留旧目录。"""
         nonlocal cached_assets, cached_catalog
-        assets = read_assets()
+        assets = read_assets(ctx)
         if cached_catalog is None or assets != cached_assets:
             cached_catalog = parser.parse(assets)
             cached_assets = assets

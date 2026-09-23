@@ -32,10 +32,18 @@ class Closeable(Protocol):
 class DashboardResources:
     """保留实际模块和关闭顺序；失败时不先解除 owner。"""
 
-    def __init__(self, ctx: Context, loader: Callable[[], ModuleType], *, has_web: bool) -> None:
+    def __init__(
+        self,
+        ctx: Context,
+        loader: Callable[[], ModuleType],
+        *,
+        has_web: bool,
+        registry: object,
+    ) -> None:
         self.ctx = ctx
         self.loader = loader
         self.has_web = has_web
+        self._registry = registry
         self.closeables: list[Closeable] = []
         self._started = False
 
@@ -96,7 +104,10 @@ class DashboardResources:
             """只在路由实际租约内解析声明能力，旧 Dashboard 不能借新 generation。"""
             if key not in dependencies:
                 raise CompositionError("SERVICE_UNDECLARED", f"Dashboard 未声明能力: {key.name}")
-            ctx.require_runtime_owner(UI, ctx.require(UI))
+            # 旧 generation 的 Fiber 已退役：scope 校验不能先经 ctx.require
+            # 取服务（INACTIVE_SERVICE 会吞掉 runtime scope 拒绝）。直接以
+            # 注册时的实际 Ui 实例证明 owner 归属。
+            ctx.require_runtime_owner(UI, self._registry)
             return ctx.require(key)
 
         dashboard_context = DashboardContext(

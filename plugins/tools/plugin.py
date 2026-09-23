@@ -392,6 +392,16 @@ class ToolCatalog:
             contributors=contributors,
         )
 
+    async def bind_scoped(
+        self, ref: ToolRef, bindings: Bindings, *,
+        configuration: Mapping[str, object] | None = None,
+    ) -> str:
+        """Capture one tool under both its registry and contributor owners."""
+        contributor = self._registration(ref).context
+        async with self._ctx.runtime_scope():
+            async with contributor.runtime_scope():
+                return self.bind(ref, bindings, configuration=configuration)
+
     def _bind_saved(
         self,
         metadata: Mapping[str, object],

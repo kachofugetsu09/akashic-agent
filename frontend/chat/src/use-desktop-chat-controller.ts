@@ -571,10 +571,6 @@ export function useDesktopChatController() {
       });
   }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setStatusLive, surface]);
 
-  const openRuntime = useCallback(() => {
-    setSurface("runtime");
-    window.history.replaceState(null, "", `${window.location.pathname}?surface=runtime`);
-  }, []);
   const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
   const handleModelChange = useCallback((runtimeId: string, effort: string) => {
     setSelectedRuntimeId(runtimeId);
@@ -613,7 +609,7 @@ export function useDesktopChatController() {
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError, mobilePairingOpen,
-    activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
+    activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
   };

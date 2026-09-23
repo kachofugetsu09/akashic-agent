@@ -18,12 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .definitions import ManagedProcessDefinition
-from agent.host_bridge.plugin_execution import spawn_process
-from utils.process_group import (
-    OwnedProcessGroup,
-    owned_process_env,
-    process_group_spawn_kwargs,
-)
+from agent.plugin_composition.execution import ChildProcess, ProcessSpawner
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +135,7 @@ class _ProcessEpoch:
     artifact_root: Path | None
     epoch: int = 0
     process: asyncio.subprocess.Process | None = None
-    process_group: OwnedProcessGroup | None = None
+    process_group: ChildProcess | None = None
     endpoint: ManagedProcessEndpoint | None = None
     stdout_ring: _LogRing | None = None
     stderr_ring: _LogRing | None = None
@@ -189,6 +184,7 @@ class ManagedProcessGenerationHost:
 
     def __init__(
         self,
+        spawner: ProcessSpawner,
         *,
         on_health: HealthReporter | None = None,
         on_incident: IncidentReporter | None = None,
@@ -205,6 +201,7 @@ class ManagedProcessGenerationHost:
             raise ValueError("recovery backoff values must be non-negative")
         if recovery_stable_seconds <= 0:
             raise ValueError("recovery_stable_seconds must be positive")
+        self._spawner = spawner
         self._on_health = on_health
         self._on_incident = on_incident
         self._on_failure = on_failure
@@ -462,8 +459,20 @@ class ManagedProcessGenerationHost:
         definition = entry.definition
         port = self._allocate_port(definition.formal_port if generation.mode == "formal" and generation.fixed_ports and definition.formal_port else None)
         command = self._resolve_command(definition.command, entry.artifact_root)
-        cwd = self._resolve_cwd(definition.cwd, entry.artifact_root)
-        env = self._process_env(definition.env, definition.port_env, port)
+        # 授权校验与签发都发生在 spawner 边界内：cwd 必须交声明值由 grant 在
+        # 固定代码制品内解析，不能先按 artifact_root/进程 cwd 改写。
+        # 端口是 provider 声明的运行期键，先备好值再并入两份 env 输入，
+        # 由 grant 一次授权并冻结；formal/candidate 输入保持隔离。
+        if (
+            definition.port_env in definition.env
+            or definition.port_env in definition.candidate_env
+        ):
+            raise ValueError(f"managed process port env collision: {definition.port_env}")
+        prepared = self._spawner.prepare_process(
+            command, definition.cwd,
+            {**definition.env, definition.port_env: str(port)},
+            {**definition.candidate_env, definition.port_env: str(port)},
+        )
         if entry.stdout_ring is None:
             entry.stdout_ring = _LogRing(
                 max_bytes=self._log_max_bytes,
@@ -485,13 +494,10 @@ class ManagedProcessGenerationHost:
             "starting",
         )
         try:
-            process, spawn_cancelled = await spawn_process(
-                *command,
-                cwd=str(cwd),
-                env=owned_process_env(env, scrub_keys=frozenset(os.environ)),
+            child, spawn_cancelled = await self._spawner.spawn(
+                prepared,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                **process_group_spawn_kwargs(),
             )
         except asyncio.CancelledError:
             raise
@@ -503,8 +509,9 @@ class ManagedProcessGenerationHost:
                 _error_text(error),
             )
             raise
+        process = child.process
         entry.process = process
-        entry.process_group = OwnedProcessGroup.from_process(process)
+        entry.process_group = child
         if spawn_cancelled:
             raise asyncio.CancelledError
         entry.stdout_task = asyncio.create_task(
@@ -970,27 +977,6 @@ class ManagedProcessGenerationHost:
             else:
                 result.append(item)
         return tuple(result)
-
-    @staticmethod
-    def _resolve_cwd(cwd: str, artifact_root: Path | None) -> Path:
-        path = Path(cwd)
-        if path.is_absolute():
-            return path
-        if artifact_root is not None:
-            return (artifact_root / path).resolve()
-        return Path.cwd() / path
-
-    @staticmethod
-    def _process_env(
-        env: Mapping[str, str],
-        port_env: str,
-        port: int,
-    ) -> dict[str, str]:
-        values = dict(env)
-        if port_env in values:
-            raise ValueError(f"managed process port env collision: {port_env}")
-        values[port_env] = str(port)
-        return values
 
     @staticmethod
     def _allocate_port(formal_port: int | None) -> int:

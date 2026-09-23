@@ -13,7 +13,7 @@ from functools import partial
 from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.channels import CHANNEL_INPUT, RawInbound
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from typing import Protocol
 
 

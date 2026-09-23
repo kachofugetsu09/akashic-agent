@@ -12,7 +12,17 @@ from typing import Literal
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
 from agent.workloads.client import WorkloadController
-from agent.workloads.model import WorkloadStartRequest, WorkloadLease
+from agent.plugin_composition.execution import (
+    ChildProcess,
+    PreparedProcess,
+    WorkloadLease,
+    WorkloadStartRequest,
+)
+from utils.process_group import (
+    OwnedProcessGroup,
+    owned_process_env,
+    process_group_spawn_kwargs,
+)
 
 
 async def cleanup_workloads_for_boot(
@@ -36,6 +46,14 @@ async def cleanup_workloads_for_boot(
         )
 
 
+# 名称层永久保留的执行环境键：宿主继承来源 + 数据根/工作区合同键。
+_RESERVED_ENV_NAMES = frozenset({
+    "PATH", "PYTHONPATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ",
+    "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
+    "HOME", "AKA_PLUGIN_DATA_DIR", "AKASHIC_PLUGIN_DATA_DIR", "AKASHIC_WORKSPACE",
+})
+
+
 @dataclass(frozen=True)
 class CodeOwner:
     generation_id: str
@@ -54,7 +72,7 @@ class ExecutionAccess:
                 self._owners[(str(key), owner.generation_id)] = owner
         self._mode: Literal["candidate", "formal"] = "candidate" if candidate else "formal"
         self._environment = {key: os.environ[key] for key in (
-            "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ",
+            "PATH", "PYTHONPATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ",
             "AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED",
         ) if key in os.environ}
 
@@ -84,8 +102,9 @@ class ExecutionGrant:
     def __init__(self, ctx: Context, owner: CodeOwner, mode: Literal["candidate", "formal"], environment: Mapping[str, str]):
         self._ctx = ctx
         self._owner = owner
-        self._mode = mode
+        self._mode: Literal["candidate", "formal"] = mode
         self._environment = dict(environment)
+        self._issue_token = object()
 
     @property
     def mode(self) -> Literal["candidate", "formal"]:
@@ -106,17 +125,111 @@ class ExecutionGrant:
         return value
 
     def environment(self, values: Mapping[str, str], candidate_values: Mapping[str, str]) -> dict[str, str]:
-        """候选只取显式候选输入；宿主环境仅继承列出的非凭据项。"""
+        """候选只取显式候选输入；宿主固定键由本授权钉住，调用方不得覆盖。"""
         runtime = self._ctx.runtime
-        result = dict(self._environment)
-        result.update(candidate_values if self._mode == "candidate" else values)
-        result.update({
+        fixed = dict(self._environment)
+        fixed.update({
             "HOME": str(runtime.data_dir),
             "AKA_PLUGIN_DATA_DIR": str(runtime.data_dir),
             "AKASHIC_PLUGIN_DATA_DIR": str(runtime.data_dir),
             "AKASHIC_WORKSPACE": str(runtime.workspace),
         })
+        # 固定键在名称层永久保留：宿主继承键与数据根/身份合同键一律
+        # 由本授权钉住，调用方在 env/candidate_env 提供同名键即拒绝
+        # （含宿主未设置时的引入），候选模式忽略 formal 输入不等于默许。
+        conflicts = sorted({
+            key
+            for source in (values, candidate_values)
+            for key in source
+            if key in _RESERVED_ENV_NAMES
+        })
+        if conflicts:
+            raise PermissionError(
+                "执行环境键由宿主固定，调用方不得提供: " + ", ".join(conflicts)
+            )
+        result = dict(candidate_values if self._mode == "candidate" else values)
+        result.update(fixed)
         return result
+
+    def prepare_process(
+        self,
+        command: tuple[str, ...],
+        cwd: str,
+        env: Mapping[str, str],
+        candidate_env: Mapping[str, str] = {},
+    ) -> PreparedProcess:
+        """一次完成 command/cwd/environment 三项校验并签发冻结制品；
+        provider 须先备好端口/endpoint/scope 等运行期材料并入 env 输入。"""
+        return PreparedProcess(
+            self._issue_token,
+            command=self.command(command, cwd),
+            cwd=str(self.cwd(cwd)),
+            env=self.environment(env, candidate_env),
+        )
+
+    async def spawn(
+        self,
+        prepared: PreparedProcess,
+        *,
+        stdin: object = None,
+        stdout: object = None,
+        stderr: object = None,
+        limit: int | None = None,
+    ) -> tuple[ChildProcess, bool]:
+        """只消费本授权签发的 PreparedProcess；取消仍先接住实际回执。"""
+        if type(prepared) is not PreparedProcess or not prepared._issued_by(self._issue_token):
+            raise PermissionError("spawn 只接受本授权签发的 PreparedProcess")
+        return await _spawn_child(
+            prepared.command, cwd=prepared.cwd, env=prepared.env,
+            stdin=stdin, stdout=stdout, stderr=stderr, limit=limit,
+        )
+
+
+async def _spawn_child(
+    command: tuple[str, ...],
+    *,
+    cwd: str | None,
+    env: Mapping[str, str] | None,
+    stdin: object,
+    stdout: object,
+    stderr: object,
+    limit: int | None,
+) -> tuple["HostedChildProcess", bool]:
+    options: dict[str, object] = {
+        "stdin": stdin,
+        "stdout": stdout,
+        "stderr": stderr,
+        "cwd": cwd,
+        # 宿主已 scrub 全部父环境：签发的冻结 env 是唯一环境来源，
+        # 仅 Supervisor 身份标记由 owned_process_env 重新钉住。
+        "env": owned_process_env(
+            dict(env or {}),
+            scrub_keys=frozenset(os.environ),
+        ),
+        **process_group_spawn_kwargs(),
+    }
+    if limit is not None:
+        options["limit"] = limit
+    process, spawn_cancelled = await spawn_process(*command, **options)
+    return HostedChildProcess(OwnedProcessGroup.from_process(process)), spawn_cancelled
+
+
+class HostedChildProcess:
+    """同一授权下的子进程句柄：暴露 stdio，进程组终止走宿主实现。"""
+
+    def __init__(self, group: OwnedProcessGroup) -> None:
+        self._group = group
+        self.process: asyncio.subprocess.Process = group.process
+
+    @property
+    def group_id(self) -> int | None:
+        return self._group.group_id
+
+    async def terminate(self, *, timeout_s: float) -> None:
+        await self._group.terminate(timeout_s=timeout_s)
+
+    async def kill(self, *, timeout_s: float) -> None:
+        await self._group.kill(timeout_s=timeout_s)
 
 
 class ControllerAccess:

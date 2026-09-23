@@ -12,7 +12,6 @@ from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import bind_runtime_snapshot, lease_runtime_snapshot, reset_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.assets.plugin import apply
 from session.log import MessageLog
@@ -100,12 +99,14 @@ async def test_fixed_assets_keep_binding_contributors_and_require_exact_scope(tm
     try:
         await other.load_all()
         await manager.load_all()
-        async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
+        generation = manager.generation("records")
+        assert generation is not None and generation.fiber is not None
+        ctx = generation.fiber.context
+        async with ctx.runtime_scope():
             registry = ctx.require(INSTALLED_ASSETS)
-            asset, = registry()
+            asset, = registry(ctx)
             assert asset.owner_id == "records" and asset.category == "abde"
-            assert asset.root_dir == snapshot.generations["records"].code_dir / "records"
+            assert asset.root_dir == generation.code_dir / "records"
             reference = ctx.require(BINDINGS).bind(INSTALLED_ASSETS, {})
             binding = log.read_binding(reference)
             archive = PluginArchive(tmp_path / "workspace/runtime/plugin-archives", create=False)
@@ -117,20 +118,18 @@ async def test_fixed_assets_keep_binding_contributors_and_require_exact_scope(tm
             assert (asset.root_dir / "raw.bin").read_bytes() == b"\x00\xff"
 
             async def leaked_read():
-                return registry()
+                return registry(ctx)
 
-            with pytest.raises(RuntimeError, match="scope"):
+            with pytest.raises(RuntimeError, match="OwnerCall|授权"):
                 await asyncio.create_task(leaked_read())
-        with pytest.raises(RuntimeError, match="scope"):
-            registry()
-        lease = other.snapshot_store.lease()
-        token = bind_runtime_snapshot(lease)
-        try:
-            with pytest.raises(RuntimeError, match="scope"):
-                registry()
-        finally:
-            reset_runtime_snapshot(token)
-            await lease.release()
+        with pytest.raises(RuntimeError, match="OwnerCall|授权"):
+            registry(ctx)
+        other_generation = other.generation("records")
+        assert other_generation is not None and other_generation.fiber is not None
+        other_ctx = other_generation.fiber.context
+        async with other_ctx.runtime_scope():
+            with pytest.raises(RuntimeError):
+                registry(other_ctx)
     finally:
         await other.terminate_all()
         await manager.terminate_all()

@@ -5,6 +5,7 @@ import ast
 from agent.plugin_composition.ui import UI, DashboardBinding
 
 import asyncio
+import dataclasses
 import importlib
 import os
 import py_compile
@@ -247,6 +248,7 @@ def test_import_boundary_keeps_exact_root_file_without_calling_apply(tmp_path: P
     try:
         owner._import_plugin(module_name, root)
         module = sys.modules[module_name]
+        assert module.__file__ is not None
         assert Path(module.__file__) == root / "plugin.py"
         assert callable(module.apply)
     finally:
@@ -424,20 +426,18 @@ async def test_candidate_failure_is_bound_to_requested_plugin(tmp_path: Path):
     await manager.load_all()
 
     for name in ("first", "second"):
+        original = (root / name / "plugin.py").read_text(encoding="utf-8")
         (root / name / "plugin.py").write_text(
             f"this is not valid python for {name} !!!\n", encoding="utf-8"
         )
-        with pytest.raises(RuntimeError, match=f"插件 {name} 导入失败"):
+        # 身份源码在导入前解析；失败直接传播原错误，不产生伪造的候选记录。
+        with pytest.raises(ValueError, match=f"{name}/plugin.py"):
             await manager.prepare_candidate(name)
+        assert manager.candidate_status(name)["candidate_state"] is None
+        assert manager.generation(name) is not None
+        # 完整选择要求全部插件身份可解析；恢复后再验证下一个。
+        (root / name / "plugin.py").write_text(original, encoding="utf-8")
 
-    first = manager.candidate_status("first")
-    second = manager.candidate_status("second")
-    assert first["candidate_plugin_id"] == "first"
-    assert second["candidate_plugin_id"] == "second"
-    assert first["candidate_reload_tx_id"] != second["candidate_reload_tx_id"]
-    assert first["candidate_state"] == second["candidate_state"] == "aborted"
-    assert "import:" in str(first["candidate_error"])
-    assert "import:" in str(second["candidate_error"])
     await manager.terminate_all()
 
 
@@ -822,8 +822,10 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
 
     discarded = await manager.drop_candidate("installed_snapshot@lab")
     assert discarded["publication_state"] == "discarded"
-    assert read_pointer(plugin_base, "stable") == stable_pointer
-    assert read_pointer(plugin_base, "latest") == stable_pointer
+    # promote/drop 不再写 per-plugin artifact 指针；stable 运行选择由 selection journal 承担。
+    assert manager.generation("installed_snapshot@lab").instance.version == "release-a"  # type: ignore[union-attr]
+    assert manager.current_snapshot is stable_snapshot
+    assert manager.ready_candidate is None
     assert not latest_root.samefile(stable_root)
 
     write_pointers(plugin_base, stable=stable_pointer, latest=latest_pointer)
@@ -831,7 +833,6 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
     promoted = await manager.switch_ready("installed_snapshot@lab")
     assert promoted["publication_state"] == "promoted"
     assert manager.generation("installed_snapshot@lab").instance.version == "release-b"  # type: ignore[union-attr]
-    assert read_pointer(plugin_base, "stable") == latest_pointer
 
     write_pointers(plugin_base, stable=latest_pointer, latest=next_pointer)
     assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
@@ -921,14 +922,14 @@ async def test_workspace_skill_name_does_not_block_plugin_promotion(
     await manager.switch_ready("installed_snapshot@lab")
     assert manager.current_snapshot is not stable_snapshot
     assert manager.generation("installed_snapshot@lab") is not stable_generation
-    assert read_pointer(plugin_base, "stable") == candidate_pointer
+    # 晋升不写 per-plugin artifact 指针；workspace 用户资产不受影响。
     assert personal.is_dir() and not personal.is_symlink()
     assert (personal / "SKILL.md").read_text(encoding="utf-8") == "user body\n"
     await manager.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_rejected_installed_candidate_restores_latest_to_stable(
+async def test_rejected_installed_candidate_keeps_latest_for_explicit_settle(
     tmp_path: Path,
 ) -> None:
     plugin_base, _ = _write_installed_artifact(
@@ -959,9 +960,14 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
     await manager.load_all()
     results = await manager.reconcile_changed()
     assert results[0]["prepared_generation"] is None
+    assert results[0]["preparation_state"] == "failed"
+    assert "candidate rejected" in str(results[0].get("error"))
     assert manager.generation("installed_snapshot@lab").instance.version == "release-a"  # type: ignore[union-attr]
     assert read_pointer(plugin_base, "stable") == stable_pointer
-    assert read_pointer(plugin_base, "latest") == stable_pointer
+    # 初始化失败不再静默回退 latest；登台指针保留，待显式 discard 结算。
+    assert read_pointer(plugin_base, "latest") == latest_pointer
+    # 本次登台没有 armed 更新 owner；失败如实留在结果中而不伪装回退。
+    assert manager.reload_journal.armed_update_for_plugin("installed_snapshot@lab") is None
     await manager.terminate_all()
 
 
@@ -2191,7 +2197,7 @@ def test_dashboard_allows_narrow_route_before_path_catchall() -> None:
     )
     _require_routes_available(binding, [])
 
-    binding.routes = tuple(reversed(binding.routes))
+    binding = dataclasses.replace(binding, routes=tuple(reversed(binding.routes)))
     with pytest.raises(RuntimeError, match="dashboard route 冲突"):
         _require_routes_available(binding, [])
 

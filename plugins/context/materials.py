@@ -77,7 +77,8 @@ class MaterialView:
         summary: Summary | None = None
         references: dict[str, Mapping[str, object]] = {}
         for name, owner in self._sources:
-            material = decode_material(await owner.prepare(snapshot, source))
+            async with owner.context.runtime_scope():
+                material = decode_material(await owner.prepare(snapshot, source))
             self._check_active()
             if material.system_prompt:
                 if not owner.prompt:

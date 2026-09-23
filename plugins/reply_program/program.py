@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.messages import MESSAGE_WRITERS, MessageReader
+from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE, MessageReader
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import ContentPart, Input, Message, Output
@@ -74,7 +74,7 @@ async def run_reply(
             item.message_id for item in snapshot
             if item.message_id in open_ids and isinstance(item.body, Input)
         )
-        menu = ctx.require(TOOL_PROGRAM).create_menu(
+        menu = await ctx.require(TOOL_PROGRAM).create_menu(
             reader, source, content=view.checks,
             check_start=lambda: check_source(task, reader, source, source_head),
             authorize=authorize, view=tool_view, limit=model.max_tool_schemas,
@@ -135,6 +135,7 @@ async def run_reply(
                 materials=build_materials, content=view, tools=menu,
                 max_output_tokens=max_output_tokens, max_steps=max_steps,
                 reduce=reduce, preview=preview, terminal_tools=terminal_tools,
+                state=ctx.require(OWNER_STATE).open_scoped(ctx, "generation"),
             )
         finally:
             output.expire()
