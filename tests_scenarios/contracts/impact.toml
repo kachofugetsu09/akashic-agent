@@ -155,7 +155,6 @@ paths = [
   "agent/plugin*/model*.py",
   "agent/plugin_composition/models.py",
   "agent/plugin_composition/__init__.py",
-  "agent/plugins/snapshot.py",
   "agent/tools/filesystem.py",
   "agent/model_runtime/**",
   "bootstrap/app.py",
@@ -183,6 +182,7 @@ paths = [
   "tests/semantic/test_model_owner_contract.py",
 ]
 deleted_paths = [
+  "agent/plugins/snapshot.py",
   "agent/provider.py",
   "agent/tools/vision.py",
   "bootstrap/providers.py",
