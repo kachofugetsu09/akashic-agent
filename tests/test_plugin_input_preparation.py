@@ -71,11 +71,14 @@ async def test_online_loader_uses_the_same_complete_input(tmp_path: Path) -> Non
     mod = owner.discover()[0]
     prepared = prepare_plugin_input(mod, workspace=workspace, archive=archive)
     descriptor = archive.read_descriptor(prepared.archive_ref)
+    descriptor_code = descriptor["code"]
+    assert isinstance(descriptor_code, str)
+    assert archive.open(descriptor_code) == prepared.code_dir
     descriptor_bytes = (archive.path / f"{prepared.archive_ref}.json").read_bytes()
     config, config_revision = load_config(data_dir)
     assert json.loads(descriptor_bytes) == {
         "version": 4,
-        "code": prepared.code_ref,
+        "code": descriptor_code,
         "python_environments": {},
         "plugin_id": "shared",
         "source_revision": prepared.source_revision,
@@ -129,7 +132,11 @@ def test_prepare_compiles_without_running_or_creating_runtime(
     prepared = prepare_plugin_input(_mod(plugin_dir), workspace=workspace, archive=archive)
 
     assert prepared.plugin_id == "silent"
-    assert archive.read_descriptor(prepared.archive_ref)["code"] == prepared.code_ref
+    descriptor_code = archive.read_descriptor(prepared.archive_ref)["code"]
+    assert isinstance(descriptor_code, str)
+    code_dir = archive.open(descriptor_code)
+    assert code_dir == prepared.code_dir
+    assert {path.name for path in code_dir.iterdir()} == {"plugin.py"}
     assert not any(name.startswith("_akashic_input_") for name in set(sys.modules) - modules_before)
 
 

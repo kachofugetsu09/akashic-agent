@@ -33,7 +33,6 @@ class PreparedPluginInput:
 
     plugin_id: str
     archive_ref: str
-    code_ref: str
     source_revision: str
     config_revision: str
     config: dict[str, object]
@@ -103,7 +102,7 @@ def prepare_plugin_input(
         "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
     })
     return PreparedPluginInput(
-        plugin_id=plugin_id, archive_ref=ref, code_ref=code_ref,
+        plugin_id=plugin_id, archive_ref=ref,
         source_revision=revision, config_revision=config_revision, config=config,
         static_manifest=identity, plugin_dir=plugin_dir, code_dir=code_dir,
         data_dir=data_dir,
