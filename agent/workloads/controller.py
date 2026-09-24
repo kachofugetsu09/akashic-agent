@@ -9,8 +9,11 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
+import stat
 import struct
+import sys
 import tempfile
 from dataclasses import asdict
 from functools import cache
@@ -162,6 +165,8 @@ class WorkloadControllerServer:
             str(self._workspace).encode("utf-8")
         ).hexdigest()[:16]
         self._lock = asyncio.Lock()
+        self._closing = False
+        self._requests: set[asyncio.Task[None]] = set()
         self._leases = self._load_leases()
         self._stopped_path = self._state_path.with_suffix(".stopped.json")
         self._stopped = self._load_state(self._stopped_path)
@@ -177,17 +182,34 @@ class WorkloadControllerServer:
             lock_handle.close()
             raise RuntimeError("已有 Workload Controller 正在运行") from error
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
+        server: asyncio.AbstractServer | None = None
+        listener: socket.socket | None = None
+        owned_socket: os.stat_result | None = None
         try:
-            if self._socket_path.exists():
-                if not self._socket_path.is_socket():
+            try:
+                stale_socket = self._socket_path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if not stat.S_ISSOCK(stale_socket.st_mode):
                     raise RuntimeError(
-                        f"Controller socket path 已被普通文件占用: {self._socket_path}"
+                        f"Controller socket path 已被非 socket 占用: {self._socket_path}"
                     )
                 self._socket_path.unlink()
-            server = await asyncio.start_unix_server(
-                self._handle,
-                path=self._socket_path,
-            )
+            # Python 3.13+ can remove a Unix path on server.close(). Keep
+            # pathname ownership here so foreign replacements survive.
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(str(self._socket_path))
+            owned_socket = self._socket_path.lstat()
+            if sys.version_info >= (3, 13):
+                server = await asyncio.start_unix_server(
+                    self._accept, sock=listener, cleanup_socket=False
+                )
+            else:
+                server = await asyncio.start_unix_server(
+                    self._accept, sock=listener
+                )
+            listener = None
             os.chmod(self._socket_path, 0o660)
             socket_stat = self._socket_path.stat()
             if (socket_stat.st_uid, socket_stat.st_gid) != (
@@ -195,20 +217,71 @@ class WorkloadControllerServer:
                 self._socket_gid,
             ):
                 os.chown(self._socket_path, self._socket_uid, self._socket_gid)
-            async with server:
-                if self._owner_container is None:
-                    await server.serve_forever()
-                else:
-                    async with asyncio.TaskGroup() as tasks:
-                        tasks.create_task(
-                            server.serve_forever(), name="workload-controller-server"
-                        )
-                        tasks.create_task(
-                            self._watch_owner(), name="workload-owner-watch"
-                        )
+            # The listener is already serving. Close it after accepted requests
+            # finish; Server.__aexit__ and serve_forever wait for clients first.
+            stop = asyncio.Event()
+            if self._owner_container is None:
+                _ = await stop.wait()
+            else:
+                async with asyncio.TaskGroup() as tasks:
+                    _ = tasks.create_task(stop.wait(), name="workload-controller-server")
+                    _ = tasks.create_task(
+                        self._watch_owner(), name="workload-owner-watch"
+                    )
         finally:
-            fcntl.flock(lock_handle, fcntl.LOCK_UN)
-            lock_handle.close()
+            try:
+                if server is not None:
+                    self._closing = True
+                    server.close()
+                if listener is not None:
+                    listener.close()
+                requests = tuple(self._requests)
+                for request in requests:
+                    _ = request.cancel()
+                if requests:
+                    results = await asyncio.gather(*requests, return_exceptions=True)
+                else:
+                    results = []
+                if server is not None:
+                    await server.wait_closed()
+                if results:
+                    errors = [
+                        result for result in results
+                        if isinstance(result, BaseException)
+                        and not isinstance(result, asyncio.CancelledError)
+                    ]
+                    if errors:
+                        raise BaseExceptionGroup("Controller request shutdown failed", errors)
+            finally:
+                try:
+                    if owned_socket is not None:
+                        try:
+                            current = self._socket_path.lstat()
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            if (
+                                not stat.S_ISSOCK(current.st_mode)
+                                or (current.st_dev, current.st_ino)
+                                != (owned_socket.st_dev, owned_socket.st_ino)
+                            ):
+                                raise RuntimeError(
+                                    f"Controller socket path 已被替换: {self._socket_path}"
+                                )
+                            self._socket_path.unlink()
+                finally:
+                    fcntl.flock(lock_handle, fcntl.LOCK_UN)
+                    lock_handle.close()
+
+    def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Track accepted requests until shutdown has settled their effects."""
+
+        if self._closing:
+            writer.close()
+            return
+        request = asyncio.create_task(self._handle(reader, writer))
+        self._requests.add(request)
+        request.add_done_callback(self._requests.discard)
 
     async def _watch_owner(self) -> None:
         """Stop owned containers after the deployment owner disappears."""
@@ -273,45 +346,51 @@ class WorkloadControllerServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            self._check_peer(writer)
-            raw = await reader.readline()
-            if not raw or len(raw) > 1_048_576:
-                raise ValueError("Controller 请求为空或过大")
-            message = json.loads(raw)
-            if not isinstance(message, dict) or message.get("version") != 1:
-                raise ValueError("Controller 请求版本无效")
-            action = message.get("action")
-            body = message.get("body")
-            if not isinstance(body, dict):
-                raise ValueError("Controller 请求 body 无效")
-            async with self._lock:
-                if action == "start":
-                    result = await self._start(_start_request(body))
-                elif action == "stop":
-                    if set(body) != {"lease"}:
-                        raise ValueError("Controller stop schema 不匹配")
-                    result = await self._stop(_lease(body.get("lease")))
-                elif action == "cleanup_candidates":
-                    if set(body) != {"workspace_id"}:
-                        raise ValueError("Controller cleanup schema 不匹配")
-                    result = await self._cleanup_candidates(
-                        _required_text(body, "workspace_id")
-                    )
-                else:
-                    raise ValueError(f"Controller action 无效: {action}")
-            response = {"ok": True, "body": result}
-        except Exception as error:
-            message = str(error).strip() or type(error).__name__
-            response = {"ok": False, "error": message[:4096]}
-        writer.write(
-            json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode(
-                "utf-8"
+            try:
+                self._check_peer(writer)
+                raw = await reader.readline()
+                if not raw or len(raw) > 1_048_576:
+                    raise ValueError("Controller 请求为空或过大")
+                message = json.loads(raw)
+                if not isinstance(message, dict) or message.get("version") != 1:
+                    raise ValueError("Controller 请求版本无效")
+                action = message.get("action")
+                body = message.get("body")
+                if not isinstance(body, dict):
+                    raise ValueError("Controller 请求 body 无效")
+                result = await _finish_effect(self._dispatch(action, body))
+                response = {"ok": True, "body": result}
+            except Exception as error:
+                message = str(error).strip() or type(error).__name__
+                response = {"ok": False, "error": message[:4096]}
+            writer.write(
+                json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+                + b"\n"
             )
-            + b"\n"
-        )
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def _dispatch(self, action: object, body: dict[str, object]) -> dict[str, object]:
+        """Keep an accepted effect under the Controller lock through shutdown."""
+
+        async with self._lock:
+            if action == "start":
+                return await self._start(_start_request(body))
+            if action == "stop":
+                if set(body) != {"lease"}:
+                    raise ValueError("Controller stop schema 不匹配")
+                return await self._stop(_lease(body.get("lease")))
+            if action == "cleanup_candidates":
+                if set(body) != {"workspace_id"}:
+                    raise ValueError("Controller cleanup schema 不匹配")
+                return await self._cleanup_candidates(
+                    _required_text(body, "workspace_id")
+                )
+            raise ValueError(f"Controller action 无效: {action}")
 
     def _check_peer(self, writer: asyncio.StreamWriter) -> None:
         sock = writer.get_extra_info("socket")
@@ -1332,7 +1411,27 @@ def main() -> None:
         owner_grace_seconds=args.owner_grace_seconds,
         owner_poll_seconds=args.owner_poll_seconds,
     )
-    asyncio.run(server.serve())
+    asyncio.run(_serve_until_signal(server))
+
+
+async def _serve_until_signal(server: WorkloadControllerServer) -> None:
+    """Turn process SIGTERM into the server's ordinary cancellation path."""
+
+    loop = asyncio.get_running_loop()
+    serving = asyncio.create_task(server.serve())
+
+    def stop() -> None:
+        _ = loop.remove_signal_handler(signal.SIGTERM)
+        _ = serving.cancel()
+
+    loop.add_signal_handler(signal.SIGTERM, stop)
+    try:
+        await serving
+    except asyncio.CancelledError:
+        if not serving.cancelled():
+            raise
+    finally:
+        _ = loop.remove_signal_handler(signal.SIGTERM)
 
 
 if __name__ == "__main__":
