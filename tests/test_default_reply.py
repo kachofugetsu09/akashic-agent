@@ -61,8 +61,9 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
             sources / "delivery_policy",
             ignore=shutil.ignore_patterns("__pycache__"),
         )
-        shutil.copytree(Path(__file__).parents[1] / "plugins/plugin_update", sources / "plugin_update",
-                        ignore=shutil.ignore_patterns("__pycache__"))
+        for name in ("assets", "plugin_update"):
+            shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
+                            ignore=shutil.ignore_patterns("__pycache__"))
     if compaction:
         shutil.copytree(Path(__file__).parents[1] / "plugins/compaction", sources / "compaction",
                         ignore=shutil.ignore_patterns("__pycache__"))

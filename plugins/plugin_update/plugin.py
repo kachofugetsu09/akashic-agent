@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
@@ -24,6 +25,7 @@ name = "plugin_update"
 version = "1.0.0"
 desc = "安装插件并在 selection accepted 或 active/failed 后用原渠道报告结果"
 inject = (
+    INSTALLED_ASSETS,
     CONTENT,
     INPUT_ORIGIN,
     PLUGIN_UPDATES,
@@ -45,6 +47,7 @@ def result_message_id(identity: str, status: UpdateStatus) -> str:
 
 async def apply(ctx: Context) -> None:
     """Register install and report durable runtime outcomes."""
+    _ = await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     watcher: asyncio.Task[None] | None = None
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
