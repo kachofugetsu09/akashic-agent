@@ -23,7 +23,7 @@ from session.message import CallRef, Control, Input, Output, ToolCall, ToolResul
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
                   reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset(),
-                  state_owner=None, model_max_attempts=1):
+                  state_owner=None, model_max_attempts=1, parallel_ids=frozenset(), max_parallel_calls=1):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
@@ -93,11 +93,14 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             assert binding_id == "tool"
             return "example"
 
-        async def execute(self, call: CallRef) -> Result:
+        def parallel(self, binding_id: str) -> bool:
+            return binding_id in parallel_ids
+
+        async def execute(self, call: CallRef, *, commit_after=None) -> Result:
             return await execution.execute_call(MessageReply(
                 "result:" + call.message_id + ":" + str(call.part_index), call,
                 log.reader("s"), writer(ToolResult, call), self.check_start,
-            ))
+            ), commit_after=commit_after)
 
         async def settle_abandoned(self, call: CallRef) -> Result:
             reply = MessageReply(
@@ -136,7 +139,8 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             return await react(reader, output, model=model, context=ContextBuilder(),
                                projection=projection, materials=materials, content=Content(), tools=Menu(task),
                                max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools,
-                               state=None if state_owner is None else log.owner(state_owner))
+                               state=None if state_owner is None else log.owner(state_owner),
+                               max_parallel_calls=max_parallel_calls)
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
     @asynccontextmanager

@@ -148,4 +148,5 @@ async def register_file(
         risk=(
             "read-only" if backend_type in (ReadFileTool, ListDirTool) else "read-write"
         ),
+        parallel=backend_type in (ReadFileTool, ListDirTool),
     ))

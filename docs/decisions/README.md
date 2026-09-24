@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0076](0076-parallel-tool-calls-commit-in-model-order.md) | accepted | 并行工具调用重叠执行，按模型顺序提交 | PRM-004、SES-003～SES-005、RUN-003、STA-001 |
 | [0073](0073-session-scope-routes-akasha-graphs.md) | accepted / implemented（首版） | Session scope 宽键路由 Akasha 物化图 | SES-010、MEM-009、MEM-013、CTRL-003 |
 | [0075](0075-host-bridge-runtime-recovery.md) | accepted | Host Bridge 运行期按故障范围恢复 | RUN-013、RUN-015、SH-001～SH-003、ERR-001 |
 | [0074](0074-deployment-policy-belongs-to-operator.md) | accepted | 部署者选择备份、插件映射与迁移 | MIG-001、MIG-002、BAK-001、PLG-013、WSP-003 |
