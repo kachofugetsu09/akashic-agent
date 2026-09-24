@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 import secrets
 import shlex
 import shutil
@@ -16,6 +18,91 @@ from scripts.akashic_release.model import ReleasePaths
 from scripts.akashic_release.systemd import start_bridge, start_core, stop_runtime
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
+_ROOT_REF = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _stopped_upgrade(
+    *, paths: ReleasePaths, candidate: Mapping[str, str], manifest: Mapping[str, object],
+    backup_dir: Path, previous_commit: str, run: Run,
+) -> dict[str, object]:
+    """Run the target image's own upgrade code against stopped state."""
+
+    stable = read_json(paths.state / "workspace/runtime/plugin-stable.json")
+    root_ref = stable.get("root_ref")
+    if stable.get("version") != 1 or not isinstance(root_ref, str) or _ROOT_REF.fullmatch(root_ref) is None:
+        raise RuntimeError("release upgrade 需要已有完整 stable Root")
+    command = [
+        "docker", "run", "--rm", "--network", "none", "--read-only",
+        "--tmpfs", "/tmp:rw,mode=1777",
+        "--mount", f"type=bind,src={paths.state},dst={paths.state}",
+        "--mount", f"type=bind,src={paths.backups},dst={paths.backups}",
+        "--env", f"AKASHIC_CONFIG={candidate['AKASHIC_CONFIG']}",
+        "--env", f"AKASHIC_WORKSPACE={candidate['AKASHIC_WORKSPACE']}",
+        "--env", f"AKASHIC_PLUGIN_HOME={candidate['AKASHIC_PLUGIN_HOME']}",
+        "--env", f"AKASHIC_RUNTIME_COMMIT={candidate['AKASHIC_RUNTIME_COMMIT']}",
+        "--env", f"AKASHIC_RUNTIME_TREE={candidate['AKASHIC_RUNTIME_TREE']}",
+        str(manifest["imageId"]), "upgrade-bundled",
+        "--expected-root-ref", root_ref, "--backup-dir", str(backup_dir),
+        "--previous-source-commit", previous_commit,
+    ]
+    result = run(command, check=True, capture_output=True, text=True)
+    try:
+        receipt = json.loads(result.stdout)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("目标 image 未返回 upgrade JSON") from error
+    if not isinstance(receipt, dict) or receipt.get("status") not in {
+        "selected_not_started", "partial_selected_not_started",
+        "already_selected_not_started", "no_eligible_targets",
+    }:
+        raise RuntimeError(f"目标 image upgrade 结果无效: {receipt}")
+    selected = receipt.get("new_root_ref")
+    if (receipt.get("old_root_ref") != root_ref or not isinstance(selected, str)
+        or _ROOT_REF.fullmatch(selected) is None
+        or receipt.get("backup_dir") != str(backup_dir)
+        or not (backup_dir / "manifest.json").is_file()):
+        raise RuntimeError("目标 image upgrade 缺少完整 Root 或已校验恢复点")
+    return receipt
+
+
+def _verify_selected_runtime(
+    *, candidate: Mapping[str, str], root_ref: str, run: Run,
+) -> dict[str, object]:
+    """Read the live runtime's exact selected Fiber identities after health."""
+
+    result = run([
+        "docker", "exec", candidate["AKASHIC_CONTAINER_NAME"],
+        "/opt/venv/bin/python", "/opt/akashic/source/main.py", "plugin-status",
+        "--config", candidate["AKASHIC_CONFIG"],
+        "--workspace", candidate["AKASHIC_WORKSPACE"],
+    ], check=True, capture_output=True, text=True)
+    status = json.loads(result.stdout)
+    if not isinstance(status, dict) or status.get("selection_ref") != root_ref:
+        raise RuntimeError("live runtime selection 与已迁移的完整 Root 不一致")
+    plugins = status.get("plugins")
+    components = status.get("selection_components")
+    if (not isinstance(plugins, list) or not isinstance(components, list)
+        or any(not isinstance(ref, str) for ref in components)
+        or len(set(components)) != len(components)):
+        raise RuntimeError("live runtime 未报告 plugin owner 状态")
+    active_refs: list[str] = []
+    for item in plugins:
+        if not isinstance(item, dict):
+            raise RuntimeError("live runtime plugin 状态无效")
+        selected = item.get("selected_ref")
+        if selected is not None and not isinstance(selected, str):
+            raise RuntimeError("live runtime selected_ref 格式无效")
+        if selected is not None and (
+            item.get("archive_ref") != selected or item.get("state") != "active"
+            or item.get("fiber_state") != "active"
+        ):
+            raise RuntimeError(f"selected plugin 尚未 ACTIVE: {item.get('plugin_id')}")
+        if isinstance(selected, str):
+            active_refs.append(selected)
+    if len(active_refs) != len(components) or set(active_refs) != set(components):
+        raise RuntimeError("live runtime 未加载完整 selection components")
+    return {"selection_ref": root_ref,
+            "active_selected": len(active_refs),
+            "optional_health": "unverified"}
 
 
 def docker_socket_gid() -> int:
@@ -211,8 +298,9 @@ def activate_release(
     environment_file: Path,
     mise: Path,
     run: Run,
+    upgrade: bool = False,
 ) -> str:
-    """Activate one prepared generation and restore the previous env on failure."""
+    """Activate one prepared generation; retain stopped state after data upgrade failure."""
 
     manifest = read_json(manifest_path)
     target = str(manifest["sourceCommit"])
@@ -241,13 +329,54 @@ def activate_release(
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(environment_file, backup)
     stop_runtime(run=run)
+    upgrade_result: dict[str, object] | None = None
+    if upgrade and previous is not None:
+        backup_dir = paths.backups / f"upgrade-{target}-{timestamp}-{os.getpid()}"
+        try:
+            upgrade_result = _stopped_upgrade(
+                paths=paths, candidate=candidate, manifest=manifest,
+                backup_dir=backup_dir, previous_commit=str(previous), run=run,
+            )
+        except BaseException as error:
+            failed = activation_receipt(
+                status="maintenance_required", target_commit=target,
+                previous_commit=str(previous), detail=str(error),
+            )
+            failed["backupDir"] = str(backup_dir)
+            failed["dataCompatibility"] = "unproved"
+            write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
+            raise RuntimeError("发行升级失败；旧 runtime 保持停止，先核对数据与恢复点") from error
     atomic_write(environment_file, render_environment(candidate))
     try:
         start_bridge(run=run)
         start_core(run=run)
         verify_release(environment_file)
+        live_result = None
+        if upgrade_result is not None:
+            live_result = _verify_selected_runtime(
+                candidate=candidate, root_ref=str(upgrade_result["new_root_ref"]), run=run,
+            )
     except BaseException as error:
-        stop_runtime(run=run)
+        maintenance_stop_detail = None
+        try:
+            stop_runtime(run=run)
+        except BaseException as stop_error:
+            maintenance_stop_detail = str(stop_error)
+        if upgrade_result is not None:
+            failed = activation_receipt(
+                status="maintenance_required", target_commit=target,
+                previous_commit=str(previous), detail=str(error),
+            )
+            failed["upgrade"] = upgrade_result
+            failed["dataCompatibility"] = "unproved"
+            if maintenance_stop_detail is not None:
+                failed["maintenanceStopDetail"] = maintenance_stop_detail
+            write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
+            if maintenance_stop_detail is not None:
+                raise RuntimeError("候选可用性失败且停机未确认；禁止启动旧 runtime") from error
+            raise RuntimeError("候选启动或可用性核对失败；旧 runtime 保持停止") from error
+        if maintenance_stop_detail is not None:
+            raise RuntimeError("首次激活失败且停机未确认") from error
         if previous is None or not backup.exists():
             receipt = activation_receipt(
                 status="failed",
@@ -277,6 +406,9 @@ def activate_release(
         target_commit=target,
         previous_commit=None if previous is None else str(previous),
     )
+    if upgrade_result is not None:
+        receipt["upgrade"] = upgrade_result
+        receipt["runtimeCheck"] = live_result
     write_json(paths.activation / "active.json", receipt)
     if previous is not None:
         write_json(paths.activation / "previous.json", {"targetCommit": previous})

@@ -23,8 +23,9 @@ from agent.migrations.bundles import (
     validate_bundle_dependencies,
     validate_pending_requirements,
 )
+from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.manifest import plugins_root, workspace_plugin_data_dir
-from bootstrap.workspace_lock import WorkspaceInstanceLock
+from bootstrap.workspace_lock import WorkspaceInstanceLock, WorkspaceMaintenanceLock
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +50,7 @@ class MigrationRunner:
         plugin_dirs: Sequence[Path] = (),
         installed_cache_root: Path | None = None,
         migration_catalog: Path | None = None,
+        fixed_sources: Sequence[ResolvedPluginSource] | None = None,
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.config_path = config_path.expanduser().resolve()
@@ -61,6 +63,7 @@ class MigrationRunner:
         # 保留路径上的 symlink 形状，让 source resolver 能够拒绝它，而不是
         # 先 resolve 后把越界路径伪装成普通 cache 根。
         self.plugin_dirs = tuple(path.expanduser() for path in plugin_dirs)
+        self.fixed_sources = None if fixed_sources is None else tuple(fixed_sources)
         self.installed_cache_root = (
             (installed_cache_root or (plugins_root() / "cache"))
             .expanduser()
@@ -82,7 +85,18 @@ class MigrationRunner:
         finally:
             workspace_lock.release()
 
-    def _apply_pending(self) -> MigrationOutcome:
+    def run_under_maintenance(
+        self, maintenance: WorkspaceMaintenanceLock, *, core_only: bool = False,
+    ) -> MigrationOutcome:
+        """Apply migrations while the release owns the workspace maintenance lock."""
+
+        if (maintenance.paths != (
+            self.workspace / ".supervisor.lock", self.workspace / ".instance.lock",
+        ) or len(maintenance._streams) != 2):
+            raise RuntimeError("release migration 缺少当前 workspace maintenance owner")
+        return self._apply_pending(core_only=core_only)
+
+    def _apply_pending(self, *, core_only: bool = False) -> MigrationOutcome:
         """加载不可变目录并提交全部缺失迁移。"""
 
         # 1. 初始化由 workspace 持有的迁移账本
@@ -94,6 +108,7 @@ class MigrationRunner:
             bundles = discover_migration_bundles(
                 plugin_dirs=self.plugin_dirs,
                 installed_cache_root=self.installed_cache_root,
+                fixed_sources=self.fixed_sources,
             )
             requirements = load_migration_requirements(self.migration_catalog)
             applied_ids = _read_applied_ids(self.ledger_path)
@@ -149,7 +164,8 @@ class MigrationRunner:
                     str(self.migrations_root), bundles
                 )
                 selected = type(migrations)(
-                    (item for item in migrations if item.id not in (baseline or ())),
+                    (item for item in migrations if item.id not in (baseline or ())
+                     and (not core_only or item.id in core_ids)),
                     migrations.post_apply,
                 )
                 pending = backend.to_apply(selected)

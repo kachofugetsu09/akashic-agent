@@ -95,6 +95,7 @@ def install(args: argparse.Namespace) -> dict[str, object]:
                 environment_file=args.runtime_env,
                 mise=args.mise,
                 run=_run,
+                upgrade=True,
             )
     return {
         "status": status,
@@ -112,10 +113,18 @@ def doctor(args: argparse.Namespace) -> dict[str, object]:
 
 def rollback(args: argparse.Namespace) -> dict[str, object]:
     paths = ReleasePaths(args.root.resolve(strict=True))
+    active = read_json(paths.activation / "active.json")
+    if "upgrade" in active:
+        raise RuntimeError("当前 release 含数据/selection 升级；旧 image 不得自动读取新状态，需先显式恢复备份")
     previous_path = paths.activation / "previous.json"
     previous = str(read_json(previous_path)["targetCommit"])
     _confirm(previous, "previous prepared generation", None, yes=args.yes)
     with release_lock(paths.run / "release.lock"):
+        for failed_path in sorted(paths.activation.glob("failed-*.json")):
+            if read_json(failed_path).get("status") == "maintenance_required":
+                raise RuntimeError(
+                    f"发行升级仍有待结算的停机恢复记录: {failed_path}；禁止自动旧版 rollback"
+                )
         status = activate_release(
             paths=paths,
             manifest_path=paths.release(previous),

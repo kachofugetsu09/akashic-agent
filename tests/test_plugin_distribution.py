@@ -1,5 +1,6 @@
 """发布制品只能含选定宿主路径与各插件自己的源码。"""
 import io
+import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -10,6 +11,7 @@ import tarfile
 from typing import Any
 
 import pytest
+import toml
 import yaml
 
 from agent.plugin_composition import FiberState, ServiceKey
@@ -45,8 +47,11 @@ from scripts.install_plugin_distribution import (
     install_profile,
     verify_distribution,
     adopt_bundled_distribution,
+    upgrade_bundled_distribution,
     main as distribution_main,
 )
+import scripts.install_plugin_distribution as distribution_installer
+from agent.plugins.manifest import workspace_plugin_data_dir
 from scripts.rollback_plugin_install import rollback_plugin_install
 
 
@@ -685,7 +690,8 @@ def _offline_case(tmp_path: Path) -> dict[str, Any]:
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
     case: dict[str, Any] = {"source": source, "workspace": tmp_path / "workspace", "home": tmp_path / "home",
             "config": config, "receipt": tmp_path / "workspace/runtime/distribution-install.json"}
-    first, _ = _offline_release(case, "1")
+    first, first_report = _offline_release(case, "1")
+    case["release_commit"] = first_report["source_commit"]
     installed = install_profile(first, first / "profiles/default.json", workspace=case["workspace"],
                                 plugins_home=case["home"], config_path=config)
     _write_receipt(case["receipt"], installed)
@@ -711,7 +717,10 @@ def _offline_release(case: dict[str, Any], version: str) -> tuple[Path, dict[str
     for name in ("peer", "target"):
         content = (
             "api_version = 3\n" + f"name = {name!r}\nversion = {version!r}\n"
-            "async def apply(ctx):\n    return None\n"
+            "async def apply(ctx):\n"
+            + ("    assert ctx.config['mode'] == 'v2'\n"
+               if case.get("assert_target_config") and name == "target" and version == "2"
+               else "    return None\n")
         )
         compile(content, f"{name}/plugin.py", "exec")
         (source / "plugins" / name / "plugin.py").write_text(content)
@@ -723,6 +732,295 @@ def _offline_release(case: dict[str, Any], version: str) -> tuple[Path, dict[str
     ], check=True, capture_output=True)
     output = source.parent / f"distribution-{version}"
     return output, build(source, "HEAD", output)
+
+
+def _add_target_data_migration(source: Path, *, fail_once: bool = False) -> None:
+    """Make B carry a real plugin-owned Yoyo data and config change."""
+
+    plugin = source / "plugins/target"
+    migrations = plugin / "target_migrations"
+    migrations.mkdir()
+    (migrations / "__init__.py").write_text("\n")
+    step = migrations / "target_data_v2.py"
+    step.write_text(
+        "from yoyo import step\n"
+        "from agent.migrations.context import current_migration_context\n"
+        "import json\n"
+        "__depends__ = set()\n"
+        "__transactional__ = False\n"
+        "def apply(connection):\n"
+        "    data = current_migration_context().bundle_data_roots['target_upgrade']\n"
+        + ("    marker = current_migration_context().workspace / 'migration-attempted'\n"
+           "    if not marker.exists():\n"
+           "        marker.write_text('attempted')\n"
+           "        raise RuntimeError('injected migration failure')\n"
+           if fail_once else "")
+        +
+        "    (data / 'data.txt').write_text('v2')\n"
+        "    config = data / 'config.input.json'\n"
+        "    value = json.loads(config.read_text())\n"
+        "    assert value['config'][1]['mode'] == 'v1'\n"
+        "    value['config'][1]['mode'] = 'v2'\n"
+        "    config.write_text(json.dumps(value))\n"
+        "steps = [step(apply)]\n"
+    )
+    files = [
+        {"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        for path in (migrations / "__init__.py", step)
+    ]
+    (plugin / "migration.catalog.toml").write_text(toml.dumps({
+        "schema_version": 1, "bundle_id": "target_upgrade", "version": "2",
+        "migration_root": "target_migrations", "package_name": "target_migrations",
+        "files": files,
+        "migrations": [{"id": "target_data_v2", "path": step.name,
+                        "depends": [], "transactional": False,
+                        "sha256": hashlib.sha256(step.read_bytes()).hexdigest()}],
+    }))
+
+
+@pytest.mark.asyncio
+async def test_release_upgrade_migrates_before_freezing_target_input(tmp_path, monkeypatch):
+    """The target artifact must first see B data/config and then own the new Root."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    case = _offline_case(state)
+    data = workspace_plugin_data_dir(case["workspace"], "target", "release")
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "data.txt").write_text("v1")
+    save_config(data, {"mode": "v1"})
+    _add_target_data_migration(case["source"])
+    case["assert_target_config"] = True
+    release_b, report_b = _offline_release(case, "2")
+    repo = tmp_path / "migration-host"
+    (repo / "migrations/core").mkdir(parents=True)
+    (repo / "migrations/catalog.toml").write_text("schema_version = 1\nmigrations = []\n")
+    monkeypatch.setattr(distribution_installer, "_SOURCE_ROOT", repo)
+    backup = tmp_path / "recovery"
+
+    result = upgrade_bundled_distribution(
+        distribution=release_b, profile=release_b / "profiles/default.json",
+        workspace=case["workspace"], plugins_home=case["home"],
+        config_path=case["config"], receipt_path=case["receipt"],
+        backup_dir=backup, expected_root_ref=case["root"],
+        previous_source_commit=case["release_commit"],
+    )
+
+    assert result["migration_ids"] == ["target_data_v2"]
+    assert result["new_root_ref"] != case["root"]
+    assert (data / "data.txt").read_text() == "v2"
+    assert load_config(data)[0] == {"mode": "v2"}
+    assert (backup / "state/workspace" / data.relative_to(case["workspace"]) / "data.txt").read_text() == "v1"
+    assert PluginSelection(case["workspace"]).read() == result["new_root_ref"]
+    assert (backup / "manifest.json").is_file()
+    owner = PluginManager([], event_bus=EventBus(), workspace=case["workspace"],
+                          installed_cache_root=case["home"] / "cache")
+    try:
+        await owner.load_all()
+        target = owner.generation("target@release")
+        assert target is not None and target.fiber is not None
+        assert target.fiber.state is FiberState.ACTIVE
+        assert target.instance.version == "2"
+        assert owner.plugin_status()["selection_ref"] == result["new_root_ref"]
+    finally:
+        await owner.terminate_all()
+    repeat = upgrade_bundled_distribution(
+        distribution=release_b, profile=release_b / "profiles/default.json",
+        workspace=case["workspace"], plugins_home=case["home"],
+        config_path=case["config"], receipt_path=case["receipt"],
+        backup_dir=tmp_path / "repeat-recovery", expected_root_ref=result["new_root_ref"],
+        previous_source_commit=str(report_b["source_commit"]),
+    )
+    assert repeat["migration_ids"] == []
+    assert repeat["new_root_ref"] == result["new_root_ref"]
+
+
+def test_release_upgrade_failed_migration_keeps_old_selection_and_retries(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    case = _offline_case(state)
+    data = workspace_plugin_data_dir(case["workspace"], "target", "release")
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "data.txt").write_text("v1")
+    save_config(data, {"mode": "v1"})
+    _add_target_data_migration(case["source"], fail_once=True)
+    release_b, _ = _offline_release(case, "2")
+    repo = tmp_path / "migration-host"
+    (repo / "migrations/core").mkdir(parents=True)
+    (repo / "migrations/catalog.toml").write_text("schema_version = 1\nmigrations = []\n")
+    monkeypatch.setattr(distribution_installer, "_SOURCE_ROOT", repo)
+    args: dict[str, Any] = dict(distribution=release_b, profile=release_b / "profiles/default.json",
+                workspace=case["workspace"], plugins_home=case["home"],
+                config_path=case["config"], receipt_path=case["receipt"],
+                expected_root_ref=case["root"],
+                previous_source_commit=case["release_commit"])
+
+    with pytest.raises(RuntimeError, match="injected migration failure"):
+        upgrade_bundled_distribution(**args, backup_dir=tmp_path / "failed-recovery")
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    assert (data / "data.txt").read_text() == "v1"
+    assert (tmp_path / "failed-recovery/manifest.json").is_file()
+    assert (tmp_path / "failed-recovery/state/workspace" / data.relative_to(case["workspace"]) / "data.txt").read_text() == "v1"
+
+    retried = upgrade_bundled_distribution(**args, backup_dir=tmp_path / "retry-recovery")
+    assert retried["migration_ids"] == ["target_data_v2"]
+    assert PluginSelection(case["workspace"]).read() == retried["new_root_ref"]
+
+
+def test_release_upgrade_preparation_failure_keeps_migrated_data_and_old_root(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    case = _offline_case(state)
+    data = workspace_plugin_data_dir(case["workspace"], "target", "release")
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "data.txt").write_text("v1")
+    save_config(data, {"mode": "v1"})
+    _add_target_data_migration(case["source"])
+    release_b, _ = _offline_release(case, "2")
+    repo = tmp_path / "migration-host"
+    (repo / "migrations/core").mkdir(parents=True)
+    (repo / "migrations/catalog.toml").write_text("schema_version = 1\nmigrations = []\n")
+    monkeypatch.setattr(distribution_installer, "_SOURCE_ROOT", repo)
+    original = distribution_installer.prepare_plugin_input
+
+    def fail_target(mod, *, workspace, archive):
+        if mod["name"] == "target":
+            raise SyntaxError("injected prepare failure")
+        return original(mod, workspace=workspace, archive=archive)
+
+    monkeypatch.setattr(distribution_installer, "prepare_plugin_input", fail_target)
+    args: dict[str, Any] = dict(distribution=release_b, profile=release_b / "profiles/default.json",
+                workspace=case["workspace"], plugins_home=case["home"],
+                config_path=case["config"], receipt_path=case["receipt"],
+                expected_root_ref=case["root"],
+                previous_source_commit=case["release_commit"])
+    with pytest.raises(SyntaxError, match="injected prepare failure"):
+        upgrade_bundled_distribution(**args, backup_dir=tmp_path / "failed-recovery")
+    assert (data / "data.txt").read_text() == "v2"
+    assert load_config(data)[0] == {"mode": "v2"}
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    assert (tmp_path / "failed-recovery/state/workspace" / data.relative_to(case["workspace"]) / "data.txt").read_text() == "v1"
+    monkeypatch.setattr(distribution_installer, "prepare_plugin_input", original)
+    retried = upgrade_bundled_distribution(**args, backup_dir=tmp_path / "retry-recovery")
+    assert retried["migration_ids"] == []
+    assert PluginSelection(case["workspace"]).read() == retried["new_root_ref"]
+
+
+def test_release_upgrade_public_cli_runs_real_migration_and_selection(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    case = _offline_case(state)
+    data = workspace_plugin_data_dir(case["workspace"], "target", "release")
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "data.txt").write_text("v1")
+    save_config(data, {"mode": "v1"})
+    _add_target_data_migration(case["source"])
+    release_b, _ = _offline_release(case, "2")
+    repo = tmp_path / "migration-host"
+    (repo / "migrations/core").mkdir(parents=True)
+    (repo / "migrations/catalog.toml").write_text("schema_version = 1\nmigrations = []\n")
+    command = [sys.executable, "-B", "-c",
+               "import sys; from pathlib import Path; import scripts.install_plugin_distribution as m; "
+               "m._SOURCE_ROOT = Path(sys.argv[1]); sys.argv = ['install_plugin_distribution.py', *sys.argv[2:]]; m.main()",
+               str(repo), "--distribution", str(release_b),
+               "--profile", str(release_b / "profiles/default.json"),
+               "--workspace", str(case["workspace"]),
+               "--plugins-home", str(case["home"]),
+               "--config", str(case["config"]), "--receipt", str(case["receipt"]),
+               "--upgrade-bundled", "--expected-root-ref", case["root"],
+               "--previous-source-commit", case["release_commit"],
+               "--backup-dir", str(tmp_path / "cli-recovery")]
+    result = subprocess.run(command, cwd=Path(__file__).parents[1],
+                            check=True, capture_output=True, text=True)
+    receipt = json.loads(result.stdout)
+    assert receipt["migration_ids"] == ["target_data_v2"]
+    assert receipt["new_root_ref"] == PluginSelection(case["workspace"]).read()
+    assert load_config(data)[0] == {"mode": "v2"}
+    assert (tmp_path / "cli-recovery/manifest.json").is_file()
+
+
+def test_release_upgrade_selection_conflict_after_migration_stays_recoverable(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    case = _offline_case(state)
+    data = workspace_plugin_data_dir(case["workspace"], "target", "release")
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "data.txt").write_text("v1")
+    save_config(data, {"mode": "v1"})
+    _add_target_data_migration(case["source"])
+    release_b, _ = _offline_release(case, "2")
+    repo = tmp_path / "migration-host"
+    (repo / "migrations/core").mkdir(parents=True)
+    (repo / "migrations/catalog.toml").write_text("schema_version = 1\nmigrations = []\n")
+    monkeypatch.setattr(distribution_installer, "_SOURCE_ROOT", repo)
+    original = PluginSelection.commit
+
+    def conflict(self, components, *, expected_ref):
+        raise SelectionConflictError("injected CAS conflict")
+
+    monkeypatch.setattr(PluginSelection, "commit", conflict)
+    args: dict[str, Any] = dict(distribution=release_b, profile=release_b / "profiles/default.json",
+                                workspace=case["workspace"], plugins_home=case["home"],
+                                config_path=case["config"], receipt_path=case["receipt"],
+                                expected_root_ref=case["root"],
+                                previous_source_commit=case["release_commit"])
+    with pytest.raises(SelectionConflictError, match="injected CAS conflict"):
+        upgrade_bundled_distribution(**args, backup_dir=tmp_path / "failed-recovery")
+    assert (data / "data.txt").read_text() == "v2"
+    assert PluginSelection(case["workspace"]).read() == case["root"]
+    assert (tmp_path / "failed-recovery/manifest.json").is_file()
+    monkeypatch.setattr(PluginSelection, "commit", original)
+    retried = upgrade_bundled_distribution(**args, backup_dir=tmp_path / "retry-recovery")
+    assert retried["migration_ids"] == []
+    assert PluginSelection(case["workspace"]).read() == retried["new_root_ref"]
+
+
+def test_release_upgrade_retains_same_path_external_override(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    case = _offline_case(state)
+    external = tmp_path / "external-target"
+    external.mkdir()
+    (external / "plugin.py").write_text(
+        "api_version = 3\nname = 'target'\nversion = 'external'\n"
+        "async def apply(ctx):\n    return None\n")
+    (external / ".akashic-source.json").write_text(json.dumps({
+        "commit": "f" * 40, "path": "plugins/target",
+    }))
+    subprocess.run(["git", "init", str(external)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(external), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(external), "-c", "user.name=Test",
+                    "-c", "user.email=test@example.invalid", "-c", "commit.gpgSign=false",
+                    "-c", "core.hooksPath=/dev/null", "commit", "-m", "external"],
+                   check=True, capture_output=True)
+    installed = install_git_plugin(workspace=case["workspace"], plugins_home=case["home"],
+                                   source=str(external), marketplace="release")
+    identity = load_static_plugin_manifest(installed.installed_path)
+    prepared = prepare_plugin_input({
+        "name": "target", "marketplace": "release", "plugin_root": str(installed.installed_path),
+        "module_path": str(installed.installed_path / "plugin.py"),
+        "manifest_digest": identity.identity_digest, "source_type": "installed",
+    }, workspace=case["workspace"], archive=PluginArchive(case["workspace"] / "runtime/plugin-archives"))
+    selection = PluginSelection(case["workspace"])
+    external_root = selection.commit(tuple(
+        prepared.archive_ref if selection.archive.read_descriptor(ref)["plugin_id"] == "target@release" else ref
+        for ref in _selection_refs(selection, case["root"])
+    ), expected_ref=case["root"])
+    release_b, _ = _offline_release(case, "2")
+    repo = tmp_path / "migration-host"
+    (repo / "migrations/core").mkdir(parents=True)
+    (repo / "migrations/catalog.toml").write_text("schema_version = 1\nmigrations = []\n")
+    monkeypatch.setattr(distribution_installer, "_SOURCE_ROOT", repo)
+    upgraded = upgrade_bundled_distribution(
+        distribution=release_b, profile=release_b / "profiles/default.json",
+        workspace=case["workspace"], plugins_home=case["home"],
+        config_path=case["config"], receipt_path=case["receipt"],
+        backup_dir=tmp_path / "recovery", expected_root_ref=external_root,
+        previous_source_commit=case["release_commit"],
+    )
+    assert upgraded["status"] == "partial_selected_not_started"
+    assert upgraded["adoption"]["skipped_external"] == ["target@release"]
+    assert prepared.archive_ref in _selection_refs(selection, upgraded["new_root_ref"])
 
 
 def _adopt(case: dict[str, Any], distribution: Path, expected: str, suffix: str) -> dict[str, Any]:

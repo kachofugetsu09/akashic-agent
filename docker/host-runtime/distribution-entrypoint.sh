@@ -40,6 +40,18 @@ if [[ "${1:-}" == "adopt-bundled" ]]; then
         --adopt-bundled "$@"
 fi
 
+if [[ "${1:-}" == "upgrade-bundled" ]]; then
+    shift
+    exec /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
+        --distribution /opt/akashic/distribution \
+        --profile /opt/akashic/distribution/profiles/default.json \
+        --workspace "$WORKSPACE" \
+        --plugins-home "$PLUGIN_HOME" \
+        --config "$CONFIG" \
+        --receipt "$WORKSPACE/runtime/distribution-install.json" \
+        --upgrade-bundled "$@"
+fi
+
 mkdir -p "$WORKSPACE" "$PLUGIN_HOME"
 
 /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \

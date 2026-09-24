@@ -24,6 +24,9 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.install import install_git_plugin
+from agent.migrations.release_backup import backup_release_state
+from agent.migrations.runner import MigrationRunner
+from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugin_composition.archive import encode_tree, sync_directory, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
@@ -787,20 +790,30 @@ def _backup_adoption(
 def adopt_bundled_distribution(
     *, distribution: Path, profile: Path, workspace: Path, plugins_home: Path,
     config_path: Path, receipt_path: Path, backup_dir: Path, expected_root_ref: str,
+    held_locks: tuple[WorkspaceMaintenanceLock, PluginPublicationLock] | None = None,
+    previous_source_commit: str | None = None,
 ) -> dict[str, Any]:
     """Select exact bundled inputs while the runtime is stopped."""
     if _SHA256.fullmatch(expected_root_ref) is None:
         raise ValueError("expected_root_ref 必须是完整 SHA-256")
+    if previous_source_commit is not None and _REVISION.fullmatch(previous_source_commit) is None:
+        raise ValueError("previous_source_commit 必须是完整 Git commit")
     _plain(workspace, directory=True)
     _plain(plugins_home, directory=True)
     workspace, plugins_home = workspace.resolve(), plugins_home.resolve()
     _plain(config_path)
     _plain(receipt_path)
-    maintenance = WorkspaceMaintenanceLock(workspace)
-    maintenance.acquire()
+    maintenance = WorkspaceMaintenanceLock(workspace) if held_locks is None else held_locks[0]
+    if held_locks is None:
+        maintenance.acquire()
+    elif maintenance.paths != (workspace / ".supervisor.lock", workspace / ".instance.lock") or len(maintenance._streams) != 2:
+        raise RuntimeError("bundle adoption 缺少 workspace maintenance owner")
     try:
-        publication = PluginPublicationLock(plugins_home)
-        publication.acquire()
+        publication = PluginPublicationLock(plugins_home) if held_locks is None else held_locks[1]
+        if held_locks is None:
+            publication.acquire()
+        elif publication.path != plugins_home / ".publication.lock" or publication._stream is None:
+            raise RuntimeError("bundle adoption 缺少 plugin publication owner")
         try:
             # 1. Fix the supplied bundle and inspect all formal current facts.
             report = verify_distribution(distribution)
@@ -869,6 +882,12 @@ def adopt_bundled_distribution(
                     if descriptor.get("data_dir") != expected_data:
                         raise ValueError(f"incomplete_or_drift: selected plugin-data 身份不一致: {plugin_id}")
                     selected_source = _provenance(old_code)
+                    release_owned = (
+                        selected_source is not None
+                        and selected_source["path"] == bundles[name][0]["source_path"]
+                        and (previous_source_commit is None
+                             or selected_source["commit"] == previous_source_commit)
+                    )
                     artifact, current_code, current_source = _current_artifact(
                         workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id,
                     )
@@ -887,12 +906,12 @@ def adopt_bundled_distribution(
                     if selected_is_b or (not same_current and not current_is_b):
                         raise ValueError(f"incomplete_or_drift: selection/cache 不一致: {plugin_id}")
                     if current_is_b:
-                        if selected_source is None or selected_source["path"] != row["source_path"]:
+                        if not release_owned:
                             raise ValueError(f"incomplete_or_drift: B pointer 不能覆盖外部选择: {plugin_id}")
                         target_rows.append((plugin_id, row, bundle))
                         changed.append({"plugin_id": plugin_id, "old_ref": old_ref, "mode": "resume_install_B"})
                         continue
-                    if selected_source is None or selected_source["path"] != row["source_path"]:
+                    if not release_owned:
                         external.append(plugin_id)
                         continue
                     target_rows.append((plugin_id, row, bundle))
@@ -969,6 +988,126 @@ def adopt_bundled_distribution(
                     "skipped_external": external, "excluded": excluded,
                     "backup_dir": None if recovery is None else str(recovery),
                     "profile": profile_name, "distribution_source_commit": report["source_commit"]}
+        finally:
+            if held_locks is None:
+                publication.release()
+    finally:
+        if held_locks is None:
+            maintenance.release()
+
+
+def _fixed_release_sources(
+    *, distribution: Path, profile: Path, workspace: Path, plugins_home: Path, receipt_path: Path,
+    selection: PluginSelection, root_ref: str, staging: Path, previous_source_commit: str,
+) -> tuple[ResolvedPluginSource, ...]:
+    """Bind migration code to target bundles and retained selected artifacts."""
+
+    report = verify_distribution(distribution)
+    root = distribution.resolve(strict=True)
+    profile_path = profile.resolve(strict=True)
+    if not any(
+        isinstance(item, dict) and _distribution_file(root, item.get("path"), "profile") == profile_path
+        for item in report["profiles"]
+    ):
+        raise ValueError("目标 profile 不属于固定 distribution")
+    _, marketplace, entries, _ = _load_profile(profile_path)
+    receipt = _read_json(receipt_path)
+    _validate_receipt_state(receipt, workspace=workspace, plugins_home=plugins_home)
+    historical = {f"{item['name']}@{item['marketplace']}" for item in receipt["installed"]}
+    rows = {str(item["name"]): item for item in report["plugins"]}
+    _, selected = _selected_components(selection, root_ref)
+    sources: list[ResolvedPluginSource] = []
+    for plugin_id, (_, descriptor, old_code) in selected.items():
+        name, separator, owner_marketplace = plugin_id.rpartition("@")
+        if not separator:
+            name, owner_marketplace = plugin_id, ""
+        code = old_code
+        row = rows.get(name)
+        if (owner_marketplace == marketplace and row is not None
+            and plugin_id in historical and descriptor["source_type"] == "installed"
+            and _provenance(old_code) is not None
+            and _provenance(old_code) == {"commit": previous_source_commit,
+                                           "path": row["source_path"]}):
+            bundle = _distribution_file(root, row["file"], f"插件 {name} bundle")
+            _check_sha256(bundle, row["sha256"], f"插件 {name} bundle")
+            expected_code = _preflight_bundle(bundle, row=row, source_commit=str(report["source_commit"]), code_identity=True)
+            code = staging / plugin_id
+            _ = _git("clone", "--no-local", "--no-checkout", str(bundle), str(code))
+            _ = _git("-C", str(code), "checkout", "--detach", str(row["source_revision"]))
+            if (_git("-C", str(code), "rev-parse", "HEAD") != row["source_revision"]
+                or _code_identity(code) != expected_code
+                or _provenance(code) != {"commit": report["source_commit"], "path": row["source_path"]}):
+                raise RuntimeError(f"目标 migration bundle 身份漂移: {plugin_id}")
+        identity = load_static_plugin_manifest(code)
+        if identity.name != name:
+            raise RuntimeError(f"selected migration owner 身份不一致: {plugin_id}")
+        sources.append(ResolvedPluginSource(
+            plugin_root=code, source_type="installed" if separator else "builtin",
+            plugin_name=name, marketplace=owner_marketplace,
+            static_manifest=identity,
+        ))
+    return tuple(sources)
+
+
+def upgrade_bundled_distribution(
+    *, distribution: Path, profile: Path, workspace: Path, plugins_home: Path,
+    config_path: Path, receipt_path: Path, backup_dir: Path, expected_root_ref: str,
+    previous_source_commit: str,
+) -> dict[str, Any]:
+    """Migrate target code and data, then commit one stopped full selection."""
+
+    _plain(workspace, directory=True)
+    _plain(plugins_home, directory=True)
+    _plain(config_path)
+    workspace, plugins_home = workspace.resolve(), plugins_home.resolve()
+    if not _SHA256.fullmatch(expected_root_ref):
+        raise ValueError("release upgrade 需要完整 expected_root_ref")
+    if _REVISION.fullmatch(previous_source_commit) is None:
+        raise ValueError("release upgrade 需要完整 previous_source_commit")
+    maintenance = WorkspaceMaintenanceLock(workspace)
+    maintenance.acquire()
+    try:
+        publication = PluginPublicationLock(plugins_home)
+        publication.acquire()
+        try:
+            selection = PluginSelection(workspace)
+            if selection.read() != expected_root_ref:
+                raise SelectionConflictError("release upgrade stable 基线改变")
+            with tempfile.TemporaryDirectory(prefix="akashic-release-migrations-") as temporary:
+                staged = Path(temporary)
+                sources = _fixed_release_sources(
+                    distribution=distribution, profile=profile, workspace=workspace,
+                    plugins_home=plugins_home,
+                    receipt_path=receipt_path, selection=selection,
+                    root_ref=expected_root_ref, staging=staged,
+                    previous_source_commit=previous_source_commit,
+                )
+                state = workspace.parent
+                if plugins_home.parent != state or config_path.resolve().parent != state:
+                    raise ValueError("release upgrade 需要同一 state 下的配置与 plugin-home")
+                saved = backup_release_state(state, backup_dir)
+                runner = MigrationRunner(
+                    repo_root=_SOURCE_ROOT, config_path=config_path, workspace=workspace,
+                    fixed_sources=sources, installed_cache_root=staged / "empty-cache",
+                )
+                # Core owns the journal shape. Check its pending facts before plugin data steps.
+                core = runner.run_under_maintenance(maintenance, core_only=True)
+                with ReloadJournal.inspect_existing(workspace) as journal:
+                    if journal.pending_recovery or journal.armed_updates:
+                        raise RuntimeError("pending reload 或 armed install 必须先由原 owner 结算")
+                plugin = runner.run_under_maintenance(maintenance)
+                adopted = adopt_bundled_distribution(
+                    distribution=distribution, profile=profile, workspace=workspace,
+                    plugins_home=plugins_home, config_path=config_path,
+                    receipt_path=receipt_path, backup_dir=backup_dir / "adoption",
+                    expected_root_ref=expected_root_ref,
+                    held_locks=(maintenance, publication),
+                    previous_source_commit=previous_source_commit,
+                )
+                return {"status": adopted["status"], "migration_ids": [
+                    *core.migrations, *plugin.migrations], "backup_dir": str(backup_dir),
+                    "backup_files": len(saved["files"]), "adoption": adopted,
+                    "old_root_ref": expected_root_ref, "new_root_ref": adopted["new_root_ref"]}
         finally:
             publication.release()
     finally:
@@ -1058,12 +1197,36 @@ def main() -> None:
     parser.add_argument("--verify-only", action="store_true")
     parser.add_argument("--ensure-profile", action="store_true")
     parser.add_argument("--adopt-bundled", action="store_true")
+    parser.add_argument("--upgrade-bundled", action="store_true")
     parser.add_argument("--expected-root-ref")
+    parser.add_argument("--previous-source-commit")
     parser.add_argument("--backup-dir", type=Path)
     args = parser.parse_args()
 
-    if sum((args.verify_only, args.ensure_profile, args.adopt_bundled)) > 1:
-        parser.error("--verify-only、--ensure-profile 与 --adopt-bundled 互斥")
+    if sum((args.verify_only, args.ensure_profile, args.adopt_bundled, args.upgrade_bundled)) > 1:
+        parser.error("--verify-only、--ensure-profile、--adopt-bundled 与 --upgrade-bundled 互斥")
+    if args.upgrade_bundled:
+        if (args.config is None or args.receipt is None or args.backup_dir is None
+            or args.expected_root_ref is None or args.previous_source_commit is None):
+            parser.error("--upgrade-bundled 必须提供 --config、--receipt、--backup-dir、--expected-root-ref、--previous-source-commit")
+        if args.core_root is not None:
+            parser.error("--upgrade-bundled 不解包 Core")
+        try:
+            upgraded = upgrade_bundled_distribution(
+                distribution=args.distribution, profile=args.profile,
+                workspace=args.workspace, plugins_home=args.plugins_home,
+                config_path=args.config, receipt_path=args.receipt,
+                backup_dir=args.backup_dir, expected_root_ref=args.expected_root_ref,
+                previous_source_commit=args.previous_source_commit,
+            )
+        except Exception as error:
+            print(json.dumps({"status": "failed", "phase": "upgrade",
+                              "error_type": type(error).__name__, "error": str(error),
+                              "details": list(getattr(error, "__notes__", ())),
+                              "requested_backup_dir": str(args.backup_dir)}, ensure_ascii=False))
+            parser.exit(1)
+        print(json.dumps(upgraded, ensure_ascii=False))
+        parser.exit(0)
     if args.adopt_bundled:
         if args.config is None or args.receipt is None or args.backup_dir is None or args.expected_root_ref is None:
             parser.error("--adopt-bundled 必须提供 --config、--receipt、--backup-dir、--expected-root-ref")

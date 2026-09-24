@@ -50,9 +50,11 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
   不改 lock 指向任意 HEAD、删 case 或降低 coverage baseline 取绿。
 - **真实资源验收**：本地 Workload 协议测试不代表 Docker 写入挂载、跨 boot 资源恢复
   或显示代理已验证；这些结果须由对应真实 Controller 与客户端提供。
-- **发行与恢复**：远端 CI、正式发布、运行数据恢复和 final enable 仍需独立交付。
-  普通 restart/ensure_profile 不自动采用新 bundle；通用 distribution 夹具不能替代
-  真实 Akasha 发行输入与功能验收，历史未决资源也不能用源码通过代为结算。
+- **发行与恢复**：已有 state 的 `akashic-release install` 升级路径已接入停止期备份、目标
+  Core/插件 Yoyo、完整 selection 与 live Fiber 核对；远端 CI、正式发布、真实运行数据的隔离
+  恢复演练和 final enable 仍需独立交付。普通 restart/ensure_profile 不自动采用新 bundle；
+  通用 distribution 夹具不能替代真实 Akasha 发行输入、重放完成及功能验收，历史未决资源
+  也不能用源码通过代为结算。
 
 既有 Subagent Tools owner、DeliveryPolicy readiness 和旧 oracle 的历史阻塞不再作为
 当前缺陷；本地退役、停止期回退和分层证据见单图设计的“本地收口与运行验收边界”一节。
