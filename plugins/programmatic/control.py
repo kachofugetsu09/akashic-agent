@@ -158,11 +158,19 @@ class Programmatic:
         self, method: str, params: BaseModel,
         transport: RequestTransport | None = None,
     ) -> dict[str, object]:
-        """仅接受声明的 typed 方法；每次调用已由入口绑定一个实际 Root。"""
-        from .plugin import open_source
-
+        """为每次公开调用借本 Programmatic Fiber 的短作用域。"""
         session_id = cast(SessionIdParams, params).session_id
         check_session(session_id)
+        async with self.ctx.runtime_scope():
+            return await self._call(method, params, transport, session_id)
+
+    async def _call(
+        self, method: str, params: BaseModel,
+        transport: RequestTransport | None, session_id: str,
+    ) -> dict[str, object]:
+        """在同一次 owner 许可内完成接纳、消息与结果操作。"""
+        from .plugin import open_source
+
         ctx = self.ctx
         # 1. 创建时提交不可变资格；ACK 丢失可用调用方原身份幂等重试。
         if method == "programmatic/session/admit":
