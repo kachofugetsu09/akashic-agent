@@ -252,6 +252,26 @@ async def test_client_inspection_binds_live_probe_scope(tmp_path: Path) -> None:
         with pytest.raises(RuntimeInspectionError) as captured:
             await service.list_capabilities()
         assert captured.value.code == "mcp_provider_unavailable"
+
+        from agent.plugin_composition.mcp_slots import MCP_SERVERS
+
+        class RegisteredTargets:
+            root_instance_token = root.instance_token
+
+            def catalog(self):
+                return [{"owner_id": "probe", "name": "server", "status": "declared"}]
+
+        await root.context.provide(MCP_SERVERS, RegisteredTargets())
+
+        async def mount_skills(ctx):
+            await ctx.provide(SKILL_INSPECTION, _Skills())
+
+        await root.mount(mount_skills, name="skills", runtime=runtime)
+        catalog = await service.list_capabilities()
+        assert catalog["mcp_servers"] == [
+            {"owner_id": "probe", "name": "server", "status": "declared"},
+        ]
+        assert catalog["skills"] == [{"name": "external-skill", "available": True}]
     finally:
         await root.dispose()
 
@@ -540,6 +560,7 @@ async def test_manager_catalog_accepts_only_current_channel_request(tmp_path: Pa
     from bus.event_bus import EventBus
     from plugins.channels import plugin as channels_plugin
     from plugins.akashic_clients.runtime_inspection import RuntimeInspectionError, ScopedRpcRuntimeInspection
+    from agent.plugin_composition.runtime_catalog import RUNTIME_MCP_DETAIL
     from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
     source = tmp_path / "plugins" / "probe"
@@ -595,7 +616,7 @@ async def test_manager_catalog_accepts_only_current_channel_request(tmp_path: Pa
                                        InboundIdentity.PROVIDER_MESSAGE_ID),
             )
 
-        fiber = await root.mount(contribute, name="client", inject=(CHANNELS, CHANNEL_INPUT, RUNTIME_CATALOG), runtime=runtime)
+        fiber = await root.mount(contribute, name="client", inject=(CHANNELS, CHANNEL_INPUT, RUNTIME_CATALOG, RUNTIME_MCP_DETAIL), runtime=runtime)
         assert contexts, root.receipt().incidents
         await asyncio.wait_for(opened.wait(), 5)
         context = contexts[0]

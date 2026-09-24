@@ -32,6 +32,8 @@ from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG,
+    RUNTIME_MCP_DETAIL,
+    RuntimeCatalogUnavailable,
     build_runtime_catalog,
 )
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
@@ -908,7 +910,7 @@ class PluginManager:
         host_keys: set[ServiceKey[object]] = {
             HOST_INFO, DASHBOARD_ROUTES, INPUT_CUSTODY, CHANNEL_IDENTITY,
             CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
-            EXECUTION, WORKLOAD_CONTROLLER, RUNTIME_CATALOG, CREDENTIALS,
+            EXECUTION, WORKLOAD_CONTROLLER, RUNTIME_CATALOG, RUNTIME_MCP_DETAIL, CREDENTIALS,
             PLUGIN_UPDATES, RESTART_GATE, CONTROL_FRAMES,
             MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS,
             OWNER_STATE, SESSION_ADMISSION, BINDINGS, TASKS, PROCESSES,
@@ -2242,7 +2244,7 @@ class PluginManager:
         }
         # Host services remain available when a later local generation arrives.
         requested.update({
-            RUNTIME_CATALOG, PLUGIN_UPDATES, RESTART_GATE,
+            RUNTIME_CATALOG, RUNTIME_MCP_DETAIL, PLUGIN_UPDATES, RESTART_GATE,
             CONTROL_FRAMES, PROCESSES, TIMERS,
             ServiceKey[object]("core.message_display.v1"),
             ServiceKey[object]("core.mobile_ui.v1"),
@@ -2275,6 +2277,29 @@ class PluginManager:
                 )
 
             _ = await root.context.provide(RUNTIME_CATALOG, read_runtime_catalog)
+        if RUNTIME_MCP_DETAIL in requested:
+            if root is not self._live_root:
+                raise RuntimeError("MCP detail 只在当前 live Root 提供")
+
+            async def read_runtime_mcp_detail(
+                context: Context | RequestContext, owner_id: str, name: str,
+            ) -> list[dict[str, object]]:
+                """Inspect one target under caller and contributor owner scopes."""
+                from agent.plugin_composition.mcp_slots import MCP_SERVERS
+
+                if isinstance(context, RequestContext):
+                    context = context._require_context(RUNTIME_MCP_DETAIL, read_runtime_mcp_detail)
+                if context.root_instance_token is not root.instance_token:
+                    raise RuntimeError("MCP detail 不属于当前 live Root")
+                context.require_declared_runtime_owner(RUNTIME_MCP_DETAIL, read_runtime_mcp_detail)
+                service = root.context.get(MCP_SERVERS)
+                if service is None:
+                    raise RuntimeCatalogUnavailable("mcp_provider_unavailable", "MCP provider 尚未在当前 Root 提供")
+                if service.root_instance_token is not root.instance_token:
+                    raise RuntimeError("MCP provider 不属于当前 Root")
+                return await service.inspect(context, read_runtime_mcp_detail, owner_id, name)
+
+            _ = await root.context.provide(RUNTIME_MCP_DETAIL, read_runtime_mcp_detail)
         if CREDENTIALS in requested or root is self._live_root:
             clients = CredentialClients({
                 (generation.plugin_id, generation.generation_id): CoreProviderClientFactory(

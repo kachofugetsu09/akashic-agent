@@ -139,6 +139,10 @@ note = "普通 UI provider 拥有贡献注册、目录封存和 Dashboard 资源
 role = "core"
 note = "按当前 snapshot 提供中立插件与 MCP 只读目录投影"
 
+[capabilities."core.runtime_mcp_detail.v1"]
+role = "core"
+note = "已声明的调用方在当前 live Root 按需读取单一 MCP 目标详情"
+
 [capabilities."plugin.channels"]
 role = "seam"
 note = "inbound/outbound Channel 适配注册表；由普通 channels provider 提供，多实现可替换"

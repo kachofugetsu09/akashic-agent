@@ -205,6 +205,14 @@ class Context:
             )
         return self.runtime.plugin_id
 
+    def require_declared_runtime_owner(self, key: ServiceKey[object], service: object) -> str:
+        """先核对 Context 有效性和声明，再核对实际调用许可。"""
+        reject_executor_context_access()
+        self._require_current()
+        if key not in self._fiber.dependencies:
+            raise CompositionError("UNDECLARED_SERVICE", f"当前 Fiber 未声明依赖: {key.name}")
+        return self.require_runtime_owner(key, service)
+
     def capture_runtime_scope(self) -> RuntimeScope:
         """把当前 Task 已接纳的许可延长成一份可移交子 Task 的 scope。"""
 
