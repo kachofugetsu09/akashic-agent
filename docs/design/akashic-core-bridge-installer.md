@@ -211,6 +211,14 @@ identity 检查，应重新准备一个完整 generation。
 `akashic-release install` 在目标 generation 的 Core image 和 Bridge 都已准备、校验后停止旧 Core/Bridge。
 目标 image 在无网络、只读根文件系统中通过 `upgrade-bundled` 使用现有 state：
 
+可选的外部目标由同一个入口传入：
+`akashic-release install --source-checkout <checkout> --commit <Core-commit> --external-inputs <input-dir> --external-plan <input-dir/plan.json> --yes`。
+plan 固定旧完整 Root、每个已选且启用的 installed plugin ID、Git bundle SHA-256、目标 commit，
+以及有非空 requirements 时的 wheel-tree SHA-256。镜像将只读输入复制到 tmpfs，先核对 bundle、
+目标源码和离线 wheel 的目标解释器可解性。外部目标与发行自带目标一起安装、准备，并仅提交一次
+完整且保序的 selection；未列出的外部选项保留原 ref。显式禁用、未选、身份漂移和不完整依赖在
+正式数据迁移前失败，不会转成静默跳过。普通不带外部参数的 Core 发行命令保持原语义。
+
 ```text
 release.lock → stop old → workspace maintenance lock → plugin publication lock
   → 固定目标 bundle 与当前完整 PluginSelection
@@ -249,6 +257,11 @@ artifact/运行环境可用，恢复点本身不复制其目标。
 核对目标 state、迁移账本、selection 和旧快照；需要切回旧版本时，在停机状态显式恢复整份
 `backups/upgrade-*/state/`、对应 runtime.env 与受影响 unit 后再启动旧版。`akashic-release rollback` 对带升级
 记录的 active release 拒绝自动软件回退。普通 `migrate --snapshot-manifest` 仍是独立的 plan-only 命令。
+外部升级在纯预检后、实际迁移前保存 `attempt-external-*.json`；进程中断或任何未知提交结果均阻断
+新安装、重放和启动，不能由可读目标 Root 推断未启动。只有 active receipt 绑定相同 plan/image、
+完整有序 Root，且 doctor 与 live selected Fiber 均通过，才只读返回 `already_active`。恢复点与
+runtime.env 备份由失败 receipt/attempt 路径关联；实际整份恢复和受影响 owner 的结算须分别取证，
+不能删除失败 receipt 或单靠旧 Root 指针宣称已恢复。
 
 ### 5.4 软件恢复
 

@@ -61,6 +61,11 @@ def install(args: argparse.Namespace) -> dict[str, object]:
     )
     _confirm(commit, commit_subject(checkout, run=_run), current, yes=args.yes)
 
+    if (args.external_plan is None) != (args.external_inputs is None):
+        raise ValueError("--external-plan 与 --external-inputs 必须同时提供")
+    if args.external_plan is not None and args.no_activate:
+        raise ValueError("external plan 需要停机激活，不能与 --no-activate 同用")
+
     with release_lock(paths.run / "release.lock"):
         paths.create_layout()
         verify_host_prerequisites(mise=args.mise, run=_run)
@@ -96,6 +101,8 @@ def install(args: argparse.Namespace) -> dict[str, object]:
                 mise=args.mise,
                 run=_run,
                 upgrade=True,
+                external_plan=args.external_plan,
+                external_inputs=args.external_inputs,
             )
     return {
         "status": status,
@@ -160,6 +167,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     install_parser.add_argument("--yes", action="store_true")
     install_parser.add_argument("--no-activate", action="store_true")
+    install_parser.add_argument("--external-plan", type=Path)
+    install_parser.add_argument("--external-inputs", type=Path)
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")

@@ -10,6 +10,8 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
+import stat
 import sys
 import subprocess
 import tarfile
@@ -34,9 +36,11 @@ from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE
+from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
 from agent.plugins.input_preparation import prepare_plugin_input, _source_revision
 from agent.plugins.reload_journal import ReloadJournal, JournalPreflight
 from agent.plugins.selection import PluginSelection, SelectionConflictError, SelectionWriteError
+from agent.migrations.bundles import validate_migration_artifact
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -44,6 +48,155 @@ _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _CONFIG_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _FORMAL_INSTALLER = "agent.plugins.install.install_git_plugin"
+
+
+def _external_path(root: Path, relative: object, *, directory: bool) -> Path:
+    """Resolve a plain POSIX input path without following a link."""
+
+    if (not isinstance(relative, str) or not relative or "\\" in relative
+        or "\x00" in relative or relative.startswith("/")):
+        raise ValueError("external input 必须是安全的 POSIX 相对路径")
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("external input 包含不安全的路径段")
+    current = root
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        raise ValueError("external input root 必须是普通目录")
+    for part in parts:
+        current /= part
+        mode = current.lstat().st_mode
+        if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
+            raise ValueError(f"external input 不能包含链接或特殊文件: {current}")
+    mode = current.lstat().st_mode
+    if directory != stat.S_ISDIR(mode):
+        raise ValueError(f"external input 类型不符: {current}")
+    return current
+
+
+def _external_plan(path: Path) -> tuple[str, str, list[dict[str, Any]]]:
+    """Validate the sole operator authority for explicit external targets."""
+
+    def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"external plan JSON key 重复: {key}")
+            result[key] = value
+        return result
+
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ValueError("external plan 必须是普通文件")
+    raw = path.read_bytes()
+    document = json.loads(raw, object_pairs_hook=unique_pairs)
+    if not isinstance(document, dict) or set(document) != {"schema_version", "expected_root_ref", "targets"}:
+        raise ValueError("external plan 根字段错误")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise ValueError("external plan schema_version 错误")
+    root_ref = document["expected_root_ref"]
+    if not isinstance(root_ref, str) or _SHA256.fullmatch(root_ref) is None:
+        raise ValueError("external plan expected_root_ref 错误")
+    targets = document["targets"]
+    if not isinstance(targets, list) or not targets:
+        raise ValueError("external plan targets 必须非空")
+    seen: set[str] = set()
+    for item in targets:
+        if not isinstance(item, dict) or set(item) not in ({"plugin_id", "bundle_relative_path", "bundle_sha256", "target_commit"}, {"plugin_id", "bundle_relative_path", "bundle_sha256", "target_commit", "offline_wheels"}):
+            raise ValueError("external target 字段错误")
+        plugin_id = item["plugin_id"]
+        if (not isinstance(plugin_id, str) or plugin_id.count("@") != 1
+            or any(_PATH_SEGMENT.fullmatch(part) is None for part in plugin_id.split("@"))
+            or plugin_id in seen):
+            raise ValueError(f"external target plugin_id 重复或无效: {plugin_id}")
+        seen.add(plugin_id)
+        if not isinstance(item["bundle_sha256"], str) or _SHA256.fullmatch(item["bundle_sha256"]) is None:
+            raise ValueError(f"external bundle_sha256 无效: {plugin_id}")
+        if not isinstance(item["target_commit"], str) or _REVISION.fullmatch(item["target_commit"]) is None:
+            raise ValueError(f"external target_commit 无效: {plugin_id}")
+        _ = _external_path_syntax(item["bundle_relative_path"])
+        wheels = item.get("offline_wheels")
+        if "offline_wheels" in item:
+            if (not isinstance(wheels, dict) or set(wheels) != {"relative_path", "tree_sha256"}
+                or not isinstance(wheels["tree_sha256"], str)
+                or _SHA256.fullmatch(wheels["tree_sha256"]) is None):
+                raise ValueError(f"external offline_wheels 无效: {plugin_id}")
+            _ = _external_path_syntax(wheels["relative_path"])
+    return hashlib.sha256(raw).hexdigest(), root_ref, targets
+
+
+def _external_path_syntax(relative: object) -> str:
+    if (not isinstance(relative, str) or not relative or relative.startswith("/")
+        or "\\" in relative or "\x00" in relative
+        or any(part in {"", ".", ".."} for part in relative.split("/"))):
+        raise ValueError("external input 路径格式错误")
+    return relative
+
+
+def _stage_external_targets(
+    *, plan: Path, inputs: Path, staged: Path, expected_root_ref: str,
+    selection: PluginSelection, workspace: Path, plugins_home: Path,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Fix bundle and wheel bytes in tmpfs and classify every explicit target."""
+
+    plan_digest, requested_root, targets = _external_plan(plan)
+    if requested_root != expected_root_ref:
+        raise SelectionConflictError("external plan expected_root_ref 与当前 Root 不符")
+    _, selected = _selected_components(selection, expected_root_ref)
+    manifest = load_plugin_manifest(plugins_home)
+    result: list[dict[str, Any]] = []
+    for index, target in enumerate(targets):
+        plugin_id = target["plugin_id"]
+        if plugin_id not in selected or manifest.get(plugin_id) is not True:
+            raise SelectionConflictError(f"external target 未选择或未启用: {plugin_id}")
+        old_ref, descriptor, old_code = selected[plugin_id]
+        name, marketplace = plugin_id.split("@")
+        if (descriptor["source_type"] != "installed"
+            or descriptor.get("data_dir") != workspace_plugin_data_dir(workspace, name, marketplace).relative_to(workspace).as_posix()):
+            raise SelectionConflictError(f"external target 非已安装输入: {plugin_id}")
+        _, current_code, current_source = _current_artifact(
+            workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id,
+        )
+        if descriptor["code"] != current_code or _provenance(old_code) != current_source:
+            raise SelectionConflictError(f"external target selection/cache 漂移: {plugin_id}")
+        bundle = _external_path(inputs, target["bundle_relative_path"], directory=False)
+        _check_sha256(bundle, target["bundle_sha256"], f"external {plugin_id} bundle")
+        local = staged / f"external-{index}.bundle"
+        shutil.copyfile(bundle, local)
+        _check_sha256(local, target["bundle_sha256"], f"staged {plugin_id} bundle")
+        code = staged / f"external-{index}-code"
+        _ = _git("clone", "--no-local", "--no-checkout", str(local), str(code))
+        _ = _git("-C", str(code), "checkout", "--detach", target["target_commit"])
+        if _git("-C", str(code), "rev-parse", "HEAD") != target["target_commit"]:
+            raise ValueError(f"external target commit 不一致: {plugin_id}")
+        identity = load_static_plugin_manifest(code)
+        if identity.name != name:
+            raise ValueError(f"external target 静态身份不一致: {plugin_id}")
+        _ = validate_migration_artifact(code, static_manifest=identity)
+        required = any((code / runtime.requirements).read_text(encoding="utf-8").strip() for runtime in identity.python)
+        wheels_spec = target.get("offline_wheels")
+        if required != (wheels_spec is not None):
+            raise ValueError(f"external target wheel 输入与 requirements 不匹配: {plugin_id}")
+        wheels: OfflineWheels | None = None
+        if wheels_spec is not None:
+            source_wheels = _external_path(inputs, wheels_spec["relative_path"], directory=True)
+            if wheel_tree_sha256(source_wheels) != wheels_spec["tree_sha256"]:
+                raise ValueError(f"external target wheel digest 不一致: {plugin_id}")
+            copied = staged / f"external-{index}-wheels"
+            copied.mkdir()
+            for file in source_wheels.iterdir():
+                shutil.copyfile(file, copied / file.name)
+            wheels = OfflineWheels(copied, wheels_spec["tree_sha256"])
+            if wheel_tree_sha256(copied) != wheels.tree_sha256:
+                raise ValueError(f"staged external wheel digest 不一致: {plugin_id}")
+            for runtime_index, runtime in enumerate(identity.python):
+                if not (code / runtime.requirements).read_text(encoding="utf-8").strip():
+                    continue
+                destination = staged / f"external-{index}-download-{runtime_index}"
+                destination.mkdir()
+                preflight_offline_runtime(code, runtime, wheels, destination)
+        result.append({"plugin_id": plugin_id, "old_ref": old_ref, "bundle": local,
+                       "commit": target["target_commit"], "code": code,
+                       "wheels": wheels, "bundle_sha256": target["bundle_sha256"]})
+    return plan_digest, result
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -807,6 +960,7 @@ def adopt_bundled_distribution(
     config_path: Path, receipt_path: Path, backup_dir: Path, expected_root_ref: str,
     held_locks: tuple[WorkspaceMaintenanceLock, PluginPublicationLock] | None = None,
     previous_source_commit: str | None = None,
+    external_targets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Select exact bundled inputs while the runtime is stopped."""
     if _SHA256.fullmatch(expected_root_ref) is None:
@@ -941,11 +1095,37 @@ def adopt_bundled_distribution(
                     )
                     if descriptor["code"] != current_code or _provenance(code) != current_source:
                         raise ValueError(f"incomplete_or_drift: 未触及插件的 selection/cache 不一致: {plugin_id}")
-                if target_rows:
+                external_rows = external_targets or []
+                for target in external_rows:
+                    plugin_id = target["plugin_id"]
+                    if plugin_id not in selected or selected[plugin_id][0] != target["old_ref"]:
+                        raise SelectionConflictError(f"external target selection 已改变: {plugin_id}")
+                    if any(item[0] == plugin_id for item in target_rows):
+                        raise SelectionConflictError(f"external target 与 bundled 目标重叠: {plugin_id}")
+                    name, marketplace_name = plugin_id.split("@")
+                    bundled = bundles.get(name) if marketplace_name == marketplace else None
+                    if bundled is not None and previous_source_commit is not None:
+                        prior = _provenance(selected[plugin_id][2])
+                        if prior == {"commit": previous_source_commit,
+                                     "path": bundled[0]["source_path"]}:
+                            raise SelectionConflictError(f"external target 属于 release bundled owner: {plugin_id}")
+                    if manifest.get(plugin_id) is not True:
+                        raise SelectionConflictError(f"external target 已禁用: {plugin_id}")
+                    _, current_code, current_source = _current_artifact(
+                        workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id,
+                    )
+                    if (selected[plugin_id][1]["code"] != current_code
+                        or _provenance(selected[plugin_id][2]) != current_source):
+                        raise SelectionConflictError(f"external target cache 漂移: {plugin_id}")
+                    changed.append({"plugin_id": plugin_id, "old_ref": target["old_ref"], "mode": "external"})
+                if target_rows or external_rows:
                     recovery = _backup_adoption(
                         workspace=workspace, plugins_home=plugins_home, backup_dir=backup_dir,
-                        root_ref=old_root, plugin_ids=tuple(item[0] for item in target_rows),
-                        bundle_sha256={item[0]: str(item[1]["sha256"]) for item in target_rows},
+                        root_ref=old_root,
+                        plugin_ids=tuple([item[0] for item in target_rows]
+                                         + [item["plugin_id"] for item in external_rows]),
+                        bundle_sha256={**{item[0]: str(item[1]["sha256"]) for item in target_rows},
+                                       **{item["plugin_id"]: item["bundle_sha256"] for item in external_rows}},
                         journal=journal,
                     )
                 else:
@@ -982,6 +1162,39 @@ def adopt_bundled_distribution(
                 except Exception as error:
                     error.add_note(f"B2 phase={phase} plugin={plugin_id} recovery={recovery} prepared={tuple(replacements)}")
                     raise
+            for target in external_rows:
+                plugin_id = target["plugin_id"]
+                name, marketplace_name = plugin_id.split("@")
+                phase = "external_install"
+                try:
+                    wheels = target["wheels"]
+                    if wheels is not None and wheel_tree_sha256(wheels.directory) != wheels.tree_sha256:
+                        raise ValueError(f"external wheel 输入变化: {plugin_id}")
+                    _check_sha256(target["bundle"], target["bundle_sha256"], f"external {plugin_id} bundle")
+                    installed = install_git_plugin(
+                        workspace=workspace, source=str(target["bundle"]),
+                        marketplace=marketplace_name, ref_name=target["commit"],
+                        plugins_home=plugins_home, refresh_existing_artifact=False,
+                        update_id=uuid4().hex, offline_wheels=wheels,
+                    )
+                    if (f"{installed.plugin_name}@{installed.marketplace}" != plugin_id
+                        or installed.source_revision != target["commit"]):
+                        raise RuntimeError(f"external install 身份不一致: {plugin_id}")
+                    phase = "external_prepare"
+                    identity = load_static_plugin_manifest(installed.installed_path)
+                    mod = {"name": name, "plugin_root": str(installed.installed_path),
+                           "module_path": str(installed.installed_path / "plugin.py"),
+                           "manifest_digest": identity.identity_digest,
+                           "marketplace": marketplace_name, "source_type": "installed"}
+                    prepared = prepare_plugin_input(mod, workspace=workspace, archive=selection.archive)
+                    if prepared.plugin_id != plugin_id:
+                        raise RuntimeError(f"external prepare 身份不一致: {plugin_id}")
+                    ReloadJournal(workspace).set_input_ref(installed.update_id, prepared.archive_ref)
+                    replacements[plugin_id] = prepared.archive_ref
+                    changed[next(i for i, item in enumerate(changed) if item["plugin_id"] == plugin_id)]["new_ref"] = prepared.archive_ref
+                except Exception as error:
+                    error.add_note(f"external phase={phase} plugin={plugin_id} recovery={recovery} prepared={tuple(replacements)}")
+                    raise
             if replacements:
                 replacement_refs = {selected[plugin_id][0]: new_ref for plugin_id, new_ref in replacements.items()}
                 new_components = tuple(replacement_refs.get(ref, ref) for ref in components)
@@ -992,15 +1205,17 @@ def adopt_bundled_distribution(
                     raise
             else:
                 new_root = old_root
+            skipped_external = [plugin_id for plugin_id in external if plugin_id not in {item["plugin_id"] for item in external_rows}]
             status = (
-                "partial_selected_not_started" if external else
+                "partial_selected_not_started" if skipped_external else
                 "selected_not_started" if replacements else
                 "already_selected_not_started" if already else "no_eligible_targets"
             )
             return {"mode": "operator_trusted_offline_distribution",
                     "status": status, "old_root_ref": old_root, "new_root_ref": new_root,
+                    "ordered_components": list(new_components if replacements else components),
                     "changed": changed, "already_selected": already,
-                    "skipped_external": external, "excluded": excluded,
+                    "skipped_external": skipped_external, "excluded": excluded,
                     "backup_dir": None if recovery is None else str(recovery),
                     "profile": profile_name, "distribution_source_commit": report["source_commit"]}
         finally:
@@ -1014,6 +1229,7 @@ def adopt_bundled_distribution(
 def _fixed_release_sources(
     *, distribution: Path, profile: Path, workspace: Path, plugins_home: Path, receipt_path: Path,
     selection: PluginSelection, root_ref: str, staging: Path, previous_source_commit: str,
+    external_targets: list[dict[str, Any]] | None = None,
 ) -> tuple[ResolvedPluginSource, ...]:
     """Bind migration code to target bundles and retained selected artifacts."""
 
@@ -1031,14 +1247,20 @@ def _fixed_release_sources(
     historical = {f"{item['name']}@{item['marketplace']}" for item in receipt["installed"]}
     rows = {str(item["name"]): item for item in report["plugins"]}
     _, selected = _selected_components(selection, root_ref)
+    external_code = {item["plugin_id"]: item["code"] for item in external_targets or []}
     sources: list[ResolvedPluginSource] = []
     for plugin_id, (_, descriptor, old_code) in selected.items():
         name, separator, owner_marketplace = plugin_id.rpartition("@")
         if not separator:
             name, owner_marketplace = plugin_id, ""
-        code = old_code
+        code = external_code.get(plugin_id, old_code)
         row = rows.get(name)
-        if (owner_marketplace == marketplace and row is not None
+        if (plugin_id in external_code and owner_marketplace == marketplace
+            and row is not None and plugin_id in historical
+            and _provenance(old_code) == {"commit": previous_source_commit,
+                                          "path": row["source_path"]}):
+            raise SelectionConflictError(f"external target 属于 release bundled owner: {plugin_id}")
+        if (plugin_id not in external_code and owner_marketplace == marketplace and row is not None
             and plugin_id in historical and descriptor["source_type"] == "installed"
             and _provenance(old_code) is not None
             and _provenance(old_code) == {"commit": previous_source_commit,
@@ -1068,6 +1290,8 @@ def upgrade_bundled_distribution(
     *, distribution: Path, profile: Path, workspace: Path, plugins_home: Path,
     config_path: Path, receipt_path: Path, backup_dir: Path, expected_root_ref: str,
     previous_source_commit: str,
+    external_plan: Path | None = None, external_inputs: Path | None = None,
+    preflight_only: bool = False,
 ) -> dict[str, Any]:
     """Migrate target code and data, then commit one stopped full selection."""
 
@@ -1079,6 +1303,8 @@ def upgrade_bundled_distribution(
         raise ValueError("release upgrade 需要完整 expected_root_ref")
     if _REVISION.fullmatch(previous_source_commit) is None:
         raise ValueError("release upgrade 需要完整 previous_source_commit")
+    if (external_plan is None) != (external_inputs is None):
+        raise ValueError("external plan 和 input root 必须同时提供")
     maintenance = WorkspaceMaintenanceLock(workspace)
     maintenance.acquire()
     try:
@@ -1090,13 +1316,29 @@ def upgrade_bundled_distribution(
                 raise SelectionConflictError("release upgrade stable 基线改变")
             with tempfile.TemporaryDirectory(prefix="akashic-release-migrations-") as temporary:
                 staged = Path(temporary)
+                plan_digest: str | None = None
+                external_targets: list[dict[str, Any]] = []
+                if external_plan is not None and external_inputs is not None:
+                    plan_digest, external_targets = _stage_external_targets(
+                        plan=external_plan, inputs=external_inputs, staged=staged,
+                        expected_root_ref=expected_root_ref, selection=selection,
+                        workspace=workspace, plugins_home=plugins_home,
+                    )
                 sources = _fixed_release_sources(
                     distribution=distribution, profile=profile, workspace=workspace,
                     plugins_home=plugins_home,
                     receipt_path=receipt_path, selection=selection,
                     root_ref=expected_root_ref, staging=staged,
                     previous_source_commit=previous_source_commit,
+                    external_targets=external_targets,
                 )
+                if preflight_only:
+                    if plan_digest is None:
+                        raise ValueError("external preflight 需要 plan")
+                    return {"status": "preflight_ok", "old_root_ref": expected_root_ref,
+                            "external_plan_sha256": plan_digest,
+                            "target_count": len(external_targets),
+                            "selected_source_count": len(sources)}
                 state = workspace.parent
                 if plugins_home.parent != state or config_path.resolve().parent != state:
                     raise ValueError("release upgrade 需要同一 state 下的配置与 plugin-home")
@@ -1118,11 +1360,17 @@ def upgrade_bundled_distribution(
                     expected_root_ref=expected_root_ref,
                     held_locks=(maintenance, publication),
                     previous_source_commit=previous_source_commit,
+                    external_targets=external_targets,
                 )
+                files = saved["files"]
+                if not isinstance(files, list):
+                    raise RuntimeError("release backup manifest files 无效")
                 return {"status": adopted["status"], "migration_ids": [
                     *core.migrations, *plugin.migrations], "backup_dir": str(backup_dir),
-                    "backup_files": len(saved["files"]), "adoption": adopted,
-                    "old_root_ref": expected_root_ref, "new_root_ref": adopted["new_root_ref"]}
+                    "backup_files": len(files), "adoption": adopted,
+                    "old_root_ref": expected_root_ref, "new_root_ref": adopted["new_root_ref"],
+                    "ordered_components": adopted["ordered_components"],
+                    "external_plan_sha256": plan_digest}
         finally:
             publication.release()
     finally:
@@ -1216,6 +1464,9 @@ def main() -> None:
     parser.add_argument("--expected-root-ref")
     parser.add_argument("--previous-source-commit")
     parser.add_argument("--backup-dir", type=Path)
+    parser.add_argument("--external-plan", type=Path)
+    parser.add_argument("--external-inputs", type=Path)
+    parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
 
     if sum((args.verify_only, args.ensure_profile, args.adopt_bundled, args.upgrade_bundled)) > 1:
@@ -1233,6 +1484,8 @@ def main() -> None:
                 config_path=args.config, receipt_path=args.receipt,
                 backup_dir=args.backup_dir, expected_root_ref=args.expected_root_ref,
                 previous_source_commit=args.previous_source_commit,
+                external_plan=args.external_plan, external_inputs=args.external_inputs,
+                preflight_only=args.preflight_only,
             )
         except Exception as error:
             print(json.dumps({"status": "failed", "phase": "upgrade",

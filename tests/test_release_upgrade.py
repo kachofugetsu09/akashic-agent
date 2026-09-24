@@ -103,6 +103,47 @@ def test_release_upgrade_readiness_failure_does_not_restart_old_image(tmp_path, 
     assert json.loads(failures[0].read_text())["status"] == "maintenance_required"
 
 
+def test_external_upgrade_crash_marker_blocks_retry_before_stop(tmp_path, monkeypatch):
+    paths, manifest, environment, events = _release_case(tmp_path, monkeypatch)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    plan = inputs / "plan.json"
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": "a" * 64,
+                                "targets": [{"plugin_id": "outside@external",
+                                             "bundle_relative_path": "outside.bundle",
+                                             "bundle_sha256": "b" * 64,
+                                             "target_commit": "c" * 40}]}))
+    monkeypatch.setattr(activate, "verify_release", lambda environment: None)
+
+    def stopped_upgrade(**kwargs):
+        events.append("preflight" if kwargs.get("preflight_only") else "upgrade")
+        if kwargs.get("preflight_only"):
+            return {"status": "preflight_ok"}
+        raise RuntimeError("after CAS injected interruption")
+
+    monkeypatch.setattr(activate, "_stopped_upgrade", stopped_upgrade)
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="旧 runtime 保持停止"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True,
+                                  external_plan=plan, external_inputs=inputs)
+    assert events == ["stop", "preflight", "upgrade"]
+    attempts = list(paths.activation.glob("attempt-external-*.json"))
+    assert len(attempts) == 1
+    assert json.loads(attempts[0].read_text())["status"] == "pending"
+    assert json.loads((paths.activation / "active.json").read_text())["targetCommit"] == "a" * 40
+    before = list(events)
+    with pytest.raises(RuntimeError, match="未结算 release failure"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True,
+                                  external_plan=plan, external_inputs=inputs)
+    assert events == before
+
+
 def test_release_backup_reads_committed_wal_and_keeps_sidecars_forensics(tmp_path):
     state = tmp_path / "state"
     state.mkdir()

@@ -1023,6 +1023,99 @@ def test_release_upgrade_retains_same_path_external_override(tmp_path, monkeypat
     assert prepared.archive_ref in _selection_refs(selection, upgraded["new_root_ref"])
 
 
+def test_external_plan_rejects_duplicate_and_unsafe_paths(tmp_path):
+    plan = tmp_path / "plan.json"
+    target = {"plugin_id": "outside@external", "bundle_relative_path": "bundles/outside.bundle",
+              "bundle_sha256": "a" * 64, "target_commit": "b" * 40}
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": "c" * 64,
+                                "targets": [target, target]}))
+    with pytest.raises(ValueError, match="重复"):
+        distribution_installer._external_plan(plan)
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": "c" * 64,
+                                "targets": [{**target, "bundle_relative_path": "../outside.bundle"}]}))
+    with pytest.raises(ValueError, match="路径"):
+        distribution_installer._external_plan(plan)
+
+
+def test_external_upgrade_combines_bundled_and_explicit_into_one_root(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    case = _offline_case(state)
+    external = tmp_path / "external"
+    external.mkdir()
+    source = external / "plugin.py"
+    source.write_text("api_version = 3\nname = 'outside'\nversion = '1'\nasync def apply(ctx):\n    return None\n")
+    subprocess.run(["git", "init", str(external)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(external), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(external), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "-c", "commit.gpgSign=false", "commit", "-m", "one"], check=True, capture_output=True)
+    installed = install_git_plugin(workspace=case["workspace"], plugins_home=case["home"],
+                                   source=str(external), marketplace="external")
+    identity = load_static_plugin_manifest(installed.installed_path)
+    selection = PluginSelection(case["workspace"])
+    prepared = prepare_plugin_input({"name": "outside", "marketplace": "external",
+                                     "plugin_root": str(installed.installed_path),
+                                     "module_path": str(installed.installed_path / "plugin.py"),
+                                     "manifest_digest": identity.identity_digest,
+                                     "source_type": "installed"},
+                                    workspace=case["workspace"], archive=selection.archive)
+    old = selection.commit((*_selection_refs(selection, case["root"]), prepared.archive_ref),
+                           expected_ref=case["root"])
+    source.write_text("api_version = 3\nname = 'outside'\nversion = '2'\nasync def apply(ctx):\n    return None\n")
+    subprocess.run(["git", "-C", str(external), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(external), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "-c", "commit.gpgSign=false", "commit", "-m", "two"], check=True, capture_output=True)
+    commit = subprocess.run(["git", "-C", str(external), "rev-parse", "HEAD"],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    inputs = tmp_path / "inputs"
+    (inputs / "bundles").mkdir(parents=True)
+    bundle = inputs / "bundles/outside.bundle"
+    subprocess.run(["git", "-C", str(external), "bundle", "create", str(bundle), "HEAD"],
+                   check=True, capture_output=True)
+    plan = inputs / "plan.json"
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": old,
+                                "targets": [{"plugin_id": "outside@external",
+                                             "bundle_relative_path": "bundles/outside.bundle",
+                                             "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+                                             "target_commit": commit}]}))
+    release_b, _ = _offline_release(case, "2")
+    repo = tmp_path / "migration-host"
+    (repo / "migrations/core").mkdir(parents=True)
+    (repo / "migrations/catalog.toml").write_text("schema_version = 1\nmigrations = []\n")
+    monkeypatch.setattr(distribution_installer, "_SOURCE_ROOT", repo)
+    before = (case["workspace"] / "runtime/plugin-stable.json").read_bytes()
+    preflight = upgrade_bundled_distribution(
+        distribution=release_b, profile=release_b / "profiles/default.json",
+        workspace=case["workspace"], plugins_home=case["home"],
+        config_path=case["config"], receipt_path=case["receipt"],
+        backup_dir=tmp_path / "preflight-recovery", expected_root_ref=old,
+        previous_source_commit=case["release_commit"], external_plan=plan,
+        external_inputs=inputs, preflight_only=True)
+    assert preflight["status"] == "preflight_ok"
+    assert (case["workspace"] / "runtime/plugin-stable.json").read_bytes() == before
+    assert not (tmp_path / "preflight-recovery").exists()
+    commits: list[tuple[str, ...]] = []
+    original_commit = PluginSelection.commit
+
+    def count_commit(self, components, *, expected_ref):
+        commits.append(components)
+        return original_commit(self, components, expected_ref=expected_ref)
+
+    monkeypatch.setattr(PluginSelection, "commit", count_commit)
+    result = upgrade_bundled_distribution(
+        distribution=release_b, profile=release_b / "profiles/default.json",
+        workspace=case["workspace"], plugins_home=case["home"],
+        config_path=case["config"], receipt_path=case["receipt"],
+        backup_dir=tmp_path / "recovery", expected_root_ref=old,
+        previous_source_commit=case["release_commit"], external_plan=plan,
+        external_inputs=inputs)
+    assert len(commits) == 1
+    assert result["new_root_ref"] == selection.read()
+    assert len(result["ordered_components"]) == 3
+    assert result["external_plan_sha256"] == hashlib.sha256(plan.read_bytes()).hexdigest()
+    assert (tmp_path / "recovery/manifest.json").is_file()
+
+
 def _adopt(case: dict[str, Any], distribution: Path, expected: str, suffix: str) -> dict[str, Any]:
     return adopt_bundled_distribution(
         distribution=distribution, profile=distribution / "profiles/default.json",

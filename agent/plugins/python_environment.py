@@ -119,6 +119,26 @@ def _check_offline_requirements(path: Path) -> None:
         raise ValueError("离线 wheel 输入只用于非空普通 requirements")
 
 
+def preflight_offline_runtime(
+    code: Path, runtime: StaticPythonRuntime, wheels: OfflineWheels, destination: Path,
+) -> None:
+    """Check the target interpreter's wheel closure before state migration."""
+
+    requirements = code / runtime.requirements
+    _check_offline_requirements(requirements)
+    _ = _verify_offline_wheels(wheels)
+    if not destination.is_dir() or destination.is_symlink():
+        raise ValueError("离线依赖检查目标必须是已有普通目录")
+    _ = subprocess.run(
+        [sys.executable, "-I", "-m", "pip", "--isolated", "download", "--no-index",
+         f"--find-links={wheels.directory}", "--only-binary=:all:",
+         "--no-cache-dir", "--no-input", "--dest", str(destination),
+         "-r", str(requirements)],
+        check=True, capture_output=True, text=True,
+    )
+    _ = _verify_offline_wheels(wheels)
+
+
 class PythonEnvironments:
     """在最终路径创建固定 Python 环境；恢复只验证，不安装或修复依赖。"""
 

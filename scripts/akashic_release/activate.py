@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import json
 import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,14 +18,38 @@ from scripts.akashic_release.manifest import activation_receipt, atomic_write, r
 from scripts.akashic_release.manifest import write_json
 from scripts.akashic_release.model import ReleasePaths
 from scripts.akashic_release.systemd import start_bridge, start_core, stop_runtime
+from agent.plugins.selection import PluginSelection
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 _ROOT_REF = re.compile(r"[0-9a-f]{64}\Z")
 
 
+def _plain_external_host(root: Path, plan: Path) -> tuple[Path, Path]:
+    """Keep the host mount and plan path free of link traversal."""
+
+    root = root.absolute()
+    plan = plan.absolute()
+    for path, want_directory in ((root, True), (plan, False)):
+        current = Path(path.anchor)
+        for part in path.parts[1:]:
+            current /= part
+            mode = current.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                raise ValueError(f"external host 路径不能穿过符号链接: {current}")
+        mode = path.lstat().st_mode
+        if want_directory != stat.S_ISDIR(mode):
+            raise ValueError(f"external host 路径类型不符: {path}")
+    if not plan.is_relative_to(root) or plan == root:
+        raise ValueError("external plan 必须位于 input root 内")
+    return root, plan
+
+
 def _stopped_upgrade(
     *, paths: ReleasePaths, candidate: Mapping[str, str], manifest: Mapping[str, object],
     backup_dir: Path, previous_commit: str, run: Run,
+    external_plan: Path | None = None, external_inputs: Path | None = None,
+    preflight_only: bool = False,
+    expected_plan_sha256: str | None = None,
 ) -> dict[str, object]:
     """Run the target image's own upgrade code against stopped state."""
 
@@ -33,7 +59,7 @@ def _stopped_upgrade(
         raise RuntimeError("release upgrade 需要已有完整 stable Root")
     command = [
         "docker", "run", "--rm", "--network", "none", "--read-only",
-        "--tmpfs", "/tmp:rw,mode=1777",
+        "--tmpfs", "/tmp:rw,mode=1777,size=4g",
         "--mount", f"type=bind,src={paths.state},dst={paths.state}",
         "--mount", f"type=bind,src={paths.backups},dst={paths.backups}",
         "--env", f"AKASHIC_CONFIG={candidate['AKASHIC_CONFIG']}",
@@ -45,6 +71,19 @@ def _stopped_upgrade(
         "--expected-root-ref", root_ref, "--backup-dir", str(backup_dir),
         "--previous-source-commit", previous_commit,
     ]
+    if external_plan is not None and external_inputs is not None:
+        if (expected_plan_sha256 is None
+            or hashlib.sha256(external_plan.read_bytes()).hexdigest() != expected_plan_sha256):
+            raise RuntimeError("external plan 在发布期间变化")
+        relative = external_plan.relative_to(external_inputs)
+        mount = "/opt/akashic/external-inputs"
+        command[command.index(str(manifest["imageId"])):command.index(str(manifest["imageId"]))] = [
+            "--mount", f"type=bind,src={external_inputs},dst={mount},readonly",
+        ]
+        command.extend(["--external-plan", f"{mount}/{relative.as_posix()}",
+                        "--external-inputs", mount])
+    if preflight_only:
+        command.append("--preflight-only")
     result = run(command, check=True, capture_output=True, text=True)
     try:
         receipt = json.loads(result.stdout)
@@ -52,20 +91,31 @@ def _stopped_upgrade(
         raise RuntimeError("目标 image 未返回 upgrade JSON") from error
     if not isinstance(receipt, dict) or receipt.get("status") not in {
         "selected_not_started", "partial_selected_not_started",
-        "already_selected_not_started", "no_eligible_targets",
+        "already_selected_not_started", "no_eligible_targets", "preflight_ok",
     }:
         raise RuntimeError(f"目标 image upgrade 结果无效: {receipt}")
+    if preflight_only:
+        if (receipt.get("old_root_ref") != root_ref or external_plan is None
+            or receipt.get("external_plan_sha256") != expected_plan_sha256):
+            raise RuntimeError("目标 image external preflight 身份不一致")
+        return receipt
+    if receipt["status"] == "preflight_ok":
+        raise RuntimeError("目标 image 仅返回 preflight，未执行 upgrade")
     selected = receipt.get("new_root_ref")
     if (receipt.get("old_root_ref") != root_ref or not isinstance(selected, str)
         or _ROOT_REF.fullmatch(selected) is None
         or receipt.get("backup_dir") != str(backup_dir)
         or not (backup_dir / "manifest.json").is_file()):
         raise RuntimeError("目标 image upgrade 缺少完整 Root 或已校验恢复点")
+    if external_plan is not None:
+        if receipt.get("external_plan_sha256") != expected_plan_sha256:
+            raise RuntimeError("目标 image upgrade external plan 身份不一致")
     return receipt
 
 
 def _verify_selected_runtime(
     *, candidate: Mapping[str, str], root_ref: str, run: Run,
+    ordered_components: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
     """Read the live runtime's exact selected Fiber identities after health."""
 
@@ -100,6 +150,8 @@ def _verify_selected_runtime(
             active_refs.append(selected)
     if len(active_refs) != len(components) or set(active_refs) != set(components):
         raise RuntimeError("live runtime 未加载完整 selection components")
+    if ordered_components is not None and tuple(components) != ordered_components:
+        raise RuntimeError("live runtime 完整 ordered selection 与发布输入不一致")
     return {"selection_ref": root_ref,
             "active_selected": len(active_refs),
             "optional_health": "unverified"}
@@ -299,6 +351,8 @@ def activate_release(
     mise: Path,
     run: Run,
     upgrade: bool = False,
+    external_plan: Path | None = None,
+    external_inputs: Path | None = None,
 ) -> str:
     """Activate one prepared generation; retain stopped state after data upgrade failure."""
 
@@ -309,15 +363,54 @@ def activate_release(
         read_json(active_path).get("targetCommit") if active_path.exists() else None
     )
     current = read_environment(environment_file) if environment_file.exists() else {}
+    if (external_plan is None) != (external_inputs is None):
+        raise ValueError("external plan 与 input root 必须同时提供")
+    for failed_path in sorted(paths.activation.glob("failed-*.json")):
+        if read_json(failed_path).get("status") == "maintenance_required":
+            raise RuntimeError(f"未结算 release failure 阻止新尝试: {failed_path}")
+    plan_digest: str | None = None
+    if external_plan is not None and external_inputs is not None:
+        if previous is None:
+            raise ValueError("external plan 需要已有 active release 与完整 Root")
+        external_inputs, external_plan = _plain_external_host(external_inputs, external_plan)
+        plan_digest = hashlib.sha256(external_plan.read_bytes()).hexdigest()
+        plan = read_json(external_plan)
+        stable = read_json(paths.state / "workspace/runtime/plugin-stable.json")
+        if previous == target and active_path.exists():
+            receipt = read_json(active_path)
+            previous_upgrade = receipt.get("upgrade")
+            if (receipt.get("status") == "active" and receipt.get("imageId") == manifest.get("imageId")
+                and isinstance(previous_upgrade, dict)
+                and previous_upgrade.get("external_plan_sha256") == plan_digest
+                and previous_upgrade.get("old_root_ref") == plan.get("expected_root_ref")
+                and previous_upgrade.get("new_root_ref") == stable.get("root_ref")):
+                selection = PluginSelection(paths.state / "workspace")
+                root = selection.archive.read_descriptor(str(stable["root_ref"]))
+                components = root.get("components")
+                if (not isinstance(components, tuple)
+                    or previous_upgrade.get("ordered_components") != list(components)):
+                    raise RuntimeError("active ordered selection 无效")
+                verify_release(environment_file)
+                _verify_selected_runtime(
+                    candidate=current, root_ref=str(stable["root_ref"]), run=run,
+                    ordered_components=components,
+                )
+                return "already_active"
+        if plan.get("expected_root_ref") != stable.get("root_ref"):
+            raise RuntimeError("external plan expected_root_ref 与当前 selection 不一致")
+    for attempt_path in sorted(paths.activation.glob("attempt-external-*.json")):
+        if read_json(attempt_path).get("status") == "pending":
+            raise RuntimeError(f"不完整 external release attempt 需人工结算: {attempt_path}")
     _verify_state_ready(paths)
-    _prepare_workload_dirs(paths)
+    if external_plan is None:
+        _prepare_workload_dirs(paths)
     candidate = release_environment(
         paths=paths,
         manifest=manifest,
         current=current,
         mise=mise,
     )
-    if previous == target:
+    if previous == target and external_plan is None:
         verify_release(environment_file)
         return "already_active"
 
@@ -330,22 +423,65 @@ def activate_release(
         shutil.copy2(environment_file, backup)
     stop_runtime(run=run)
     upgrade_result: dict[str, object] | None = None
+    attempt_path: Path | None = None
     if upgrade and previous is not None:
         backup_dir = paths.backups / f"upgrade-{target}-{timestamp}-{os.getpid()}"
         try:
+            if external_plan is not None:
+                _ = _stopped_upgrade(
+                    paths=paths, candidate=candidate, manifest=manifest,
+                    backup_dir=backup_dir, previous_commit=str(previous), run=run,
+                    external_plan=external_plan, external_inputs=external_inputs,
+                    preflight_only=True, expected_plan_sha256=plan_digest,
+                )
+                attempt_path = paths.activation / f"attempt-external-{target}-{timestamp}-{secrets.token_hex(4)}.json"
+                write_json(attempt_path, {"status": "pending", "phase": "before_upgrade",
+                                          "targetCommit": target, "imageId": manifest["imageId"],
+                                          "externalPlanSha256": plan_digest,
+                                          "oldRootRef": read_json(paths.state / "workspace/runtime/plugin-stable.json")["root_ref"],
+                                          "backupDir": str(backup_dir),
+                                          "environmentBackup": str(backup)})
             upgrade_result = _stopped_upgrade(
                 paths=paths, candidate=candidate, manifest=manifest,
                 backup_dir=backup_dir, previous_commit=str(previous), run=run,
+                external_plan=external_plan, external_inputs=external_inputs,
+                expected_plan_sha256=plan_digest,
             )
         except BaseException as error:
+            if external_plan is not None and attempt_path is None:
+                try:
+                    start_bridge(run=run)
+                    start_core(run=run)
+                    verify_release(environment_file)
+                except BaseException as recovery_error:
+                    failed = activation_receipt(
+                        status="maintenance_required", target_commit=target,
+                        previous_commit=str(previous), detail=str(error),
+                    )
+                    failed["phase"] = "external_preflight_recovery"
+                    failed["recoveryDetail"] = str(recovery_error)
+                    write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
+                    raise RuntimeError("external preflight 冲突且旧 runtime 恢复失败") from recovery_error
+                failed = activation_receipt(
+                    status="preflight_conflict", target_commit=target,
+                    previous_commit=str(previous), detail=str(error),
+                )
+                failed["phase"] = "external_preflight"
+                write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
+                raise RuntimeError("external preflight 冲突，旧 runtime 已恢复") from error
             failed = activation_receipt(
                 status="maintenance_required", target_commit=target,
                 previous_commit=str(previous), detail=str(error),
             )
             failed["backupDir"] = str(backup_dir)
+            failed["phase"] = "stopped_upgrade"
+            failed["environmentBackup"] = str(backup)
+            failed["attemptPath"] = None if attempt_path is None else str(attempt_path)
             failed["dataCompatibility"] = "unproved"
             write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
             raise RuntimeError("发行升级失败；旧 runtime 保持停止，先核对数据与恢复点") from error
+    if external_plan is not None:
+        _prepare_workload_dirs(paths)
     atomic_write(environment_file, render_environment(candidate))
     try:
         start_bridge(run=run)
@@ -353,8 +489,13 @@ def activate_release(
         verify_release(environment_file)
         live_result = None
         if upgrade_result is not None:
+            expected_components = upgrade_result.get("ordered_components")
+            if external_plan is not None and (not isinstance(expected_components, list)
+                                              or any(not isinstance(ref, str) for ref in expected_components)):
+                raise RuntimeError("upgrade 未报告完整 ordered components")
             live_result = _verify_selected_runtime(
                 candidate=candidate, root_ref=str(upgrade_result["new_root_ref"]), run=run,
+                ordered_components=tuple(expected_components) if isinstance(expected_components, list) else None,
             )
     except BaseException as error:
         maintenance_stop_detail = None
@@ -368,6 +509,9 @@ def activate_release(
                 previous_commit=str(previous), detail=str(error),
             )
             failed["upgrade"] = upgrade_result
+            failed["phase"] = "target_start_or_readiness"
+            failed["attemptPath"] = None if attempt_path is None else str(attempt_path)
+            failed["environmentBackup"] = str(backup)
             failed["dataCompatibility"] = "unproved"
             if maintenance_stop_detail is not None:
                 failed["maintenanceStopDetail"] = maintenance_stop_detail
@@ -409,7 +553,14 @@ def activate_release(
     if upgrade_result is not None:
         receipt["upgrade"] = upgrade_result
         receipt["runtimeCheck"] = live_result
+        receipt["imageId"] = manifest["imageId"]
+        receipt["attemptPath"] = None if attempt_path is None else str(attempt_path)
+        receipt["environmentBackup"] = str(backup)
     write_json(paths.activation / "active.json", receipt)
+    if attempt_path is not None:
+        write_json(attempt_path, {"status": "active", "targetCommit": target,
+                                  "externalPlanSha256": plan_digest,
+                                  "newRootRef": upgrade_result["new_root_ref"] if upgrade_result else None})
     if previous is not None:
         write_json(paths.activation / "previous.json", {"targetCommit": previous})
     return "activated"
