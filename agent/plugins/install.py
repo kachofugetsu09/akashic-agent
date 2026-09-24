@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from agent.migrations.bundles import validate_migration_artifact
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
+from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugin_composition.archive import sync_directory
 
@@ -138,6 +138,7 @@ def install_git_plugin(
     plugins_home: Path | None = None,
     refresh_existing_artifact: bool = False,
     update_id: str | None = None,
+    offline_wheels: OfflineWheels | None = None,
 ) -> PluginInstallResult:
     home = (plugins_home or plugins_root()).resolve(strict=False)
     journal = ReloadJournal(workspace)
@@ -212,6 +213,7 @@ def install_git_plugin(
             refresh_existing_artifact=refresh_existing_artifact,
             journal=journal, update_id=update_id,
             previous_enabled=previous_enabled,
+            offline_wheels=offline_wheels,
         )
         plugin_id = f"{plugin_name}@{marketplace}"
         try:
@@ -304,6 +306,7 @@ def _activate_plugin_version(
     source_revision: str,
     refresh_existing_artifact: bool,
     journal: ReloadJournal, update_id: str, previous_enabled: bool | None,
+    offline_wheels: OfflineWheels | None,
 ) -> _CacheActivation:
     """Prepare one immutable artifact and publish its direct install pointer."""
 
@@ -356,9 +359,15 @@ def _activate_plugin_version(
     try:
         # 2. 在不可发现的 staging 目录复制代码并准备依赖，旧版本保持可见
         _ = shutil.copytree(clone_root, staging_root, dirs_exist_ok=True)
-        _prepare_static_python_runtimes(
-            staging_root, static_manifest, workspace=workspace
-        )
+        if offline_wheels is None:
+            _prepare_static_python_runtimes(
+                staging_root, static_manifest, workspace=workspace
+            )
+        else:
+            _prepare_static_python_runtimes(
+                staging_root, static_manifest, workspace=workspace,
+                offline_wheels=offline_wheels,
+            )
 
         # 3. 先落完整 artifact，再原子切换 stable/latest 指针对。
         if target_root.exists():
@@ -572,14 +581,24 @@ def _prepare_static_python_runtimes(
     manifest: StaticPluginManifest,
     *,
     workspace: Path,
+    offline_wheels: OfflineWheels | None = None,
 ) -> None:
     """在最终耐久路径准备环境；安装 cache 只保存不可变引用。"""
     if manifest.python:
         environments = PythonEnvironments(workspace)
-        refs = {
-            runtime.runtime_root: environments.prepare(plugin_root, runtime)
-            for runtime in manifest.python
-        }
+        refs = {}
+        used_offline_wheels = False
+        for runtime in manifest.python:
+            requirements = (plugin_root / runtime.requirements).read_text(encoding="utf-8")
+            if offline_wheels is not None and requirements.strip():
+                refs[runtime.runtime_root] = environments.prepare(
+                    plugin_root, runtime, offline_wheels=offline_wheels
+                )
+                used_offline_wheels = True
+            else:
+                refs[runtime.runtime_root] = environments.prepare(plugin_root, runtime)
+        if offline_wheels is not None and not used_offline_wheels:
+            raise ValueError("没有非空 Python requirements，不能提供离线 wheel")
         with (plugin_root / ENVIRONMENT_FILE).open("w") as stream:
             _ = stream.write(json.dumps(refs, sort_keys=True))
             stream.flush()
