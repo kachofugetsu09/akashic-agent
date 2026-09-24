@@ -78,7 +78,7 @@
 | 32 | `tests/test_content_protocols.py::test_meme_and_citation_are_independent_of_registration_order` | O：对等插件互不感知 | 两个对等内容协议的结果与注册顺序无关，证明对等插件之间没有隐式耦合。 |
 | 33 | `tests/test_message_push_plugin.py::test_push_completes_while_target_turn_is_active_and_appends_one_output` | AGENTS：message_push 只是 Message 来源 | 目标 Turn 正在运行时 push 仍能完成，且只追加一条输出。证明 message_push 没有复制出第二套执行模型。 |
 | 34 | `tests/test_conversation_source.py::test_interrupt_inputs_survive_and_old_output_cannot_commit` | C3 Turn 取消与终态 | 中断后输入不丢，被取消 Turn 的旧输出不能再提交。Turn 终态唯一。 |
-| 35 | `tests/semantic/test_context_history_contract.py::test_real_message_reply_preserves_history_embeddings_and_restart_seq` | CTX-001 上下文裁切是非破坏投影；SES-005 只追加 | 真实回复走完后，历史消息、embedding 和重启后的 seq 都不变。这个文件里只保留这一个节点，mutant 节点删除。 |
+| 35 | `tests/test_context_history_contract.py::test_real_message_reply_preserves_history_embeddings_and_restart_seq` | CTX-001 上下文裁切是非破坏投影；SES-005 只追加 | 真实回复走完后，历史消息、embedding 和重启后的 seq 都不变。已从 `tests/semantic/` 挪到 `tests/`；mutant 节点删除，用到的 oracle 已内联。 |
 | 36 | `tests/test_message_log.py::test_concurrent_writers_allocate_one_sequence_per_fact` | SES-002 seq 单调唯一 | 并发写入时每条事实恰好一个序号。 |
 | 37 | `tests/test_message_log.py::test_missing_resource_rolls_back_message_and_sequence` | SES-001 原子追加 | 资源缺失时消息和序号一起回滚，不留半条事实。 |
 | 38 | `tests/test_message_metadata.py::test_unknown_metadata_survives_restart_history_and_follow_without_plugins` | O：删除插件后核心事实照常可读；SES 公共 Message | 写入元数据的插件不在场时，历史、重启和 follow 仍能完整读回。Session 事实不依赖插件存在。 |
@@ -96,13 +96,15 @@
 清理时只删 `test_*` 函数，下列模块里的 helper 要保留，否则保留的测试会 import 失败：
 
 - `tests/conftest.py`、`tests/fixtures/plugin_workspace.py`、`tests/fixtures/durable_delivery_crash/`（第 40 条要用）
-- `tests/test_plugin_install.py`（被第 19、22、23、28 条 import）、`tests/test_plugin_fresh_root.py`（被第 22、23 条 import）、`tests/test_python_environment.py`（被 `test_plugin_install` import）
-- `tests/test_default_reply.py`、`tests/test_delivery_bindings.py`、`tests/test_message_delivery.py`（被第 31、33 条 import）
-- `tests/test_message_react.py`（被第 35 条 import）
-- `tests_scenarios/contracts/oracles.py`：第 35 条要用。建议把用到的函数内联进测试文件，再删除整个 `contracts/` 目录。
+- `tests/test_plugin_install.py` 保留 `_commit`、`_write_v3_plugin`（被第 19、22、23、28 条 import）
+- `tests/test_plugin_fresh_root.py` 保留 `module`（被第 22、23 条 import）
+- `tests/test_default_reply.py` 保留 `application`、`live_root`（被第 31 条 import）
+- `tests/support/delivery_sources.py`：从已删除的 `test_delivery_bindings.py` 抽出 `sources`（第 31、33 条与 `application` 使用）
+- `tests/support/message_react.py`：从已删除的 `test_message_react.py` 抽出 `runtime`（第 35 条使用）
+- 第 35 条用到的 `assert_rows_unchanged`、`assert_no_forbidden_writes` 已内联进 `tests/test_context_history_contract.py`；`tests_scenarios/contracts/` 已删除
 - `docker/debug/plugin_external_acceptance.py`（第 17、18 条要用）
 
-更干净的做法：把这些 helper 抽到 `tests/support/`，被引用的测试文件只留保留节点。清理完运行 `pytest --collect-only -q tests`，确认收集到 40 个节点。
+`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 40 个节点（`test_default_reply` 带参数展开为 2 个，合计 41 个用例）。
 
 ## 3. 需要补充的测试（10 个，全部来自 #766 验收）
 

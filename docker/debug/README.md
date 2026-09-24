@@ -2,6 +2,8 @@
 
 ## 统一变更影响 Gate
 
+> **已退役。** 现行验证是概念基线 pytest（`pytest -q tests`）与静态检查，清单见 [`docs/refactor/orthogonality-test-baseline.md`](../../docs/refactor/orthogonality-test-baseline.md)。`docker/debug/gate.py` 与 `tests_scenarios/contracts/` 已删除。下文只保留历史说明。
+
 实现者只需运行一个公开入口：
 
 ```bash
@@ -155,7 +157,7 @@ Gate 失败。证据位于
 迁移使用普通 pytest 覆盖执行与失败重试，CI 另以精简检查保护已注册 migration 不被改写：
 
 ```bash
-python -m pytest tests/test_migration_runner.py tests/test_yoyo_migration_append_only.py
+python -m pytest tests/test_migration_runner.py
 python scripts/check_yoyo_migrations.py --base origin/main
 ```
 
