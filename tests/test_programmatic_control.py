@@ -34,6 +34,80 @@ async def endpoint(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_programmatic_service_borrows_its_owner_for_another_fiber(tmp_path):
+    """另一个真实 Fiber 的许可不能代替 Programmatic 自己的许可。"""
+    from agent.plugin_composition import CompositionError, ServiceKey
+    from agent.plugin_composition.messages import MESSAGE_WRITERS, SESSION_ADMISSION
+    from agent.plugin_composition.tasks import TASKS
+    from plugins.programmatic.control import (
+        AdmitParams, PauseParams, PROGRAMMATIC, ResultParams, ResumeParams, SendParams,
+    )
+    from tests.test_default_reply import application
+
+    caller_key = ServiceKey("fixture.programmatic.call")
+
+    def add_sources(sources):
+        shutil.copytree(Path(__file__).parents[1] / "plugins/programmatic", sources / "programmatic")
+        caller = sources / "programmatic_caller"
+        caller.mkdir()
+        (caller / "plugin.py").write_text(
+            "from agent.plugin_composition import ServiceKey\n"
+            "from plugins.programmatic.control import PROGRAMMATIC\n"
+            "api_version = 3\n"
+            "name = 'programmatic_caller'\n"
+            "version = '1.0.0'\n"
+            "inject = (PROGRAMMATIC,)\n"
+            "CALL = ServiceKey('fixture.programmatic.call')\n"
+            "async def apply(ctx):\n"
+            "    api = ctx.require(PROGRAMMATIC)\n"
+            "    async def call(method, params):\n"
+            "        async with ctx.runtime_scope():\n"
+            "            return await api.call(method, params)\n"
+            "    await ctx.provide(CALL, call)\n",
+            encoding="utf-8",
+        )
+
+    api = None
+    session = "programmatic:other-fiber"
+    async with application(tmp_path, replying=False, extra_sources=add_sources) as (log, host):
+        root = host.live_root
+        assert root is not None
+        call = root.service_value(caller_key)
+        assert call is not None
+        api = root.context.require(PROGRAMMATIC)
+        ctx = api.ctx
+        with pytest.raises(CompositionError, match="OwnerCall"):
+            ctx.require(SESSION_ADMISSION).ensure(ctx, session, SessionAttributes("internal", "excluded"))
+        with pytest.raises(CompositionError, match="OwnerCall"):
+            ctx.require(MESSAGE_WRITERS).bind(ctx, author="user", source="programmatic",
+                body_types=(Input,), content={})
+        with pytest.raises(CompositionError, match="OwnerCall"):
+            ctx.require(TASKS).open(ctx)
+
+        admitted = await call("programmatic/session/admit", AdmitParams(session_id=session))
+        assert admitted["learning"] == "excluded"
+        sent = await call("programmatic/message/send", SendParams(
+            session_id=session, message_id="input", text="真实 Fiber 输入"))
+        assert sent["message_id"] == "input"
+        assert [row.message_id for row in log.reader(session).snapshot()] == ["input"]
+        result = await call("programmatic/message/result", ResultParams(
+            session_id=session, input_id="input"))
+        assert result["status"] == "open"
+        await call("programmatic/message/pause", PauseParams(session_id=session, message_id="pause"))
+        assert (await call("programmatic/message/result", ResultParams(
+            session_id=session, input_id="input")))["status"] == "pause"
+        await call("programmatic/message/resume", ResumeParams(
+            session_id=session, message_id="resume", input_id="input"))
+        assert (await call("programmatic/message/result", ResultParams(
+            session_id=session, input_id="input")))["status"] == "open"
+        assert [row.message_id for row in log.reader(session).snapshot()] == ["input", "pause", "resume"]
+
+    assert api is not None
+    with pytest.raises(CompositionError, match="当前 activation 不接纳新调用"):
+        await api.call("programmatic/session/admit", AdmitParams(session_id=session))
+
+
+@pytest.mark.asyncio
 async def test_programmatic_admission_is_immutable_and_ack_retries_recover_same_input(tmp_path, monkeypatch):
     async with endpoint(tmp_path, monkeypatch) as (address, core):
         session = "programmatic:test"
