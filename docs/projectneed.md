@@ -951,7 +951,7 @@ Session 无论是否可学习，都正常持久化 Input、Control、工具调�
 
 ### TST-001 语义 oracle 独立于实现
 
-P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验证。普通实现 agent 不得在同一 refactor 中同时修改 oracle 的预期结果。
+正交化概念由基线文档列出的受保护测试守护；其余 P0 不变量由静态检查、policy 或真实运行中的黑盒观察验证，不默认新增单元测试。普通实现 agent 不得在同一 refactor 中同时修改受保护测试的预期结果。
 
 ### TST-002 核对完整状态和 write set
 
