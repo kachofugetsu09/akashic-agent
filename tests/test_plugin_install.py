@@ -23,12 +23,13 @@ from agent.plugins.install import (
     set_installed_plugin_enabled,
 )
 from agent.plugins.manifest import plugins_root
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
+from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments, wheel_tree_sha256
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
     materialize_command,
 )
 from agent.plugins.source_resolver import resolve_plugin_sources, scan_plugin_sources
+from tests.test_python_environment import write_test_wheel
 
 
 def test_installed_pointer_loads_code_identity_without_toml(tmp_path: Path) -> None:
@@ -466,6 +467,83 @@ def test_install_git_plugin_prepares_discovered_python_runtime(
         ).stdout.strip()
         == "ok"
     )
+
+
+def test_install_git_plugin_offline_wheels_keep_previous_state_on_failure(tmp_path: Path) -> None:
+    """Real Git staging changes artifact refs only after exact offline install."""
+
+    repo = tmp_path / "plugin"
+    (repo / "mcp").mkdir(parents=True)
+    (repo / "mcp/requirements.txt").write_text("fixture-dep==1.0\n")
+    (repo / "mcp/run.py").write_text("import fixture_dep; print(fixture_dep.VALUE)\n")
+    _write_v3_plugin(repo, name="probe")
+    _commit(repo)
+    wheels = tmp_path / "wheels"
+    wheel = write_test_wheel(wheels, "fixture_dep")
+    home = tmp_path / "plugins-home"
+    workspace = tmp_path / "workspace"
+    data = workspace / "plugin-data/probe-lab"
+    data.mkdir(parents=True)
+    (data / "keep.txt").write_text("keep")
+
+    def install():
+        return install_git_plugin(
+            workspace=workspace, source=str(repo), marketplace="lab",
+            plugins_home=home,
+            offline_wheels=OfflineWheels(wheels, wheel_tree_sha256(wheels)),
+        )
+
+    first = install()
+    store = PythonEnvironments(workspace)
+    first_ref = json.loads((first.installed_path / ENVIRONMENT_FILE).read_text())["mcp"]
+    record = store.archive.read_descriptor(first_ref)
+    archived = store.archive.open(record["input"]["code"])
+    manifest = load_static_plugin_manifest(archived)
+    env = store.open(first_ref, archived, manifest.python[0])
+    command = materialize_command(archived, manifest.python, ("python", "mcp/run.py"), environment_root=env)
+    assert subprocess.run(command, cwd=archived, capture_output=True, text=True, check=True).stdout.strip() == "v1"
+    pointer_path = home / "cache/lab/probe/.pointers.json"
+    manifest_path = home / "manifest.toml"
+    old_pointer = pointer_path.read_bytes()
+    old_manifest = manifest_path.read_bytes()
+    old_refs = sorted(item.name for item in store.path.glob("*.ref"))
+
+    wheel.unlink()
+    with pytest.raises(ValueError, match="不能为空"):
+        install()
+    assert pointer_path.read_bytes() == old_pointer
+    assert manifest_path.read_bytes() == old_manifest
+    assert (data / "keep.txt").read_text() == "keep"
+    assert sorted(item.name for item in store.path.glob("*.ref")) == old_refs
+
+    write_test_wheel(wheels, "fixture_echo")
+    with pytest.raises(subprocess.CalledProcessError):
+        install()
+    assert pointer_path.read_bytes() == old_pointer
+    assert manifest_path.read_bytes() == old_manifest
+    assert (data / "keep.txt").read_text() == "keep"
+    assert sorted(item.name for item in store.path.glob("*.ref")) == old_refs
+    (wheels / "fixture_echo-1.0-py3-none-any.whl").unlink()
+
+    write_test_wheel(wheels, "fixture_dep", payload="v2")
+    second = install()
+    second_ref = json.loads((second.installed_path / ENVIRONMENT_FILE).read_text())["mcp"]
+    assert second_ref != first_ref
+    assert second.installed_path != first.installed_path
+    assert pointer_path.read_bytes() != old_pointer
+    assert manifest_path.read_bytes() == old_manifest
+    second_record = store.archive.read_descriptor(second_ref)
+    second_code = store.archive.open(second_record["input"]["code"])
+    second_env = store.open(second_ref, second_code, load_static_plugin_manifest(second_code).python[0])
+    second_command = materialize_command(
+        second_code, load_static_plugin_manifest(second_code).python,
+        ("python", "mcp/run.py"), environment_root=second_env,
+    )
+    assert subprocess.run(
+        second_command, cwd=second_code, capture_output=True, text=True, check=True
+    ).stdout.strip() == "v2"
+    assert not (workspace / "runtime/plugin-stable.json").exists()
+    assert (data / "keep.txt").read_text() == "keep"
 
 
 def test_retry_reuses_artifact_and_fixed_python_environment(
