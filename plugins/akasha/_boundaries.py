@@ -57,7 +57,7 @@ class ToolCatalog(Protocol):
     async def register(
         self, ctx: Context, *, name: str, description: str,
         parameters: Mapping[str, object], open: object, capture: object | None = None,
-        idempotent: bool = False, risk: str = "read-write",
+        idempotent: bool = False, risk: str = "read-write", parallel: bool = False,
     ) -> ToolRef: ...
 
     def view(self, *refs: ToolRef) -> ToolView: ...

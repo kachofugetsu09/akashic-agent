@@ -50,8 +50,9 @@ class ToolMenu(Protocol):
     @property
     def schemas(self) -> tuple[Mapping[str, Any], ...]: ...
     def name(self, binding_id: str) -> str: ...
+    def parallel(self, binding_id: str) -> bool: ...
     def decode(self, call: Any) -> DecodedCall: ...
-    async def execute(self, call: CallRef) -> object: ...
+    async def execute(self, call: CallRef, *, commit_after: Any = None) -> object: ...
     async def settle_abandoned(self, call: CallRef) -> object: ...
 
 
@@ -247,15 +248,53 @@ def _terminal_result(messages: Sequence[Message], source: str, tools: ToolMenu,
     return any(seq > boundary and ref in succeeded for ref, seq in calls.items())
 
 
-async def _settle(tools: ToolMenu, call: CallRef, capture_scope: Callable[[], RuntimeScope] | None = None) -> None:
+class _OrderGate:
+    """前驱提交完成后放行；失败时拒绝后继抢先写 ToolResult。"""
+
+    def __init__(self) -> None:
+        self._ready = asyncio.Event()
+        self._aborted = False
+
+    def release(self) -> None:
+        if not self._aborted:
+            self._ready.set()
+
+    def abort(self) -> None:
+        self._aborted = True
+        self._ready.set()
+
+    async def wait(self) -> None:
+        await self._ready.wait()
+        if self._aborted:
+            raise _CommitDeferred
+
+
+class _CommitDeferred(Exception):
+    """前驱没有按序提交，本调用保留已开始回执。"""
+
+
+async def _settle(
+    tools: ToolMenu,
+    call: CallRef,
+    capture_scope: Callable[[], RuntimeScope] | None = None,
+    *,
+    commit_after: _OrderGate | None = None,
+    scope: RuntimeScope | None = None,
+) -> None:
     """普通取消等待原调用；明确放弃由 Tools 提交终态并释放等待者。"""
-    scope = None if capture_scope is None else capture_scope()
+    # scope 由 owner task 预先取得；子任务里再取 lease 会丢失授权。
+    if scope is None and capture_scope is not None:
+        scope = capture_scope()
 
     async def execute():
+        if commit_after is None:
+            result = tools.execute(call)
+        else:
+            result = tools.execute(call, commit_after=commit_after)
         if scope is None:
-            return await tools.execute(call)
+            return await result
         async with scope:
-            return await tools.execute(call)
+            return await result
 
     operation = execute()
     try:
@@ -282,6 +321,107 @@ async def _settle(tools: ToolMenu, call: CallRef, capture_scope: Callable[[], Ru
     finally:
         if scope is not None:
             await scope.close()
+
+
+def _parallel(reader: MessageReader, tools: ToolMenu, call: CallRef) -> bool:
+    """只按当前注册分类；失效引用一律串行，真实错误留给结算路径。"""
+    message = reader.get(call.message_id)
+    body = None if message is None else message.body
+    if not isinstance(body, Output) or call.part_index >= len(body.parts):
+        return False
+    part = body.parts[call.part_index]
+    if not isinstance(part, ToolCall):
+        return False
+    try:
+        return tools.parallel(part.binding_id) is True
+    except Exception:
+        return False
+
+
+def _committed(reader: MessageReader, call: CallRef) -> bool:
+    """本调用的 ToolResult 已经在日志里；错误回执也算提交完成。"""
+    return any(
+        isinstance(message.body, ToolResult) and message.body.call_ref == call
+        for message in reader.snapshot()
+    )
+
+
+async def _run_ordered(
+    reader: MessageReader,
+    tools: ToolMenu,
+    call: CallRef,
+    gate: _OrderGate,
+    commit_after: _OrderGate | None,
+    scope: RuntimeScope | None,
+) -> None:
+    """成功、取消排空或错误回执落盘后放行；提交前失败则中止，避免后继抢先落盘。"""
+    try:
+        await _settle(tools, call, commit_after=commit_after, scope=scope)
+    except BaseException:
+        # 已落盘的回执放行后继；提交前失败或被前驱中止时不能把后继门打开。
+        if _committed(reader, call):
+            gate.release()
+        else:
+            gate.abort()
+        raise
+    else:
+        gate.release()
+
+
+async def _settle_group(
+    reader: MessageReader,
+    tools: ToolMenu,
+    calls: Sequence[CallRef],
+    limit: int,
+    capture_scope: Callable[[], RuntimeScope] | None,
+) -> None:
+    """同组调用重叠执行；提交门只在前驱完成后打开。"""
+    gates = [_OrderGate() for _ in calls]
+    tasks: list[asyncio.Task[None]] = []
+    in_flight: set[asyncio.Task[None]] = set()
+    try:
+        for index, call in enumerate(calls):
+            while len(in_flight) >= limit:
+                done, in_flight = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                for finished in done:
+                    failure = None if finished.cancelled() else finished.exception()
+                    if failure is not None:
+                        raise failure
+            scope = None if capture_scope is None else capture_scope()
+            task = asyncio.create_task(_run_ordered(
+                reader, tools, call, gates[index], gates[index - 1] if index else None, scope,
+            ))
+            tasks.append(task)
+            in_flight.add(task)
+        for task in tasks:
+            await task
+    finally:
+        for task in tasks:
+            _ = task.cancel()
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _settle_pending(
+    reader: MessageReader,
+    tools: ToolMenu,
+    source: str,
+    limit: int,
+    capture_scope: Callable[[], RuntimeScope] | None,
+) -> None:
+    """结算未闭段调用：exclusive 调用是屏障，连续 parallel 调用走有界池。"""
+    calls = _pending_calls(reader.snapshot(), source)
+    index = 0
+    while index < len(calls):
+        if not _parallel(reader, tools, calls[index]):
+            await _settle(tools, calls[index], capture_scope)
+            index += 1
+            continue
+        end = index + 1
+        while end < len(calls) and _parallel(reader, tools, calls[end]):
+            end += 1
+        await _settle_group(reader, tools, calls[index:end], limit, capture_scope)
+        index = end
 
 
 @asynccontextmanager
@@ -396,20 +536,24 @@ async def react(
     terminal_tools: frozenset[str] = frozenset(),
     capture_scope: Callable[[], RuntimeScope] | None = None,
     state: OwnerStore | None = None,
+    max_parallel_calls: int = 1,
 ) -> Message:
     """先结算已提交调用，再读日志推理并逐条提交；没有 Turn、Attempt 或历史副本。"""
     if type(max_steps) is not int or max_steps < 0:
         raise ValueError("模型请求上限必须是非负整数")
+    if type(max_parallel_calls) is not int or max_parallel_calls < 1:
+        raise ValueError("并行工具上限必须是正整数")
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     while True:
-        # 1. 串行策略停止补发并排空已开始调用；换算法无需改 Tool effect owner。
-        pending, abandoned = _open_calls(reader.snapshot(), writer.source)
+        # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
+        _, abandoned = _open_calls(reader.snapshot(), writer.source)
         for call in abandoned:
             # 已放弃调用的结算故障必须先阻断本来源：缺回执的调用不能带着未知效果进入新请求。
             await tools.settle_abandoned(call)
-        for call in pending:
-            await _settle(tools, call, capture_scope)
+        await _settle_pending(
+            reader, tools, writer.source, max_parallel_calls, capture_scope,
+        )
         snapshot = reader.snapshot()
         head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
         # 本代准备的固定身份：最近一条同来源 Input 或 abandon Control。

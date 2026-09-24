@@ -68,6 +68,7 @@ class _Registration:
     capture: Capture | None
     preparation: _Preparation | None = None
     authorization: _Authorization | None = None
+    parallel: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +198,7 @@ class ToolCatalog:
         idempotent: bool = False,
         risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
         search_hint: str | None = None,
+        parallel: bool = False,
     ) -> ToolRef:
         """目标自行校验参数 schema；注册表固定发现描述与真实资源入口。"""
         self._check_context(ctx)
@@ -211,8 +213,10 @@ class ToolCatalog:
             raise ValueError("工具风险声明无效")
         if search_hint is not None and not isinstance(search_hint, str):
             raise TypeError("工具搜索提示必须是字符串或 None")
-        if any(type(value) is not bool for value in (idempotent, public)):
+        if any(type(value) is not bool for value in (idempotent, public, parallel)):
             raise TypeError("工具执行和发现选项必须是 bool")
+        if parallel and risk != "read-only":
+            raise ValueError("只有 read-only 工具可以重叠执行")
         if capture is not None and not callable(capture):
             raise TypeError("工具 capture 必须是同步回调")
         descriptor = cast(
@@ -232,7 +236,7 @@ class ToolCatalog:
         )
 
         reference = ToolRef(name, descriptor)
-        registration = _Registration(reference, ctx, open, capture)
+        registration = _Registration(reference, ctx, open, capture, parallel=parallel)
 
         def setup() -> Callable[[], None]:
             if name in self._tools:
@@ -292,6 +296,11 @@ class ToolCatalog:
             return cleanup
 
         return await ctx.effect(setup, label=f"tool-authorize:{name}")
+
+    def allows_parallel(self, name: str) -> bool:
+        """调度只读注册事实；未知工具一律不能重叠。"""
+        registration = self._tools.get(name)
+        return registration is not None and registration.parallel
 
     def _check_context(self, ctx: Context) -> None:
         if ctx.root_instance_token is not self._ctx.root_instance_token:

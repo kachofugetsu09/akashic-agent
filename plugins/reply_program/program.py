@@ -32,6 +32,7 @@ async def run_reply(
     authorize: Authorize,
     max_output_tokens: int,
     max_steps: int,
+    max_parallel_calls: int = 4,
     tool_view: ToolView | None = None,
     tool_names: Sequence[str] | None = None,
     exclude_materials: frozenset[str] = frozenset(),
@@ -135,6 +136,7 @@ async def run_reply(
                 materials=build_materials, content=view, tools=menu,
                 max_output_tokens=max_output_tokens, max_steps=max_steps,
                 reduce=reduce, preview=preview, terminal_tools=terminal_tools,
+                max_parallel_calls=max_parallel_calls,
                 state=ctx.require(OWNER_STATE).open_scoped(ctx, "generation"),
             )
         finally:
