@@ -95,7 +95,7 @@ class _Scheduler:
 
 
 class _Skills:
-    def list_skills(self) -> tuple[Mapping[str, object], ...]:
+    async def list_skills(self) -> tuple[Mapping[str, object], ...]:
         return ({"name": "external-skill", "available": True},)
 
 

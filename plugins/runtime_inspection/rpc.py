@@ -45,7 +45,7 @@ def rpc_methods(provider: RuntimeInspectionProvider) -> dict[str, RpcMethod]:
                 _unavailable("job_not_found", f"定时任务不存在: {params.job_id}"))
 
     async def skills(params: BaseModel) -> object:
-        rows = provider.list_skills()
+        rows = await provider.list_skills()
         return ({"items": [dict(row) for row in rows]} if rows is not None else
                 _unavailable("skills_unavailable", "技能检查服务尚未绑定"))
 

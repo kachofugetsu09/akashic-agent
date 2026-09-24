@@ -117,7 +117,12 @@ async def register_skills(ctx: Context) -> ToolRef:
             cached_assets = assets
         return cached_catalog
 
-    _ = await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_catalog))
+    async def read_inspection_catalog() -> tuple[SkillRecord, ...]:
+        """在原技能 owner 的短调用作用域内读取安装资产。"""
+        async with ctx.runtime_scope():
+            return read_catalog()
+
+    _ = await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_inspection_catalog))
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
