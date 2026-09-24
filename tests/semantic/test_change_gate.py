@@ -449,6 +449,65 @@ def test_gate_build_and_scenario_have_independent_timeouts(
     assert scenario_timeout == scenario.timeout_seconds
 
 
+@pytest.mark.parametrize(
+    ("partial_stdout", "partial_stderr", "expected_stdout", "expected_stderr"),
+    [
+        (b"last test: running\n\xff", b"warning\xff", "last test: running\n\ufffd", "warning\ufffd"),
+        ("last test: running\n", "warning", "last test: running\n", "warning"),
+        (None, None, "", ""),
+    ],
+)
+def test_scenario_timeout_keeps_partial_output_and_cleans_up(
+    tmp_path: Path, monkeypatch: Any,
+    partial_stdout: bytes | str | None, partial_stderr: bytes | str | None,
+    expected_stdout: str, expected_stderr: str,
+) -> None:
+    gate = _gate_module()
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    monkeypatch.setattr(gate, "_prepare_sandbox", lambda *_args: sandbox)
+    monkeypatch.setattr(
+        gate, "_residual_resources",
+        lambda _project: {"containers": [], "networks": [], "volumes": []},
+    )
+    calls: list[tuple[list[str], int | None]] = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        calls.append((command, kwargs.get("timeout")))
+        if "run" in command:
+            raise gate.subprocess.TimeoutExpired(
+                command, 1, output=partial_stdout, stderr=partial_stderr,
+            )
+        return gate.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    scenario = gate.Scenario(
+        id="partial_output", requirements=("TST-001",), groups=("tooling",),
+        environment="public_clean_workspace", timeout_seconds=1,
+        command=("python", "-V"), observes=("process_exit",), mutants=(),
+    )
+    report = gate._run_scenario(
+        scenario, run_id="test-run", report_dir=tmp_path / "report",
+    )
+
+    assert report["status"] == "failed"
+    assert report["exitCode"] is None
+    assert report["stdout"] == expected_stdout
+    assert expected_stderr in report["stderr"]
+    assert "场景超过 1s" in report["stderr"]
+    saved = json.loads((tmp_path / "report" / "public" / "partial_output.json").read_text())
+    assert saved == report
+    assert report["cleanupExitCode"] == 0
+    assert report["residualResources"] == {
+        "containers": [], "networks": [], "volumes": [],
+    }
+    assert len(calls) == 2
+    assert calls[0][1] == scenario.timeout_seconds
+    assert "down" in calls[1][0]
+    assert calls[1][1] is None
+    assert not sandbox.exists()
+
+
 def test_change_gate_forbids_npm_network_fallback() -> None:
     compose_path = ROOT / "docker" / "debug" / "docker-compose.change-gate.yml"
     compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
