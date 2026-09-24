@@ -247,8 +247,10 @@ async def test_public_capabilities_lists_real_installed_skill_and_loads_fixed_de
                 yield probe.context
 
         catalog = await ScopedRpcRuntimeInspection(open_scope).list_capabilities()
+        skills = catalog["skills"]
+        assert isinstance(skills, list)
         assert [(item["name"], item["source_id"], item["available"])
-                for item in catalog["skills"]] == [("example", "fixture_skills", True)]
+                for item in skills] == [("example", "fixture_skills", True)]
 
         ctx = root.context
         reference = await ctx.require(TOOLS).bind_scoped(
@@ -258,6 +260,7 @@ async def test_public_capabilities_lists_real_installed_skill_and_loads_fixed_de
         async with bindings.open(reference, TOOLS) as (tools, metadata):
             async with tools.open(metadata) as tool:
                 arguments = await tool.prepare({"skill": "example"})
+                assert isinstance(arguments, Mapping)
                 result = await tool.invoke("detail", arguments)
         assert result.outcome == "success"
         detail = json.loads(cast(str, result.parts[0].value))
