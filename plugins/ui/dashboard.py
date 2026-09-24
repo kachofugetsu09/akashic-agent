@@ -116,6 +116,7 @@ class DashboardResources:
             data_root=data_root,
             validation=ctx.require(HOST_INFO).validation,
             _resolve=resolve,
+            _context=ctx,
             _workspace_roots=tuple(
                 (name, resolve_declared_workspace_root(workspace, name))
                 for name in workspace_roots

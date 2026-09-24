@@ -6,13 +6,14 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from agent.plugin_composition.model import HealthView, IncidentView, ServiceKey
+from agent.plugin_composition.requests import RequestContext
 
 if TYPE_CHECKING:
     from agent.plugin_composition.context import CompositionRoot, Context, Fiber
     from agent.plugins.manager import PluginGeneration
 
 
-RuntimeCatalogReader = Callable[["Context"], dict[str, object]]
+RuntimeCatalogReader = Callable[["Context | RequestContext"], dict[str, object]]
 RUNTIME_CATALOG = ServiceKey[RuntimeCatalogReader]("core.runtime_catalog.v1")
 
 

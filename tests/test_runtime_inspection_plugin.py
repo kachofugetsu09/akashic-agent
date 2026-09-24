@@ -530,3 +530,98 @@ async def test_client_translates_runtime_catalog_unavailable() -> None:
         assert captured.value.code == "mcp_catalog_unavailable"
     finally:
         await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manager_catalog_accepts_only_current_channel_request(tmp_path: Path) -> None:
+    """真实 Channel 请求沿原 Context 读目录，离开请求或换 task 后拒绝。"""
+    from agent.plugin_composition.channels import CHANNELS, CHANNEL_INPUT, ChannelCapability, ChannelDefinition, ChannelReady, InboundIdentity, StopReceipt
+    from agent.plugins.manager import PluginManager
+    from bus.event_bus import EventBus
+    from plugins.channels import plugin as channels_plugin
+    from plugins.akashic_clients.runtime_inspection import RuntimeInspectionError, ScopedRpcRuntimeInspection
+    from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+    source = tmp_path / "plugins" / "probe"
+    source.mkdir(parents=True)
+    source.joinpath("plugin.py").write_text(
+        "api_version = 3\nname = 'probe'\nversion = '1.0.0'\n"
+        "async def apply(ctx):\n    pass\n", encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
+    manager = PluginManager([source.parent], event_bus=EventBus(), workspace=workspace,
+                            installed_cache_root=tmp_path / "cache")
+    contexts = []
+    opened = asyncio.Event()
+
+    class Adapter:
+        def __init__(self, context):
+            self.context = context
+            contexts.append(context)
+
+        async def start(self):
+            return ChannelReady(self.context.binding_token)
+
+        async def deliver(self, request):
+            raise AssertionError("目录测试不发送外部消息")
+
+        def attach_runtime(self, ports):
+            self.ports = ports
+
+        def open_admission(self):
+            opened.set()
+
+        def close_admission(self):
+            pass
+
+        async def stop(self):
+            return StopReceipt(self.context.binding_token, True)
+
+    try:
+        await manager.load_all()
+        root = manager.live_root
+        assert root is not None
+        runtime = PluginRuntime("client", "client:g1", source, tmp_path / "data", workspace, {})
+        async def reject_input(*args, **kwargs):
+            raise AssertionError("目录测试不接受输入消息")
+
+        await root.context.provide(CHANNEL_INPUT, reject_input)
+        await root.mount(channels_plugin.apply, name="channels", inject=channels_plugin.inject, runtime=runtime)
+
+        async def contribute(ctx):
+            await ctx.require(CHANNELS).register(
+                ctx, ChannelDefinition("catalog", frozenset({ChannelCapability.INBOUND}), Adapter,
+                                       InboundIdentity.PROVIDER_MESSAGE_ID),
+            )
+
+        fiber = await root.mount(contribute, name="client", inject=(CHANNELS, CHANNEL_INPUT, RUNTIME_CATALOG), runtime=runtime)
+        assert contexts, root.receipt().incidents
+        await asyncio.wait_for(opened.wait(), 5)
+        context = contexts[0]
+        async with context.open_scope() as request:
+            reader = request.require(RUNTIME_CATALOG)
+            catalog = reader(request)
+            assert next(item for item in _rows(catalog["plugins"]) if item["id"] == "probe")
+            assert not hasattr(request, "root_instance_token")
+
+            async def unowned_child():
+                with pytest.raises(CompositionError, match="请求作用域已关闭"):
+                    reader(request)
+
+            await asyncio.create_task(unowned_child())
+        with pytest.raises(CompositionError, match="请求作用域已关闭"):
+            reader(request)
+
+        # 没有 MCP provider 应按既有 unavailable 合同返回，而非 Context AttributeError。
+        inspection = ScopedRpcRuntimeInspection(context.open_scope)
+        for call in (inspection.list_capabilities(), inspection.get_mcp("probe", "server")):
+            with pytest.raises(RuntimeInspectionError) as missing:
+                await call
+            assert missing.value.code == "mcp_provider_unavailable"
+        await fiber.dispose()
+        with pytest.raises(KeyError, match="catalog"):
+            async with context.open_scope():
+                raise AssertionError("旧 channel 不应再接纳请求")
+    finally:
+        await manager.terminate_all()

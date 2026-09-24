@@ -44,6 +44,7 @@ from agent.plugin_composition.tasks import TASKS, PluginTasks
 from session.log import MessageCatalog, MessageLog, MessagePage
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import Context, Fiber
+from agent.plugin_composition.requests import RequestContext
 from agent.restart import RESTART_GATE, RestartGate
 from agent.control.frame_book import CONTROL_FRAMES, FrameBook
 
@@ -2254,9 +2255,11 @@ class PluginManager:
             if root is not self._live_root:
                 raise RuntimeError("runtime catalog 只在当前 live Root 提供")
 
-            def read_runtime_catalog(context: Context) -> dict[str, object]:
+            def read_runtime_catalog(context: Context | RequestContext) -> dict[str, object]:
                 """Read live runtime facts only from the exact owner scope."""
 
+                if isinstance(context, RequestContext):
+                    context = context._require_context(RUNTIME_CATALOG, read_runtime_catalog)
                 if context.root_instance_token is not root.instance_token:
                     raise RuntimeError("runtime catalog 不属于当前 live Root")
                 if RUNTIME_CATALOG not in context._declared_dependencies():

@@ -15,6 +15,7 @@ from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.message_view import MessageDisplayReader
+from agent.plugin_composition.requests import RequestContext
 
 from .services import MobileUiProvider, WebUiProvider
 
@@ -42,7 +43,7 @@ MODEL_SELECTION = ServiceKey[ModelSelectionReader]("models.selection.v1")
 MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
 MOBILE_UI = ServiceKey[MobileUiProvider]("core.mobile_ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("core.web_ui.v1")
-RuntimeCatalogReader = Callable[["Context"], dict[str, object]]
+RuntimeCatalogReader = Callable[["Context | RequestContext"], dict[str, object]]
 RUNTIME_CATALOG = ServiceKey[RuntimeCatalogReader]("core.runtime_catalog.v1")
 
 INSPECTION_DOCUMENTS_LIST = rpc_method_key("inspection/documents.list")
