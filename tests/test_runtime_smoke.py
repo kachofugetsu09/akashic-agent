@@ -65,9 +65,10 @@ class _AppKwargs(TypedDict, total=False):
 
 
 class _FakeDashboardServer(uvicorn.Server):
-    """Expose the only server shutdown flag used by fault injection tests."""
+    """Represent an unbound server in host fault injection tests."""
 
     def __init__(self) -> None:
+        self.started = False
         self.should_exit = False
 
 
