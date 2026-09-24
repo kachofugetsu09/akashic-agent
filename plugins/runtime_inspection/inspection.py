@@ -24,7 +24,7 @@ class SchedulerReader(Protocol):
 class SkillReader(Protocol):
     """技能目录只读投影的窄输入。"""
 
-    def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
+    async def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
 
 
 SCHEDULER_INSPECTION = ServiceKey[SchedulerReader]("scheduler.inspection.v1")
@@ -145,11 +145,11 @@ class RuntimeInspectionProvider:
             }
         return {**summary, "markdown": content}
 
-    def list_skills(self) -> tuple[Mapping[str, object], ...] | None:
+    async def list_skills(self) -> tuple[Mapping[str, object], ...] | None:
         """读取当前 generation 的技能 provider；缺失时保持局部 unavailable。"""
 
         service = self._skills
-        return None if service is None else service.list_skills()
+        return None if service is None else await service.list_skills()
 
     def list_jobs(self) -> tuple[Mapping[str, object], ...] | None:
         """读取当前 generation 的 scheduler provider。"""

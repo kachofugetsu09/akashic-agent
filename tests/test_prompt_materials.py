@@ -13,12 +13,13 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.config_input import save_config
 from pydantic import ValidationError
 
-from agent.plugin_composition import CompositionError, FiberState, ServiceKey
+from agent.plugin_composition import CompositionError, FiberState, PluginRuntime, ServiceKey
 from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
 from agent.plugin_composition.assets import InstalledAsset
+from agent.plugin_composition.mcp_slots import MCP_SERVERS
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.content.plugin import check_text
@@ -26,6 +27,8 @@ from plugins.context.materials import MATERIALS
 from plugins.context.plugin import Config
 from plugins.conversation.plugin import check_origin
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from plugins.akashic_clients.capabilities import INSPECTION_SKILLS_LIST, RUNTIME_CATALOG
+from plugins.akashic_clients.runtime_inspection import ScopedRpcRuntimeInspection
 from plugins.sources.plugin import SOURCES
 from session.log import MessageLog
 from session.artifact_store import ArtifactStore
@@ -95,7 +98,7 @@ async def application(tmp_path):
     initialize_plugin_workspace(workspace)
     log = MessageLog(workspace / "sessions.db")
     store = ArtifactStore(workspace / "sessions.db")
-    for name in ("content", "context", "tools"):
+    for name in ("content", "context", "tools", "runtime_inspection"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     prompt_sources(sources)
@@ -190,24 +193,76 @@ async def test_prompt_fails_on_missing_or_corrupt_veda_without_reset(tmp_path, p
 
 
 @pytest.mark.asyncio
-async def test_skill_catalog_cache_still_requires_the_calling_task_lease(tmp_path):
+async def test_skill_inspection_borrows_its_owner_and_direct_asset_read_still_requires_a_lease(tmp_path):
     async with application(tmp_path) as (_, host):
         root = host.live_root
         assert root is not None
         generation = host.generation("standard_tools")
         assert generation is not None and generation.fiber is not None
         context = generation.fiber.context
-        async with context.runtime_scope():
-            service = context.require(ServiceKey("standard_tools.skill_inspection.v1"))
-            assert [item["name"] for item in service.list_skills()] == ["example"]
-
-            async def inherited_task():
-                return service.list_skills()
-
-            with pytest.raises(CompositionError, match="授权需要当前 Context"):
-                await asyncio.create_task(inherited_task())
+        service = context.require(ServiceKey("standard_tools.skill_inspection.v1"))
+        assert [item["name"] for item in await service.list_skills()] == ["example"]
+        assert [item["name"] for item in await asyncio.create_task(service.list_skills())] == ["example"]
         with pytest.raises(CompositionError, match="授权需要当前 Context"):
-            service.list_skills()
+            context.require(INSTALLED_ASSETS)(context)
+    with pytest.raises(CompositionError):
+        await service.list_skills()
+
+
+@pytest.mark.asyncio
+async def test_public_capabilities_lists_real_installed_skill_and_loads_fixed_detail(tmp_path):
+    async with application(tmp_path) as (_, host):
+        root = host.live_root
+        assert root is not None
+
+        class McpTargets:
+            root_instance_token = root.instance_token
+
+            def catalog(self):
+                return []
+
+        await root.context.provide(MCP_SERVERS, McpTargets())
+
+        async def mount_probe(ctx):
+            ctx.require(RUNTIME_CATALOG)
+            ctx.require(INSPECTION_SKILLS_LIST)
+
+        probe = await root.mount(
+            mount_probe,
+            name="skills-client-probe",
+            inject=(RUNTIME_CATALOG, INSPECTION_SKILLS_LIST),
+            runtime=PluginRuntime(
+                plugin_id="skills-client-probe",
+                generation_id="skills-client-probe:g1",
+                plugin_dir=tmp_path,
+                data_dir=tmp_path / "probe-data",
+                workspace=tmp_path / "workspace",
+                config={},
+            ),
+        )
+
+        @asynccontextmanager
+        async def open_scope():
+            async with probe.context.runtime_scope():
+                yield probe.context
+
+        catalog = await ScopedRpcRuntimeInspection(open_scope).list_capabilities()
+        assert [(item["name"], item["source_id"], item["available"])
+                for item in catalog["skills"]] == [("example", "fixture_skills", True)]
+
+        ctx = root.context
+        reference = await ctx.require(TOOLS).bind_scoped(
+            ctx.require(ALL_TOOLS)().select("load_skill"), ctx.require(BINDINGS)
+        )
+        bindings = ctx.require(BINDINGS)
+        async with bindings.open(reference, TOOLS) as (tools, metadata):
+            async with tools.open(metadata) as tool:
+                arguments = await tool.prepare({"skill": "example"})
+                result = await tool.invoke("detail", arguments)
+        assert result.outcome == "success"
+        detail = json.loads(cast(str, result.parts[0].value))
+        assert detail["instructions"] == "读取 resource.txt，保留原内容。"
+        assert (Path(detail["base_directory"]) / "resource.txt").read_text() == "resource-a"
 
 
 @pytest.mark.asyncio
