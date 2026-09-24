@@ -79,7 +79,9 @@ def test_offline_wheels_install_transitive_and_keep_final_script(tmp_path: Path,
     ref = store.prepare(code, manifest.python[0], offline_wheels=offline)
     assert store.prepare(code, manifest.python[0], offline_wheels=offline) == ref
     record = store.archive.read_descriptor(ref)
-    assert record["input"]["wheel_tree_sha256"] == digest
+    record_input = record["input"]
+    assert isinstance(record_input, Mapping)
+    assert record_input["wheel_tree_sha256"] == digest
     root = store.open(ref, code, manifest.python[0])
     script = root / ".venv/bin/fixture-echo"
     assert f"{root}/.venv/bin/python" in script.read_text()
@@ -171,7 +173,9 @@ def test_open_checks_optional_wheel_digest_but_not_wheel_source(tmp_path: Path):
     store = PythonEnvironments(tmp_path / "workspace")
     ref = store.prepare(code, manifest.python[0])
     record = store.archive.read_descriptor(ref)
-    assert "wheel_tree_sha256" not in record["input"]
+    record_input = record["input"]
+    assert isinstance(record_input, Mapping)
+    assert "wheel_tree_sha256" not in record_input
     assert store.open(ref, code, manifest.python[0]).is_dir()
     broken = json.loads(json.dumps(record, default=lambda value: dict(value)))
     broken["input"]["wheel_tree_sha256"] = "bad"
