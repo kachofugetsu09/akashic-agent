@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 
@@ -10,7 +11,7 @@ from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 from agent.plugin_contracts import Input, Output
 
 from .learning import Learning, LearningConfig
-from .projection import input_features
+from .projection import Sample, input_features
 
 type Embed = Callable[[list[str]], Awaitable[list[list[float]]]]
 
@@ -36,8 +37,15 @@ class SemanticInterest:
         records = self._embeddings.bind(self._learning.text)
         prototypes: list[np.ndarray] = []
         # 1. 固定消息上界；学习准入继续由 Akasha 独占，内部和未完成工作没有样本。
-        samples = self._learning.samples(self._catalog, rule, heads=self._catalog.snapshot_heads())
-        for sample in samples:
+        heads = self._catalog.snapshot_heads()
+        samples: list[Sample] = []
+        for session_id, head in heads.items():
+            samples.extend(self._learning.samples(self._catalog, rule, heads={session_id: head}))
+            await asyncio.sleep(0)
+        samples.sort(key=lambda sample: sample.key)
+        for index, sample in enumerate(samples):
+            if index % 32 == 0:
+                await asyncio.sleep(0)
             ending = sample.ending
             if ending.recorded_at > through or not isinstance(ending.body, Output) or ending.body.finish != "complete":
                 continue
