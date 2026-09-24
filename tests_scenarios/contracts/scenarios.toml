@@ -323,8 +323,7 @@ command = [
   "tests/test_resource_providers.py::test_apply_owns_workload_before_controller_await_and_uses_real_reference",
   "tests/test_workload_borrow.py::test_replacement_cannot_reuse_endpoint_until_borrow_is_closed",
   "tests/test_workload_borrow.py::test_unconfirmed_start_retains_request_without_replaying_cleanup",
-  "tests/test_workload_boot_cleanup.py::test_new_boot_cleans_once_before_apply_and_root_changes_do_not",
-  "tests/test_workload_boot_cleanup.py::test_bad_cleanup_receipt_blocks_boot_and_keeps_failure_owner",
+  "tests/test_workload_boot_cleanup.py",
   "tests/test_plugin_uninstall_root_drain.py::test_uninstall_accepts_before_target_owner_drains_and_preserves_peer",
   "tests/semantic/test_contract_oracles.py::test_plugin_data_oracle_rejects_uninstall_delete_mutant",
 ]
