@@ -3,16 +3,18 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition.message_view import read_message_rows, session_row
+from .notifications import NotificationFeed, notification_events, parse_cursor
 from .services import AttachmentStorePort as AttachmentStore
 from .services import (
     InvalidPage,
@@ -305,6 +307,19 @@ def create_chat_app(
         return {"items": [session_row(cast(Any, entry)) for entry in page.items], "total": page.total,
                 "next_cursor": None if page.next_cursor is None else {
                     "updated_at": page.next_cursor[0], "session_id": page.next_cursor[1]}}
+
+    @app.get("/api/chat/notifications/stream")
+    async def notification_stream(since: str | None = Query(default=None)) -> StreamingResponse:
+        try:
+            cursor = parse_cursor(since, datetime.now(UTC))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="since 必须是 ISO 时间") from error
+        feed = NotificationFeed(open_message_catalog, prefix=f"{channel.name}:")
+        return StreamingResponse(
+            notification_events(feed, cursor),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/chat/navigation")
     def chat_navigation() -> dict[str, str]:
