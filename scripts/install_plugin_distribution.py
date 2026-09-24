@@ -38,7 +38,6 @@ from agent.plugins.input_preparation import prepare_plugin_input, _source_revisi
 from agent.plugins.reload_journal import ReloadJournal, JournalPreflight
 from agent.plugins.selection import PluginSelection, SelectionConflictError, SelectionWriteError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
-from scripts.upgrade_plugin_selection import _plain, _save
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -733,6 +732,22 @@ def _current_artifact(
     if data.is_symlink() or not data.is_dir():
         raise ValueError(f"incomplete_or_drift: plugin-data 身份无效: {data}")
     return artifact, _code_identity(artifact), _provenance(artifact)
+
+
+def _plain(path: Path, *, directory: bool = False) -> None:
+    if path.is_symlink() or not (path.is_dir() if directory else path.is_file()):
+        raise ValueError(f"元数据路径必须是普通{'目录' if directory else '文件'}: {path}")
+
+
+def _save(path: Path, content: bytes) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with path.open("xb") as stream:
+        path.chmod(0o600)
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    if path.read_bytes() != content:
+        raise RuntimeError(f"备份校验失败: {path}")
 
 
 def _backup_adoption(
