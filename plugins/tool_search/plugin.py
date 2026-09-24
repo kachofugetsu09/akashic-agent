@@ -264,6 +264,7 @@ async def apply(ctx: Context) -> None:
         public=False,
         idempotent=True,
         risk="read-only",
+        parallel=True,
     )
     view = catalog.view(search_ref)
     _ = await ctx.provide(TOOL_SEARCH_TOOLS, view)

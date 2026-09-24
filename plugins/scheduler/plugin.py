@@ -96,6 +96,7 @@ async def apply(ctx: Context) -> None:
         open=open_list,
         idempotent=True,
         risk="read-only",
+        parallel=True,
     )
 
     async def program(task: Task, reader: MessageReader) -> Message:

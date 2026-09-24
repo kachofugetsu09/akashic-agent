@@ -283,7 +283,15 @@ docs/
 │   ├── 0062-tools-flow-through-provider-views.md
 │   ├── 0063-execution-failures-have-terminal-results.md
 │   ├── 0064-plugin-boundary-is-machine-enforced.md
-│   └── 0065-plugin-boundary-checks-do-not-grant-core-ownership.md
+│   ├── 0065-plugin-boundary-checks-do-not-grant-core-ownership.md
+│   ├── 0066-yoyo-current-baseline.md
+│   ├── 0067-clients-are-ordinary-plugin.md
+│   ├── 0068-compaction-uses-one-recent-window.md
+│   ├── 0069-bindings-follow-selected-runtime-scope.md
+│   ├── 0070-plugins-own-persisted-data.md
+│   ├── 0071-plugin-composition-and-whole-runtime-updates.md
+│   ├── 0072-single-graph-local-plugin-updates.md
+│   └── 0073-parallel-tool-calls-commit-in-model-order.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-channel-client-adapters.md

@@ -40,6 +40,7 @@ class ToolCatalog(Protocol):
         self, ctx: Context, *, name: str, description: str, parameters: Mapping[str, object],
         open: Callable[[Mapping[str, object]], AbstractAsyncContextManager[object]],
         idempotent: bool, risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
+        parallel: bool = False,
     ) -> ToolRef: ...
     def view(self, *refs: ToolRef) -> ToolView: ...
 

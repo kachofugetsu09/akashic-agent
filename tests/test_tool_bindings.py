@@ -975,3 +975,37 @@ async def test_local_tool_prepare_and_authorize_protect_contributor_scopes(tmp_p
     assert target_fiber.state is FiberState.ACTIVE
     await plugin_tasks.close()
     await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_parallel_flag_stays_out_of_binding_description(tmp_path):
+    """重叠执行是目录事实，不改写 binding 描述；写入工具不能声明重叠。"""
+    root = CompositionRoot("parallel-flag")
+    tools_fiber, tools_ctx, catalog, plugin_tasks, _admission = await _mount_local_tools(
+        root, tmp_path, [],
+    )
+
+    @asynccontextmanager
+    async def open_target(_state):
+        yield object()
+
+    try:
+        async with tools_ctx.runtime_scope():
+            ref = await catalog.register(
+                tools_ctx, name="read_example", description="read",
+                parameters={"type": "object"}, open=open_target,
+                risk="read-only", parallel=True,
+            )
+            assert "parallel" not in ref.description
+            assert catalog.allows_parallel("read_example") is True
+            assert catalog.allows_parallel("missing") is False
+            with pytest.raises(ValueError, match="read-only"):
+                await catalog.register(
+                    tools_ctx, name="write_example", description="write",
+                    parameters={"type": "object"}, open=open_target,
+                    risk="read-write", parallel=True,
+                )
+    finally:
+        await plugin_tasks.close()
+        await tools_fiber.dispose()
+        await root.dispose()

@@ -67,6 +67,7 @@ class ToolCatalog(Protocol):
         idempotent: bool = False,
         risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
         search_hint: str | None = None,
+        parallel: bool = False,
     ) -> object: ...
 
     def view(self, *refs: object) -> ToolView: ...
