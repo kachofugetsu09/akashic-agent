@@ -5,8 +5,11 @@ import inspect
 import logging
 import os
 import signal
+import stat
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+import uvicorn
 
 from agent.config import resolve_app_server_endpoint
 from agent.control.service import ControlService
@@ -146,6 +149,37 @@ def _wait_server_task(
     return wait
 
 
+def _remove_dashboard_socket(
+    server: uvicorn.Server | None,
+    task: asyncio.Task[None] | None,
+) -> Callable[[], Awaitable[None]]:
+    """Remove this host's Unix socket after its dashboard listener has stopped."""
+
+    async def remove() -> None:
+        if server is None:
+            return
+        if task is not None and not task.done():
+            raise RuntimeError("Dashboard server task is still running")
+        if not server.started:
+            return
+        if any(listener.is_serving() for listener in server.servers):
+            raise RuntimeError("Dashboard Unix socket is still serving")
+        uds = server.config.uds
+        if uds is None:
+            return
+        path = Path(uds)
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            return
+        if not stat.S_ISSOCK(mode):
+            raise RuntimeError(f"Dashboard socket path is not a socket: {path}")
+        # Python 3.12 closes the listener but leaves its Unix socket pathname.
+        path.unlink()
+
+    return remove
+
+
 class AppRuntime:
     def __init__(
         self,
@@ -172,7 +206,7 @@ class AppRuntime:
         self.core: CoreRuntime | None = None
         self.bus = None
         self.event_bus: EventBus | None = None
-        self.dashboard_server = None
+        self.dashboard_server: uvicorn.Server | None = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
@@ -424,6 +458,10 @@ class AppRuntime:
                 (
                     "dashboard_server.wait",
                     _wait_server_task(self.dashboard_task),
+                ),
+                (
+                    "dashboard_socket.remove",
+                    _remove_dashboard_socket(self.dashboard_server, self.dashboard_task),
                 ),
                 ("message_bus.aclose", _close_message_bus(self.bus)),
                 (
