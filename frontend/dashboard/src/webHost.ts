@@ -146,8 +146,18 @@ class BrowserCatalogSession implements WebHostSession {
       return () => host.replaceChildren();
     }
     const dispose = this.renderEntry(entry, host);
-    this.renderEffects.push(dispose);
-    return dispose;
+    const notice = document.createElement("p");
+    if (this.errors.size) {
+      notice.className = "web-host-entry-error";
+      notice.setAttribute("role", "alert");
+      notice.textContent = `部分插件界面加载失败：${[...this.errors]
+        .map(([id, error]) => `${id}：${error.message}`).join("；")}`;
+      // 根插件拥有 host 的内容；错误提示不插入它的渲染树。
+      document.body.prepend(notice);
+    }
+    const close = once(() => { notice.remove(); dispose(); });
+    this.renderEffects.push(close);
+    return close;
   }
 
   close(): void {
@@ -334,10 +344,10 @@ class BrowserCatalogSession implements WebHostSession {
   private verifyContractUse(): void {
     for (const owner of this.activations) {
       if (owner.disposed) continue;
-      const requires = this.injections
+      // 同一 list mount 可以登记多个 entry；依赖描述的是 mount 集合。
+      const requires = [...new Set(this.injections
         .filter((item) => item.owner === owner)
-        .map((item) => item.mountId)
-        .sort();
+        .map((item) => item.mountId))].sort();
       const provides = [...this.mounts.values()]
         .filter((mount) => mount.parentEntry?.owner === owner)
         .map((mount) => mount.id)
