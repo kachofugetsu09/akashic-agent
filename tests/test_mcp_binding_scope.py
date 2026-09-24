@@ -24,6 +24,49 @@ from tests.test_plugin_install import _commit
 SERVICE = ServiceKey[Callable[[], AbstractAsyncContextManager[McpServer]]]("test.bound.mcp")
 
 
+@pytest.mark.asyncio
+async def test_declared_owner_keeps_worker_and_stale_context_boundaries(tmp_path):
+    """未声明的 key 也不能绕过同步线程和失活 Context 的前置拒绝。"""
+    from agent.plugin_composition import CompositionRoot, PluginRuntime
+    from agent.plugin_composition.executor import ExecutorService, SyncTask
+    from agent.plugin_composition.runtime_catalog import RUNTIME_MCP_DETAIL
+
+    root = CompositionRoot("declared-owner-boundaries")
+    executor = ExecutorService(max_workers=1)
+    reader = object()
+    trigger = ServiceKey[str]("test.declared-owner-trigger")
+
+    async def provide_trigger(ctx):
+        await ctx.provide(trigger, "ready")
+
+    async def apply(ctx):
+        ctx.require(trigger)
+
+    try:
+        provider = await root.mount(provide_trigger, name="trigger")
+        fiber = await root.mount(
+            apply, name="reader-without-detail", inject=(trigger,),
+            runtime=PluginRuntime("reader", "reader:g1", tmp_path, tmp_path / "data", tmp_path / "workspace", {}),
+        )
+        context = fiber.context
+
+        def inspect_from_worker():
+            with pytest.raises(CompositionError) as failure:
+                context.require_declared_runtime_owner(RUNTIME_MCP_DETAIL, reader)
+            assert failure.value.code == "CONTEXT_IN_SYNC_WORKER"
+
+        await executor.parallel_sync((SyncTask("inspect-context", inspect_from_worker),))
+        await provider.dispose()
+        await root.mount(provide_trigger, name="trigger")
+        assert fiber.context is not context
+        with pytest.raises(CompositionError) as failure:
+            context.require_declared_runtime_owner(RUNTIME_MCP_DETAIL, reader)
+        assert failure.value.code == "STALE_ACTIVATION"
+    finally:
+        await executor.aclose()
+        await root.dispose()
+
+
 def _write_source(path, source):
     """Parse and compile fixture source in memory before writing it."""
     tree = ast.parse(source, filename=str(path))
