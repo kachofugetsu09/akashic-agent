@@ -1111,6 +1111,15 @@ def _build_change_gate_image(run_id: str, report_dir: Path) -> dict[str, object]
     return record
 
 
+def _timeout_text(value: bytes | str | None) -> str:
+    """Read partial subprocess output without hiding a timeout on bad bytes."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def _run_scenario(
     scenario: Scenario, *, run_id: str, report_dir: Path
 ) -> dict[str, object]:
@@ -1123,6 +1132,8 @@ def _run_scenario(
     started = time.monotonic()
     result: subprocess.CompletedProcess[str] | None = None
     timeout_error = ""
+    timeout_stdout = ""
+    timeout_stderr = ""
     cleanup_result: subprocess.CompletedProcess[str] | None = None
 
     # 2. 在只读源码挂载中执行声明命令，失败输出仍写入公开报告。
@@ -1143,8 +1154,10 @@ def _run_scenario(
                 text=True,
                 timeout=scenario.timeout_seconds,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
             timeout_error = f"场景超过 {scenario.timeout_seconds}s"
+            timeout_stdout = _timeout_text(error.stdout)
+            timeout_stderr = _timeout_text(error.stderr)
     finally:
         cleanup_result = subprocess.run(
             _compose_command(project, "down", "--remove-orphans", "--volumes"),
@@ -1167,8 +1180,10 @@ def _run_scenario(
         "command": list(scenario.command),
         "durationSeconds": round(time.monotonic() - started, 3),
         "exitCode": None if result is None else result.returncode,
-        "stdout": "" if result is None else result.stdout,
-        "stderr": timeout_error if result is None else result.stderr,
+        "stdout": timeout_stdout if result is None else result.stdout,
+        "stderr": (
+            f"{timeout_stderr}\n{timeout_error}" if timeout_stderr else timeout_error
+        ) if result is None else result.stderr,
         "cleanupExitCode": cleanup_result.returncode,
         "residualResources": residual,
         "observes": list(scenario.observes),
