@@ -262,6 +262,13 @@ artifact/运行环境可用，恢复点本身不复制其目标。
 完整有序 Root，且 doctor 与 live selected Fiber 均通过，才只读返回 `already_active`。恢复点与
 runtime.env 备份由失败 receipt/attempt 路径关联；实际整份恢复和受影响 owner 的结算须分别取证，
 不能删除失败 receipt 或单靠旧 Root 指针宣称已恢复。
+完成停机升级后，创建 Workload 目录或写入 runtime.env 若失败，release 在尚未调用目标启动入口的
+阶段写 `before_target_start` failure，保留 `targetStarted=false`、原错误、升级结果和恢复点。该明确阶段
+与 `stopped_upgrade` 一样可以在实际整份恢复后结算；启动已被尝试或阶段未知时仍拒绝结算。
+成功启动并核对后，`active.json` 是当前成功的唯一权威 receipt；原 attempt 再保存从该 receipt 得到的
+终态副本，供后续 active 被新计划覆盖时保留历史。若终态副本写入中断而 attempt 仍为 pending，
+同 plan 只读 replay 仍需核对其与 active、Root、doctor 和 live Fiber 的完整绑定。新 plan 入场前
+先以相同核对确认旧成功，再把终态副本写回原 attempt；任一绑定或实时核对失败都不放行新计划。
 若失败明确发生在目标 runtime 启动前，且升级镜像无网络、仅挂载 state/backup/只读输入，operator
 完成显式整份恢复后可运行
 `akashic-release settle-restored --failure <activation/failed-*.json>`。该命令在服务停止和既有两把

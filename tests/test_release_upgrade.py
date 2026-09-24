@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,317 @@ def _release_case(tmp_path: Path, monkeypatch) -> tuple[ReleasePaths, Path, Path
     monkeypatch.setattr(activate, "start_bridge", lambda **kwargs: events.append("bridge"))
     monkeypatch.setattr(activate, "start_core", lambda **kwargs: events.append("core"))
     return paths, manifest, environment, events
+
+
+def _external_activation_case(tmp_path: Path, monkeypatch):
+    """Use real selection and backup owners around a controlled service boundary."""
+
+    paths = ReleasePaths(tmp_path / "release")
+    paths.create_layout()
+    workspace = paths.state / "workspace"
+    home = paths.state / "plugin-home"
+    workspace.mkdir()
+    home.mkdir()
+    (paths.state / "config.toml").write_text("[runtime]\n")
+    data = workspace / "plugin-data/fixture"
+    data.mkdir(parents=True)
+    (data / "data.txt").write_text("v1")
+    selection = PluginSelection(workspace)
+    selection.initialize()
+    old_root = selection.commit((), expected_ref=None)
+    _ = ReloadJournal(workspace)
+    write_json(paths.activation / "active.json", {"status": "active", "targetCommit": "a" * 40})
+    manifest = paths.release("b" * 40)
+    image = "sha256:" + "b" * 64
+    write_json(manifest, {"sourceCommit": "b" * 40, "imageId": image})
+    environment = tmp_path / "runtime.env"
+    environment.write_text("OLD=value\n")
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    events: list[str] = []
+    ticks = iter(datetime(2026, 9, 24, 12, minute, tzinfo=timezone.utc) for minute in range(10))
+    monkeypatch.setattr(activate, "datetime", type("Clock", (), {"now": staticmethod(lambda tz: next(ticks))}))
+    monkeypatch.setattr(activate, "release_environment", lambda **kwargs: {
+        "AKASHIC_CONFIG": str(paths.state / "config.toml"),
+        "AKASHIC_WORKSPACE": str(workspace),
+        "AKASHIC_PLUGIN_HOME": str(home),
+        "AKASHIC_RUNTIME_COMMIT": "b" * 40,
+        "AKASHIC_RUNTIME_TREE": "c" * 40,
+        "AKASHIC_CONTAINER_NAME": "fixture-core",
+    })
+    monkeypatch.setattr(activate, "verify_release", lambda path: events.append("doctor"))
+    monkeypatch.setattr(activate, "_prepare_workload_dirs", lambda paths: events.append("workload_dirs"))
+    monkeypatch.setattr(activate, "stop_runtime", lambda **kwargs: events.append("stop"))
+    monkeypatch.setattr(activate, "start_bridge", lambda **kwargs: events.append("bridge"))
+    monkeypatch.setattr(activate, "start_core", lambda **kwargs: events.append("core"))
+
+    def stopped_upgrade(**kwargs):
+        if kwargs.get("preflight_only"):
+            events.append("preflight")
+            return {"status": "preflight_ok"}
+        events.append("upgrade")
+        before = selection.read()
+        backup = kwargs["backup_dir"]
+        backup_release_state(paths.state, backup)
+        (data / "data.txt").write_text("v2")
+        new_root = selection.commit((), expected_ref=before)
+        return {"status": "selected_not_started", "old_root_ref": before,
+                "new_root_ref": new_root, "ordered_components": [],
+                "backup_dir": str(backup),
+                "external_plan_sha256": kwargs["expected_plan_sha256"]}
+
+    monkeypatch.setattr(activate, "_stopped_upgrade", stopped_upgrade)
+
+    def run(command, **kwargs):
+        if command[:2] == ["docker", "exec"]:
+            events.append("live")
+            return subprocess.CompletedProcess(command, 0, json.dumps({
+                "selection_ref": selection.read(), "selection_components": [], "plugins": [],
+            }), "")
+        if command[:2] == ["systemctl", "is-active"]:
+            return subprocess.CompletedProcess(command, 3, "inactive\n", "")
+        raise AssertionError(command)
+
+    def plan_for(root: str, name: str) -> Path:
+        plan = inputs / f"{name}.json"
+        plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": root,
+                                    "targets": [{"plugin_id": "outside@external",
+                                                 "bundle_relative_path": "outside.bundle",
+                                                 "bundle_sha256": "d" * 64,
+                                                 "target_commit": "c" * 40}]}))
+        return plan
+
+    return paths, manifest, environment, inputs, selection, data, events, run, plan_for
+
+
+@pytest.mark.parametrize("failing_write", ["workload_dirs", "environment"])
+def test_external_prestart_write_failure_can_settle_full_restore(tmp_path, monkeypatch, failing_write):
+    paths, manifest, environment, inputs, selection, data, events, run, plan_for = (
+        _external_activation_case(tmp_path, monkeypatch))
+    old_root = selection.read()
+    assert old_root is not None
+    plan = plan_for(old_root, "first")
+    original_atomic = activate.atomic_write
+    if failing_write == "workload_dirs":
+        monkeypatch.setattr(activate, "_prepare_workload_dirs",
+                            lambda paths: (_ for _ in ()).throw(OSError("workload dir failed")))
+    else:
+        def fail_environment(path, content):
+            if path == environment:
+                raise OSError("runtime.env replace failed")
+            return original_atomic(path, content)
+        monkeypatch.setattr(activate, "atomic_write", fail_environment)
+
+    with pytest.raises(RuntimeError, match="启动前"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=plan,
+                                  external_inputs=inputs)
+    assert "upgrade" in events and "bridge" not in events and "core" not in events
+    attempt_path = next(paths.activation.glob("attempt-external-*.json"))
+    failed_path = next(paths.activation.glob("failed-*.json"))
+    attempt = read_json(attempt_path)
+    failed = read_json(failed_path)
+    assert failed["status"] == "maintenance_required"
+    assert failed["phase"] == "before_target_start" and failed["targetStarted"] is False
+    assert failed["attemptPath"] == str(attempt_path)
+    assert failed["upgrade"]["new_root_ref"] == selection.read()
+    assert failed["backupDir"] == attempt["backupDir"]
+    assert failed["environmentBackup"] == attempt["environmentBackup"]
+    assert failed["environmentBackupSha256"] == attempt["environmentBackupSha256"]
+    assert "failed" in failed["detail"]
+    before = list(events)
+    with pytest.raises(RuntimeError, match="未结算 release failure"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=plan,
+                                  external_inputs=inputs)
+    assert events == [*before, "stop"]
+    with pytest.raises(RuntimeError, match="未完整恢复"):
+        activate.settle_restored_failure(paths=paths, failed_path=failed_path,
+                                         environment_file=environment, run=run)
+    post_failure = tmp_path / "post-failure-state"
+    shutil.copytree(paths.state, post_failure, symlinks=True)
+    shutil.rmtree(paths.state)
+    shutil.copytree(Path(attempt["backupDir"]) / "state", paths.state, symlinks=True)
+    environment.write_bytes(Path(attempt["environmentBackup"]).read_bytes())
+    assert selection.read() == old_root and (data / "data.txt").read_text() == "v1"
+    settled = activate.settle_restored_failure(paths=paths, failed_path=failed_path,
+                                               environment_file=environment, run=run)
+    assert settled["status"] == "verified_full_restore"
+    monkeypatch.setattr(activate, "_prepare_workload_dirs", lambda paths: events.append("workload_dirs"))
+    monkeypatch.setattr(activate, "atomic_write", original_atomic)
+    second = plan_for(old_root, "second")
+    assert activate.activate_release(paths=paths, manifest_path=manifest,
+                                     environment_file=environment, mise=tmp_path / "mise",
+                                     run=run, upgrade=True, external_plan=second,
+                                     external_inputs=inputs) == "activated"
+
+
+def test_active_receipt_survives_terminal_attempt_write_failure(tmp_path, monkeypatch):
+    paths, manifest, environment, inputs, selection, data, events, run, plan_for = (
+        _external_activation_case(tmp_path, monkeypatch))
+    old_root = selection.read()
+    assert old_root is not None
+    first = plan_for(old_root, "first")
+    original_write = activate.write_json
+    failed_once = False
+
+    def fail_terminal(path, document):
+        nonlocal failed_once
+        if (path.name.startswith("attempt-external-")
+            and document.get("status") == "active" and not failed_once):
+            failed_once = True
+            raise OSError("terminal attempt fsync failed")
+        return original_write(path, document)
+
+    monkeypatch.setattr(activate, "write_json", fail_terminal)
+    with pytest.raises(OSError, match="terminal attempt"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=first,
+                                  external_inputs=inputs)
+    assert read_json(paths.activation / "active.json")["status"] == "active"
+    first_attempt = next(paths.activation.glob("attempt-external-*.json"))
+    assert read_json(first_attempt)["status"] == "pending"
+    after_success = list(events)
+    assert activate.activate_release(paths=paths, manifest_path=manifest,
+                                     environment_file=environment, mise=tmp_path / "mise",
+                                     run=run, upgrade=True, external_plan=first,
+                                     external_inputs=inputs) == "already_active"
+    assert events == [*after_success, "doctor", "live"]
+    current_root = selection.read()
+    assert current_root is not None
+    second = plan_for(current_root, "second")
+    assert activate.activate_release(paths=paths, manifest_path=manifest,
+                                     environment_file=environment, mise=tmp_path / "mise",
+                                     run=run, upgrade=True, external_plan=second,
+                                     external_inputs=inputs) == "activated"
+    assert read_json(first_attempt)["status"] == "active"
+    assert read_json(first_attempt)["backupDir"]
+    assert read_json(first_attempt)["imageId"] == read_json(manifest)["imageId"]
+    current_root = selection.read()
+    assert current_root is not None
+    third = plan_for(current_root, "third")
+    assert activate.activate_release(paths=paths, manifest_path=manifest,
+                                     environment_file=environment, mise=tmp_path / "mise",
+                                     run=run, upgrade=True, external_plan=third,
+                                     external_inputs=inputs) == "activated"
+    assert len(list(paths.activation.glob("attempt-external-*.json"))) == 3
+
+
+def test_active_replay_refuses_unrelated_pending_attempt(tmp_path, monkeypatch):
+    paths, manifest, environment, inputs, selection, data, events, run, plan_for = (
+        _external_activation_case(tmp_path, monkeypatch))
+    root = selection.read()
+    assert root is not None
+    first = plan_for(root, "first")
+    assert activate.activate_release(paths=paths, manifest_path=manifest,
+                                     environment_file=environment, mise=tmp_path / "mise",
+                                     run=run, upgrade=True, external_plan=first,
+                                     external_inputs=inputs) == "activated"
+    other = paths.activation / "attempt-external-unrelated.json"
+    write_json(other, {"status": "pending", "targetCommit": "f" * 40})
+    before = list(events)
+    with pytest.raises(RuntimeError, match="其他不完整 external attempt"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=first,
+                                  external_inputs=inputs)
+    assert events == [*before, "doctor", "live", "stop"]
+    assert read_json(other)["status"] == "pending"
+
+
+@pytest.mark.parametrize("mismatch", [
+    "attempt_image", "attempt_plan", "attempt_old_root", "active_new_root",
+    "active_order", "active_attempt_path", "missing_image_both", "doctor", "live",
+])
+def test_pending_success_needs_exact_bound_live_proof(tmp_path, monkeypatch, mismatch):
+    paths, manifest, environment, inputs, selection, data, events, run, plan_for = (
+        _external_activation_case(tmp_path, monkeypatch))
+    old_root = selection.read()
+    assert old_root is not None
+    first = plan_for(old_root, "first")
+    original_write = activate.write_json
+
+    def fail_terminal(path, document):
+        if path.name.startswith("attempt-external-") and document.get("status") == "active":
+            raise OSError("terminal attempt fsync failed")
+        return original_write(path, document)
+
+    monkeypatch.setattr(activate, "write_json", fail_terminal)
+    with pytest.raises(OSError, match="terminal attempt"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=first,
+                                  external_inputs=inputs)
+    monkeypatch.setattr(activate, "write_json", original_write)
+    attempt_path = next(paths.activation.glob("attempt-external-*.json"))
+    active_path = paths.activation / "active.json"
+    attempt = read_json(attempt_path)
+    active = read_json(active_path)
+    if mismatch == "attempt_image":
+        attempt["imageId"] = "sha256:" + "f" * 64
+    elif mismatch == "attempt_plan":
+        attempt["externalPlanSha256"] = "f" * 64
+    elif mismatch == "attempt_old_root":
+        attempt["oldRootRef"] = "f" * 64
+    elif mismatch == "active_new_root":
+        active["upgrade"]["new_root_ref"] = "f" * 64
+    elif mismatch == "active_order":
+        active["upgrade"]["ordered_components"] = ["f" * 64]
+    elif mismatch == "active_attempt_path":
+        active["attemptPath"] = str(paths.activation / "unrelated.json")
+    elif mismatch == "missing_image_both":
+        attempt.pop("imageId")
+        active.pop("imageId")
+    elif mismatch == "doctor":
+        monkeypatch.setattr(activate, "verify_release",
+                            lambda path: (_ for _ in ()).throw(RuntimeError("doctor failed")))
+    elif mismatch == "live":
+        monkeypatch.setattr(activate, "_verify_selected_runtime",
+                            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("live failed")))
+    original_write(attempt_path, attempt)
+    original_write(active_path, active)
+    current_root = selection.read()
+    assert current_root is not None
+    second = plan_for(current_root, "second")
+    before = list(events)
+    with pytest.raises(RuntimeError):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=second,
+                                  external_inputs=inputs)
+    assert events[-1] == "stop"
+    assert "preflight" not in events[len(before):]
+    assert "upgrade" not in events[len(before):]
+    assert "bridge" not in events[len(before):] and "core" not in events[len(before):]
+    assert read_json(attempt_path)["status"] == "pending"
+
+
+def test_prestart_failure_retains_both_errors_if_receipt_write_fails(tmp_path, monkeypatch):
+    paths, manifest, environment, inputs, selection, data, events, run, plan_for = (
+        _external_activation_case(tmp_path, monkeypatch))
+    root = selection.read()
+    assert root is not None
+    plan = plan_for(root, "first")
+    monkeypatch.setattr(activate, "_prepare_workload_dirs",
+                        lambda paths: (_ for _ in ()).throw(OSError("original workload failure")))
+    original_write = activate.write_json
+
+    def fail_receipt(path, document):
+        if path.name.startswith("failed-"):
+            raise OSError("receipt fsync failure")
+        return original_write(path, document)
+
+    monkeypatch.setattr(activate, "write_json", fail_receipt)
+    with pytest.raises(RuntimeError, match="original workload failure.*receipt fsync failure"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=plan,
+                                  external_inputs=inputs)
+    assert "bridge" not in events and "core" not in events
+    assert read_json(next(paths.activation.glob("attempt-external-*.json")))["status"] == "pending"
 
 
 def test_release_upgrade_command_failure_keeps_old_runtime_stopped(tmp_path, monkeypatch):
@@ -242,11 +554,23 @@ def test_exact_active_external_replay_is_read_only(tmp_path, monkeypatch):
     image = "sha256:" + "b" * 64
     manifest = paths.release("b" * 40)
     write_json(manifest, {"sourceCommit": "b" * 40, "imageId": image})
+    attempt_path = paths.activation / "attempt-external-replay.json"
+    plan_digest = hashlib.sha256(plan.read_bytes()).hexdigest()
+    write_json(attempt_path, {"status": "pending", "targetCommit": "b" * 40,
+                              "imageId": image, "externalPlanSha256": plan_digest,
+                              "oldRootRef": "a" * 64, "backupDir": str(paths.backups / "upgrade-replay"),
+                              "environmentBackup": str(paths.backups / "runtime.env.replay"),
+                              "environmentBackupSha256": "e" * 64})
     write_json(paths.activation / "active.json", {
         "status": "active", "targetCommit": "b" * 40, "imageId": image,
         "upgrade": {"old_root_ref": "a" * 64, "new_root_ref": selected_root,
                     "ordered_components": [],
-                    "external_plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest()},
+                    "backup_dir": str(paths.backups / "upgrade-replay"),
+                    "external_plan_sha256": plan_digest},
+        "attemptPath": str(attempt_path),
+        "environmentBackup": str(paths.backups / "runtime.env.replay"),
+        "environmentBackupSha256": "e" * 64,
+        "runtimeCheck": {"selection_ref": selected_root, "active_selected": 0},
     })
     environment = tmp_path / "runtime.env"
     environment.write_text("AKASHIC_CONTAINER_NAME=fixture-core\n")

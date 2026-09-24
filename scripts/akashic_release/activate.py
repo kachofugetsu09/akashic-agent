@@ -202,6 +202,66 @@ def _attempt_settled(paths: ReleasePaths, attempt_path: Path) -> bool:
     return False
 
 
+def _verified_active_attempt(
+    *, paths: ReleasePaths, attempt_path: Path, attempt: Mapping[str, object],
+    active: Mapping[str, object], environment_file: Path,
+    current: Mapping[str, str], run: Run,
+) -> tuple[str, ...] | None:
+    """Bind a pending attempt to the current active receipt and live Root."""
+
+    # 1. A missing fact cannot match another missing fact across two receipts.
+    upgrade = active.get("upgrade")
+    required_attempt = ("targetCommit", "imageId", "externalPlanSha256", "oldRootRef",
+                        "backupDir", "environmentBackup", "environmentBackupSha256")
+    if (attempt_path.is_symlink() or not attempt_path.is_file()
+        or attempt_path.parent != paths.activation
+        or attempt.get("status") not in {"pending", "active"}
+        or any(not isinstance(attempt.get(key), str) or not attempt[key]
+               for key in required_attempt)
+        or active.get("status") != "active" or not isinstance(upgrade, dict)
+        or active.get("attemptPath") != str(attempt_path)
+        or active.get("targetCommit") != attempt.get("targetCommit")
+        or active.get("imageId") != attempt.get("imageId")
+        or active.get("environmentBackup") != attempt.get("environmentBackup")
+        or active.get("environmentBackupSha256") != attempt.get("environmentBackupSha256")
+        or upgrade.get("external_plan_sha256") != attempt.get("externalPlanSha256")
+        or upgrade.get("old_root_ref") != attempt.get("oldRootRef")
+        or upgrade.get("backup_dir") != attempt.get("backupDir")):
+        return None
+    # 2. Check current durable selection, then prove this runtime is still healthy.
+    selected = PluginSelection(paths.state / "workspace")
+    root_ref = selected.read()
+    if root_ref is None or upgrade.get("new_root_ref") != root_ref:
+        return None
+    components = selected.archive.read_descriptor(root_ref).get("components")
+    live_receipt = active.get("runtimeCheck")
+    if (not isinstance(components, tuple)
+        or upgrade.get("ordered_components") != list(components)
+        or not isinstance(live_receipt, dict)
+        or live_receipt.get("selection_ref") != root_ref
+        or type(live_receipt.get("active_selected")) is not int
+        or live_receipt["active_selected"] != len(components)):
+        return None
+    verify_release(environment_file)
+    _verify_selected_runtime(candidate=current, root_ref=root_ref, run=run,
+                             ordered_components=components)
+    return components
+
+
+def _completed_attempt(
+    attempt: Mapping[str, object], active: Mapping[str, object],
+    components: tuple[str, ...], active_path: Path,
+) -> dict[str, object]:
+    """Keep a historical terminal copy derived from one committed active receipt."""
+
+    upgrade = active["upgrade"]
+    if not isinstance(upgrade, dict):
+        raise RuntimeError("active receipt 缺少 upgrade")
+    return {**attempt, "status": "active", "newRootRef": upgrade["new_root_ref"],
+            "orderedComponents": list(components), "runtimeCheck": active["runtimeCheck"],
+            "activeReceiptSha256": hashlib.sha256(active_path.read_bytes()).hexdigest()}
+
+
 def settle_restored_failure(
     *, paths: ReleasePaths, failed_path: Path, environment_file: Path, run: Run,
 ) -> dict[str, object]:
@@ -213,7 +273,10 @@ def settle_restored_failure(
         or not failed_path.name.startswith("failed-")):
         raise ValueError("failure receipt 必须是本 release 的普通文件")
     failed = read_json(failed_path)
-    if failed.get("status") != "maintenance_required" or failed.get("phase") != "stopped_upgrade":
+    phase = failed.get("phase")
+    if (failed.get("status") != "maintenance_required"
+        or phase not in {"stopped_upgrade", "before_target_start"}
+        or (phase == "before_target_start" and failed.get("targetStarted") is not False)):
         raise ValueError("只有尚未启动目标 runtime 的 external failure 可由完整恢复结算")
     attempt_raw = failed.get("attemptPath")
     if not isinstance(attempt_raw, str):
@@ -593,6 +656,7 @@ def activate_release(
             stop_runtime(run=run)
             raise RuntimeError(f"未结算 release failure 阻止新尝试: {failed_path}")
     plan_digest: str | None = None
+    active = read_json(active_path) if active_path.exists() else None
     if external_plan is not None and external_inputs is not None:
         if previous is None:
             raise ValueError("external plan 需要已有 active release 与完整 Root")
@@ -602,33 +666,49 @@ def activate_release(
         plan_digest = hashlib.sha256(external_plan.read_bytes()).hexdigest()
         plan = read_json(external_plan)
         stable = read_json(paths.state / "workspace/runtime/plugin-stable.json")
-        if previous == target and active_path.exists():
-            receipt = read_json(active_path)
-            previous_upgrade = receipt.get("upgrade")
-            if (receipt.get("status") == "active" and receipt.get("imageId") == manifest.get("imageId")
+        if previous == target and active is not None:
+            previous_upgrade = active.get("upgrade")
+            if (active.get("imageId") == manifest.get("imageId")
                 and isinstance(previous_upgrade, dict)
                 and previous_upgrade.get("external_plan_sha256") == plan_digest
-                and previous_upgrade.get("old_root_ref") == plan.get("expected_root_ref")
-                and previous_upgrade.get("new_root_ref") == stable.get("root_ref")):
-                selection = PluginSelection(paths.state / "workspace")
-                root = selection.archive.read_descriptor(str(stable["root_ref"]))
-                components = root.get("components")
-                if (not isinstance(components, tuple)
-                    or previous_upgrade.get("ordered_components") != list(components)):
-                    raise RuntimeError("active ordered selection 无效")
-                verify_release(environment_file)
-                _verify_selected_runtime(
-                    candidate=current, root_ref=str(stable["root_ref"]), run=run,
-                    ordered_components=components,
-                )
-                return "already_active"
+                and previous_upgrade.get("old_root_ref") == plan.get("expected_root_ref")):
+                attempt_raw = active.get("attemptPath")
+                if isinstance(attempt_raw, str):
+                    replay_attempt = Path(attempt_raw)
+                    if (replay_attempt.parent == paths.activation
+                        and replay_attempt.is_file() and not replay_attempt.is_symlink()
+                        and _verified_active_attempt(
+                            paths=paths, attempt_path=replay_attempt,
+                            attempt=read_json(replay_attempt), active=active,
+                            environment_file=environment_file, current=current, run=run,
+                        ) is not None):
+                        for other in paths.activation.glob("attempt-external-*.json"):
+                            if (other != replay_attempt
+                                and read_json(other).get("status") == "pending"
+                                and not _attempt_settled(paths, other)):
+                                stop_runtime(run=run)
+                                raise RuntimeError(f"其他不完整 external attempt 需人工结算: {other}")
+                        return "already_active"
         if plan.get("expected_root_ref") != stable.get("root_ref"):
             raise RuntimeError("external plan expected_root_ref 与当前 selection 不一致")
     for attempt_path in sorted(paths.activation.glob("attempt-external-*.json")):
-        if (read_json(attempt_path).get("status") == "pending"
-            and not _attempt_settled(paths, attempt_path)):
+        attempt = read_json(attempt_path)
+        if attempt.get("status") != "pending" or _attempt_settled(paths, attempt_path):
+            continue
+        try:
+            components = None if active is None else _verified_active_attempt(
+                paths=paths, attempt_path=attempt_path, attempt=attempt,
+                active=active, environment_file=environment_file, current=current, run=run,
+            )
+        except BaseException as error:
+            stop_runtime(run=run)
+            raise RuntimeError(f"active attempt 复核失败，保持 maintenance: {attempt_path}") from error
+        if components is None:
             stop_runtime(run=run)
             raise RuntimeError(f"不完整 external release attempt 需人工结算: {attempt_path}")
+        # 当前 active 是成功权威；先把它的历史副本写回原 attempt，再允许下一计划覆盖 active。
+        assert active is not None
+        write_json(attempt_path, _completed_attempt(attempt, active, components, active_path))
     _verify_state_ready(paths)
     if external_plan is None:
         _prepare_workload_dirs(paths)
@@ -702,15 +782,37 @@ def activate_release(
             )
             failed["backupDir"] = str(backup_dir)
             failed["phase"] = "stopped_upgrade"
+            failed["targetStarted"] = False
             failed["environmentBackup"] = str(backup)
             failed["environmentBackupSha256"] = environment_digest
             failed["attemptPath"] = None if attempt_path is None else str(attempt_path)
             failed["dataCompatibility"] = "unproved"
             write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
             raise RuntimeError("发行升级失败；旧 runtime 保持停止，先核对数据与恢复点") from error
-    if external_plan is not None:
-        _prepare_workload_dirs(paths)
-    atomic_write(environment_file, render_environment(candidate))
+    try:
+        if external_plan is not None:
+            _prepare_workload_dirs(paths)
+        atomic_write(environment_file, render_environment(candidate))
+    except BaseException as error:
+        if external_plan is None or upgrade_result is None or attempt_path is None:
+            raise
+        failed = activation_receipt(
+            status="maintenance_required", target_commit=target,
+            previous_commit=str(previous), detail=str(error),
+        )
+        failed.update({"phase": "before_target_start", "targetStarted": False,
+                       "upgrade": upgrade_result, "backupDir": str(backup_dir),
+                       "attemptPath": str(attempt_path),
+                       "environmentBackup": str(backup),
+                       "environmentBackupSha256": environment_digest,
+                       "dataCompatibility": "unproved"})
+        try:
+            write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
+        except BaseException as receipt_error:
+            raise RuntimeError(
+                f"目标启动前写入失败: {error!r}; failure receipt 写入也失败: {receipt_error!r}"
+            ) from error
+        raise RuntimeError("目标启动前写入失败；旧 runtime 保持停止，先核对完整恢复点") from error
     try:
         start_bridge(run=run)
         start_core(run=run)
@@ -810,9 +912,11 @@ def activate_release(
         write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
         raise RuntimeError("active receipt 发布失败；目标 runtime 已停在 maintenance") from error
     if attempt_path is not None:
-        write_json(attempt_path, {"status": "active", "targetCommit": target,
-                                  "externalPlanSha256": plan_digest,
-                                  "newRootRef": upgrade_result["new_root_ref"] if upgrade_result else None})
+        attempt = read_json(attempt_path)
+        components = upgrade_result.get("ordered_components") if upgrade_result else None
+        if not isinstance(components, list) or any(not isinstance(ref, str) for ref in components):
+            raise RuntimeError("active attempt 缺少完整 ordered components")
+        write_json(attempt_path, _completed_attempt(attempt, receipt, tuple(components), active_path))
     if previous is not None:
         write_json(paths.activation / "previous.json", {"targetCommit": previous})
     return "activated"
