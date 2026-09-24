@@ -28,6 +28,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.selection import PluginSelection
 from bus.event_bus import EventBus
 from plugins.eventmail.store import EventMailStore
+from session.log import MessageLog
 
 DEFAULT_LOCK = Path(__file__).with_name("content-source-interop.lock.json")
 DEFAULT_REPORT = (
@@ -41,6 +42,10 @@ FORBIDDEN_PROACTIVE_MARKERS = (
     "get_proactive_events",
     "acknowledge_events",
     "take_proactive_events",
+)
+COEXISTENCE_BUILTINS = (
+    "commands", "content", "conversation", "eventmail", "models",
+    "programmatic", "sources", "tools", "turn_projection", "ui",
 )
 
 
@@ -463,7 +468,7 @@ async def _run_coexistence_probe(
     contract: dict[str, object],
     plugin_root: Path,
 ) -> dict[str, object]:
-    """Mount a real non-Content plugin beside Content and prove zero mailbox writes."""
+    """Install beside Content in its live Root and prove zero mailbox writes."""
 
     plugin_id = contract["plugin_id"]
     config_toml = contract["config_toml"]
@@ -481,60 +486,62 @@ async def _run_coexistence_probe(
     core_before = _source_identity(ROOT)
     with tempfile.TemporaryDirectory(prefix="akashic-content-source-interop-") as raw:
         root = Path(raw)
-        plugins = root / "plugins"
-        content_dir = plugins / "content"
-        staged_plugin = plugins / plugin_id
-        _ = shutil.copytree(ROOT / "plugins" / "eventmail", content_dir)
-        _ = shutil.copytree(
-            plugin_root,
-            staged_plugin,
-            ignore=shutil.ignore_patterns(
-                ".git",
-                ".venv",
-                ".akashic-core",
-                ".plugin-contracts",
-                ".pytest_cache",
-                "__pycache__",
-                "tests",
-            ),
-        )
+        plugin_dir = root / "plugins"
+        plugin_dir.mkdir()
+        for name in COEXISTENCE_BUILTINS:
+            _ = shutil.copytree(ROOT / "plugins" / name, plugin_dir / name)
         workspace = root / "workspace"
         workspace.mkdir()
         PluginSelection(workspace).initialize()
-        data_root = workspace / "plugin-data" / f"{plugin_id}-builtin"
+        marketplace = "content-interop"
+        data_root = workspace / "plugin-data" / f"{plugin_id}-{marketplace}"
         data_root.mkdir(parents=True)
         from agent.plugin_composition.config_input import save_config
 
         save_config(data_root, tomllib.loads(config_toml))
         content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
-        baseline = PluginManager(
-            plugin_dirs=[content_dir],
-            event_bus=EventBus(),
-            workspace=workspace,
-            installed_cache_root=root / "baseline-cache",
-        )
-        try:
-            await baseline.load_all()
-        finally:
-            await baseline.terminate_all()
-        content_before = _content_logical_state(content_path)
         event_bus = EventBus()
+        message_log = MessageLog(workspace / "sessions.db")
         manager = PluginManager(
-            plugin_dirs=[content_dir, staged_plugin],
+            plugin_dirs=[plugin_dir],
             event_bus=event_bus,
             workspace=workspace,
             installed_cache_root=root / "cache",
+            message_log=message_log,
         )
         row_count = -1
+        content_before: dict[str, object] = {}
+        root_identity: str | None = None
         try:
             await manager.load_all()
-            # 同一 workspace 的重启保留基线；显式发布新增的普通插件。
-            candidate = await manager.prepare_candidate(plugin_id)
-            if candidate is None:
-                raise GateError(f"coexistence 插件未进入候选: {plugin_id}")
-            publication = await manager.publish_prepared(plugin_id)
-            if publication["publication_state"] != "committed":
-                raise GateError(f"coexistence 插件未提交: {plugin_id}")
+            live_root = manager.live_root
+            if live_root is None:
+                raise GateError("Content baseline 未建立 live Root")
+            content_before = _content_logical_state(content_path)
+            root_identity = live_root.generation_id
+            update_id = f"content-interop-{plugin_id}"
+            accepted = await manager.install(
+                source=str(plugin_root),
+                marketplace=marketplace,
+                ref_name=_git(plugin_root, "rev-parse", "HEAD"),
+                sparse_paths=[],
+                update_id=update_id,
+            )
+            operation = manager._operation
+            if operation is None or operation.update_id != update_id:
+                raise GateError(f"Manager 未持有安装操作: {plugin_id}")
+            await operation.task
+            status = manager.read_update(update_id)
+            if accepted.selection != "selected" or status.state != "active":
+                raise GateError(
+                    f"coexistence 插件未成为 live generation: {plugin_id} "
+                    f"selection={accepted.selection} state={status.state} error={status.error}"
+                )
+            if manager.live_root is not live_root:
+                raise GateError("普通插件安装替换了 live Root")
+            generation = manager.generation(status.plugin_id)
+            if generation is None or generation.fiber is None:
+                raise GateError(f"coexistence 插件缺少活动 Fiber: {status.plugin_id}")
             store = EventMailStore(content_path)
             row_count = sum(store.state_counts().values())
             if row_count != expected_rows:
@@ -543,7 +550,20 @@ async def _run_coexistence_probe(
                     f"expected={expected_rows} actual={row_count}"
                 )
         finally:
-            await manager.terminate_all()
+            try:
+                await manager.terminate_all()
+            finally:
+                try:
+                    message_log.close()
+                finally:
+                    await event_bus.aclose()
+        resource_close = {
+            "live_root_closed": manager.live_root is None,
+            "message_log_closed": message_log._closed,
+            "event_bus_closed": event_bus._closed,
+        }
+        if not all(resource_close.values()):
+            raise GateError(f"coexistence owner 未全部关闭: {resource_close}")
         content_after = _content_logical_state(content_path)
         changed_tables = [
             table
@@ -556,10 +576,12 @@ async def _run_coexistence_probe(
             )
         receipt: dict[str, object] = {
             "plugin_id": plugin_id,
+            "live_root_id": root_identity,
             "content_rows": row_count,
             "content_before": content_before,
             "content_after": content_after,
             "changed_tables": changed_tables,
+            "resource_close": resource_close,
         }
     source_after = _source_identity(plugin_root)
     core_after = _source_identity(ROOT)

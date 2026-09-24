@@ -5,6 +5,8 @@ import pytest
 
 from session.identities import ChannelIdentities
 from session.log import MessageLog, SessionAttributes
+from agent.plugin_composition.channels import CredentialRef
+from agent.plugin_composition.config_input import load_config
 
 
 def _history(tmp_path):
@@ -46,8 +48,11 @@ allow_from = ["alice"]
     )
     assert migrate_legacy_channels(config, workspace, marketplace="installed") == ("telegram_channel",)
     assert "channels.telegram" not in config.read_text(encoding="utf-8")
-    plugin = workspace / "plugin-data/telegram_channel-installed/config.local.toml"
-    assert 'token = "123:token"' in plugin.read_text(encoding="utf-8")
+    plugin_dir = workspace / "plugin-data/telegram_channel-installed"
+    values, _revision = load_config(plugin_dir)
+    assert isinstance(values["token"], CredentialRef)
+    assert values["allow_from"] == ["alice"]
+    assert "123:token" not in (plugin_dir / "config.input.json").read_text(encoding="utf-8")
     assert (tmp_path / "config.toml.before-channel-plugin-migration.bak").exists()
 
 
@@ -74,8 +79,8 @@ def test_channel_migration_preserves_legacy_empty_channel_as_disabled_plugin(tmp
     config.write_text("[channels.telegram]\n", encoding="utf-8")
 
     assert migrate_legacy_channels(config, workspace, marketplace="installed") == ("telegram_channel",)
-    plugin = workspace / "plugin-data/telegram_channel-installed/config.local.toml"
-    assert plugin.read_text(encoding="utf-8") == "enabled = false\nallow_from = []\n"
+    values, _revision = load_config(workspace / "plugin-data/telegram_channel-installed")
+    assert values == {"enabled": False, "allow_from": []}
 
 
 def test_explicit_session_delete_keeps_identity_in_same_audit_backup(tmp_path):

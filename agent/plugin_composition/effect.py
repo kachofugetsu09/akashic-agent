@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import CompositionError
@@ -23,12 +23,19 @@ class Effect:
         plugin_id: str = "",
         generation_id: str = "",
         fiber: str = "",
+        lifecycle_binder: Callable[[], AbstractContextManager[object]] | None = None,
+        close_guard: Callable[[], object] | None = None,
     ) -> None:
         self.label = label
         self._remove_from_owner = remove_from_owner
         self._plugin_id = plugin_id
         self._generation_id = generation_id
         self._fiber = fiber
+        # Core-only：owner Fiber 在创建时固定当次 Context 的窄 binder；
+        # cleanup 的实际执行 Task 用它建立 (Context, Task) 生命周期借用。
+        self._lifecycle_binder = lifecycle_binder
+        # Core-only：在切换到 cleanup Task 前，由原 caller 做同步自等待检查。
+        self._close_guard = close_guard
         self._cleanup: Cleanup | None = None
         self._ready = asyncio.Event()
         self._setup_task: asyncio.Task[object] | None = None
@@ -70,6 +77,8 @@ class Effect:
                 "REENTRANT_EFFECT_WAIT",
                 "effect setup 不能同步等待其 owner 完成卸载",
             )
+        if self._close_guard is not None:
+            self._close_guard()
         if self._close_task is None or self._close_task.done():
             self._close_task = asyncio.create_task(
                 self._close(),
@@ -96,15 +105,21 @@ class Effect:
                 )
             )
             with boundary:
-                result = self._cleanup()
-                if inspect.isawaitable(result):
-                    await result
+                lifecycle = (
+                    nullcontext()
+                    if self._lifecycle_binder is None
+                    else self._lifecycle_binder()
+                )
+                with lifecycle:
+                    result = self._cleanup()
+                    if inspect.isawaitable(result):
+                        await result
         self._cleanup = None
         self._closed = True
         self._remove_from_owner(self)
 
 
-async def _join_cleanup(task: asyncio.Task[None]) -> None:
+async def _join_cleanup(task: asyncio.Task[object]) -> None:
     """等待同一关闭操作，重复取消也不能中断资源 owner。"""
 
     if task is asyncio.current_task():

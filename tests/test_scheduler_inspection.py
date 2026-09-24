@@ -10,7 +10,6 @@ from typing import cast
 
 import pytest
 
-from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.akashic_clients.runtime_inspection import (
     RuntimeInspectionError,
     ScopedRpcRuntimeInspection,
@@ -41,16 +40,15 @@ def _job(
     )
 
 
-def _inspection_service(store):
-    """Resolve inspection RPC methods through one current snapshot per call."""
+def _inspection_service(root):
+    """Resolve each inspection RPC inside the live Root's request scope."""
+
+    context = root.root_fiber.children[0].context
 
     @asynccontextmanager
     async def open_scope():
-        async with lease_runtime_snapshot(store) as snapshot:
-            root = snapshot.composition_root
-            if root is None:
-                raise RuntimeError("inspection fixture 缺少 composition root")
-            yield root.context
+        async with context.runtime_scope():
+            yield context
 
     return ScopedRpcRuntimeInspection(open_scope)
 
@@ -106,7 +104,6 @@ async def test_client_passes_through_scheduler_projection_without_reading_worksp
     from agent.plugin_composition.rpc import rpc_method_key
     from plugins.runtime_inspection.rpc import rpc_methods
     from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
-    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, get_current_runtime_snapshot
 
     root = CompositionRoot("scheduler-inspection")
     provider = _Provider()
@@ -114,23 +111,16 @@ async def test_client_passes_through_scheduler_projection_without_reading_worksp
         for method, operation in rpc_methods(cast(RuntimeInspectionProvider, provider)).items():
             await ctx.provide(rpc_method_key(method), operation)
     await root.mount(apply, name="external-scheduler")
-    store = RuntimeSnapshotStore()
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    store.install(snapshot)
-    service = _inspection_service(store)
+    service = _inspection_service(root)
     original = provider.list_jobs
     def list_jobs():
-        assert get_current_runtime_snapshot() is snapshot
-        assert snapshot.lease_count == 1
         return original()
     provider.list_jobs = list_jobs
     try:
         assert await service.list_jobs() == {"items": [{"id": "external", "display": "来自 scheduler"}]}
         assert await service.get_job("external") == {"id": "external", "display": "来自 scheduler"}
-        assert snapshot.lease_count == 0
         assert not (tmp_path / "schedules.json").exists()
     finally:
-        await store.close()
         await root.dispose()
 
 
@@ -140,7 +130,6 @@ async def test_client_does_not_swallow_scheduler_provider_failure(tmp_path: Path
     from agent.plugin_composition.rpc import rpc_method_key
     from plugins.runtime_inspection.rpc import rpc_methods
     from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
-    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 
     class BrokenProvider:
         def list_jobs(self) -> tuple[Mapping[str, object], ...]:
@@ -154,15 +143,11 @@ async def test_client_does_not_swallow_scheduler_provider_failure(tmp_path: Path
         for method, operation in rpc_methods(cast(RuntimeInspectionProvider, BrokenProvider())).items():
             await ctx.provide(rpc_method_key(method), operation)
     await root.mount(apply, name="external-scheduler")
-    store = RuntimeSnapshotStore()
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    store.install(snapshot)
-    service = _inspection_service(store)
+    service = _inspection_service(root)
     try:
         with pytest.raises(RuntimeError, match="scheduler read failed"):
             await service.list_jobs()
     finally:
-        await store.close()
         await root.dispose()
 
 
@@ -172,7 +157,6 @@ async def test_client_reports_scheduler_unavailable_without_provider(tmp_path: P
     from agent.plugin_composition.rpc import rpc_method_key
     from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
     from plugins.runtime_inspection.rpc import rpc_methods
-    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 
     root = CompositionRoot("scheduler-inspection-unavailable")
     provider = RuntimeInspectionProvider(
@@ -184,16 +168,13 @@ async def test_client_reports_scheduler_unavailable_without_provider(tmp_path: P
             await ctx.provide(rpc_method_key(method), operation)
 
     await root.mount(apply, name="runtime-inspection")
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
-    service = _inspection_service(store)
+    service = _inspection_service(root)
     try:
         with pytest.raises(RuntimeInspectionError) as captured:
             await service.list_jobs()
         assert captured.value.code == "scheduler_unavailable"
         assert str(captured.value) == "调度检查服务尚未绑定"
     finally:
-        await store.close()
         await root.dispose()
 
 
@@ -204,7 +185,6 @@ async def test_client_reports_skills_unavailable_without_provider(tmp_path: Path
     from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
     from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
     from plugins.runtime_inspection.rpc import rpc_methods
-    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 
     root = CompositionRoot("skill-inspection")
     provider = RuntimeInspectionProvider(
@@ -217,19 +197,15 @@ async def test_client_reports_skills_unavailable_without_provider(tmp_path: Path
 
     await root.context.provide(
         RUNTIME_CATALOG,
-        lambda: {"snapshot_id": "fixture", "plugins": [], "mcp_servers": []},
+        lambda _ctx: {"snapshot_id": "fixture", "plugins": [], "mcp_servers": []},
     )
     await root.mount(apply, name="runtime-inspection")
-    store = RuntimeSnapshotStore()
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    store.install(snapshot)
-    service = _inspection_service(store)
+    service = _inspection_service(root)
     try:
         with pytest.raises(RuntimeInspectionError) as captured:
             await service.list_capabilities()
         assert captured.value.code == "skills_unavailable"
     finally:
-        await store.close()
         await root.dispose()
 
 

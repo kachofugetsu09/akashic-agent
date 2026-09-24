@@ -138,6 +138,9 @@ paths = [
   "scripts/plugin_composition_experiment.py",
   "bootstrap/tools.py",
   "tests/test_plugin_*.py",
+  "tests/test_resource_providers.py",
+  "tests/test_workload_borrow.py",
+  "tests/test_workload_boot_cleanup.py",
 ]
 deleted_paths = [
   "agent/tool_hooks/**",
@@ -149,11 +152,9 @@ scenarios = ["plugin_generation_contract", "plugin_workload_contract", "plugin_u
 priority = "p0"
 requirements = ["RUN-005", "RUN-009", "RUN-010", "RUN-011", "RUN-012", "TST-001", "TST-003"]
 paths = [
-  "agent/plugin_composition/*model*.py",
+  "agent/plugin*/model*.py",
   "agent/plugin_composition/models.py",
   "agent/plugin_composition/__init__.py",
-  "agent/plugins/model_*.py",
-  "agent/plugins/snapshot.py",
   "agent/tools/filesystem.py",
   "agent/model_runtime/**",
   "bootstrap/app.py",
@@ -180,7 +181,12 @@ paths = [
   "tests/test_*model*.py",
   "tests/semantic/test_model_owner_contract.py",
 ]
-deleted_paths = ["agent/provider.py", "agent/tools/vision.py", "bootstrap/providers.py"]
+deleted_paths = [
+  "agent/plugins/snapshot.py",
+  "agent/provider.py",
+  "agent/tools/vision.py",
+  "bootstrap/providers.py",
+]
 depends_on = ["plugin", "runtime"]
 scenarios = ["model_owner_contract"]
 
@@ -204,6 +210,21 @@ paths = [
   "skills/develop-akashic-plugin/**",
   "tests/control/**",
   "tests/semantic/test_recursive_plugin_self_validation_contract.py",
+  "tests/semantic/recursive_plugin_fixture.py",
+  "tests/test_programmatic_control.py",
+  "tests/test_message_push_plugin.py",
+  "tests/test_message_markdown_memory.py",
+  "tests/test_upgrade_plugin_selection.py",
+  "scripts/rollback_plugin_install.py",
+  "tests/test_plugin_update_rollback.py",
+  "tests/test_plugin_distribution.py",
+  "tests/test_plugin_retired_activity_recovery.py",
+  "plugins/programmatic/**",
+  "plugins/message_push/**",
+  "plugins/tools/**",
+  "plugins/delivery/**",
+  "plugins/akasha/learning.py",
+  "plugins/markdown_memory/**",
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_runtime_control.py",
 ]
@@ -227,7 +248,7 @@ scenarios = ["contract_catalog", "plugin_generation_contract", "plugin_domain_ob
 [groups.events]
 priority = "p1"
 requirements = ["RUN-001", "OUT-001"]
-paths = ["bus/**", "agent/tools/events.py", "agent/tools/executor.py"]
+paths = ["bus/**", "agent/tools/events.py"]
 depends_on = []
 scenarios = ["contract_catalog", "plugin_domain_observe_events"]
 
@@ -397,6 +418,11 @@ requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
 paths = [
   "agent/tools/base.py",
   "agent/tool_runtime.py",
+  "plugins/tools/**",
+  "tests/test_tool_execution_receipts.py",
+  "tests/test_standard_tools.py",
+  "tests/test_message_push_plugin.py",
+  "tests/test_subagent_messages.py",
   "agent/plugin_composition/messages.py",
   "plugins/turn_projection/**",
   "agent/plugin_composition/tasks.py",
@@ -404,7 +430,7 @@ paths = [
   "plugins/reply/**",
   "agent/turns/outbound.py",
 ]
-deleted_paths = ["agent/looping/handlers.py", "agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py"]
+deleted_paths = ["agent/looping/handlers.py", "agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py", "tests/test_tool_executor.py"]
 depends_on = ["memory", "channel"]
 scenarios = ["companion_tool_context_contract"]
 

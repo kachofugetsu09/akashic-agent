@@ -351,8 +351,8 @@ def create_chat_app(
     async def plugin_ui_catalog() -> dict[str, object]:
         if mobile_ui_scope is not None:
             async with mobile_ui_scope() as provider:
-                return provider.catalog()
-        return _require_plugin_ui_provider(plugin_ui_provider).catalog()
+                return await provider.catalog()
+        return await _require_plugin_ui_provider(plugin_ui_provider).catalog()
 
     @app.get("/api/chat/plugin-ui/asset")
     async def plugin_ui_asset(
@@ -364,14 +364,14 @@ def create_chat_app(
         try:
             if mobile_ui_scope is not None:
                 async with mobile_ui_scope() as provider:
-                    asset = provider.asset(
+                    asset = await provider.asset(
                         plugin_id,
                         plugin_revision,
                         kind,
                         sha256,
                     )
             else:
-                asset = _require_plugin_ui_provider(plugin_ui_provider).asset(
+                asset = await _require_plugin_ui_provider(plugin_ui_provider).asset(
                     plugin_id,
                     plugin_revision,
                     kind,

@@ -63,7 +63,7 @@ async def run_reply(
         chosen = ctx.require(MODEL_SELECTION).read_saved(reader.metadata() or {})
     from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
     async with (
-        cleanup(ctx, reader, source, from_seq, task=task, drain=tools.drain_calls),
+        cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
         materials.bind(exclude=exclude_materials) as material_view,
@@ -74,7 +74,7 @@ async def run_reply(
             item.message_id for item in snapshot
             if item.message_id in open_ids and isinstance(item.body, Input)
         )
-        menu = ctx.require(TOOL_PROGRAM).create_menu(
+        menu = await ctx.require(TOOL_PROGRAM).create_menu(
             reader, source, content=view.checks,
             check_start=lambda: check_source(task, reader, source, source_head),
             authorize=authorize, view=tool_view, limit=model.max_tool_schemas,

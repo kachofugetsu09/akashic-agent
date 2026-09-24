@@ -6,10 +6,9 @@ import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 from agent.plugin_composition import CredentialRef, ServiceKey
-from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import RuntimeSnapshotStore, lease_runtime_snapshot
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config, save_credential
 from bus.event_bus import EventBus
 from session.log import MessageLog
@@ -54,21 +53,24 @@ def environment(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_credential_binding_uses_current_reader_after_config_change(tmp_path):
+async def test_credential_binding_rejects_config_drift_after_restart(tmp_path):
     source, config, log, host = environment(tmp_path)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            reader = ctx.require(PROBE)
+        root = host.live_root
+        assert root is not None
+        ctx = root.context
+        reader = ctx.require(PROBE)
+        original_ctx = ctx.require(ServiceKey("test.credential_context"))
+        async with original_ctx.runtime_scope():
             assert await reader.read() == "fixture-private-token"
             with pytest.raises(RuntimeError, match="frozen plugin"):
                 await reader.undeclared()
             reference = ctx.require(BINDINGS).bind(PROBE, {})
-            generation = snapshot.generations["secret_reader"]
+            generation = host.generation("secret_reader")
+            assert generation is not None
             assert generation.config_projection["token"] == load_config(config.parent)[0]["token"]
             assert "fixture-private-token" not in str(generation.config_projection)
-            original_ctx = ctx.require(ServiceKey("test.credential_context"))
             async with ctx.require(CREDENTIALS).open(original_ctx, {"token": original_ctx.config["token"]}) as client:
                 assert client.credential(original_ctx.config["token"]) == "fixture-private-token"
             with pytest.raises(RuntimeError, match="已关闭"):
@@ -85,38 +87,44 @@ async def test_credential_binding_uses_current_reader_after_config_change(tmp_pa
                          installed_cache_root=tmp_path / "home/cache", message_log=log)
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        root = host.live_root
+        assert root is not None
+        bindings = root.context.require(BINDINGS)
         async with bindings.open(reference, PROBE) as (reader, metadata):
             assert metadata == {}
-            assert await reader.read() == "replacement-token"
+            with pytest.raises(RuntimeError, match="config revision 已漂移"):
+                await reader.read()
     finally:
         await host.terminate_all()
         log.close()
 
 
 @pytest.mark.asyncio
-async def test_candidate_registers_credential_consumer_but_cannot_read_secret(tmp_path):
+async def test_local_update_keeps_credential_access_on_formal_owner(tmp_path):
     source, config, log, host = environment(tmp_path)
     try:
         await host.load_all()
-        (source / "plugin.py").write_text(MODULE + "\nmarker = 'candidate'\n")
-        prepared = await host.prepare_candidate("secret_reader")
-        assert prepared is not None
-        latest = prepared.runtime_snapshot
-        assert latest is not None and latest is not host.current_snapshot
-        candidate_store = RuntimeSnapshotStore()
-        candidate_store.install(latest)
-        try:
-            async with lease_runtime_snapshot(candidate_store):
-                reader = latest.composition_root.context.require(PROBE)
-                with pytest.raises(RuntimeError, match="candidate 验证期"):
-                    await reader.read()
-                ctx = latest.composition_root.context.require(ServiceKey("test.credential_context"))
-                assert not (ctx.data_root / "config.local.toml").exists()
-        finally:
-            await candidate_store.close()
+        root = host.live_root
+        assert root is not None
+        old_context = root.context.require(ServiceKey("test.credential_context"))
+        async with old_context.runtime_scope():
+            assert await old_context.require(PROBE).read() == "fixture-private-token"
+            async with old_context.require(CREDENTIALS).open(
+                old_context, {"token": old_context.config["token"]}
+            ) as client:
+                assert client.credential(old_context.config["token"]) == "fixture-private-token"
+            with pytest.raises(RuntimeError, match="已关闭"):
+                client.credential(old_context.config["token"])
+        (source / "plugin.py").write_text(MODULE + "\nmarker = 'updated'\n")
+        result = await host.reconcile_changed()
+        assert result[0]["publication_state"] == "active"
+        assert host.live_root is root
+        new_context = root.context.require(ServiceKey("test.credential_context"))
+        assert new_context is not old_context
+        async with new_context.runtime_scope():
+            assert await new_context.require(PROBE).read() == "fixture-private-token"
+            with pytest.raises(RuntimeError, match="frozen plugin"):
+                await new_context.require(PROBE).undeclared()
         assert "fixture-private-token" not in config.read_text()
     finally:
         await host.terminate_all()
@@ -124,14 +132,16 @@ async def test_candidate_registers_credential_consumer_but_cannot_read_secret(tm
 
 
 @pytest.mark.asyncio
-async def test_candidate_rejects_restored_legacy_config(tmp_path):
+async def test_local_update_rejects_restored_legacy_config(tmp_path):
     source, config, log, host = environment(tmp_path)
     try:
         await host.load_all()
         (config.parent / "config.local.toml").write_text('token="old-secret"')
         (source / "plugin.py").write_text(MODULE + "\nmarker = 'candidate'\n")
+        root = host.live_root
         with pytest.raises(RuntimeError, match="升级"):
-            await host.prepare_candidate("secret_reader")
+            await host.reconcile_changed()
+        assert host.live_root is root
         assert (config.parent / "config.local.toml").read_text() == 'token="old-secret"'
     finally:
         await host.terminate_all()
@@ -140,8 +150,8 @@ async def test_candidate_rejects_restored_legacy_config(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shared_directory", [False, True])
-async def test_business_validation_never_copies_historical_credentials(tmp_path, shared_directory):
-    """候选验证不复制历史 binding 的秘密或重新打开正式服务。"""
+async def test_local_install_never_copies_unrelated_historical_credentials(tmp_path, shared_directory):
+    """本地安装只归档目标代码，历史凭据仍在原 owner 私有目录。"""
     from agent.plugins.install import install_git_plugin
     from tests.test_plugin_install import _commit, _write_v3_plugin
 
@@ -149,8 +159,12 @@ async def test_business_validation_never_copies_historical_credentials(tmp_path,
     (config.parent / "notes.txt").write_text("preserved history")
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            reference = snapshot.composition_root.context.require(BINDINGS).bind(PROBE, {})
+        root = host.live_root
+        assert root is not None
+        credential_context = root.context.require(ServiceKey("test.credential_context"))
+        async with credential_context.runtime_scope():
+            reference = root.context.require(BINDINGS).bind(PROBE, {})
+        assert reference
     finally:
         await host.terminate_all()
 
@@ -182,22 +196,24 @@ async def apply(ctx):
                          installed_cache_root=tmp_path / "installed/cache", message_log=log)
     try:
         await host.load_all()
+        root = host.live_root
+        assert root is not None
         (plain / "plugin.py").write_text((plain / "plugin.py").read_text() + '\nmarker="candidate"\n')
         _commit(plain)
-        result, _ = await host.install_candidate(source=str(plain), marketplace="lab", ref_name="", sparse_paths=[])
-        if shared_directory:
-            save_config(config.parent, {"token": save_credential(config.parent, "fixture-private-token")})
         before = tuple(log._connection.iterdump())
-        async with host.open_validation(result.update_id) as scope:
-            validation = next(iter(host._validation_hosts.values()))
-            copied = validation.workspace / "plugin-data/secret_reader-builtin"
-            assert not (validation.workspace / "plugin-data/plain-lab" / CONFIG_INPUT).exists()
-            assert validation.messages.read_bindings() == ()
-            assert not (copied / CONFIG_INPUT).exists()
-            assert not (copied / "notes.txt").exists()
-            for path in validation.workspace.rglob("*"):
-                if path.is_file():
-                    assert b"fixture-private-token" not in path.read_bytes(), path
+        accepted = await host.install(
+            source=str(plain), marketplace="lab", ref_name="", sparse_paths=[],
+            update_id="plain-update",
+        )
+        assert accepted.selection == "selected"
+        operation = host._operation
+        assert operation is not None
+        await operation.task
+        assert host.live_root is root
+        assert (config.parent / "notes.txt").read_text() == "preserved history"
+        for path in host._archive.path.rglob("*"):
+            if path.is_file():
+                assert b"fixture-private-token" not in path.read_bytes(), path
         assert tuple(log._connection.iterdump()) == before
         assert "fixture-private-token" not in config.read_text()
     finally:

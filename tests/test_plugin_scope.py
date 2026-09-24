@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.scope import CleanupFailure, PluginScope
+from agent.plugins.manifest import upsert_plugin_manifest
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 
 @pytest.mark.asyncio
@@ -19,6 +21,8 @@ async def test_disabled_cleanup_retries_a_generation_that_never_reached_a_snapsh
 
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
                             installed_cache_root=tmp_path / "home/cache")
+    initialize_plugin_workspace(tmp_path / "workspace")
+    upsert_plugin_manifest("owner", enabled=False, plugins_home=tmp_path / "home")
     scope = PluginScope("owner")
     attempts = 0
 
@@ -38,7 +42,7 @@ async def test_disabled_cleanup_retries_a_generation_that_never_reached_a_snapsh
         with pytest.raises(RuntimeError, match="scope cleanup 未完成"):
             await manager._dispose_generation(generation, state="discarded")
         assert attempts == 1
-        assert generation.runtime_snapshot is None
+        assert generation in manager._draining_generations["owner"]
         await manager.reconcile_disabled_and_drain("owner")
         assert attempts == 2
         assert scope.closed
@@ -122,62 +126,43 @@ async def test_cleanup_cancel_is_failure_and_keeps_its_dependency():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stage", ["root", "scope"])
-async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, stage):
-    """真实关闭入口不能在任一资源阶段失败后继续卸载其依赖。"""
+async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch):
+    """Scope 关闭失败时保留 generation 和模块供重试。"""
     manager = object.__new__(PluginManager)
     scope = PluginScope("owner")
-    cleanup = Mock(side_effect=OSError("still open") if stage == "scope" else None)
+    cleanup = Mock(side_effect=OSError("still open"))
     scope.defer("asset", cleanup)
     generation = SimpleNamespace(
         plugin_id="owner", generation_id="generation", module_path="module",
-        scope=scope, runtime_snapshot=SimpleNamespace(composition_root=None), state="prepared",
+        scope=scope, state="prepared", fiber=None,
+        reload_tx_id=None,
         instance=SimpleNamespace(module=None),
     )
     manager._building_roots = {}
+    manager._active_generations = {}
     manager._draining_generations = {}
     manager._cleanup_failures = []
-    manager._snapshot_store = SimpleNamespace(
-        pause_admission=Mock(), generation_is_referenced_elsewhere=Mock(return_value=False),
-    )
-    dispose_root = AsyncMock(side_effect=OSError("still open") if stage == "root" else None)
+    manager._live_credentials = None
+    manager._live_execution_access = None
     remove = Mock()
     monkeypatch.setattr(manager, "_record_root_failure", Mock())
-    monkeypatch.setattr(manager, "_dispose_unreferenced_composition_root", dispose_root)
     monkeypatch.setattr(manager, "_remove_module_tree", remove)
 
-    with pytest.raises((OSError, RuntimeError), match="still open"):
+    with pytest.raises(RuntimeError, match="still open"):
         await manager._dispose_generation(cast(Any, generation), state="discarded")
     assert manager._draining_generations["owner"] == [generation]
     assert manager._draining_generations["owner"][0].scope is scope
     assert generation.state == "prepared"
     assert not scope.closed
     remove.assert_not_called()
-    manager._snapshot_store.pause_admission.assert_called_once()
-    if stage != "scope":
-        cleanup.assert_not_called()
+    cleanup.assert_called_once()
 
-    dispose_root.side_effect = cleanup.side_effect = None
+    cleanup.side_effect = None
     await manager._dispose_generation(cast(Any, generation), state="discarded")
     assert manager._draining_generations == {}
     assert scope.closed
     assert generation.state == "discarded"
-    assert [call.args[0] for call in remove.call_args_list] == ["module", "alias"]
-
-
-@pytest.mark.asyncio
-async def test_discard_prepared_failure_keeps_candidate_and_does_not_abort(monkeypatch):
-    manager = object.__new__(PluginManager)
-    generation = SimpleNamespace(generation_id="generation")
-    manager._prepared_generations = {"owner": generation}
-    dispose = AsyncMock(side_effect=RuntimeError("cleanup pending"))
-    abort = Mock()
-    monkeypatch.setattr(manager, "_dispose_generation", dispose)
-    monkeypatch.setattr(manager, "_abort_reload", abort)
-    with pytest.raises(RuntimeError, match="cleanup pending"):
-        await manager._discard_prepared("owner")
-    assert manager._prepared_generations["owner"] is generation
-    abort.assert_not_called()
+    assert [call.args[0] for call in remove.call_args_list] == ["module"]
 
 
 @pytest.mark.asyncio

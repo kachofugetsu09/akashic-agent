@@ -54,6 +54,7 @@ class HealthView:
 
 @dataclass(frozen=True, slots=True)
 class IncidentView:
+    fiber_id: int
     sequence: int
     owner: str
     kind: str

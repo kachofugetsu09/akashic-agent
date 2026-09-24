@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import sqlite3
+import stat
+import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -129,101 +133,6 @@ class ReloadJournalEvent:
 
 
 @dataclass(frozen=True)
-class CandidateCleanupObligation:
-    """一条持久候选校验目录清理义务，含创建它的确切宿主身份。"""
-
-    update_id: str
-    plugin_id: str
-    validation_root: Path
-    owner_boot_id: str
-    owner_pid: int
-
-
-class CandidateCleanupPendingError(RuntimeError):
-    """候选校验目录清理义务未清完；指针结算未完成，调用者不得当作成功。"""
-
-    def __init__(self, update_ids: tuple[str, ...]) -> None:
-        super().__init__(
-            "candidate validation cleanup pending: " + ", ".join(update_ids)
-        )
-        self.update_ids = update_ids
-
-
-# 已知 lineage：v1 缺少宿主身份证据列，v2 起 owner_boot_id/owner_pid 必填。
-_CANDIDATE_CLEANUP_SCHEMA_V2 = """
-    CREATE TABLE IF NOT EXISTS candidate_validation_roots (
-        update_id TEXT NOT NULL,
-        plugin_id TEXT NOT NULL,
-        validation_root TEXT NOT NULL,
-        owner_boot_id TEXT NOT NULL,
-        owner_pid INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (update_id, validation_root)
-    );
-"""
-# 已知 v1 lineage 的完整期望 schema；只比列名会把畸形同名四列表误当可迁移。
-_CANDIDATE_CLEANUP_EXPECTED_V1: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...] = (
-    ("update_id", "TEXT", 1, (None,), 1),
-    ("plugin_id", "TEXT", 1, (None,), 0),
-    ("validation_root", "TEXT", 1, (None,), 2),
-    ("created_at", "TEXT", 1, (None,), 0),
-)
-# owner 期望 schema：严格比较 PRAGMA table_info 的 (type, notnull, dflt_value, pk)。
-# owner_boot_id/owner_pid 允许 v1 迁移留下的 '':0 默认值（对应保守未知行），
-# 其余列不接受任何默认值。
-_CANDIDATE_CLEANUP_EXPECTED: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...] = (
-    ("update_id", "TEXT", 1, (None,), 1),
-    ("plugin_id", "TEXT", 1, (None,), 0),
-    ("validation_root", "TEXT", 1, (None,), 2),
-    ("owner_boot_id", "TEXT", 1, (None, "''"), 0),
-    ("owner_pid", "INTEGER", 1, (None, "0"), 0),
-    ("created_at", "TEXT", 1, (None,), 0),
-)
-
-
-def check_candidate_cleanup_schema(conn: sqlite3.Connection) -> bool:
-    """按 owner 期望 schema 严格核对清理义务表；未知同名表/列/类型/默认值/主键一律 fail-loud。
-
-    返回 False 表示缺表或命中已知 v1 lineage（交由迁移处理）。
-    """
-
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='candidate_validation_roots'",
-    ).fetchone()
-    if row is None:
-        return False
-    info = list(conn.execute("PRAGMA table_info(candidate_validation_roots)"))
-    names = tuple(str(item[1]) for item in info)
-    if names == tuple(item[0] for item in _CANDIDATE_CLEANUP_EXPECTED_V1):
-        _check_cleanup_columns(info, _CANDIDATE_CLEANUP_EXPECTED_V1)
-        return False
-    expected_names = tuple(item[0] for item in _CANDIDATE_CLEANUP_EXPECTED)
-    if names != expected_names:
-        raise ValueError(f"未知 candidate_validation_roots schema: {names}")
-    _check_cleanup_columns(info, _CANDIDATE_CLEANUP_EXPECTED)
-    return True
-
-
-def _check_cleanup_columns(
-    info: list[tuple[object, ...]],
-    expected: tuple[tuple[str, str, int, tuple[str | None, ...], int], ...],
-) -> None:
-    for item, (name, type_, notnull, defaults, pk) in zip(info, expected):
-        actual = (
-            str(item[1]),
-            str(item[2]).upper(),
-            cast(int, item[3]),
-            item[4],
-            cast(int, item[5]),
-        )
-        if actual[0] != name or actual[1] != type_ or actual[2] != notnull or actual[4] != pk:
-            raise ValueError(f"candidate_validation_roots.{name} schema 不符: {actual}")
-        dflt = None if actual[3] is None else str(actual[3])
-        if dflt not in defaults:
-            raise ValueError(f"candidate_validation_roots.{name} 默认值不符: {dflt!r}")
-
-
-@dataclass(frozen=True)
 class ReloadRecoveryAction:
     tx_id: str
     plugin_id: str
@@ -243,20 +152,111 @@ class ReloadRecoveryAction:
     candidate_artifact_pointer: str | None = None
     recovery_target: RecoveryTarget | None = None
 
+
+@dataclass(frozen=True)
+class JournalPreflight:
+    """Existing journal facts and the one WAL-aware backup source."""
+
+    pending_recovery: tuple[ReloadRecoveryAction, ...]
+    armed_updates: tuple[update_rollback.UpdateRollback, ...]
+    _copy: sqlite3.Connection
+
+    def update(self, update_id: str) -> update_rollback.UpdateRollback:
+        """Read one exact row from the checked, read-only journal snapshot."""
+        return update_rollback.read(self._copy, update_id)
+
+    def backup_to(self, path: Path) -> None:
+        """Save the checked snapshot without opening the live journal in SQLite."""
+        saved = sqlite3.connect(path)
+        try:
+            self._copy.backup(saved)
+            if saved.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise RuntimeError("reload journal 备份完整性检查失败")
+        finally:
+            saved.close()
+
+
+def _journal_bytes(path: Path) -> tuple[bytes, tuple[int, int, int]]:
+    """Read an existing regular file without following a replacement link."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"journal 路径必须是普通文件: {path}")
+        with os.fdopen(os.dup(fd), "rb") as stream:
+            content = stream.read()
+        if len(content) != info.st_size:
+            raise RuntimeError(f"journal 在读取期间变化: {path}")
+        return content, (info.st_dev, info.st_ino, info.st_size)
+    finally:
+        os.close(fd)
+
+
+def _check_journal_source(
+    paths: tuple[Path, ...], original: dict[Path, tuple[bytes, tuple[int, int, int]]],
+) -> None:
+    """Reject a changed source or sidecar set while its snapshot is in use."""
+    if {path for path in paths if path.exists() or path.is_symlink()} != set(original):
+        raise RuntimeError("journal sidecar 在读取期间变化")
+    for path, (content, identity) in original.items():
+        observed, current_identity = _journal_bytes(path)
+        if current_identity != identity or hashlib.sha256(observed).digest() != hashlib.sha256(content).digest():
+            raise RuntimeError(f"journal 在读取期间变化: {path}")
+
 class ReloadJournal:
     """Persist plugin reload phases and expose deterministic crash recovery work."""
 
     def __init__(self, workspace: Path) -> None:
         self.path = workspace / "runtime" / "plugin-reloads.sqlite3"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         new = not self.path.exists()
-        self._initialize()
         if new:
-            with self._connect() as conn:
-                _ = conn.execute("BEGIN IMMEDIATE")
-                if not update_rollback.check_schema(conn):
-                    for statement in update_rollback.SCHEMA.values():
-                        _ = conn.execute(statement)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._initialize()
+        else:
+            self._check_existing_schema()
+
+    @classmethod
+    @contextmanager
+    def inspect_existing(cls, workspace: Path) -> Iterator[JournalPreflight]:
+        """Read one existing DB/WAL/SHM snapshot without SQLite opening the source."""
+        if workspace.is_symlink() or not workspace.is_dir():
+            raise ValueError(f"journal workspace 目录无效: {workspace}")
+        runtime = workspace / "runtime"
+        if runtime.is_symlink() or not runtime.is_dir():
+            raise ValueError(f"journal runtime 目录无效: {runtime}")
+        source = runtime / "plugin-reloads.sqlite3"
+        rollback_sidecar = runtime / "plugin-reloads.sqlite3-journal"
+        if rollback_sidecar.exists() or rollback_sidecar.is_symlink():
+            raise RuntimeError("journal 存在未结算 rollback sidecar")
+        sources = (source, Path(f"{source}-wal"), Path(f"{source}-shm"))
+        original: dict[Path, tuple[bytes, tuple[int, int, int]]] = {}
+        for path in sources:
+            if path == source or path.exists() or path.is_symlink():
+                original[path] = _journal_bytes(path)
+        with tempfile.TemporaryDirectory(prefix="akashic-journal-preflight-") as directory:
+            copy = Path(directory) / source.name
+            if Path(directory).resolve().is_relative_to(workspace.resolve()):
+                raise ValueError("journal 临时副本不能位于 workspace 内")
+            for path, (content, _) in original.items():
+                (Path(directory) / path.name).write_bytes(content)
+            _check_journal_source(sources, original)
+            conn = sqlite3.connect(copy)
+            try:
+                conn.execute("PRAGMA query_only=ON")
+                cls._check_schema(conn)
+                if conn.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                    raise RuntimeError("reload journal 内容损坏")
+                pending = cls._pending_recovery(conn)
+                armed = tuple(
+                    update_rollback.read(conn, str(row[0]))
+                    for row in conn.execute(
+                        "SELECT update_id FROM plugin_updates WHERE phase='armed' ORDER BY update_id"
+                    )
+                )
+                yield JournalPreflight(pending, armed, conn)
+            finally:
+                conn.close()
+                _check_journal_source(sources, original)
 
     def arm_update(
         self, *, update_id: str, plugin_id: str, plugin_base: Path,
@@ -272,16 +272,11 @@ class ReloadJournal:
         with self._connect() as conn:
             return update_rollback.read(conn, update_id)
 
-    def armed_update_for_plugin(self, plugin_id: str) -> update_rollback.UpdateRollback | None:
-        """按插件查唯一未完成更新；初始化失败记录在原 owner 上供显式结算。"""
+    def set_input_ref(self, update_id: str, input_ref: str) -> None:
+        """Persist the fixed archive input before selection CAS."""
         with self._connect() as conn:
-            if not update_rollback.check_schema(conn):
-                return None
-            row = conn.execute(
-                "SELECT update_id FROM plugin_updates WHERE plugin_id=? AND phase='armed'",
-                (plugin_id,),
-            ).fetchone()
-            return None if row is None else update_rollback.read(conn, row[0])
+            _ = conn.execute("BEGIN IMMEDIATE")
+            update_rollback.set_input_ref(conn, update_id=update_id, input_ref=input_ref)
 
     def update_for_reload(self, tx_id: str) -> update_rollback.UpdateRollback | None:
         """有更新恢复点时，完整旧指针对只由该记录恢复。"""
@@ -290,52 +285,6 @@ class ReloadJournal:
                 return None
             row = conn.execute("SELECT update_id FROM plugin_updates WHERE reload_tx_id=?", (tx_id,)).fetchone()
             return None if row is None else update_rollback.read(conn, row[0])
-
-    def record_candidate_cleanup(
-        self,
-        update_id: str,
-        plugin_id: str,
-        validation_root: Path,
-        *,
-        owner_boot_id: str,
-        owner_pid: int,
-    ) -> None:
-        """候选校验目录从创建起就是安装 owner 的持久清理义务。"""
-        if not owner_boot_id.strip() or owner_pid <= 0:
-            raise ValueError("候选清理义务缺少确切的宿主身份证据")
-        with self._connect() as conn:
-            _ = conn.execute(
-                "INSERT OR REPLACE INTO candidate_validation_roots VALUES(?,?,?,?,?,?)",
-                (update_id, plugin_id, str(validation_root),
-                 owner_boot_id, owner_pid, _now()),
-            )
-
-    def candidate_cleanup(self, update_id: str) -> tuple[CandidateCleanupObligation, ...]:
-        """返回该更新仍欠的确切校验目录与宿主身份；进程重启后据此恢复清理。"""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT update_id,plugin_id,validation_root,owner_boot_id,owner_pid "
-                "FROM candidate_validation_roots WHERE update_id=?",
-                (update_id,),
-            ).fetchall()
-            return tuple(
-                CandidateCleanupObligation(
-                    update_id=str(row[0]),
-                    plugin_id=str(row[1]),
-                    validation_root=Path(str(row[2])),
-                    owner_boot_id=str(row[3]),
-                    owner_pid=int(row[4]),
-                )
-                for row in rows
-            )
-
-    def clear_candidate_cleanup(self, update_id: str, validation_root: Path) -> None:
-        """只有真实删除成功才销账，失败保留义务供显式重试。"""
-        with self._connect() as conn:
-            _ = conn.execute(
-                "DELETE FROM candidate_validation_roots WHERE update_id=? AND validation_root=?",
-                (update_id, str(validation_root)),
-            )
 
     def record_update_error(self, update_id: str, error: str) -> None:
         """保存实际失败原因，不把诊断写入伪装成发布或回退。"""
@@ -368,29 +317,21 @@ class ReloadJournal:
             if update_id is not None:
                 query += " AND update_id=?"
                 values = (update_id,)
-            unsettled: list[str] = []
             for row in conn.execute(query, values).fetchall():
-                pending = conn.execute(
-                    "SELECT 1 FROM candidate_validation_roots WHERE update_id=? LIMIT 1",
-                    (row[0],),
-                ).fetchone()
-                if pending is not None:
-                    # 确切校验目录义务未清完的更新不结算指针；先完成清理再重试。
-                    _ = conn.execute(
-                        "UPDATE plugin_updates SET error=?,updated_at=? WHERE update_id=? AND phase='armed'",
-                        (
-                            f"{error}; candidate validation cleanup pending",
-                            _now(),
-                            row[0],
-                        ),
-                    )
-                    unsettled.append(str(row[0]))
-                    continue
                 update_rollback.rollback(conn, update_rollback.read(conn, row[0]), plugins_home, now=_now(), error=error)
-            if unsettled:
-                # 未完成不是成功：先提交已真实回退与错误标注，再显式上报未结算项。
-                conn.commit()
-                raise CandidateCleanupPendingError(tuple(unsettled))
+
+    def rollback_install_update(
+        self, plugins_home: Path, *, expected: update_rollback.UpdateRollback, error: str,
+    ) -> None:
+        """Roll back one unchanged, unlinked install row under the caller's offline locks."""
+        with self._connect() as conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            current = update_rollback.read(conn, expected.update_id)
+            if current != expected:
+                raise RuntimeError("插件安装恢复点在预检后改变")
+            if current.phase != "armed" or current.reload_tx_id is not None or current.input_ref is not None:
+                raise RuntimeError("指定记录不是孤立 armed 安装")
+            update_rollback.rollback(conn, current, plugins_home, now=_now(), error=error)
 
     def begin(
         self,
@@ -844,9 +785,59 @@ class ReloadJournal:
             self._append_event(conn, tx_id, phase, details_for_event, now)
 
     def pending_recovery(self) -> tuple[ReloadRecoveryAction, ...]:
-        placeholders = ", ".join("?" for _ in _TERMINAL_PHASES)
         with self._connect() as conn:
-            rows = conn.execute(
+            return self._pending_recovery(conn)
+
+    def orphaned_armed_updates(self) -> tuple[update_rollback.UpdateRollback, ...]:
+        """Read installs with no runtime transaction to settle at boot."""
+        with self._connect() as conn:
+            return tuple(
+                update_rollback.read(conn, str(row[0]))
+                for row in conn.execute(
+                    "SELECT update_id FROM plugin_updates "
+                    "WHERE phase='armed' AND reload_tx_id IS NULL ORDER BY update_id"
+                )
+            )
+
+    def settle_generation_cleanup(
+        self, *, tx_id: str, plugin_id: str, generation_id: str, receipt: str,
+    ) -> None:
+        """Close the exact failed cleanup only after its owner releases resources."""
+        if not receipt:
+            raise ValueError("generation cleanup 缺少清理回执")
+        with self._connect() as conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT plugin_id,generation_id,phase,recovery_action,failure_resource "
+                "FROM reload_transactions WHERE tx_id=?", (tx_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"ReloadTransaction 不存在: {tx_id}")
+            if tuple(row) != (
+                plugin_id, generation_id, "cleanup_failed", "retry_generation_cleanup",
+                f"generation-cleanup:{generation_id}",
+            ):
+                raise RuntimeError("generation cleanup 回执与原失败 owner 不匹配")
+            now = _now()
+            changed = conn.execute(
+                "UPDATE reload_transactions SET phase='recovered',updated_at=? "
+                "WHERE tx_id=? AND plugin_id=? AND generation_id=? "
+                "AND phase='cleanup_failed' AND recovery_action='retry_generation_cleanup'",
+                (now, tx_id, plugin_id, generation_id),
+            )
+            if changed.rowcount != 1:
+                raise RuntimeError("generation cleanup 结算事实已变化")
+            self._append_event(conn, tx_id, "recovered", {
+                "event": "generation_cleanup_settled",
+                "plugin_id": plugin_id,
+                "generation_id": generation_id,
+                "cleanup_receipt": receipt,
+            }, now)
+
+    @staticmethod
+    def _pending_recovery(conn: sqlite3.Connection) -> tuple[ReloadRecoveryAction, ...]:
+        placeholders = ", ".join("?" for _ in _TERMINAL_PHASES)
+        rows = conn.execute(
                 f"""
                 SELECT tx_id, plugin_id, base_snapshot_id, candidate_snapshot_id,
                        base_generation_id, generation_id, source_revision, phase,
@@ -983,55 +974,77 @@ class ReloadJournal:
                 CREATE INDEX IF NOT EXISTS idx_reload_events_tx
                 ON reload_events(tx_id, sequence);
                 """)
-            existing_roots = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidate_validation_roots'",
-            ).fetchone()
-            if existing_roots is None:
-                conn.executescript(_CANDIDATE_CLEANUP_SCHEMA_V2)
-            elif not check_candidate_cleanup_schema(conn):
-                # v1 lineage 迁移前先留可恢复备份；未知 schema 已在 check 中 fail-loud。
-                backup = self.path.with_name(
-                    f"{self.path.name}.bak-candidate-roots-{uuid.uuid4().hex}"
-                )
-                conn.execute("VACUUM INTO ?", (str(backup),))
-                # 重建而非 ALTER ADD COLUMN：列序必须与 owner schema 一致；
-                # v1 行的 owner 证据以 ''/0 落账，表示保守未知。
-                conn.execute(
-                    "ALTER TABLE candidate_validation_roots "
-                    "RENAME TO candidate_validation_roots_v1"
-                )
-                conn.executescript(_CANDIDATE_CLEANUP_SCHEMA_V2)
-                conn.execute(
-                    "INSERT INTO candidate_validation_roots "
-                    "(update_id,plugin_id,validation_root,owner_boot_id,owner_pid,created_at) "
-                    "SELECT update_id,plugin_id,validation_root,'',0,created_at "
-                    "FROM candidate_validation_roots_v1"
-                )
-                conn.execute("DROP TABLE candidate_validation_roots_v1")
-                if not check_candidate_cleanup_schema(conn):
-                    raise RuntimeError(
-                        "candidate_validation_roots 迁移后 schema 仍不匹配"
-                    )
-            columns = {
-                str(row[1])
-                for row in conn.execute("PRAGMA table_info(reload_transactions)")
+
+            for statement in update_rollback.SCHEMA.values():
+                _ = conn.execute(statement)
+
+    def _check_existing_schema(self) -> None:
+        """Read an existing journal without creating or altering any object."""
+        uri = f"file:{self.path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            self._check_schema(conn)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _check_schema(conn: sqlite3.Connection) -> None:
+        """Check the current schema on a caller-owned connection."""
+        try:
+            shape = update_rollback.plugin_update_schema_state(conn)
+        except ValueError as error:
+            raise RuntimeError(f"runtime/plugin-reloads.sqlite3 schema 无法识别: {error}") from error
+        if shape == "old":
+            raise RuntimeError(
+                "runtime/plugin-reloads.sqlite3 使用旧 plugin_updates schema；"
+                "请先执行 Core migration，不会由普通启动自动迁移"
+            )
+        if shape == "missing":
+            raise RuntimeError(
+                "runtime/plugin-reloads.sqlite3 缺少 plugin_updates；"
+                "不会由普通启动补造历史表"
+            )
+        required = {
+            "reload_transactions": {
+                "tx_id", "plugin_id", "base_snapshot_id", "candidate_snapshot_id",
+                "base_generation_id", "generation_id", "source_revision", "config_revision",
+                "phase", "started_at", "updated_at", "error", "formal_effects_json",
+                "failure_resource", "recovery_action", "attempt_count",
+                "runtime_owner_boot_id", "base_artifact_pointer", "candidate_artifact_pointer",
+                "recovery_target",
+            },
+            "reload_events": {"sequence", "tx_id", "phase", "details_json", "created_at"},
+        }
+        for table, columns in required.items():
+            actual = {
+                str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
             }
-            additions = {
-                "base_generation_id": "TEXT",
-                "formal_effects_json": "TEXT NOT NULL DEFAULT '[]'",
-                "failure_resource": "TEXT",
-                "recovery_action": "TEXT",
-                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
-                "runtime_owner_boot_id": "TEXT",
-                "base_artifact_pointer": "TEXT",
-                "candidate_artifact_pointer": "TEXT",
-                "recovery_target": "TEXT",
-            }
-            for name, definition in additions.items():
-                if name not in columns:
-                    conn.execute(
-                        f"ALTER TABLE reload_transactions ADD COLUMN {name} {definition}"
-                    )
+            if actual != columns:
+                raise RuntimeError(
+                    f"runtime/plugin-reloads.sqlite3 缺少或包含未知 {table} 列；"
+                    "请先执行对应 Core migration"
+                )
+        indexes = {
+            str(row[1]) for row in conn.execute("PRAGMA index_list(reload_transactions)")
+        }
+        event_indexes = {
+            str(row[1]) for row in conn.execute("PRAGMA index_list(reload_events)")
+        }
+        if "idx_reload_transactions_phase" not in indexes or "idx_reload_events_tx" not in event_indexes:
+            raise RuntimeError(
+                "runtime/plugin-reloads.sqlite3 缺少当前索引；请先执行 Core migration"
+            )
+        valid_phases = tuple(sorted(_TRANSITIONS.keys() | _TERMINAL_PHASES))
+        if conn.execute(
+            "SELECT 1 FROM reload_transactions WHERE phase NOT IN ("
+            + ",".join("?" for _ in valid_phases) + ") LIMIT 1",
+            valid_phases,
+        ).fetchone() is not None:
+            raise RuntimeError("runtime/plugin-reloads.sqlite3 含未知 reload phase")
+        if conn.execute(
+            "SELECT 1 FROM plugin_updates WHERE phase NOT IN ('armed','committed','rolled_back') LIMIT 1"
+        ).fetchone() is not None:
+            raise RuntimeError("runtime/plugin-reloads.sqlite3 含未知 install phase")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

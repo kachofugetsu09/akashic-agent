@@ -78,6 +78,7 @@ async def test_committed_input_recovers_when_its_wakeup_is_lost(tmp_path):
 async def test_one_lane_admission_fault_does_not_kill_reply_follower():
     """一个 lane 的 open/start 故障不能移除其他 lane 的未来。"""
     updates: asyncio.Queue[dict[str, int]] = asyncio.Queue()
+    heads: dict[str, int] = {}
     good_first = asyncio.Event()
     good_second = asyncio.Event()
 
@@ -90,12 +91,13 @@ async def test_one_lane_admission_fault_does_not_kill_reply_follower():
 
         def head(self, *, source=None):
             del source
-            return 0
+            return heads[self.session_id]
 
     class Catalog:
         async def follow(self):
             while True:
-                yield await updates.get()
+                heads.update(await updates.get())
+                yield dict(heads)
 
         def reader(self, session_id):
             return Reader(session_id)
@@ -125,18 +127,46 @@ async def test_one_lane_admission_fault_does_not_kill_reply_follower():
 
     class Source:
         name = "conversation"
+        context = None
 
         def open(self, session_id):
             return Session(session_id)
 
     class Sources:
+        def __init__(self):
+            self.source = Source()
+
         def entries(self):
-            return (Source(),)
+            return (self.source,)
+
+        def needs_reply(self, reader, source):
+            return self.source.open("broken").needs_reply(reader, source)
+
+        async def changes(self):
+            await asyncio.Event().wait()
+            yield ()
 
     class Context:
         @asynccontextmanager
         async def runtime_scope(self):
             yield
+
+        def capture_runtime_scope(self):
+            return self
+
+        async def wait_admission_closed(self):
+            await asyncio.Event().wait()
+
+        async def close(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+    Source.context = Context()
 
     async def program(task, reader, source):
         del task, reader, source
@@ -183,7 +213,11 @@ async def test_reply_follower_faults_when_drive_makes_no_durable_progress():
 
     class FailedTask:
         done = True
+        active = False
         boundary_hint = 0
+
+        def on_done(self, callback):
+            callback()
 
         def cancel(self):
             pass
@@ -207,19 +241,47 @@ async def test_reply_follower_faults_when_drive_makes_no_durable_progress():
 
     class Source:
         name = "conversation"
+        context = None
 
         def open(self, session_id):
             del session_id
             return Session()
 
     class Sources:
+        def __init__(self):
+            self.source = Source()
+
         def entries(self):
-            return (Source(),)
+            return (self.source,)
+
+        def needs_reply(self, reader, source):
+            return Session().needs_reply(reader, source)
+
+        async def changes(self):
+            await asyncio.Event().wait()
+            yield ()
 
     class Context:
         @asynccontextmanager
         async def runtime_scope(self):
             yield
+
+        def capture_runtime_scope(self):
+            return self
+
+        async def wait_admission_closed(self):
+            await asyncio.Event().wait()
+
+        async def close(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+    Source.context = Context()
 
     async def program(task, reader, source):
         del task, reader, source
@@ -229,8 +291,11 @@ async def test_reply_follower_faults_when_drive_makes_no_durable_progress():
     ))
     await updates.put({"one": 1})
     try:
-        with pytest.raises(RuntimeError, match="没有进展|no progress"):
+        with pytest.raises(ExceptionGroup) as caught:
             await asyncio.wait_for(watcher, 0.2)
+        assert len(caught.value.exceptions) == 1
+        assert isinstance(caught.value.exceptions[0], RuntimeError)
+        assert "没有持久进展" in str(caught.value.exceptions[0])
         assert starts == 1
     finally:
         hold_repeat.set()

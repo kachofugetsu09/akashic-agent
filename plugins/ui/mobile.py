@@ -4,87 +4,45 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable
 from pathlib import Path
-from types import MappingProxyType
 from typing import cast
+from uuid import uuid4
 
-from agent.plugin_composition import Context, CompositionError, SnapshotSealing
+from agent.plugin_composition import Context, CompositionError, Effect, FiberState
 from agent.plugin_composition.ui_slots import (
     UI_SLOTS, MOBILE_UI_SLOTS, MobileUiAsset, MobileUiBinding, MobileUiDefinition,
-    MobileUiDescriptor, MobileUiNavigation, MobileUiQueryHandler, MobileUiRegistry,
+    MobileUiDescriptor, MobileUiNavigation, MobileUiQueryHandler,
 )
 
 
-class FrozenMobileUiRegistry(Mapping[str, MobileUiBinding]):
-    """Expose immutable mobile descriptors and exact-snapshot handlers."""
-
-    def __init__(self, root_instance_token: object, bindings: Mapping[str, MobileUiBinding]) -> None:
-        self._root_instance_token = root_instance_token
-        if any(key != binding.descriptor.owner for key, binding in bindings.items()):
-            raise ValueError("Mobile UI registry key 与 descriptor owner 不一致")
-        self._bindings = MappingProxyType(
-            {plugin_id: bindings[plugin_id] for plugin_id in sorted(bindings)}
-        )
-        self._descriptors = tuple(
-            sorted(
-                (binding.descriptor for binding in self._bindings.values()),
-                key=lambda descriptor: descriptor.owner,
-            )
-        )
-
-    @property
-    def root_instance_token(self) -> object:
-        return self._root_instance_token
-
-    @property
-    def descriptors(self) -> tuple[MobileUiDescriptor, ...]:
-        return self._descriptors
-
-    def binding(self, plugin_id: str) -> MobileUiBinding | None:
-        return self._bindings.get(plugin_id)
-
-    def descriptor(self, plugin_id: str) -> MobileUiDescriptor | None:
-        binding = self.binding(plugin_id)
-        return None if binding is None else binding.descriptor
-
-    def __getitem__(self, plugin_id: str) -> MobileUiBinding:
-        return self._bindings[plugin_id]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._bindings)
-
-    def __len__(self) -> int:
-        return len(self._bindings)
-
-
 class MobileUiSlots:
-    """Collect plugin-owned mobile UI declarations for one composition Root."""
+    """Collect the live Mobile UI registrations for one composition Root."""
 
     def __init__(self, ctx: Context) -> None:
         self._ctx = ctx
-        self._registrations: dict[str, tuple[Context, MobileUiBinding]] = {}
-        self._frozen: MobileUiRegistry | None = None
+        self._registrations: dict[str, MobileUiBinding] = {}
+
+    def contributors(self) -> tuple[Context, ...]:
+        self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        for binding in self._registrations.values():
+            binding.context._require_current()  # pyright: ignore[reportPrivateUsage]
+        return tuple(binding.context for binding in self._registrations.values())
 
     @property
     def root_instance_token(self) -> object:
+        self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
         return self._ctx.root_instance_token
 
-    def contributors(self) -> tuple[Context, ...]:
-        return tuple(ctx for ctx, _binding in self._registrations.values())
+    def bindings(self) -> tuple[MobileUiBinding, ...]:
+        """Return the current registration projection without running callbacks."""
 
-    def catalog(self) -> MobileUiRegistry:
-        if self._frozen is None:
-            raise RuntimeError("Mobile UI 目录尚未封存")
-        return self._frozen
-
-    def seal(self, _event: SnapshotSealing) -> None:
-        """provider 在组合封存事件中冻结目录，Core 不解释领域资产。"""
-        if self._frozen is not None:
-            raise RuntimeError("Mobile UI 目录不能重复封存")
-        self._frozen = FrozenMobileUiRegistry(
-            self.root_instance_token,
-            {owner: binding for owner, (_ctx, binding) in self._registrations.items()},
+        self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        for binding in self._registrations.values():
+            binding.context._require_current()  # pyright: ignore[reportPrivateUsage]
+        return tuple(
+            binding for _owner, binding
+            in sorted(self._registrations.items())
         )
 
     async def register_mobile(
@@ -94,10 +52,14 @@ class MobileUiSlots:
         *,
         query: MobileUiQueryHandler,
         available: Callable[[], bool] | None = None,
-    ) -> None:
+    ) -> Effect:
         """Register one mobile UI declaration as an Effect of the calling Fiber."""
 
-        if ctx.root_instance_token is not self.root_instance_token or ctx.require(UI_SLOTS) is not self:
+        ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        provider_token = self.root_instance_token
+        if ctx.root_instance_token is not provider_token:
+            raise ValueError("Mobile UI 注册不能跨实际 Root 或 provider")
+        if ctx.require(UI_SLOTS) is not self:
             raise ValueError("Mobile UI 注册不能跨实际 Root 或 provider")
         # 1. Validate the public ABI before any registration becomes visible.
         if not isinstance(definition, MobileUiDefinition):
@@ -109,12 +71,10 @@ class MobileUiSlots:
         if navigation is not None and not isinstance(navigation, MobileUiNavigation):
             raise TypeError("插件 Mobile UI navigation 必须是 MobileUiNavigation")
         runtime = ctx.runtime
-        owner_fiber = ctx.fiber
-        activation_token = owner_fiber.activation_token
-        if activation_token is None:
+        if ctx.fiber.state is not FiberState.LOADING and ctx.fiber.state is not FiberState.ACTIVE:
             raise CompositionError(
                 "INACTIVE_FIBER",
-                f"{runtime.plugin_id} 当前 Fiber 没有 active activation",
+                f"{runtime.plugin_id} 当前 Fiber 不允许登记 Mobile UI",
             )
         asset = resolve_mobile_ui_asset(
             runtime.plugin_dir,
@@ -140,10 +100,10 @@ class MobileUiSlots:
             asset=asset,
             query=cast(MobileUiQueryHandler, query),
             available=_always_available if available is None else available,
-            owner_fiber=owner_fiber,
-            activation_token=activation_token,
+            context=ctx,
+            registration_uuid=uuid4().hex,
         )
-        _ = await ctx.effect(
+        return await ctx.effect(
             lambda: self._register(ctx, binding),
             label=f"ui-slot:mobile:{definition.module}",
         )
@@ -155,13 +115,15 @@ class MobileUiSlots:
     ) -> Callable[[], None]:
         """Add one declaration and return its exact inverse."""
 
-        plugin_id = ctx.runtime.plugin_id
-        # 1. Freeze closes the admission boundary for this Root.
-        if self._frozen is not None:
+        ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        provider_token = self.root_instance_token
+        if ctx.root_instance_token is not provider_token:
             raise CompositionError(
-                "PLUGIN_UI_SLOTS_FROZEN",
-                "插件 UI Slot 声明已冻结，不能在 snapshot 发布后新增",
+                "STALE_ACTIVATION",
+                f"插件 Mobile UI 注册已脱离当前 Composition Root: {ctx.runtime.plugin_id}",
             )
+        plugin_id = ctx.runtime.plugin_id
+        # 1. One plugin owns one current registration; the Effect is its owner.
         if plugin_id in self._registrations:
             raise CompositionError(
                 "DUPLICATE_PLUGIN_MOBILE_UI",
@@ -169,7 +131,7 @@ class MobileUiSlots:
             )
 
         # 2. 每个 owner 只持有一条注册，Effect 关闭后解除归属。
-        self._registrations[plugin_id] = (ctx, binding)
+        self._registrations[plugin_id] = binding
 
         def cleanup() -> None:
             del self._registrations[plugin_id]

@@ -78,6 +78,19 @@ Turn 排除语义一次性投影为 `effects.post_commit=suppress`，并删除�
 - Wake 已送达投影、后台 programmatic Turn 和 continuation 使用 `durable + suppress`。
 - Session 删除只删除 Session 事实；某个 Memory 插件若需要撤销自己的投影，应通过自己的领域 Tool 或生命周期协议拥有该能力。
 
+### 2026-09-24：Programmatic 学习资格的局部勘误
+
+维护者决定将 Programmatic API 对齐到当前 Session admission 边界；现行合同以
+[CTRL-003 / MEM-009](../projectneed.md#ctrl-003-programmatic-会话使用当前运行图且默认不学习)
+和 [0902 V4](../design/0902-reviewed-v4.md) 为准。上面的“后台 programmatic Turn 使用
+durable + suppress”是历史实现描述，不再要求新调用创建 Turn scope。Session 创建时
+固定学习资格，消息与终态仍正常保存；Prompt 读取、Tool 授权和学习资格互不代替。
+
+这项勘误不改变通用 Turn effect 的历史含义，也不否认
+`20260826_01_migrate_turn_effects` 曾执行的迁移。旧消息中的 suppress 和迁移
+provenance 仍由现有消费者只读解释；不重写、不重学旧行，不删除相应 decoder，
+也不授权重新执行旧启动迁移。
+
 ## 验收
 
 - [x] Akasha 单独启用可启动、注入普通 Prompt section、消费 TurnCommitted 并提供 Tool/UI。

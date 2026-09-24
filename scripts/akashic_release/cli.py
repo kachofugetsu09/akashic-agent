@@ -10,7 +10,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from scripts.akashic_release.activate import activate_release
+from scripts.akashic_release.activate import activate_release, settle_restored_failure, failure_settled
 from scripts.akashic_release.doctor import verify_release
 from scripts.akashic_release.manifest import read_json, release_lock
 from scripts.akashic_release.migrate import migration_plan
@@ -61,6 +61,11 @@ def install(args: argparse.Namespace) -> dict[str, object]:
     )
     _confirm(commit, commit_subject(checkout, run=_run), current, yes=args.yes)
 
+    if (args.external_plan is None) != (args.external_inputs is None):
+        raise ValueError("--external-plan 与 --external-inputs 必须同时提供")
+    if args.external_plan is not None and args.no_activate:
+        raise ValueError("external plan 需要停机激活，不能与 --no-activate 同用")
+
     with release_lock(paths.run / "release.lock"):
         paths.create_layout()
         verify_host_prerequisites(mise=args.mise, run=_run)
@@ -95,6 +100,9 @@ def install(args: argparse.Namespace) -> dict[str, object]:
                 environment_file=args.runtime_env,
                 mise=args.mise,
                 run=_run,
+                upgrade=True,
+                external_plan=args.external_plan,
+                external_inputs=args.external_inputs,
             )
     return {
         "status": status,
@@ -112,10 +120,19 @@ def doctor(args: argparse.Namespace) -> dict[str, object]:
 
 def rollback(args: argparse.Namespace) -> dict[str, object]:
     paths = ReleasePaths(args.root.resolve(strict=True))
+    active = read_json(paths.activation / "active.json")
+    if "upgrade" in active:
+        raise RuntimeError("当前 release 含数据/selection 升级；旧 image 不得自动读取新状态，需先显式恢复备份")
     previous_path = paths.activation / "previous.json"
     previous = str(read_json(previous_path)["targetCommit"])
     _confirm(previous, "previous prepared generation", None, yes=args.yes)
     with release_lock(paths.run / "release.lock"):
+        for failed_path in sorted(paths.activation.glob("failed-*.json")):
+            if (read_json(failed_path).get("status") == "maintenance_required"
+                and not failure_settled(paths, failed_path)):
+                raise RuntimeError(
+                    f"发行升级仍有待结算的停机恢复记录: {failed_path}；禁止自动旧版 rollback"
+                )
         status = activate_release(
             paths=paths,
             manifest_path=paths.release(previous),
@@ -130,6 +147,15 @@ def pair_mobile(args: argparse.Namespace) -> dict[str, object]:
     from scripts.akashic_release.mobile_pair import pair_mobile as run_pairing
 
     return run_pairing(args.runtime_env)
+
+
+def settle_restored(args: argparse.Namespace) -> dict[str, object]:
+    paths = ReleasePaths(args.root.resolve(strict=True))
+    with release_lock(paths.run / "release.lock"):
+        return settle_restored_failure(
+            paths=paths, failed_path=args.failure,
+            environment_file=args.runtime_env, run=_run,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -151,6 +177,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     install_parser.add_argument("--yes", action="store_true")
     install_parser.add_argument("--no-activate", action="store_true")
+    install_parser.add_argument("--external-plan", type=Path)
+    install_parser.add_argument("--external-inputs", type=Path)
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")
@@ -163,6 +191,12 @@ def _parser() -> argparse.ArgumentParser:
     rollback_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)
     rollback_parser.add_argument("--yes", action="store_true")
     rollback_parser.set_defaults(handler=rollback)
+
+    settlement_parser = subparsers.add_parser("settle-restored")
+    settlement_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
+    settlement_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
+    settlement_parser.add_argument("--failure", type=Path, required=True)
+    settlement_parser.set_defaults(handler=settle_restored)
 
     pair_parser = subparsers.add_parser("pair-mobile")
     pair_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)

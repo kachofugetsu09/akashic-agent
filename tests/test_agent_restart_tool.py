@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import shutil
-import subprocess
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,10 +21,7 @@ from agent.plugin_composition import CompositionRoot, Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
-from agent.plugins.generation import PluginGeneration
-from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import RuntimeSnapshot, lease_runtime_snapshot
 from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
 from bus.event_bus import EventBus
 from agent.control.frame_book import FrameBook
@@ -49,7 +46,7 @@ from session.message import (
     CallRef, ContentReferences, Input, Message, Output, ToolCall, ToolResult, freeze_json,
 )
 
-import agent.plugins.manager as plugin_manager_module
+STARTUP_PROBE_EMIT = ServiceKey[Callable[[], Awaitable[None]]]("test.startup_probe.emit")
 
 
 class _FixtureTransport:
@@ -246,17 +243,19 @@ def _write_startup_probe(root: Path, run_id: str, state_root: Path) -> None:
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from agent.plugin_composition import RUNTIME_STARTING
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.control_frames import CONTROL_FRAMES
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import CallRef, Input, Output, ToolCall, ToolResult
 
 api_version = 3
 name = "startup_probe"
 version = "1.0.0"
-inject = (MESSAGE_WRITERS, BINDINGS, TOOLS, ALL_TOOLS, FINAL_OUTPUT_DELIVERY)
+inject = (MESSAGE_WRITERS, BINDINGS, TOOLS, ALL_TOOLS, FINAL_OUTPUT_DELIVERY, TURN_PROJECTION, CONTROL_FRAMES)
 STATE_ROOT = {str(state_root)!r}
 
 
@@ -279,7 +278,7 @@ async def apply(ctx):
     tools = ctx.require(TOOLS)
     bindings = ctx.require(BINDINGS)
 
-    def append_after_prepare(_event):
+    def append_after_prepare():
         run_id = Path(STATE_ROOT, "run-id").read_text()
         binding = tools.bind(ctx.require(ALL_TOOLS)().select("agent_restart"), bindings)
         session = "startup-probe:" + run_id
@@ -307,7 +306,11 @@ async def apply(ctx):
 
         asyncio.get_running_loop().call_soon(append_result)
 
-    await ctx.on(RUNTIME_STARTING, append_after_prepare)
+    async def emit():
+        async with ctx.runtime_scope():
+            append_after_prepare()
+
+    await ctx.provide(ServiceKey("test.startup_probe.emit"), emit)
 """
     )
 
@@ -324,6 +327,7 @@ async def _restart_application(
         "sources",
         "content",
         "assets",
+        "commands",
         "standard_tools",
         "context",
         "tools",
@@ -372,6 +376,26 @@ async def _restart_application(
         artifact_store.close()
         if owns_log:
             log.close()
+
+
+def _restart_context(root: CompositionRoot) -> Context:
+    """Get the active restart child that owns the registered tool."""
+    for fiber in root._fibers.values():
+        if (
+            fiber.name == "restart"
+            and fiber.runtime is not None
+            and fiber.runtime.plugin_id == "message_push"
+        ):
+            return fiber.context
+    raise AssertionError("live Root 缺少 message_push restart owner")
+
+
+@asynccontextmanager
+async def _live_root(host: PluginManager):
+    """Read the one formal Root used by local plugin lifecycle tests."""
+    root = host.live_root
+    assert root is not None
+    yield root
 
 
 def _source(message_id: str = "call-a", reason: str = "reload") -> CallSource:
@@ -469,19 +493,17 @@ async def test_unmanaged_runtime_does_not_register_restart_tool(tmp_path: Path) 
     gate = RestartGate(boot_id="fixture-boot", supervised=False)
     initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (_log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            names = {
-                ref.name
-                for ref in snapshot.composition_root.context.require(ALL_TOOLS)().refs
-            }
+        root = host.live_root
+        assert root is not None
+        names = {ref.name for ref in root.context.require(ALL_TOOLS)().refs}
     assert "agent_restart" not in names
 
 
 @pytest.mark.asyncio
-async def test_starting_baseline_ignores_old_result_and_reads_result_after_prepare(
+async def test_restart_watcher_ignores_old_result_and_reads_new_after_prepare(
     tmp_path: Path,
 ) -> None:
-    """启动期间追加的真实 ToolResult 不能被异步基线吞掉。"""
+    """新 watcher 只处理准备后的真实 ToolResult，旧结果不再触发。"""
     first_commits: list[str] = []
     first_committed = asyncio.Event()
     first_gate = RestartGate(
@@ -491,7 +513,10 @@ async def test_starting_baseline_ignores_old_result_and_reads_result_after_prepa
     initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(
         tmp_path, first_gate, channel=False, source_tag="baseline-first", startup_run="first",
-    ):
+    ) as (_log, host):
+        root = host.live_root
+        assert root is not None
+        await root.context.require(STARTUP_PROBE_EMIT)()
         await asyncio.wait_for(first_committed.wait(), 2)
     assert len(first_commits) == 1
 
@@ -503,7 +528,11 @@ async def test_starting_baseline_ignores_old_result_and_reads_result_after_prepa
     )
     async with _restart_application(
         tmp_path, second_gate, channel=False, source_tag="baseline-second", startup_run="second",
-    ):
+    ) as (_log, host):
+        root = host.live_root
+        assert root is not None
+        assert not second_commits
+        await root.context.require(STARTUP_PROBE_EMIT)()
         await asyncio.wait_for(second_committed.wait(), 2)
         assert (tmp_path / "startup-state" / "delivered-startup-probe_second").exists()
     assert len(second_commits) == 1
@@ -534,8 +563,8 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
 
     initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=True) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            context = snapshot.composition_root.context
+        async with _live_root(host) as root:
+            context = root.context
             execute = context.require(ServiceKey("reply.execute.v1"))
             monkeypatch.setitem(execute.keywords, "cleanup", controlled_cleanup)
             accept = context.require(CHANNEL_INPUT)
@@ -547,12 +576,8 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
             )
             await asyncio.wait_for(cleanup_blocked.wait(), 2)
             rows = log.reader("test:room").snapshot()
-            assert any(
-                isinstance(row.body, Output) and row.body.finish == "complete"
-                for row in rows
-            ), rows
+            assert rows and isinstance(rows[0].body, Input)
             assert not commits
-            assert not gate.accepting
 
             sender_state = tmp_path / "sender-state"
 
@@ -566,6 +591,11 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
             (sender_state / "release").write_text("1")
             await asyncio.wait_for(wait_for_file("calls"), 2)
             await asyncio.wait_for(committed.wait(), 2)
+            rows = log.reader("test:room").snapshot()
+            assert any(
+                isinstance(row.body, Output) and row.body.finish == "complete"
+                for row in rows
+            ), (rows, root.receipt().incidents)
             assert len(commits) == 1
             assert (sender_state / "calls").read_text() == rows[-1].message_id
 
@@ -586,40 +616,38 @@ async def test_real_channel_restart_reopens_after_rejected_delivery(
     async with _restart_application(
         tmp_path, gate, channel=True, reject_first=True,
     ) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            accept = snapshot.composition_root.context.require(CHANNEL_INPUT)
+        async with _live_root(host) as root:
+            accept = root.context.require(CHANNEL_INPUT)
             message = lambda input_id, text: ChannelInboundMessage(
                 "test", "user", "room", text, datetime.now(timezone.utc), {},
             )
             await accept("test:room", "input-1", message("input-1", "reject once"))
+            sender_state = tmp_path / "sender-state"
 
-        sender_state = tmp_path / "sender-state"
+            async def wait_for_file(name: str) -> None:
+                while not (sender_state / name).exists():
+                    await asyncio.sleep(0.01)
 
-        async def wait_for_file(name: str) -> None:
-            while not (sender_state / name).exists():
-                await asyncio.sleep(0.01)
+            await asyncio.wait_for(wait_for_file("rejected"), 2)
 
-        await asyncio.wait_for(wait_for_file("rejected"), 2)
-        async def wait_for_gate_drain() -> None:
-            await gate.wait_until_open()
-            while gate.permit_count:
-                await asyncio.sleep(0)
+            async def wait_for_gate_drain() -> None:
+                await gate.wait_until_open()
+                while gate.permit_count:
+                    await asyncio.sleep(0)
 
-        await asyncio.wait_for(wait_for_gate_drain(), 2)
-        assert gate.permit_count == 0
-        assert not commits
+            await asyncio.wait_for(wait_for_gate_drain(), 2)
+            assert gate.permit_count == 0
+            assert not commits
 
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            accept = snapshot.composition_root.context.require(CHANNEL_INPUT)
             await accept("test:room", "input-2", message("input-2", "retry now"))
-        await asyncio.wait_for(wait_for_file("started"), 2)
-        assert not commits
-        (sender_state / "release").write_text("1")
-        await asyncio.wait_for(wait_for_file("calls"), 2)
-        await asyncio.wait_for(committed.wait(), 2)
-        assert len(commits) == 1
-        assert gate.permit_count == 0
-        assert (sender_state / "calls").read_text()
+            await asyncio.wait_for(wait_for_file("started"), 2)
+            assert not commits
+            (sender_state / "release").write_text("1")
+            await asyncio.wait_for(wait_for_file("calls"), 2)
+            await asyncio.wait_for(committed.wait(), 2)
+            assert len(commits) == 1
+            assert gate.permit_count == 0
+            assert (sender_state / "calls").read_text()
 
 
 @pytest.mark.asyncio
@@ -650,22 +678,20 @@ async def test_manager_reload_hands_late_tool_result_to_new_watcher(
                 content={}, check_call=lambda call: None,
             )
             message_writer.append("late-input", Input(()))
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                ctx = snapshot.composition_root.context
+            async with _live_root(host) as root:
+                ctx = _restart_context(root)
                 async with ctx.runtime_scope():
                     binding = ctx.require(TOOLS).bind(
                         ctx.require(ALL_TOOLS)().select("agent_restart"),
                         ctx.require(BINDINGS),
                     )
                     descriptor = log.read_binding(binding)
-                    generations = snapshot.generations
             metadata = descriptor["metadata"]
             assert isinstance(metadata, Mapping)
             tool_descriptor = metadata["tool"]
             assert isinstance(tool_descriptor, Mapping)
             assert tool_descriptor["name"] == "agent_restart"
-            assert isinstance(tool_descriptor["owner"], str)
-            assert tool_descriptor["owner"] in generations
+            assert tool_descriptor["owner"] == "message_push"
             call = output_writer.append(
                 "late-call", Output((ToolCall(binding, {"reason": "reload"}),), "continue"),
             )
@@ -675,18 +701,6 @@ async def test_manager_reload_hands_late_tool_result_to_new_watcher(
             )
             final_output = Output((), "complete")
             await host.terminate_all()
-            state = tmp_path / "reload-state"
-            (state / "await-prepare").parent.mkdir(parents=True, exist_ok=True)
-            (state / "await-prepare").write_text("1")
-
-            async def append_late_result() -> None:
-                await asyncio.wait_for(_wait_for_path(state / "prepared"), 2)
-                result_writer.append(
-                    "late-result", ToolResult(CallRef(call.message_id, 0), "success", ()),
-                )
-                output_writer.append("late-final", final_output)
-
-            late_task = asyncio.create_task(append_late_result())
             async with _restart_application(
                 tmp_path, gate, channel=False, source_tag="reload-second", reload_probe=True,
                 message_log=log,
@@ -695,8 +709,10 @@ async def test_manager_reload_hands_late_tool_result_to_new_watcher(
                     task.get_name() == "plugin-task:agent-restart-watcher"
                     for task in asyncio.all_tasks()
                 )
-                await asyncio.wait_for(late_task, 2)
-                assert (state / "prepared").read_text()
+                result_writer.append(
+                    "late-result", ToolResult(CallRef(call.message_id, 0), "success", ()),
+                )
+                output_writer.append("late-final", final_output)
                 rows = log.reader(session).snapshot()
                 assert [row.seq for row in rows] == [0, 1, 2, 3]
                 assert all(row.source == "reload-probe" for row in rows)
@@ -710,321 +726,55 @@ async def test_manager_reload_hands_late_tool_result_to_new_watcher(
         log.close()
 
 
-async def _wait_for_path(path: Path) -> None:
-    while not path.exists():
-        await asyncio.sleep(0.01)
-
-
-async def _wait_for_admission_pause(snapshot: RuntimeSnapshot) -> None:
-    while snapshot.accepting_leases:
-        await asyncio.sleep(0)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("supervised", [True, False], ids=["supervised", "unmanaged"])
-async def test_restart_provider_candidate_preserves_formal_root_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supervised: bool,
+async def test_restart_provider_update_preserves_live_root_and_restart_owner(
+    tmp_path: Path, supervised: bool,
 ) -> None:
-    """候选和正式 Root 按宿主 gate 保持相同的 restart 声明。"""
-    sources = tmp_path / "plugins"
-    _copy_plugin_sources(
-        sources,
-        (
-            "sources",
-            "content",
-            "assets",
-            "standard_tools",
-            "context",
-            "tools",
-            "conversation",
-            "react",
-            "turn_projection",
-            "reply",
-            "reply_program",
-            "tool_search",
-            "delivery",
-            "programmatic",
-            "message_push",
-        ),
-    )
-
-    # 1. 只替换一个已安装 provider generation。
-    generated = tmp_path / "generated"
-    generated.mkdir()
-    _write_restart_provider(generated, shared_event=True)
-    provider_repo = tmp_path / "restart-provider"
-    provider_repo.mkdir()
-    provider_source = generated / "restart_provider" / "plugin.py"
-    shutil.copy2(provider_source, provider_repo / "plugin.py")
-    for args in (
-        ("git", "init", "-q"),
-        ("git", "add", "."),
-        ("git", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-qm", "stable"),
-    ):
-        subprocess.run(args, cwd=provider_repo, check=True)
-    install_git_plugin(
-        workspace=tmp_path / "workspace",
-        source=str(provider_repo),
-        marketplace="fixture",
-        ref_name="HEAD",
-        sparse_paths=[],
-        plugins_home=tmp_path / "home",
-    )
-
-    commits: list[str] = []
+    """Replacing one provider keeps the restart owner and formal Root stable."""
     gate = RestartGate(
         boot_id="fixture-boot", supervised=supervised,
-        commit=commits.append if supervised else None,
+        commit=(lambda _request_id: None) if supervised else None,
     )
-    log = MessageLog(tmp_path / "sessions.db")
-    artifact_store = ArtifactStore(tmp_path / "sessions.db")
-    context_config = tmp_path / "workspace/plugin-data/context-builtin"
-    context_config.parent.mkdir(parents=True, exist_ok=True)
-    save_config(context_config, {"prompt_sources": {"skills": "standard_tools"}})
     initialize_plugin_workspace(tmp_path / "workspace")
-    host = PluginManager(
-        [sources],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-        installed_cache_root=tmp_path / "home" / "cache",
-        message_log=log,
-        restart_gate=gate,
-        channel_attachment_store=ChannelAttachmentArtifactStore(
-            workspace=tmp_path / "workspace", metadata_store=artifact_store
-        ),
-    )
-    observed: dict[str, RuntimeSnapshot] = {}
-    original_check = plugin_manager_module._validate_candidate_formal_snapshot_identity
-
-    def capture_identity(
-        *, candidate: RuntimeSnapshot, formal: RuntimeSnapshot,
-    ) -> None:
-        observed["candidate"] = candidate
-        observed["formal"] = formal
-        original_check(candidate=candidate, formal=formal)
-
-    monkeypatch.setattr(
-        plugin_manager_module,
-        "_validate_candidate_formal_snapshot_identity",
-        capture_identity,
-    )
-    old_task: asyncio.Task[object] | None = None
-    promotion_task: asyncio.Task[dict[str, object]] | None = None
-    release_authorize: asyncio.Event | None = None
-    watcher_history: list[asyncio.Task[None]] = []
-    watcher_started: asyncio.Queue[asyncio.Task[None]] = asyncio.Queue()
-    spawn = Context.spawn
-
-    async def observe_spawn(
-        context: Context, coroutine: Coroutine[object, object, object], *, name: str,
-    ) -> asyncio.Task[object]:
-        """在真实任务创建完成时记录，避免忙轮询阻碍清理线程。"""
-        task = await spawn(context, coroutine, name=name)
-        if name == "agent-restart-watcher":
-            watcher = cast(asyncio.Task[None], task)
-            watcher_history.append(watcher)
-            watcher_started.put_nowait(watcher)
-        return task
-
-    monkeypatch.setattr(Context, "spawn", observe_spawn)
-    try:
-        await host.load_all()
-        runtime_runner = asyncio.create_task(host.run_runtime_services())
-        old_watcher = await asyncio.wait_for(watcher_started.get(), 2) if supervised else None
-        stable = host.current_snapshot
-        assert stable is not None
-        stable_generation_ids = {
-            plugin_id: generation.generation_id
-            for plugin_id, generation in stable.generations.items()
+    async with _restart_application(tmp_path, gate, channel=False) as (_log, host):
+        root = host.live_root
+        provider = host.generation("restart_provider")
+        restart_owner = host.generation("message_push")
+        assert root is not None and provider is not None and restart_owner is not None
+        selected = host._selection.read()
+        watchers = {
+            task for task in asyncio.all_tasks()
+            if task.get_name() == "plugin-task:agent-restart-watcher"
         }
+        tool_names = {ref.name for ref in root.context.require(ALL_TOOLS)().refs}
+        assert ("agent_restart" in tool_names) is supervised
+        assert bool(watchers) is supervised
+        assert root.context.require(RESTART_GATE) is gate
 
-        # 2. 通过真实 install_candidate 准备更新。
-        (provider_repo / "plugin.py").write_text(
-            (provider_repo / "plugin.py").read_text() + "\n# candidate revision\n",
-        )
-        for args in (
-            ("git", "add", "."),
-            ("git", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-qm", "candidate"),
-        ):
-            subprocess.run(args, cwd=provider_repo, check=True)
-        installed, status = await host.install_candidate(
-            source=str(provider_repo),
-            marketplace="fixture",
-            ref_name="HEAD",
-            sparse_paths=[],
-        )
-        assert installed.plugin_name == "restart_provider"
-        assert status["candidate_plugin_id"] == "restart_provider@fixture"
-        latest = host.latest_snapshot
-        assert latest is not None
-        changed = [
-            plugin_id
-            for plugin_id, generation in latest.generations.items()
-            if stable.generations[plugin_id].generation_id != generation.generation_id
-        ]
-        assert changed == ["restart_provider@fixture"]
-        assert (
-            latest.generations["message_push"].generation_id
-            == stable_generation_ids["message_push"]
-        )
-        assert latest.composition_root is not None
-        candidate_root = latest.composition_root
-        assert isinstance(candidate_root, CompositionRoot)
-        expected_active = {"reply", "restart_provider@fixture"}
-        if supervised:
-            expected_active.add("message_push")
-        assert expected_active <= candidate_root.active_plugin_ids()
-        candidate_gate = candidate_root.context.require(RESTART_GATE)
-        assert isinstance(candidate_gate, RestartGate)
-        assert candidate_gate.supervised is supervised
-        assert candidate_gate.execution_enabled is False
-        expected_gate_error = "不允许重启效果" if supervised else "未由 supervisor 托管"
-        with pytest.raises(RestartRejectedError, match=expected_gate_error):
-            candidate_gate.prepare("candidate-request")
-        with pytest.raises(RestartRejectedError, match="不允许重启效果"):
-            await candidate_gate.commit("candidate-request")
-        candidate_tool_names = {
-            ref.name for ref in candidate_root.context.require(ALL_TOOLS)().refs
-        }
-        if supervised:
-            assert "agent_restart" in candidate_tool_names
-        else:
-            assert "agent_restart" not in candidate_tool_names
+        source = tmp_path / "plugins/restart_provider/plugin.py"
+        code = source.read_text(encoding="utf-8")
+        assert code.count('version = "1.0.0"') == 1
+        source.write_text(code.replace('version = "1.0.0"', 'version = "1.0.1"'), encoding="utf-8")
+        changed = await host.reconcile_changed()
 
-        release_authorize = asyncio.Event()
-        if supervised:
-            # 3. 真实 ToolExecution 在授权处阻塞，证明 promotion 必须等待旧 lease。
-            session = "reload-probe:real"
-            input_writer = log.writer(
-                session, author="user", source="reload-probe", body_types=(Input,), content={},
-            )
-            output_writer = log.writer(
-                session, author="assistant", source="reload-probe", body_types=(Output,),
-                content={}, check_call=lambda call: None,
-            )
-            input_writer.append("real-input", Input(()))
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                context = snapshot.composition_root.context
-                async with context.runtime_scope():
-                    binding = context.require(TOOLS).bind(
-                        context.require(ALL_TOOLS)().select("agent_restart"),
-                        context.require(BINDINGS),
-                    )
-            call = output_writer.append(
-                "real-call", Output((ToolCall(binding, {"reason": "reload"}),), "continue"),
-            )
-            old_result_writer = log.writer(
-                session, author="tool", source="reload-probe", body_types=(ToolResult,),
-                content={"text": lambda _part: ContentReferences()},
-                call_ref=CallRef(call.message_id, 0),
-            )
-            entered_authorize = asyncio.Event()
-
-            async def authorize(_binding_id: str, _arguments: Mapping[str, object]) -> Mapping[str, object] | str:
-                entered_authorize.set()
-                await release_authorize.wait()
-                return "old runtime drained before promotion"
-
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                context = snapshot.composition_root.context
-                async with context.runtime_scope():
-                    execution = context.require(TOOLS).execution(authorize)
-                    old_task = asyncio.create_task(
-                        execution.execute_call(
-                            MessageReply(
-                                "real-old-result", CallRef(call.message_id, 0),
-                                log.reader(session), old_result_writer, lambda: None,
-                            )
-                        ),
-                        name="reload-probe:old-tool-execution",
-                    )
-                    await asyncio.wait_for(entered_authorize.wait(), 2)
-
-        # 5. promotion 完成 candidate Overlay 到 formal Root 的切换。
-        promotion_task = asyncio.create_task(
-            host.switch_ready("restart_provider@fixture", update_id=installed.update_id),
-        )
-        if supervised:
-            await asyncio.wait_for(_wait_for_admission_pause(stable), 2)
-            assert not promotion_task.done()
-            assert old_task is not None and not old_task.done()
-            assert commits == []
-            release_authorize.set()
-            old_result = await asyncio.wait_for(old_task, 2)
-            assert old_result.outcome == "denied"
-            persisted_result = log.reader(session).get("real-old-result")
-            assert persisted_result is not None
-            assert persisted_result.body == ToolResult(
-                CallRef(call.message_id, 0), "denied", old_result.parts,
-            )
-        promoted = await asyncio.wait_for(promotion_task, 5)
-        assert promoted["publication_state"] == "promoted"
-        candidate = observed["candidate"]
-        formal = observed["formal"]
-        assert candidate.snapshot_id != formal.snapshot_id
-        assert {key: item.archive_ref for key, item in candidate.generations.items()} == {
-            key: item.archive_ref for key, item in formal.generations.items()
-        }
-
-        candidate_topology = candidate.composition_topology
-        formal_topology = formal.composition_topology
-        assert candidate_topology is not None and formal_topology is not None
-        assert candidate_topology.services == formal_topology.services
-        assert candidate_topology.fibers == formal_topology.fibers
-        assert candidate.composition_root is not None
-        assert formal.composition_root is not None
-        assert (
-            candidate.composition_root.plugin_service_owners()
-            == formal.composition_root.plugin_service_owners()
-        )
-        expected_listeners = {
-            "serial:runtime.started:tools",
-            "serial:runtime.stopping:tools",
-            "emit:runtime.starting:reply",
-            "emit:runtime.starting:restart_provider@fixture",
-            "serial:runtime.started:reply",
-            "serial:runtime.stopping:reply",
-            "serial:runtime.started:programmatic",
-            "serial:runtime.stopping:programmatic",
-        }
-        if supervised:
-            expected_listeners |= {
-                "emit:runtime.starting:restart",
-                "serial:runtime.started:restart",
-                "serial:runtime.stopping:restart",
-            }
-        assert set(candidate_topology.listeners) == expected_listeners
-        assert formal_topology.listeners == candidate_topology.listeners
-        assert commits == []
-        assert gate.permit_count == 0
-        if supervised:
-            await asyncio.wait_for(watcher_started.get(), 2)
-            new_watchers = [task for task in watcher_history if task is not old_watcher]
-            assert new_watchers
-            assert new_watchers[-1] is not old_watcher
-            assert old_watcher is not None and old_watcher.done()
-
-        candidate_tool = RestartTool(candidate_gate, FrameBook())
-        with pytest.raises(RestartRejectedError, match="正式 supervisor"):
-            await candidate_tool.prepare({"reason": "candidate"}, _source())
-    finally:
-        if release_authorize is not None:
-            release_authorize.set()
-        if promotion_task is not None and not promotion_task.done():
-            promotion_task.cancel()
-        if old_task is not None and not old_task.done():
-            old_task.cancel()
-        if promotion_task is not None:
-            await asyncio.gather(promotion_task, return_exceptions=True)
-        if old_task is not None:
-            await asyncio.gather(old_task, return_exceptions=True)
-        if "runtime_runner" in locals():
-            runtime_runner.cancel()
-            await asyncio.gather(runtime_runner, return_exceptions=True)
-        await host.terminate_all()
-        artifact_store.close()
-        log.close()
-
+        replacement = host.generation("restart_provider")
+        assert any(
+            item.get("plugin_id") == "restart_provider"
+            and item.get("publication_state") == "active"
+            for item in changed
+        ), changed
+        assert replacement is not None and replacement is not provider
+        assert replacement.archive_ref != provider.archive_ref
+        assert host._selection.read() != selected
+        assert host.live_root is root
+        assert host.generation("message_push") is restart_owner
+        assert root.context.require(RESTART_GATE) is gate
+        assert {ref.name for ref in root.context.require(ALL_TOOLS)().refs} == tool_names
+        assert {
+            task for task in asyncio.all_tasks()
+            if task.get_name() == "plugin-task:agent-restart-watcher"
+        } == watchers
 
 @pytest.mark.asyncio
 async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_commit(
@@ -1051,7 +801,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
             channel_attachment_store=SimpleNamespace(resolve_refs=lambda _ids: ()),
         ))
         service = build_control_service(core)
-        endpoint = tmp_path / "control.sock"
+        endpoint = "\0i750-" + secrets.token_hex(8)
         connection_done = asyncio.Event()
         drain_entered = asyncio.Event()
         drain_release = asyncio.Event()
@@ -1099,7 +849,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
                 finally:
                     connection_done.set()
 
-        server = await asyncio.start_unix_server(accept, path=str(endpoint))
+        server = await asyncio.start_unix_server(accept, path=endpoint)
         request_id = 0
 
         async def request(
@@ -1122,7 +872,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
                 if frame.get("id") == current:
                     return frame
 
-        reader, writer = await asyncio.open_unix_connection(str(endpoint))
+        reader, writer = await asyncio.open_unix_connection(endpoint)
         try:
             assert (await request(reader, writer, "initialize", {
                 "protocolVersion": "2.0", "clientInfo": {"name": "fixture", "version": "1"},
@@ -1142,8 +892,10 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
             })
             assert send["result"]["message_id"] == "input"  # type: ignore[index]
 
-            async with asyncio.timeout(5):
-                await drain_entered.wait()
+            try:
+                await asyncio.wait_for(drain_entered.wait(), 5)
+            except TimeoutError:
+                pytest.fail(f"writer={writer_state!r}; rows={log.reader(session).snapshot()!r}")
             assert not commits, "最终输出仍被真实 writer 阻塞，重启不得提交"
             drain_release.set()
 
@@ -1190,9 +942,9 @@ async def test_programmatic_restart_watcher_aborts_preclaim_after_disconnect(
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:disconnect"
         frames = host._control_frames  # type: ignore[attr-defined]
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        watcher = _loaded_restart_watcher(snapshot.composition_root)
+        root = host.live_root
+        assert root is not None
+        watcher = _loaded_restart_watcher(root)
         original_wait = cast(
             Callable[..., Awaitable[None]],
             getattr(watcher, "_wait_for_request"),
@@ -1213,15 +965,18 @@ async def test_programmatic_restart_watcher_aborts_preclaim_after_disconnect(
                 raise
 
         setattr(watcher, "_wait_for_request", hold_before_wait)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            context = snapshot.composition_root.context
-            api = context.require(PROGRAMMATIC)
-            await api.call("programmatic/session/admit", AdmitParams(session_id=session))
-            await api.call(
-                "programmatic/message/send",
-                SendParams(session_id=session, message_id="input", text="restart now"),
-                _FixtureTransport("fixture-connection"),
-            )
+        async with _live_root(host) as root:
+            generation = host.generation("programmatic")
+            assert generation is not None and generation.fiber is not None
+            context = generation.fiber.context
+            async with context.runtime_scope():
+                api = context.require(PROGRAMMATIC)
+                await api.call("programmatic/session/admit", AdmitParams(session_id=session))
+                await api.call(
+                    "programmatic/message/send",
+                    SendParams(session_id=session, message_id="input", text="restart now"),
+                    _FixtureTransport("fixture-connection"),
+                )
         try:
             await asyncio.wait_for(watcher_entered.wait(), 5)
             rows = log.reader(session).snapshot()
@@ -1302,15 +1057,18 @@ async def test_programmatic_restart_rejection_keeps_other_gate_request_and_abort
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:settings"
         frames = host._control_frames  # type: ignore[attr-defined]
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            context = snapshot.composition_root.context
-            api = context.require(PROGRAMMATIC)
-            await api.call("programmatic/session/admit", AdmitParams(session_id=session))
-            await api.call(
-                "programmatic/message/send",
-                SendParams(session_id=session, message_id="input", text="restart now"),
-                _FixtureTransport("fixture-connection"),
-            )
+        async with _live_root(host) as root:
+            generation = host.generation("programmatic")
+            assert generation is not None and generation.fiber is not None
+            context = generation.fiber.context
+            async with context.runtime_scope():
+                api = context.require(PROGRAMMATIC)
+                await api.call("programmatic/session/admit", AdmitParams(session_id=session))
+                await api.call(
+                    "programmatic/message/send",
+                    SendParams(session_id=session, message_id="input", text="restart now"),
+                    _FixtureTransport("fixture-connection"),
+                )
 
         call_ref: CallRef | None = None
         async with asyncio.timeout(5):

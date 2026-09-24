@@ -1,157 +1,64 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 
 import pytest
 
-from tests_scenarios.contracts.oracles import (
-    assert_recursive_plugin_self_validation,
+from tests.semantic.recursive_plugin_fixture import (
+    read_child,
+    read_failed_selection,
+    read_programmatic,
+    read_push,
+    read_selection,
 )
+from tests_scenarios.contracts.oracles import assert_recursive_plugin_self_validation
 
 
-def _complete_observation() -> dict[str, object]:
-    return {
-        "stable_snapshot": "snapshot-s0",
-        "candidate_snapshot": "snapshot-s1",
-        "install_publication_state": "latest_ready",
-        "parent_runtime": "snapshot-s0",
-        "ordinary_runtime_during_validation": "snapshot-s0",
-        "validation_runtime": "snapshot-s1",
-        "validation_finished_before_parent_release": True,
-        "parent_status_before_promote": "in_progress",
-        "parent_terminal_status": "completed",
-        "validation_turn": {
-            "threadId": "programmatic:validation",
-            "status": "completed",
-            "metadata": {
-                "runtime": "latest",
-                "inboundMetadata": {
-                    "effects": {"post_commit": "suppress"},
-                    "disabled_prompt_sections": ["memory"],
-                },
-            },
-            "items": [
-                {
-                    "type": "toolCall",
-                    "data": {
-                        "name": "candidate_only_tool",
-                        "status": "success",
-                        "resultPreview": '{"domain":"ready","snapshot":"snapshot-s1"}',
-                    },
-                },
-                {
-                    "type": "toolCall",
-                    "data": {
-                        "name": "message_push",
-                        "status": "success",
-                        "resultPreview": (
-                            '{"delivery_id":"proof-4","status":"delivered",'
-                            '"provider_ids":[],"error":null}'
-                        ),
-                    },
-                },
-            ],
-        },
-        "candidate_tool_result": {"domain": "ready", "snapshot": "snapshot-s1"},
-        "domain_state": "ready",
-        "validation_messages": [
-            {"role": "user", "content": "validate"},
-            {
-                "role": "assistant",
-                "content": "done",
-                "tool_chain": [{"calls": [{"name": "candidate_only_tool"}]}],
-            },
-        ],
-        "push_send_sequence": 4,
-        "parent_terminal_sequence": 7,
-        "push_target_history_before": [],
-        "push_target_history_after": [],
-        "stable_before_promote": "snapshot-s0",
-        "reload_journal_events_before_promote": ["preparing", "latest_ready"],
-        "reload_journal_events_after_promote": [
-            "preparing",
-            "latest_ready",
-            "complete",
-        ],
-        "recovered_stable_snapshot": "snapshot-s0",
-        "recovered_latest_snapshot": "snapshot-s1",
-        "recovery_promoted_candidate": False,
-        "stable_after_promote": "snapshot-s1",
-        "parent_runtime_after_promote": "snapshot-s0",
-    }
+@pytest.fixture(scope="module")
+def real_observation(tmp_path_factory) -> dict[str, object]:
+    """Collect one successful observation from each real owner boundary."""
+
+    root = tmp_path_factory.mktemp("recursive-p0")
+    patch = pytest.MonkeyPatch()
+
+    async def collect() -> dict[str, object]:
+        return {
+            "selection": await read_selection(root),
+            "failure": await read_failed_selection(root, patch),
+            "programmatic": await read_programmatic(root, patch),
+            "child": await read_child(root),
+            "push": await read_push(root),
+        }
+
+    try:
+        return asyncio.run(collect())
+    finally:
+        patch.undo()
 
 
-def test_recursive_plugin_self_validation_accepts_complete_evidence() -> None:
-    assert_recursive_plugin_self_validation(_complete_observation())
+def test_recursive_plugin_self_validation_reads_real_owners(real_observation) -> None:
+    assert_recursive_plugin_self_validation(real_observation)
 
 
-def _assert_mutant(
-    field: str,
-    value: object,
-    error: str,
+@pytest.mark.parametrize(
+    ("section", "field", "wrong", "message"),
+    [
+        ("selection", "after_compile_ref", "wrong-ref", "编译失败"),
+        ("failure", "failed_fiber", "active", "未 ACTIVE"),
+        ("failure", "recovered_before_retry", True, "误报为 A 已恢复"),
+        ("failure", "scope_retained", False, "cleanup owner"),
+        ("programmatic", "eligible_learning", "excluded", "学习资格"),
+        ("child", "domain_file", "missing", "领域效果"),
+        ("child", "parent_terminal", "failed", "父 Session terminal"),
+        ("push", "new_target_bodies", (), "独立 MessagePush Output"),
+    ],
+    ids=["compile-selection", "selected-not-active", "no-false-recovery", "cleanup-owner", "admission", "domain-effect", "parent-terminal", "push-output"],
+)
+def test_recursive_plugin_oracle_rejects_changed_real_observation(
+    real_observation, section: str, field: str, wrong: object, message: str,
 ) -> None:
-    mutant = deepcopy(_complete_observation())
-    mutant[field] = value
-
-    with pytest.raises(AssertionError, match=error):
-        assert_recursive_plugin_self_validation(mutant)
-
-
-def test_recursive_plugin_oracle_rejects_stable_misbinding_mutant() -> None:
-    _assert_mutant("validation_runtime", "snapshot-s0", "没有绑定 latest")
-
-
-def test_recursive_plugin_oracle_rejects_global_lock_mutant() -> None:
-    _assert_mutant(
-        "validation_finished_before_parent_release",
-        False,
-        "全局锁",
-    )
-
-
-def test_recursive_plugin_oracle_rejects_parent_terminal_overflow_mutant() -> None:
-    _assert_mutant(
-        "parent_terminal_status",
-        "failed",
-        "terminal 未完整送达",
-    )
-
-
-def test_recursive_plugin_oracle_rejects_post_commit_effect_mutant() -> None:
-    mutant = deepcopy(_complete_observation())
-    turn = mutant["validation_turn"]
-    assert isinstance(turn, dict)
-    metadata = turn["metadata"]
-    assert isinstance(metadata, dict)
-    inbound = metadata["inboundMetadata"]
-    assert isinstance(inbound, dict)
-    inbound["effects"] = {"post_commit": "allow"}
-
-    with pytest.raises(AssertionError, match="只读记忆策略"):
-        assert_recursive_plugin_self_validation(mutant)
-
-
-def test_recursive_plugin_oracle_rejects_fake_domain_success_mutant() -> None:
-    _assert_mutant("domain_state", "not-ready", "领域状态")
-
-
-def test_recursive_plugin_oracle_rejects_message_push_blocking_mutant() -> None:
-    _assert_mutant("push_send_sequence", 8, "等待了父 session")
-
-
-def test_recursive_plugin_oracle_rejects_crash_promotion_mutant() -> None:
-    _assert_mutant("recovery_promoted_candidate", True, "自动晋升")
-
-
-def test_recursive_plugin_oracle_rejects_fake_tool_item() -> None:
-    mutant = deepcopy(_complete_observation())
-    turn = mutant["validation_turn"]
-    assert isinstance(turn, dict)
-    items = turn["items"]
-    assert isinstance(items, list)
-    item = items[0]
-    assert isinstance(item, dict)
-    item["type"] = "assistantMessage"
-
-    with pytest.raises(AssertionError, match="真实 completed tool item"):
+    mutant = deepcopy(real_observation)
+    mutant[section][field] = wrong
+    with pytest.raises(AssertionError, match=message):
         assert_recursive_plugin_self_validation(mutant)

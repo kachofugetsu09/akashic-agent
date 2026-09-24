@@ -221,22 +221,6 @@
       "title": "PluginIdParams",
       "type": "object"
     },
-    "plugin/discard": {
-      "additionalProperties": false,
-      "properties": {
-        "update_id": {
-          "maxLength": 256,
-          "minLength": 1,
-          "title": "Update Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "update_id"
-      ],
-      "title": "UpdateIdParams",
-      "type": "object"
-    },
     "plugin/install": {
       "additionalProperties": false,
       "properties": {
@@ -279,22 +263,6 @@
         "source"
       ],
       "title": "InstallParams",
-      "type": "object"
-    },
-    "plugin/promote": {
-      "additionalProperties": false,
-      "properties": {
-        "update_id": {
-          "maxLength": 256,
-          "minLength": 1,
-          "title": "Update Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "update_id"
-      ],
-      "title": "UpdateIdParams",
       "type": "object"
     },
     "plugin/status": {

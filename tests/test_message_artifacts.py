@@ -80,7 +80,6 @@ def test_bad_ref_or_late_binding_failure_rolls_back_message_and_pins_but_keeps_a
 async def test_host_exposes_only_bounded_artifact_read_and_candidate_cannot_open(tmp_path):
     from agent.plugin_composition.artifacts import ARTIFACT_READ, ArtifactRead
     from agent.plugins.manager import PluginManager
-    from agent.plugins.snapshot import lease_runtime_snapshot
     from bus.event_bus import EventBus
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
 
@@ -106,21 +105,23 @@ async def apply(ctx):
                          installed_cache_root=tmp_path / "home", channel_attachment_store=artifacts)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            reader = snapshot.composition_root.context.require(ARTIFACT_READ)
-            assert not hasattr(reader, "import_bytes") and not hasattr(reader, "resolve_refs")
-            lease = await reader.acquire(ref)
-            try:
-                assert not hasattr(lease, "model_path")
-                assert await lease.read_bytes(max_bytes=100) == b"fixed bytes"
-                with pytest.raises(ValueError, match="上限"):
-                    await lease.read_bytes(max_bytes=1)
-            finally:
-                await lease.aclose()
-            with pytest.raises(RuntimeError, match="关闭"):
-                await lease.read_bytes(max_bytes=100)
-            with pytest.raises(RuntimeError, match="candidate"):
-                await ArtifactRead(None).acquire(ref)
+        root = host.live_root
+        assert root is not None
+        reader = root.service_value(ARTIFACT_READ)
+        assert reader is not None
+        assert not hasattr(reader, "import_bytes") and not hasattr(reader, "resolve_refs")
+        lease = await reader.acquire(ref)
+        try:
+            assert not hasattr(lease, "model_path")
+            assert await lease.read_bytes(max_bytes=100) == b"fixed bytes"
+            with pytest.raises(ValueError, match="上限"):
+                await lease.read_bytes(max_bytes=1)
+        finally:
+            await lease.aclose()
+        with pytest.raises(RuntimeError, match="关闭"):
+            await lease.read_bytes(max_bytes=100)
+        with pytest.raises(RuntimeError, match="candidate"):
+            await ArtifactRead(None).acquire(ref)
     finally:
         await host.terminate_all()
         store.close()

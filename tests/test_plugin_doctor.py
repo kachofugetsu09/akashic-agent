@@ -34,10 +34,13 @@ def test_doctor_does_not_import_plugin_and_defers_runtime_checks(tmp_path: Path,
     home = installed_artifact(tmp_path, source, candidate=candidate)
     report = run_plugin_doctor(workspace=tmp_path / "workspace", plugins_home=home)
     assert not marker.exists()
-    assert report["status"] == "degraded"
+    assert report["status"] == ("broken" if candidate else "degraded")
     checks = report["plugins"][0]["checks"]
-    assert any(check["name"] == ("candidate_runtime" if candidate else "runtime")
-               and check["status"] == "deferred" for check in checks)
+    if candidate:
+        assert report["status"] == "broken"
+        assert any(check["name"] == "install" and check["status"] == "error" for check in checks)
+    else:
+        assert any(check["name"] == "runtime" and check["status"] == "deferred" for check in checks)
     assert not (tmp_path / "workspace").exists()
 
 
@@ -46,8 +49,13 @@ def test_doctor_does_not_import_plugin_and_defers_runtime_checks(tmp_path: Path,
     'name = "demo"\nversion = "1.0.0"\napi_version = 2\n',
 ])
 def test_doctor_reports_invalid_artifact_without_running_it(tmp_path: Path, source: str):
-    home = installed_artifact(tmp_path, source, candidate=False)
+    home = installed_artifact(
+        tmp_path, 'name = "demo"\nversion = "1.0.0"\napi_version = 3\n',
+        candidate=False,
+    )
+    # Corrupt the artifact after pointer publication to exercise doctor input.
+    (home / "cache/lab/demo/.artifacts/one/plugin.py").write_text(source)
     report = run_plugin_doctor(workspace=tmp_path / "workspace", plugins_home=home)
     assert report["status"] == "broken"
-    assert any(check["name"] == "declaration" and check["status"] == "error"
+    assert any(check["name"] == "install" and check["status"] == "error"
                for check in report["plugins"][0]["checks"])

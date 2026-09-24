@@ -1,4 +1,5 @@
 from collections.abc import Callable, Mapping
+from contextlib import asynccontextmanager
 from typing import cast
 
 import pytest
@@ -64,6 +65,10 @@ class _Context:
             return self.bindings
         raise AssertionError(f"unexpected service: {key}")
 
+    @asynccontextmanager
+    async def runtime_scope(self):
+        yield
+
 
 class _Catalog:
     def __init__(self):
@@ -92,7 +97,8 @@ async def _reject_authorize(_binding_id: str, _arguments: Mapping[str, object]) 
     return "rejected"
 
 
-def test_factory_returns_real_menu_and_scoped_reply() -> None:
+@pytest.mark.asyncio
+async def test_factory_returns_real_menu_and_scoped_reply() -> None:
     writers = _Writers()
     catalog = _Catalog()
     factory = ToolProgramFactory(
@@ -104,7 +110,7 @@ def test_factory_returns_real_menu_and_scoped_reply() -> None:
     async def authorize(binding_id: str, arguments: Mapping[str, object]):
         return {"binding": binding_id}
 
-    menu = factory.create_menu(
+    menu = await factory.create_menu(
         reader,
         "conversation",
         content={"text": _check_text},
@@ -121,7 +127,7 @@ def test_factory_returns_real_menu_and_scoped_reply() -> None:
     assert catalog.authorize is authorize
     assert catalog.child_permit is not None
 
-    reply = factory.bind_reply(
+    reply = await factory.bind_reply(
         reader,
         "conversation",
         content={"text": _check_text},
@@ -135,7 +141,8 @@ def test_factory_returns_real_menu_and_scoped_reply() -> None:
     assert writers.bound["source"] == "conversation"
 
 
-def test_menu_keeps_internal_binding_errors_fail_loud() -> None:
+@pytest.mark.asyncio
+async def test_menu_keeps_internal_binding_errors_fail_loud() -> None:
     writers = _Writers()
     catalog = _Catalog()
     factory = ToolProgramFactory(
@@ -152,7 +159,7 @@ def test_menu_keeps_internal_binding_errors_fail_loud() -> None:
         def configuration(self, name):
             return None
 
-    menu = factory.create_menu(
+    menu = await factory.create_menu(
         cast(MessageReader, _Reader()),
         "conversation",
         content={},

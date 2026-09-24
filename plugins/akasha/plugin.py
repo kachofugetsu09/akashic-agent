@@ -173,11 +173,15 @@ async def apply(ctx: Context) -> None:
     start_lock = asyncio.Lock()
     health = await ctx.health("embedding", required=False)
 
+    # The store belongs to Akasha's apply owner; callers of the public read
+    # service hold their own scope, not Akasha's OwnerCall.
+    record_state = ctx.require(OWNER_STATE).open(ctx)
+
     def records() -> RecallRecords:
-        return RecallRecords(ctx.require(OWNER_STATE).open(ctx))
+        return RecallRecords(record_state)
 
     def records_read() -> RecallRecordsRead:
-        return RecallRecordsRead(ctx.require(OWNER_STATE).open(ctx))
+        return RecallRecordsRead(record_state)
 
     # 公开读取函数不暴露 owner transaction；归档 apply 也不会读取正式数据库。
     def read_recall(identity: str) -> Recall | None:
@@ -262,9 +266,10 @@ async def apply(ctx: Context) -> None:
                 return [list(vector) for vector in result.vectors]
         return embed
 
-    def select_interest() -> tuple[LearningConfig, Embed]:
-        _identity, rule, model_id = select_learning()
-        return rule, embedder(rule, model_id)
+    async def select_interest() -> tuple[LearningConfig, Embed]:
+        async with ctx.runtime_scope():
+            _identity, rule, model_id = select_learning()
+            return rule, embedder(rule, model_id)
 
     _ = await ctx.provide(SEMANTIC_INTEREST, SemanticInterest(
         learning, ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS), select_interest,

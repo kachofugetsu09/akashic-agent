@@ -3,6 +3,8 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -68,6 +70,126 @@ async def test_programmatic_admission_is_immutable_and_ack_retries_recover_same_
 
 
 @pytest.mark.asyncio
+async def test_public_programmatic_learning_policy_reaches_akasha_and_markdown(tmp_path, monkeypatch):
+    """Public admission fixes eligibility before either real learning owner reads the log."""
+    from agent.plugin_composition import CHAT_MODELS, ServiceKey
+    from agent.plugin_composition.bindings import BINDINGS
+    from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
+    from plugins.akasha.infrastructure.persistence import load_consumption
+    from plugins.markdown_memory.plugin import Config as MarkdownConfig, project
+    from plugins.markdown_memory._boundaries import CONTENT, CONTEXT, TURN_PROJECTION, COMPACTION_READER
+    from plugins.compaction.records import COMPACTION_SUMMARIES
+    from tests.test_akasha_message_plugin import application as akasha_application
+    from tests.test_message_markdown_memory import (
+        application as markdown_application, profile_store, publish, record_use,
+    )
+
+    admission_root = tmp_path / "admission"
+    admission_root.mkdir()
+    sessions = (
+        ("programmatic:default-excluded", None, "private default fact"),
+        ("programmatic:false-excluded", False, "private false fact"),
+        ("programmatic:eligible", True, "fact-one learned answer"),
+    )
+    # 1. Admit and send through the public control boundary.
+    async with endpoint(admission_root, monkeypatch) as (address, core):
+        async with await AsyncAkashic.connect(address) as client:
+            for session, persist_memory, text in sessions:
+                input_id = f"{session}:input"
+                params: dict[str, object] = {"session_id": session}
+                if persist_memory is not None:
+                    params["persist_memory"] = persist_memory
+                admitted = await client.request("programmatic/session/admit", params)
+                assert admitted == await client.request("programmatic/session/admit", params)
+                assert response_data(admitted)["learning"] == ("eligible" if persist_memory else "excluded")
+                with pytest.raises(RemoteError):
+                    await client.request("programmatic/session/admit", {
+                        "session_id": session, "persist_memory": not bool(persist_memory),
+                    })
+                await client.request("programmatic/message/send", {
+                    "session_id": session, "message_id": input_id, "text": text,
+                })
+                assert response_data(await client.request("programmatic/message/result", {
+                    "session_id": session, "input_id": input_id,
+                }))["status"] == "open"
+                assert [type(row.body) for row in core.message_log.reader(session).snapshot()] == [Input]
+                assert core.message_log.catalog().attributes(session) == SessionAttributes(
+                    "internal", "eligible" if persist_memory else "excluded")
+
+    source_db = admission_root / "workspace/sessions.db"
+
+    def copy_log(source_db: Path, target: Path) -> None:
+        target.mkdir()
+        with closing(sqlite3.connect(source_db)) as source, closing(sqlite3.connect(target / "sessions.db")) as saved:
+            source.backup(saved)
+
+    akasha_root = tmp_path / "akasha"
+    copy_log(source_db, akasha_root)
+    # 2. Close the original turns while the actual Akasha owner watches this log.
+    async with akasha_application(akasha_root) as (log, host):
+        root = host.live_root
+        assert root is not None
+        for session, persist_memory, _ in sessions:
+            log.writer(session, author="assistant", source="programmatic",
+                body_types=(Output,), content={"text": check_text}).append(
+                    f"{session}:answer", Output((ContentPart("text", "learned answer" if persist_memory else "private answer"),),
+                                     "complete"))
+        await asyncio.wait_for(root.context.require(ServiceKey("fixture.embedded")).wait(), 5)
+        embedded = (akasha_root / "embedding-calls.txt").read_text()
+        assert "fact-one" in embedded and "learned answer" in embedded
+        assert "private default fact" not in embedded and "private false fact" not in embedded
+        learning = root.context.require(AKASHA_LEARNING)
+        blocked = LearningConfig(embedding_model="fixture", dimension=2, sources=("conversation",))
+        assert learning.samples(log.catalog(), blocked, heads=log.catalog().snapshot_heads()) == ()
+        for session, _, _ in sessions:
+            assert [type(row.body) for row in log.reader(session).snapshot()] == [Input, Output]
+    learned = load_consumption(akasha_root / "workspace/memory/akasha.db")
+    assert learned is not None
+    assert [(entry.session_id, entry.ending[1]) for entry in learned.applied] == [
+        ("programmatic:eligible", "programmatic:eligible:answer")]
+
+    markdown_root = tmp_path / "markdown"
+    copy_log(akasha_root / "sessions.db", markdown_root)
+    # 3. Use real summary receipts to drive Markdown's source and session gates.
+    async with markdown_application(markdown_root) as (log, host):
+        root = host.live_root
+        assert root is not None
+        ctx = root.context
+        store = profile_store(markdown_root)
+
+        async def consume(session: str, identity: str, sources: tuple[str, ...]):
+            summary = publish(log, identity + "-summary", session_id=session)
+            used = await record_use(log, host, summary, identity + "-use", source="programmatic",
+                                    session_id=session)
+            await project(used, reader=log.reader(session), bindings=ctx.require(BINDINGS), store=store,
+                models=ctx.require(CHAT_MODELS), lock_path=markdown_root / "workspace/memory/markdown-profile.lock",
+                sources=sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT),
+                context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES),
+                compaction=ctx.require(COMPACTION_READER))
+            return summary.reference, used
+
+        for session, _, _ in sessions[:2]:
+            reference, _ = await consume(session, session.split(":")[-1], MarkdownConfig().sources)
+            assert not store.is_applied(reference)
+        assert not (markdown_root / "requests.jsonl").exists()
+        eligible = sessions[2][0]
+        blocked_ref, eligible_use = await consume(eligible, "eligible", ("conversation",))
+        assert not store.is_applied(blocked_ref)
+        assert not (markdown_root / "requests.jsonl").exists()
+        await project(eligible_use, reader=log.reader(eligible), bindings=ctx.require(BINDINGS), store=store,
+            models=ctx.require(CHAT_MODELS), lock_path=markdown_root / "workspace/memory/markdown-profile.lock",
+            sources=MarkdownConfig().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT),
+            context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES),
+            compaction=ctx.require(COMPACTION_READER))
+        assert store.is_applied(blocked_ref)
+        assert "fact-one" in store.read_memory()
+        payload = (markdown_root / "requests.jsonl").read_text()
+        assert "private default fact" not in payload and "private false fact" not in payload
+        for session, _, _ in sessions:
+            assert isinstance(log.reader(session).get(f"{session}:input").body, Input)
+
+
+@pytest.mark.asyncio
 async def test_programmatic_committed_output_releases_route_without_result_read(tmp_path, monkeypatch):
     async with endpoint(tmp_path, monkeypatch) as (address, core):
         session = "programmatic:route-settle"
@@ -91,7 +213,6 @@ async def test_programmatic_resume_rebinds_output_to_new_connection_after_discon
     tmp_path, monkeypatch,
 ):
     """旧连接断开后，显式 resume 必须把最终 Output 观察交给新连接。"""
-    from agent.plugins.snapshot import lease_runtime_snapshot
     from plugins.programmatic.control import PROGRAMMATIC
     from plugins.turn_projection.plugin import TURN_PROJECTION
 
@@ -117,14 +238,15 @@ async def test_programmatic_resume_rebinds_output_to_new_connection_after_discon
             )
             writer.append("final", Output((ContentPart("text", "恢复结果"),), "complete"))
 
-            async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
-                context = snapshot.composition_root.context
-                reader = core.message_log.reader(session)
-                projection = context.require(TURN_PROJECTION)
-                turn = projection.project(reader.snapshot(), "programmatic")[-1]
-                waiter = asyncio.create_task(
-                    context.require(PROGRAMMATIC).wait(reader, turn),
-                )
+            root = core.plugin_manager.live_root
+            assert root is not None
+            context = root.context
+            reader = core.message_log.reader(session)
+            projection = context.require(TURN_PROJECTION)
+            turn = projection.project(reader.snapshot(), "programmatic")[-1]
+            waiter = asyncio.create_task(
+                context.require(PROGRAMMATIC).wait(reader, turn),
+            )
             page = await second.message_read(session)
             await asyncio.wait_for(waiter, 3)
             claim.consume()
@@ -162,7 +284,6 @@ async def test_exec_cli_reads_exact_completed_message_over_real_socket(tmp_path,
 
 @pytest.mark.asyncio
 async def test_programmatic_source_uses_real_default_reply_and_tool_settlement(tmp_path):
-    from agent.plugins.snapshot import lease_runtime_snapshot
     from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, ResultParams
     from tests.test_default_reply import application
 
@@ -171,14 +292,19 @@ async def test_programmatic_source_uses_real_default_reply_and_tool_settlement(t
 
     async with application(tmp_path, replying=True, extra_sources=add_source) as (log, host):
         session = "programmatic:reply"
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            api = snapshot.composition_root.context.require(PROGRAMMATIC)
+        root = host.live_root
+        assert root is not None
+        api = root.context.require(PROGRAMMATIC)
+        generation = host.generation("programmatic")
+        assert generation is not None and generation.fiber is not None
+        context = generation.fiber.context
+        async with context.runtime_scope():
             await api.call("programmatic/session/admit", AdmitParams(session_id=session))
             await api.call("programmatic/message/send", SendParams(session_id=session, message_id="input", text="do work"))
         async with asyncio.timeout(5):
             async for _ in log.reader(session).follow():
-                async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                    result = await snapshot.composition_root.context.require(PROGRAMMATIC).call(
+                async with context.runtime_scope():
+                    result = await api.call(
                         "programmatic/message/result", ResultParams(session_id=session, input_id="input"))
                 if result["status"] != "open":
                     break
@@ -241,62 +367,3 @@ async def test_control_socket_stop_closes_clients_waiting_for_connection_slot(tm
             for writer in writers:
                 writer.close()
                 await writer.wait_closed()
-
-
-@pytest.mark.asyncio
-async def test_programmatic_requests_keep_exact_snapshot_while_follow_does_not_pin_it(tmp_path, monkeypatch):
-    from agent.plugins.snapshot import RuntimeSnapshotCompiler, get_current_runtime_snapshot
-    from plugins.programmatic.control import PROGRAMMATIC
-
-    async with endpoint(tmp_path, monkeypatch) as (address, core):
-        manager = core.plugin_manager
-        old = manager.current_snapshot
-        assert old is not None
-        api = old.composition_root.context.require(PROGRAMMATIC)
-        original = api.call
-        entered, release = asyncio.Event(), asyncio.Event()
-        observed = []
-
-        async def blocked(method, params, transport=None):
-            snapshot = get_current_runtime_snapshot()
-            observed.append(snapshot.snapshot_id)
-            if params.session_id == "programmatic:old":
-                entered.set()
-                await release.wait()
-                assert get_current_runtime_snapshot() is snapshot
-            return await original(method, params, transport)
-
-        monkeypatch.setattr(api, "call", blocked)
-        async with await AsyncAkashic.connect(address) as client:
-            async with await client.session_follow("programmatic:new") as feed:
-                stream = feed.events()
-                assert (await asyncio.wait_for(anext(stream), 3))["type"] == "reply.status"
-                assert old.lease_count == 0
-                request = asyncio.create_task(client.request("programmatic/session/admit", {
-                    "session_id": "programmatic:old",
-                }))
-                try:
-                    await asyncio.wait_for(entered.wait(), 3)
-                    replacement = RuntimeSnapshotCompiler().compile(old.generations,
-                        snapshot_revision="programmatic-publication-proof", composition_root=old.composition_root)
-                    await manager._publish_committed_snapshot(replacement)
-                    assert manager.current_snapshot is replacement
-                    assert not request.done() and old.lease_count == 1
-                    release.set()
-                    await asyncio.wait_for(request, 3)
-                    await asyncio.wait_for(manager.snapshot_store.wait_for_snapshot_drained(old), 3)
-                    await client.request("programmatic/session/admit", {"session_id": "programmatic:new"})
-                    await client.request("programmatic/message/send", {
-                        "session_id": "programmatic:new", "message_id": "new-input", "text": "new owner",
-                    })
-                    assert observed == [old.snapshot_id, replacement.snapshot_id, replacement.snapshot_id]
-                    async with asyncio.timeout(3):
-                        async for event in stream:
-                            if event["type"] == "messages.appended":
-                                assert event["items"][0]["id"] == "new-input"
-                                break
-                finally:
-                    release.set()
-                    request.cancel()
-                    await asyncio.gather(request, return_exceptions=True)
-                    await stream.aclose()

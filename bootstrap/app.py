@@ -5,8 +5,11 @@ import inspect
 import logging
 import os
 import signal
+import stat
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+import uvicorn
 
 from agent.config import resolve_app_server_endpoint
 from agent.control.service import ControlService
@@ -146,6 +149,37 @@ def _wait_server_task(
     return wait
 
 
+def _remove_dashboard_socket(
+    server: uvicorn.Server | None,
+    task: asyncio.Task[None] | None,
+) -> Callable[[], Awaitable[None]]:
+    """Remove this host's Unix socket after its dashboard listener has stopped."""
+
+    async def remove() -> None:
+        if server is None:
+            return
+        if task is not None and not task.done():
+            raise RuntimeError("Dashboard server task is still running")
+        if not server.started:
+            return
+        if any(listener.is_serving() for listener in server.servers):
+            raise RuntimeError("Dashboard Unix socket is still serving")
+        uds = server.config.uds
+        if uds is None:
+            return
+        path = Path(uds)
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            return
+        if not stat.S_ISSOCK(mode):
+            raise RuntimeError(f"Dashboard socket path is not a socket: {path}")
+        # Python 3.12 closes the listener but leaves its Unix socket pathname.
+        path.unlink()
+
+    return remove
+
+
 class AppRuntime:
     def __init__(
         self,
@@ -172,7 +206,7 @@ class AppRuntime:
         self.core: CoreRuntime | None = None
         self.bus = None
         self.event_bus: EventBus | None = None
-        self.dashboard_server = None
+        self.dashboard_server: uvicorn.Server | None = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
@@ -208,6 +242,10 @@ class AppRuntime:
             self.event_bus = event_bus
             manager = self.core.plugin_manager
             manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
+            self.dashboard_server = build_dashboard_server(
+                workspace=self.workspace,
+                plugin_manager=manager,
+            )
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
@@ -246,20 +284,12 @@ class AppRuntime:
                 self.readiness.mark_stage("channels.ready")
             if plugin_manager is None:
                 raise RuntimeError("插件 Runtime 不可用")
-            # 正式 lifecycle 完成后才公布 runtime ready；一次调度机会不等于启动完成。
-            await plugin_manager.start_runtime()
-
-            self.tasks = [
-                self.bus.dispatch_outbound(),
-                plugin_manager.run_runtime_services(),
-            ]
             host_bridge_monitor = build_host_bridge_monitor()
+            self.tasks = []
             if host_bridge_monitor is not None:
                 self.tasks.append(host_bridge_monitor)
-            self.dashboard_server = build_dashboard_server(
-                workspace=self.workspace,
-                uds=prepare_runtime_socket(dashboard_socket_path(self.workspace)),
-                plugin_manager=plugin_manager,
+            self.dashboard_server.config.uds = prepare_runtime_socket(
+                dashboard_socket_path(self.workspace)
             )
             self.dashboard_task = asyncio.create_task(
                 self.dashboard_server.serve(),
@@ -290,10 +320,13 @@ class AppRuntime:
         try:
             await self.start()
             runtime_tasks = self._schedule_runtime_tasks()
-            self._primary_task = asyncio.create_task(
-                _run_primary_tasks(runtime_tasks),
-                name="primary_runtime",
-            )
+            if runtime_tasks:
+                self._primary_task = asyncio.create_task(
+                    _run_primary_tasks(runtime_tasks),
+                    name="primary_runtime",
+                )
+            else:
+                self._primary_task = None
             self._runtime_tasks.clear()
             watched_tasks = {
                 task
@@ -303,9 +336,13 @@ class AppRuntime:
                 )
                 if task is not None
             }
-            supervised_tasks = {self._primary_task, *watched_tasks}
+            supervised_tasks = set(watched_tasks)
+            if self._primary_task is not None:
+                supervised_tasks.add(self._primary_task)
+            if not supervised_tasks:
+                raise RuntimeError("没有可监督的宿主任务")
 
-            # runtime task 获得一次调度机会后仍存活，才对外发布 ready。
+            # 实际宿主监督任务获得一次调度机会后仍存活，才对外发布 ready。
             done, _ = await asyncio.wait(supervised_tasks, timeout=0)
             if not done:
                 if self.readiness is not None:
@@ -314,7 +351,7 @@ class AppRuntime:
                     supervised_tasks,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-            if self._primary_task in done:
+            if self._primary_task is not None and self._primary_task in done:
                 await self._primary_task
             else:
                 if self.dashboard_task is not None and self.dashboard_task in done:
@@ -422,6 +459,10 @@ class AppRuntime:
                     "dashboard_server.wait",
                     _wait_server_task(self.dashboard_task),
                 ),
+                (
+                    "dashboard_socket.remove",
+                    _remove_dashboard_socket(self.dashboard_server, self.dashboard_task),
+                ),
                 ("message_bus.aclose", _close_message_bus(self.bus)),
                 (
                     "plugin_watcher.stop",
@@ -495,71 +536,6 @@ class AppRuntime:
             raise RuntimeError("插件 Runtime 不可用")
         await manager.reconcile_disabled_and_drain(plugin_id)
         return f"插件已停用并排空: {plugin_id}"
-
-    def _plugin_status(
-        self,
-        status: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-        resolved_status = manager.candidate_status() if status is None else status
-        return {
-            "stableSnapshotId": resolved_status["stable_snapshot_id"],
-            "latestSnapshotId": resolved_status["latest_snapshot_id"],
-            "candidatePluginId": resolved_status["candidate_plugin_id"],
-            "candidateGenerationId": resolved_status["candidate_generation_id"],
-            "candidateState": resolved_status["candidate_state"],
-            "candidateRuntimeRevision": resolved_status["candidate_source_revision"],
-            "candidateReloadTransactionId": resolved_status["candidate_reload_tx_id"],
-            "candidateError": resolved_status["candidate_error"],
-        }
-
-    async def _promote_plugin(self, plugin_id: str) -> dict[str, object]:
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-        return await manager.switch_ready(plugin_id)
-
-    async def _discard_plugin(self, plugin_id: str) -> dict[str, object]:
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-        return await manager.drop_candidate(plugin_id)
-
-    async def _uninstall_plugin(self, plugin_id: str) -> dict[str, object]:
-        """Disable, drain, and remove plugin code while retaining workspace data."""
-
-        # 1. 先更新安装清单，新请求不再取得该插件 generation。
-        plugin_id = plugin_id.strip()
-        if not plugin_id:
-            raise ValueError("缺少插件 ID")
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-        from agent.plugins.install import (
-            finalize_uninstall_plugin,
-            set_installed_plugin_enabled,
-        )
-
-        _ = set_installed_plugin_enabled(
-            plugin_id,
-            enabled=False,
-            plugins_home=manager.installed_plugins_home,
-        )
-
-        # 2. 等待旧 turn 释放 lease，再删除 cache 和 manifest entry。
-        await manager.reconcile_disabled_and_drain(plugin_id)
-        cache_path, data_path = finalize_uninstall_plugin(
-            plugin_id,
-            workspace=self.workspace,
-            plugins_home=manager.installed_plugins_home,
-        )
-        return {
-            "pluginId": plugin_id,
-            "cachePath": str(cache_path),
-            "dataPath": str(data_path),
-        }
 
     def _plugin_candidate_scan_done(self, task: asyncio.Task[Any]) -> None:
         self._plugin_candidate_tasks.discard(task)

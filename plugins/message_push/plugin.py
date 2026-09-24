@@ -38,6 +38,7 @@ inject = (
 )
 
 _RESTART_DEPS = (
+    TOOLS,
     BINDINGS,
     MESSAGE_CATALOG,
     TURN_PROJECTION,

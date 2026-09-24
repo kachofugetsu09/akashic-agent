@@ -64,7 +64,7 @@ class CommandRecoveryRequired(RuntimeError):
 
 
 class CommandCatalog(Protocol):
-    """已封存目录的发现、精确绑定与执行能力。"""
+    """一次登记快照的发现、精确绑定与真实 owner 执行能力。"""
 
     @property
     def descriptors(self) -> tuple[CommandDescriptor, ...]: ...
@@ -78,7 +78,7 @@ class CommandCatalog(Protocol):
 
 
 class Commands(Protocol):
-    """贡献方注册命令，消费者读取 provider 封存的目录。"""
+    """贡献方注册命令，消费者读取不阻塞后续登记的短生命目录。"""
 
     async def register(self, ctx: Context, definition: CommandDefinition) -> None: ...
 

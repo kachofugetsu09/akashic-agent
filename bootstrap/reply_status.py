@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import suppress
-from typing import Protocol
+from contextlib import aclosing
+from dataclasses import dataclass
+from typing import Protocol, cast
+from uuid import uuid4
 
-from agent.plugin_composition import ServiceKey
-
-from agent.plugins.snapshot import RuntimeSnapshotStore
+from agent.plugin_composition import CompositionRoot, FiberState, ServiceKey
 
 
 class ReplyStatusRead(Protocol):
@@ -19,54 +19,178 @@ class ReplyStatusRead(Protocol):
 REPLY_STATUS = ServiceKey[ReplyStatusRead]("reply.status.v2")
 
 
-class RuntimeReplyStatus:
-    """订阅当前回复的只读状态；客户端连接不占用插件执行 lease。"""
+@dataclass(frozen=True, slots=True)
+class _StatusEvent:
+    value: object
+    boundary: bool
 
-    def __init__(self, store: RuntimeSnapshotStore):
-        self._store = store
+
+_ROOT_CLOSED = object()
+
+
+class _StatusChannel:
+    """Keep one current frame while preserving provider lifecycle boundaries."""
+
+    def __init__(self) -> None:
+        self._events: asyncio.Queue[_StatusEvent] = asyncio.Queue(maxsize=1)
+        self._boundary_pending = False
+        self._boundary_consumed = asyncio.Event()
+        self._boundary_consumed.set()
+        self._terminal_error: BaseException | None = None
+        self._closed = False
+
+    def _replace(self, event: _StatusEvent) -> None:
+        """Replace only a non-terminal frame and wake a waiting consumer."""
+        while self._events.full():
+            _ = self._events.get_nowait()
+        self._boundary_pending = event.boundary
+        if event.boundary:
+            self._boundary_consumed.clear()
+        else:
+            self._boundary_consumed.set()
+        self._events.put_nowait(event)
+
+    async def publish(self, value: object) -> None:
+        """Coalesce temporary frames without delaying provider cleanup."""
+        while self._boundary_pending and not self._closed and self._terminal_error is None:
+            await self._boundary_consumed.wait()
+        if self._closed or self._terminal_error is not None:
+            return
+        if self._events.full():
+            _ = self._events.get_nowait()
+        self._events.put_nowait(_StatusEvent(value, boundary=False))
+
+    def publish_boundary(self, value: object) -> None:
+        """Replace temporary data unless a terminal error already won."""
+        if self._closed or self._terminal_error is not None:
+            return
+        self._replace(_StatusEvent(value, boundary=True))
+
+    def publish_error(self, error: BaseException) -> None:
+        """Keep the first reader error visible until the consumer observes it."""
+        if self._closed or self._terminal_error is not None:
+            return
+        self._terminal_error = error
+        self._replace(_StatusEvent(error, boundary=True))
+        self._boundary_pending = False
+        self._boundary_consumed.set()
+
+    def close(self) -> None:
+        """Wake this subscription without replacing an already queued error."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._terminal_error is None:
+            self._replace(_StatusEvent(_ROOT_CLOSED, boundary=True))
+        else:
+            self._boundary_pending = False
+            self._boundary_consumed.set()
+
+    async def receive(self) -> object:
+        event = await self._events.get()
+        if event.boundary:
+            self._boundary_pending = False
+            self._boundary_consumed.set()
+        return event.value
+
+
+class RuntimeReplyStatus:
+    """Subscribe to the live Root without retaining a provider call."""
+
+    def __init__(self, root: CompositionRoot):
+        if not isinstance(root, CompositionRoot):
+            raise TypeError("RuntimeReplyStatus 需要 CompositionRoot")
+        self._root = root
 
     async def follow(self, session_id: str) -> AsyncGenerator[dict[str, object], None]:
-        """切换 generation 时丢弃旧预览；无回复插件与空闲状态明确区分。"""
-        while True:
-            # 1. 同步取出窄读取接口，不在 Root 上跨 await 执行业务。
-            snapshot = self._store.current
-            if snapshot is None or snapshot.composition_root is None:
-                raise RuntimeError("回复状态需要已发布的插件 Root")
-            read = snapshot.composition_root.context.get(REPLY_STATUS)
-            base: dict[str, object] = {
-                "version": 2, "session_id": session_id,
-                "snapshot_id": snapshot.snapshot_id,
-            }
-            if read is None:
-                yield {**base, "available": False, "items": []}
-                _ = await self._store.wait_for_stable_change(snapshot)
-                continue
+        """Follow one optional provider Fiber until the Root or caller closes."""
+        root = self._root
+        channel = _StatusChannel()
+        subscriber = None
+        root_effect = None
+        subscription_id = uuid4().hex
 
-            # 2. 通知只提示重新读取当前状态；旧 generation 的 token 不重放。
-            changed = asyncio.create_task(self._store.wait_for_stable_change(snapshot))
-            pending: asyncio.Task[tuple[dict[str, object], ...]] | None = None
-            follower = read.follow(session_id)
+        def unavailable() -> dict[str, object]:
+            return {
+                "version": 2,
+                "session_id": session_id,
+                "snapshot_id": None,
+                "available": False,
+                "items": [],
+            }
+
+        async def apply(context) -> None:
+            """Start the Fiber-owned pump for one frozen provider activation."""
             try:
-                while self._store.current is snapshot:
-                    pending = asyncio.create_task(anext(follower))
-                    done, _ = await asyncio.wait((pending, changed), return_when=asyncio.FIRST_COMPLETED)
-                    if changed in done:
-                        _ = changed.result()
-                        break
+                reader = context.require(REPLY_STATUS)
+                provider = context._fiber.dependency_store[  # pyright: ignore[reportPrivateUsage]
+                    cast(ServiceKey[object], REPLY_STATUS)
+                ]
+                snapshot_id = f"{root.generation_id}:{provider.revision}"
+
+                async def pump() -> None:
+                    boundary_sent = False
                     try:
-                        items = pending.result()
-                    except StopAsyncIteration:
-                        yield {**base, "available": False, "items": []}
-                        _ = await changed
-                        break
-                    yield {**base, "available": True, "items": list(items)}
+                        follower = reader.follow(session_id)
+                        async with aclosing(follower):
+                            async for items in follower:
+                                await channel.publish({
+                                    "version": 2,
+                                    "session_id": session_id,
+                                    "snapshot_id": snapshot_id,
+                                    "available": True,
+                                    "items": list(items),
+                                })
+                        channel.publish_boundary(unavailable())
+                        boundary_sent = True
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError as error:
+                        current = asyncio.current_task()
+                        if current is None or not current.cancelling():
+                            channel.publish_error(error)
+                            boundary_sent = True
+                        raise
+                    except BaseException as error:
+                        channel.publish_error(error)
+                        boundary_sent = True
+                        raise
+                    finally:
+                        if not boundary_sent:
+                            channel.publish_boundary(unavailable())
+
+                await context.spawn(
+                    pump(),
+                    name=f"reply-status-pump:{subscription_id}",
+                )
+            except BaseException as error:
+                if not isinstance(error, asyncio.CancelledError):
+                    channel.publish_error(error)
+                raise
+
+        try:
+            root_effect = await root.context.effect(
+                lambda: channel.close,
+                label=f"reply-status-root-close:{subscription_id}",
+            )
+            subscriber = await root.context.inject(
+                (cast(ServiceKey[object], REPLY_STATUS),),
+                apply,
+                name=f"reply-status:{subscription_id}",
+            )
+            if subscriber.state == FiberState.PENDING:
+                yield unavailable()
+
+            while True:
+                value = await channel.receive()
+                if value is _ROOT_CLOSED:
+                    return
+                if isinstance(value, BaseException):
+                    raise value
+                yield cast(dict[str, object], value)
+        finally:
+            try:
+                if subscriber is not None:
+                    await subscriber.dispose()
             finally:
-                # 3. 切页、断线和卸载结束正在等的读取，不能留下后台订阅。
-                if pending is not None:
-                    _ = pending.cancel()
-                    with suppress(asyncio.CancelledError, StopAsyncIteration):
-                        _ = await pending
-                _ = changed.cancel()
-                with suppress(asyncio.CancelledError):
-                    _ = await changed
-                await follower.aclose()
+                if root_effect is not None:
+                    await root_effect.aclose()

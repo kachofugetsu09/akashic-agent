@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from agent.plugin_composition.channel_io import InputCustody
 from agent.plugin_composition.channels import CHANNELS
-from agent.plugin_composition.context import RuntimeScope
 
 import logging
 import os
@@ -23,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 from agent.config_models import Config
 from agent.plugins.manifest import plugins_root
+from agent.plugins.source_resolver import PluginSourceFailure
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.workspace_lock import PluginPublicationLock
 from bus.event_bus import EventBus
@@ -69,10 +69,13 @@ class CoreRuntime:
     async def inspect_modules(self) -> str:
         """展示实际发布的组合图，不再构造旧回复 Pipeline。"""
         self._lock_plugin_publication()
-        await self.plugin_manager.load_all()
-        snapshot = self.plugin_manager.current_snapshot
-        assert snapshot is not None and snapshot.composition_topology is not None
-        topology = snapshot.composition_topology
+        root = self.plugin_manager.live_root
+        if root is None:
+            await self.plugin_manager.load_all()
+            root = self.plugin_manager.live_root
+            if root is None:
+                raise RuntimeError("插件初始化成功但没有发布 live Root")
+        topology = root.topology_view()
         parts = [f"identity: {topology.identity}", f"revision: {topology.composition_revision}"]
         parts.extend(f"fiber: {fiber.parent or '<root>'} -> {fiber.name}" for fiber in topology.fibers)
         parts.extend(f"listener: {listener}" for listener in topology.listeners)
@@ -158,6 +161,9 @@ def build_core_runtime(
             if plugin_dirs is None
             else _resolve_plugin_dirs(workspace, plugin_dirs=plugin_dirs)
         )
+        disabled_builtin_plugins, source_failures = _disabled_builtin_plugins_for_runtime(
+            config, resolved_plugin_dirs
+        )
         manager = PluginManager(
             plugin_dirs=resolved_plugin_dirs, event_bus=event_bus,
             workspace=workspace, message_log=message_log, channel_identities=identities,
@@ -169,29 +175,19 @@ def build_core_runtime(
             ),
             installed_cache_root=plugins_root() / "cache",
             channel_attachment_store=attachments,
-            disabled_builtin_plugins=_disabled_builtin_plugins_for_runtime(
-                config, resolved_plugin_dirs
-            ),
+            disabled_builtin_plugins=disabled_builtin_plugins,
+            source_failures=source_failures,
             restart_gate=restart_gate,
             control_frames=control_frames,
         )
         async def recover_input(raw):
-            snapshot = manager.current_snapshot
-            if snapshot is None or not snapshot.accepting_leases:
+            root = manager.live_root
+            if root is None:
                 return False
-            lease = manager.snapshot_store.lease(snapshot.snapshot_id)
-            async with RuntimeScope(lease):
-                root = lease.snapshot.composition_root
-                if root is None:
-                    raise RuntimeError("durable input 恢复需要当前 Root")
-                channels = root.context.get(CHANNELS)
-                return False if channels is None else await channels.recover_inbound(raw)
-
-        async def deliver_output(envelope, binding):
-            return await binding.deliver(envelope)
+            channels = root.context.get(CHANNELS)
+            return False if channels is None else await channels.recover_inbound(raw)
 
         bus.bind_durable_inbound_recoverer(recover_input)
-        bus.bind_channel_outbound_dispatcher(deliver_output)
         runtime = CoreRuntime(
             config=config, workspace=workspace, http_resources=http_resources,
             bus=bus, event_bus=event_bus, message_log=message_log,
@@ -232,23 +228,24 @@ def _resolve_plugin_dirs(
 def _disabled_builtin_plugins_for_runtime(
     config: Config,
     plugin_dirs: Iterable[Path] = (),
-) -> frozenset[str]:
+) -> tuple[frozenset[str], tuple[PluginSourceFailure, ...]]:
     """校验显式禁用的插件，不根据运行能力改写用户选择。"""
 
     disabled = set(config.disabled_builtin_plugins)
     roots = tuple(plugin_dirs)
     if not roots:
-        return frozenset(disabled)
+        return frozenset(disabled), ()
 
-    from agent.plugins.source_resolver import resolve_plugin_sources
+    from agent.plugins.source_resolver import scan_plugin_sources
 
+    scan = scan_plugin_sources(list(roots))
     known = {
-        source.plugin_name or source.plugin_root.name
-        for source in resolve_plugin_sources(list(roots))
+        source.plugin_name
+        for source in scan.sources
     }
     unknown = sorted(disabled - known)
     if unknown:
         raise ValueError(
             "agent.plugins.disabled_builtin 包含未知内置插件: " + ", ".join(unknown)
         )
-    return frozenset(disabled)
+    return frozenset(disabled), scan.failures

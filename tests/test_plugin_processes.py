@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 import sys
@@ -8,9 +9,8 @@ import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 from agent.plugin_composition import PROCESSES, PluginProcesses, ProcessCleanupError, ServiceKey
-from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.tools.unified_exec import (
     ExecutionCleanupFailure, ExecutionCleanupReport, ShellProcessManager, UnknownExecutionError,
 )
@@ -52,6 +52,13 @@ def manager(tmp_path, log):
                          installed_cache_root=tmp_path / "cache", message_log=log)
 
 
+@asynccontextmanager
+async def live_root(host):
+    root = host.live_root
+    assert root is not None
+    yield root
+
+
 @pytest.mark.asyncio
 async def test_formal_and_archived_processes_share_backend_and_isolate_actual_owner(tmp_path, monkeypatch):
     log = MessageLog(tmp_path / "sessions.db")
@@ -68,15 +75,15 @@ async def test_formal_and_archived_processes_share_backend_and_isolate_actual_ow
     try:
         await host.load_all()
         assert built == []
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            root = snapshot.composition_root.context
+        async with live_root(host) as composition:
+            root = composition.context
             first = root.require(ServiceKey("fixture.processes.first"))
             second = root.require(ServiceKey("fixture.processes.second"))
             processes = root.require(PROCESSES)
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            binding = bindings.bind(ServiceKey("fixture.processes.first"), {})
-            started = await launch(processes, first, "job", tmp_path, interactive=True)
+            bindings = root.require(BINDINGS)
+            async with first.runtime_scope():
+                binding = bindings.bind(ServiceKey("fixture.processes.first"), {})
+                started = await launch(processes, first, "job", tmp_path, interactive=True)
             assert started.execution_id is not None
             async with bindings.open(binding, ServiceKey("fixture.processes.first")) as (selected, _):
                 assert selected is first
@@ -92,12 +99,14 @@ async def test_formal_and_archived_processes_share_backend_and_isolate_actual_ow
             assert started.execution_id is not None
             pid = int(started.output)
             for context, key in ((first, "other-job"), (second, "job")):
-                with pytest.raises(UnknownExecutionError):
-                    await processes.write_stdin(context, key, execution_id=started.execution_id,
-                                                chars="", yield_time_ms=5000, max_output_tokens=100)
-                assert not await processes.terminate_execution(context, key, started.execution_id)
+                async with context.runtime_scope():
+                    with pytest.raises(UnknownExecutionError):
+                        await processes.write_stdin(context, key, execution_id=started.execution_id,
+                                                    chars="", yield_time_ms=5000, max_output_tokens=100)
+                    assert not await processes.terminate_execution(context, key, started.execution_id)
             os.kill(pid, 0)
-            cleaned = await processes.terminate_owner(first, "job")
+            async with first.runtime_scope():
+                cleaned = await processes.terminate_owner(first, "job")
             assert cleaned.cleaned_execution_ids == (started.execution_id,)
             assert not cleaned.failures
             with pytest.raises(ProcessLookupError):
@@ -117,11 +126,12 @@ async def test_process_shutdown_failure_retains_original_backend_until_cleanup(t
     host = manager(tmp_path, log)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
+        async with live_root(host) as composition:
+            root = composition.context
             context = root.require(ServiceKey("fixture.processes.first"))
             processes = root.require(PROCESSES)
-            started = await launch(processes, context, "job", tmp_path)
+            async with context.runtime_scope():
+                started = await launch(processes, context, "job", tmp_path)
             assert started.execution_id is not None
             execution_id = started.execution_id
             pid = int(started.output)
@@ -170,8 +180,8 @@ async def test_shutdown_waits_for_admitted_spawn_before_cleaning_backend(tmp_pat
     monkeypatch.setattr(host._plugin_processes, "_factory", lambda: backend)
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
+        async with live_root(host) as composition:
+            root = composition.context
             context = root.require(ServiceKey("fixture.processes.first"))
             processes = root.require(PROCESSES)
             wait = processes._drained.wait
@@ -181,7 +191,8 @@ async def test_shutdown_waits_for_admitted_spawn_before_cleaning_backend(tmp_pat
                 return await wait()
 
             monkeypatch.setattr(processes._drained, "wait", observed_wait)
-            scope = context.capture_runtime_scope()
+            async with context.runtime_scope():
+                scope = context.capture_runtime_scope()
 
             async def run():
                 async with scope:

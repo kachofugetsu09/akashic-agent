@@ -183,6 +183,10 @@ fleet 报告固定来源和 v3-only 静态合同；真实 MCP handshake/readines
 实现。它先把调用方提供的 canonical checkout 与 exact lock 对账，再运行 Core 已有的
 Content/Wake/Drift/Session 组合 fixture，最后在每个插件自己的目录运行其原样 fixture。
 因此修改一个插件的业务模型只需要更新该插件与 exact revision，不会给 Core 增加来源分支。
+Content coexistence probe 在隔离 workspace 中启动 Content、MessageLog 和插件所需的内建
+provider，再用 `Manager.install` 从已核对的 checkout 安装插件；它检查同一个
+`Manager.live_root`、活动 generation、Content 行数及前后逻辑状态。
+receipt 同时保留 live Root id 和 Content 状态，不能通过并排挂载候选目录代替正式安装。
 
 ```text
 exact lock ──► checkout SHA/manifest/no old seam
@@ -245,11 +249,12 @@ python docker/debug/content_wake_h5_e2e.py \
 `content-source-interop.lock.json`。显式 `--seed-protected-fixture` 只接受空的隔离目录，并写入
 带一行数据的 `sessions.db`、旧 proactive/wake/drift DB 与历史 Markdown/JSON；不复制正式数据。
 不使用 seed 时，调用者也必须提供至少包含非空 Session、旧 proactive DB 和 archive 的 fixture，
-空 protected target 会在安装前失败。runner 复用 Wake provider 的快照，对账 path、inode、hash、
+空 protected target 会在安装前失败。runner 复用 Wake provider 对 protected workspace 数据的快照，对账 path、inode、hash、
 size、SQLite integrity/quick_check/row counts，前后不相等时本次组合失败。owner pytest 由
 Core dev Python 运行，实际插件 service 只通过 `AKASHIC_PLUGIN_FIXTURE_PYTHON` 使用回执中的
 artifact runtime；一次性 root 内固定版本的 pytest layer 仅验证 artifact 隔离，不进入 owner
 fixture，Core site-packages 不会暴露给插件 service 解释器。
+这里的快照只用于证明受保护的 workspace 数据未改变，不代表或控制插件 runtime Root。
 真实 DeepSeek 命令只作为 `PENDING` 项进入 index；没有单独授权时 runner 不调用外部 provider。
 生成的证据留在一次性 root，不提交进 Git。
 
@@ -273,8 +278,9 @@ fixture source ── Timer ──▶ eventmail.content_source.v1 submit
 ```
 
 真实 selected case 固定使用 `deepseek-v4-flash`。runner 从外置副本加载普通 `models` 和
-`openai-compatible` 插件，经 `RuntimeModelControl` 写连接、模型和默认 role，再由 exact
-snapshot 的 `CHAT_MODELS` 执行；Core 不读取 provider 配置。credential 只从进程环境读取，
+`openai-compatible` 插件，经 live Root 的 `models/command` RPC（实际 `RpcMethod` 与
+Models provider `Context`）写连接、模型和默认 role，再由同一 Root 的 `CHAT_MODELS`
+exact owner scope 执行；Core 不读取 provider 配置。credential 只从进程环境读取，
 不写入临时 TOML 或报告。运行前先完成确定性的 settlement crash/restart、
 ACK retry、quiet 和 empty-poll 检查，之后才允许一次真实 logical provider request：
 

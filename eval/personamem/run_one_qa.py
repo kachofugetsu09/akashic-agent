@@ -5,7 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from eval.longmemeval.runtime import close_runtime, create_runtime
+from .runtime import close_runtime, create_runtime
 
 from .dataset import load_dataset
 from .metrics import extract_option_label

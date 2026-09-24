@@ -16,6 +16,23 @@ _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?")
 
 
+class PluginSourceContentError(ValueError):
+    """A plugin identity content error that tolerant source scans may report."""
+
+
+class PluginSourceCompileError(PluginSourceContentError):
+    """A source-file compile error that tolerant preparation may report."""
+
+
+def source_error_details(error: PluginSourceContentError) -> tuple[str, str]:
+    """Return the explicit underlying syntax/decode reason for one source error."""
+
+    cause = error.__cause__
+    if isinstance(cause, (SyntaxError, UnicodeError)):
+        return type(cause).__name__, str(cause) or type(cause).__name__
+    return type(error).__name__, str(error) or type(error).__name__
+
+
 @dataclass(frozen=True, slots=True)
 class StaticPythonRuntime:
     """One source-relative requirements file that must be staged before use."""
@@ -87,9 +104,13 @@ def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"插件 plugin.py 必须是普通文件: {path}")
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError, UnicodeError) as error:
-        raise ValueError(f"插件身份源码无法解析: {path}") from error
+        source = path.read_text(encoding="utf-8")
+    except UnicodeError as error:
+        raise PluginSourceContentError(f"插件身份源码无法解码: {path}") from error
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError as error:
+        raise PluginSourceContentError(f"插件身份源码无法解析: {path}") from error
 
     # 2. 只接受单次、直接赋值；表达式、导入和条件分支都不提供身份。
     fields = {"name", "version", "api_version"}
@@ -107,17 +128,19 @@ def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:
         if not names:
             continue
         if len(targets) != 1 or len(names) != 1 or not isinstance(value, ast.Constant):
-            raise ValueError(f"插件身份必须直接赋字面量: {path}:{statement.lineno}")
+            raise PluginSourceContentError(
+                f"插件身份必须直接赋字面量: {path}:{statement.lineno}"
+            )
         name = names[0]
         if name in values:
-            raise ValueError(f"插件身份重复赋值: {name}")
+            raise PluginSourceContentError(f"插件身份重复赋值: {name}")
         values[name] = value.value
     missing = sorted(fields - values.keys())
     if missing:
-        raise ValueError(f"plugin.py 缺少顶层字面量身份: {missing}")
+        raise PluginSourceContentError(f"plugin.py 缺少顶层字面量身份: {missing}")
     api_version = _integer(values, "api_version")
     if api_version != 3:
-        raise ValueError("plugin.py 只接受 api_version = 3")
+        raise PluginSourceContentError("plugin.py 只接受 api_version = 3")
     return _name(values["name"], "name"), _version(values["version"], "version"), api_version
 
 
@@ -300,17 +323,17 @@ def _is_absolute_path(value: str) -> bool:
 def _integer(raw: Mapping[str, object], key: str) -> int:
     value = raw.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"插件静态 manifest {key} 必须是整数")
+        raise PluginSourceContentError(f"插件静态 manifest {key} 必须是整数")
     return value
 
 
 def _name(raw: object, label: str) -> str:
     if not isinstance(raw, str) or not _NAME.fullmatch(raw):
-        raise ValueError(f"插件静态 manifest {label} 无效")
+        raise PluginSourceContentError(f"插件静态 manifest {label} 无效")
     return raw
 
 
 def _version(raw: object, label: str) -> str:
     if not isinstance(raw, str) or not _VERSION.fullmatch(raw):
-        raise ValueError(f"插件静态 manifest {label} 无效")
+        raise PluginSourceContentError(f"插件静态 manifest {label} 无效")
     return raw

@@ -206,7 +206,77 @@ unit、daemon-reload、enable 和 unit 控制的窄步骤调用 sudo；服务进
 还会复核 image、Host Bridge checkout、toolchain 与 Bridge RPC。operator 不得手改这些字段来绕过
 identity 检查，应重新准备一个完整 generation。
 
-### 5.3 软件恢复
+### 5.3 已有 state 的发行升级
+
+`akashic-release install` 在目标 generation 的 Core image 和 Bridge 都已准备、校验后停止旧 Core/Bridge。
+目标 image 在无网络、只读根文件系统中通过 `upgrade-bundled` 使用现有 state：
+
+可选的外部目标由同一个入口传入：
+`akashic-release install --source-checkout <checkout> --commit <Core-commit> --external-inputs <input-dir> --external-plan <input-dir/plan.json> --yes`。
+plan 固定旧完整 Root、每个已选且启用的 installed plugin ID、Git bundle SHA-256、目标 commit，
+以及有非空 requirements 时的 wheel-tree SHA-256。镜像将只读输入复制到 tmpfs，先核对 bundle、
+目标源码和离线 wheel 的目标解释器可解性。外部目标与发行自带目标一起安装、准备，并仅提交一次
+完整且保序的 selection；未列出的外部选项保留原 ref。显式禁用、未选、身份漂移和不完整依赖在
+正式数据迁移前失败，不会转成静默跳过。普通不带外部参数的 Core 发行命令保持原语义。
+
+```text
+release.lock → stop old → workspace maintenance lock → plugin publication lock
+  → 固定目标 bundle 与当前完整 PluginSelection
+  → 备份 state（SQLite online backup、WAL 和完整性核对）
+  → 目标 Core Yoyo → 核对 reload journal pending/armed
+  → 目标 bundle 与保留外部选项的 Yoyo → 安装目标 bundle
+  → 归档迁移后的 config → 完整 selection CAS → start Bridge/Core
+  → release doctor → live selection/Fiber ACTIVE → active receipt
+```
+
+插件自身的 Yoyo step 负责 data/config 变换；release 不解释插件私有 schema。已选外部、禁用、被覆盖或
+已卸载的成员按当前选择和 manifest 保留，不用目标 profile 重新启用。只有 selected provenance 的 commit
+等于上一代已激活发行 commit 且路径匹配目标 bundle，才能由发行替换；同路径但不同 commit 的外部覆盖
+仍保留。目标 bundle 的 Git revision、
+provenance 和代码 digest 在迁移前固定；`prepare_plugin_input` 只在迁移完成后冻结配置。Core schema
+先升级，再由 journal owner 判定 pending/armed；未决事务不被 release 猜测回滚。整个流程不能保证跨文件
+与 SQLite 的原子性，备份 manifest 和 Yoyo ledger 是明确的恢复证据。
+
+`upgrade-bundled` 使用 `exec` 独立退出，不在同一容器内继续启动 Supervisor。随后普通 Core
+容器启动时，migration runner 在 workspace 实例锁内读取完整 `PluginSelection`，只从所选
+component 的精确 archive 加载 migration bundle；缺失或损坏的 archive 使启动失败，不扫描
+cache 顶替。首次初始化的 null selection 尚无完整 archive，runner 按首次装载使用的
+plugin manifest 过滤安装输入；停止期升级仍先单独执行 Core schema migration。迁移落账、selection
+已提交和 Fiber ACTIVE 是不同事实，只有启动及 live 核对后才可写 active receipt。
+
+恢复点保存普通插件文件原字节，包括名称以 `-wal` 或 `-shm` 结尾的 opaque 数据。只有同名
+base 是实际 SQLite 文件时，sidecar 才单独留作 forensic copy，由逻辑 SQLite backup 承担
+恢复。`workspace` 根的实例锁、Supervisor 锁/PID、readiness、控制 socket 与 `plugin-home`
+根的 publication 锁，以及 `workspace/runtime` 下的 Chat/Web socket 不进入恢复 state；
+插件私有目录中的同名文件照常保留。目录内相对
+symlink 按链接原样保存，隔离恢复后需核对解析目标；指向外部路径的 symlink 仍依赖外部
+artifact/运行环境可用，恢复点本身不复制其目标。
+
+升级失败后旧服务保持停止，`failed-*.json` 记录 `maintenance_required`、恢复目录和实际错误；不能仅切回
+旧 image 读取可能已迁移的数据。迁移成功但 archive/selection/start/readiness 失败也同样停机。恢复时先
+核对目标 state、迁移账本、selection 和旧快照；需要切回旧版本时，在停机状态显式恢复整份
+`backups/upgrade-*/state/`、对应 runtime.env 与受影响 unit 后再启动旧版。`akashic-release rollback` 对带升级
+记录的 active release 拒绝自动软件回退。普通 `migrate --snapshot-manifest` 仍是独立的 plan-only 命令。
+外部升级在纯预检后、实际迁移前保存 `attempt-external-*.json`；进程中断或任何未知提交结果均阻断
+新安装、重放和启动，不能由可读目标 Root 推断未启动。只有 active receipt 绑定相同 plan/image、
+完整有序 Root，且 doctor 与 live selected Fiber 均通过，才只读返回 `already_active`。恢复点与
+runtime.env 备份由失败 receipt/attempt 路径关联；实际整份恢复和受影响 owner 的结算须分别取证，
+不能删除失败 receipt 或单靠旧 Root 指针宣称已恢复。
+完成停机升级后，创建 Workload 目录或写入 runtime.env 若失败，release 在尚未调用目标启动入口的
+阶段写 `before_target_start` failure，保留 `targetStarted=false`、原错误、升级结果和恢复点。该明确阶段
+与 `stopped_upgrade` 一样可以在实际整份恢复后结算；启动已被尝试或阶段未知时仍拒绝结算。
+成功启动并核对后，`active.json` 是当前成功的唯一权威 receipt；原 attempt 再保存从该 receipt 得到的
+终态副本，供后续 active 被新计划覆盖时保留历史。若终态副本写入中断而 attempt 仍为 pending，
+同 plan 只读 replay 仍需核对其与 active、Root、doctor 和 live Fiber 的完整绑定。新 plan 入场前
+先以相同核对确认旧成功，再把终态副本写回原 attempt；任一绑定或实时核对失败都不放行新计划。
+若失败明确发生在目标 runtime 启动前，且升级镜像无网络、仅挂载 state/backup/只读输入，operator
+完成显式整份恢复后可运行
+`akashic-release settle-restored --failure <activation/failed-*.json>`。该命令在服务停止和既有两把
+workspace/plugin 锁下核对备份清单的每个文件、目录、软链接、SQLite、runtime.env、旧 Root、旧 active
+receipt 与 reload journal，再另写保留原失败记录的 settlement receipt。启动曾被尝试或其他外部
+效果无法证明已结算时，此入口拒绝结算并继续停机。
+
+### 5.4 软件恢复
 
 候选激活失败时停止候选，原子恢复旧 runtime.env，依次启动并真实验证旧 Bridge 与 Core，再写 failed
 receipt。恢复也失败时停在 maintenance，不循环切换、不启动身份不确定的 Core，并输出精确人工恢复
@@ -216,7 +286,7 @@ error（若有）和人工命令；不能因第二个异常覆盖第一次失败
 软件恢复不等于数据回滚。包含 Workspace schema/data migration 的运行必须先走第 8 节恢复点与切换
 合同；安装器不得用进程恢复掩盖已发生的数据或外部效果。
 
-### 5.4 CLI
+### 5.5 CLI
 
 公开 bootstrap 与已安装的稳定 CLI 分工如下：
 
@@ -242,9 +312,9 @@ akashic-release migrate --snapshot-manifest PATH
 依赖直接绘制一次性二维码，等待已验签手机 claim，并要求 operator 输入相同的六位确认码后才批准。
 默认 pairing offer 有效期为 8 分钟；延长操作窗口不改变 secret 哈希存储、一次性消费、设备签名或人工确认。
 
-当前首版的 `migrate` 只校验预演 snapshot manifest 并输出 `plan_only` 阶段清单，明确返回
-`automaticDataWrites=false`。它不停止旧端、不复制正式 state、不切换 ingress；这些动作仍需维护者在
-目标机逐阶段批准。这样可以先用同一入口核对迁移输入，又不会让软件安装授权隐式扩大成数据迁移授权。
+`migrate` 只校验预演 snapshot manifest 并输出 `plan_only` 阶段清单，明确返回
+`automaticDataWrites=false`。正式已有 state 的发行升级走上述 `install` 事务；跨机器迁入 state、ingress
+切换和旧系统退役仍按第 8 节单独验收。
 
 重复安装当前健康 generation 返回 `already_active` 并只执行 verify。active receipt、runtime.env、实际
 Bridge/Core identity 任一不一致时，install/rollback 拒绝继续并要求先运行 doctor。
@@ -254,7 +324,8 @@ Bridge/Core identity 任一不一致时，install/rollback 拒绝继续并要求
 没有 receipt 时，它先预检 profile 所需的全部 bundle，再初始化空 workspace、正式安装插件并写入配置和
 receipt；已有 receipt 时只校验历史 receipt 与当前 manifest/artifact，不按 shipped profile 重新安装、
 启用或覆盖用户组合。通过普通运行时控制面卸载或替换插件后重启仍保持当前组合；普通卸载保留
-`plugin-data`。软件 rollback 只恢复上一代 release/env，不回滚已经提交的 Workspace 数据或外部效果。
+`plugin-data`。无数据迁移的软件 rollback 只恢复上一代 release/env；有数据升级的 active receipt 拒绝
+自动 rollback，须先显式恢复匹配的整份 state 快照。
 
 安装 receipt 只证明 bundle 已安装，不证明业务 setup 已完成。首次正式运行前，operator 以同一
 `distribution-entrypoint.sh` 执行一次 `setup`（例如 `docker run --rm ... <image> setup`），向导会

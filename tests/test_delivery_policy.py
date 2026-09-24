@@ -9,7 +9,6 @@ import pytest
 
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.context import Context
-from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.tasks import Tasks
 from plugins.delivery.api import Sink
 from plugins.delivery.execution import Deliveries
@@ -18,7 +17,7 @@ from plugins.delivery_policy.follow import follow
 from plugins.delivery_policy.plugin import origin
 from session.log import MessageLog, OwnerTransaction
 from session.message import ContentPart, ContentReferences, Input, Output
-from tests.test_default_reply import application
+from tests.test_default_reply import application, live_root
 from tests.test_delivery_bindings import sources
 from tests.test_message_delivery import Provider
 
@@ -39,8 +38,8 @@ async def test_real_input_reply_and_archived_delivery_are_independent_consumers(
 
     monkeypatch.setattr(OwnerTransaction, "save", observe)
     async with application(tmp_path, replying=True) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            accepted = await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+        async with live_root(host) as root:
+            accepted = await root.context.require(CHANNEL_INPUT)(
                 "test:room", "u1", ChannelInboundMessage(
                     "test", "user", "room", "do the work", datetime(2026, 9, 6, tzinfo=UTC), {},
                 ),
@@ -262,37 +261,43 @@ async def test_actual_reply_keeps_target_busy_through_provider_send(tmp_path, mo
     shutil.copytree(Path(__file__).parents[1] / "plugins/delivery_policy", tmp_path / "plugins/delivery_policy",
                     ignore=shutil.ignore_patterns("__pycache__"))
     async with application(tmp_path, replying=True) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
+        async with live_root(host) as live:
+            root = live.context
             await root.require(CHANNEL_INPUT)("test:room", "u1", ChannelInboundMessage(
                 "test", "user", "room", "do the work", datetime(2026, 9, 6, tzinfo=UTC), {},
             ))
             async with asyncio.timeout(5):
                 await sending.wait()
-            first = next(row for row in log.reader("test:room").snapshot()
-                         if isinstance(row.body, Output) and row.body.finish == "complete")
-            await root.require(CHANNEL_INPUT)("test:room", "u2", ChannelInboundMessage(
-                "test", "user", "room", "next input", datetime(2026, 9, 6, tzinfo=UTC), {},
-            ))
-            async with asyncio.timeout(5):
-                async for _ in log.catalog().follow():
-                    completed = [row for row in log.reader("test:room").snapshot()
-                                 if isinstance(row.body, Output) and row.body.finish == "complete"]
-                    if len(completed) == 2:
-                        break
-            records = DeliveryRecords(log.owner("plugin:delivery"), "delivery_policy")
-            assert records.read(first.message_id, "test")[1].phase == "started"
-            delivery = root.require(ServiceKey("fixture.delivery"))()
-            waiting = asyncio.Event()
+            try:
+                first = next(row for row in log.reader("test:room").snapshot()
+                             if isinstance(row.body, Output) and row.body.finish == "complete")
+                await root.require(CHANNEL_INPUT)("test:room", "u2", ChannelInboundMessage(
+                    "test", "user", "room", "next input", datetime(2026, 9, 6, tzinfo=UTC), {},
+                ))
+                async with asyncio.timeout(5):
+                    async for _ in log.catalog().follow():
+                        completed = [row for row in log.reader("test:room").snapshot()
+                                     if isinstance(row.body, Output) and row.body.finish == "complete"]
+                        if len(completed) == 2:
+                            break
+                records = DeliveryRecords(log.owner("plugin:delivery"), "delivery_policy")
+                assert records.read(first.message_id, "test")[1].phase == "started"
+                sender_generation = host.generation("test_sender")
+                assert sender_generation is not None and sender_generation.fiber is not None
+                sender_context = sender_generation.fiber.context
+                async with sender_context.runtime_scope():
+                    delivery = sender_context.require(ServiceKey("fixture.delivery"))()
+                waiting = asyncio.Event()
 
-            async def idle():
-                waiting.set()
-                await delivery.wait_idle("test", "room")
+                async def idle():
+                    waiting.set()
+                    await delivery.wait_idle("test", "room")
 
-            pending = asyncio.create_task(idle())
-            await waiting.wait()
-            assert not pending.done()
-            release.set()
+                pending = asyncio.create_task(idle())
+                await waiting.wait()
+                assert not pending.done()
+            finally:
+                release.set()
             async with asyncio.timeout(5):
                 await pending
             records = DeliveryRecords(log.owner("plugin:delivery"), "delivery_policy")
@@ -303,54 +308,80 @@ async def test_actual_reply_keeps_target_busy_through_provider_send(tmp_path, mo
 @pytest.mark.parametrize("pause", [False, True])
 async def test_input_commit_blocks_idle_before_reply_program_starts(tmp_path, monkeypatch, pause):
     from agent.plugin_composition import ServiceKey
+    from plugins.sources.plugin import SOURCES
 
     sources(tmp_path / "plugins")
     shutil.copytree(Path(__file__).parents[1] / "plugins/delivery_policy", tmp_path / "plugins/delivery_policy",
                     ignore=shutil.ignore_patterns("__pycache__"))
     async with application(tmp_path, replying=True) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            root = snapshot.composition_root.context
-            from plugins.conversation.plugin import CONVERSATION
-            kind = type(root.require(CONVERSATION)("test:room"))
-            start = kind.start
-            entering, release = asyncio.Event(), asyncio.Event()
+        sources_generation = host.generation("sources")
+        policy_generation = host.generation("delivery_policy")
+        provider_generation = host.generation("test_provider")
+        assert sources_generation is not None and sources_generation.fiber is not None
+        assert policy_generation is not None and policy_generation.fiber is not None
+        assert provider_generation is not None and provider_generation.fiber is not None
+        assert policy_generation.fiber.state.name == "ACTIVE", (
+            policy_generation.fiber.state,
+            policy_generation.fiber.missing_services,
+            policy_generation.fiber.error,
+        )
+        sources_context = sources_generation.fiber.context
+        policy_context = policy_generation.fiber.context
+        provider_context = provider_generation.fiber.context
+        async with sources_context.runtime_scope():
+            matches = tuple(item for item in sources_context.require(SOURCES).entries()
+                            if item.name == "conversation")
+        assert len(matches) == 1
+        source = matches[0]
+        async with source.context.runtime_scope():
+            kind = type(source.open("test:room"))
+        start = kind.start
+        entering, release = asyncio.Event(), asyncio.Event()
 
-            async def delayed(self, program):
-                entering.set()
-                await release.wait()
-                return await start(self, program)
+        async def delayed(self, program):
+            entering.set()
+            await release.wait()
+            return await start(self, program)
 
-            monkeypatch.setattr(kind, "start", delayed)
-            await root.require(CHANNEL_INPUT)("test:room", "u1", ChannelInboundMessage(
-                "test", "user", "room", "do the work", datetime(2026, 9, 6, tzinfo=UTC), {},
+        monkeypatch.setattr(kind, "start", delayed)
+
+        async def accept(message_id, message):
+            async with sources_context.runtime_scope():
+                return await sources_context.require(CHANNEL_INPUT)("test:room", message_id, message)
+
+        async with provider_context.runtime_scope():
+            calls = provider_context.require(ServiceKey("fixture.calls"))
+        async with policy_context.runtime_scope():
+            delivery = policy_context.require(ServiceKey("delivery.v1")).open(policy_context)
+        await accept("u1", ChannelInboundMessage(
+            "test", "user", "room", "do the work", datetime(2026, 9, 6, tzinfo=UTC), {},
+        ))
+        await entering.wait()
+        assert calls == []
+        waiting = asyncio.Event()
+
+        async def idle():
+            waiting.set()
+            await delivery.wait_idle("test", "room")
+
+        pending = asyncio.create_task(idle())
+        await waiting.wait()
+        assert not pending.done()
+        if pause:
+            await accept("stop", ChannelInboundMessage(
+                "test", "user", "room", "/stop", datetime(2026, 9, 6, tzinfo=UTC), {},
             ))
-            await entering.wait()
-            assert root.require(ServiceKey("fixture.calls")) == []
-            waiting = asyncio.Event()
-            delivery = root.require(ServiceKey("fixture.delivery"))()
-
-            async def idle():
-                waiting.set()
-                await delivery.wait_idle("test", "room")
-
-            pending = asyncio.create_task(idle())
-            await waiting.wait()
-            assert not pending.done()
-            if pause:
-                await root.require(CHANNEL_INPUT)("test:room", "stop", ChannelInboundMessage(
-                    "test", "user", "room", "/stop", datetime(2026, 9, 6, tzinfo=UTC), {},
-                ))
-                async with asyncio.timeout(5):
-                    await pending
-                assert root.require(ServiceKey("fixture.calls")) == []
-            release.set()
             async with asyncio.timeout(5):
                 await pending
-            outputs = [row for row in log.reader("test:room").snapshot()
-                       if isinstance(row.body, Output) and row.body.finish == "complete"]
-            if pause:
-                assert outputs == []
-                return
-            assert len(outputs) == 1
-            records = DeliveryRecords(log.owner("plugin:delivery"), "delivery_policy")
-            assert records.read(outputs[0].message_id, "test")[1].phase == "delivered"
+            assert calls == []
+        release.set()
+        async with asyncio.timeout(5):
+            await pending
+        outputs = [row for row in log.reader("test:room").snapshot()
+                   if isinstance(row.body, Output) and row.body.finish == "complete"]
+        if pause:
+            assert outputs == []
+            return
+        assert len(outputs) == 1
+        records = DeliveryRecords(log.owner("plugin:delivery"), "delivery_policy")
+        assert records.read(outputs[0].message_id, "test")[1].phase == "delivered"

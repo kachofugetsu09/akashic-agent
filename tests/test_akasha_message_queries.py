@@ -8,8 +8,7 @@ import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
-from agent.plugin_composition.bindings import Bindings
-from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugin_composition.bindings import BINDINGS
 from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.infrastructure.persistence import logical_state_sha256
@@ -20,7 +19,7 @@ from plugins.akasha.runtime import MessageMemory
 from session.embedding_store import MessageEmbeddings
 from session.log import MessageLog, OwnerTransaction
 from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
-from tests.test_akasha_learning_binding import manager, sources
+from tests.test_akasha_learning_binding import learning_context, live_root, manager, sources
 
 
 def material_rows(material: Mapping[str, object], name: str) -> tuple[Mapping[str, object], ...]:
@@ -43,13 +42,12 @@ async def memory_runtime(tmp_path, *, max_chars=12000):
     calls = []
     try:
         await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        live = live_root(host)
+        bindings = live.context.require(BINDINGS)
         embeddings = MessageEmbeddings(log)
         consumer = await MessageConsumer.load(tmp_path / "memory.db", 
             catalog=log.catalog(), embeddings=embeddings, bindings=bindings, config=MemoryConfig())
-        async with lease_runtime_snapshot(host.snapshot_store):
+        async with learning_context(live).runtime_scope():
             rule = LearningConfig(embedding_model="fixed", dimension=2, sources=("chat",))
             binding = bindings.bind(AKASHA_LEARNING, rule.model_dump())
         async def embed(texts):

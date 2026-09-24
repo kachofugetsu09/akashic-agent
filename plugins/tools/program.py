@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING
 
 from agent.plugin_composition import Context, ServiceKey
@@ -36,29 +36,27 @@ class ToolProgramFactory:
         *,
         content: Mapping[str, ContentCheck],
         check_start: Callable[[], None],
-    ) -> Callable[[CallRef], MessageReply]:
-        """固定来源和 scoped writer，返回原 owner 的实际 MessageReply。"""
-        writers = self._ctx.require(MESSAGE_WRITERS)
-        writer: Callable[..., MessageWriter] = writers.bind(
-            self._ctx,
-            author="tool",
-            source=source,
-            body_types=(ToolResult,),
-            content=content,
-        )
+    ) -> Callable[[CallRef], Awaitable[MessageReply]]:
+        """Open each tool writer under the Tools owner's actual call scope."""
 
-        def reply(call_ref: CallRef) -> MessageReply:
+        async def reply(call_ref: CallRef) -> MessageReply:
+            async with self._ctx.runtime_scope():
+                writers = self._ctx.require(MESSAGE_WRITERS)
+                writer: Callable[..., MessageWriter] = writers.bind(
+                    self._ctx,
+                    author="tool",
+                    source=source,
+                    body_types=(ToolResult,),
+                    content=content,
+                )
+                opened = writer(reader.session_id, call_ref=call_ref)
             return MessageReply(
-                result_message_id(call_ref),
-                call_ref,
-                reader,
-                writer(reader.session_id, call_ref=call_ref),
-                check_start,
+                result_message_id(call_ref), call_ref, reader, opened, check_start,
             )
 
         return reply
 
-    def create_menu(
+    async def create_menu(
         self,
         reader: MessageReader,
         source: str,
@@ -73,25 +71,33 @@ class ToolProgramFactory:
         child_permit: Callable[[], ExternalRootPermit] | None = None,
     ) -> ToolMenu:
         """按真实 reader、writer、授权和 view 组装一个可执行菜单。"""
-        from .menu import ToolMenu
+        from .menu import NativePresentation, ToolMenu
 
-        bindings = self._ctx.require(BINDINGS)
-        reply = self.bind_reply(
-            reader,
-            source,
-            content=content,
-            check_start=check_start,
-        )
-        return ToolMenu(
-            self._catalog,
-            bindings,
-            self._catalog.execution(authorize, child_permit=child_permit),
-            reply,
-            view=view,
-            limit=limit,
-            fixed_bindings=fixed_bindings,
-            presentation=presentation,
-        )
+        async with self._ctx.runtime_scope():
+            bindings = self._ctx.require(BINDINGS)
+            execution = self._catalog.execution(authorize, child_permit=child_permit)
+            if view is not None:
+                selected = presentation or NativePresentation({
+                    ref.name: ref.description for ref in view.refs
+                })
+                fixed_bindings = {
+                    ref.name: await self._catalog.bind_scoped(
+                        ref, bindings, configuration=selected.configuration(ref.name),
+                    )
+                    for ref in view.refs
+                }
+                presentation = selected
+                view = None
+            return ToolMenu(
+                self._catalog,
+                bindings,
+                execution,
+                self.bind_reply(reader, source, content=content, check_start=check_start),
+                view=view,
+                limit=limit,
+                fixed_bindings=fixed_bindings,
+                presentation=presentation,
+            )
 
 
 TOOL_PROGRAM = ServiceKey[ToolProgramFactory]("tools.program.v1")

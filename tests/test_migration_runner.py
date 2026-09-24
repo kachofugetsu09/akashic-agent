@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,8 @@ import pytest
 import toml
 
 from agent.plugins.artifacts import relative_artifact_pointer, write_pointers
+from agent.plugins.selection import PluginSelection
+from agent.plugin_composition.archive import PluginArchive
 from agent.migrations.bundles import MigrationBundleBlocked, MigrationBundleError
 from agent.migrations.runner import MigrationRunner
 from bootstrap.init_workspace import init_workspace
@@ -180,7 +183,9 @@ def _write_bundle(
     )
     (migration_root / "__init__.py").write_text("\n", encoding="utf-8")
     for migration_id, (_depends, source) in migrations.items():
-        (migration_root / f"{migration_id}.py").write_text(
+        path = migration_root / f"{migration_id}.py"
+        compile(source, str(path), "exec")
+        path.write_text(
             source,
             encoding="utf-8",
         )
@@ -235,7 +240,7 @@ def test_empty_core_and_catalog_establish_current_baseline(tmp_path: Path) -> No
     assert _applied_ids(runner.ledger_path) == ()
 
 
-def test_stable_installed_cache_pointer_is_loaded_without_plugin_dir(
+def test_equal_installed_cache_pointer_runs_once_without_plugin_dir(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "state"
@@ -254,30 +259,68 @@ def test_stable_installed_cache_pointer_is_loaded_without_plugin_dir(
         package_name="stable_migrations",
         manifest_name="installed_plugin",
     )
+    write_pointers(
+        plugin_base,
+        stable=relative_artifact_pointer(plugin_base, stable),
+        latest=relative_artifact_pointer(plugin_base, stable),
+    )
+
+    runner = _runner(root, repo)
+    outcome = runner.run()
+
+    assert outcome.migrations == ("stable_step",)
+    marker = tmp_path / "stable.marker"
+    assert marker.read_text(encoding="utf-8") == "attempted"
+    assert _applied_ids(runner.ledger_path) == ("stable_step",)
+    ledger_rows = _ledger_rows(runner.ledger_path)
+    marker.unlink()
+
+    second = runner.run()
+
+    assert (second.state, second.migrations) == ("current", ())
+    assert not marker.exists()
+    assert _ledger_rows(runner.ledger_path) == ledger_rows
+
+
+def test_unequal_installed_cache_pointers_block_migration_without_rewriting(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    repo = _empty_repo(tmp_path)
+    plugin_base = root / "plugin-cache/marketplace/installed_plugin"
+    artifacts = plugin_base / ".artifacts"
+    stable = _write_bundle(
+        artifacts,
+        {"stable_step": ((), _migration_source(tmp_path / "stable.marker"))},
+        bundle_id="stable_release",
+        package_name="stable_migrations",
+        manifest_name="installed_plugin",
+    )
     candidate = _write_bundle(
         artifacts,
-        {
-            "candidate_step": (
-                (),
-                _migration_source(tmp_path / "candidate.marker"),
-            )
-        },
+        {"candidate_step": ((), _migration_source(tmp_path / "candidate.marker"))},
         bundle_id="candidate_release",
         package_name="candidate_migrations",
         manifest_name="installed_plugin",
     )
-    write_pointers(
+    pointer_path = write_pointers(
         plugin_base,
         stable=relative_artifact_pointer(plugin_base, stable),
         latest=relative_artifact_pointer(plugin_base, candidate),
     )
+    pointer_bytes = pointer_path.read_bytes()
+    runner = _runner(root, repo)
 
-    outcome = _runner(root, repo).run()
+    with pytest.raises(RuntimeError, match="Yoyo 迁移失败") as raised:
+        runner.run()
 
-    assert outcome.migrations == ("stable_step",)
-    assert (tmp_path / "stable.marker").read_text(encoding="utf-8") == "attempted"
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert "插件仍有历史候选指针对，须先处理未决更新" in str(raised.value.__cause__)
+    assert "历史候选指针对" in str(raised.value)
+    assert not (tmp_path / "stable.marker").exists()
     assert not (tmp_path / "candidate.marker").exists()
-    assert _runner(root, repo).run().state == "current"
+    assert pointer_path.read_bytes() == pointer_bytes
+    assert _applied_ids(runner.ledger_path) == ()
 
 
 def test_future_core_step_runs_after_installed_bundle_is_applied(
@@ -324,6 +367,68 @@ def test_future_core_step_runs_after_installed_bundle_is_applied(
     after_ledger = _ledger_rows(runner.ledger_path)
     old_row = next(row for row in before_ledger if row[1] == "installed_step")
     assert next(row for row in after_ledger if row[1] == "installed_step") == old_row
+
+
+def test_startup_uses_selected_archive_not_unselected_cache(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "state"
+    repo = _empty_repo(tmp_path)
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    config = root / "config.toml"
+    config.write_text("version = 'A'\n")
+    data = workspace / "plugin-data/selected_plugin-builtin"
+    data.mkdir(parents=True)
+    (data / "version").write_text("A")
+    selected_step = (
+        "from yoyo import step\n"
+        "from agent.migrations.context import current_migration_context\n"
+        "__depends__ = set()\n__transactional__ = False\n"
+        "def apply(connection):\n"
+        "    context = current_migration_context()\n"
+        "    data = context.bundle_data_roots['selected_plugin'] / 'version'\n"
+        "    data.write_text(data.read_text() + 'B')\n"
+        "    context.config_path.write_text(\"version = 'B'\\n\")\n"
+        "steps = [step(apply)]\n"
+    )
+    selected = _write_bundle(
+        tmp_path / "selected",
+        {"selected_step": ((), selected_step)},
+        bundle_id="selected_plugin",
+    )
+    unused = _write_bundle(
+        root / "plugin-home/cache/marketplace/unused/.artifacts",
+        {"unused_step": ((), _migration_source(tmp_path / "unused.marker"))},
+        bundle_id="unused",
+    )
+    base = root / "plugin-home/cache/marketplace/unused"
+    write_pointers(base, stable=relative_artifact_pointer(base, unused),
+                   latest=relative_artifact_pointer(base, unused))
+    selection = PluginSelection(workspace)
+    selection.initialize()
+    selection.archive = PluginArchive(selection.archive.path)
+    code = selection.archive.save(selected)
+    component = selection.archive.save_descriptor({
+        "version": 4, "plugin_id": "selected_plugin@builtin", "code": code,
+        "source_type": "builtin",
+    })
+    selection.commit((component,), expected_ref=None)
+
+    from agent.migrations import runner as migration_runner
+
+    monkeypatch.setattr(migration_runner, "_PROJECT_ROOT", repo)
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(root / "plugin-home"))
+    first = migration_runner.migrate_installation(config, workspace)
+    second = migration_runner.migrate_installation(config, workspace)
+    assert first.migrations == ("selected_step",)
+    assert second.migrations == ()
+    assert (data / "version").read_text() == "AB"
+    assert config.read_text() == "version = 'B'\n"
+    assert (selection.archive.open(code) / "plugin.py").read_text().startswith("name = 'selected_plugin'")
+    assert not (tmp_path / "unused.marker").exists()
+    shutil.rmtree(selection.archive.path / code)
+    with pytest.raises(FileNotFoundError):
+        migration_runner.migrate_installation(config, workspace)
+    assert not (tmp_path / "unused.marker").exists()
 
 
 def test_applied_bundle_with_retired_core_dependency_does_not_block(
@@ -782,4 +887,6 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
         assert result.returncode == 0, result.stdout + result.stderr
 
     assert (workspace / "migrations.sqlite3").is_file()
-    assert set(_applied_ids(workspace / "migrations.sqlite3")) <= {_ORIGIN_ID}
+    assert set(_applied_ids(workspace / "migrations.sqlite3")) == {
+        "20260921_01_plugin_update_input_ref",
+    }

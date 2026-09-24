@@ -84,6 +84,11 @@ def _render_plugin(
         f"  api v{item.get('api_version')} · gen {_short(item.get('generation_id'), 8)}"
         f" · rev {_short(item.get('revision'), 8)} · {marker}"
     )
+    load_error = item.get("load_error")
+    if load_error:
+        lines.append(f"{prefix}   └─ load error: {load_error}")
+    if item.get("cleanup_pending"):
+        lines.append(f"{prefix}   └─ cleanup pending")
     if not isinstance(composition, Mapping):
         return
     subtree = prefix + ("   " if last else "│  ")
@@ -96,9 +101,9 @@ def _render_plugin(
 
 
 def format_stable_catalog(catalog: Mapping[str, object]) -> str:
-    """把 stable 组合投影渲染成 ASCII 依赖树。"""
+    """把当前运行图投影渲染成 ASCII 依赖树。"""
     lines = [
-        f"stable snapshot {_short(catalog.get('snapshot_id'), 16)}",
+        f"current runtime graph {_short(catalog.get('snapshot_id'), 16)}",
         "plugins",
     ]
     plugins = catalog.get("plugins")
@@ -122,16 +127,15 @@ def format_stable_catalog(catalog: Mapping[str, object]) -> str:
 
 
 async def apply(ctx: Context) -> None:
-    """注册 /stable 只读命令；经注入的 RUNTIME_CATALOG DTO 读取当前组合投影。"""
-
-    read_catalog = ctx.require(RUNTIME_CATALOG)
+    """注册 /stable 只读命令；在当前 Fiber scope 读取 live 运行图。"""
 
     async def show_stable(_invocation: CommandInvocation) -> CommandResult:
         try:
             async with ctx.runtime_scope():
-                catalog = read_catalog()
+                reader = ctx.require(RUNTIME_CATALOG)
+                catalog = reader(ctx)
             return CommandResult("success", format_stable_catalog(catalog))
-        except Exception as error:  # catalog owner 失败也必须如实回报
+        except Exception as error:  # live owner 失败也必须如实回报
             return CommandResult("error", f"读取 stable 组合失败: {error}")
 
     _ = await ctx.require(COMMANDS).register(ctx, CommandDefinition(

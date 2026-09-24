@@ -7,7 +7,6 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.models import ContextLengthError, LLMResponse
-from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.reply.status import REPLY_STATUS, ReplyState
 from session.message import ContentPart, ContentReferences, Input, Output
 from session.log import WriterExpired
@@ -130,36 +129,38 @@ async def test_installed_reply_publishes_read_only_status_service(tmp_path):
             if len(calls) == 1:''')
         path.write_text(text)
     async with application(tmp_path, replying=True, extra_sources=streaming_driver) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            entered, release = ctx.require(ServiceKey('fixture.preview-gates'))
-            read = ctx.require(REPLY_STATUS)
-            await ctx.require(CHANNEL_INPUT)('test:room', 'u', ChannelInboundMessage('test', 'user', 'room', 'question', datetime.now(UTC), {}))
-            await asyncio.wait_for(entered.wait(), 3)
-            current = read.snapshot('test:room')[0]
-            assert current.preview.text == '真实预览' and current.source == 'conversation'
-            identity = current.preview.message_id
-            release.set()
-            async def finished():
-                async for _ in log.catalog().follow():
-                    messages = log.reader('test:room').snapshot()
-                    if any(isinstance(m.body, Output) and m.body.finish == 'complete' for m in messages):
-                        return
-            await asyncio.wait_for(finished(), 3)
-            assert log.reader('test:room').get(identity).body.finish == 'continue'
-            async def drained():
-                async for items in read.follow('test:room'):
-                    if not items:
-                        return
-            await asyncio.wait_for(drained(), 3)
-            assert read.snapshot('test:room') == ()
+        root = host.live_root
+        assert root is not None
+        ctx = root.context
+        entered, release = ctx.require(ServiceKey('fixture.preview-gates'))
+        read = ctx.require(REPLY_STATUS)
+        await ctx.require(CHANNEL_INPUT)('test:room', 'u', ChannelInboundMessage('test', 'user', 'room', 'question', datetime.now(UTC), {}))
+        await asyncio.wait_for(entered.wait(), 3)
+        current = read.snapshot('test:room')[0]
+        assert current.preview.text == '真实预览' and current.source == 'conversation'
+        identity = current.preview.message_id
+        release.set()
+        async def finished():
+            async for _ in log.catalog().follow():
+                messages = log.reader('test:room').snapshot()
+                if any(isinstance(m.body, Output) and m.body.finish == 'complete' for m in messages):
+                    return
+        await asyncio.wait_for(finished(), 3)
+        assert log.reader('test:room').get(identity).body.finish == 'continue'
+        async def drained():
+            async for items in read.follow('test:room'):
+                if not items:
+                    return
+        await asyncio.wait_for(drained(), 3)
+        assert read.snapshot('test:room') == ()
 
 
 @pytest.mark.asyncio
 async def test_reply_status_disposal_ends_old_generation_readers(tmp_path):
     async with application(tmp_path, replying=True) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            read = snapshot.composition_root.context.require(REPLY_STATUS)
+        root = host.live_root
+        assert root is not None
+        read = root.context.require(REPLY_STATUS)
         follower = read.follow('test:room')
         assert await anext(follower) == ()
         pending = asyncio.create_task(anext(follower))

@@ -22,12 +22,37 @@ esac
 
 test -r "$CONFIG"
 test -r /opt/akashic/runtime-info.json
-mkdir -p "$WORKSPACE" "$PLUGIN_HOME"
 
 /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py check \
     --runtime-info /opt/akashic/runtime-info.json \
     --expected-commit "$EXPECTED_COMMIT" \
     --expected-tree "$EXPECTED_TREE"
+
+if [[ "${1:-}" == "adopt-bundled" ]]; then
+    shift
+    exec /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
+        --distribution /opt/akashic/distribution \
+        --profile /opt/akashic/distribution/profiles/default.json \
+        --workspace "$WORKSPACE" \
+        --plugins-home "$PLUGIN_HOME" \
+        --config "$CONFIG" \
+        --receipt "$WORKSPACE/runtime/distribution-install.json" \
+        --adopt-bundled "$@"
+fi
+
+if [[ "${1:-}" == "upgrade-bundled" ]]; then
+    shift
+    exec /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
+        --distribution /opt/akashic/distribution \
+        --profile /opt/akashic/distribution/profiles/default.json \
+        --workspace "$WORKSPACE" \
+        --plugins-home "$PLUGIN_HOME" \
+        --config "$CONFIG" \
+        --receipt "$WORKSPACE/runtime/distribution-install.json" \
+        --upgrade-bundled "$@"
+fi
+
+mkdir -p "$WORKSPACE" "$PLUGIN_HOME"
 
 /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
     --distribution /opt/akashic/distribution \

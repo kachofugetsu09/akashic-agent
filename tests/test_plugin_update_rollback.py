@@ -1,67 +1,62 @@
-"""强杀后只读唯一 stable；不续跑候选，也不伪造安装回退。"""
+"""Crash and pointer recovery around the live plugin selection."""
+from __future__ import annotations
+
 import asyncio
 from contextlib import closing
-from contextvars import Context
 from pathlib import Path
 import signal
 import shutil
 import sqlite3
 import subprocess
 import sys
+from uuid import uuid4
 
 import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
-
 from agent.plugin_composition import ServiceKey
-from agent.plugins.artifacts import ArtifactPointer, read_pointers, write_pointers
+from agent.plugin_composition.archive import PluginArchive
+from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, read_pointers, write_pointers
+from agent.plugins.input_preparation import prepare_plugin_input
 from agent.plugins.install import install_git_plugin
+from agent.plugins.doctor import run_plugin_doctor
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import load_plugin_manifest, set_plugin_enabled, write_plugin_manifest
 from agent.plugins.reload_journal import ReloadJournal
-from agent.plugins.selection import PluginSelection, SelectionWriteError
+from agent.plugins.selection import PluginSelection
+from agent.plugins.static_manifest import load_static_plugin_manifest
 from bus.event_bus import EventBus
+from scripts.rollback_plugin_install import rollback_plugin_install
 from tests.test_plugin_install import _commit, _write_v3_plugin
 
 CHILD = '''
 import asyncio, os, signal, sys
 from pathlib import Path
-import agent.plugins.install as installer
-import agent.plugins.manager as runtime
-from agent.plugins.reload_journal import ReloadJournal
-from agent.plugin_composition import ServiceKey
+from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 workspace, home, source = map(Path, sys.argv[1:4])
 cut = sys.argv[4]
 def kill():
     os.kill(os.getpid(), signal.SIGKILL)
 async def run():
-    host = runtime.PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     await host.load_all()
-    if cut in {"latest", "manifest"}:
-        name = "write_pointers" if cut == "latest" else "upsert_plugin_manifest"
-        original = getattr(installer, name)
-        def changed(*args, **kwargs):
-            result = original(*args, **kwargs)
+    original = host._selection.commit
+    def switched(*args, **kwargs):
+        if cut == "before":
             kill()
-            return result
-        setattr(installer, name, changed)
-    result, status = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[], update_id="crash-update")
-    assert host.latest_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "new"
-    if cut in {"promoting", "committed"}:
-        original = host._selection.commit
-        def switched(*args, **kwargs):
-            if cut == "promoting":
-                kill()
-            result = original(*args, **kwargs)
-            kill()
-            return result
-        host._selection.commit = switched
-    await host.switch_ready("probe@lab")
+        result = original(*args, **kwargs)
+        kill()
+        return result
+    host._selection.commit = switched
+    accepted = await host.install(source=str(source), marketplace="lab", ref_name="", sparse_paths=[], update_id="crash-update")
+    assert accepted.state == "accepted"
+    operation = host._operation
+    assert operation is not None
+    await operation.task
     raise AssertionError("crash cut was not reached")
 asyncio.run(run())
 '''
-
 
 def prepare(tmp_path):
     source = tmp_path / "source"
@@ -73,153 +68,418 @@ inject = ()
 async def apply(ctx):
     await ctx.provide(ServiceKey("version.probe"), lambda: "old")
 '''
+    compile(module, "probe/plugin.py", "exec")
     _write_v3_plugin(source, name="probe", module_source=module)
     _commit(source)
     home, workspace = tmp_path / "home", tmp_path / "workspace"
     initialize_plugin_workspace(workspace)
     old = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
     (old.data_path / "history.txt").write_text("existing durable data")
-    (source / "plugin.py").write_text(module.replace('"old"', '"new"'))
+    replacement = module.replace('"old"', '"new"')
+    compile(replacement, "probe/plugin.py", "exec")
+    (source / "plugin.py").write_text(replacement)
     _commit(source)
     return source, home, workspace, old
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("finish", ["commit", "pointer_failure", "shutdown", "cancel_after_commit", "retry_after_cancel"])
-async def test_publication_returns_to_caller_before_waiting_for_its_generation(tmp_path, monkeypatch, finish):
-    """真实发布等待调用者归还旧租约，失败及关闭仍由原切换 owner 结算。"""
-    from agent.plugins.snapshot import get_current_runtime_lease
-    from agent.plugin_composition.context import RuntimeScope
+def arm_historical_update(source, home, workspace, previous, previous_enabled):
+    """Build a real artifact, then record the legacy pending rollback input."""
+    installed = install_git_plugin(
+        workspace=workspace, source=str(source), marketplace="lab", plugins_home=home,
+    )
+    base = installed.installed_path.parents[1]
+    pointers = read_pointers(base)
+    assert pointers is not None and pointers.stable == pointers.latest
+    update_id = "historical-" + uuid4().hex
+    ReloadJournal(workspace).arm_update(
+        update_id=update_id, plugin_id=f"{installed.plugin_name}@lab",
+        plugin_base=base, previous=previous, candidate=pointers.stable,
+        previous_enabled=previous_enabled,
+    )
+    return installed, update_id
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", ["before-pointer", "after-pointer"])
+@pytest.mark.parametrize("check", ["boot", "doctor"])
+async def test_orphaned_armed_install_is_visible_without_changing_inputs(tmp_path, cut, check):
+    """An unlinked install keeps its exact facts until an explicit owner settles it."""
     source, home, workspace, old = prepare(tmp_path)
+    first = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    await first.load_all()
+    await first.terminate_all()
+    selected = PluginSelection(workspace).read()
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert selected is not None and previous is not None
+    install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    candidate = read_pointers(base)
+    assert candidate is not None and candidate.stable == candidate.latest
+    if cut == "before-pointer":
+        write_pointers(base, stable=previous.stable, latest=previous.latest)
+    pointers = read_pointers(base)
+    manifest = load_plugin_manifest(home)
+    journal = ReloadJournal(workspace)
+    journal.arm_update(
+        update_id="orphan", plugin_id="probe@lab", plugin_base=base,
+        previous=previous, candidate=candidate.stable, previous_enabled=True,
+    )
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
-    lease = None
-    shutdown = None
     try:
-        await host.load_all()
-        stable = host.current_snapshot
-        selection_before = PluginSelection(workspace).read()
-        result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        waiting = asyncio.Event()
-        original_wait = host._snapshot_store.wait_for_no_leases
-        async def wait(snapshot):
-            assert get_current_runtime_lease() is None
-            if snapshot is stable:
-                waiting.set()
-            await original_wait(snapshot)
-        monkeypatch.setattr(host._snapshot_store, "wait_for_no_leases", wait)
-        if finish == "pointer_failure":
-            def fail_pointer(*args, **kwargs):
-                raise SelectionWriteError(
-                    operation="commit", target_ref=None, outcome="unchanged",
-                    observed_ref=selection_before, observation_error=None,
-                )
-            monkeypatch.setattr(host._selection, "commit", fail_pointer)
-        elif finish == "cancel_after_commit":
-            original_track = host._track_reload_drain
-            def cancel_after_commit(*args):
-                original_track(*args)
-                assert host._reload_journal.update(result.update_id).phase == "committed"
-                asyncio.current_task().cancel()
-            monkeypatch.setattr(host, "_track_reload_drain", cancel_after_commit)
-        lease = await host._snapshot_store.acquire()
-        async with RuntimeScope(lease):
-            host.start_update_publication(result.update_id)
-            await asyncio.wait_for(waiting.wait(), 10)
-            publication = host._update_publication[1]
-            assert host.update_is_publishing(result.update_id)
-            assert host._reload_journal.update(result.update_id).phase == "armed"
-            assert host.current_snapshot is stable
-            if finish == "retry_after_cancel":
-                publication.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await publication
-                assert host._reload_journal.update(result.update_id).error == "publication cancelled"
-                with pytest.raises(RuntimeError, match="失败|未知"):
-                    host.start_update_publication(result.update_id)
-                await host.discard_update(result.update_id)
-                assert host.read_update(result.update_id).phase == "rolled_back"
-                assert host.current_snapshot is stable
-                return
-            if finish == "shutdown":
-                shutdown = asyncio.create_task(host.terminate_all(), context=Context())
-                with pytest.raises(asyncio.CancelledError):
-                    await publication
-        if shutdown is not None:
-            await asyncio.wait_for(shutdown, 10)
-        elif finish == "cancel_after_commit":
-            try:
-                await asyncio.wait_for(publication, 10)
-            except asyncio.CancelledError:
-                pass  # 下方从真实选择和 journal 核对已提交事实。
+        if check == "boot":
+            with pytest.raises(RuntimeError, match="armed"):
+                await host.load_all()
+            assert host.live_root is None
         else:
-            await asyncio.wait_for(publication, 10)
-        update = host._reload_journal.update(result.update_id)
-        assert not host.update_is_publishing(result.update_id)
-        if finish in {"commit", "cancel_after_commit"}:
-            assert update.phase == "committed"
-            assert PluginSelection(workspace).read() != selection_before
-            assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "new"
-        else:
-            assert update.phase != "committed"
-            expected_error = "publication cancelled" if finish == "shutdown" else "outcome=unchanged"
-            assert expected_error in update.error
-            assert PluginSelection(workspace).read() == selection_before
-            assert read_pointers(old.installed_path.parents[1]).stable == update.previous.stable
-            if finish == "pointer_failure":
-                # 整体运行恢复不伪装成安装 owner 已回写旧 latest。
-                assert update.phase == "armed"
-                assert update.reload_tx_id is not None
-                assert host._reload_journal.get(update.reload_tx_id).phase == "aborted"
-                assert read_pointers(old.installed_path.parents[1]).latest == update.candidate
-                assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "old"
+            report = run_plugin_doctor(workspace=workspace, plugins_home=home)
+            assert report["status"] == "broken"
+            assert "orphan" in report["error"]
+        with pytest.raises(RuntimeError, match="unsettled armed"):
+            install_git_plugin(
+                workspace=workspace, source=str(source), marketplace="lab",
+                plugins_home=home, update_id="next-install",
+            )
+        assert journal.update("orphan").phase == "armed"
+        assert journal.update("orphan").reload_tx_id is None
+        assert PluginSelection(workspace).read() == selected
+        assert read_pointers(base) == pointers
+        assert load_plugin_manifest(home) == manifest
     finally:
-        if lease is not None:
-            await lease.release()
-        if shutdown is not None:
-            await asyncio.gather(shutdown, return_exceptions=True)
         await host.terminate_all()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cut", ["latest", "manifest", "promoting", "committed"])
-async def test_killed_update_returns_to_old_pointer_until_commit(tmp_path, cut):
+@pytest.mark.parametrize("cut", ["before", "after"])
+async def test_killed_update_boots_exact_selected_archive(tmp_path: Path, cut: str) -> None:
+    """A process crash cannot turn an uncertain CAS into an implicit rollback."""
     source, home, workspace, old = prepare(tmp_path)
-    result = await asyncio.to_thread(subprocess.run,
+    initial = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    await initial.load_all()
+    await initial.terminate_all()
+    selected_old = PluginSelection(workspace).read()
+    assert selected_old is not None
+    result = await asyncio.to_thread(
+        subprocess.run,
         [sys.executable, "-c", CHILD, str(workspace), str(home), str(source), cut],
         cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == -signal.SIGKILL, result.stdout + result.stderr
-    journal = ReloadJournal(workspace)
-    before = journal.update("crash-update")
-    # committed 切点在 selection 已提交、journal 尚未记录的窗口。
-    assert before.phase == "armed"
-    selected_before_boot = PluginSelection(workspace).read()
-    pointers_before_boot = read_pointers(old.installed_path.parents[1])
-    # 删除原 Git source，启动不能靠重新拉取或重建候选解决中断。
+    selected_after = PluginSelection(workspace).read()
+    assert (selected_after == selected_old) is (cut == "before")
     (source / "plugin.py").unlink()
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     try:
         await host.load_all()
-        value = host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))()
-        assert value == ("new" if cut == "committed" else "old")
-        update = journal.update("crash-update")
-        assert update.phase == ("committed" if cut == "committed" else "armed")
-        if cut != "committed" and update.reload_tx_id is not None:
-            assert update.error
-        pointers = read_pointers(old.installed_path.parents[1])
-        if cut == "committed":
-            # 提交已确认：启动结算把 stable 指针对称收敛到已提交制品，
-            # 不能让运行新制品而 stable 仍指旧制品的不一致持久化。
-            assert pointers.stable.path == update.candidate.path
-        else:
-            assert pointers == pointers_before_boot
-        assert PluginSelection(workspace).read() == selected_before_boot
-        assert host.ready_candidate is None
+        assert PluginSelection(workspace).read() == selected_after
+        root = host.live_root
+        assert root is not None
+        assert root.context.require(ServiceKey("version.probe"))() == (
+            "old" if cut == "before" else "new"
+        )
         assert (old.data_path / "history.txt").read_text() == "existing durable data"
         assert old.installed_path.exists()
     finally:
         await host.terminate_all()
+
+
+def _select_installed(workspace: Path, installed, *, old_root: str | None = None) -> str:
+    """Select the real installed artifact as one fixed archive input."""
+    selection = PluginSelection(workspace)
+    artifact = installed.installed_path
+    identity = load_static_plugin_manifest(artifact)
+    archive = PluginArchive(workspace / "runtime/plugin-archives")
+    prepared = prepare_plugin_input({
+        "name": installed.plugin_name, "marketplace": installed.marketplace,
+        "plugin_root": str(artifact), "module_path": str(artifact / "plugin.py"),
+        "manifest_digest": identity.identity_digest, "source_type": "installed",
+    }, workspace=workspace, archive=archive)
+    return selection.commit((prepared.archive_ref,), expected_ref=old_root)
+
+
+@pytest.mark.parametrize("pointer_cut", ["old", "staged", "new"])
+@pytest.mark.parametrize("manifest_cut", ["old", "new"])
+def test_stopped_exact_install_rollback_preserves_old_selection(tmp_path, pointer_cut, manifest_cut):
+    source, home, workspace, old = prepare(tmp_path)
+    selected = _select_installed(workspace, old)
+    selected_bytes = PluginSelection(workspace).path.read_bytes()
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    set_plugin_enabled("probe@lab", enabled=False, plugins_home=home)
+    _, update_id = arm_historical_update(source, home, workspace, previous, False)
+    update = ReloadJournal(workspace).update(update_id)
+    if pointer_cut == "old":
+        write_pointers(base, stable=previous.stable, latest=previous.latest)
+    elif pointer_cut == "staged":
+        write_pointers(base, stable=previous.stable, latest=update.candidate)
+    if manifest_cut == "old":
+        set_plugin_enabled("probe@lab", enabled=False, plugins_home=home)
+    ReloadJournal(workspace).record_update_error(update_id, "interrupted after arm")
+    backup = tmp_path / "rollback-backup"
+
+    result = rollback_plugin_install(
+        workspace=workspace, plugins_home=home, update_id=update_id,
+        expected_root_ref=selected, backup_dir=backup,
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["remaining_armed"] == ()
+    assert ReloadJournal(workspace).update(update_id).phase == "rolled_back"
+    assert "interrupted after arm" in ReloadJournal(workspace).update(update_id).error
+    assert read_pointers(base) == previous
+    assert load_plugin_manifest(home)["probe@lab"] is False
+    assert PluginSelection(workspace).path.read_bytes() == selected_bytes
+    assert (old.data_path / "history.txt").read_text() == "existing durable data"
+    assert (backup / "workspace/runtime/plugin-reloads.sqlite3").is_file()
+    assert (backup / "workspace/runtime/plugin-stable.json").read_bytes() == selected_bytes
+    again = tmp_path / "no-new-backup"
+    retry = rollback_plugin_install(
+        workspace=workspace, plugins_home=home, update_id=update_id,
+        expected_root_ref=selected, backup_dir=again,
+    )
+    assert retry["status"] == "already_rolled_back"
+    assert not again.exists()
+
+
+def test_stopped_rollback_allows_selected_previous_equal_candidate(tmp_path):
+    _, home, workspace, old = prepare(tmp_path)
+    selected = _select_installed(workspace, old)
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    journal = ReloadJournal(workspace)
+    journal.arm_update(update_id="same-content", plugin_id="probe@lab", plugin_base=base,
+                       previous=previous, candidate=previous.stable, previous_enabled=True)
+
+    result = rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                     update_id="same-content", expected_root_ref=selected,
+                                     backup_dir=tmp_path / "same-backup")
+
+    assert result["status"] == "rolled_back"
+    assert PluginSelection(workspace).read() == selected
+    assert read_pointers(base) == previous
+
+
+def test_stopped_rollback_allows_root_without_target_with_prior_install(tmp_path):
+    source, home, workspace, old = prepare(tmp_path)
+    selection = PluginSelection(workspace)
+    root_ref = selection.commit((), expected_ref=None)
+    root_bytes = selection.path.read_bytes()
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    assert previous.stable.path is not None and previous.latest.path is not None
+    set_plugin_enabled("probe@lab", enabled=False, plugins_home=home)
+    candidate, update_id = arm_historical_update(source, home, workspace, previous, False)
+    assert read_pointers(base) != previous
+
+    result = rollback_plugin_install(
+        workspace=workspace, plugins_home=home, update_id=update_id,
+        expected_root_ref=root_ref, backup_dir=tmp_path / "absent-target-backup",
+    )
+
+    assert result["status"] == "rolled_back"
+    assert read_pointers(base) == previous
+    assert load_plugin_manifest(home)["probe@lab"] is False
+    assert ReloadJournal(workspace).update(update_id).phase == "rolled_back"
+    assert selection.path.read_bytes() == root_bytes
+    assert old.installed_path.exists() and candidate.installed_path.exists()
+    assert (old.data_path / "history.txt").read_text() == "existing durable data"
+
+
+def test_stopped_rollback_rejects_different_selected_candidate(tmp_path):
+    source, home, workspace, old = prepare(tmp_path)
+    old_root = _select_installed(workspace, old)
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    installed, update_id = arm_historical_update(source, home, workspace, previous, True)
+    selected_new = _select_installed(workspace, installed, old_root=old_root)
+
+    with pytest.raises(RuntimeError, match="selected code/source"):
+        rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                update_id=update_id, expected_root_ref=selected_new,
+                                backup_dir=tmp_path / "reject-backup")
+    assert not (tmp_path / "reject-backup").exists()
+    assert ReloadJournal(workspace).update(update_id).phase == "armed"
+
+
+def test_stopped_first_install_rollback_restores_absence(tmp_path):
+    source = tmp_path / "source"
+    _write_v3_plugin(source, name="new")
+    _commit(source)
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
+    installed = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    base = installed.installed_path.parents[1]
+    candidate = read_pointers(base)
+    assert candidate is not None
+    ReloadJournal(workspace).arm_update(update_id="first-interrupted", plugin_id="new@lab", plugin_base=base,
+                                         previous=None, candidate=candidate.stable, previous_enabled=None)
+
+    result = rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                     update_id="first-interrupted", expected_root_ref=None,
+                                     backup_dir=tmp_path / "first-backup")
+
+    assert result["status"] == "rolled_back"
+    assert read_pointers(base) is None
+    assert "new@lab" not in load_plugin_manifest(home)
+    assert installed.installed_path.exists()
+    assert installed.data_path.exists()
+    recovery = (tmp_path / "first-backup/recovery.json").read_text()
+    assert '"backup": null' in recovery
+
+
+@pytest.mark.parametrize("damage", ["unknown_pointer", "missing_old", "rollback_sidecar", "wrong_id", "committed"])
+def test_stopped_rollback_refuses_unproved_inputs(tmp_path, damage):
+    source, home, workspace, old = prepare(tmp_path)
+    selected = _select_installed(workspace, old)
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
+    journal = ReloadJournal(workspace)
+    requested = update_id
+    if damage == "unknown_pointer":
+        third = base / ".artifacts/third"
+        shutil.copytree(old.installed_path, third)
+        write_pointers(base, stable=ArtifactPointer(".artifacts/third"), latest=ArtifactPointer(".artifacts/third"))
+    elif damage == "missing_old":
+        shutil.rmtree(old.installed_path)
+    elif damage == "rollback_sidecar":
+        Path(str(journal.path) + "-journal").write_bytes(b"incomplete")
+    elif damage == "wrong_id":
+        requested = "missing-update"
+    else:
+        journal.commit_update(update_id)
+
+    with pytest.raises((RuntimeError, ValueError, FileNotFoundError, KeyError)):
+        rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                update_id=requested, expected_root_ref=selected,
+                                backup_dir=tmp_path / "reject-backup")
+    assert not (tmp_path / "reject-backup").exists()
+
+
+def test_stopped_rollback_retries_after_files_restored_but_row_armed(tmp_path):
+    source, home, workspace, old = prepare(tmp_path)
+    selected = _select_installed(workspace, old)
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
+    write_pointers(base, stable=previous.stable, latest=previous.latest)
+
+    result = rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                     update_id=update_id, expected_root_ref=selected,
+                                     backup_dir=tmp_path / "retry-backup")
+
+    assert result["status"] == "rolled_back"
+    assert read_pointers(base) == previous
+
+
+def test_stopped_rollback_lock_conflict_has_no_backup(tmp_path):
+    source, home, workspace, old = prepare(tmp_path)
+    selected = _select_installed(workspace, old)
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
+    from bootstrap.workspace_lock import WorkspaceMaintenanceLock
+    lock = WorkspaceMaintenanceLock(workspace)
+    lock.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="生命周期 owner"):
+            rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                    update_id=update_id, expected_root_ref=selected,
+                                    backup_dir=tmp_path / "locked-backup")
+    finally:
+        lock.release()
+    assert not (tmp_path / "locked-backup").exists()
+
+
+def test_stopped_rollback_preserves_other_armed_row_and_historical_pair(tmp_path):
+    _, home, workspace, old = prepare(tmp_path)
+    selected = _select_installed(workspace, old)
+    base = old.installed_path.parents[1]
+    old_pair = read_pointers(base)
+    assert old_pair is not None
+    second = base / ".artifacts/second"
+    shutil.copytree(old.installed_path, second)
+    historical = ArtifactPointers(old_pair.stable, ArtifactPointer(".artifacts/second"))
+    write_pointers(base, stable=historical.stable, latest=historical.latest)
+    journal = ReloadJournal(workspace)
+    journal.arm_update(update_id="historical-pair", plugin_id="probe@lab", plugin_base=base,
+                       previous=historical, candidate=ArtifactPointer(".artifacts/future"),
+                       previous_enabled=True)
+    journal.arm_update(update_id="other-plugin", plugin_id="other@lab",
+                       plugin_base=home / "cache/lab/other", previous=None,
+                       candidate=ArtifactPointer(".artifacts/new"), previous_enabled=None)
+    other_before = journal.update("other-plugin")
+
+    result = rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                     update_id="historical-pair", expected_root_ref=selected,
+                                     backup_dir=tmp_path / "historical-backup")
+
+    assert result["status"] == "rolled_back"
+    assert result["remaining_armed"] == ("other-plugin",)
+    assert result["further_recovery_required"] is True
+    assert read_pointers(base) == historical
+    assert journal.update("other-plugin") == other_before
+
+
+@pytest.mark.parametrize("drift", ["pointer", "selection"])
+def test_stopped_rollback_refuses_input_drift_after_backup(tmp_path, monkeypatch, drift):
+    source, home, workspace, old = prepare(tmp_path)
+    selected = _select_installed(workspace, old)
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
+    import scripts.rollback_plugin_install as stopped
+    original = stopped._backup
+
+    def change_after_backup(*args, **kwargs):
+        original(*args, **kwargs)
+        if drift == "selection":
+            PluginSelection(workspace).path.write_text('{"version":1,"root_ref":null}')
+        else:
+            third = base / ".artifacts/third"
+            shutil.copytree(old.installed_path, third)
+            write_pointers(base, stable=ArtifactPointer(".artifacts/third"),
+                           latest=ArtifactPointer(".artifacts/third"))
+
+    monkeypatch.setattr(stopped, "_backup", change_after_backup)
+    backup = tmp_path / "drift-backup"
+    with pytest.raises(RuntimeError, match="备份后改变"):
+        rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                update_id=update_id, expected_root_ref=selected,
+                                backup_dir=backup)
+    assert (backup / "recovery.json").is_file()
+    assert ReloadJournal(workspace).update(update_id).phase == "armed"
+
+
+def test_stopped_rollback_backs_up_live_wal_snapshot(tmp_path):
+    source, home, workspace, old = prepare(tmp_path)
+    selected = _select_installed(workspace, old)
+    base = old.installed_path.parents[1]
+    previous = read_pointers(base)
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
+    journal = ReloadJournal(workspace)
+    backup = tmp_path / "wal-backup"
+    with closing(sqlite3.connect(journal.path)) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("INSERT INTO plugin_updates SELECT * FROM plugin_updates WHERE 0")
+        connection.commit()
+        result = rollback_plugin_install(workspace=workspace, plugins_home=home,
+                                         update_id=update_id, expected_root_ref=selected,
+                                         backup_dir=backup)
+    assert result["status"] == "rolled_back"
+    with closing(sqlite3.connect(backup / "workspace/runtime/plugin-reloads.sqlite3")) as saved:
+        assert saved.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert saved.execute("SELECT phase FROM plugin_updates WHERE update_id=?", (update_id,)).fetchone() == ("armed",)
+    recovery = (backup / "recovery.json").read_text()
+    assert "plugin-reloads.sqlite3-wal.raw" in recovery
 
 
 def test_rollback_keeps_prior_disabled_state_and_unrelated_manifest_entries(tmp_path):
@@ -228,21 +488,23 @@ def test_rollback_keeps_prior_disabled_state_and_unrelated_manifest_entries(tmp_
     entries = load_plugin_manifest(home)
     entries["other@lab"] = False
     write_plugin_manifest(entries, plugins_home=home)
-    staged = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    previous = read_pointers(old.installed_path.parents[1])
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, False)
     assert load_plugin_manifest(home)["probe@lab"] is True
     journal = ReloadJournal(workspace)
     journal.rollback_updates(home)
     journal.rollback_updates(home)
-    assert journal.update(staged.update_id).phase == "rolled_back"
+    assert journal.update(update_id).phase == "rolled_back"
     assert load_plugin_manifest(home) == {"probe@lab": False, "other@lab": False}
     assert (old.data_path / "history.txt").read_text() == "existing durable data"
 
 
 def test_unknown_pointer_is_not_overwritten_by_startup_rollback(tmp_path):
     source, home, workspace, old = prepare(tmp_path)
-    staged = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    previous = read_pointers(old.installed_path.parents[1])
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
     base = old.installed_path.parents[1]
     other = base / ".artifacts/third"
     shutil.copytree(old.installed_path, other)
@@ -252,7 +514,7 @@ def test_unknown_pointer_is_not_overwritten_by_startup_rollback(tmp_path):
     with pytest.raises(RuntimeError, match="其他操作改变"):
         journal.rollback_updates(home)
     assert (base / ".pointers.json").read_bytes() == before
-    assert journal.update(staged.update_id).phase == "armed"
+    assert journal.update(update_id).phase == "armed"
 
 
 @pytest.mark.parametrize("empty_pointer", [False, True])
@@ -265,8 +527,8 @@ def test_first_install_rollback_restores_absent_pointer_and_manifest_entry(tmp_p
     if empty_pointer:
         base.mkdir(parents=True)
         write_pointers(base, stable=ArtifactPointer(None), latest=ArtifactPointer(None))
-    result = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    previous = ArtifactPointers(ArtifactPointer(None), ArtifactPointer(None)) if empty_pointer else None
+    result, _ = arm_historical_update(source, home, workspace, previous, None)
     journal = ReloadJournal(workspace)
     journal.rollback_updates(home)
     pointers = read_pointers(result.installed_path.parents[1])
@@ -283,8 +545,7 @@ def test_first_install_rollback_rejects_existing_nonobject_pointer(tmp_path, inv
     _write_v3_plugin(source, name="new")
     _commit(source)
     home, workspace = tmp_path / "home", tmp_path / "workspace"
-    result = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    result, update_id = arm_historical_update(source, home, workspace, None, None)
     path = result.installed_path.parents[1] / ".pointers.json"
     path.write_text(invalid)
     before_manifest = load_plugin_manifest(home)
@@ -293,19 +554,20 @@ def test_first_install_rollback_rejects_existing_nonobject_pointer(tmp_path, inv
         journal.rollback_updates(home)
     assert path.read_text() == invalid
     assert load_plugin_manifest(home) == before_manifest
-    assert journal.update(result.update_id).phase == "armed"
+    assert journal.update(update_id).phase == "armed"
 
 
 def test_reload_link_and_commit_are_atomic_with_update_guard(tmp_path):
     source, home, workspace, old = prepare(tmp_path)
-    staged = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab",
-                                plugins_home=home, stage_candidate=True)
+    previous = read_pointers(old.installed_path.parents[1])
+    assert previous is not None
+    _, update_id = arm_historical_update(source, home, workspace, previous, True)
     journal = ReloadJournal(workspace)
-    update = journal.update(staged.update_id)
+    update = journal.update(update_id)
     with pytest.raises(RuntimeError, match="换候选"):
         journal.begin(plugin_id="probe@lab", base_snapshot_id=None, generation_id="bad",
             source_revision="source", config_revision="config", candidate_artifact_pointer="wrong")
-    assert journal.update(staged.update_id).reload_tx_id is None
+    assert journal.update(update_id).reload_tx_id is None
     tx = journal.begin(plugin_id="probe@lab", base_snapshot_id=None, generation_id="candidate",
         source_revision="source", config_revision="config", candidate_artifact_pointer=update.candidate.path)
     for phase in ("prepared", "validating", "commit_started", "latest_ready", "promoting"):
@@ -316,20 +578,4 @@ def test_reload_link_and_commit_are_atomic_with_update_guard(tmp_path):
     with pytest.raises(sqlite3.IntegrityError, match="injected cut"):
         journal.advance(tx, "committed")
     assert journal.get(tx).phase == "promoting"
-    assert journal.update(staged.update_id).phase == "armed"
-
-
-@pytest.mark.asyncio
-async def test_same_artifact_enable_commits_only_after_runtime_activation(tmp_path):
-    source, home, workspace, _ = prepare(tmp_path)
-    installed = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
-    set_plugin_enabled("probe@lab", enabled=False, plugins_home=home)
-    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
-    await host.load_all()
-    try:
-        result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
-        assert result.installed_path == installed.installed_path
-        assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "new"
-        assert ReloadJournal(workspace).update(result.update_id).phase == "committed"
-    finally:
-        await host.terminate_all()
+    assert journal.update(update_id).phase == "armed"

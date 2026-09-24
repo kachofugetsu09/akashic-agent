@@ -12,7 +12,6 @@ import pytest
 from pydantic import ValidationError
 
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.channels import (
     CHANNEL_INPUT,
     AttachmentRef,
@@ -97,12 +96,11 @@ class _MessageBusIngress:
         )
         await self._bus.prepare_channel_input(envelope)
         try:
-            async with lease_runtime_snapshot(self._manager.snapshot_store) as snapshot:
-                root = snapshot.composition_root
-                if root is None:
-                    raise RuntimeError("测试 ingress 缺少当前 composition snapshot")
-                accept = root.context.require(CHANNEL_INPUT)
-                await accept(session_key, raw.message_id, raw.message)
+            root = self._manager.live_root
+            if root is None:
+                raise RuntimeError("测试 ingress 缺少当前 live Root")
+            accept = root.context.require(CHANNEL_INPUT)
+            await accept(session_key, raw.message_id, raw.message)
             await self._bus.complete_channel_input(envelope)
             return True
         except BaseException:
@@ -263,7 +261,9 @@ async def test_mobile_input_and_reference_commit_original_facts_and_replay_once(
         assert bus.inbound_size == 0
         assert (await channel.handle_command(device_id=device, frame=frame)).replayed
         assert len(log.reader(session).snapshot()) == 2
-        assert manager.current_snapshot.lease_count == 0
+        sources = manager.generation("sources@fixture")
+        assert sources is not None and sources.fiber is not None
+        assert not sources.fiber._in_flight_calls
         assert identities.load('akashic')
 
 
@@ -475,7 +475,9 @@ async def test_cancelled_input_restarts_through_current_binding_and_uses_final_r
         assert reply.type == ('message.send.ok' if valid else 'message.send.error')
         assert len(log.reader(session).snapshot()) == int(valid)
         assert storage.has_session_claim(session) is valid
-        assert manager.current_snapshot.lease_count == 0
+        sources = manager.generation("sources@fixture")
+        assert sources is not None and sources.fiber is not None
+        assert not sources.fiber._in_flight_calls
 
 
 @pytest.mark.asyncio

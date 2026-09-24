@@ -111,20 +111,21 @@ class Senders:
 
     @asynccontextmanager
     async def open(self, metadata: Mapping[str, object]) -> AsyncGenerator[Sender]:
-        """归档自身核对目标和幂等合同；不读取当前渠道注册或运行快照。"""
+        """核对归档目标并在 Senders 与目标 owner scope 中打开 sender。"""
         descriptor = Adapter.model_validate(dict(metadata))
         registration = self._registrations[descriptor.name]
         if registration.descriptor != descriptor:
             raise ValueError("发送 binding 与归档注册不一致")
         async with self._ctx.runtime_scope():
-            async with registration.open() as target:
-                if target.idempotent != descriptor.idempotent:
-                    raise ValueError("发送幂等协议与固定描述不一致")
-                view = _SenderView(target)
-                try:
-                    yield view
-                finally:
-                    view.close()
+            async with registration.context.runtime_scope():
+                async with registration.open() as target:
+                    if target.idempotent != descriptor.idempotent:
+                        raise ValueError("发送幂等协议与固定描述不一致")
+                    view = _SenderView(target)
+                    try:
+                        yield view
+                    finally:
+                        view.close()
 
 
 DELIVERY_SENDERS = ServiceKey[Senders]("delivery.senders.v1")

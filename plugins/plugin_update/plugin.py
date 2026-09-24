@@ -6,59 +6,45 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from agent.plugin_composition import Context, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
+from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
-from agent.plugin_composition.tasks import TASKS
-from .inputs import CONTENT, MODEL_SETTINGS
+from .inputs import CONTENT
 from .inputs import DELIVERY, INPUT_ORIGIN
 from .inputs import DELIVERY_SENDERS
-from .inputs import ALL_TOOLS, TOOLS
+from .inputs import TOOLS
 from agent.plugin_contracts import ContentPart, Output
-from agent.plugin_contracts import json_value
 
-from .tool import InstallPlugin, InstallInput, Request
-from .validation import PLUGIN_VALIDATION, Validation
-from .latest import Latest, LatestInput
+from .tool import InstallPlugin, InstallInput, Request, decode_request
 
 logger = logging.getLogger(__name__)
-REPLY_EXECUTE = ServiceKey("reply.execute.v1")
-
 api_version = 3
 name = "plugin_update"
 version = "1.0.0"
-desc = "按实际要求验证候选，排空后发布，并用原渠道报告结果"
+desc = "安装插件并在 selection accepted 或 active/failed 后用原渠道报告结果"
 inject = (
     CONTENT,
-    MODEL_SETTINGS,
     INPUT_ORIGIN,
-    REPLY_EXECUTE,
     PLUGIN_UPDATES,
     TOOLS,
-    ALL_TOOLS,
     BINDINGS,
     OWNER_STATE,
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
-    SESSION_ADMISSION,
-    TASKS,
     DELIVERY,
     DELIVERY_SENDERS,
 )
 
 
-class Config(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    max_steps: int = Field(default=40, gt=0)
-    max_output_tokens: int = Field(default=4096, gt=0)
-
+def result_message_id(identity: str, status: UpdateStatus) -> str:
+    """Return the immutable result message identity for one terminal outcome."""
+    if status.state not in {"active", "failed"}:
+        raise ValueError(f"插件更新不是终态: {status.state}")
+    return identity + ":result-" + status.state
 
 async def apply(ctx: Context) -> None:
-    """工具只准备候选；普通来源拥有验证策略和通知，发布由 Core 排空。"""
-    config = Config.model_validate(ctx.config)
+    """Register install and report durable runtime outcomes."""
     watcher: asyncio.Task[None] | None = None
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
@@ -77,43 +63,22 @@ async def apply(ctx: Context) -> None:
     _ = await catalog.register(
         ctx,
         name="plugin_install",
-        description="安装或更新插件并固定候选；随后用 plugin_latest run 执行普通候选调用，status 查看，revert 撤销",
+        description="安装或更新插件；selection accepted 后由宿主继续挂载并报告 active/failed",
         parameters=InstallInput.model_json_schema(),
         open=open_tool,
         capture=capture,
         idempotent=False,
         risk="external-side-effect",
     )
-    _ = await ctx.provide(
-        PLUGIN_VALIDATION,
-        Validation(
-            ctx, max_steps=config.max_steps, max_output_tokens=config.max_output_tokens
-        ),
-    )
-
-    @asynccontextmanager
-    async def open_latest(state: Mapping[str, object]) -> AsyncGenerator[Latest]:
-        if state:
-            raise ValueError("plugin_latest 不接收 binding 配置")
-        yield Latest(ctx)
-
-    _ = await catalog.register(
-        ctx, name="plugin_latest",
-        description="run 启动固定 latest 的普通程序并立即返回 update/call 句柄；status 读取过程和结束后的原结果；revert 撤销本 session 更新授权；正常完成且未撤销才晋升",
-        parameters=LatestInput.model_json_schema(), open=open_latest,
-        idempotent=False, risk="external-side-effect",
-    )
-
     async def report(identity: str, request: Request, status: UpdateStatus) -> None:
-        """完成正文只写一次；重启沿原 Message 和发送回执查询，不重做更新。"""
+        """Send one durable result without overwriting historical result messages."""
         async with ctx.runtime_scope():
-            terminal = status.phase in {"committed", "rolled_back"}
-            message_id = identity + (":complete" if terminal else ":problem")
+            message_id = result_message_id(identity, status)
             reader = ctx.require(MESSAGE_CATALOG).reader(request.session_id)
             previous = reader.get(message_id)
             if previous is None:
-                text = (f"插件 {status.plugin_id} 更新已完成。" if status.phase == "committed"
-                        else f"插件 {status.plugin_id} 未发布：{status.error or '候选已回退'}")
+                text = (f"插件 {status.plugin_id} 已激活。" if status.state == "active"
+                        else f"插件 {status.plugin_id} 更新失败：{status.error or '未知错误'}")
                 body = Output((ContentPart("text", text),), "complete")
             else:
                 if not isinstance(previous.body, Output):
@@ -163,16 +128,13 @@ async def apply(ctx: Context) -> None:
                         if identity in active:
                             continue
                         status = updates.read(ctx, identity)
-                        if status is None or status.publishing:
+                        if status is None or status.state not in {"active", "failed"}:
                             continue
-                        request = Request.model_validate(json_value(record.value))
-                        if status.phase in {"committed", "rolled_back"} or status.error:
-                            phase = "complete" if status.phase in {"committed", "rolled_back"} else "problem"
-                            if (identity, phase) in reported:
-                                continue
-                            reported.add((identity, phase))
-                        else:
+                        request = decode_request(record.value)
+                        result = status.state
+                        if (identity, result) in reported:
                             continue
+                        reported.add((identity, result))
                         active.add(identity)
                         _ = group.create_task(run(identity, request, status))
 

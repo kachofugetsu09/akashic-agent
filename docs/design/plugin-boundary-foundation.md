@@ -673,7 +673,7 @@ stop 回执；Core 复用既有 channel lifecycle，不增加第二套 listener 
 这层只提供客户端迁出所需的中立能力。Mobile/WebChat 的实现、配置和 durable
 handoff 仍需后续迁入普通插件；不能据此宣称 Core 业务归属已经全部收束。
 
-### 9.37 七个窄合同模块的公开资格（复核于 8f4ff388）
+### 9.37 八个窄合同模块的公开资格（host 增补于 Issue 750 R1）
 
 以下 `agent.plugin_composition` 模块登记在 `PLUGIN_ALLOWED_MODULES` 的冻结清单中，
 依据是各自事实/机制的明确 owner 与已审合同面，而不是「有插件 import 它」。
@@ -685,6 +685,7 @@ R2 只允许使用清单内既有公开模块；本次登记只是承认已审�
 | `channel_io` | `InputCustody`、`INPUT_CUSTODY`、`CHANNEL_IDENTITY`、附件端口 | Core 的 durable inbound custody 与附件 owner | 窄传输/身份端口；不暴露完整 Bus、队列或存储 |
 | `config_input` | `CONFIG_INPUT`、`load_config` | Core 的固定配置输入 owner | 只交付该 generation 的固定配置投影；插件不取得任意 plugin-data 读写 |
 | `execution` | `EXECUTION`、`ExecutionAccess` | Core 的执行原子能力（归档 code_dir 命令解析） | 只授予当前 Context 已声明的执行能力；不含资源目录或进程生命周期 |
+| `host` | 冻结的 `HostInfo`（boot identity、validation marker）与 `HOST_INFO` | Manager 从真实 host 提供；Channel 与 Dashboard 消费 | 只传递宿主身份事实；模块没有 I/O、控制或 cleanup 权限 |
 | `requests` | `RequestContext` | channel Host 的请求 scope | 只向插件请求暴露已声明能力与 generation 资源路径；不泄漏 snapshot 或 lease |
 | `runtime_catalog` | `RUNTIME_CATALOG`、`RuntimeCatalogReader`、`RuntimeCatalogUnavailable` | Core 的 stable runtime DTO 投影 owner | 只返回脱离 snapshot 的只读字典；插件不能取得 snapshot、lease、store 或任意运行时查询入口 |
 | `ui` | Web/Dashboard 领域合同 | UI provider 缝（注册与校验由普通 provider 执行） | 只含注册/校验合同值类型；不含宿主路由或内部 store |
@@ -693,3 +694,6 @@ R2 只允许使用清单内既有公开模块；本次登记只是承认已审�
 （PR #751 stacked 分支）的公开合同与边界复核；登记动作见任务
 T-939e5d/T-e91344 的真实 diff。任何模块扩大到非合同实现时，须先撤销其公开
 资格再单独评审，不得借「兼容消费者」留存。
+
+Issue 750 R1 对 `host` 的新增登记依据是本节的逐模块 owner 审查；
+本轮本地检查不能替代独立概念 review。

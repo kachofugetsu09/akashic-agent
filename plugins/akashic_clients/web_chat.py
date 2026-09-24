@@ -258,7 +258,7 @@ class WebChatChannel:
 
     @asynccontextmanager
     async def _open_message_catalog(self) -> AsyncIterator[MessageCatalog]:
-        """Hold one message capability only for the current request or stream."""
+        """Resolve one message capability for a short request or reader acquisition."""
 
         if self._message_scope is not None:
             async with self._message_scope() as messages:
@@ -456,10 +456,9 @@ class WebChatChannel:
     def _close_v3_binding(self, adapter: WebNativeChannelAdapter) -> None:
         if self._v3_adapters.get(adapter.binding_token) is not adapter:
             raise RuntimeError("Web v3 binding 未注册")
-        # Host closes admission and then drains binding operations.  A follow
-        # keeps its request scope open while waiting for the next message, so
-        # it must be cancelled at the admission boundary or the host would
-        # wait forever for that scope to release.
+        # Adapter admission is closed before draining captured calls. Followers
+        # own their reader after short acquisition, so cancel those long reads.
+        # The Web transport stays open for a replacement binding.
         self._cancel_followers_for_admission()
 
     def _cancel_followers_for_admission(self) -> None:
@@ -985,10 +984,21 @@ class WebChatChannel:
             await self._send_error(websocket, request_id, str(error))
             return ""
         await self._cancel_follow(websocket)
-        _ = await self._add_connection(session_id, websocket)
+        if self._stopping:
+            return ""
+        try:
+            _ = await self._add_connection(session_id, websocket)
+        except RuntimeError:
+            if self._stopping:
+                return ""
+            raise
+        if self._stopping:
+            await self._remove_connection_attempt(session_id, websocket)
+            return ""
         await websocket.send_json({"type": "session.following", "version": 2,
                                    "request_id": request_id, "session_id": session_id, "through_seq": head})
         if self._stopping:
+            await self._remove_connection_attempt(session_id, websocket)
             return ""
         task = tasks.create_task(self._follow(websocket, session_id, after_seq))
         self._followers[websocket] = (session_id, task)
@@ -1002,15 +1012,14 @@ class WebChatChannel:
                     await websocket.send_json({"type": kind, **frame})
 
         async def send_messages() -> None:
-            # The message reader and its display projection must enter and
-            # leave the request scope in this follower task.  Passing an
-            # entered scope through TaskGroup task creation leaves a copied
-            # ContextVar pointing at a closed RequestContext on installed
-            # runtimes.
+            # Resolve the reader before the long follow.  The display
+            # projection opens its own short scope for each page in the
+            # follower task; no entered request scope crosses TaskGroup work.
             async with self._open_message_catalog() as messages:
-                await send("messages.appended", follow_messages(
-                    cast(Any, messages.reader(session_id)), after_seq=after_seq,
-                    display_only=True, reader_display=self.message_display))
+                reader = cast(Any, messages.reader(session_id))
+            await send("messages.appended", follow_messages(
+                reader, after_seq=after_seq,
+                display_only=True, reader_display=self.message_display))
 
         async with asyncio.TaskGroup() as tasks:
             _ = tasks.create_task(send_messages())

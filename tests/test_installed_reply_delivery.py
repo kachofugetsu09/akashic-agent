@@ -19,18 +19,25 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_contracts import Input, Output
 from agent.plugins.install import install_git_plugin
-from agent.plugins.model_control import RuntimeModelControl
-from agent.plugins.snapshot import lease_runtime_snapshot
+from bootstrap.app_server import build_control_service
 from bootstrap.init_workspace import init_workspace
 from bootstrap.tools import build_core_runtime
 from core.net.http import SharedHttpResources
 from session.log import MessageLog
 
 
-async def _model_command(control: RuntimeModelControl, payload: dict[str, object]) -> dict[str, object]:
+async def _model_command(core, payload: dict[str, object]) -> dict[str, object]:
     """Configure the installed Models owner through its public RPC boundary."""
 
-    result = await control.invoke_rpc("models/command", payload)
+    service = build_control_service(core)
+    resolve = service.resolve_method
+    if resolve is None:
+        raise AssertionError("ControlService 未提供动态 RPC resolver")
+    async with resolve("models/command") as operation:
+        if operation is None:
+            raise AssertionError("live Root 未提供 models/command")
+        params = operation.params.model_validate(payload)
+        result = await operation.invoke(params, None)
     assert isinstance(result, dict)
     assert result.get("status") == 200, result
     body = result.get("body")
@@ -121,9 +128,8 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
         core = build_core_runtime(Config(), workspace, http, plugin_dirs=[])
         await core.start()
         host = core.plugin_manager
-        assert set(host.current_snapshot.generations) == {
-            f"{item.plugin_name}@{item.marketplace}" for item in installed.values()
-        }
+        root = host.live_root
+        assert root is not None
         for name in names:
             item = installed[name]
             generation = host.generation(f"{item.plugin_name}@{item.marketplace}")
@@ -133,8 +139,7 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
             assert Path(generation.instance.module.__file__).is_relative_to(archive_root)
 
         # 2. 用实际模型配置入口绑定 HTTP driver；没有替换业务能力或实际执行函数。
-        control = RuntimeModelControl(host.snapshot_store)
-        await _model_command(control, {
+        await _model_command(core, {
             "type": "add_connection",
             "expected_revision": 0,
             "connection_id": "local",
@@ -144,7 +149,7 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
             "auth_identity": "fixture",
             "credential": {"api_key": "fixture"},
         })
-        await _model_command(control, {
+        await _model_command(core, {
             "type": "add_model",
             "expected_revision": 1,
             "model_id": "fixture",
@@ -158,15 +163,18 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
             },
             "capability_sources": {},
         })
-        await _model_command(control, {
-            "type": "set_default",
+        await _model_command(core, {
+        "type": "set_default",
             "expected_revision": 2,
             "role": "default",
             "model_id": "fixture",
         })
         await host.start_runtime()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            accepted = await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+        root = host.live_root
+        assert root is not None
+        input_context, accept_input = root._service_provider(CHANNEL_INPUT)
+        async with input_context.runtime_scope():
+            accepted = await accept_input(
                 "telegram:123", "input-1", ChannelInboundMessage(
                     "telegram", "user", "123", "hello", datetime.now(UTC), {},
                 ),
@@ -181,16 +189,25 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
                                and row.body.finish == "complete"), None)
                 if output is None:
                     continue
-                async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                    ctx = snapshot.composition_root.context
-                    turn = ctx.require(ServiceKey("turn.projection.v1")).project(rows, "conversation")[-1]
-                    await ctx.require(ServiceKey("delivery.final_output.v1")).wait(
-                        core.message_log.reader("telegram:123"), turn,
-                    )
-                    history = ctx.require(ServiceKey("delivery.read.v1"))
+                root = host.live_root
+                assert root is not None
+                turn_context, turn_projection = root._service_provider(
+                    ServiceKey("turn.projection.v1")
+                )
+                async with turn_context.runtime_scope():
+                    turn = turn_projection.project(rows, "conversation")[-1]
+                final_context, final_output = root._service_provider(
+                    ServiceKey("delivery.final_output.v1")
+                )
+                async with final_context.runtime_scope():
+                    await final_output.wait(core.message_log.reader("telegram:123"), turn)
+                read_context, history = root._service_provider(
+                    ServiceKey("delivery.read.v1")
+                )
+                async with read_context.runtime_scope():
                     receipt = history.status(output.message_id, "telegram")
-                    assert receipt is not None and receipt["status"] == "delivered"
-                    return rows, receipt
+                assert receipt is not None and receipt["status"] == "delivered"
+                return rows, receipt
             raise AssertionError("日志在送达之前关闭")
 
         rows, receipt = await asyncio.wait_for(confirmed(), 15)

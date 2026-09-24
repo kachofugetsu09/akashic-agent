@@ -40,13 +40,25 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 - 移动端用户 checkout 存在未提交 Theme diff（Theme.kt 等 5 个文件）；D2 决策（原生壳与 WebUI token 边界）完成前不得合入。
 
-## P0 · 插件普通调用与晋升
+## P0 · 单图插件系统与局部换代（Issue 750）
 
-- 按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 调整为调用程序拥有验证、provider 拥有隔离资源、底座拥有整体 stable 提交。旧 `validation_port_env`、双指针与 attached child 的 Core 特例不再是目标合同。
-- 按 [latest 普通调用](design/plugin-latest-programmatic.md) 完成非阻塞调用的过程/最终结果可见性、发起者撤销和原 owner 清理；正常完成默认请求晋升，不引入后台裁判或批准 JSON。继续核对隔离宿主的最小职责与累计消费者。
-- 普通 latest 仍需后续运行证据；模型 owner 接续现有设置和凭据、新组合使用自己的 driver、调用账写在本次调用环境的源码已通过独立静态审查。真实插件链的测试已写未跑，不能据此声明实际模型请求与晋升验收通过。
-- 独立 Fitbit source 的候选 listener 与正式资源隔离仍待该仓库交付，本轮不修改外部插件。
-- 提交前后崩溃、排空失败和真实恢复的行为证据尚缺；本轮用户要求只提 PR，不执行 Gate/CI，不能将代码交付视作这些验收已完成。
+按 [0072](decisions/0072-single-graph-local-plugin-updates.md) 与
+[单图设计](design/issue-750-plugin-publication-simplification.md) 继续完成：
+
+- **外部组合验收**：Content/H5 的历史 lock 不匹配当前 Core 祖先与单参数 `apply(ctx)`
+  入口。固定兼容的外部源码和 artifact-owned Python 后，按原完整场景重新验收；
+  不改 lock 指向任意 HEAD、删 case 或降低 coverage baseline 取绿。
+- **真实资源验收**：本地 Workload 协议测试不代表 Docker 写入挂载、跨 boot 资源恢复
+  或显示代理已验证；这些结果须由对应真实 Controller 与客户端提供。
+- **发行与恢复**：已有 state 的 `akashic-release install` 升级路径已接入停止期备份、目标
+  Core/插件 Yoyo、完整 selection 与 live Fiber 核对；远端 CI、正式发布、真实运行数据的隔离
+  恢复演练和 final enable 仍需独立交付。普通 restart/ensure_profile 不自动采用新 bundle；
+  通用 distribution 夹具不能替代真实 Akasha 发行输入、重放完成及功能验收，历史未决资源
+  也不能用源码通过代为结算。
+
+既有 Subagent Tools owner、DeliveryPolicy readiness 和旧 oracle 的历史阻塞不再作为
+当前缺陷；本地退役、停止期回退和分层证据见单图设计的“本地收口与运行验收边界”一节。
+本地开发与验证不授权 PR 合并、正式数据写入或部署。
 
 ## P0 · 独立语义验收
 

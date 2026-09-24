@@ -1,6 +1,6 @@
 # PersonaMem Benchmark
 
-这版接法复用了 `eval/longmemeval` 的主链：
+PersonaMem 的数据、导入、运行时和评分代码位于 `eval/personamem`：
 
 ```text
 ┌────────────────────┐
@@ -24,11 +24,15 @@
 - 共享向量记忆只在该样本内部生效，不会串题
 - 回答格式固定为选项标签，如 `(a)`
 
+现有 ingest/QA 入口仍调用旧 `CoreRuntime.session_manager` 和 `CoreRuntime.loop`；当前
+`CoreRuntime` 已不提供这些属性。本次只解除对退役 LongMemEval 包的代码依赖，尚未
+完成 PersonaMem 的运行链迁移，下方命令不代表已通过端到端验收。
+
 ## 运行
 
 ```bash
 python -m eval.personamem.run \
-  --config eval/longmemeval/config.toml \
+  --config eval/personamem/config.toml \
   --questions /path/to/questions_32k.csv \
   --contexts /path/to/shared_contexts_32k.jsonl \
   --workspace /tmp/personamem_bench \
@@ -40,7 +44,7 @@ python -m eval.personamem.run \
 
 ```bash
 python -m eval.personamem.run \
-  --config eval/longmemeval/config.toml \
+  --config eval/personamem/config.toml \
   --questions /path/to/questions_32k.csv \
   --contexts /path/to/shared_contexts_32k.jsonl \
   --workspace /tmp/personamem_recall \

@@ -73,7 +73,7 @@ class ScopedRpcRuntimeInspection:
         """Restore the existing Mobile aggregate from one request generation."""
 
         async with self._open_scope() as scope:
-            payload = dict(scope.require(RUNTIME_CATALOG)())
+            payload = dict(scope.require(RUNTIME_CATALOG)(scope))
             _raise_unavailable(payload)
             skills = await self._invoke(scope, INSPECTION_SKILLS_LIST, {})
             _raise_unavailable(skills)
@@ -96,7 +96,7 @@ class ScopedRpcRuntimeInspection:
         """Render one MCP detail from the same neutral catalog capability."""
 
         async with self._open_scope() as scope:
-            payload = scope.require(RUNTIME_CATALOG)()
+            payload = scope.require(RUNTIME_CATALOG)(scope)
             _raise_unavailable(payload)
         servers = payload.get("mcp_servers")
         if not isinstance(servers, list):
@@ -132,6 +132,10 @@ def _raise_unavailable(payload: Mapping[str, object]) -> None:
     """Translate a neutral inspection failure at the client boundary."""
 
     unavailable = payload.get("unavailable")
+    if unavailable is None:
+        # The live catalog keeps the plugin tree when only MCP is absent;
+        # this adapter preserves the existing client error contract.
+        unavailable = payload.get("mcp_unavailable")
     if unavailable is None:
         return
     if not isinstance(unavailable, Mapping):

@@ -3,6 +3,7 @@ import base64
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from functools import partial
+import inspect
 import json
 from pathlib import Path
 import shutil
@@ -17,26 +18,41 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.config_input import save_config
 
 from agent.media import encode_image_data_uri
-from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition import CompositionError, PROCESSES, PluginProcesses, ServiceKey
+from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.context import CompositionRoot
-from agent.plugin_composition.tasks import TASKS
-from agent.plugin_composition.tasks import Tasks
+from agent.plugin_composition.messages import OWNER_STATE, OwnerState
+from agent.plugin_composition.model import FiberState, PluginRuntime
+from agent.process_runtime import (
+    ExecutionCleanupFailure,
+    ExecutionCleanupReport,
+    ShellProcessManager,
+)
+from agent.plugin_composition.runtime_lifecycle import (
+    RUNTIME_STARTED,
+    RUNTIME_STARTING,
+)
+from agent.plugin_composition.tasks import PluginTasks, TASKS
+from agent.plugin_composition.tasks import Task, Tasks
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugins.generation import PluginGeneration
+from agent.plugins.scope import PluginScope
+from agent.plugins.archive import PluginArchive
+from agent.restart import RestartGate
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from plugins.standard_tools.shell import SHELL_OWNERS, TOOL_CLEANUP, shell_cleanup
+from plugins.standard_tools.plugin import register_shell
+from plugins.standard_tools.shell import SHELL_OWNERS, TOOL_CLEANUP
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.reply_program.program import run_reply
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.api import MessageReply
-from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
+from session.message import Control, CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from plugins.standard_web.web import WebTool
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
+from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolCatalog, open_tool
 from plugins.standard_web.search import WebSearchTool
 
 
@@ -109,6 +125,152 @@ async def apply(ctx):
     return host, store, log, artifacts, source
 
 
+def _local_runtime(tmp_path, plugin_id):
+    return PluginRuntime(
+        plugin_id,
+        plugin_id + ":local",
+        tmp_path / "plugins",
+        tmp_path / plugin_id / "data",
+        tmp_path / "workspace",
+        {},
+    )
+
+
+async def _mount_local_shell_root(tmp_path):
+    """Build one real local Root for Shell cleanup lifecycle tests."""
+    workspace = tmp_path / "local-workspace"
+    store, log = storage(workspace)
+    archive = PluginArchive(tmp_path / "local-archives")
+    root = CompositionRoot("local-shell-root")
+    tasks = PluginTasks()
+    processes = PluginProcesses(
+        factory=lambda: ShellProcessManager(output_dir=tmp_path / "shell-output")
+    )
+    await root.context.provide(TASKS, tasks)
+    await root.context.provide(PROCESSES, processes)
+    await root.context.provide(OWNER_STATE, OwnerState(log))
+    generations: dict[str, PluginGeneration] = {}
+
+    def generation_lookup(ctx):
+        runtime = ctx.runtime
+        generation = generations.get(runtime.plugin_id)
+        if generation is None:
+            ref = archive.save_descriptor(
+                {"plugin_id": runtime.plugin_id, "generation_id": runtime.generation_id}
+            )
+            generation = PluginGeneration(
+                runtime.plugin_id, runtime.generation_id, runtime.plugin_id,
+                "fixture", "fixture", runtime.plugin_dir, runtime.data_dir, None,
+                PluginScope(runtime.plugin_id, generation_id=runtime.generation_id),
+                archive_ref=ref,
+            )
+            generations[runtime.plugin_id] = generation
+        return generation
+
+    bindings = Bindings(log, archive, root, generation_lookup)
+    await root.context.provide(BINDINGS, bindings)
+    contexts = {}
+    hard_consumer_unloading = asyncio.Event()
+    effect_closes = {"shell": 0, "hard_consumer": 0, "unrelated": 0}
+
+    async def mount_tools(ctx):
+        contexts["tools"] = ctx
+        admission = ctx.require(TASKS).open(ctx)
+        contexts["tools_admission"] = admission
+        catalog = ToolCatalog(ctx, admission)
+        contexts["catalog"] = catalog
+        await ctx.provide(TOOLS, catalog)
+
+    tools_fiber = await root.mount(
+        mount_tools,
+        name="local-tools",
+        inject=(TASKS, BINDINGS, OWNER_STATE),
+        runtime=_local_runtime(tmp_path, "local-tools"),
+    )
+
+    async def mount_shell(ctx):
+        contexts["shell"] = ctx
+
+        async def close_effect():
+            effect_closes["shell"] += 1
+
+        await ctx.effect(lambda: close_effect, label="local-shell-effect")
+        contexts["shell_refs"] = await register_shell(ctx)
+
+    shell_fiber = await root.mount(
+        mount_shell,
+        name="local-shell",
+        inject=(TOOLS, TASKS, PROCESSES, BINDINGS),
+        runtime=_local_runtime(tmp_path, "local-shell"),
+    )
+
+    async def mount_hard_consumer(ctx):
+        contexts["hard_consumer"] = ctx
+
+        async def close_effect():
+            effect_closes["hard_consumer"] += 1
+            hard_consumer_unloading.set()
+
+        await ctx.effect(lambda: close_effect, label="local-shell-hard-consumer")
+
+    hard_consumer_fiber = await root.mount(
+        mount_hard_consumer,
+        name="local-shell-hard-consumer",
+        inject=(TOOL_CLEANUP,),
+        runtime=_local_runtime(tmp_path, "local-shell-hard-consumer"),
+    )
+
+    async def mount_caller(ctx):
+        contexts["caller"] = ctx
+
+    caller_fiber = await root.mount(
+        mount_caller,
+        name="local-caller",
+        inject=(TOOL_CLEANUP,),
+        runtime=_local_runtime(tmp_path, "local-caller"),
+    )
+
+    async def mount_unrelated(ctx):
+        contexts["unrelated"] = ctx
+
+        async def close_effect():
+            effect_closes["unrelated"] += 1
+
+        await ctx.effect(lambda: close_effect, label="local-unrelated-effect")
+        await ctx.on(RUNTIME_STARTING, lambda _event: None)
+        await ctx.on(RUNTIME_STARTED, lambda _event: None)
+
+    unrelated_fiber = await root.mount(
+        mount_unrelated,
+        name="local-unrelated",
+        runtime=_local_runtime(tmp_path, "local-unrelated"),
+    )
+    return {
+        "root": root,
+        "store": store,
+        "log": log,
+        "archive": archive,
+        "bindings": bindings,
+        "tasks": tasks,
+        "processes": processes,
+        "tools_fiber": tools_fiber,
+        "shell_fiber": shell_fiber,
+        "hard_consumer_fiber": hard_consumer_fiber,
+        "caller_fiber": caller_fiber,
+        "unrelated_fiber": unrelated_fiber,
+        "tools_ctx": contexts["tools"],
+        "tools_admission": contexts["tools_admission"],
+        "catalog": contexts["catalog"],
+        "shell_ctx": contexts["shell"],
+        "shell_refs": contexts["shell_refs"],
+        "hard_consumer_ctx": contexts["hard_consumer"],
+        "caller_ctx": contexts["caller"],
+        "unrelated_ctx": contexts["unrelated"],
+        "hard_consumer_unloading": hard_consumer_unloading,
+        "effect_closes": effect_closes,
+    }
+
+
 @pytest.mark.asyncio
 async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifact(tmp_path):
     host, store, log, artifacts, source = environment(tmp_path)
@@ -121,19 +283,20 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
 
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        ctx = live_root.context
+        async with ctx.require(ServiceKey("standard-tools-probe")).runtime_scope():
             tools = ctx.require(TOOLS)
             view = ctx.require(ALL_TOOLS)()
-            read = tools.bind(view.select("read_file"), bindings)
-            write = tools.bind(
+            read = await tools.bind_scoped(view.select("read_file"), bindings)
+            write = await tools.bind_scoped(
                 view.select("write_file"),
                 bindings,
                 configuration={"allowed_dir": str(tmp_path / "job")},
             )
-            edit = tools.bind(
+            edit = await tools.bind_scoped(
                 view.select("edit_file"),
                 bindings,
                 configuration={"allowed_dir": str(tmp_path / "job")},
@@ -187,10 +350,11 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
 
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            ctx = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        ctx = live_root.context
+        async with ctx.require(ServiceKey("standard-tools-probe")).runtime_scope():
             catalog = ctx.require(TOOLS)
             view = ctx.require(ALL_TOOLS)()
             configuration = {
@@ -198,18 +362,19 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
                 "working_dir": str(tmp_path),
                 "allow_network": False,
             }
-            command = catalog.bind(
+            command = await catalog.bind_scoped(
                 view.select("shell"), bindings, configuration=configuration
             )
-            stdin = catalog.bind(
+            stdin = await catalog.bind_scoped(
                 view.select("write_stdin"), bindings, configuration=configuration
             )
-            foreign = catalog.bind(
+            foreign = await catalog.bind_scoped(
                 view.select("write_stdin"),
                 bindings,
                 configuration={**configuration, "owner_key": "job-b"},
             )
-            cleanup = bindings.bind(SHELL_OWNERS, {})
+            async with ctx.require(SHELL_OWNERS)._ctx.runtime_scope():
+                cleanup = bindings.bind(SHELL_OWNERS, {})
         shutil.rmtree(source)
         execution = ToolExecution(
             log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
@@ -288,7 +453,9 @@ async def start_shell_call(log, bindings, tasks, binding, source, identity):
     )
     result = await execution.execute_call(reply)
     assert result.outcome == "success"
-    return cast(str, json.loads(cast(str, result.parts[0].value))["execution_id"])
+    execution_id = json.loads(cast(str, result.parts[0].value))["execution_id"]
+    assert isinstance(execution_id, int)
+    return execution_id
 
 
 @pytest.mark.asyncio
@@ -297,11 +464,12 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
     tasks = Tasks()
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            root = snapshot.composition_root.context
-            tool = root.require(TOOLS).bind(
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        root = live_root.context
+        async with root.require(ServiceKey("standard-tools-probe")).runtime_scope():
+            tool = await root.require(TOOLS).bind_scoped(
                 root.require(ALL_TOOLS)().select("shell"), bindings
             )
         first = await start_shell_call(log, bindings, tasks, tool, "conversation", "first")
@@ -311,16 +479,16 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
         ))
         shutil.rmtree(source)
         # 清理使用稳定 owner key；不因源码目录变化跳过同一进程集合的终止。
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert isinstance(snapshot.composition_root, CompositionRoot)
-            ctx = snapshot.composition_root.context
+        async with root.require(ServiceKey("standard-tools-probe")).runtime_scope():
+            ctx = root
             assert ctx.get(SHELL_OWNERS) is not None
-            async with shell_cleanup(ctx, log.reader("shared"), "conversation", 0):
+            cleanup = ctx.require(TOOL_CLEANUP)
+            async with cleanup(log.reader("shared"), "conversation", 0):
                 pass
             backend = host._plugin_processes._manager
             assert first not in await backend.active_execution_ids()
             assert second in await backend.active_execution_ids()
-            async with shell_cleanup(ctx, log.reader("shared"), "wake", 0):
+            async with cleanup(log.reader("shared"), "wake", 0):
                 pass
             assert await backend.active_execution_ids() == []
         assert tuple(row[0] for row in log._connection.execute(
@@ -334,6 +502,391 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("unload_owner", ["tools", "shell"])
+async def test_local_shell_cleanup_survives_hard_owner_unload(tmp_path, monkeypatch, unload_owner):
+    """C1: public cleanup keeps Shell-owned drain and process cleanup alive."""
+    graph = await _mount_local_shell_root(tmp_path)
+    old_call = None
+    cleanup_call = None
+    unload_call: asyncio.Task[None] | None = None
+    probe_call = None
+    release_old = asyncio.Event()
+    old_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    try:
+        async with graph["tools_ctx"].runtime_scope():
+            binding = graph["catalog"].bind(
+                graph["shell_refs"][0], graph["bindings"],
+                configuration={},
+            )
+        descriptor = graph["bindings"].describe(binding, TOOLS)
+        backend = graph["processes"]._backend()
+        original_exec = backend.exec_command
+        original_terminate = backend.terminate_owner
+
+        async def delayed_exec(**kwargs):
+            old_started.set()
+            await release_old.wait()
+            return await original_exec(**kwargs)
+
+        async def delayed_terminate(owner):
+            cleanup_started.set()
+            await release_cleanup.wait()
+            return await original_terminate(owner)
+
+        monkeypatch.setattr(backend, "exec_command", delayed_exec)
+        monkeypatch.setattr(backend, "terminate_owner", delayed_terminate)
+        old_call = asyncio.create_task(
+            start_shell_call(
+                graph["log"], graph["bindings"], graph["tools_admission"],
+                binding, "conversation", "local-c1-old",
+            )
+        )
+        await old_started.wait()
+
+        async def caller_cleanup():
+            async with graph["caller_ctx"].runtime_scope():
+                cleanup = graph["caller_ctx"].require(TOOL_CLEANUP)
+                async with cleanup(
+                    graph["log"].reader("shared"), "conversation", 0,
+                    drain=graph["catalog"].drain_calls,
+                ):
+                    unload = (
+                        graph["tools_fiber"]
+                        if unload_owner == "tools" else graph["shell_fiber"]
+                    )
+                    nonlocal unload_call
+                    unload_call = asyncio.create_task(unload.dispose())
+                    # A real hard consumer enters UNLOADING before Shell can
+                    # dispatch STOPPING; the old call still holds its permit.
+                    await graph["hard_consumer_unloading"].wait()
+                    assert graph["shell_fiber"].state is FiberState.UNLOADING
+                    assert graph["effect_closes"]["hard_consumer"] == 1
+
+                    probe_body = asyncio.Event()
+
+                    async def probe_public_cleanup():
+                        async with cleanup(
+                            graph["log"].reader("shared"), "conversation", 0,
+                            drain=graph["catalog"].drain_calls,
+                        ):
+                            probe_body.set()
+
+                    nonlocal probe_call
+                    probe_call = asyncio.create_task(probe_public_cleanup())
+                    with pytest.raises(CompositionError) as error:
+                        await probe_call
+                    assert error.value.code == "OWNER_UNAVAILABLE"
+                    assert not probe_body.is_set()
+                    unrelated_token = graph["unrelated_ctx"].fiber.activation_token
+                    unrelated_state = graph["unrelated_fiber"].state
+                    unrelated_context = graph["unrelated_ctx"]
+                    unrelated_effects = graph["effect_closes"]["unrelated"]
+                    async with unrelated_context.runtime_scope():
+                        assert graph["unrelated_fiber"].state is unrelated_state
+                        assert graph["unrelated_ctx"].fiber.activation_token is unrelated_token
+                        assert unrelated_context is graph["unrelated_ctx"]
+                    assert graph["unrelated_fiber"].state is FiberState.ACTIVE
+                    assert graph["unrelated_ctx"].fiber.activation_token is unrelated_token
+                    assert graph["effect_closes"]["unrelated"] == unrelated_effects
+
+        cleanup_call = asyncio.create_task(caller_cleanup())
+        await graph["hard_consumer_unloading"].wait()
+        release_old.set()
+        await old_call
+        reader = graph["log"].reader("shared")
+        original_messages = (
+            reader.get("local-c1-old"), reader.get("local-c1-old-result")
+        )
+        await cleanup_started.wait()
+        assert not cleanup_call.done()
+        assert graph["bindings"].describe(binding, TOOLS) == descriptor
+        release_cleanup.set()
+        await cleanup_call
+        assert unload_call is not None
+        await unload_call
+        assert graph["shell_fiber"]._in_flight_calls == {}
+        assert graph["effect_closes"]["shell"] == 1
+        assert original_messages[0] is not None and original_messages[1] is not None
+        assert (
+            reader.get("local-c1-old"), reader.get("local-c1-old-result")
+        ) == original_messages
+    finally:
+        release_old.set()
+        release_cleanup.set()
+        pending = tuple(
+            task for task in (old_call, cleanup_call, unload_call, probe_call)
+            if task is not None and not task.done()
+        )
+        if pending:
+            for task in pending:
+                await asyncio.gather(task, return_exceptions=True)
+        await graph["root"].dispose()
+        await graph["tasks"].close()
+        await graph["processes"].close()
+        graph["log"].close()
+        graph["store"].close()
+
+
+@pytest.mark.asyncio
+async def test_local_shell_cleanup_failure_keeps_owner_for_explicit_retry(tmp_path, monkeypatch):
+    """C3: a real cleanup report retains the old owner until retry."""
+    graph = await _mount_local_shell_root(tmp_path)
+    try:
+        async with graph["tools_ctx"].runtime_scope():
+            binding = graph["catalog"].bind(
+                graph["shell_refs"][0], graph["bindings"],
+                configuration={},
+            )
+        descriptor = graph["bindings"].describe(binding, TOOLS)
+        old_id = await start_shell_call(
+            graph["log"], graph["bindings"], graph["tools_admission"],
+            binding, "conversation", "local-c3-old",
+        )
+        new_id = await start_shell_call(
+            graph["log"], graph["bindings"], graph["tools_admission"],
+            binding, "wake", "local-c3-new",
+        )
+        reader = graph["log"].reader("shared")
+        original_messages = tuple(
+            reader.get(message_id)
+            for message_id in (
+                "local-c3-old", "local-c3-old-result",
+                "local-c3-new", "local-c3-new-result",
+            )
+        )
+        backend = graph["processes"]._backend()
+        original_terminate = backend.terminate_owner
+        failed = True
+
+        async def fail_once(owner):
+            nonlocal failed
+            if failed:
+                failed = False
+                return ExecutionCleanupReport(
+                    (old_id,), (),
+                    (ExecutionCleanupFailure(old_id, "OSError", "controlled failure"),),
+                )
+            return await original_terminate(owner)
+
+        monkeypatch.setattr(backend, "terminate_owner", fail_once)
+
+        async def cleanup_old():
+            async with graph["caller_ctx"].runtime_scope():
+                cleanup = graph["caller_ctx"].require(TOOL_CLEANUP)
+                async with cleanup(
+                    graph["log"].reader("shared"), "conversation", 0,
+                    drain=graph["catalog"].drain_calls,
+                ):
+                    pass
+
+        await cleanup_old()
+        backend_ids = await backend.active_execution_ids()
+        assert old_id in backend_ids and new_id in backend_ids
+        assert any(
+            incident.kind == "shell_cleanup_failed"
+            for incident in graph["root"].recent_incidents()
+        )
+        assert graph["bindings"].describe(binding, TOOLS) == descriptor
+        assert reader.get("local-c3-old") is not None
+        assert reader.get("local-c3-old-result") is not None
+        assert tuple(
+            reader.get(message_id)
+            for message_id in (
+                "local-c3-old", "local-c3-old-result",
+                "local-c3-new", "local-c3-new-result",
+            )
+        ) == original_messages
+
+        await cleanup_old()
+        backend_ids = await backend.active_execution_ids()
+        assert old_id not in backend_ids and new_id in backend_ids
+        assert tuple(
+            reader.get(message_id)
+            for message_id in (
+                "local-c3-old", "local-c3-old-result",
+                "local-c3-new", "local-c3-new-result",
+            )
+        ) == original_messages
+    finally:
+        await graph["root"].dispose()
+        await graph["tasks"].close()
+        await graph["processes"].close()
+        graph["log"].close()
+        graph["store"].close()
+
+
+@pytest.mark.asyncio
+async def test_local_shell_cleanup_closes_scope_when_raw_child_creation_fails(
+    tmp_path, monkeypatch,
+):
+    """C4: synchronous raw-child failure closes the captured Shell scope."""
+    graph = await _mount_local_shell_root(tmp_path)
+    try:
+        async with graph["tools_ctx"].runtime_scope():
+            binding = graph["catalog"].bind(
+                graph["shell_refs"][0], graph["bindings"],
+                configuration={},
+            )
+        await start_shell_call(
+            graph["log"], graph["bindings"], graph["tools_admission"],
+            binding, "conversation", "local-c4-call",
+        )
+        captured = []
+        drain_started = asyncio.Event()
+
+        def fail_create_task(operation, **_kwargs):
+            captured.append(operation)
+            raise RuntimeError("controlled create_task failure")
+
+        async def record_drain(_calls):
+            drain_started.set()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(asyncio, "create_task", fail_create_task)
+            with pytest.raises(RuntimeError, match="controlled create_task failure"):
+                async with graph["caller_ctx"].runtime_scope():
+                    cleanup = graph["caller_ctx"].require(TOOL_CLEANUP)
+                    async with cleanup(
+                        graph["log"].reader("shared"), "conversation", 0,
+                        drain=record_drain,
+                    ):
+                        pass
+        assert len(captured) == 1
+        assert inspect.getcoroutinestate(captured[0]) == inspect.CORO_CLOSED
+        assert not drain_started.is_set()
+        assert graph["shell_fiber"]._in_flight_calls == {}
+        async with graph["shell_ctx"].runtime_scope():
+            pass
+        assert not any(
+            incident.kind == "shell_cleanup_failed"
+            for incident in graph["root"].recent_incidents()
+        )
+    finally:
+        monkeypatch.undo()
+        await graph["root"].dispose()
+        await graph["tasks"].close()
+        await graph["processes"].close()
+        graph["log"].close()
+        graph["store"].close()
+
+
+@pytest.mark.asyncio
+async def test_local_shell_task_canceled_before_start_releases_scope_and_root_permit(tmp_path, monkeypatch):
+    """C4: a real Shell cleanup Task canceled before user code starts leaks nothing."""
+    graph = await _mount_local_shell_root(tmp_path)
+    gate = RestartGate(boot_id="local-c4", supervised=False)
+    permit = gate.acquire()
+    caller_task = None
+    cleanup_task: Task | None = None
+    caller_settled = asyncio.Event()
+    cleanup_settled = asyncio.Event()
+    cleanup_body_started = asyncio.Event()
+    started = asyncio.Event()
+    captured = []
+    before_cancel = {}
+    try:
+        async with graph["tools_ctx"].runtime_scope():
+            binding = graph["catalog"].bind(
+                graph["shell_refs"][0], graph["bindings"], configuration={}
+            )
+        reader = graph["log"].reader("shared")
+        controls = graph["log"].writer(
+            "shared", author="user", source="conversation",
+            body_types=(Control,), content={},
+        )
+        old_id = None
+
+        async def record_cleanup(_calls):
+            cleanup_body_started.set()
+
+        async def caller_program(task):
+            nonlocal old_id
+            cleanup = graph["caller_ctx"].require(TOOL_CLEANUP)
+            async with cleanup(
+                reader, "conversation", 0, task=task,
+                drain=record_cleanup,
+            ):
+                old_id = await start_shell_call(
+                    graph["log"], graph["bindings"], graph["tools_admission"],
+                    binding, "conversation", "local-c4-cancel",
+                )
+                started.set()
+                await asyncio.Event().wait()
+
+        async with graph["shell_ctx"].runtime_scope():
+            shell_admission = graph["tasks"].open(graph["shell_ctx"])
+        original_admit = shell_admission.admit
+
+        async def cancel_shell_cleanup_before_run(key, callback):
+            def start_cleanup(slot):
+                nonlocal cleanup_task
+                owned = callback(slot)
+                if (
+                    isinstance(key, tuple)
+                    and key[:4] == ("shell-cleanup", "shared", "conversation", 0)
+                ):
+                    cleanup_task = owned
+                    captured.append(owned)
+                    before_cancel["permits"] = gate.permit_count
+                    before_cancel["shell_calls"] = bool(
+                        graph["shell_fiber"]._in_flight_calls
+                    )
+                    owned.on_done(cleanup_settled.set)
+                    owned.cancel()
+                return owned
+
+            return await original_admit(key, start_cleanup)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(shell_admission, "admit", cancel_shell_cleanup_before_run)
+            async with graph["caller_ctx"].runtime_scope():
+                admission = graph["tasks"].open(graph["caller_ctx"])
+                caller_task = await admission.admit(
+                    ("caller", "local-c4-cancel"),
+                    lambda slot: slot.start(
+                        caller_program, child_permit=permit.child
+                    ),
+                )
+            caller_task.on_done(permit.release)
+            caller_task.on_done(caller_settled.set)
+            await started.wait()
+            old_message = reader.get("local-c4-cancel")
+            assert old_message is not None
+            controls.append(
+                "local-c4-abandon", Control("abandon", old_message.seq)
+            )
+            caller_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller_task.join()
+            await caller_settled.wait()
+            assert cleanup_task is not None
+            with pytest.raises(asyncio.CancelledError):
+                await cleanup_task.join()
+            await cleanup_settled.wait()
+
+        assert captured == [cleanup_task]
+        assert before_cancel == {"permits": 2, "shell_calls": True}
+        assert not cleanup_body_started.is_set()
+        assert graph["shell_fiber"]._in_flight_calls == {}
+        assert gate.permit_count == 0
+        assert old_id is not None
+    finally:
+        if caller_task is not None and not caller_task.done:
+            caller_task.cancel()
+            await asyncio.gather(caller_task.join(), return_exceptions=True)
+        if cleanup_task is not None and not cleanup_task.done:
+            await asyncio.gather(cleanup_task.join(), return_exceptions=True)
+        permit.release()
+        await graph["root"].dispose()
+        await graph["tasks"].close()
+        await graph["processes"].close()
+        graph["log"].close()
+        graph["store"].close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["complete", "cleanup_failure", "cancel", "recover"])
 async def test_reply_closes_real_shell_after_settlement_without_changing_output(tmp_path, monkeypatch, case):
     host, store, log, _artifacts, _source = environment(tmp_path, reply=True)
@@ -343,13 +896,14 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
     execution_id = None
     try:
         await host.load_all()
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root is not None
-            bindings = Bindings(log, host._archive, snapshot.composition_root)
-            root = snapshot.composition_root.context
+        live_root = host.live_root
+        assert live_root is not None
+        bindings = live_root.context.require(BINDINGS)
+        root = live_root.context
+        async with root.require(ServiceKey("standard-tools-probe")).runtime_scope():
             ctx = root.require(ServiceKey("standard-tools-probe"))
             catalog = root.require(TOOLS)
-            binding = catalog.bind(
+            binding = await catalog.bind_scoped(
                 root.require(ALL_TOOLS)().select("shell"),
                 bindings,
                 configuration=(
@@ -446,7 +1000,7 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
             remaining = await backend.active_execution_ids()
             if case == "cleanup_failure":
                 assert remaining == [execution_id]
-                assert any(item.kind == "shell_cleanup_failed" for item in snapshot.composition_root.recent_incidents())
+                assert any(item.kind == "shell_cleanup_failed" for item in live_root.recent_incidents())
                 with pytest.raises(RuntimeError, match="shell cleanup 未确认"):
                     await start_shell_call(log, bindings, tasks, binding, "conversation", "blocked")
                 other = await start_shell_call(log, bindings, tasks, binding, "wake", "other")

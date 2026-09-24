@@ -14,7 +14,6 @@ from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.plugin_composition.channels import (
     ChannelDeliveryReceipt,
     DeliveryStatus,
-    OutboundEnvelope,
 )
 from agent.plugin_composition.durable_deliveries import (
     DurableBindingAttempt,
@@ -22,7 +21,6 @@ from agent.plugin_composition.durable_deliveries import (
     PluginDurableDeliveries,
 )
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from bus.queue import MessageBus
 from session.manager import SessionManager
 
 
@@ -51,14 +49,6 @@ def _envelope_for_test(request: DurableDeliveryRequest) -> dict[str, object]:
         "body": request.body,
         "metadata": dict(request.metadata),
     }
-
-
-class _RecordingBinding:
-    snapshot_id = "snapshot:recording"
-    generation_id = "generation:recording"
-    binding_token = "binding:recording"
-    channel_name = "recording"
-    active = True
 
 
 @pytest.mark.asyncio
@@ -191,46 +181,24 @@ async def test_caller_cancellation_waits_for_receipt_and_projection(
 ) -> None:
     store = DurableDeliveryStore(tmp_path / "settlements.sqlite")
     sessions = SessionManager(tmp_path / "workspace")
-    bus = MessageBus()
     provider_entered = asyncio.Event()
     provider_release = asyncio.Event()
 
-    async def provider(
-        envelope: OutboundEnvelope, _binding: object
-    ) -> ChannelDeliveryReceipt:
+    async def sender(request, provider_started):
+        provider_started(
+            DurableBindingAttempt(
+                request.logical_delivery_id,
+                "snapshot:one",
+                "generation:one",
+                "binding:one",
+            )
+        )
         provider_entered.set()
         await provider_release.wait()
         return ChannelDeliveryReceipt(
-            envelope.delivery_id,
+            request.logical_delivery_id,
             DeliveryStatus.DELIVERED,
             ("provider:after-cancel",),
-        )
-
-    async def sender(request, provider_started):
-        binding = _RecordingBinding()
-        envelope = OutboundEnvelope(
-            logical_delivery_id=request.logical_delivery_id,
-            delivery_id=request.logical_delivery_id,
-            attempt_sequence=1,
-            snapshot_id=binding.snapshot_id,
-            generation_id=binding.generation_id,
-            binding_token=binding.binding_token,
-            channel=binding.channel_name,
-            recipient=request.recipient,
-            body=request.body,
-            metadata={},
-        )
-        attempt = DurableBindingAttempt(
-            request.logical_delivery_id,
-            binding.snapshot_id,
-            binding.generation_id,
-            binding.binding_token,
-        )
-        return await bus.publish_channel_outbound_awaited(
-            envelope,
-            binding,
-            passive=False,
-            before_provider=lambda: provider_started(attempt),
         )
 
     async def project(request) -> str:
@@ -241,8 +209,6 @@ async def test_caller_cancellation_waits_for_receipt_and_projection(
             control_turn_id=request.accepted_turn.turn_id,
         )
 
-    bus.bind_channel_outbound_dispatcher(provider)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
     service = PluginDurableDeliveries(store, sender, project)
     caller = asyncio.create_task(service.submit(_request()))
     await provider_entered.wait()
@@ -256,8 +222,6 @@ async def test_caller_cancellation_waits_for_receipt_and_projection(
     assert current.provider_receipt is not None
     assert current.provider_receipt["status"] == "delivered"
     assert len(sessions.control_store.fetch_session_messages("recipient-session")) == 1
-    bus.stop()
-    await dispatch
     sessions.close()
 
 

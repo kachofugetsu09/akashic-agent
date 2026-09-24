@@ -5,6 +5,9 @@ import sqlite3
 import pytest
 
 from agent.plugins.selection import PluginSelection, SelectionFormatError, SelectionWriteError
+from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.artifacts import ArtifactPointer
+from agent.plugins import update_rollback
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceInstanceLock
 from scripts.upgrade_plugin_selection import initialize_selection
 
@@ -125,3 +128,86 @@ def test_metadata_symlink_or_bad_pointer_is_not_silently_accepted(tmp_path: Path
         initialize_selection(workspace=workspace, plugins_home=home, backup_dir=backup)
     assert not backup.exists()
     assert not PluginSelection(workspace).path.exists()
+
+
+def test_existing_journal_preflight_reads_wal_without_touching_source_files(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    journal = ReloadJournal(workspace)
+    keeper = sqlite3.connect(journal.path)
+    try:
+        keeper.execute("PRAGMA wal_autocheckpoint=0")
+        keeper.execute("BEGIN")
+        assert keeper.execute("SELECT update_id FROM plugin_updates").fetchall() == []
+        journal.arm_update(update_id="uncheckpointed", plugin_id="probe@lab",
+                           plugin_base=tmp_path / "home/cache/lab/probe", previous=None,
+                           candidate=ArtifactPointer(".artifacts/new"), previous_enabled=True)
+        assert keeper.execute("SELECT update_id FROM plugin_updates").fetchall() == []
+        source_paths = tuple(Path(f"{journal.path}{suffix}") for suffix in ("", "-wal", "-shm"))
+        before = {path: (path.read_bytes(), (path.stat().st_dev, path.stat().st_ino))
+                  for path in source_paths}
+        assert before[source_paths[1]][0]
+        main_only = tmp_path / "main-only.sqlite3"
+        main_only.write_bytes(before[source_paths[0]][0])
+        plain = sqlite3.connect(main_only)
+        try:
+            assert plain.execute(
+                "SELECT update_id FROM plugin_updates WHERE update_id='uncheckpointed'"
+            ).fetchone() is None
+        finally:
+            plain.close()
+        backup = tmp_path / "copy.sqlite3"
+        with ReloadJournal.inspect_existing(workspace) as facts:
+            assert [item.update_id for item in facts.armed_updates] == ["uncheckpointed"]
+            facts.backup_to(backup)
+        assert {path: (path.read_bytes(), (path.stat().st_dev, path.stat().st_ino))
+                for path in source_paths} == before
+        copied = sqlite3.connect(backup)
+        try:
+            assert copied.execute("SELECT phase FROM plugin_updates WHERE update_id='uncheckpointed'").fetchone() == ("armed",)
+        finally:
+            copied.close()
+    finally:
+        keeper.rollback()
+        keeper.close()
+
+
+@pytest.mark.parametrize("shape", ["missing", "old", "unknown"])
+def test_existing_journal_preflight_rejects_missing_schema_and_closes_on_error(tmp_path: Path, shape: str) -> None:
+    workspace = tmp_path / "workspace"
+    runtime = workspace / "runtime"
+    runtime.mkdir(parents=True)
+    path = runtime / "plugin-reloads.sqlite3"
+    with pytest.raises(FileNotFoundError):
+        with ReloadJournal.inspect_existing(workspace):
+            pass
+    assert not path.exists() and not Path(f"{path}-wal").exists()
+    bad = sqlite3.connect(path)
+    if shape == "old":
+        bad.execute(update_rollback._LEGACY_PLUGIN_UPDATES)
+        bad.execute(update_rollback.SCHEMA["plugin_update_active"])
+    elif shape == "unknown":
+        bad.execute("CREATE TABLE plugin_updates (update_id TEXT, plugin_id TEXT, phase TEXT)")
+        bad.execute(update_rollback.SCHEMA["plugin_update_active"])
+    else:
+        bad.execute("CREATE TABLE unrelated (value TEXT)")
+    bad.close()
+    before = path.read_bytes()
+    with pytest.raises(RuntimeError):
+        with ReloadJournal.inspect_existing(workspace):
+            pass
+    assert path.read_bytes() == before
+    path.unlink()
+    path.symlink_to(tmp_path / "missing")
+    with pytest.raises(OSError):
+        with ReloadJournal.inspect_existing(workspace):
+            pass
+    assert path.is_symlink()
+    path.unlink()
+    journal = ReloadJournal(workspace)
+    with pytest.raises(RuntimeError, match="injected"):
+        with ReloadJournal.inspect_existing(workspace) as facts:
+            raise RuntimeError("injected")
+    with pytest.raises(sqlite3.ProgrammingError):
+        facts._copy.execute("SELECT 1")
+    assert journal.path.is_file()

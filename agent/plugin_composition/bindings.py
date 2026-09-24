@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from collections.abc import Callable
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.context import CompositionRoot, Context, RuntimeScope
+from agent.plugin_composition.context import (
+    CompositionRoot,
+    Context,
+    _lifecycle_binding,
+    _current_runtime_scope,
+)
 from session.log import MessageLog
 from session.message_codec import json_value
 
 if TYPE_CHECKING:
     from agent.plugin_composition.archive import PluginArchive
+    from agent.plugins.generation import PluginGeneration
 
 _T = TypeVar("_T")
 
@@ -44,10 +52,12 @@ class Bindings:
         log: MessageLog | None,
         archive: PluginArchive,
         root: CompositionRoot,
+        generation_lookup: Callable[[Context], PluginGeneration] | None = None,
     ):
         self._storage = log
         self._archive = archive
         self._root = root
+        self._generation_lookup = generation_lookup
 
     @property
     def _log(self) -> MessageLog:
@@ -62,64 +72,88 @@ class Bindings:
         *,
         contributors: tuple[Context, ...] = (),
     ) -> str:
-        """从当前真实 lease 固定实现，随后 Message 可原子引用此 binding。"""
-        from agent.plugins.snapshot import get_current_runtime_lease
-
+        """从当前 OwnerCall 和真实 provider Context 固定实现。"""
         log = self._log
-        lease = get_current_runtime_lease()
-        if lease is None or lease.snapshot.composition_root is None:
-            raise RuntimeError("固定 binding 需要实际 runtime scope")
-        if lease.snapshot.composition_root is not self._root:
-            raise RuntimeError("固定 binding 的所属 Root 不属于当前 runtime scope")
-        if lease.snapshot.composition_root.context.get(service) is None:
-            raise RuntimeError(f"当前 scope 不提供服务: {service.name}")
-        # 1. 服务 provider 与目标注册 owner 是闭包入口，依赖只向上展开。
-        root = lease.snapshot.composition_root
-        owners = root.plugin_service_owners()
-        dependencies = root.plugin_dependencies()
+        current = _current_runtime_scope()
+        if current is not None:
+            owner_root = current._call._fiber.root  # pyright: ignore[reportPrivateUsage]
+            owner_context = current._call._fiber.context  # pyright: ignore[reportPrivateUsage]
+        else:
+            lifecycle = _lifecycle_binding.get()
+            if lifecycle is None or lifecycle[1] is not asyncio.current_task():
+                raise RuntimeError("固定 binding 需要实际 OwnerCall 或 lifecycle owner")
+            owner_root = lifecycle[0]._fiber.root  # pyright: ignore[reportPrivateUsage]
+            owner_context = lifecycle[0]
+        if owner_root is not self._root:
+            raise RuntimeError("固定 binding 的所属 Root 不属于当前 OwnerCall")
+        # 1. The caller's frozen dependency store is the authorization boundary.
+        owner_context.require(service)
+        root = self._root
         selected: set[str] = set()
-        pending: list[str] = []
+        pending: list[Context] = []
         services: set[ServiceKey[object]] = set()
+        contexts: dict[int, Context] = {}
+
+        def provider_for(key: ServiceKey[object], requester: Context):
+            frozen = requester._fiber.dependency_store.get(  # pyright: ignore[reportPrivateUsage]
+                key,
+            )
+            if frozen is not None:
+                return frozen
+            provider = root._providers.get(key)  # pyright: ignore[reportPrivateUsage]
+            if provider is None or provider.owner is not requester._fiber:  # pyright: ignore[reportPrivateUsage]
+                raise ValueError(f"调用者未声明服务依赖: {key.name}")
+            return provider
 
         def include_context(context: Context) -> None:
-            contributor = root.context_owner(context)
-            if contributor is None:
-                raise ValueError("注册 Context 不属于当前 scope")
-            include_owner(contributor)
+            if self._generation_lookup is not None:
+                generation = self._generation_lookup(context)
+                contributor = generation.plugin_id
+            else:
+                contributor = root.context_owner(context)
+                if contributor is None:
+                    raise ValueError("注册 Context 不属于当前 active Root")
+            identity = id(context)
+            if identity in contexts:
+                return
+            contexts[identity] = context
+            selected.add(contributor)
+            pending.append(context)
 
-        def include_owner(plugin_id: str) -> None:
-            if plugin_id not in selected:
-                selected.add(plugin_id)
-                pending.append(plugin_id)
-
-        def include_service(key: ServiceKey[object]) -> None:
+        def include_service(key: ServiceKey[object], requester: Context) -> None:
             if key in services:
                 return
             services.add(key)
-            owner = owners.get(key)
-            if owner is not None:
-                include_owner(owner)
-                for context in root.binding_contributors(key):
+            provider = provider_for(key, requester)
+            provider_context = provider.owner.context
+            runtime = provider.owner.runtime
+            if runtime is None:
+                # Core providers are authorized by the requester's frozen
+                # dependency store and are not archive components.
+                return
+            include_context(provider_context)
+            if provider.binding_contributors is not None:
+                for context in provider.binding_contributors():
                     include_context(context)
 
         for context in contributors:
             include_context(context)
-        include_service(service)
+        include_service(service, owner_context)
         if not selected:
             raise ValueError("Core 服务绑定需要实际目标注册 owner")
         while pending:
-            plugin_id = pending.pop()
-            if plugin_id not in lease.snapshot.generations:
-                raise ValueError(f"注册 owner 不属于当前 scope: {plugin_id}")
-            for key in dependencies[plugin_id]:
-                include_service(key)
-        components: list[str] = []
-        for plugin_id in sorted(selected):
-            generation = lease.snapshot.generations[plugin_id]
+            context = pending.pop()
+            for key in context._fiber.dependencies:  # pyright: ignore[reportPrivateUsage]
+                include_service(key, context)
+        components: set[str] = set()
+        for context in contexts.values():
+            if self._generation_lookup is None:
+                raise RuntimeError("正式 binding 缺少 Manager generation lookup")
+            generation = self._generation_lookup(context)
             if generation.archive_ref is None:
                 raise RuntimeError(f"插件缺少加载时归档: {generation.plugin_id}")
-            components.append(generation.archive_ref)
-        root_ref = self._archive.save_descriptor({"components": components})
+            components.add(generation.archive_ref)
+        root_ref = self._archive.save_descriptor({"components": tuple(sorted(components))})
         descriptor: dict[str, object] = {
             "version": 1,
             "root_ref": root_ref,
@@ -145,25 +179,13 @@ class Bindings:
     async def open(
         self, identity: str, service: ServiceKey[_T]
     ) -> AsyncIterator[tuple[_T, Mapping[str, object]]]:
-        """在调用者已选的 Root 中打开服务；缺 scope 时只从所属 Root 获取一次。"""
+        """在调用者已选的 Root 中打开 provider-owned 服务 scope。"""
         metadata = self.describe(identity, service)
-        from agent.plugins.snapshot import get_current_runtime_lease
-
-        current = get_current_runtime_lease()
-        if current is None:
-            lease = await self._root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
-        else:
-            lease = current.fork()
-
-        async with RuntimeScope(lease):
-            root = lease.snapshot.composition_root
-            if root is None:
-                raise RuntimeError("打开 binding 需要实际 runtime scope")
-            if root is not self._root:
-                raise RuntimeError("打开 binding 的所属 Root 不属于当前 runtime scope")
-            value = root.context.get(service)
-            if value is None:
-                raise RuntimeError(f"当前 runtime scope 不提供服务: {service.name}")
+        current = _current_runtime_scope()
+        if current is not None and current._call._fiber.root is not self._root:  # pyright: ignore[reportPrivateUsage]
+            raise RuntimeError("打开 binding 的所属 Root 不属于当前 runtime scope")
+        provider_context, value = self._root._service_provider(service)  # pyright: ignore[reportPrivateUsage]
+        async with provider_context.runtime_scope():
             yield cast(_T, value), cast(Mapping[str, object], metadata)
 
     def _read_descriptor(

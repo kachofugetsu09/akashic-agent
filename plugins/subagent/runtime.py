@@ -8,12 +8,12 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Literal, cast
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import CompositionError, Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from .inputs import CONTENT, CHECK_ORIGIN
-from .inputs import CONVERSATION
+from .inputs import CONVERSATION_COMPLETE
 from .inputs import DELIVERY
 from .inputs import REPLY_PROGRAM
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
@@ -227,7 +227,7 @@ class Subagents:
                 if message is not None:
                     return message
                 return await ctx.require(REPLY_PROGRAM)(task, current, source, extra)
-            message = await ctx.require(CONVERSATION)(parent.session_id).complete(report)
+            message = await ctx.require(CONVERSATION_COMPLETE)(parent.session_id, report)
 
         # 2. 原发送成功或失败都关闭通知；失败回执保留，不重复回传。
         assert request.sink is not None
@@ -269,16 +269,24 @@ class Subagents:
                     caller = asyncio.current_task()
                     if caller is not None and caller.cancelling():
                         raise
-                async with self.ctx.runtime_scope():
-                    found = self.read(key)
-                    assert found is not None
-                    record, request, reader = found
-                    if request.background and not record.value["settled"]:
-                        outcome = self.outcome(reader)
-                        if outcome is None:
-                            raise RuntimeError("子任务没有可回传的终态")
-                        if await self._announce(key, request, reader, outcome):
-                            self._settle(key)
+                entered = False
+                try:
+                    async with self.ctx.runtime_scope():
+                        entered = True
+                        found = self.read(key)
+                        assert found is not None
+                        record, request, reader = found
+                        if request.background and not record.value["settled"]:
+                            outcome = self.outcome(reader)
+                            if outcome is None:
+                                raise RuntimeError("子任务没有可回传的终态")
+                            if await self._announce(key, request, reader, outcome):
+                                self._settle(key)
+                except CompositionError as error:
+                    if entered or error.code != "OWNER_UNAVAILABLE":
+                        raise
+                    # Stop revoked this watcher; the durable pointer is read on restart.
+                    return
             except asyncio.CancelledError:
                 task.cancel()
                 await drain(task)
@@ -290,24 +298,32 @@ class Subagents:
         try:
             async with asyncio.TaskGroup() as group:
                 async for _ in self.ctx.require(MESSAGE_CATALOG).follow():
-                    async with self.ctx.runtime_scope():
-                        for key, _record in self.ctx.require(OWNER_STATE).open(self.ctx).list():
-                            if key in active:
-                                continue
-                            found = self.read(key)
-                            assert found is not None
-                            record, request, reader = found
-                            if record.value["settled"]:
-                                continue
-                            parent = self.ctx.require(MESSAGE_CATALOG).reader(request.parent_session_id)
-                            heads = (reader.head(), parent.head())
-                            if attempted.get(key) == heads:
-                                continue
-                            task = await self.start(key)
-                            attempted[key] = heads
-                            if task is not None:
-                                active[key] = task
-                                _ = group.create_task(wait(key, task))
+                    entered = False
+                    try:
+                        async with self.ctx.runtime_scope():
+                            entered = True
+                            for key, _record in self.ctx.require(OWNER_STATE).open(self.ctx).list():
+                                if key in active:
+                                    continue
+                                found = self.read(key)
+                                assert found is not None
+                                record, request, reader = found
+                                if record.value["settled"]:
+                                    continue
+                                parent = self.ctx.require(MESSAGE_CATALOG).reader(request.parent_session_id)
+                                heads = (reader.head(), parent.head())
+                                if attempted.get(key) == heads:
+                                    continue
+                                task = await self.start(key)
+                                attempted[key] = heads
+                                if task is not None:
+                                    active[key] = task
+                                    _ = group.create_task(wait(key, task))
+                    except CompositionError as error:
+                        if entered or error.code != "OWNER_UNAVAILABLE":
+                            raise
+                        # Stop revoked this watcher; the next boot reads owner state.
+                        return
         finally:
             tasks = tuple(active.values())
             for task in tasks:

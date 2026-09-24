@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 
 from plugins.akashic_clients.config import MobileRealtimeConfig
 from agent.plugin_composition.tasks import Tasks
-from agent.plugins.snapshot import RuntimeSnapshotStore
 from bootstrap.reply_status import RuntimeReplyStatus
 from agent.plugin_composition.message_view import message_rows
 from plugins.akashic_clients.mobile_realtime.auth import DeviceAuthenticator, device_proof_signing_bytes
@@ -28,7 +27,7 @@ from plugins.akashic_clients.services import MessageCatalogPort
 from plugins.reply.status import ReplyState
 from session.log import MessageLog
 from session.message import ContentPart, Input, Output, Control
-from tests.test_message_follow import status_root
+from tests.test_message_follow import mount_status, status_root
 from tests.test_mobile_message_log import append
 from tests.sqlite_helpers import snapshot
 
@@ -137,11 +136,9 @@ def test_authenticated_follow_splits_every_row_then_switches_reconnects_without_
 def test_preview_large_unicode_and_generation_switch_remain_ephemeral(gateway, tmp_path):
     log, runtime, client, device, private = gateway
     session = f'akashic:{uuid4()}'
-    state, tasks, store = ReplyState(), Tasks(), RuntimeSnapshotStore()
-    root, first = client.portal.call(status_root, 'mobile-old', state)
-    new_root, second = client.portal.call(status_root, 'mobile-new', ReplyState())
-    store.install(first)
-    runtime.channel.reply_status = RuntimeReplyStatus(store).follow
+    state, tasks = ReplyState(), Tasks()
+    root, old_fiber = client.portal.call(status_root, 'mobile-old', state)
+    runtime.channel.reply_status = RuntimeReplyStatus(root).follow
     entered, release = asyncio.Event(), asyncio.Event()
     full = '🪷完整草稿' * 100000
     async def operation(task):
@@ -156,33 +153,55 @@ def test_preview_large_unicode_and_generation_switch_remain_ephemeral(gateway, t
         await entered.wait()
         return task
     task = client.portal.call(start)
+    new_fiber = None
     try:
         with connected(gateway) as (ws, epoch):
             cursor = runtime.storage.read_cursor(device)
             follow(ws, epoch, session, -1)
             status = receive(ws, 'reply.status')
+            assert status['version'] == 2 and status['session_id'] == session
+            old_snapshot_id = status['snapshot_id']
             preview = status['items'][0]['preview']
             assert preview['truncated'] and full.startswith(preview['text']) and full.startswith(preview['thinking'])
             assert len(message_json(status)) <= 240 * 1024
-            assert log.reader(session).get('answer') is None and first.lease_count == 0
+            assert log.reader(session).get('answer') is None
             client.portal.call(release.set)
             page = receive(ws, 'messages.appended')
             assert page['items'][0]['id'] == 'answer' and 'message_ref' in page['items'][0]
             assert log.reader(session).get('answer').body.parts[0].value == full
-            async def promote():
-                await store.commit(store.begin_publish(second))
-                await store.wait_for_snapshot_drained(first)
-            client.portal.call(promote)
-            while receive(ws, 'reply.status')['snapshot_id'] != second.snapshot_id:
-                pass
+            async def switch_provider():
+                await old_fiber.dispose()
+                return await mount_status(root, ReplyState(), name='reply-new')
+            new_fiber = client.portal.call(switch_provider)
+            unavailable_status = receive(ws, 'reply.status')
+            for _ in range(4):
+                if unavailable_status['snapshot_id'] != old_snapshot_id:
+                    break
+                assert unavailable_status['available']
+                unavailable_status = receive(ws, 'reply.status')
+            assert (
+                unavailable_status['version'] == 2
+                and unavailable_status['session_id'] == session
+                and unavailable_status['snapshot_id'] is None
+                and not unavailable_status['available']
+                and unavailable_status['items'] == []
+            )
+            status = receive(ws, 'reply.status')
+            assert (
+                status['version'] == 2
+                and status['session_id'] == session
+                and status['available']
+                and status['items'] == []
+                and status['snapshot_id'] != old_snapshot_id
+            )
             assert runtime.storage.read_cursor(device) == cursor
     finally:
         client.portal.call(release.set)
         client.portal.call(task.join)
         client.portal.call(tasks.close)
-        client.portal.call(store.close)
+        if new_fiber is not None:
+            client.portal.call(new_fiber.dispose)
         client.portal.call(root.dispose)
-        client.portal.call(new_root.dispose)
 
 
 def test_runtime_stop_waits_for_status_reader_cleanup(gateway):

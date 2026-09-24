@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import closing
 from collections.abc import Mapping
 import json
@@ -22,6 +23,194 @@ from tests.sqlite_helpers import snapshot
 def _mapping(value: object) -> Mapping[str, object]:
     assert isinstance(value, Mapping)
     return cast(Mapping[str, object], value)
+
+
+@pytest.mark.asyncio
+async def test_live_message_projection_uses_only_page_providers_and_releases_scopes(storage):
+    from agent.plugin_composition import CompositionRoot, FiberState, PluginRuntime, ServiceKey
+    from agent.plugin_composition.message_view import project_message_rows
+
+    path, log, _ = storage
+    log.save_binding("tool", {"service": "tools.v1", "metadata": {"tool": {"name": "tool"}}})
+    log.writer(
+        "s", author="user", source="conversation", body_types=(Input, Output),
+        content={"example.fact": lambda _: ContentReferences()},
+    ).append("input", Input((ContentPart("example.fact", {"secret": "keep"}),)))
+    log.writer(
+        "s", author="assistant", source="conversation", body_types=(Input, Output),
+        content={"example.fact": lambda _: ContentReferences()},
+        check_call=lambda _call: None,
+    ).append(
+        "output",
+        Output((ContentPart("example.fact", {"secret": "keep"}), ToolCall("tool", {"q": "x"})), "continue"),
+    )
+    log.writer(
+        "s", author="assistant", source="conversation", body_types=(Output,),
+        content={
+            "missing.fact": lambda _: ContentReferences(),
+            "loading.fact": lambda _: ContentReferences(),
+        },
+    ).append("missing", Output((ContentPart("missing.fact", {"x": 1}),), "complete"))
+    log.writer(
+        "s", author="assistant", source="conversation", body_types=(Output,),
+        content={
+            "missing.fact": lambda _: ContentReferences(),
+            "loading.fact": lambda _: ContentReferences(),
+        },
+    ).append("loading", Output((ContentPart("loading.fact", {"x": 2}),), "complete"))
+    page = log.reader("s").read_tail()
+    root = CompositionRoot("live-message-view")
+    runtime = PluginRuntime(
+        plugin_id="display-owner", generation_id="display-owner-1",
+        plugin_dir=path.parent, data_dir=path.parent,
+        workspace=path.parent, config={},
+    )
+    calls: list[str] = []
+    unused_calls: list[str] = []
+    labels = ["live"]
+    closed: list[str] = []
+    fact_key = ServiceKey("message.display:example.fact")
+    tool_key = ServiceKey("tools.display-name.v1")
+    loading_key = ServiceKey("message.display:loading.fact")
+
+    async def apply(ctx):
+        label = labels[0]
+
+        async def close():
+            closed.append(label)
+
+        await ctx.effect(lambda: close)
+
+        def display_fact(part):
+            ctx.require_runtime_owner(fact_key, display_fact)
+            calls.append(part.kind)
+            return {"label": label}
+
+        def display_tool(binding_id):
+            ctx.require_runtime_owner(tool_key, display_tool)
+            calls.append(binding_id)
+            return "tool-name"
+
+        def unused(_part):
+            unused_calls.append("called")
+            return {"label": "wrong"}
+
+        await ctx.provide(fact_key, display_fact)
+        await ctx.provide(tool_key, display_tool)
+        await ctx.provide(ServiceKey("message.display:not-on-page"), unused)
+
+    unrelated_key = ServiceKey("message.display:unrelated")
+
+    async def unrelated(ctx):
+        await ctx.provide(unrelated_key, lambda _part: {"label": "unrelated"})
+
+    owner = await root.mount(apply, name="display-owner", runtime=runtime)
+    unrelated_fiber = await root.mount(unrelated, name="unrelated-display")
+    loading_started = asyncio.Event()
+    loading_release = asyncio.Event()
+    loading_handles: list[object] = []
+    loading_calls: list[str] = []
+
+    async def loading(ctx):
+        def display_loading(part):
+            ctx.require_runtime_owner(loading_key, display_loading)
+            loading_calls.append(part.kind)
+            return {"label": "loading"}
+
+        await ctx.provide(loading_key, display_loading)
+        loading_handles.append(ctx.fiber)
+        loading_started.set()
+        await loading_release.wait()
+
+    loading_task = asyncio.create_task(root.mount(loading, name="loading-display", runtime=runtime))
+    await loading_started.wait()
+    assert loading_handles[0].state is FiberState.LOADING
+    assert root.service_value(loading_key) is None
+    root_token = root.instance_token
+    old_context = owner.context
+    unrelated_context = unrelated_fiber.context
+    unrelated_token = unrelated_context.fiber.activation_token
+    try:
+        rows = await project_message_rows(root, page, display_only=True)
+        bodies = [_mapping(row["body"]) for row in rows]
+        assert bodies[0]["parts"] == [{"kind": "example.fact", "value": {"label": "live"}}]
+        assert bodies[1]["parts"] == [
+            {"kind": "example.fact", "value": {"label": "live"}},
+            {"kind": "tool_call", "binding_id": "tool", "name": "tool-name", "arguments": {"q": "x"}},
+        ]
+        assert bodies[2]["parts"] == [{"kind": "missing.fact", "display": "unavailable"}]
+        assert bodies[3]["parts"] == [{"kind": "loading.fact", "display": "unavailable"}]
+        assert calls == ["example.fact", "example.fact", "tool"]
+        assert unused_calls == []
+        assert loading_calls == []
+        assert not owner._in_flight_calls
+        assert not unrelated_fiber._in_flight_calls
+
+        loading_release.set()
+        await loading_task
+        assert root.service_value(loading_key) is not None
+        rows = await project_message_rows(root, page, display_only=True)
+        assert _mapping(rows[3]["body"])["parts"] == [
+            {"kind": "loading.fact", "value": {"label": "loading"}},
+        ]
+        assert loading_calls == ["loading.fact"]
+
+        await owner.dispose()
+        assert closed == ["live"]
+        labels[0] = "new"
+        owner = await root.mount(apply, name="display-owner", runtime=runtime)
+        calls.clear()
+        rows = await project_message_rows(root, page, display_only=True)
+        assert _mapping(rows[0]["body"])["parts"] == [
+            {"kind": "example.fact", "value": {"label": "new"}},
+        ]
+        assert old_context is not owner.context
+        assert root.instance_token is root_token
+        assert unrelated_fiber.context is unrelated_context
+        assert unrelated_context.fiber.activation_token is unrelated_token
+        assert closed == ["live"]
+    finally:
+        loading_release.set()
+        if not loading_task.done():
+            await loading_task
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_message_projection_releases_scope_on_renderer_error(storage):
+    from agent.plugin_composition import CompositionRoot, PluginRuntime, ServiceKey
+    from agent.plugin_composition.message_view import project_message_rows
+
+    path, log, _ = storage
+    log.writer(
+        "s", author="assistant", source="conversation", body_types=(Output,),
+        content={"example.fact": lambda _: ContentReferences()},
+    ).append("output", Output((ContentPart("example.fact", {"x": 1}),), "complete"))
+    page = log.reader("s").read_tail()
+    root = CompositionRoot("live-message-view-error")
+    key = ServiceKey("message.display:example.fact")
+
+    async def apply(ctx):
+        def fail(part):
+            ctx.require_runtime_owner(key, fail)
+            raise RuntimeError("renderer failed")
+
+        await ctx.provide(key, fail)
+
+    owner = await root.mount(
+        apply, name="display-owner",
+        runtime=PluginRuntime(
+            plugin_id="display-owner", generation_id="display-owner-1",
+            plugin_dir=path.parent, data_dir=path.parent,
+            workspace=path.parent, config={},
+        ),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="renderer failed"):
+            await project_message_rows(root, page, display_only=False)
+        assert not owner._in_flight_calls
+    finally:
+        await root.dispose()
 
 
 def test_view_keeps_independent_facts_and_hides_private_configuration(storage):
@@ -144,49 +333,3 @@ def test_web_catalog_and_history_use_real_log_without_session_manager(tmp_path):
             with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute("UPDATE messages SET body=? WHERE id='3'", ('{"kind":"broken"}',))
             assert client.get(endpoint).status_code == 500
-
-
-@pytest.mark.asyncio
-async def test_runtime_display_discovers_new_kind_and_releases_each_generation(storage):
-    """新内容只需插件贡献；同一 reader 在切代后不保留旧回调。"""
-    from agent.plugin_composition import CompositionRoot, ServiceKey
-    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, get_current_runtime_snapshot
-    from bootstrap.message_display import RuntimeMessageDisplay
-
-    _, log, _ = storage
-    log.writer("custom", author="test", source="test", body_types=(Input,),
-        content={"example.fact": lambda _: ContentReferences()}).append(
-            "fact", Input((ContentPart("example.fact", {"private": "secret"}),)))
-    page = log.reader("custom").read_tail()
-    store = RuntimeSnapshotStore()
-    reader = RuntimeMessageDisplay(store)
-    roots = []
-    try:
-        for label in ("first", "replacement", None):
-            root = CompositionRoot("display-" + str(label))
-            roots.append(root)
-            if label is not None:
-                def display(part):
-                    assert part.kind == "example.fact"
-                    assert get_current_runtime_snapshot() is selected
-                    assert selected.lease_count == 1
-                    return {"label": label}
-                async def apply(ctx):
-                    await ctx.provide(ServiceKey("message.display:example.fact"), display)
-                await root.mount(apply, name="independent-display")
-            selected = RuntimeSnapshotCompiler().compile({}, composition_root=root, snapshot_revision=str(label))
-            if store.current is None:
-                store.install(selected)
-            else:
-                await store.commit(store.begin_publish(selected))
-            rows = await reader(page, display_only=True)
-            expected = {"kind": "example.fact", "display": "unavailable"} if label is None else {
-                "kind": "example.fact", "value": {"label": label}}
-            body = rows[0]["body"]
-            assert isinstance(body, Mapping)
-            assert body["parts"] == [expected]
-            assert selected.lease_count == 0
-    finally:
-        await store.close()
-        for root in roots:
-            await root.dispose()

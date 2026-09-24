@@ -6,8 +6,8 @@ import json
 import time
 from pathlib import Path
 
-from eval.longmemeval.ingest import ingest_instance
-from eval.longmemeval.runtime import close_runtime, create_runtime, format_model_trace
+from .ingest import ingest_instance
+from .runtime import close_runtime, create_runtime, format_model_trace
 
 from .dataset import load_dataset
 from .metrics import extract_option_label

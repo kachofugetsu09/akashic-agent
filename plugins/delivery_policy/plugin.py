@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
-
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable, Mapping
@@ -24,6 +22,7 @@ from .boundary import (
     FINAL_OUTPUT_DELIVERY,
     ORIGIN_CHECK,
     REPLY_COMPLETION,
+    DeliveryExecution,
     FinalOutputTurn,
     OriginCheck,
     SinkInput,
@@ -104,8 +103,9 @@ def input_origin(
 class DeliveryFinalOutput:
     """等待 delivery owner 为一个最终 Output 写入 delivered 回执。"""
 
-    def __init__(self, ctx: Context, timeout_s: float = 15.0) -> None:
+    def __init__(self, ctx: Context, delivery: Callable[[], DeliveryExecution], timeout_s: float = 15.0) -> None:
         self._ctx = ctx
+        self._delivery = delivery
         self._timeout_s = timeout_s
 
     async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
@@ -114,7 +114,7 @@ class DeliveryFinalOutput:
             raise RestartRejectedError("最终 Turn 没有 Output")
         # 只在取得正式 Delivery owner 时持有 Root lease；记录读取本身不等待外部 I/O。
         async with self._ctx.runtime_scope():
-            delivery = self._ctx.require(DELIVERY).open(self._ctx)
+            delivery = self._delivery()
         async with asyncio.timeout(self._timeout_s):
             # ReplyCompletion 在 run_reply 的资源 cleanup 之后才创建首次选路；
             # 日志 follower 可能先看到 complete Output，先等待 Delivery owner 的真实 selection。
@@ -138,11 +138,29 @@ class DeliveryFinalOutput:
 async def apply(ctx: Context) -> None:
     """正式启动后跟随日志；不把策略、学习或来源 ACK 放进发送原子能力。"""
     config = Config.model_validate(ctx.config)
-    final_delivery = DeliveryFinalOutput(ctx)
+    delivery: DeliveryExecution | None = None
+
+    def current_delivery() -> DeliveryExecution:
+        if delivery is None:
+            raise RuntimeError("Delivery 尚未完成正式启动准备")
+        return delivery
+
+    final_delivery = DeliveryFinalOutput(ctx, current_delivery)
     origin_check = ctx.require(ORIGIN_CHECK)
     _ = await ctx.provide(ServiceKey("delivery.input-origin.v1"), partial(input_origin, check_origin=origin_check))
-    for source in config.sources:
-        ctx.require(FINAL_OUTPUT_DELIVERY).register(source, final_delivery)
+    final_outputs = ctx.require(FINAL_OUTPUT_DELIVERY)
+
+    def register_final_outputs() -> Callable[[], None]:
+        for source in config.sources:
+            final_outputs.register(source, final_delivery)
+
+        def unregister_final_outputs() -> None:
+            for source in config.sources:
+                final_outputs.unregister(source, final_delivery)
+
+        return unregister_final_outputs
+
+    _ = await ctx.effect(register_final_outputs, label="delivery-policy-final-output")
     watcher: asyncio.Task[None] | None = None
     recovery: dict[tuple[str, str], AbstractContextManager[None]] = {}
 
@@ -158,6 +176,7 @@ async def apply(ctx: Context) -> None:
 
     def prepare(_event: object) -> None:
         """正式接纳开放前占住原被动效果，直到 follower 实际恢复一次发送或查询。"""
+        nonlocal delivery
         delivery = ctx.require(DELIVERY).open(ctx)
         for message_id, sink in delivery.pending():
             selection = delivery.selection(message_id)
@@ -184,7 +203,7 @@ async def apply(ctx: Context) -> None:
         def activity(self, reader: MessageReader, source: str) -> AbstractContextManager[None]:
             route = (input_origin(reader, source, through_seq=reader.head(), check_origin=origin_check)
                      if source in config.sources and reader.attributes.visibility != "internal" else None)
-            return nullcontext() if route is None else ctx.require(DELIVERY).open(ctx).activity(*route)
+            return nullcontext() if route is None else current_delivery().activity(*route)
 
         @asynccontextmanager
         async def __call__(
@@ -196,7 +215,7 @@ async def apply(ctx: Context) -> None:
         ) -> AsyncGenerator[None]:
             """完成后固定选路并独立启动发送，新 Input 不取得旧发送的取消权。"""
             head = reader.head()
-            delivery = ctx.require(DELIVERY).open(ctx)
+            delivery = current_delivery()
             with self.activity(reader, source):
                 try:
                     yield
@@ -207,7 +226,11 @@ async def apply(ctx: Context) -> None:
                         ) is None:
                             continue
                         try:
-                            sinks = select(reader, message) if delivery.selection(message.message_id) is None else ()
+                            if delivery.selection(message.message_id) is None:
+                                async with ctx.runtime_scope():
+                                    sinks = select(reader, message)
+                            else:
+                                sinks = ()
                             assert sinks is not None
                             selected = delivery.prepare(reader, message, sinks, passive=True)
                             for sink in selected.sinks:
@@ -229,7 +252,7 @@ async def apply(ctx: Context) -> None:
     async def start(_event: object) -> None:
         nonlocal watcher
         watcher = await ctx.spawn(follow(
-            ctx, ctx.require(MESSAGE_CATALOG), partial(ctx.require(DELIVERY).open, ctx), select, settled=settled,
+            ctx, ctx.require(MESSAGE_CATALOG), current_delivery, select, settled=settled,
         ), name="delivery")
 
     async def stop(_event: object) -> None:

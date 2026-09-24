@@ -13,6 +13,34 @@ from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, pointer_s
 from agent.plugins.manifest import load_plugin_manifest, write_plugin_manifest
 from infra.persistence.json_store import load_json
 
+_LEGACY_PLUGIN_UPDATES = """CREATE TABLE plugin_updates (
+        update_id TEXT PRIMARY KEY,
+        plugin_id TEXT NOT NULL,
+        plugin_base TEXT NOT NULL,
+        previous_pointers_json TEXT,
+        candidate_pointer TEXT NOT NULL,
+        previous_enabled INTEGER CHECK (previous_enabled IN (0, 1)),
+        phase TEXT NOT NULL CHECK (phase IN ('armed', 'committed', 'rolled_back')),
+        reload_tx_id TEXT UNIQUE REFERENCES reload_transactions(tx_id),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        error TEXT NOT NULL
+    )"""
+
+_ALTERED_PLUGIN_UPDATES = """CREATE TABLE plugin_updates (
+        update_id TEXT PRIMARY KEY,
+        plugin_id TEXT NOT NULL,
+        plugin_base TEXT NOT NULL,
+        previous_pointers_json TEXT,
+        candidate_pointer TEXT NOT NULL,
+        previous_enabled INTEGER CHECK (previous_enabled IN (0, 1)),
+        phase TEXT NOT NULL CHECK (phase IN ('armed', 'committed', 'rolled_back')),
+        reload_tx_id TEXT UNIQUE REFERENCES reload_transactions(tx_id),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        error TEXT NOT NULL ,
+        input_ref TEXT)"""
+
 SCHEMA = {
     "plugin_updates": """CREATE TABLE plugin_updates (
         update_id TEXT PRIMARY KEY,
@@ -25,7 +53,8 @@ SCHEMA = {
         reload_tx_id TEXT UNIQUE REFERENCES reload_transactions(tx_id),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        error TEXT NOT NULL
+        error TEXT NOT NULL,
+        input_ref TEXT
     )""",
     "plugin_update_active": """CREATE UNIQUE INDEX plugin_update_active
         ON plugin_updates(plugin_id) WHERE phase='armed'""",
@@ -35,6 +64,7 @@ SCHEMA = {
 @dataclass(frozen=True)
 class UpdateRollback:
     update_id: str
+    input_ref: str | None
     plugin_id: str
     plugin_base: Path
     previous: ArtifactPointers | None
@@ -45,17 +75,36 @@ class UpdateRollback:
     error: str
 
 
-def check_schema(conn: sqlite3.Connection) -> bool:
-    found = 0
-    for name, statement in SCHEMA.items():
-        row = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone()
-        if row is not None:
-            if ' '.join(row[0].split()) != ' '.join(statement.split()):
-                raise ValueError(f"未知 plugin update schema: {name}")
-            found += 1
-    if found not in (0, len(SCHEMA)):
+def plugin_update_schema_state(conn: sqlite3.Connection) -> Literal["missing", "old", "new"]:
+    """Classify only the known plugin update table and index shapes."""
+    table = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='plugin_updates'"
+    ).fetchone()
+    index = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='plugin_update_active'"
+    ).fetchone()
+    if table is None and index is None:
+        return "missing"
+    if table is None or index is None:
         raise ValueError("plugin update schema 不完整")
-    return found == len(SCHEMA)
+    table_sql = " ".join(str(table[0]).split())
+    index_sql = " ".join(str(index[0]).split())
+    expected_index = " ".join(SCHEMA["plugin_update_active"].split())
+    if index_sql != expected_index:
+        raise ValueError("未知 plugin update schema: plugin_update_active")
+    if table_sql in {
+        " ".join(SCHEMA["plugin_updates"].split()),
+        " ".join(_ALTERED_PLUGIN_UPDATES.split()),
+    }:
+        return "new"
+    if table_sql == " ".join(_LEGACY_PLUGIN_UPDATES.split()):
+        return "old"
+    raise ValueError("未知 plugin update schema: plugin_updates")
+
+
+def check_schema(conn: sqlite3.Connection) -> bool:
+    """Return true only for the current shape; old shape needs Core migration."""
+    return plugin_update_schema_state(conn) == "new"
 
 
 def pointer_value(pointers: ArtifactPointers | None) -> dict[str, str | None] | None:
@@ -64,12 +113,12 @@ def pointer_value(pointers: ArtifactPointers | None) -> dict[str, str | None] | 
 
 def read(conn: sqlite3.Connection, update_id: str) -> UpdateRollback:
     row = conn.execute(
-        "SELECT plugin_id,plugin_base,previous_pointers_json,candidate_pointer,previous_enabled,"
+        "SELECT input_ref,plugin_id,plugin_base,previous_pointers_json,candidate_pointer,previous_enabled,"
         "phase,reload_tx_id,error FROM plugin_updates WHERE update_id=?", (update_id,),
     ).fetchone()
     if row is None:
         raise KeyError(f"插件更新不存在: {update_id}")
-    raw = None if row[2] is None else json.loads(row[2])
+    raw = None if row[3] is None else json.loads(row[3])
     previous = None
     if raw is not None:
         if not isinstance(raw, dict):
@@ -81,8 +130,8 @@ def read(conn: sqlite3.Connection, update_id: str) -> UpdateRollback:
             raise ValueError("旧插件指针记录损坏")
         previous = ArtifactPointers(ArtifactPointer(cast(str | None, raw['stable'])), ArtifactPointer(cast(str | None, raw['latest'])))
     return UpdateRollback(
-        update_id, row[0], Path(row[1]), previous, ArtifactPointer(row[3]),
-        None if row[4] is None else bool(row[4]), row[5], row[6], row[7],
+        update_id, row[0], row[1], Path(row[2]), previous, ArtifactPointer(row[4]),
+        None if row[5] is None else bool(row[5]), row[6], row[7], row[8],
     )
 
 
@@ -97,10 +146,29 @@ def arm(
     if not check_schema(conn):
         raise RuntimeError("插件更新需要先执行 update rollback 迁移")
     _ = conn.execute(
-        "INSERT INTO plugin_updates VALUES(?,?,?,?,?,?,'armed',NULL,?,?, '')",
+        "INSERT INTO plugin_updates (update_id,input_ref,plugin_id,plugin_base,"
+        "previous_pointers_json,candidate_pointer,previous_enabled,phase,reload_tx_id,"
+        "created_at,updated_at,error) VALUES(?,NULL,?,?,?,?,?,'armed',NULL,?,?, '')",
         (update_id, plugin_id, str(plugin_base.resolve()),
          None if previous is None else json.dumps(pointer_value(previous), sort_keys=True),
          candidate.path, previous_enabled, now, now),
+    )
+
+
+def set_input_ref(conn: sqlite3.Connection, *, update_id: str, input_ref: str) -> None:
+    """Fill the immutable runtime archive reference once, or reject drift."""
+    if not input_ref:
+        raise ValueError("插件更新 input_ref 不能为空")
+    if not check_schema(conn):
+        raise RuntimeError("插件更新需要先执行 update rollback 迁移")
+    row = conn.execute("SELECT input_ref FROM plugin_updates WHERE update_id=?", (update_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"插件更新不存在: {update_id}")
+    if row[0] not in (None, input_ref):
+        raise RuntimeError("插件更新 input_ref 不能改变")
+    _ = conn.execute(
+        "UPDATE plugin_updates SET input_ref=? WHERE update_id=? AND input_ref IS NULL",
+        (input_ref, update_id),
     )
 
 

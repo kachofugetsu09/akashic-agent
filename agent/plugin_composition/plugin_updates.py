@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from agent.plugin_composition.bindings import BindingScope
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_contracts import Message
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
@@ -16,21 +13,21 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class UpdateStatus:
-    """只读现有更新收据，不暴露安装指针、SQL 或宿主本身。"""
+    """Project one update from its durable input and live generation facts."""
 
     update_id: str
     plugin_id: str
-    phase: Literal["armed", "committed", "rolled_back"]
-    ready: bool
-    publishing: bool
+    input_ref: str | None
+    selection: Literal["selected", "not_selected", "unknown"]
+    generation_id: str | None
+    archive_ref: str | None
+    fiber_state: str | None
+    state: Literal["accepted", "active", "failed", "unknown"]
     error: str
-    candidate_id: str | None = None
-    candidate_phase: str | None = None
-    evidence: str | None = None
 
 
 class PluginUpdates:
-    """校验实际调用 scope；安装、验证和发布仍归原插件宿主。"""
+    """Expose only install, read, and change notifications."""
 
     def __init__(self, host: PluginManager | None):
         self._host = host
@@ -38,7 +35,7 @@ class PluginUpdates:
     def _check(self, ctx: Context) -> PluginManager:
         _ = ctx.require_runtime_owner(PLUGIN_UPDATES, self)
         if self._host is None:
-            raise PermissionError("候选验证不能管理插件更新")
+            raise PermissionError("插件更新宿主不可用")
         return self._host
 
     def _request(self, ctx: Context, update_id: str) -> PluginManager:
@@ -54,51 +51,17 @@ class PluginUpdates:
         except KeyError:
             return None
 
-    def messages(self, ctx: Context, update_id: str, session_id: str) -> tuple[Message, ...]:
-        """只读取该更新原隔离调用的消息，不开放正式库、路径或 SQL。"""
-        return self._request(ctx, update_id).read_validation_messages(update_id, session_id)
-
     async def install(
         self, ctx: Context, update_id: str, *, source: str, marketplace: str,
         ref: str = "", sparse: tuple[str, ...] = (),
     ) -> UpdateStatus:
-        """一次新请求准备候选；已有请求只允许 read，不重拉或重建。"""
+        """Install one request; an existing ID is read-only and never re-run."""
         host = self._request(ctx, update_id)
-        _ = await host.install_candidate(source=source, marketplace=marketplace,
+        _ = await host.install(source=source, marketplace=marketplace,
             ref_name=ref, sparse_paths=list(sparse), update_id=update_id)
         status = self.read(ctx, update_id)
         assert status is not None
         return status
-
-    @asynccontextmanager
-    async def open_validation(self, ctx: Context, update_id: str) -> AsyncGenerator[BindingScope]:
-        """程序只取得候选副本的服务；退出必须先完成真实资源清理。"""
-        host = self._request(ctx, update_id)
-        async with host.open_validation(update_id) as scope:
-            yield scope
-
-    def publish(self, ctx: Context, update_id: str) -> None:
-        """同步提交发布请求；调用者退出 scope 后宿主才能排空并切换。"""
-        self._request(ctx, update_id).start_update_publication(update_id)
-
-    def publication(self, ctx: Context, update_id: str) -> Callable[[], None]:
-        """在真实调用 scope 内固定请求；来源排空 Task 后才使用这个窄提交入口。"""
-        host = self._request(ctx, update_id)
-        candidate_id = host.read_update(update_id).candidate_id
-        if candidate_id is None:
-            raise RuntimeError("更新尚未固定候选")
-
-        def publish() -> None:
-            if host.read_update(update_id).candidate_id != candidate_id:
-                raise RuntimeError("调用授权不属于当前候选")
-            host.start_update_publication(update_id)
-
-        return publish
-
-    async def discard(self, ctx: Context, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
-        """验证拒绝后沿原 owner 清理候选并恢复旧安装状态。"""
-        host = self._request(ctx, update_id)
-        await host.discard_update(update_id, reason=reason)
 
     async def changes(self, ctx: Context) -> AsyncGenerator[None]:
         """通知只唤醒读取，不保存队列或持有等待发布必须排空的租约。"""

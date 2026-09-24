@@ -1,4 +1,5 @@
-"""闭接纳初始化不能给后台工作传递提交前的运行许可。"""
+"""首次 selection 提交前不能运行插件代码。"""
+import asyncio
 import pytest
 
 from agent.plugins.manager import PluginManager
@@ -9,7 +10,7 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail_commit", [False, True])
-async def test_started_background_work_waits_for_durable_commit(tmp_path, monkeypatch, fail_commit):
+async def test_initial_start_waits_for_durable_selection_commit(tmp_path, monkeypatch, fail_commit):
     source = tmp_path / "plugins" / "startup"
     source.mkdir(parents=True)
     (source / "plugin.py").write_text('''import asyncio
@@ -28,7 +29,6 @@ async def apply(ctx):
             acted.set()
     async def start(event):
         await ctx.spawn(work(), name="startup-work")
-        await queued.wait()
     await ctx.on(RUNTIME_STARTED, start)
 ''')
     workspace = tmp_path / "workspace"
@@ -36,15 +36,13 @@ async def apply(ctx):
     host = PluginManager([source.parent], event_bus=EventBus(), workspace=workspace,
                          installed_cache_root=tmp_path / "home" / "cache")
     commit = host._selection.commit
-    modules = []
+    pending = []
 
     def inspect_commit(components, *, expected_ref):
-        snapshot = host._publication.candidate
-        module = snapshot.generations["startup"].instance.module
-        modules.append(module)
-        assert module.queued.is_set()
-        assert module.effects == []
-        assert not snapshot.accepting_leases
+        generation = host._active_generations["startup"]
+        pending.append(generation)
+        assert generation.instance is None
+        assert generation.fiber is None
         if fail_commit:
             raise SelectionWriteError(operation="commit", target_ref=None, outcome="unchanged",
                                       observed_ref=expected_ref, observation_error=None)
@@ -56,11 +54,14 @@ async def apply(ctx):
             with pytest.raises(SelectionWriteError):
                 await host.load_all()
             assert PluginSelection(workspace).read() is None
-            assert modules[0].effects == [] and not modules[0].acted.is_set()
+            assert pending[0].instance is None
         else:
             await host.load_all()
-            await modules[0].acted.wait()
+            generation = host.generation("startup")
+            assert generation is not None and generation.instance is not None
+            module = generation.instance.module
+            await asyncio.wait_for(module.acted.wait(), 5)
             assert PluginSelection(workspace).read() is not None
-            assert modules[0].effects == ["accepted work"]
+            assert module.effects == ["accepted work"]
     finally:
         await host.terminate_all()

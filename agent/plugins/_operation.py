@@ -14,6 +14,8 @@ class ManagerOperation:
     """保留实际操作任务及其一次性的提交许可，不记录资源阶段。"""
 
     deadline: float
+    update_id: str | None = None
+    accepted: asyncio.Future[Any] | None = None
     task: asyncio.Task[Any] = field(init=False)
     revoked: bool = False
     committed: object | None = None
@@ -26,6 +28,15 @@ class ManagerOperation:
         self.revoked = True
         if cancel and not self.task.done():
             self.task.cancel()
+
+    def settle_accepted(self, error: BaseException) -> None:
+        """结束调用方的 accepted 等待，但保留操作任务和其资源 owner。"""
+        if self.accepted is None or self.accepted.done():
+            return
+        self.accepted.set_exception(error)
+        # A disconnected caller cannot retrieve this future; mark the error
+        # observed now while the future remains awaitable for a live caller.
+        _ = self.accepted.exception()
 
 
 current_operation: ContextVar[ManagerOperation | None] = ContextVar(

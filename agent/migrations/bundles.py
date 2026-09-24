@@ -134,13 +134,13 @@ def discover_migration_bundles(
     *,
     plugin_dirs: Sequence[Path] = (),
     installed_cache_root: Path | None = None,
+    fixed_sources: Sequence[ResolvedPluginSource] | None = None,
 ) -> tuple[MigrationBundle, ...]:
     """只从明确的插件 source 读取 bundle，不扫描 checkout/plugins。"""
 
-    sources = resolve_plugin_sources(
-        plugin_dirs,
-        installed_cache_root=installed_cache_root,
-        installed_selector="stable",
+    sources = (
+        tuple(fixed_sources) if fixed_sources is not None else
+        tuple(resolve_plugin_sources(plugin_dirs, installed_cache_root=installed_cache_root))
     )
     bundles: list[MigrationBundle] = []
     seen_bundles: set[str] = set()

@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+from contextlib import asynccontextmanager
 from pathlib import Path
 from collections.abc import Mapping
 from typing import cast
@@ -8,15 +9,17 @@ import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.model import ServiceKey
+from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.context import CompositionRoot
+from agent.plugin_composition.model import FiberState, PluginRuntime, ServiceKey
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import get_current_runtime_snapshot, lease_runtime_snapshot
 from bus.event_bus import EventBus
 from session.log import MessageLog
 
 VALUE = ServiceKey("archive.test.value")
 RESULT = ServiceKey("archive.test.result")
+DELIVERY = ServiceKey("archive.fixture.delivery")
 
 
 def write_plugins(path: Path):
@@ -49,6 +52,7 @@ async def apply(ctx):
     await ctx.effect(setup)
     await ctx.on(RUNTIME_STARTED, start)
     await ctx.provide(ServiceKey("archive.test.value"), state)
+    await ctx.provide(ServiceKey("archive.test.secondary"), {"text": "secondary"})
 """)
     consumer = path / "consumer"
     consumer.mkdir()
@@ -63,13 +67,109 @@ async def apply(ctx):
 """)
 
 
-def manager(tmp_path, plugins):
+def manager(tmp_path, plugins, *, message_log=None):
     return PluginManager(
         plugin_dirs=plugins,
         event_bus=EventBus(),
         workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
+        message_log=message_log,
     )
+
+
+@asynccontextmanager
+async def live_binding_root(
+    tmp_path, *, plugin_id="provider", with_drain_consumer=False
+):
+    """Build one live Root whose provider owns a cleanup Effect."""
+    root = CompositionRoot(f"bindings-{plugin_id}")
+    value = {"text": "old:A"}
+    state = {
+        "cleanup_calls": 0,
+        "contributor_calls": 0,
+        "unrelated_events": [],
+    }
+    consumer_released = asyncio.Event()
+    state["consumer_released"] = consumer_released
+    state["consumer_cleanup_calls"] = 0
+
+    async def provider(ctx):
+        state["senders_context"] = ctx
+
+        def forbidden_contributors():
+            state["contributor_calls"] += 1
+            raise AssertionError("Bindings.open 不得读取 binding contributors")
+
+        def setup():
+            def cleanup():
+                state["cleanup_calls"] += 1
+
+            return cleanup
+
+        await ctx.effect(setup, label="binding-provider-resource")
+        await ctx.provide(
+            RESULT,
+            value,
+            binding_contributors=forbidden_contributors,
+        )
+
+    async def drain_consumer(ctx):
+        _ = ctx.require(RESULT)
+
+        def setup():
+            def cleanup():
+                state["consumer_cleanup_calls"] += 1
+                consumer_released.set()
+
+            return cleanup
+
+        await ctx.effect(setup, label="binding-drain-consumer")
+
+    if with_drain_consumer:
+        await root.mount(
+            drain_consumer,
+            name="binding-drain-consumer",
+            inject=(RESULT,),
+            runtime=PluginRuntime(
+                "binding-drain-consumer",
+                f"generation-{plugin_id}",
+                tmp_path / "data",
+                tmp_path / "workspace",
+                tmp_path / "plugin",
+                {},
+            ),
+        )
+    fiber = await root.mount(
+        provider,
+        name=plugin_id,
+        runtime=PluginRuntime(
+            plugin_id,
+            f"generation-{plugin_id}",
+            tmp_path / "data",
+            tmp_path / "workspace",
+            tmp_path / "plugin",
+            {},
+        ),
+    )
+    try:
+        yield root, fiber.context, value, state
+    finally:
+        await root.dispose()
+
+
+def seed_binding(log, metadata):
+    """Seed only the persisted descriptor fact used by open tests."""
+    identity = "fixture-binding"
+    log.save_binding(
+        identity,
+        {
+            "version": 1,
+            "root_ref": "fixture-root",
+            "service": RESULT.name,
+            "metadata": metadata,
+        },
+    )
+    return identity
 
 
 @pytest.mark.asyncio
@@ -88,15 +188,10 @@ async def test_loaded_generation_keeps_assets_and_late_imports_after_source_chan
         (plugins / "provider" / "asset.txt").write_text("asset B")
         (plugins / "provider" / "late.py").write_text("VALUE = 'late B'\n")
         assert importlib.import_module(generation.module_path + ".late").VALUE == "late A"
-        current = host.current_snapshot
-        assert current is not None
-        root = await host._resolve_composition_root(dict(current.generations))
-        assert root.receipt().ready
-        try:
-            value = cast(Mapping[str, object], root.service_value(RESULT))
-            assert value["asset"] == "asset A"
-        finally:
-            await root.dispose()
+        root = host._live_root
+        assert root is not None and root.receipt().ready
+        value = cast(Mapping[str, object], root.service_value(RESULT))
+        assert value["asset"] == "asset A"
     finally:
         await host.terminate_all()
 
@@ -110,14 +205,31 @@ async def test_binding_capture_keeps_declared_dependency_provenance(
     write_plugins(plugins)
     (plugins / "consumer" / "plugin.py").write_text("""
 from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.bindings import BINDINGS
 api_version = 3
 name = "consumer"
 version = "1.0.0"
 async def apply(ctx):
-    await ctx.provide(ServiceKey("archive.fixture.delivery"), {})
-    async def child(child_ctx):
-        await child_ctx.provide(ServiceKey("archive.test.result"), child_ctx.require(ServiceKey("archive.test.value")))
-    await ctx.mount(child, name="child-provider", inject=(ServiceKey("archive.test.value"),))
+    delivery = {}
+    await ctx.provide(ServiceKey("archive.fixture.delivery"), delivery)
+    async def extra_child(extra_ctx):
+        extra_ctx.require(ServiceKey("archive.test.secondary"))
+        delivery["extra_context"] = extra_ctx
+    await ctx.mount(
+        extra_child, name="extra-child",
+        inject=(ServiceKey("archive.test.secondary"),),
+    )
+    async def result_child(child_ctx):
+        value = child_ctx.require(ServiceKey("archive.test.value"))
+        await child_ctx.provide(ServiceKey("archive.test.result"), value)
+        delivery["identity"] = child_ctx.require(BINDINGS).bind(
+            ServiceKey("archive.test.result"), {"source": "real-child"},
+            contributors=(delivery["extra_context"],),
+        )
+    await ctx.mount(
+        result_child, name="result-child",
+        inject=(ServiceKey("archive.test.value"), BINDINGS),
+    )
 """)
     unrelated = plugins / "unrelated"
     unrelated.mkdir()
@@ -132,16 +244,16 @@ async def apply(ctx):
     pass
 """)
     initialize_plugin_workspace(tmp_path / "workspace")
-    host = manager(tmp_path, [plugins])
     log = MessageLog(tmp_path / "messages.db")
+    host = manager(tmp_path, [plugins], message_log=log)
     try:
         await host.load_all()
-        assert len(host.current_snapshot.generations) == 3
-        snapshot = host.current_snapshot
-        assert snapshot.composition_root is not None
-        binding = Bindings(log, host._archive, snapshot.composition_root)
-        async with lease_runtime_snapshot(host.snapshot_store):
-            identity = binding.bind(RESULT, {})
+        root = host._live_root
+        assert root is not None
+        binding = root.context.require(BINDINGS)
+        delivery = root.context.require(DELIVERY)
+        assert delivery["extra_context"].fiber.state is FiberState.ACTIVE
+        identity = cast(str, delivery["identity"])
         descriptor = log.read_binding(identity)
         root_descriptor = host._archive.read_descriptor(cast(str, descriptor["root_ref"]))
         component_ids = {
@@ -149,15 +261,12 @@ async def apply(ctx):
             for ref in cast(tuple[str, ...], root_descriptor["components"])
         }
         assert component_ids == {"consumer", "provider"}
-        async with binding.open(identity, RESULT) as (state, _):
+        expected = root.context.require(RESULT)
+        async with binding.open(identity, RESULT) as (state, metadata):
             assert state["text"] == "old:A"
-            selected = get_current_runtime_snapshot()
-            assert selected is snapshot
-            assert set(selected.generations) == {
-                "consumer",
-                "provider",
-                "unrelated",
-            }
+            assert state is expected
+            assert metadata == descriptor["metadata"]
+            assert log.read_binding(identity) == descriptor
     finally:
         log.close()
         await host.terminate_all()
@@ -176,8 +285,8 @@ async def test_capture_registry_contributor_uses_actual_live_context(
     if dynamic:
         consumer = plugins / "consumer/plugin.py"
         consumer.write_text(consumer.read_text().replace(
-            'ctx.provide(ServiceKey("archive.test.result"), ctx.require(inject[0]))',
-            'ctx.provide(ServiceKey("archive.test.result"), ctx.require(inject[0]), '
+            'await ctx.provide(ServiceKey("archive.test.result"), ctx.require(inject[0]))',
+            'await ctx.provide(ServiceKey("archive.test.result"), ctx.require(inject[0]), '
             'binding_contributors=lambda: (ctx.require(inject[0])["registration"],))'))
     addon = plugins / "addon"
     addon.mkdir()
@@ -193,169 +302,239 @@ async def apply(ctx):
     value["extra"] = "registered A"
 """)
     initialize_plugin_workspace(tmp_path / "workspace")
-    host = manager(tmp_path, [plugins])
     initialize_plugin_workspace(tmp_path / "other/workspace")
-    other = manager(tmp_path / "other", [plugins])
     log = MessageLog(tmp_path / "messages.db")
+    other_log = MessageLog(tmp_path / "other/messages.db")
+    host = manager(tmp_path, [plugins], message_log=log)
+    other = manager(tmp_path / "other", [plugins], message_log=other_log)
     try:
         await host.load_all()
         await other.load_all()
-        context = host.current_snapshot.composition_root.context.require(RESULT)[
+        host_root = host._live_root
+        other_root = other._live_root
+        assert host_root is not None and other_root is not None
+        context = host_root.context.require(RESULT)[
             "registration"
         ]
-        foreign = other.current_snapshot.composition_root.context.require(RESULT)[
+        foreign = other_root.context.require(RESULT)[
             "registration"
         ]
-        snapshot = host.current_snapshot
-        assert snapshot.composition_root is not None
-        binding = Bindings(log, host._archive, snapshot.composition_root)
-        async with lease_runtime_snapshot(host.snapshot_store):
-            for invalid in (foreign, Context(context._root, context._fiber)):
-                with pytest.raises(ValueError, match="不属于"):
-                    if dynamic:
-                        host.current_snapshot.composition_root.context.require(RESULT)["registration"] = invalid
+        binding = host_root.context.require(BINDINGS)
+        result_value = host_root.context.require(RESULT)
+        provider_context, _ = host_root._service_provider(RESULT)
+        for invalid in (foreign, Context(context._root, context._fiber)):
+            with pytest.raises(ValueError, match="不属于"):
+                if dynamic:
+                    result_value["registration"] = invalid
+                    async with provider_context.runtime_scope():
                         binding.bind(RESULT, {})
-                    else:
+                else:
+                    async with provider_context.runtime_scope():
                         binding.bind(RESULT, {}, contributors=(invalid,))
-            host.current_snapshot.composition_root.context.require(RESULT)["registration"] = context
+        result_value["registration"] = context
+        async with provider_context.runtime_scope():
             identity = binding.bind(
                 RESULT, {"target": "extra"}, contributors=() if dynamic else (context,)
             )
-        async with binding.open(identity, RESULT) as (state, _):
+        descriptor = log.read_binding(identity)
+        expected = host_root.context.require(RESULT)
+        async with binding.open(identity, RESULT) as (state, metadata):
             assert state["extra"] == "registered A"
-            selected = get_current_runtime_snapshot()
-            assert selected is snapshot
-            assert set(selected.generations) == {
-                "addon",
-                "consumer",
-                "provider",
-            }
+            assert state is expected
+            assert metadata == descriptor["metadata"]
+            assert log.read_binding(identity) == descriptor
     finally:
         log.close()
+        other_log.close()
         await other.terminate_all()
         await host.terminate_all()
 
 
 @pytest.mark.asyncio
 async def test_binding_open_uses_selected_scope_without_reopening_archive(
-    tmp_path, monkeypatch,
+    tmp_path,
 ):
-    """打开旧 binding 只读取事实，并使用当前调用已经选定的 Root。"""
-    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
-    plugins = tmp_path / "plugins"
-    write_plugins(plugins)
-    initialize_plugin_workspace(tmp_path / "workspace")
-    host = manager(tmp_path, [plugins])
+    """打开旧 binding 只读取日志事实，并使用自己的 live provider。"""
     log = MessageLog(tmp_path / "messages.db")
     try:
-        await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None
-        root = snapshot.composition_root
-        assert root is not None
-        bindings = Bindings(log, host._archive, root)  # type: ignore[arg-type]
-        async with lease_runtime_snapshot(host.snapshot_store):
-            identity = bindings.bind(RESULT, {"choice": "stable"})
-            expected = root.context.require(RESULT)
-
-            def unexpected_archive_read(_identity):
-                raise AssertionError("binding.open 不应重新读取历史 archive")
-
-            monkeypatch.setattr(host._archive, "read_descriptor", unexpected_archive_read)
+        async with live_binding_root(tmp_path) as (root, context, expected, state):
+            bindings = Bindings(log, object(), root)  # type: ignore[arg-type]
+            identity = seed_binding(log, {"choice": "stable"})
             async with bindings.open(identity, RESULT) as (value, metadata):
                 assert value is expected
                 assert metadata == {"choice": "stable"}
-                assert get_current_runtime_snapshot() is snapshot
-            assert get_current_runtime_snapshot() is snapshot
-        assert get_current_runtime_snapshot() is None
+                assert context._fiber._in_flight_calls
+            assert not context._fiber._in_flight_calls
+            assert state["cleanup_calls"] == 0
     finally:
         log.close()
-        await host.terminate_all()
 
 
 @pytest.mark.asyncio
 async def test_binding_open_acquires_own_root_once_and_rejects_unrelated_scope(
-    tmp_path, monkeypatch,
+    tmp_path,
 ):
-    """缺 scope 只从所属 Root 获取一次；已有其他 Root 时明确拒绝跨 Root。"""
-    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
-    plugins = tmp_path / "plugins"
-    write_plugins(plugins)
-    initialize_plugin_workspace(tmp_path / "workspace")
-    host = manager(tmp_path, [plugins])
-    initialize_plugin_workspace(tmp_path / "other/workspace")
-    other = manager(tmp_path / "other", [plugins])
+    """缺 scope 从所属 Root 获取；已有其他 Root 时明确拒绝跨 Root。"""
     log = MessageLog(tmp_path / "messages.db")
     try:
-        await host.load_all()
-        await other.load_all()
-        snapshot = host.current_snapshot
-        other_snapshot = other.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        assert other_snapshot is not None
-        root = snapshot.composition_root
-        bindings = Bindings(log, host._archive, root)  # type: ignore[arg-type]
-        async with lease_runtime_snapshot(host.snapshot_store):
-            identity = bindings.bind(RESULT, {})
+        async with live_binding_root(tmp_path / "host", plugin_id="host") as (
+            root, context, expected, _state,
+        ):
+            async with live_binding_root(tmp_path / "other", plugin_id="other") as (
+                _other_root, other_context, _other_value, _other_state,
+            ):
+                bindings = Bindings(log, object(), root)  # type: ignore[arg-type]
+                identity = seed_binding(log, {})
+                async with bindings.open(identity, RESULT) as (value, _):
+                    assert value is expected
+                    assert context._fiber._in_flight_calls
+                assert not context._fiber._in_flight_calls
 
-        acquire_calls = 0
-        original_acquire = root._acquire_runtime_scope  # type: ignore[union-attr]
-
-        async def acquire_once():
-            nonlocal acquire_calls
-            acquire_calls += 1
-            return await original_acquire()
-
-        monkeypatch.setattr(root, "_acquire_runtime_scope", acquire_once)
-        async with bindings.open(identity, RESULT) as (value, _):
-            assert value is root.context.require(RESULT)  # type: ignore[union-attr]
-            assert get_current_runtime_snapshot() is snapshot
-        assert acquire_calls == 1
-        assert get_current_runtime_snapshot() is None
-
-        async with lease_runtime_snapshot(other.snapshot_store):
-            with pytest.raises(RuntimeError, match="所属 Root"):
-                async with bindings.open(identity, RESULT):
-                    pytest.fail("不相干 Root 不应静默改选 stable")
-            assert get_current_runtime_snapshot() is other_snapshot
+                with pytest.raises(RuntimeError, match="所属 Root"):
+                    async with other_context.runtime_scope():
+                        async with bindings.open(identity, RESULT):
+                            pytest.fail("不相干 Root 不应静默改选 stable")
+                assert not context._fiber._in_flight_calls
     finally:
         log.close()
-        await other.terminate_all()
-        await host.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_binding_open_releases_fallback_scope_when_cancelled(tmp_path, monkeypatch):
-    """fallback scope 被取消时仍释放 lease，不把取消变成残留运行时。"""
-    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
-    plugins = tmp_path / "plugins"
-    write_plugins(plugins)
-    initialize_plugin_workspace(tmp_path / "workspace")
-    host = manager(tmp_path, [plugins])
+async def test_binding_open_keeps_admitted_provider_scope_during_unload(tmp_path):
+    """已有 provider permit 可嵌套；新 Task 不得借用继承的 ContextVar。"""
     log = MessageLog(tmp_path / "messages.db")
     try:
-        await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)  # type: ignore[arg-type]
-        async with lease_runtime_snapshot(host.snapshot_store):
-            identity = bindings.bind(RESULT, {})
+        async with live_binding_root(
+            tmp_path, with_drain_consumer=True,
+        ) as (root, context, expected, state):
+            bindings = Bindings(log, object(), root)  # type: ignore[arg-type]
+            identity = seed_binding(log, {"choice": "stable"})
+            admitted = asyncio.Event()
+            unloading = state["consumer_released"]
+            continue_work = asyncio.Event()
+            nested_opened = asyncio.Event()
+            rejected = asyncio.Event()
+            release = asyncio.Event()
+            rejection = {"body_ran": False, "message": ""}
+            unrelated_scope_work = []
 
-        entered = asyncio.Event()
+            async def unrelated(ctx):
+                await ctx.on(RUNTIME_STARTED, lambda _event: state["unrelated_events"].append("started"))
+                await ctx.on(RUNTIME_STOPPING, lambda _event: state["unrelated_events"].append("stopping"))
 
-        async def use_binding():
-            async with bindings.open(identity, RESULT):
-                entered.set()
-                await asyncio.Future()
+            unrelated_fiber = await root.mount(
+                unrelated,
+                name="binding-unrelated",
+                runtime=PluginRuntime(
+                    "binding-unrelated",
+                    "generation-unrelated",
+                    tmp_path / "unrelated-data",
+                    tmp_path / "unrelated-workspace",
+                    tmp_path / "unrelated-plugin",
+                    {},
+                ),
+            )
+            unrelated_context = unrelated_fiber.context
+            unrelated_state = unrelated_context.fiber.state
+            unrelated_activation = unrelated_context.fiber.activation_token
+            unrelated_events = tuple(state["unrelated_events"])
+            root_identity = root.instance_token
 
-        task = asyncio.create_task(use_binding())
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        assert snapshot.lease_count == 1
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert snapshot.lease_count == 0
-        assert get_current_runtime_snapshot() is None
+            async def reject_inherited_scope():
+                try:
+                    async with bindings.open(identity, RESULT):
+                        rejection["body_ran"] = True
+                except RuntimeError as error:
+                    rejection["message"] = str(error)
+                finally:
+                    rejected.set()
+
+            async def admitted_work():
+                async with context.runtime_scope():
+                    admitted.set()
+                    await unloading.wait()
+                    await continue_work.wait()
+                    async with unrelated_context.runtime_scope():
+                        unrelated_scope_work.append(unrelated_context.fiber.state)
+                    async with bindings.open(identity, RESULT) as (value, metadata):
+                        assert value is expected
+                        assert metadata == {"choice": "stable"}
+                    nested_opened.set()
+                    child = asyncio.create_task(reject_inherited_scope())
+                    await rejected.wait()
+                    await child
+                    await release.wait()
+
+            holder = None
+            dispose_task = None
+            try:
+                holder = asyncio.create_task(admitted_work())
+                await admitted.wait()
+                dispose_task = asyncio.create_task(context.fiber.dispose())
+                await unloading.wait()
+                assert context.fiber.state is FiberState.UNLOADING
+                assert state["consumer_cleanup_calls"] == 1
+                assert state["contributor_calls"] == 0
+                assert root.instance_token is root_identity
+                assert unrelated_context.fiber.state is unrelated_state
+                assert unrelated_context.fiber.activation_token is unrelated_activation
+                assert tuple(state["unrelated_events"]) == unrelated_events
+                continue_work.set()
+                await nested_opened.wait()
+                await rejected.wait()
+                assert unrelated_scope_work == [FiberState.ACTIVE]
+                assert not rejection["body_ran"]
+                assert "不接纳新调用" in rejection["message"]
+                release.set()
+                await holder
+                await dispose_task
+                assert context.fiber.state is FiberState.DISPOSED
+                assert state["cleanup_calls"] == 1
+                assert not context._fiber._in_flight_calls
+                assert not state["senders_context"]._fiber._in_flight_calls
+            finally:
+                continue_work.set()
+                release.set()
+                if holder is not None:
+                    try:
+                        await holder
+                    finally:
+                        if dispose_task is not None:
+                            await dispose_task
+                elif dispose_task is not None:
+                    await dispose_task
     finally:
         log.close()
-        await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_binding_open_releases_fallback_scope_when_cancelled(tmp_path):
+    """取消 live provider scope 时释放 permit，不留下运行时残留。"""
+    log = MessageLog(tmp_path / "messages.db")
+    try:
+        async with live_binding_root(tmp_path) as (root, context, _value, state):
+            bindings = Bindings(log, object(), root)  # type: ignore[arg-type]
+            identity = seed_binding(log, {})
+            entered = asyncio.Event()
+
+            async def use_binding():
+                async with bindings.open(identity, RESULT):
+                    entered.set()
+                    await asyncio.Future()
+
+            task = asyncio.create_task(use_binding())
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert len(context._fiber._in_flight_calls) == 1
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not context._fiber._in_flight_calls
+            assert state["cleanup_calls"] == 0
+
+            await root.dispose()
+            with pytest.raises(RuntimeError, match="当前 runtime scope 不提供服务"):
+                async with bindings.open(identity, RESULT):
+                    pytest.fail("已移除 provider 不应继续打开")
+            assert state["cleanup_calls"] == 1
+    finally:
+        log.close()

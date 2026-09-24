@@ -18,6 +18,8 @@ workspace_files = ()
 
 
 class BoundContentSource(Protocol):
+    def close(self) -> None: ...
+
     def submit(
         self, batch_id: str, items: Sequence[Mapping[str, object]]
     ) -> Mapping[str, object]: ...
@@ -40,6 +42,8 @@ class ContentSourceServices(Protocol):
 
 
 class BoundAlertSource(Protocol):
+    def close(self) -> None: ...
+
     def report(
         self,
         *,
@@ -57,6 +61,8 @@ class AlertSourceServices(Protocol):
 
 
 class BoundContextSource(Protocol):
+    def close(self) -> None: ...
+
     def report(
         self,
         *,
@@ -164,13 +170,33 @@ EVENTMAIL_ALERT_DELIVERY = ServiceKey[object]("eventmail.alert_delivery.v1")
 EVENTMAIL_CHANGED = EmitEventKey[None]("eventmail.changed")
 
 
-class _BoundSource:
+class _SourceBinding:
+    """Release one source ID only after its owning Fiber drains its calls."""
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        self._release = release
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._release()
+        self._closed = True
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("EventMail source binding 已关闭")
+
+
+class _BoundSource(_SourceBinding):
     def __init__(
         self,
         store: EventMailStore,
         source_id: str,
         changed: Callable[[], None],
+        release: Callable[[], None],
     ) -> None:
+        super().__init__(release)
         self._store = store
         self._source_id = source_id
         self._changed = changed
@@ -178,20 +204,25 @@ class _BoundSource:
     def submit(
         self, batch_id: str, items: Sequence[Mapping[str, object]]
     ) -> Mapping[str, object]:
+        self._check_open()
         receipt = self._store.submit(self._source_id, batch_id, items)
         self._changed()
         return receipt
 
     def read_submission(self, batch_id: str) -> Mapping[str, object] | None:
+        self._check_open()
         return self._store.read_submission(self._source_id, batch_id)
 
     def read_revision(self, item_id: str, revision: str) -> Mapping[str, object] | None:
+        self._check_open()
         return self._store.read_revision(self._source_id, item_id, revision)
 
     def unsettled(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
+        self._check_open()
         return self._store.unsettled(self._source_id, limit)
 
     def ack(self, settlement_ref: str) -> Mapping[str, object]:
+        self._check_open()
         return self._store.ack(self._source_id, settlement_ref)
 
 
@@ -206,15 +237,22 @@ class _SourceServices:
             raise ValueError("Content source_id 必须非空且无首尾空白")
         if source_id in self._bound:
             raise RuntimeError(f"Content source_id 已有 owner: {source_id}")
-        bound = _BoundSource(self._store, source_id, self._changed)
+        def release() -> None:
+            if self._bound.get(source_id) is not bound:
+                raise RuntimeError(f"Content source_id owner 已改变: {source_id}")
+            del self._bound[source_id]
+
+        bound = _BoundSource(self._store, source_id, self._changed, release)
         self._bound[source_id] = bound
         return bound
 
 
-class _BoundAlertSource:
+class _BoundAlertSource(_SourceBinding):
     def __init__(
-        self, store: EventMailStore, source_id: str, changed: Callable[[], None]
+        self, store: EventMailStore, source_id: str, changed: Callable[[], None],
+        release: Callable[[], None],
     ) -> None:
+        super().__init__(release)
         self._store = store
         self._source_id = source_id
         self._changed = changed
@@ -227,6 +265,7 @@ class _BoundAlertSource:
         observed_at: datetime,
         expires_at: datetime | None = None,
     ) -> Mapping[str, object]:
+        self._check_open()
         receipt = self._store.report_alert(
             source_id=self._source_id,
             event_id=event_id,
@@ -238,6 +277,7 @@ class _BoundAlertSource:
         return receipt
 
     def status(self, *, event_id: str) -> str | None:
+        self._check_open()
         return self._store.alert_status(self._source_id, event_id)
 
 
@@ -251,15 +291,22 @@ class _AlertSourceServices:
         source = _source_id(source_id)
         if source in self._bound:
             raise RuntimeError(f"EventMail Alert source_id 已有 owner: {source}")
-        bound = _BoundAlertSource(self._store, source, self._changed)
+        def release() -> None:
+            if self._bound.get(source) is not bound:
+                raise RuntimeError(f"EventMail Alert source_id owner 已改变: {source}")
+            del self._bound[source]
+
+        bound = _BoundAlertSource(self._store, source, self._changed, release)
         self._bound[source] = bound
         return bound
 
 
-class _BoundContextSource:
+class _BoundContextSource(_SourceBinding):
     def __init__(
-        self, store: EventMailStore, source_id: str, changed: Callable[[], None]
+        self, store: EventMailStore, source_id: str, changed: Callable[[], None],
+        release: Callable[[], None],
     ) -> None:
+        super().__init__(release)
         self._store = store
         self._source_id = source_id
         self._changed = changed
@@ -272,6 +319,7 @@ class _BoundContextSource:
         observed_at: datetime,
         expires_at: datetime | None = None,
     ) -> Mapping[str, object]:
+        self._check_open()
         receipt = self._store.report_context(
             source_id=self._source_id,
             event_id=event_id,
@@ -293,7 +341,12 @@ class _ContextSourceServices:
         source = _source_id(source_id)
         if source in self._bound:
             raise RuntimeError(f"EventMail Context source_id 已有 owner: {source}")
-        bound = _BoundContextSource(self._store, source, self._changed)
+        def release() -> None:
+            if self._bound.get(source) is not bound:
+                raise RuntimeError(f"EventMail Context source_id owner 已改变: {source}")
+            del self._bound[source]
+
+        bound = _BoundContextSource(self._store, source, self._changed, release)
         self._bound[source] = bound
         return bound
 

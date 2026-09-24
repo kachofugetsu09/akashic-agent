@@ -1,8 +1,34 @@
 from __future__ import annotations
 
 import re
+import string
+from collections import Counter
 
-from eval.longmemeval.metrics import exact_match, token_f1
+
+def _normalise(text: str) -> str:
+    text = text.lower()
+    text = text.translate(str.maketrans("", "", string.punctuation))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def token_f1(pred: str, gold: str) -> float:
+    pred_tokens = _normalise(pred).split()
+    gold_tokens = _normalise(gold).split()
+    if not pred_tokens or not gold_tokens:
+        return float(pred_tokens == gold_tokens)
+    common = Counter(pred_tokens) & Counter(gold_tokens)
+    num_same = sum(common.values())
+    if num_same == 0:
+        return 0.0
+    precision = num_same / len(pred_tokens)
+    recall = num_same / len(gold_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def exact_match(pred: str, gold: str) -> bool:
+    return _normalise(pred) == _normalise(gold)
+
 
 _PAREN_LABEL_RE = re.compile(r"\(([a-z])\)", re.IGNORECASE)
 _WORD_LABEL_RE = re.compile(r"\b([a-z])\b", re.IGNORECASE)

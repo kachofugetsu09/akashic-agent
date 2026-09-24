@@ -155,8 +155,9 @@ async def apply(ctx: Context) -> None:
     async def report(task: Task, reader: MessageReader, source: str,
                      reminders: Sequence[Reminder]) -> Message:
         """来源只交入材料；主回复仍使用当前配置、工具和多步程序。"""
-        with status.open(task, reader.session_id, source) as preview:
-            return await respond(task, reader, source, preview, reminders)
+        async with ctx.runtime_scope():
+            with status.open(task, reader.session_id, source) as preview:
+                return await respond(task, reader, source, preview, reminders)
 
     _ = await ctx.provide(REPLY_PROGRAM, report)
 

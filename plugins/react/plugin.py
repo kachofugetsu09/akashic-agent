@@ -4,7 +4,6 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence, Mapping
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
-from functools import partial
 from dataclasses import replace
 from typing import Protocol, Any, cast
 from uuid import uuid4
@@ -694,4 +693,9 @@ REACT = ServiceKey[Callable[..., Awaitable[Message]]]("react.v2")
 
 
 async def apply(ctx: Context) -> None:
-    _ = await ctx.provide(REACT, partial(react, capture_scope=ctx.capture_runtime_scope))
+    async def owned_react(*args: Any, **kwargs: Any) -> Message:
+        """Keep the React owner permit through settlement and child capture."""
+        async with ctx.runtime_scope():
+            return await react(*args, capture_scope=ctx.capture_runtime_scope, **kwargs)
+
+    _ = await ctx.provide(REACT, owned_react)

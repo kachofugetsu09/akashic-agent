@@ -19,7 +19,7 @@ class SemanticInterest:
     """用已完成对话的固定向量衡量候选兴趣，不重建历史向量或写学习图。"""
 
     def __init__(self, learning: Learning, catalog: MessageCatalog, embeddings: MessageEmbeddings,
-                 select: Callable[[], tuple[LearningConfig, Embed]]):
+                 select: Callable[[], Awaitable[tuple[LearningConfig, Embed]]]):
         self._learning = learning
         self._catalog = catalog
         self._embeddings = embeddings
@@ -32,7 +32,7 @@ class SemanticInterest:
             raise ValueError("兴趣截止时间必须包含时区")
         if any(not isinstance(text, str) for text in texts):
             raise TypeError("兴趣候选必须是字符串")
-        rule, embed = self._select()
+        rule, embed = await self._select()
         records = self._embeddings.bind(self._learning.text)
         prototypes: list[np.ndarray] = []
         # 1. 固定消息上界；学习准入继续由 Akasha 独占，内部和未完成工作没有样本。

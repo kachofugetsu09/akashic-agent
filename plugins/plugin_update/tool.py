@@ -30,9 +30,6 @@ class InstallInput(BaseModel):
     marketplace: str = Field(min_length=1)
     ref: str = ""
     sparse: list[str] = Field(default_factory=list)
-    validation_prompt: str = Field(min_length=1)
-    validation_tools: list[str] | None = None
-    excluded_materials: list[str] = Field(default_factory=list)
 
 
 class Request(BaseModel):
@@ -42,13 +39,37 @@ class Request(BaseModel):
     sink: SinkInput | None
 
 
+_RETIRED_INSTALL_FIELDS = frozenset({
+    "validation_prompt",
+    "validation_tools",
+    "excluded_materials",
+})
+
+
 def update_id(key: str) -> str:
     return "plugin-update:" + hashlib.sha256(key.encode()).hexdigest()
 
 
 def receipt(status: UpdateStatus) -> Result:
-    return Result("error" if status.phase == "rolled_back" else "success",
+    return Result("success" if status.state in {"accepted", "active"} else "error",
                   (ContentPart("text", json.dumps(asdict(status), ensure_ascii=False)),))
+
+
+def decode_request(value: object) -> Request:
+    """Decode history while dropping only the three retired validation fields."""
+    raw = json_value(value)
+    if not isinstance(raw, Mapping):
+        raise ValueError("插件更新请求必须是对象")
+    install = raw.get("install")
+    if not isinstance(install, Mapping):
+        raise ValueError("插件更新 install 必须是对象")
+    current = {
+        key: item for key, item in install.items()
+        if key not in _RETIRED_INSTALL_FIELDS
+    }
+    payload = dict(raw)
+    payload["install"] = current
+    return Request.model_validate(payload)
 
 
 class InstallPlugin:
@@ -82,21 +103,22 @@ class InstallPlugin:
         return Request(install=install, session_id=message.session_id, sink=sink).model_dump(mode="json")
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        """一次新调用写入通知意图，再准备候选；不等待验证或父 Turn 结束。"""
+        """一次新调用写入通知意图，再提交公开安装；不等待父 Turn 结束。"""
         request = Request.model_validate(json_value(arguments))
         identity = update_id(key)
         ctx = self._ctx
         store = ctx.require(OWNER_STATE).open(ctx)
-        if store.read(identity) is not None:
+        updates = ctx.require(PLUGIN_UPDATES)
+        if store.read(identity) is not None or updates.read(ctx, identity) is not None:
             raise RuntimeError("已有插件更新请求只能查询")
         _ = store.transact(lambda tx: tx.save(identity, request.model_dump(mode="json"), expected_version=None))
         install = request.install
-        status = await ctx.require(PLUGIN_UPDATES).install(ctx, identity, source=install.source,
+        status = await updates.install(ctx, identity, source=install.source,
             marketplace=install.marketplace, ref=install.ref, sparse=tuple(install.sparse))
         return receipt(status)
 
     async def query(self, key: str) -> Result | None:
-        """只读取原更新；进程死亡后的回退是失败，不自动重跑安装或验证。"""
+        """只读取原安装请求；未知结果不自动重跑或猜测当前制品。"""
         ctx = self._ctx
         identity = update_id(key)
         status = ctx.require(PLUGIN_UPDATES).read(ctx, identity)
@@ -104,4 +126,4 @@ class InstallPlugin:
             return receipt(status)
         if ctx.require(OWNER_STATE).open(ctx).read(identity) is None:
             return None
-        return Result("error", (ContentPart("text", "原更新未完成候选准备；请发起新的更新请求。"),))
+        return Result("error", (ContentPart("text", "原安装请求没有可读取的当前状态；请发起新的更新请求。"),))

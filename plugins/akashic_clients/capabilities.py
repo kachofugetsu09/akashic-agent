@@ -8,7 +8,7 @@ host resolves these keys inside each request scope.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from agent.plugin_composition import MODEL_CALL_STATS, MODEL_CATALOG, ServiceKey
 from agent.plugin_composition.commands import COMMANDS
@@ -17,6 +17,9 @@ from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.message_view import MessageDisplayReader
 
 from .services import MobileUiProvider, WebUiProvider
+
+if TYPE_CHECKING:
+    from agent.plugin_composition.context import Context
 
 
 class ReplyStatusReader(Protocol):
@@ -39,7 +42,7 @@ MODEL_SELECTION = ServiceKey[ModelSelectionReader]("models.selection.v1")
 MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
 MOBILE_UI = ServiceKey[MobileUiProvider]("core.mobile_ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("core.web_ui.v1")
-RuntimeCatalogReader = Callable[[], dict[str, object]]
+RuntimeCatalogReader = Callable[["Context"], dict[str, object]]
 RUNTIME_CATALOG = ServiceKey[RuntimeCatalogReader]("core.runtime_catalog.v1")
 
 INSPECTION_DOCUMENTS_LIST = rpc_method_key("inspection/documents.list")

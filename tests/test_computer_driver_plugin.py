@@ -20,6 +20,9 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, MessageCatalog, OwnerState
+from agent.plugin_composition.tasks import TASKS, PluginTasks
+from agent.plugin_composition.ui import DASHBOARD_ROUTES
+from agent.plugin_composition.host import HOST_INFO, HostInfo
 from agent.plugins.archive import PluginArchive
 from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
 from agent.host_bridge.plugin_execution import CodeOwner, ExecutionAccess, ControllerAccess
@@ -32,7 +35,6 @@ from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection import plugin as turn_projection_plugin
 from session.log import MessageLog
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.workloads.host import WorkloadGenerationHost
 from agent.plugin_composition.execution import (
     WorkloadEndpoint,
@@ -64,16 +66,20 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
     monkeypatch.setattr("plugins.workloads.host._http_health", healthy)
     await root.context.provide(EXECUTION, execution)
     await root.context.provide(WORKLOAD_CONTROLLER, ControllerAccess(execution, controller, "test"))
+    await root.context.provide(DASHBOARD_ROUTES, ())
+    await root.context.provide(HOST_INFO, HostInfo(boot_id="test", validation=True))
     await root.mount(mcp_plugin.apply, name="mcp", inject=mcp_plugin.inject)
     await root.mount(workloads_plugin.apply, name="workloads", inject=workloads_plugin.inject)
     mcp = root.context.require(MCP_SERVERS)
     archive = PluginArchive(tmp_path / "archives")
 
     bindings = Bindings(log, archive, root)
+    tasks = PluginTasks()
     for key, value in (
         (BINDINGS, bindings),
         (MESSAGE_CATALOG, MessageCatalog(log)),
         (OWNER_STATE, OwnerState(log)),
+        (TASKS, tasks),
     ):
         await root.context.provide(key, value)
     path = Path(plugin.__file__).parent
@@ -112,7 +118,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
                 data_dir=tmp_path / "projection-data", workspace=tmp_path, config={},
             ),
         )
-        await root.mount(
+        computer = await root.mount(
             lambda ctx: plugin.apply(ctx),
             name="computer",
             inject=plugin.inject,
@@ -121,6 +127,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
                 data_dir=tmp_path / "computer-data", workspace=tmp_path, config={},
             ),
         )
+        assert computer.state.name == "ACTIVE", repr(computer.error)
         assert [ref.name for ref in root.context.require(ALL_TOOLS)().refs] == [
             "computer"
         ]
@@ -132,6 +139,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
         assert controller.started[0].mode == "candidate"
     finally:
         await root.dispose()
+        await tasks.close()
         log.close()
 
 
@@ -418,19 +426,21 @@ class _ComputerHarness:
         self.gateway = gateway
         self.gateway_state = gateway_state
         self.controller = controller
-        snapshot = manager.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        self.composition_root = snapshot.composition_root
+        composition_root = manager.live_root
+        assert composition_root is not None
+        self.composition_root = composition_root
         self.tools = self.composition_root.context.require(TOOLS)
+        tools_owner = manager.generation("tools")
+        assert tools_owner is not None and tools_owner.fiber is not None
+        self.tools_context = tools_owner.fiber.context
         self.bindings = self.composition_root.context.require(BINDINGS)
         self.binding: str | None = None
 
     async def bind_computer(self) -> str:
-        async with lease_runtime_snapshot(self.manager.snapshot_store):
-            self.binding = self.tools.bind(
-                self.composition_root.context.require(ALL_TOOLS)().select("computer"),
-                self.bindings,
-            )
+        self.binding = await self.tools.bind_scoped(
+            self.composition_root.context.require(ALL_TOOLS)().select("computer"),
+            self.bindings,
+        )
         assert self.binding is not None
         return self.binding
 
@@ -461,10 +471,10 @@ class _ComputerHarness:
         return MessageReply(result_id, call_ref, self.log.reader(session_id), result_writer, lambda: None)
 
     async def execute(self, reply: MessageReply):
-        async with lease_runtime_snapshot(self.manager.snapshot_store):
-            tools = self.composition_root.context.require(TOOLS)
-            async def authorize(_binding: str, _arguments: Mapping[str, object]):
-                return {}
+        tools = self.composition_root.context.require(TOOLS)
+        async def authorize(_binding: str, _arguments: Mapping[str, object]):
+            return {}
+        async with self.tools_context.runtime_scope():
             return await tools.execution(authorize).execute_call(reply)
 
     def finish(self, reply: MessageReply, status: Literal["complete", "quiet", "abandoned"]) -> None:
@@ -614,7 +624,13 @@ async def _computer_harness(tmp_path: Path, *, log: MessageLog | None = None,
         message_log=log,
         workload_controller=controller,
     )
-    await manager.load_all()
+    # The copied executable uses env python3; pin the test's installed Python.
+    path_before = os.environ["PATH"]
+    os.environ["PATH"] = str(Path(sys.executable).parent) + os.pathsep + path_before
+    try:
+        await manager.load_all()
+    finally:
+        os.environ["PATH"] = path_before
     await manager.start_runtime()
     harness = _ComputerHarness(
         source_root, workspace, log, manager, gateway, gateway_state, controller
@@ -763,14 +779,15 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
         harness.finish(reply, "complete")
         await _wait_until(lambda: sum(1 for call in state.calls if call.get("endTurn")) == 1)
         assert harness.owner(reply).value["phase"] == "started"
-        old_revision = harness.manager.current_snapshot.generations["computer"].source_revision
+        old_computer = harness.manager.generation("computer")
+        assert old_computer is not None
+        old_revision = old_computer.source_revision
         old_mcp_command = harness.composition_root.context.require(MCP_SERVERS)._entries["computer"].definition.command
         old_end_generation = next(
             _call_context(call)["generation_id"]
             for call in state.calls
             if call.get("endTurn")
         )
-        await _wait_until(lambda: harness.manager.current_snapshot.lease_count == 0)
         await _wait_until(lambda: any(
             incident.kind == "computer-end-turn"
             for incident in harness.composition_root.receipt().incidents
@@ -790,12 +807,10 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
             .replace('command=("mcp_server.py",),', 'command=("mcp_server.py", "--new-target"),')
             + "\n# source revision after binding capture\n"
         )
-        # Boot from the durable old stable source; the changed source is made
-        # visible after restart and then published through reconcile/promote.
+        # Boot from the exact old selection, then update its live generation.
         computer_source.write_text(source_text)
         # A real restart releases the old manager's process owners.  The new
-        # manager then restores its archived stable workload before publishing
-        # the changed source as a fresh candidate.
+        # manager restores the selected archive before seeing the changed source.
         new_gateway = _start_test_gateway(state, "new")
         harness.controller.ports_by_image[new_image] = new_gateway.server_port
         await harness.manager.terminate_all()
@@ -818,18 +833,19 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
                 for label, call in state.routed_calls
                 if call.get("endTurn")
             ] == ["old", "old"]
-            assert restarted.manager.current_snapshot is not None
-            assert restarted.manager.current_snapshot.generations["computer"].source_revision == old_revision
+            restored = restarted.manager.generation("computer")
+            assert restored is not None and restored.source_revision == old_revision
 
             result = await restarted.manager.reconcile_changed()
             computer_result = next(item for item in result if item["plugin_id"] == "computer")
-            assert computer_result["publication_state"] == "committed"
-            assert restarted.manager.current_snapshot.generations["computer"].source_revision != old_revision
-            new_mcp_command = restarted.manager.current_snapshot.composition_root.context.require(MCP_SERVERS)._entries["computer"].definition.command
+            assert computer_result["publication_state"] == "active"
+            current = restarted.manager.generation("computer")
+            assert current is not None and current.source_revision != old_revision
+            new_mcp_command = restarted.composition_root.context.require(MCP_SERVERS)._entries["computer"].definition.command
             assert old_mcp_command != new_mcp_command
             assert new_mcp_command[-1] == "--new-target"
-            current_root = restarted.manager.current_snapshot.composition_root
-            assert current_root is not None
+            current_root = restarted.manager.live_root
+            assert current_root is not None and current_root is restarted.composition_root
             restarted.composition_root = current_root
             restarted.tools = current_root.context.require(TOOLS)
             restarted.bindings = current_root.context.require(BINDINGS)

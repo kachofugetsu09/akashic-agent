@@ -1,13 +1,17 @@
 import shutil
 import subprocess
+import hashlib
+import json
 from collections.abc import Mapping
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
-from agent.plugins.python_environment import PythonEnvironments
+import agent.plugins.python_environment as python_environment_module
+from agent.plugins.python_environment import OfflineWheels, PythonEnvironments, wheel_tree_sha256
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
     materialize_command,
@@ -21,6 +25,167 @@ def source(tmp_path):
     (code / "probe.py").write_text("import sys; print(sys.prefix)\n")
     (code / "requirements.txt").write_text("")
     return code, load_static_plugin_manifest(code)
+
+
+def write_test_wheel(directory: Path, name: str, *, payload: str = "v1") -> Path:
+    """Build a real, tiny wheel with a console script and optional dependency."""
+
+    directory.mkdir(parents=True, exist_ok=True)
+    dist = name.replace("_", "-")
+    path = directory / f"{name}-1.0-py3-none-any.whl"
+    metadata = f"Metadata-Version: 2.1\nName: {dist}\nVersion: 1.0\n"
+    if name == "fixture_echo":
+        metadata += 'Provides-Extra: extra\nRequires-Dist: fixture-dep>=1; extra == "extra"\n'
+        module = "def main():\n    import fixture_dep\n    print('installed ' + fixture_dep.VALUE)\n"
+    else:
+        module = f"VALUE = {payload!r}\n"
+    files = {
+        f"{name}.py": module,
+        f"{name}-1.0.dist-info/METADATA": metadata,
+        f"{name}-1.0.dist-info/WHEEL": (
+            "Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+    }
+    if name == "fixture_echo":
+        files[f"{name}-1.0.dist-info/entry_points.txt"] = (
+            "[console_scripts]\nfixture-echo = fixture_echo:main\n"
+        )
+    record = f"{name}-1.0.dist-info/RECORD"
+    with ZipFile(path, "w") as wheel:
+        for relative, content in files.items():
+            wheel.writestr(relative, content)
+        wheel.writestr(record, "".join(f"{relative},,\n" for relative in files) + f"{record},,\n")
+    return path
+
+
+def test_offline_wheels_install_transitive_and_keep_final_script(tmp_path: Path, monkeypatch):
+    code, manifest = source(tmp_path)
+    (code / "requirements.txt").write_text(
+        'fixture-echo[extra]==1.0; python_version >= "3.0"\n', encoding="utf-8"
+    )
+    wheels = tmp_path / "wheels"
+    write_test_wheel(wheels, "fixture_echo")
+    write_test_wheel(wheels, "fixture_dep")
+    names = sorted(wheels.iterdir(), key=lambda item: item.name.encode("utf-8"))
+    exact = b"".join(
+        item.name.encode() + b"\0" + hashlib.sha256(item.read_bytes()).hexdigest().encode() + b"\n"
+        for item in names
+    )
+    digest = hashlib.sha256(exact).hexdigest()
+    assert wheel_tree_sha256(wheels) == digest
+    offline = OfflineWheels(wheels, digest)
+    monkeypatch.setenv("PIP_INDEX_URL", "https://invalid.example.test/simple")
+    store = PythonEnvironments(tmp_path / "workspace")
+    ref = store.prepare(code, manifest.python[0], offline_wheels=offline)
+    assert store.prepare(code, manifest.python[0], offline_wheels=offline) == ref
+    record = store.archive.read_descriptor(ref)
+    record_input = record["input"]
+    assert isinstance(record_input, Mapping)
+    assert record_input["wheel_tree_sha256"] == digest
+    root = store.open(ref, code, manifest.python[0])
+    script = root / ".venv/bin/fixture-echo"
+    assert f"{root}/.venv/bin/python" in script.read_text()
+    assert subprocess.run([str(script)], capture_output=True, text=True, check=True).stdout.strip() == "installed v1"
+    write_test_wheel(wheels, "fixture_dep", payload="v2")
+    changed = OfflineWheels(wheels, wheel_tree_sha256(wheels))
+    assert changed.tree_sha256 != digest
+    new_ref = store.prepare(code, manifest.python[0], offline_wheels=changed)
+    assert new_ref != ref
+    assert subprocess.run(
+        [str(store.open(new_ref, code, manifest.python[0]) / ".venv/bin/fixture-echo")],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip() == "installed v2"
+    shutil.rmtree(wheels)
+    assert store.open(ref, code, manifest.python[0]) == root
+    assert store.open(new_ref, code, manifest.python[0]).is_dir()
+
+
+@pytest.mark.parametrize("requirements", [
+    "fixture-echo==1.0\n-r other.txt\n",
+    "-c constraints.txt\nfixture-echo==1.0\n",
+    "--extra-index-url https://example.test\nfixture-echo==1.0\n",
+    "./fixture_echo-1.0-py3-none-any.whl\n",
+    "fixture-echo @ https://example.test/wheel.whl\n",
+    "-e git+https://example.test/repo#egg=fixture-echo\n",
+    "fixture-echo.tar.gz\n",
+    "probe.py\n",
+])
+def test_offline_requirements_reject_unsupported_inputs(tmp_path: Path, requirements: str):
+    code, manifest = source(tmp_path)
+    (code / "requirements.txt").write_text(requirements, encoding="utf-8")
+    wheels = tmp_path / "wheels"
+    write_test_wheel(wheels, "fixture_echo")
+    store = PythonEnvironments(tmp_path / "workspace")
+    with pytest.raises(ValueError, match="离线 requirements"):
+        store.prepare(code, manifest.python[0], offline_wheels=OfflineWheels(wheels, wheel_tree_sha256(wheels)))
+    assert not store.path.exists()
+
+
+def test_offline_wheel_shape_digest_and_missing_dependency_fail_closed(tmp_path: Path):
+    code, manifest = source(tmp_path)
+    (code / "requirements.txt").write_text("fixture-echo[extra]==1.0\n", encoding="utf-8")
+    wheels = tmp_path / "wheels"
+    wheel = write_test_wheel(wheels, "fixture_echo")
+    store = PythonEnvironments(tmp_path / "workspace")
+    digest = wheel_tree_sha256(wheels)
+    with pytest.raises(subprocess.CalledProcessError):
+        store.prepare(code, manifest.python[0], offline_wheels=OfflineWheels(wheels, digest))
+    assert not list(store.path.glob("*.ref"))
+    wheel.write_bytes(wheel.read_bytes() + b"changed")
+    with pytest.raises(ValueError, match="摘要不匹配"):
+        store.prepare(code, manifest.python[0], offline_wheels=OfflineWheels(wheels, digest))
+    (wheels / "junk.txt").write_text("junk")
+    with pytest.raises(ValueError, match="普通 .whl"):
+        wheel_tree_sha256(wheels)
+    (wheels / "junk.txt").unlink()
+    (wheels / "link.whl").symlink_to(wheel)
+    with pytest.raises(ValueError, match="普通 .whl"):
+        wheel_tree_sha256(wheels)
+    (wheels / "link.whl").unlink()
+    alias = tmp_path / "alias"
+    alias.symlink_to(wheels, target_is_directory=True)
+    with pytest.raises(ValueError, match="普通目录"):
+        wheel_tree_sha256(alias)
+
+
+def test_offline_wheel_drift_after_real_pip_does_not_publish(tmp_path: Path, monkeypatch):
+    code, manifest = source(tmp_path)
+    (code / "requirements.txt").write_text("fixture-dep==1.0\n", encoding="utf-8")
+    wheels = tmp_path / "wheels"
+    wheel = write_test_wheel(wheels, "fixture_dep")
+    offline = OfflineWheels(wheels, wheel_tree_sha256(wheels))
+    original = python_environment_module._run
+
+    def change_after_pip(command: list[str], cwd: Path) -> None:
+        original(command, cwd)
+        if "--no-index" in command:
+            wheel.write_bytes(wheel.read_bytes() + b"changed")
+
+    monkeypatch.setattr(python_environment_module, "_run", change_after_pip)
+    store = PythonEnvironments(tmp_path / "workspace")
+    with pytest.raises(ValueError, match="摘要不匹配"):
+        store.prepare(code, manifest.python[0], offline_wheels=offline)
+    assert not list(store.path.glob("*.ref"))
+
+
+def test_open_checks_optional_wheel_digest_but_not_wheel_source(tmp_path: Path):
+    code, manifest = source(tmp_path)
+    store = PythonEnvironments(tmp_path / "workspace")
+    ref = store.prepare(code, manifest.python[0])
+    record = store.archive.read_descriptor(ref)
+    record_input = record["input"]
+    assert isinstance(record_input, Mapping)
+    assert "wheel_tree_sha256" not in record_input
+    assert store.open(ref, code, manifest.python[0]).is_dir()
+    broken = json.loads(json.dumps(record, default=lambda value: dict(value)))
+    broken["input"]["wheel_tree_sha256"] = "bad"
+    broken_ref = store.archive.save_descriptor(broken)
+    with pytest.raises(ValueError, match="wheel 摘要"):
+        store.open(broken_ref, code, manifest.python[0])
+    broken["input"]["wheel_tree_sha256"] = None
+    null_ref = store.archive.save_descriptor(broken)
+    with pytest.raises(ValueError, match="wheel 摘要"):
+        store.open(null_ref, code, manifest.python[0])
 
 
 def test_final_environment_survives_cache_removal_and_rejects_damage(

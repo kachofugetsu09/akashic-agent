@@ -151,8 +151,14 @@ async def test_saved_handle_drains_group_after_wrapper_leader_exits(
             assert os.getpgid(grandchild_pid) == group_id
             # 保存句柄仍排空整个进程组，不依赖 adopt/PID 重建。
             await child.kill(timeout_s=10)
-            with pytest.raises(ProcessLookupError):
+            try:
                 os.kill(grandchild_pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                # 容器 PID 1 可能尚未收割孤儿；僵尸已不能继续执行。
+                state = Path(f"/proc/{grandchild_pid}/stat").read_text().split(") ", 1)[1][0]
+                assert state == "Z"
         finally:
             await child.kill(timeout_s=5)
             if pidfile.exists():

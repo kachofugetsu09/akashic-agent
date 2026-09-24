@@ -8,7 +8,6 @@ from agent.plugin_composition import (
     EMBEDDINGS,
     MODEL_CATALOG,
     MODEL_DRIVERS,
-    SNAPSHOT_SEALING,
     Context,
 )
 
@@ -66,16 +65,11 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.effect(lambda: store.close, label="model-registry-host-lock")
     state = ModelsState(
         store,
-        root_instance_token=ctx.root_instance_token,
         context=ctx,
         capability_catalog=LiteLlmCapabilityCatalog(
             ctx.data_root / "litellm-capabilities.json",
             writable=True,
         ),
-    )
-    _ = await ctx.effect(
-        lambda: state.close_auth_attempts,
-        label="model-auth-attempts",
     )
     _ = await ctx.provide(MODEL_DRIVERS, state.drivers)
     _ = await ctx.provide(CHAT_MODELS, state.chat_models, binding_contributors=state.chat_contributors)
@@ -92,4 +86,3 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MODEL_SELECTION, SelectionOwner())
     for method, operation in rpc_methods(BoundModelControl(ctx)).items():
         _ = await ctx.provide(rpc_method_key(method), operation)
-    _ = await ctx.on(SNAPSHOT_SEALING, state.seal)

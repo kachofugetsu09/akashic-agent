@@ -109,6 +109,11 @@ class OwnerState:
     def __init__(self, log: _MessageLog | None):
         self._log = log
 
+    @property
+    def available(self) -> bool:
+        """Tell providers whether this Root has formal owner storage."""
+        return self._log is not None
+
     def open(self, ctx: Context) -> OwnerStore:
         if self._log is None:
             raise RuntimeError("candidate 验证期禁止访问正式 owner state")

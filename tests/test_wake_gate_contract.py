@@ -19,6 +19,7 @@ from docker.debug.content_wake_h5_e2e import (
     _validate_protected_snapshot,
 )
 from docker.debug.wake_v3_provider_e2e import _run, snapshot_protected_workspace
+from plugins.wake.plugin import _stop_watcher
 
 
 async def _start_provider(
@@ -178,6 +179,17 @@ async def test_wake_provider_200_keeps_v3_request_and_delivery_contract(
 
     assert payload["status"] == "passed"
     assert payload["selected"]["final_state"] == "delivered"
+    recovery = cast(dict[str, object], payload["deterministic_recovery"])
+    assert recovery["first_stop_complete"] is True
+    assert recovery["first_incident_count"] == 1
+    assert recovery["first_failed_attempt_count"] == 1
+    assert recovery["first_pending_source_count"] == 1
+    assert recovery["first_cleanup_recovery_count"] == 0
+    assert recovery["settlement_failure_count"] == 1
+    assert recovery["logical_provider_requests"] == 2
+    assert recovery["delivery_count"] == 1
+    assert recovery["source_ack_count"] == 1
+    assert recovery["source_ack_attempts"] == 2
     assert len(requests) == 2
     for request in requests:
         assert request["model"] == "deepseek-v4-flash"
@@ -233,6 +245,38 @@ async def test_wake_provider_error_is_terminal_and_redacted(
     assert endpoint not in encoded
     assert "fixture-secret-marker" not in encoded
     assert "fixture-provider-body-marker" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_wake_stop_does_not_replay_completed_task_failure() -> None:
+    async def fail_business() -> None:
+        raise RuntimeError("business failed")
+
+    watcher = asyncio.create_task(fail_business())
+    with pytest.raises(RuntimeError, match="business failed"):
+        await watcher
+
+    await _stop_watcher(watcher)
+    assert watcher.done()
+
+
+@pytest.mark.asyncio
+async def test_wake_stop_reports_failure_while_draining() -> None:
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def fail_during_stop() -> None:
+        started.set()
+        try:
+            await blocked.wait()
+        finally:
+            raise RuntimeError("teardown failed")
+
+    watcher = asyncio.create_task(fail_during_stop())
+    await started.wait()
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        await _stop_watcher(watcher)
+    assert watcher.done()
 
 
 def test_h5_manifest_and_protected_workspace_contract(tmp_path: Path) -> None:

@@ -1,50 +1,35 @@
 from __future__ import annotations
 
-from session.inbound_store import InboundHandoffStore
 import asyncio
+import json
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
+from agent.plugin_contracts import json_value
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
     ChannelInboundMessage,
-    ChannelDeliveryReceipt,
-    DeliveryStatus,
+    DURABLE_ATTACHMENT_REFS,
+    DURABLE_HANDOFF_ID,
+    DURABLE_INBOUND_MARKER,
+    DURABLE_PROVIDER_MESSAGE_ID,
     InboundEnvelope,
     InboundOwner,
     InboundState,
     JsonValue,
-    OutboundEnvelope,
     RawInbound,
 )
 from bus.events import InboundMessage
 from bus.queue import MessageBus
+from session.inbound_store import HANDOFF_PROVIDER_IDENTITY_KEY, InboundHandoffStore
 from session.manager import SessionManager
 from session.store import SessionAdmissionConflictError
-
-
-def _v3_outbound() -> tuple[OutboundEnvelope, _OutboundBinding]:
-    envelope = OutboundEnvelope(
-        logical_delivery_id="delivery-1",
-        delivery_id="delivery-1",
-        attempt_sequence=1,
-        snapshot_id="snapshot-1",
-        generation_id="generation-1",
-        binding_token="binding-1",
-        channel="feishu",
-        recipient="chat-1",
-        body="hello",
-        metadata={"kind": "final"},
-    )
-    binding = _OutboundBinding()
-    return envelope, binding
 
 
 class _InboundLease:
@@ -58,10 +43,6 @@ class _InboundLease:
         self.generation_id = "generation-1"
         self.binding_token = "binding-1"
         self.channel_name = channel
-        self.snapshot_lease = SimpleNamespace(
-            active=True,
-            snapshot=SimpleNamespace(snapshot_id=self.snapshot_id),
-        )
         self.closed = 0
         self.closed_event = asyncio.Event()
         self.close_gate = close_gate
@@ -110,13 +91,101 @@ def _v3_inbound(
     return envelope, lease
 
 
-@dataclass(frozen=True)
-class _OutboundBinding:
-    snapshot_id: str = "snapshot-1"
-    generation_id: str = "generation-1"
-    binding_token: str = "binding-1"
-    channel_name: str = "feishu"
-    active: bool = True
+def _durable_raw(
+    *,
+    session_key: str,
+    handoff_id: str,
+    message_id: str,
+    provider_identity: str | None,
+    recipient: str | None,
+    sender: str = "display-sender",
+    chat_id: str = "display-chat",
+    content: str = "durable payload",
+    metadata_extra: dict[str, JsonValue] | None = None,
+    attachments: tuple[AttachmentRef, ...] = (),
+) -> RawInbound:
+    """Build one durable input whose provider and display identities differ."""
+
+    metadata: dict[str, JsonValue] = {
+        "session_key_override": session_key,
+        DURABLE_PROVIDER_MESSAGE_ID: message_id,
+        DURABLE_INBOUND_MARKER: True,
+        DURABLE_HANDOFF_ID: handoff_id,
+        "business": {"keep": True},
+    }
+    if metadata_extra is not None:
+        metadata.update(metadata_extra)
+    return RawInbound(
+        message_id=message_id,
+        provider_identity=provider_identity,
+        recipient=recipient,
+        message=ChannelInboundMessage(
+            channel="identity-test",
+            sender=sender,
+            chat_id=chat_id,
+            content=content,
+            timestamp=datetime(2026, 9, 23, tzinfo=timezone.utc),
+            metadata=metadata,
+            attachments=attachments,
+        ),
+    )
+
+
+def _insert_handoff(
+    store: InboundHandoffStore,
+    raw: RawInbound,
+    metadata: dict[str, JsonValue],
+    *,
+    dedupe_key: str | None = None,
+) -> tuple[str, bool]:
+    """Insert a fixed test handoff without invoking recovery or rewriting it."""
+
+    return store.reserve_inbound_handoff(
+        handoff_id=cast(str, raw.message.metadata[DURABLE_HANDOFF_ID]),
+        dedupe_key=dedupe_key,
+        channel=raw.message.channel,
+        sender=raw.message.sender,
+        chat_id=raw.message.chat_id,
+        session_key=cast(str, raw.message.metadata["session_key_override"]),
+        content=raw.message.content,
+        timestamp=raw.message.timestamp.isoformat(),
+        media_json="[]",
+        metadata_json=json.dumps(
+            json_value(metadata), ensure_ascii=False, separators=(",", ":")
+        ),
+        created_at="2026-09-23T00:00:00+00:00",
+    )
+
+
+async def _durable_bus(manager: SessionManager) -> MessageBus:
+    bus = MessageBus()
+    try:
+        bus.bind_durable_inbound_store(manager.inbound_store)
+        bus.bind_session_admission_owner(manager.admissions)
+    except BaseException:
+        await bus.aclose()
+        raise
+    return bus
+
+
+def _legacy_mobile_metadata(raw: RawInbound) -> dict[str, JsonValue]:
+    return {
+        "mobile_v3_handoff": True,
+        "mobile_handoff_id": cast(str, raw.message.metadata[DURABLE_HANDOFF_ID]),
+        "client_message_id": raw.message_id,
+        "mobile_v3_attachment_refs": (),
+        "session_key_override": cast(str, raw.message.metadata["session_key_override"]),
+        "business": {"keep": True},
+    }
+
+
+def _raw_handoff_row(store: InboundHandoffStore, handoff_id: str) -> tuple[object, ...]:
+    row = store._conn.execute(
+        "SELECT * FROM inbound_handoffs WHERE handoff_id = ?",
+        (handoff_id,),
+    ).fetchone()
+    assert row is not None
+    return tuple(row)
 
 
 @pytest.mark.asyncio
@@ -214,342 +283,6 @@ async def test_cleanup_finalize_failure_is_fatal_and_observable(
 
 
 @pytest.mark.asyncio
-async def test_removed_legacy_outbound_paths_fail_loud() -> None:
-    bus = MessageBus()
-
-    with pytest.raises(RuntimeError, match="legacy publish_outbound 已删除"):
-        await bus.publish_outbound(object())
-    with pytest.raises(RuntimeError, match="legacy publish_outbound_awaited 已删除"):
-        await bus.publish_outbound_awaited(object())
-    assert bus.outbound_size == 0
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_outbound_returns_exact_provider_receipt_once() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def deliver(
-        received: OutboundEnvelope,
-        owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        assert received is envelope
-        assert owner is binding
-        return ChannelDeliveryReceipt(
-            delivery_id=received.delivery_id,
-            status=DeliveryStatus.DELIVERED,
-            provider_ids=("provider-1",),
-        )
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    receipt = await bus.publish_channel_outbound_awaited(envelope, binding)
-    assert receipt.status is DeliveryStatus.DELIVERED
-    assert receipt.provider_ids == ("provider-1",)
-    assert calls == 1
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_pre_provider_commit_fences_adapter_effect() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    provider_calls = 0
-
-    async def deliver(
-        _received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal provider_calls
-        provider_calls += 1
-        raise AssertionError("failed pre-provider commit must fence adapter effect")
-
-    def reject_commit() -> None:
-        raise RuntimeError("ledger commit failed")
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    receipt = await bus.publish_channel_outbound_awaited(
-        envelope,
-        binding,
-        passive=False,
-        before_provider=reject_commit,
-    )
-
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert receipt.error == "ledger commit failed"
-    assert provider_calls == 0
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_direct_channel_outbound_waits_for_passive_turn() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    entered = asyncio.Event()
-
-    async def deliver(
-        received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        entered.set()
-        return ChannelDeliveryReceipt(
-            received.delivery_id,
-            DeliveryStatus.DELIVERED,
-        )
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    await bus.chat_lane.mark_passive_pending(
-        envelope.channel,
-        envelope.recipient,
-    )
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    pending = asyncio.create_task(
-        bus.publish_channel_outbound_awaited(
-            envelope,
-            binding,
-            passive=False,
-        )
-    )
-    await asyncio.sleep(0)
-    assert not entered.is_set()
-    assert not pending.done()
-
-    await bus.chat_lane.mark_passive_done(
-        envelope.channel,
-        envelope.recipient,
-    )
-    receipt = await asyncio.wait_for(pending, timeout=1)
-    assert receipt.status is DeliveryStatus.DELIVERED
-    assert entered.is_set()
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_direct_channel_wait_is_rejected_by_terminal_bus_close() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def deliver(
-        _received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("关闭前仍在 lane 等待的 direct push 不得调用 provider")
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    await bus.chat_lane.mark_passive_pending(
-        envelope.channel,
-        envelope.recipient,
-    )
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    pending = asyncio.create_task(
-        bus.publish_channel_outbound_awaited(
-            envelope,
-            binding,
-            passive=False,
-        )
-    )
-    while bus.outbound_size:
-        await asyncio.sleep(0)
-
-    await asyncio.wait_for(bus.aclose(), timeout=1)
-    receipt = await asyncio.wait_for(pending, timeout=1)
-
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert calls == 0
-    assert dispatch.done()
-    await bus.chat_lane.mark_passive_done(
-        envelope.channel,
-        envelope.recipient,
-    )
-
-
-@pytest.mark.asyncio
-async def test_v3_passive_channel_outbound_does_not_wait_for_its_own_turn() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def deliver(
-        received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        return ChannelDeliveryReceipt(
-            received.delivery_id,
-            DeliveryStatus.DELIVERED,
-        )
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    await bus.chat_lane.mark_passive_pending(
-        envelope.channel,
-        envelope.recipient,
-    )
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-
-    receipt = await asyncio.wait_for(
-        bus.publish_channel_outbound_awaited(
-            envelope,
-            binding,
-            passive=True,
-        ),
-        timeout=1,
-    )
-
-    assert receipt.status is DeliveryStatus.DELIVERED
-    assert calls == 1
-    await bus.chat_lane.mark_passive_done(
-        envelope.channel,
-        envelope.recipient,
-    )
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_outbound_exception_is_unknown_without_retry() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def fail_after_effect(
-        _received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        raise RuntimeError("provider receipt lost")
-
-    bus.bind_channel_outbound_dispatcher(fail_after_effect)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    receipt = await bus.publish_channel_outbound_awaited(envelope, binding)
-    assert receipt.status is DeliveryStatus.FAILED
-    assert receipt.error == "provider receipt lost"
-    assert calls == 1
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_outbound_cancel_waits_for_provider_settlement() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    calls = 0
-
-    async def blocked_delivery(
-        received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        entered.set()
-        await release.wait()
-        return ChannelDeliveryReceipt(
-            received.delivery_id,
-            DeliveryStatus.DELIVERED,
-        )
-
-    bus.bind_channel_outbound_dispatcher(blocked_delivery)
-    dispatch = asyncio.create_task(bus.dispatch_outbound())
-    pending = asyncio.create_task(
-        bus.publish_channel_outbound_awaited(envelope, binding)
-    )
-    await asyncio.wait_for(entered.wait(), timeout=1)
-    pending.cancel()
-    await asyncio.sleep(0)
-    assert not pending.done()
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-    assert calls == 1
-    assert bus._pending_channel_receipts == set()
-    bus.stop()
-    await dispatch
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_queued_receipt_rejected_on_bus_close() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    pending = asyncio.create_task(
-        bus.publish_channel_outbound_awaited(envelope, binding)
-    )
-    await asyncio.sleep(0)
-    assert len(bus._pending_channel_receipts) == 1
-    await bus.aclose()
-    receipt = await pending
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert bus._pending_channel_receipts == set()
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_publish_after_bus_close_is_immediately_rejected() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    calls = 0
-
-    async def deliver(
-        _received: OutboundEnvelope,
-        _owner: Any,
-    ) -> ChannelDeliveryReceipt:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("closed bus must not dispatch")
-
-    bus.bind_channel_outbound_dispatcher(deliver)
-    await bus.aclose()
-
-    receipt = await bus.publish_channel_outbound_awaited(envelope, binding)
-
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert calls == 0
-    assert bus.outbound_size == 0
-    await bus.dispatch_outbound()
-    assert calls == 0
-
-
-@pytest.mark.asyncio
-async def test_v3_channel_publish_blocked_at_lane_is_rejected_by_concurrent_close() -> None:
-    bus = MessageBus()
-    envelope, binding = _v3_outbound()
-    key, state = bus._chat_lane._acquire_state(
-        envelope.channel,
-        envelope.recipient,
-    )
-    try:
-        await state.condition.acquire()
-        pending = asyncio.create_task(
-            bus.publish_channel_outbound_awaited(envelope, binding)
-        )
-        await asyncio.sleep(0)
-        closing = asyncio.create_task(bus.aclose())
-        await asyncio.sleep(0)
-        assert not pending.done()
-        state.condition.release()
-        await closing
-        receipt = await pending
-    finally:
-        if state.condition.locked():
-            state.condition.release()
-        bus._chat_lane._release_state(key, state)
-
-    assert receipt.status is DeliveryStatus.REJECTED
-    assert bus.outbound_size == 0
-
-
-@pytest.mark.asyncio
 async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
     tmp_path: Path,
 ) -> None:
@@ -628,7 +361,7 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
     await asyncio.sleep(0)
     closing = asyncio.create_task(bus.aclose())
     await asyncio.sleep(0)
-    assert bus._outbound_closed is True
+    assert bus._closed is True
     assert not reserving.done()
     assert not closing.done()
     bus._durable_handoff_lock.release()
@@ -672,24 +405,15 @@ async def test_channel_authority_rejects_untrusted_session_override_before_enque
         timestamp=datetime.now(timezone.utc), metadata=metadata,
     ))
     with pytest.raises(RuntimeError, match='只属于'):
-        await host._admit_inbound(('snapshot', channel), raw)
+        await host._admit_inbound_scoped(('snapshot', channel), raw)
 
 
-def test_source_admission_boot_id_is_shared_across_roots():
-    from agent.plugin_composition.admission import SourceAdmission
+def test_host_info_boot_id_is_shared_across_roots():
+    from agent.plugin_composition.host import HostInfo
 
-    first = SourceAdmission(
-        cast(Any, SimpleNamespace(root_instance_token=object())), cast(Any, None),
-        boot_id="host-1", candidate=False,
-    )
-    second = SourceAdmission(
-        cast(Any, SimpleNamespace(root_instance_token=object())), cast(Any, None),
-        boot_id="host-1", candidate=False,
-    )
-    other = SourceAdmission(
-        cast(Any, SimpleNamespace(root_instance_token=object())), cast(Any, None),
-        boot_id="host-2", candidate=False,
-    )
+    first = HostInfo("host-1", False)
+    second = HostInfo("host-1", False)
+    other = HostInfo("host-2", False)
     assert first.boot_id == second.boot_id
     assert first.boot_id != other.boot_id
 
@@ -718,27 +442,37 @@ def test_plugin_manager_without_gate_gets_one_fresh_host_boot_id(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> None:
     from agent.plugin_composition.channels import ChannelCapability, InboundIdentity
-    from plugins.channels.provider import PluginChannels
+    from agent.plugin_composition.context import CompositionRoot
+    from plugins.channels.provider import PluginChannels, _ChannelBindingState
 
     async def unused(*args):
         return None
 
-    host = object.__new__(PluginChannels)
-    states = {}
-    for channel in ("alpha", "beta"):
-        states[("snapshot", channel)] = SimpleNamespace(
+    root = CompositionRoot("channel-routing")
+    async def apply(_ctx):
+        return None
+
+    fiber = await root.mount(apply, name="channel-owner")
+    context = fiber.context
+
+    def binding(channel, snapshot):
+        return _ChannelBindingState(
+            snapshot_id=snapshot, plugin_id="channel-owner", generation_id="test",
             channel_name=channel,
             capabilities=(ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
+            factory=lambda _context: pytest.fail("recovery must not start an adapter"),
+            adapter=None, binding_token=channel, config={}, factory_context=None,
+            plugin_context=context, activation_token=context.fiber.activation_token,
             admission_open=True,
-            stopping=False,
-            stopped=False,
         )
+
+    host = object.__new__(PluginChannels)
+    states = {("snapshot", channel): binding(channel, "snapshot") for channel in ("alpha", "beta")}
     host._bindings = states
     seen = []
 
-    async def recover(key, raw, **kwargs):
-        assert kwargs.get("_use_recovery_snapshot_lease") is True
+    async def recover(key, raw):
         seen.append((key, raw.message.channel))
         return True
 
@@ -761,19 +495,15 @@ async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> Non
             },
         ),
     )
-    assert await host.recover_inbound(raw) is True
-    assert seen == [(("snapshot", "beta"), "beta")]
+    try:
+        assert await host.recover_inbound(raw) is True
+        assert seen == [(("snapshot", "beta"), "beta")]
 
-    states[("other", "beta")] = SimpleNamespace(
-        channel_name="beta",
-        capabilities=(ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND),
-        inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-        admission_open=True,
-        stopping=False,
-        stopped=False,
-    )
-    with pytest.raises(RuntimeError, match="不唯一"):
-        await host.recover_inbound(raw)
+        states[("other", "beta")] = binding("beta", "other")
+        with pytest.raises(RuntimeError, match="不唯一"):
+            await host.recover_inbound(raw)
+    finally:
+        await root.dispose()
 
 
 @pytest.mark.asyncio
@@ -925,3 +655,535 @@ async def test_mobile_envelope_session_must_match_durable_handoff_before_reserve
         await bus.prepare_channel_input(envelope)
     assert lease.closed == 1
     assert bus.inbound_size == 0
+
+
+@pytest.mark.parametrize(
+    ("provider_identity", "recipient"),
+    [("exact-provider", "exact-recipient"), (None, None)],
+    ids=("independent-identity", "explicit-none-pair"),
+)
+@pytest.mark.asyncio
+async def test_durable_provider_identity_roundtrips_after_store_reopen(
+    tmp_path: Path,
+    provider_identity: str | None,
+    recipient: str | None,
+) -> None:
+    workspace = tmp_path / "workspace"
+    session_key = "identity-test:session-1"
+    manager = SessionManager(workspace)
+    bus: MessageBus | None = None
+    try:
+        manager.save(manager.get_or_create(session_key))
+        bus = await _durable_bus(manager)
+        attachment = AttachmentRef(
+            artifact_id="identity-artifact",
+            kind=AttachmentKind.FILE,
+            filename=None,
+            media_type=None,
+            size_bytes=0,
+            sha256="a" * 64,
+        )
+        raw = _durable_raw(
+            session_key=session_key,
+            handoff_id="identity-handoff",
+            message_id="provider-message-1",
+            provider_identity=provider_identity,
+            recipient=recipient,
+            metadata_extra={"provider_option": "kept"},
+            attachments=(attachment,),
+        )
+        assert await bus.reserve_durable_inbound(raw) is True
+        assert await bus.reserve_durable_inbound(raw) is True
+        rows = manager.inbound_store.list_inbound_handoffs()
+        assert len(rows) == 1
+        stored_metadata = json.loads(cast(str, rows[0]["metadata_json"]))
+        assert stored_metadata[HANDOFF_PROVIDER_IDENTITY_KEY] == {
+            "version": 1,
+            "provider_identity": provider_identity,
+            "recipient": recipient,
+        }
+        assert stored_metadata["provider_option"] == "kept"
+        assert raw.message.metadata.get(HANDOFF_PROVIDER_IDENTITY_KEY) is None
+        stored_row = _raw_handoff_row(manager.inbound_store, "identity-handoff")
+    finally:
+        try:
+            if bus is not None:
+                await bus.aclose()
+        finally:
+            manager.close()
+
+    reopened = SessionManager(workspace)
+    recovery_bus: MessageBus | None = None
+    try:
+        recovery_bus = await _durable_bus(reopened)
+        recovered: list[RawInbound] = []
+
+        async def observe_recovery(item: RawInbound) -> bool:
+            recovered.append(item)
+            return False
+
+        recovery_bus.bind_durable_inbound_recoverer(observe_recovery)
+        await recovery_bus.recover_durable_inbounds()
+        assert len(recovered) == 1
+        item = recovered[0]
+        assert (item.provider_identity, item.recipient) == (
+            provider_identity,
+            recipient,
+        )
+        assert (item.message.sender, item.message.chat_id) == (
+            "display-sender",
+            "display-chat",
+        )
+        assert item.message.content == "durable payload"
+        assert item.message.attachments == (attachment,)
+        assert item.message.metadata["provider_option"] == "kept"
+        assert item.message.metadata["business"] == {"keep": True}
+        assert item.message.metadata[DURABLE_PROVIDER_MESSAGE_ID] == raw.message_id
+        assert item.message.metadata[DURABLE_HANDOFF_ID] == "identity-handoff"
+        assert HANDOFF_PROVIDER_IDENTITY_KEY not in item.message.metadata
+        assert _raw_handoff_row(reopened.inbound_store, "identity-handoff") == stored_row
+        assert reopened.inbound_store.list_inbound_handoffs()[0]["handoff_id"] == (
+            "identity-handoff"
+        )
+        assert recovery_bus._recovery_claimed == set()
+    finally:
+        try:
+            if recovery_bus is not None:
+                await recovery_bus.aclose()
+        finally:
+            reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_old_mobile_handoff_read_and_recovery_keep_legacy_projection_only(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    session_key = "identity-test:legacy"
+    manager = SessionManager(workspace)
+    bus: MessageBus | None = None
+    try:
+        manager.save(manager.get_or_create(session_key))
+        raw = _durable_raw(
+            session_key=session_key,
+            handoff_id="legacy-handoff",
+            message_id="legacy-provider-message",
+            provider_identity=None,
+            recipient=None,
+        )
+        legacy_metadata = _legacy_mobile_metadata(raw)
+        store = manager.inbound_store
+        assert _insert_handoff(
+            store,
+            raw,
+            legacy_metadata,
+            dedupe_key=f"mobile:{session_key}:{raw.message_id}",
+        ) == ("legacy-handoff", True)
+        row_before = _raw_handoff_row(store, "legacy-handoff")
+        metadata_before = cast(str, row_before[-2]).encode("utf-8")
+        bus = await _durable_bus(manager)
+        recovered: list[RawInbound] = []
+
+        async def observe_recovery(item: RawInbound) -> bool:
+            recovered.append(item)
+            return False
+
+        bus.bind_durable_inbound_recoverer(observe_recovery)
+        projected = store.read_inbound_handoff(
+            channel=raw.message.channel,
+            session_key=session_key,
+            provider_message_id=raw.message_id,
+        )
+        assert projected is not None
+        projected_metadata = json.loads(cast(str, projected["metadata_json"]))
+        assert projected_metadata[DURABLE_INBOUND_MARKER] is True
+        assert projected_metadata[DURABLE_HANDOFF_ID] == "legacy-handoff"
+        assert projected_metadata[DURABLE_PROVIDER_MESSAGE_ID] == raw.message_id
+        assert projected_metadata[DURABLE_ATTACHMENT_REFS] == []
+        assert HANDOFF_PROVIDER_IDENTITY_KEY not in projected_metadata
+        assert cast(str, _raw_handoff_row(store, "legacy-handoff")[-2]).encode(
+            "utf-8"
+        ) == metadata_before
+        assert _raw_handoff_row(store, "legacy-handoff") == row_before
+
+        await bus.recover_durable_inbounds()
+        assert len(recovered) == 1
+        assert (recovered[0].provider_identity, recovered[0].recipient) == (
+            raw.message.sender,
+            raw.message.chat_id,
+        )
+        assert HANDOFF_PROVIDER_IDENTITY_KEY not in recovered[0].message.metadata
+        assert cast(str, _raw_handoff_row(store, "legacy-handoff")[-2]).encode(
+            "utf-8"
+        ) == metadata_before
+        assert _raw_handoff_row(store, "legacy-handoff") == row_before
+        assert bus._recovery_claimed == set()
+    finally:
+        try:
+            if bus is not None:
+                await bus.aclose()
+        finally:
+            manager.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_handoff_repush_is_idempotent_only_for_its_old_identity_pair(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    session_key = "identity-test:legacy-repush"
+    manager = SessionManager(workspace)
+    bus: MessageBus | None = None
+    try:
+        manager.save(manager.get_or_create(session_key))
+        raw = _durable_raw(
+            session_key=session_key,
+            handoff_id="legacy-repush-handoff",
+            message_id="legacy-repush-message",
+            provider_identity="display-sender",
+            recipient="display-chat",
+        )
+        _insert_handoff(
+            manager.inbound_store,
+            raw,
+            _legacy_mobile_metadata(raw),
+            dedupe_key=f"mobile:{session_key}:{raw.message_id}",
+        )
+        before = _raw_handoff_row(manager.inbound_store, "legacy-repush-handoff")
+        bus = await _durable_bus(manager)
+        requested = _durable_raw(
+            session_key=session_key,
+            handoff_id="legacy-repush-handoff",
+            message_id="legacy-repush-message",
+            provider_identity="display-sender",
+            recipient="display-chat",
+            metadata_extra=_legacy_mobile_metadata(raw),
+        )
+        assert await bus.reserve_durable_inbound(requested) is True
+        assert _raw_handoff_row(manager.inbound_store, "legacy-repush-handoff") == before
+        assert len(manager.inbound_store.list_inbound_handoffs()) == 1
+    finally:
+        try:
+            if bus is not None:
+                await bus.aclose()
+        finally:
+            manager.close()
+
+
+@pytest.mark.parametrize(
+    "change",
+    ("different-pair", "explicit-none-pair", "business-metadata", "content"),
+)
+@pytest.mark.asyncio
+async def test_legacy_handoff_repush_rejects_changed_identity(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    session_key = f"identity-test:legacy-conflict:{change}"
+    manager = SessionManager(workspace)
+    bus: MessageBus | None = None
+    try:
+        manager.save(manager.get_or_create(session_key))
+        original = _durable_raw(
+            session_key=session_key,
+            handoff_id="legacy-conflict-handoff",
+            message_id="legacy-conflict-message",
+            provider_identity=None,
+            recipient=None,
+        )
+        _insert_handoff(
+            manager.inbound_store,
+            original,
+            _legacy_mobile_metadata(original),
+            dedupe_key=f"mobile:{session_key}:{original.message_id}",
+        )
+        before = _raw_handoff_row(manager.inbound_store, "legacy-conflict-handoff")
+        pair = {
+            "different-pair": ("other-provider", "other-recipient"),
+            "explicit-none-pair": (None, None),
+            "business-metadata": ("display-sender", "display-chat"),
+            "content": ("display-sender", "display-chat"),
+        }[change]
+        extras = _legacy_mobile_metadata(original)
+        if change == "business-metadata":
+            extras["business"] = {"changed": True}
+        content = "changed payload" if change == "content" else "durable payload"
+        requested = _durable_raw(
+            session_key=session_key,
+            handoff_id="legacy-conflict-handoff",
+            message_id="legacy-conflict-message",
+            provider_identity=pair[0],
+            recipient=pair[1],
+            content=content,
+            metadata_extra=extras,
+        )
+        bus = await _durable_bus(manager)
+        with pytest.raises(RuntimeError, match="inbound handoff identity conflict"):
+            await bus.reserve_durable_inbound(requested)
+        assert _raw_handoff_row(manager.inbound_store, "legacy-conflict-handoff") == before
+        assert bus._durable_admissions == {}
+    finally:
+        try:
+            if bus is not None:
+                await bus.aclose()
+        finally:
+            manager.close()
+
+
+@pytest.mark.asyncio
+async def test_new_handoff_repush_rejects_changed_provider_identity_pair(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    session_key = "identity-test:new-conflict"
+    manager = SessionManager(workspace)
+    bus: MessageBus | None = None
+    try:
+        manager.save(manager.get_or_create(session_key))
+        original = _durable_raw(
+            session_key=session_key,
+            handoff_id="new-conflict-handoff",
+            message_id="new-conflict-message",
+            provider_identity="provider-original",
+            recipient="recipient-original",
+        )
+        bus = await _durable_bus(manager)
+        assert await bus.reserve_durable_inbound(original) is True
+        before = _raw_handoff_row(manager.inbound_store, "new-conflict-handoff")
+        changed = _durable_raw(
+            session_key=session_key,
+            handoff_id="new-conflict-handoff",
+            message_id="new-conflict-message",
+            provider_identity="provider-changed",
+            recipient="recipient-original",
+        )
+        with pytest.raises(RuntimeError, match="inbound handoff identity conflict"):
+            await bus.reserve_durable_inbound(changed)
+        assert _raw_handoff_row(manager.inbound_store, "new-conflict-handoff") == before
+    finally:
+        try:
+            if bus is not None:
+                await bus.aclose()
+        finally:
+            manager.close()
+
+
+@pytest.mark.asyncio
+async def test_business_metadata_cannot_forge_reserved_handoff_identity(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    session_key = "identity-test:reserved-key"
+    manager = SessionManager(workspace)
+    bus: MessageBus | None = None
+    try:
+        manager.save(manager.get_or_create(session_key))
+        raw = _durable_raw(
+            session_key=session_key,
+            handoff_id="reserved-key-handoff",
+            message_id="reserved-key-message",
+            provider_identity="provider",
+            recipient="recipient",
+            metadata_extra={
+                HANDOFF_PROVIDER_IDENTITY_KEY: {
+                    "version": 1,
+                    "provider_identity": "forged",
+                    "recipient": "forged-recipient",
+                }
+            },
+        )
+        original_metadata = dict(raw.message.metadata)
+        bus = await _durable_bus(manager)
+        with pytest.raises(ValueError, match="reserved identity key"):
+            await bus.reserve_durable_inbound(raw)
+        assert dict(raw.message.metadata) == original_metadata
+        assert manager.inbound_store.list_inbound_handoffs() == []
+        assert bus._durable_admissions == {}
+    finally:
+        try:
+            if bus is not None:
+                await bus.aclose()
+        finally:
+            manager.close()
+
+
+@pytest.mark.parametrize(
+    "bad_identity",
+    (
+        {"version": 2, "provider_identity": "provider", "recipient": "recipient"},
+        {"version": 1, "provider_identity": "provider"},
+        {"version": True, "provider_identity": "provider", "recipient": "recipient"},
+        {"version": 1, "provider_identity": 5, "recipient": "recipient"},
+        {"version": 1, "provider_identity": None, "recipient": "recipient"},
+        {"version": 1, "provider_identity": "", "recipient": "recipient"},
+    ),
+    ids=("unknown-version", "missing-member", "bool-version", "wrong-type", "partial-pair", "invalid-text"),
+)
+@pytest.mark.asyncio
+async def test_corrupt_new_identity_handoff_fails_without_consuming_row(
+    tmp_path: Path,
+    bad_identity: dict[str, JsonValue],
+) -> None:
+    store = InboundHandoffStore(tmp_path / "sessions.db")
+    bus: MessageBus | None = None
+    try:
+        bus = MessageBus()
+        bus.bind_durable_inbound_store(store)
+        raw = _durable_raw(
+            session_key="identity-test:corrupt",
+            handoff_id="corrupt-identity-handoff",
+            message_id="corrupt-identity-message",
+            provider_identity="provider",
+            recipient="recipient",
+        )
+        metadata: dict[str, JsonValue] = dict(raw.message.metadata)
+        metadata[DURABLE_ATTACHMENT_REFS] = ()
+        metadata[HANDOFF_PROVIDER_IDENTITY_KEY] = {
+            "version": 1,
+            "provider_identity": "provider",
+            "recipient": "recipient",
+        }
+        _insert_handoff(store, raw, metadata)
+        row = _raw_handoff_row(store, "corrupt-identity-handoff")
+        corrupted = json.loads(cast(str, row[-2]))
+        corrupted[HANDOFF_PROVIDER_IDENTITY_KEY] = bad_identity
+        store._conn.execute(
+            "UPDATE inbound_handoffs SET metadata_json = ? WHERE handoff_id = ?",
+            (
+                json.dumps(corrupted, separators=(",", ":")),
+                "corrupt-identity-handoff",
+            ),
+        )
+        store._conn.commit()
+        before = _raw_handoff_row(store, "corrupt-identity-handoff")
+        recover_calls: list[RawInbound] = []
+
+        async def observe_recovery(item: RawInbound) -> bool:
+            recover_calls.append(item)
+            return True
+
+        bus.bind_durable_inbound_recoverer(observe_recovery)
+        with pytest.raises(ValueError):
+            await bus.recover_durable_inbounds()
+        assert recover_calls == []
+        assert _raw_handoff_row(store, "corrupt-identity-handoff") == before
+        assert bus._recovery_claimed == set()
+    finally:
+        try:
+            if bus is not None:
+                await bus.aclose()
+        finally:
+            store.close()
+
+
+@pytest.mark.parametrize("dedupe_kind", ("null", "legacy"))
+@pytest.mark.asyncio
+async def test_corrupt_identity_cannot_disappear_from_legacy_lookup_or_repush(
+    tmp_path: Path,
+    dedupe_kind: str,
+) -> None:
+    store = InboundHandoffStore(tmp_path / "sessions.db")
+    try:
+        session_key = f"identity-test:corrupt-lookup:{dedupe_kind}"
+        original = _durable_raw(
+            session_key=session_key,
+            handoff_id="corrupt-lookup-handoff",
+            message_id="corrupt-lookup-message",
+            provider_identity=None,
+            recipient=None,
+        )
+        dedupe_key = (
+            None
+            if dedupe_kind == "null"
+            else f"mobile:{session_key}:{original.message_id}"
+        )
+        _insert_handoff(
+            store,
+            original,
+            _legacy_mobile_metadata(original),
+            dedupe_key=dedupe_key,
+        )
+        before = _raw_handoff_row(store, "corrupt-lookup-handoff")
+        corrupted = json.loads(cast(str, before[-2]))
+        corrupted[HANDOFF_PROVIDER_IDENTITY_KEY] = {
+            "version": 2,
+            "provider_identity": "display-sender",
+            "recipient": "display-chat",
+        }
+        store._conn.execute(
+            "UPDATE inbound_handoffs SET metadata_json = ? WHERE handoff_id = ?",
+            (
+                json.dumps(corrupted, ensure_ascii=False, separators=(",", ":")),
+                "corrupt-lookup-handoff",
+            ),
+        )
+        store._conn.commit()
+        corrupted_before = _raw_handoff_row(store, "corrupt-lookup-handoff")
+
+        with pytest.raises(ValueError, match="version unsupported"):
+            store.read_inbound_handoff(
+                channel=original.message.channel,
+                session_key=session_key,
+                provider_message_id=original.message_id,
+            )
+        assert _raw_handoff_row(store, "corrupt-lookup-handoff") == corrupted_before
+
+        retry = _durable_raw(
+            session_key=session_key,
+            handoff_id="corrupt-lookup-retry",
+            message_id=original.message_id,
+            provider_identity=original.message.sender,
+            recipient=original.message.chat_id,
+        )
+        retry_metadata: dict[str, JsonValue] = dict(retry.message.metadata)
+        retry_metadata[HANDOFF_PROVIDER_IDENTITY_KEY] = {
+            "version": 1,
+            "provider_identity": retry.provider_identity,
+            "recipient": retry.recipient,
+        }
+        retry_metadata[DURABLE_ATTACHMENT_REFS] = ()
+        with pytest.raises(ValueError, match="version unsupported"):
+            _insert_handoff(
+                store,
+                retry,
+                retry_metadata,
+                dedupe_key=(
+                    f"{retry.message.channel}:{session_key}:{retry.message_id}"
+                ),
+            )
+
+        rows = store._conn.execute(
+            "SELECT COUNT(*) FROM inbound_handoffs"
+        ).fetchone()
+        assert rows is not None and rows[0] == 1
+        assert _raw_handoff_row(store, "corrupt-lookup-handoff") == corrupted_before
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_reserve_rejects_unknown_identity_version_without_inserting_row(
+    tmp_path: Path,
+) -> None:
+    store = InboundHandoffStore(tmp_path / "sessions.db")
+    try:
+        raw = _durable_raw(
+            session_key="identity-test:corrupt-request",
+            handoff_id="corrupt-request-handoff",
+            message_id="corrupt-request-message",
+            provider_identity="provider",
+            recipient="recipient",
+        )
+        metadata: dict[str, JsonValue] = dict(raw.message.metadata)
+        metadata[HANDOFF_PROVIDER_IDENTITY_KEY] = {
+            "version": 2,
+            "provider_identity": "provider",
+            "recipient": "recipient",
+        }
+        metadata[DURABLE_ATTACHMENT_REFS] = ()
+        with pytest.raises(ValueError, match="version unsupported"):
+            _insert_handoff(store, raw, metadata)
+        assert store.list_inbound_handoffs() == []
+    finally:
+        store.close()

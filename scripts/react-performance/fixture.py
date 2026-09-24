@@ -25,7 +25,7 @@ from tests.test_default_reply import application
 from tests.test_delivery_bindings import sources as delivery_sources
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugin_composition.models import BoundModelDescriptor
 from session.log import MessageCatalog, MessageLog, MessageReader, MessageWriter
 from session.message import (
     ContentPart,
@@ -85,20 +85,23 @@ def extras(mode):
             'return Result("success",',
             'mark("tool_return")\n            return Result("success",',
         )
+        compile(code, str(provider), "exec")
         provider.write_text(code)
         sender = sources / "test_sender/plugin.py"
-        sender.write_text(
+        sender_code = (
             "from latency_probe_marks import mark\n"
             + sender.read_text().replace(
                 "async def send(self, key, address, message):",
                 'async def send(self, key, address, message):\n            mark("sender_enter")',
             )
         )
+        compile(sender_code, str(sender), "exec")
+        sender.write_text(sender_code)
 
     return setup
 
 
-def seed(log, count, model_store=None, model_descriptor=None):
+def seed(log, count, model_store=None, model_descriptor: BoundModelDescriptor | None = None):
     """只在一次性数据库填入历史与成功模型账，再推进已有发送 cursor。"""
     if count == 0:
         return
@@ -127,6 +130,7 @@ def seed(log, count, model_store=None, model_descriptor=None):
             "body": output if index % 2 else template["body"],
         }
         if index % 2 and model_store is not None:
+            assert model_descriptor is not None
             from dataclasses import asdict
             from plugins.models.projection import response_facts
             from agent.plugin_composition.models import LLMResponse
@@ -274,12 +278,14 @@ async def run(mode, count, full_history=False):
             if full_history:
                 from agent.plugin_composition import CHAT_MODELS
 
-                async with lease_runtime_snapshot(host.snapshot_store) as runtime:
-                    context = runtime.composition_root.context
-                    assert len(created_stores) == 1
-                    model_store = created_stores[0]
-                    async with context.require(CHAT_MODELS).execution() as execution:
-                        model_descriptor = execution.chat("agent").descriptor
+                root = host.live_root
+                if root is None:
+                    raise RuntimeError("正式 live Root 不可用")
+                context, chat_models = root._service_provider(CHAT_MODELS)
+                assert len(created_stores) == 1
+                model_store = created_stores[0]
+                async with context.runtime_scope(), chat_models.execution() as execution:
+                    model_descriptor = execution.chat("agent").descriptor
             seed(log, count, model_store, model_descriptor)
             await host.start_runtime()
             # 排空启动追赶，让订阅进入等待；启动耗时不计入本次请求。
@@ -291,9 +297,11 @@ async def run(mode, count, full_history=False):
                 await asyncio.sleep(0)
                 if thread_jobs == 0 and finished_jobs == finished:
                     break
-            async with lease_runtime_snapshot(host.snapshot_store) as runtime:
-                root = runtime.composition_root.context
-                accept = root.require(CHANNEL_INPUT)
+            root = host.live_root
+            if root is None:
+                raise RuntimeError("正式 live Root 不可用")
+            context, accept = root._service_provider(CHANNEL_INPUT)
+            async with context.runtime_scope():
                 gc.collect()
                 ACTIVE = True
                 if PROFILE is not None:
@@ -311,10 +319,14 @@ async def run(mode, count, full_history=False):
                 await accept("test:room", "measured-input", message)
                 mark("channel_input_return")
             await asyncio.wait_for(DONE.wait(), 300)
-            async with lease_runtime_snapshot(host.snapshot_store) as runtime:
-                delivery = runtime.composition_root.context.require(
-                    ServiceKey("fixture.delivery")
-                )()
+            root = host.live_root
+            if root is None:
+                raise RuntimeError("正式 live Root 不可用")
+            context, open_delivery = root._service_provider(
+                ServiceKey("fixture.delivery")
+            )
+            async with context.runtime_scope():
+                delivery = open_delivery()
                 await delivery.wait_idle("test", "room")
             ACTIVE = False
             if PROFILE is not None:
@@ -334,22 +346,21 @@ async def run(mode, count, full_history=False):
             assert (path / "effect.txt").read_text().splitlines() == ["once", "once"]
             sent = list((path / "workspace").rglob("sent.jsonl"))
             assert len(sent) == 1 and len(sent[0].read_text().splitlines()) == 1
-            calls = runtime.composition_root.context.require(
-                ServiceKey("fixture.calls")
-            )
-            assert len(calls) == 3
-            # 比较时只归一化生成 ID；上面的断言另外固定实际效果数量和顺序。
-            request_shapes = [
-                [(m["role"], len(str(m.get("content", "")))) for m in call.messages]
-                for call in calls
-            ]
-            from session.message_codec import json_value
+            context, calls = root._service_provider(ServiceKey("fixture.calls"))
+            async with context.runtime_scope():
+                assert len(calls) == 3
+                # 比较时只归一化生成 ID；上面的断言另外固定实际效果数量和顺序。
+                request_shapes = [
+                    [(m["role"], len(str(m.get("content", "")))) for m in call.messages]
+                    for call in calls
+                ]
+                from session.message_codec import json_value
 
-            normalized = json.dumps(
-                [json_value(call.messages) for call in calls],
-                sort_keys=True,
-                ensure_ascii=False,
-            )
+                normalized = json.dumps(
+                    [json_value(call.messages) for call in calls],
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
             normalized = re.sub(
                 r"/tmp/akashic-flow-perf-[a-zA-Z0-9_-]+", "/tmp/FIXTURE", normalized
             )

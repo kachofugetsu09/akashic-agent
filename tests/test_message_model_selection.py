@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
@@ -13,16 +14,22 @@ from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.models import ModelUnavailableError
 from plugins.models.settings import DisableConnection, MODEL_SETTINGS
-from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
-from plugins.conversation.plugin import CONVERSATION
+from plugins.sources.plugin import SOURCES
 from plugins.models.selection import read_saved
 from session.log import MessageLog, SessionAttributes, WriterExpired
 from session.message import ContentPart, Control, Input, Output
-from tests.test_default_reply import application
+from tests.test_default_reply import application, live_root
 from tests.test_message_services import write_plugins
+
+
+def _write_python_source(path: Path, source: str) -> None:
+    """Validate a generated plugin before the loader sees it."""
+    tree = ast.parse(source, filename=str(path))
+    compile(tree, str(path), "exec")
+    path.write_text(source)
 
 
 def model_provider(sources: Path) -> None:
@@ -30,14 +37,31 @@ def model_provider(sources: Path) -> None:
     driver = sources / "fixture_driver"
     driver.mkdir()
     (driver / "plugin.py").write_text('''
-from agent.plugin_composition import MODEL_DRIVERS
-from plugins.openai_compatible.driver import definition
+from agent.plugin_composition import MODEL_DRIVERS, ModelDriverDefinition, DriverConnection, LLMResponse, ServiceKey
 api_version = 3
 name = "fixture_driver"
 version = "1.0.0"
 inject = (MODEL_DRIVERS,)
 async def apply(ctx):
-    await ctx.require(MODEL_DRIVERS).register(ctx, definition())
+    selected = []
+    class Driver:
+        max_tool_schemas = None
+        async def complete(self, request):
+            return LLMResponse("finished")
+        def estimate_context_tokens(self, messages, tools=()):
+            return 10
+        def estimate_appended_message_tokens(self, messages):
+            return 10
+    async def open_driver(descriptor, credential):
+        def bind_chat(model, config):
+            if model.role == "agent":
+                selected.append((model.model_id, model.reasoning_effort))
+            return Driver()
+        def bind_embedding(model, config):
+            raise AssertionError("chat test opened embedding")
+        return DriverConnection(bind_chat, bind_embedding)
+    await ctx.require(MODEL_DRIVERS).register(ctx, ModelDriverDefinition("openai-compatible", "1", open_driver))
+    await ctx.provide(ServiceKey("fixture.selected"), selected)
 ''')
     path = sources / "test_provider/plugin.py"
     text = path.read_text()
@@ -46,24 +70,49 @@ async def apply(ctx):
         ChatModelSelection,
         ModelKind,
     )
-    from plugins.models.settings import AddConnection, AddModel
+    from plugins.models.settings import AddConnection, AddModel, SetDefaultModel
     if store.read_snapshot().revision == 0:
         store.add_connection(AddConnection(0, "connection", "test", "openai-compatible", "https://example.test/v1", "fixture", {"api_key": "fixture"}))
         store.add_model(AddModel(1, "saved", "connection", ModelKind.CHAT, "fixture", ModelCapabilities(supported_reasoning_efforts=("low", "high")), CapabilitySources()))
-    await ctx.provide(MODEL_DRIVERS, settings.drivers)
-    await ctx.provide(MODEL_CATALOG, settings.catalog)
-    selected = []
-    await ctx.provide(ServiceKey("fixture.selected"), selected)
+        store.set_default(SetDefaultModel(2, "default", "saved"))
+    model_state = settings
+    await ctx.provide(MODEL_DRIVERS, model_state.drivers)
+    await ctx.provide(MODEL_CATALOG, model_state.catalog)
     class Driver:''')
-    text = text.replace("            yield SimpleNamespace(chat=lambda role: model)", '''            settings.validate_chat_selection(ChatModelSelection(model_id, reasoning_effort))
-            selected.append((model_id, reasoning_effort))
-            yield SimpleNamespace(chat=lambda role: model)''')
-    path.write_text(text)
+    text = text.replace(
+        "    await ctx.provide(CHAT_MODELS, Models())",
+        "    await ctx.provide(CHAT_MODELS, model_state.chat_models)",
+    )
+    _write_python_source(path, text)
 
 
 def inbound(metadata=None):
     return ChannelInboundMessage("test", "user", "room", "question", datetime(2026, 9, 5, tzinfo=UTC),
                                  {} if metadata is None else metadata)
+
+
+async def conversation_source(host):
+    generation = host.generation("sources")
+    if generation is None or generation.fiber is None:
+        raise AssertionError("sources generation 未建立")
+    context = generation.fiber.context
+    async with context.runtime_scope():
+        matches = tuple(item for item in context.require(SOURCES).entries()
+                        if item.name == "conversation")
+    conversation = host.generation("conversation")
+    provider = host.generation("test_provider")
+    sources_generation = host.generation("sources")
+    assert len(matches) == 1, (
+        f"conversation Source 缺失; sources={tuple(item.name for item in matches)}, "
+        f"conversation_state={None if conversation is None or conversation.fiber is None else conversation.fiber.state}, "
+        f"conversation_missing={None if conversation is None or conversation.fiber is None else conversation.fiber.missing_services}, "
+        f"conversation_error={None if conversation is None or conversation.fiber is None else conversation.fiber.error}, "
+        f"provider_state={None if provider is None or provider.fiber is None else provider.fiber.state}, "
+        f"provider_missing={None if provider is None or provider.fiber is None else provider.fiber.missing_services}, "
+        f"provider_error={None if provider is None or provider.fiber is None else provider.fiber.error}, "
+        f"sources_state={None if sources_generation is None or sources_generation.fiber is None else sources_generation.fiber.state}"
+    )
+    return matches[0]
 
 
 def saved_metadata(path: Path, raw: str | None) -> None:
@@ -91,8 +140,8 @@ async def terminal(log, count):
 async def test_saved_choice_survives_reopen_and_drives_real_reply(tmp_path, raw):
     saved_metadata(tmp_path / "sessions.db", raw)
     async with application(tmp_path, replying=True, extra_sources=model_provider) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            context = snapshot.composition_root.context
+        async with live_root(host) as root:
+            context = root.context
             await context.require(CHANNEL_INPUT)("test:room", "u1", inbound())
             await terminal(log, 1)
             effort = "high" if "model_selection" in raw else None
@@ -108,8 +157,8 @@ async def test_explicit_switch_clear_and_replay_share_one_session_fact(tmp_path)
     raw = '{"model_runtime_override":"saved","other":{"keep":true}}'
     saved_metadata(tmp_path / "sessions.db", raw)
     async with application(tmp_path, replying=True, extra_sources=model_provider) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            context = snapshot.composition_root.context
+        async with live_root(host) as root:
+            context = root.context
             accept = context.require(CHANNEL_INPUT)
             first = inbound({"model_runtime_id": "saved", "model_reasoning_effort": "low"})
             message = await accept("test:room", "u1", first)
@@ -126,7 +175,7 @@ async def test_explicit_switch_clear_and_replay_share_one_session_fact(tmp_path)
             assert log.reader("test:room").metadata() == {"other": {"keep": True}}
             await accept("test:room", "u3", inbound())
             await terminal(log, 3)
-            assert context.require(ServiceKey("fixture.selected")) == [("saved", "low"), (None, None), (None, None)]
+            assert context.require(ServiceKey("fixture.selected")) == [("saved", "low"), ("saved", None), ("saved", None)]
 
 
 @pytest.mark.asyncio
@@ -137,17 +186,18 @@ async def test_explicit_switch_clear_and_replay_share_one_session_fact(tmp_path)
 ])
 async def test_invalid_selection_leaves_no_input_or_session(tmp_path, metadata):
     async with application(tmp_path, replying=False, extra_sources=model_provider) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+        async with live_root(host) as root:
             with pytest.raises((ModelUnavailableError, ValueError)):
-                await snapshot.composition_root.context.require(CHANNEL_INPUT)("test:room", "u1", inbound(metadata))
+                await root.context.require(CHANNEL_INPUT)("test:room", "u1", inbound(metadata))
         assert log.catalog().snapshot_heads() == {}
 
 
 @pytest.mark.asyncio
 async def test_direct_conversation_uses_same_validation_and_atomic_metadata_write(tmp_path):
     async with application(tmp_path, replying=False, extra_sources=model_provider) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            conversation = snapshot.composition_root.context.require(CONVERSATION)("test:room")
+        source = await conversation_source(host)
+        async with source.context.runtime_scope():
+            conversation = source.open("test:room")
             part = ContentPart("model.selection", {"model_id": "saved", "reasoning_effort": "high"})
             with pytest.raises(ValueError, match="一次"):
                 await conversation.accept("double", Input((part, part)))
@@ -170,13 +220,13 @@ async def test_direct_conversation_uses_same_validation_and_atomic_metadata_writ
 @pytest.mark.asyncio
 async def test_replay_survives_unavailable_catalog_and_does_not_restore_selection(tmp_path):
     async with application(tmp_path, replying=False, extra_sources=model_provider) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            context = snapshot.composition_root.context
+        async with live_root(host) as root:
+            context = root.context
             accept = context.require(CHANNEL_INPUT)
             first = inbound({"model_runtime_id": "saved"})
             message = await accept("test:room", "u1", first)
             await accept("test:room", "u2", inbound({"model_runtime_id": ""}))
-            await context.require(MODEL_SETTINGS).apply(DisableConnection(2, "connection"))
+            await context.require(MODEL_SETTINGS).apply(DisableConnection(3, "connection"))
             assert await accept("test:room", "u1", first) == message
             assert log.reader("test:room").metadata() == {}
             with pytest.raises(ModelUnavailableError):
@@ -188,9 +238,9 @@ async def test_replay_survives_unavailable_catalog_and_does_not_restore_selectio
 async def test_saved_disabled_model_fails_reply_without_falling_back(tmp_path):
     saved_metadata(tmp_path / "sessions.db", '{"model_runtime_override":"saved"}')
     async with application(tmp_path, replying=True, extra_sources=model_provider) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            context = snapshot.composition_root.context
-            await context.require(MODEL_SETTINGS).apply(DisableConnection(2, "connection"))
+        async with live_root(host) as root:
+            context = root.context
+            await context.require(MODEL_SETTINGS).apply(DisableConnection(3, "connection"))
             await context.require(CHANNEL_INPUT)("test:room", "u1", inbound())
             async def failed():
                 async for _ in log.catalog().follow():
@@ -220,8 +270,8 @@ def test_metadata_damage_is_explicit_and_unknown_read_never_creates(tmp_path, ra
 async def test_clear_without_saved_selection_preserves_sql_null(tmp_path):
     saved_metadata(tmp_path / "sessions.db", None)
     async with application(tmp_path, replying=False, extra_sources=model_provider) as (log, host):
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+        async with live_root(host) as root:
+            await root.context.require(CHANNEL_INPUT)(
                 "test:room", "u1", inbound({"model_runtime_id": ""}),
             )
         with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection:
@@ -248,27 +298,34 @@ async def test_metadata_grants_belong_to_one_registered_plugin(tmp_path, duplica
                              installed_cache_root=tmp_path / "home", message_log=log)
         try:
             if duplicate:
-                with pytest.raises(RuntimeError, match="metadata 已有 owner"):
-                    await host.load_all()
+                await host.load_all()
+                rejected = host.generation("two")
+                assert rejected is not None and rejected.fiber is not None
+                assert rejected.fiber.state.name == "FAILED"
+                assert rejected.fiber.error is not None
+                assert "metadata 已有 owner" in str(rejected.fiber.error)
                 assert log.catalog().snapshot_heads() == {}
                 return
             await host.load_all()
-            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-                context = snapshot.composition_root.context
+            async with live_root(host) as root:
+                context = root.context
                 one = context.require(ServiceKey("probe.one"))
                 two = context.require(ServiceKey("probe.two"))
                 update = context.require(ServiceKey("update.one"))
                 writers = context.require(MESSAGE_WRITERS)
                 for owner, callback in ((two, update), (one, lambda body: {"preference": 2})):
-                    with pytest.raises(PermissionError, match="未登记"):
-                        writers.bind(owner, author="user", source="test", body_types=(Input,), content={},
-                                     update_metadata=callback)
-                writer = writers.bind(one, author="user", source="test", body_types=(Input,), content={},
-                                      update_metadata=update)("s")
+                    async with owner.runtime_scope():
+                        with pytest.raises(PermissionError, match="未登记"):
+                            writers.bind(owner, author="user", source="test", body_types=(Input,), content={},
+                                         update_metadata=callback)
+                async with one.runtime_scope():
+                    writer = writers.bind(one, author="user", source="test", body_types=(Input,), content={},
+                                          update_metadata=update)("s")
                 message = writer.append("u1", Input(()))
                 assert log.reader("s").metadata() == {"preference": {"choice": 1}}
                 await context.require(ServiceKey[Effect]("registration.one")).aclose()
-                await writers.register_metadata(two, keys=frozenset({"preference"}), update=update)
+                async with two.runtime_scope():
+                    await writers.register_metadata(two, keys=frozenset({"preference"}), update=update)
                 with pytest.raises(WriterExpired, match="授权已释放"):
                     writer.append("u2", Input(()))
                 assert writer.append("u1", Input(())) == message

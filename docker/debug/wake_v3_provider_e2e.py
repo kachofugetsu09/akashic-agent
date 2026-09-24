@@ -27,18 +27,20 @@ from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition import (
     CHAT_MODELS,
     LLMResponse,
+    MODEL_CATALOG,
     ToolCall,
 )
+from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugins.manager import PluginManager
+from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.selection import PluginSelection
-from agent.plugins.model_control import RuntimeModelControl
-from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.artifact_store import ArtifactStore
 from session.log import MessageLog
 from plugins.wake.request import Request, read_request
 from plugins.wake.source import Pointer
+from plugins.wake.state import WakeState
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 from tests.model_plugin_fakes import (
     register_test_model_provider,
@@ -353,17 +355,12 @@ class RuntimeStack:
     async def close(self) -> None:
         """Close every isolated runtime owner while preserving its durable workspace."""
 
-        try:
-            await self.manager.terminate_all()
-        finally:
-            try:
-                await self.event_bus.aclose()
-            finally:
-                self.message_log.close()
-                self.artifact_metadata.close()
-                if self.uses_test_model:
-                    unregister_test_model_provider(self.workspace)
-
+        await self.manager.terminate_all()
+        await self.event_bus.aclose()
+        self.message_log.close()
+        self.artifact_metadata.close()
+        if self.uses_test_model:
+            unregister_test_model_provider(self.workspace)
 
 async def run_suite(
     root: Path,
@@ -403,6 +400,10 @@ async def run_suite(
     original_timer = plugin_manager_module.AsyncioOneShotTimer
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
     settlement_failures = 0
+    first_incident_count = 0
+    first_failed_attempt_count = 0
+    first_pending_source_count = 0
+    first_cleanup_recovery_count = 0
 
     first: RuntimeStack | None = None
     restarted: RuntimeStack | None = None
@@ -444,14 +445,11 @@ async def run_suite(
             )
         await first.start()
         if inject_settlement_failure:
-            snapshot = first.manager.current_snapshot
-            if snapshot is None or snapshot.composition_root is None:
+            live_root = first.manager.live_root
+            if live_root is None:
                 raise GateFailure("EVENTMAIL_SETTLEMENT_SERVICE_MISSING")
-            delivery_service = cast(
-                Any,
-                snapshot.composition_root.context.require(
-                    wake_plugin_module.EVENTMAIL_DELIVERY
-                ),
+            delivery_context, delivery_service = live_root._service_provider(
+                wake_plugin_module.EVENTMAIL_DELIVERY
             )
 
             def fail_before_restart(
@@ -463,7 +461,8 @@ async def run_suite(
                 settlement_failures += 1
                 raise _FixtureSettlementInterruption()
 
-            delivery_service.settle = fail_before_restart
+            async with delivery_context.runtime_scope():
+                delivery_service.settle = fail_before_restart
         await _eventually(lambda: timer.pending_count() >= 1, "SOURCE_TIMER_NOT_ARMED")
         timer.fire_earliest()
         await _eventually(
@@ -482,16 +481,47 @@ async def run_suite(
             ),
         )
 
-        # 3. A projected interruption restarts the formal stack and only moves forward.
+        # 3. The failed business task stays recorded; stop must actually release
+        # the first Root before a new stack opens the same durable workspace.
         if inject_settlement_failure:
-            try:
-                await first.close()
-            except BaseException as error:
-                # The injected domain failure is surfaced by the Wake watcher during stop;
-                # its durable owner records remain the recovery evidence.
-                if not _is_fixture_settlement_failure(error):
-                    raise
+            first_root = first.manager.live_root
+            if first_root is None:
+                raise GateFailure("RECOVERY_FIRST_ROOT_MISSING")
+            closing = first
             first = None
+            await closing.close()
+            if closing.manager.live_root is not None or closing.manager.cleanup_failures:
+                raise GateFailure("RECOVERY_FIRST_ROOT_NOT_CLOSED")
+            first_cleanup_recovery_count = len(
+                ReloadJournal(workspace).pending_recovery()
+            )
+            if first_cleanup_recovery_count:
+                raise GateFailure("RECOVERY_FALSE_CLEANUP_OWNER")
+            first_incident_count = sum(
+                item.kind == "task_failure" and item.owner == "wake"
+                for item in first_root.recent_incidents()
+            )
+            if first_incident_count != 1:
+                raise GateFailure("RECOVERY_WAKE_INCIDENT_MISSING")
+            attempts = WakeState(
+                workspace / "plugin-data" / "wake-builtin" / "wake.sqlite3"
+            ).list_attempts()
+            first_failed_attempt_count = sum(
+                item["outcome"] == "failed" for item in attempts
+            )
+            if first_failed_attempt_count != 1:
+                raise GateFailure("RECOVERY_FAILED_ATTEMPT_MISSING")
+            pending_rows = _read_failure_rows(
+                workspace / "sessions.db", "owner_records",
+                "SELECT value FROM owner_records WHERE owner = ? AND key LIKE 'flow:%'",
+                ("plugin:wake",),
+            )
+            first_pending_source_count = sum(
+                not Pointer.model_validate(json.loads(str(row[0]))).settled
+                for row in pending_rows
+            )
+            if first_pending_source_count != 1:
+                raise GateFailure("RECOVERY_PENDING_SOURCE_MISSING")
             restarted = _build_stack(
                 workspace,
                 root,
@@ -544,21 +574,23 @@ async def run_suite(
             raise GateFailure("DELIVERY_RECIPIENT_MISMATCH")
         model_evidence: dict[str, object] = {}
         if model_plugin_dirs:
-            catalog = await RuntimeModelControl(active.manager.snapshot_store).catalog()
-            async with lease_runtime_snapshot(active.manager.snapshot_store) as snapshot:
-                composition_root = snapshot.composition_root
-                if composition_root is None:
-                    raise GateFailure("MODEL_SNAPSHOT_ROOT_MISSING")
-                chat_models = composition_root.context.require(CHAT_MODELS)
+            live_root = active.manager.live_root
+            if live_root is None:
+                raise GateFailure("MODEL_LIVE_ROOT_MISSING")
+            catalog_context, catalog = live_root._service_provider(MODEL_CATALOG)
+            async with catalog_context.runtime_scope():
+                catalog_revision = catalog.snapshot().revision
+            model_context, chat_models = live_root._service_provider(CHAT_MODELS)
+            async with model_context.runtime_scope():
                 async with chat_models.execution() as execution:
                     selected_model = execution.chat("default")
                     model_evidence = {
-                        "revision": catalog.revision,
+                        "revision": catalog_revision,
                         "model_id": selected_model.descriptor.model_id,
                         "driver_id": selected_model.descriptor.driver_id,
                         "snapshot_id": selected_model.descriptor.plugin_snapshot_id,
                     }
-        return {
+        result: dict[str, object] = {
             "model": MODEL,
             "logical_provider_requests": counted.logical_requests,
             "delivery_count": len(channel_rows),
@@ -583,6 +615,15 @@ async def run_suite(
             "restart_count": int(inject_settlement_failure),
             "model_binding": model_evidence,
         }
+        if inject_settlement_failure:
+            result.update({
+                "first_stop_complete": True,
+                "first_incident_count": first_incident_count,
+                "first_failed_attempt_count": first_failed_attempt_count,
+                "first_pending_source_count": first_pending_source_count,
+                "first_cleanup_recovery_count": first_cleanup_recovery_count,
+            })
+        return result
     finally:
         plugin_manager_module.AsyncioOneShotTimer = original_timer
         if first is not None:
@@ -636,6 +677,13 @@ def _build_stack(
             "semantic_interest",
         )
     ]
+    if model_plugin_dirs:
+        # Selected Models/driver artifacts use the real UI and Models driver
+        # contribution dependencies; no marker ServiceKey or synthetic seal.
+        plugin_dirs.extend(
+            Path(__file__).resolve().parents[2] / "plugins" / name
+            for name in ("ui", "shell_ui")
+        )
     fixture_plugin = _write_e2e_fixture_plugin(root, include_models=not model_plugin_dirs)
     plugin_dirs.append(fixture_plugin)
     plugin_dirs.extend(model_plugin_dirs)
@@ -833,53 +881,30 @@ async def apply(ctx: Context):
 
 
 def _copy_selected_model_plugins(root: Path) -> tuple[Path, Path]:
-    """Copy the real model store and HTTP driver with an archive-visible edge."""
+    """Copy the real Models and provider artifacts without synthetic wiring."""
 
     external = root / "external-model-plugins"
     models = external / "models"
     provider = external / "openai_compatible"
     shutil.copytree(_SOURCE_ROOT / "plugins" / "models", models)
     shutil.copytree(_SOURCE_ROOT / "plugins" / "openai_compatible", provider)
-    marker = 'ServiceKey("wake-e2e.openai-provider.v1")'
-    plugin = models / "plugin.py"
-    text = plugin.read_text(encoding="utf-8")
-    text = text.replace(
-        "from agent.plugin_composition import (\n",
-        "from agent.plugin_composition import (\n    ServiceKey,\n",
-    )
-    # marker 依赖让 models 的 apply 等待 provider，保证 SNAPSHOT_SEALING
-    # listener 的注册顺序是 provider 在前、models.state.seal 在后。
-    text = text.replace("inject = (UI,)", f"inject = (UI, {marker},)")
-    assert marker in text, "models inject 改写的匹配目标已变化"
-    plugin.write_text(text, encoding="utf-8")
-    plugin = provider / "plugin.py"
-    text = plugin.read_text(encoding="utf-8")
-    text = text.replace(
-        "from agent.plugin_composition import MODEL_DRIVERS, Context\n",
-        "from agent.plugin_composition import MODEL_DRIVERS, SNAPSHOT_SEALING, Context, ServiceKey\n",
-    )
-    # provider 不能 inject MODEL_DRIVERS，否则与 models 的 marker 依赖成环；
-    # 注册推迟到 SNAPSHOT_SEALING，此时 MODEL_DRIVERS 已发布且尚未封印。
-    text = text.replace("inject = (UI, MODEL_DRIVERS,)", "inject = (UI,)")
-    assert "inject = (UI,)" in text, "openai_compatible inject 改写的匹配目标已变化"
-    text = text.replace(
-        "    _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())\n",
-        "    await ctx.provide(ServiceKey(\"wake-e2e.openai-provider.v1\"), object())\n"
-        "    async def register(_event: object) -> None:\n"
-        "        _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())\n"
-        "    _ = await ctx.on(SNAPSHOT_SEALING, register)\n",
-    )
-    assert "ctx.on(SNAPSHOT_SEALING, register)" in text
-    plugin.write_text(text, encoding="utf-8")
     return models, provider
 
 
 async def _configure_selected_model(manager: PluginManager) -> None:
     """Configure the real endpoint through the ordinary models service."""
 
-    control = RuntimeModelControl(manager.snapshot_store)
+    root = manager.live_root
+    if root is None:
+        raise RuntimeError("正式 live Root 不可用")
+    provider_context, operation = root._service_provider(
+        rpc_method_key("models/command")
+    )
+
     async def command(payload: dict[str, object]) -> dict[str, object]:
-        result = await control.invoke_rpc("models/command", payload)
+        async with provider_context.runtime_scope():
+            params = operation.params.model_validate(payload)
+            result = await operation.invoke(params, None)
         if not isinstance(result, dict) or result.get("status") != 200:
             raise RuntimeError(f"models command failed: {result!r}")
         body = result.get("body")
@@ -1118,16 +1143,6 @@ def _content_state_counts(workspace: Path) -> dict[str, int]:
         "SELECT status, COUNT(*) FROM items GROUP BY status ORDER BY status",
     )
     return {str(row[0]): _evidence_int(row[1]) for row in rows}
-
-
-def _is_fixture_settlement_failure(error: BaseException) -> bool:
-    """Accept only the exact injected interruption during the recovery exercise."""
-
-    if isinstance(error, BaseExceptionGroup):
-        return bool(error.exceptions) and all(
-            _is_fixture_settlement_failure(item) for item in error.exceptions
-        )
-    return type(error) is _FixtureSettlementInterruption
 
 
 def _wake_request(log: MessageLog) -> tuple[Request, Pointer]:

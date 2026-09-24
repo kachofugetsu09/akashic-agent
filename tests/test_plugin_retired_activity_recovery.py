@@ -89,18 +89,18 @@ async def test_startup_keeps_retired_activity_recovery_pending(tmp_path: Path, r
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resource", ["activity-publication", "plugin-skill-projection"])
-async def test_manual_retry_keeps_retired_activity_recovery_pending(tmp_path: Path, resource: str) -> None:
-    """手工 retry 不能调用已删除 owner，也不能完成 journal。"""
+async def test_manual_retry_without_live_selection_keeps_recovery_pending(tmp_path: Path, resource: str) -> None:
+    """手工 retry 需要 live selection，不能把旧 journal 标成完成。"""
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     journal = _write_recovery_action(
         workspace,
         resource=f"channel-publication,{resource}",
     )
     manager = _manager(tmp_path, workspace, with_plugin=False)
     try:
-        with pytest.raises(RuntimeError, match="retired.*" + resource):
+        with pytest.raises(RuntimeError, match="没有该插件的局部 live retry selection"):
             await manager.retry_runtime_recovery("baseline")
     finally:
         await manager.terminate_all()
@@ -111,16 +111,16 @@ async def test_manual_retry_keeps_retired_activity_recovery_pending(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_startup_still_finishes_non_activity_runtime_recovery(
+async def test_startup_keeps_unknown_selection_recovery_pending_after_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """未涉及旧 Activity owner 的正常 runtime recovery 仍可完成。"""
+    """旧进程清理有回执也不能伪造未知 selection 的结算。"""
 
     workspace = tmp_path / "workspace"
     initialize_plugin_workspace(workspace)
     _write_plugin(tmp_path)
-    journal = _write_recovery_action(workspace, resource="channel-publication")
+    journal = _write_recovery_action(workspace, resource="process")
     monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
     monkeypatch.setenv("AKASHIC_BOOT_ID", "new-boot")
     import agent.background.boot_guardian as guardian
@@ -134,25 +134,27 @@ async def test_startup_still_finishes_non_activity_runtime_recovery(
 
     record = journal.latest(plugin_id="baseline")
     assert record is not None
-    assert record.phase == "recovered"
-    receipt = journal.events(record.tx_id)[-1].details["retry_receipt"]
+    assert record.phase == "degraded"
+    event = journal.events(record.tx_id)[-1]
+    assert event.details["selection_committed"] is None
+    receipt = event.details["cleanup_receipt"]
     assert isinstance(receipt, str)
     assert "previous=old-boot:current=new-boot:cleanup=complete" in receipt
 
 
 @pytest.mark.asyncio
-async def test_startup_finishes_runtime_recovery_without_prior_runtime_owner(
+async def test_startup_keeps_unknown_selection_without_prior_runtime_owner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """未启动旧 runtime 的失败事务无需伪造 boot cleanup。"""
+    """未启动旧 runtime 的失败事务无需清理，但 selection 仍需证据。"""
 
     workspace = tmp_path / "workspace"
     initialize_plugin_workspace(workspace)
     _write_plugin(tmp_path)
     journal = _write_recovery_action(
         workspace,
-        resource="channel-publication",
+        resource="process",
         runtime_owner_boot_id=None,
     )
     monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
@@ -174,8 +176,10 @@ async def test_startup_finishes_runtime_recovery_without_prior_runtime_owner(
     assert cleanup_calls == []
     record = journal.latest(plugin_id="baseline")
     assert record is not None
-    assert record.phase == "recovered"
-    receipt = journal.events(record.tx_id)[-1].details["retry_receipt"]
+    assert record.phase == "degraded"
+    event = journal.events(record.tx_id)[-1]
+    assert event.details["selection_committed"] is None
+    receipt = event.details["cleanup_receipt"]
     assert isinstance(receipt, str)
     assert "previous=None:current=new-boot:cleanup=not-required" in receipt
 
@@ -192,7 +196,7 @@ async def test_startup_rejects_runtime_recovery_owned_by_current_boot(
     _write_plugin(tmp_path)
     journal = _write_recovery_action(
         workspace,
-        resource="channel-publication",
+        resource="process",
         runtime_owner_boot_id="new-boot",
     )
     monkeypatch.setenv("AKASHIC_SUPERVISED", "1")

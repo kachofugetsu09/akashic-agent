@@ -10,9 +10,9 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, ContextManager, Literal, Protocol, cast
+from typing import Any, ContextManager, Literal, Protocol, TypeVar, cast
 
-from agent.plugin_composition.context import Context, RuntimeLease, RuntimeScope
+from agent.plugin_composition.context import Context, RuntimeScope
 from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
 from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
@@ -56,11 +56,13 @@ from agent.plugin_composition.channels import (
     TurnStartedPresentation,
 )
 
-from agent.plugin_composition.admission import SOURCE_ADMISSION
+from agent.plugin_composition.host import HOST_INFO, HostInfo
 from agent.plugin_composition.channel_io import (
     InputCustody, INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
 )
 from agent.plugin_composition.runtime_lifecycle import RUNTIME_STARTING, RuntimeStarting
+
+_T = TypeVar("_T")
 
 class _PresentationContractFailure(TypeError):
     def __init__(self, message: str, receipt: PresentationReceipt) -> None:
@@ -98,7 +100,6 @@ class _ChannelBindingState:
     activation_token: object | None = None
     listeners: set[asyncio.Task[object]] = field(default_factory=set)
     start_task: asyncio.Task[object] | None = None
-    stop_task: asyncio.Task[StopReceipt] | None = None
     start_attempted: bool = False
     started: bool = False
     admission_open: bool = False
@@ -155,17 +156,15 @@ def _channel_entrypoint(
 
 
 class ChannelBindingLease:
-    """Own one forked snapshot lease and one exact Host in-flight claim."""
+    """Own one exact binding in-flight claim and its close responsibility."""
 
     def __init__(
         self,
         host: PluginChannels,
         key: tuple[str, str],
-        snapshot_lease: RuntimeLease,
     ) -> None:
         self._host = host
         self._key = key
-        self.snapshot_lease = snapshot_lease
         self._binding_released = False
         self._closed = False
 
@@ -207,24 +206,33 @@ class ChannelBindingLease:
             or envelope.binding_token != self.binding_token
         ):
             raise RuntimeError("OutboundEnvelope 与 exact Channel binding 不一致")
-        receipt = await self._host._deliver(
-            self._key,
-            ProviderDeliveryRequest(
-                binding_token=self.binding_token,
-                delivery_id=envelope.delivery_id,
-                recipient=envelope.recipient,
-                body=envelope.body,
-                attachments=envelope.attachments,
-                metadata=envelope.metadata,
-                commit_role=envelope.commit_role,
-                thinking=envelope.thinking,
-                reply_to=envelope.reply_to,
-                session_message_id=envelope.session_message_id,
-                control_turn_id=envelope.control_turn_id,
-                execution_attempt_id=envelope.execution_attempt_id,
-                terminal_status=envelope.terminal_status,
+        state = self._host._binding(self._key)
+        context = state.plugin_context
+        if context is None:
+            raise RuntimeError("Channel outbound 缺少贡献 Context")
+        request = ProviderDeliveryRequest(
+            binding_token=self.binding_token,
+            delivery_id=envelope.delivery_id,
+            recipient=envelope.recipient,
+            body=envelope.body,
+            attachments=envelope.attachments,
+            metadata=envelope.metadata,
+            commit_role=envelope.commit_role,
+            thinking=envelope.thinking,
+            reply_to=envelope.reply_to,
+            session_message_id=envelope.session_message_id,
+            control_turn_id=envelope.control_turn_id,
+            execution_attempt_id=envelope.execution_attempt_id,
+            terminal_status=envelope.terminal_status,
+        )
+        receipt = await self._host._run_captured_operation(
+            context,
+            lambda _scope: self._host._deliver(
+                self._key,
+                request,
+                retained_binding=self,
             ),
-            retained_binding=self,
+            name=f"channel-deliver:{self.channel_name}:{envelope.delivery_id}",
         )
         return ChannelDeliveryReceipt(
             delivery_id=receipt.delivery_id,
@@ -263,7 +271,6 @@ class ChannelBindingLease:
         if not self._binding_released:
             self._host._release_binding_lease(self)
             self._binding_released = True
-        await self.snapshot_lease.release()
         self._closed = True
 
 
@@ -362,6 +369,19 @@ class _ChannelDurableInbound:
 
     async def reserve(self, raw: RawInbound) -> bool:
         state = self._state()
+        context = state.plugin_context
+        if context is None:
+            raise RuntimeError("durable inbound 缺少贡献 Context")
+        return await self._host._run_captured_operation(
+            context,
+            lambda _scope: self._reserve_scoped(raw),
+            name=f"channel-durable-reserve:{state.channel_name}:{raw.message_id}",
+        )
+
+    async def _reserve_scoped(self, raw: RawInbound) -> bool:
+        """Reserve one durable handoff inside the binding contributor scope."""
+
+        state = self._state()
         reservation = self._reservation_metadata(raw)
         if reservation.channel != state.channel_name:
             raise RuntimeError("RawInbound channel 与 exact binding 不一致")
@@ -388,10 +408,19 @@ class _ChannelDurableInbound:
         reservation = self._remembered_reservation(state, handoff_id=handoff_id)
         if reservation is None:
             raise RuntimeError("durable inbound defer 不属于 exact binding reservation")
-        released = await self._custody(allow_closed=True).defer_durable_inbound(handoff_id)
-        if not released:
-            raise RuntimeError("durable inbound reservation 仍有执行 owner")
-        self._host._forget_durable_reservation(self._key, handoff_id)
+        custody = self._host._input_custody
+        if custody is None:
+            raise RuntimeError("Channel input custody runtime port 未绑定")
+
+        async def settle() -> None:
+            released = await custody.defer_durable_inbound(handoff_id)
+            if not released:
+                raise RuntimeError("durable inbound reservation 仍有执行 owner")
+            self._host._forget_durable_reservation(self._key, handoff_id)
+
+        await self._run_terminal_settlement(
+            settle(), name=f"channel-durable-defer:{handoff_id}",
+        )
 
     async def settle_rejected(
         self,
@@ -407,12 +436,36 @@ class _ChannelDurableInbound:
         )
         if reservation is None:
             raise RuntimeError("durable inbound settle 不属于 exact binding reservation")
-        await self._custody(allow_closed=True).settle_rejected_inbound(
-            channel=state.channel_name,
-            session_key=session_key,
-            provider_message_id=provider_message_id,
+        custody = self._host._input_custody
+        if custody is None:
+            raise RuntimeError("Channel input custody runtime port 未绑定")
+
+        async def settle() -> None:
+            await custody.settle_rejected_inbound(
+                channel=state.channel_name,
+                session_key=session_key,
+                provider_message_id=provider_message_id,
+            )
+            self._host._forget_durable_reservation(self._key, reservation.handoff_id)
+
+        await self._run_terminal_settlement(
+            settle(), name=f"channel-durable-reject:{reservation.handoff_id}",
         )
-        self._host._forget_durable_reservation(self._key, reservation.handoff_id)
+
+    async def _run_terminal_settlement(
+        self,
+        operation: Coroutine[Any, Any, _T],
+        *,
+        name: str,
+    ) -> _T:
+        """Finish one durable settlement before restoring caller cancellation."""
+
+        try:
+            task = asyncio.create_task(operation, name=name)
+        except BaseException:
+            operation.close()
+            raise
+        return cast(_T, await _await_task_after_cancellation(task))
 
     def has_pending(
         self,
@@ -454,10 +507,21 @@ class _ChannelDurableInbound:
 
     async def recover(self, raw: RawInbound) -> bool:
         state = self._state()
-        if raw.message.channel != state.channel_name:
-            raise RuntimeError("RawInbound channel 与 exact binding 不一致")
-        _ = self._reservation_metadata(raw)
-        return await self._host._recover_inbound(self._key, raw)
+        context = state.plugin_context
+        if context is None:
+            raise RuntimeError("durable inbound 缺少贡献 Context")
+
+        async def operation(_scope: RuntimeScope) -> bool:
+            if raw.message.channel != state.channel_name:
+                raise RuntimeError("RawInbound channel 与 exact binding 不一致")
+            _ = self._reservation_metadata(raw)
+            return await self._host._recover_inbound(self._key, raw)
+
+        return await self._host._run_captured_operation(
+            context,
+            operation,
+            name=f"channel-durable-recover:{state.channel_name}:{raw.message_id}",
+        )
 
 
 class _ChannelIdentity:
@@ -517,16 +581,17 @@ class _ChannelControl:
             self._host._release_presentation_operation(self._key)
             raise
         try:
-            task = asyncio.create_task(
-                self._host._handle_control(
-                    self._key,
-                    raw,
-                    response_bodies,
-                    binding,
+            context = state.plugin_context
+            if context is None:
+                raise RuntimeError("Channel control 缺少贡献 Context")
+            result = await self._host._run_captured_operation(
+                context,
+                lambda _scope: self._host._handle_control(
+                    self._key, raw, response_bodies, binding,
                 ),
                 name=f"channel-control:{state.channel_name}:{raw.message_id}",
             )
-            return cast(ControlReceipt, await _await_task_after_cancellation(task))
+            return cast(ControlReceipt, result)
         finally:
             try:
                 await binding.aclose()
@@ -603,8 +668,13 @@ class _ChannelStreamSubscription:
     async def invoke(self, event: TurnStreamEvent) -> PresentationReceipt:
         """Invoke one already-admitted callback and settle its typed receipt."""
 
+        state = self._host._binding(self._key)
+        context = state.plugin_context
+        if context is None:
+            raise RuntimeError("turn stream 缺少贡献 Context")
         try:
-            return await self._invoke_plugin(event)
+            async with context.runtime_scope():
+                return await self._invoke_plugin(event)
         except _PresentationContractFailure:
             raise
         except asyncio.CancelledError:
@@ -723,18 +793,30 @@ class _ChannelAttachmentImport:
 
         self._host._begin_attachment_operation(self._key)
         try:
-            result = self._port.import_bytes(
-                data,
-                kind=kind,
-                filename=filename,
-                media_type=media_type,
+            state = self._host._binding(self._key)
+            context = state.plugin_context
+            if context is None:
+                raise RuntimeError("attachment import 缺少贡献 Context")
+
+            async def operation(_scope: RuntimeScope) -> AttachmentRef:
+                result = self._port.import_bytes(
+                    data,
+                    kind=kind,
+                    filename=filename,
+                    media_type=media_type,
+                )
+                if not inspect.isawaitable(result):
+                    raise TypeError("attachment import 必须返回 awaitable")
+                result = await result
+                if not isinstance(result, AttachmentRef):
+                    raise TypeError("attachment import 必须返回 AttachmentRef")
+                return result
+
+            return await self._host._run_captured_operation(
+                context,
+                operation,
+                name=f"channel-attachment-import:{state.channel_name}",
             )
-            if not inspect.isawaitable(result):
-                raise TypeError("attachment import 必须返回 awaitable")
-            result = await result
-            if not isinstance(result, AttachmentRef):
-                raise TypeError("attachment import 必须返回 AttachmentRef")
-            return result
         finally:
             self._host._release_attachment_operation(self._key)
 
@@ -774,11 +856,24 @@ class _ChannelAttachmentRead:
             raise TypeError("attachment read 只接受 AttachmentRef")
         self._host._begin_attachment_operation(self._key)
         try:
-            result = self._port.acquire(ref)
-            if not inspect.isawaitable(result):
-                raise TypeError("attachment acquire 必须返回 awaitable")
-            lease = await result
-            _validate_attachment_read_lease(lease, ref)
+            state = self._host._binding(self._key)
+            context = state.plugin_context
+            if context is None:
+                raise RuntimeError("attachment read 缺少贡献 Context")
+
+            async def operation(_scope: RuntimeScope) -> AttachmentReadLease:
+                result = self._port.acquire(ref)
+                if not inspect.isawaitable(result):
+                    raise TypeError("attachment acquire 必须返回 awaitable")
+                lease = await result
+                _validate_attachment_read_lease(lease, ref)
+                return cast(AttachmentReadLease, lease)
+
+            lease = await self._host._run_captured_operation(
+                context,
+                operation,
+                name=f"channel-attachment-acquire:{state.channel_name}:{ref.artifact_id}",
+            )
             return _ChannelAttachmentReadLease(self._host, self._key, lease, ref)
         except BaseException:
             self._host._release_attachment_operation(self._key)
@@ -861,7 +956,9 @@ class PluginChannels:
     def __init__(self, ctx: Context) -> None:
         self._context = ctx
         self._root_token = ctx.root_instance_token
-        self._admission = ctx.require(SOURCE_ADMISSION)
+        self._host_info = ctx.require(HOST_INFO)
+        if not isinstance(self._host_info, HostInfo):
+            raise TypeError("Channel provider 需要 HostInfo")
         self._input_custody = ctx.require(INPUT_CUSTODY)
         identity = ctx.require(CHANNEL_IDENTITY)
         self._identity_resolver = identity.resolve
@@ -869,27 +966,15 @@ class PluginChannels:
         self._identity_rollbacker = identity.rollback
         self._attachment_import = ctx.require(CHANNEL_ATTACHMENT_IMPORT)
         self._attachment_read = ctx.require(CHANNEL_ATTACHMENT_READ)
-        self._snapshot_lease_acquirer = self._admission.lease
-        self._recovery_snapshot_lease_acquirer = self._admission.lease
-        self._boot_id = self._admission.boot_id
         self._bindings: dict[tuple[str, str], _ChannelBindingState] = {}
         self._declarations: dict[str, ChannelDefinition] = {}
         self._durable_reservation_owners: dict[str, tuple[str, str]] = {}
         self._binding_leases: set[ChannelBindingLease] = set()
-        self._startup_snapshot_leases: dict[str, RuntimeLease] = {}
-        self._sealed = False
-        self._opened = asyncio.Event()
-
-    def seal(self) -> None:
-        """封存本 Root 贡献；不向 Core 复制目录。"""
-        self._sealed = True
 
     async def register(self, ctx: Context, definition: ChannelDefinition) -> None:
         """连接、factory 和停止回执由贡献 Context 持有。"""
         if ctx.root_instance_token is not self._root_token or ctx.require(CHANNELS) is not self:
             raise CompositionError("CHANNEL_SERVICE_ROOT_MISMATCH", "Channel provider 不属于当前 Root")
-        if self._sealed:
-            raise CompositionError("PLUGIN_CHANNELS_FROZEN", "Channel 贡献已封存")
         if not isinstance(definition, ChannelDefinition):
             raise TypeError("Channel 贡献必须是 ChannelDefinition")
         if definition.name in self._declarations:
@@ -907,22 +992,10 @@ class PluginChannels:
         await ctx.effect(declare, label=f"channel-definition:{definition.name}")
         key: tuple[str, str] | None = None
 
-        def close() -> None:
-            if key is not None:
-                self._close_admission(key)
-
-        def open() -> None:
-            if key is None:
-                raise RuntimeError("Channel 必须 closed 启动 ready 后才能开放")
-            self._open_admission(key)
-            self._opened.set()
-
-        await self._admission.watch(ctx, close=close, open=open)
-
         async def stop() -> None:
             nonlocal key
             if key is not None:
-                await self._stop_binding_critical(key)
+                await self._stop_binding(key)
                 del self._bindings[key]
                 key = None
 
@@ -930,11 +1003,13 @@ class PluginChannels:
 
         async def start(_event: RuntimeStarting) -> None:
             nonlocal key
-            self._admission.require_starting(ctx)
+            if self._host_info.validation:
+                raise RuntimeError("validation Host 不启动正式 Channel adapter")
             if key is not None:
                 raise RuntimeError("同一 Channel Context 不允许重新启动旧连接")
-            lease = self._admission.current_lease()
-            key = (lease.snapshot_id, definition.name)
+            # Retry can mount the same selected archive again. Keep old ports
+            # tied to this activation instead of reusing its generation key.
+            key = (f"{ctx.generation_id}:{uuid.uuid4().hex}", definition.name)
             self._bindings[key] = _ChannelBindingState(
                 snapshot_id=key[0], plugin_id=ctx.runtime.plugin_id,
                 generation_id=ctx.runtime.generation_id, channel_name=definition.name,
@@ -943,46 +1018,53 @@ class PluginChannels:
                 config=definition.config, factory_context=None, plugin_context=ctx,
                 activation_token=ctx.fiber.activation_token,
             )
-            self._startup_snapshot_leases[key[0]] = lease
-            try:
-                await self._start_binding(key)
-            finally:
-                self._startup_snapshot_leases.pop(key[0], None)
+            await self._start_binding(key)
+
+            async def open_when_ready() -> None:
+                try:
+                    async with ctx.runtime_scope():
+                        state = self._binding(key)
+                        if state.plugin_context is not ctx or state.activation_token is not ctx.fiber.activation_token:
+                            raise RuntimeError("Channel ready 属于已替换 activation")
+                        self._open_admission(key)
+                except BaseException as error:
+                    state = self._bindings.get(key)
+                    if state is not None and state.plugin_context is ctx:
+                        ctx.report_incident("CHANNEL_OPEN_FAILED", str(error) or type(error).__name__)
+                    raise
+
+            await ctx.spawn(open_when_ready(), name=f"channel-open:{definition.name}")
 
         await ctx.on(RUNTIME_STARTING, start)
 
-    async def start_recovery(self) -> None:
-        """提交开放后才恢复 pending 输入，任务归当前 provider Scope。"""
-        if not any(ChannelCapability.DURABLE_INBOUND in item.capabilities for item in self._declarations.values()):
-            return
-        # _opened 是一次性事件：每次启动都等本次提交的开放，不能复用上一代已置位的事件。
-        self._opened = asyncio.Event()
+    def acquire_binding(self, channel_name: str) -> ChannelBindingLease:
+        """Acquire the one active binding for a channel name."""
 
-        async def recover() -> None:
-            await self._opened.wait()
-            await self._input_custody.recover_durable_inbounds()
+        channel_name = _text(channel_name, "channel_name")
+        candidates = tuple(
+            key for key, state in self._bindings.items()
+            if state.channel_name == channel_name
+            and state.admission_open
+            and not state.stopping
+            and not state.stopped
+        )
+        if len(candidates) != 1:
+            raise RuntimeError(f"Channel binding 不唯一或不可用: {channel_name}")
+        return self._acquire_binding(candidates[0])
 
-        await self._context.spawn(recover(), name="channel-pending-inputs")
-
-    def acquire_binding(
+    def _acquire_binding(
         self,
-        snapshot_lease: RuntimeLease,
-        channel_name: str,
+        key: tuple[str, str],
         *,
         _allow_claimed_after_close: bool = False,
     ) -> ChannelBindingLease:
-        """Fork one exact stable lease and retain its live Channel binding."""
+        """Acquire one exact local binding and retain its in-flight claim."""
 
-        if not snapshot_lease.active:
-            raise RuntimeError("RuntimeSnapshot lease 已关闭")
-        snapshot_id = _text(snapshot_lease.snapshot_id, "snapshot_id")
-        key = (snapshot_id, _text(channel_name, "channel_name"))
         state = self._binding(key)
         context = state.plugin_context
-        if context is None:
-            raise RuntimeError("Channel binding 不属于 exact Root/provider/贡献 Context")
-        owner = self._admission.require_channel_binding_owner(snapshot_lease, context, self)
-        if (owner != state.plugin_id
+        if (context is None or context.root_instance_token is not self._root_token
+                or context.require(CHANNELS) is not self
+                or context.runtime.plugin_id != state.plugin_id
                 or context.fiber.activation_token is not state.activation_token):
             raise RuntimeError("Channel binding 不属于 exact Root/provider/贡献 Context")
         if state.stopped or (
@@ -990,10 +1072,9 @@ class PluginChannels:
             and (not state.admission_open or state.stopping)
         ):
             raise RuntimeError("channel admission 已关闭")
-        forked = snapshot_lease.fork()
         state.in_flight += 1
         state.drain_event.clear()
-        binding = ChannelBindingLease(self, key, forked)
+        binding = ChannelBindingLease(self, key)
         self._binding_leases.add(binding)
         return binding
 
@@ -1088,121 +1169,90 @@ class PluginChannels:
         task.add_done_callback(finished)
         return task
 
+    async def _run_captured_operation(
+        self,
+        context: Context,
+        operation: Callable[[RuntimeScope], Awaitable[_T]],
+        *,
+        name: str,
+        cancel_child: bool = False,
+    ) -> _T:
+        """Capture a parent Fiber scope and settle an exact child Task."""
+
+        async with context.runtime_scope():
+            scope = context.capture_runtime_scope()
+            entered = False
+
+            async def child() -> _T:
+                nonlocal entered
+                async with scope:
+                    entered = True
+                    return await operation(scope)
+
+            child_coroutine = child()
+            try:
+                task = asyncio.create_task(child_coroutine, name=name)
+            except BaseException:
+                child_coroutine.close()
+                await scope.close()
+                raise
+            try:
+                if cancel_child:
+                    try:
+                        return cast(_T, await asyncio.shield(task))
+                    except asyncio.CancelledError:
+                        task.cancel()
+                        await _await_task_after_cancellation(task)
+                        raise
+                return cast(_T, await _await_task_after_cancellation(task))
+            finally:
+                if not entered:
+                    await scope.close()
+
     @asynccontextmanager
     async def _open_request_scope(self, key: tuple[str, str]) -> AsyncIterator[RequestContext]:
-        """让外部请求占有精确 binding，关闭接纳后排空再释放插件。"""
+        """Admit one request with the contributor Fiber's local runtime scope."""
 
-        # 1. 首个 await 前占位，防止关闭接纳与取得 snapshot 之间漏过排空。
         state = self._binding(key)
         context = state.plugin_context
         if context is None:
             raise RuntimeError("channel 没有插件声明 Context")
-        # ``channel.start`` runs before public admission opens.  A channel
-        # may still need one exact scope during startup to validate and bind
-        # its declared providers.  Only the task currently starting this
-        # binding receives that closed-admission exception; later requests
-        # continue to require an open binding.
-        state = self._binding(key)
-        allow_start_scope = (
-            state.start_task is asyncio.current_task()
-            and not state.started
-            and not state.stopping
-        )
+        allow_start_scope = state.start_task is asyncio.current_task() and not state.started and not state.stopping
         self._begin_presentation_operation(key, allow_closed=allow_start_scope)
-        binding: ChannelBindingLease | None = None
+        owner_task = asyncio.current_task()
+        active = True
         try:
-            binding = await self._acquire_control_binding(key)
-            owner = self._admission.require_channel_binding_owner(
-                binding.snapshot_lease, context, self,
-            )
-            if (
-                owner != state.plugin_id
-                or context.fiber.state is not FiberState.ACTIVE
-                or context.fiber.activation_token is not state.activation_token
-            ):
-                raise RuntimeError("channel 请求 Context 不属于当前 activation")
-            # 2. 原 Context 的 get 允许 Root 查询；请求只解析声明 Fiber 的依赖。
-            allowed = frozenset(context._declared_dependencies())
-            runtime = context.runtime
-            active = True
+            async with context.runtime_scope():
+                allowed = frozenset(context._declared_dependencies())
+                runtime = context.runtime
 
-            scope = RuntimeScope(binding.snapshot_lease.fork())
+                def resolve(service_key: ServiceKey[object]) -> object:
+                    if not active or asyncio.current_task() is not owner_task:
+                        raise CompositionError("REQUEST_SCOPE_MISSING", "插件请求作用域已关闭")
+                    if service_key not in allowed:
+                        raise CompositionError("SERVICE_UNDECLARED", f"请求未声明能力: {service_key.name}")
+                    return context.require(service_key)
 
-            def resolve(key: ServiceKey[object]) -> object:
-                if not active or not scope.is_current:
-                    raise CompositionError("REQUEST_SCOPE_MISSING", "插件请求作用域已关闭")
-                if context.fiber.activation_token is not state.activation_token:
-                    raise CompositionError("REQUEST_SCOPE_MISSING", "请求声明 activation 已失效")
-                if key not in allowed:
-                    raise CompositionError("SERVICE_UNDECLARED", f"请求未声明能力: {key.name}")
-                return context.require(key)
-
-            request = RequestContext(
-                plugin_id=runtime.plugin_id,
-                plugin_dir=runtime.plugin_dir,
-                data_root=runtime.data_dir,
-                validation=self._admission.validation,
-                _workspace_roots=tuple((name, runtime.workspace_root(name)) for name in runtime.workspace_roots),
-                _workspace_files=tuple((name, runtime.workspace_file(name)) for name in runtime.workspace_files),
-                _resolve=resolve,
-            )
-            try:
-                async with scope:
-                    yield request
-            finally:
-                active = False
+                yield RequestContext(
+                    plugin_id=runtime.plugin_id,
+                    plugin_dir=runtime.plugin_dir,
+                    data_root=runtime.data_dir,
+                    validation=self._host_info.validation,
+                    _workspace_roots=tuple((name, runtime.workspace_root(name)) for name in runtime.workspace_roots),
+                    _workspace_files=tuple((name, runtime.workspace_file(name)) for name in runtime.workspace_files),
+                    _resolve=resolve,
+                )
         finally:
-            # 3. 取消也必须等 lease 清理完成，才能解除 Host 的排空占位。
-            try:
-                if binding is not None:
-                    cleanup = asyncio.create_task(binding.aclose(), name="channel-request-release")
-                    await _await_task_after_cancellation(cleanup)
-            finally:
-                self._release_presentation_operation(key)
+            active = False
+            self._release_presentation_operation(key)
 
     async def _acquire_control_binding(
         self,
         key: tuple[str, str],
     ) -> ChannelBindingLease:
-        """Fork an exact snapshot lease for one control effect."""
+        """Acquire the exact local binding for one control effect."""
 
-        state = self._binding(key)
-        startup_lease = self._startup_snapshot_leases.get(state.snapshot_id)
-        if startup_lease is not None and state.start_task is asyncio.current_task():
-            source = startup_lease.fork()
-        else:
-            acquirer = self._snapshot_lease_acquirer
-            if acquirer is None:
-                raise RuntimeError("Channel control exact snapshot lease owner 未绑定")
-            source = acquirer(state.snapshot_id)
-        binding: ChannelBindingLease | None = None
-        try:
-            try:
-                if source.snapshot_id != state.snapshot_id:
-                    raise RuntimeError("Channel control 与当前 stable snapshot 不一致")
-                binding = self.acquire_binding(
-                    source,
-                    state.channel_name,
-                    _allow_claimed_after_close=True,
-                )
-            finally:
-                release = asyncio.create_task(
-                    source.release(),
-                    name=f"channel-control-source-release:{state.channel_name}",
-                )
-                await _await_task_after_cancellation(release)
-        except BaseException as error:
-            if binding is not None:
-                cleanup = asyncio.create_task(
-                    binding.aclose(),
-                    name=f"channel-control-binding-rollback:{state.channel_name}",
-                )
-                try:
-                    await _await_task_after_cancellation(cleanup)
-                except BaseException as cleanup_error:
-                    raise error from cleanup_error
-            raise
-        return cast(ChannelBindingLease, binding)
+        return self._acquire_binding(key, _allow_claimed_after_close=True)
 
     async def _handle_control(
         self,
@@ -1214,11 +1264,10 @@ class PluginChannels:
         interrupter = self._declarations[self._binding(key).channel_name].interrupt
         if interrupter is None:
             raise RuntimeError("Channel control interrupt owner 未绑定")
-        async with RuntimeScope(binding.snapshot_lease.fork()):
-            result = interrupter(raw)
-            if not inspect.isawaitable(result):
-                raise TypeError("control interrupter 必须返回 awaitable")
-            result = await result
+        result = interrupter(raw)
+        if not inspect.isawaitable(result):
+            raise TypeError("control interrupter 必须返回 awaitable")
+        result = await result
         reason = _control_reason(result)
         accepted = reason == "interrupted"
         response = await self._dispatch_control_response(
@@ -1345,6 +1394,15 @@ class PluginChannels:
     def _release_presentation_operation(self, key: tuple[str, str]) -> None:
         self._release_in_flight(key)
 
+    @staticmethod
+    def _binding_is_active(state: _ChannelBindingState) -> bool:
+        context = state.plugin_context
+        return (
+            context is not None
+            and context.fiber.state is FiberState.ACTIVE
+            and context.fiber.activation_token is state.activation_token
+        )
+
     async def recover_inbound(self, raw: RawInbound) -> bool:
         """Route a persisted handoff to the one current exact channel binding."""
 
@@ -1361,6 +1419,7 @@ class PluginChannels:
                 and state.admission_open
                 and not state.stopping
                 and not state.stopped
+                and self._binding_is_active(state)
             )
         )
         if not candidates:
@@ -1376,15 +1435,12 @@ class PluginChannels:
         return await self._recover_inbound(
             candidates[0],
             raw,
-            _use_recovery_snapshot_lease=True,
         )
 
     async def _recover_inbound(
         self,
         key: tuple[str, str],
         raw: RawInbound,
-        *,
-        _use_recovery_snapshot_lease: bool = False,
     ) -> bool:
         """Replace only a prior accepted claim for one durable recovery."""
 
@@ -1400,7 +1456,12 @@ class PluginChannels:
         if raw.message.channel != state.channel_name:
             raise RuntimeError("RawInbound channel 与 exact binding 不一致")
         _ = _ChannelDurableInbound._reservation_metadata(raw)
-        if not state.admission_open or state.stopping or state.stopped:
+        if (
+            not state.admission_open
+            or state.stopping
+            or state.stopped
+            or not self._binding_is_active(state)
+        ):
             raise RuntimeError("channel admission 已关闭")
 
         # 1. 进程内恢复复用旧 claim，不在任何 await 窗口释放 duplicate fence。
@@ -1412,14 +1473,12 @@ class PluginChannels:
                 key,
                 raw,
                 _retained_claim=dedupe_key,
-                _use_recovery_snapshot_lease=_use_recovery_snapshot_lease,
             )
 
         # 2. 进程重启时无内存 claim，由 current binding 新建正常 claim。
         return await self._admit_inbound(
             key,
             raw,
-            _use_recovery_snapshot_lease=_use_recovery_snapshot_lease,
         )
 
     async def _admit_inbound(
@@ -1428,7 +1487,33 @@ class PluginChannels:
         raw: RawInbound,
         *,
         _retained_claim: tuple[str, str] | None = None,
-        _use_recovery_snapshot_lease: bool = False,
+    ) -> bool:
+        """Enter the contributor scope before processing one raw callback."""
+
+        state = self._binding(key)
+        context = state.plugin_context
+        if context is None:
+            raise RuntimeError("Channel ingress 缺少贡献 Context")
+        self._begin_presentation_operation(key, allow_closed=False)
+        try:
+            return await self._run_captured_operation(
+                context,
+                lambda _scope: self._admit_inbound_scoped(
+                    key, raw, _retained_claim=_retained_claim, _claimed=True,
+                ),
+                name=f"channel-input:{raw.message_id}",
+                cancel_child=True,
+            )
+        finally:
+            self._release_presentation_operation(key)
+
+    async def _admit_inbound_scoped(
+        self,
+        key: tuple[str, str],
+        raw: RawInbound,
+        *,
+        _retained_claim: tuple[str, str] | None = None,
+        _claimed: bool = False,
     ) -> bool:
         """在 exact Root 接纳 Input，再完成传输收束；没有回复队列。"""
 
@@ -1442,7 +1527,7 @@ class PluginChannels:
             raise RuntimeError("channel 未声明可用的 inbound capability")
         if raw.message.channel != state.channel_name:
             raise RuntimeError("RawInbound channel 与 exact binding 不一致")
-        if not state.admission_open or state.stopping or state.stopped:
+        if state.stopped or (not _claimed and (not state.admission_open or state.stopping)):
             raise RuntimeError("channel admission 已关闭")
         durable_marker = raw.message.metadata.get(DURABLE_INBOUND_MARKER) is True
         if durable_marker and ChannelCapability.DURABLE_INBOUND not in state.capabilities:
@@ -1468,40 +1553,23 @@ class PluginChannels:
             raise RuntimeError("Channel retained recovery claim 不一致")
         if not retained_claim and dedupe_key in state.inbound_message_id_set:
             return False
-        acquirer = (
-            self._recovery_snapshot_lease_acquirer
-            if _use_recovery_snapshot_lease
-            else self._snapshot_lease_acquirer
-        )
         custody = self._input_custody
-        if acquirer is None or custody is None:
+        context = state.plugin_context
+        if context is None or custody is None:
             raise RuntimeError("Channel ingress runtime ports 未绑定")
 
         # 1. Claim before any await so concurrent duplicate callbacks serialize.
         if not retained_claim:
             state.inbound_message_id_set.add(dedupe_key)
             state.inbound_message_ids.append(dedupe_key)
-        self._begin_presentation_operation(key, allow_closed=False)
+        if not _claimed:
+            self._begin_presentation_operation(key, allow_closed=False)
         accepted = False
         binding: ChannelBindingLease | None = None
         envelope: InboundEnvelope | None = None
         identity_receipt: object | None = None
         try:
-            source = acquirer(state.snapshot_id)
-            try:
-                if source.snapshot_id != key[0]:
-                    raise RuntimeError("Channel ingress 与当前 stable snapshot 不一致")
-                binding = self.acquire_binding(
-                    source,
-                    state.channel_name,
-                    _allow_claimed_after_close=True,
-                )
-            finally:
-                release = asyncio.create_task(
-                    source.release(),
-                    name=f"channel-ingress-source-release:{state.channel_name}",
-                )
-                await _await_task_after_cancellation(release)
+            binding = self._acquire_binding(key, _allow_claimed_after_close=True)
             if raw.provider_identity is not None:
                 rememberer = self._identity_rememberer
                 if rememberer is None or raw.recipient is None:
@@ -1537,23 +1605,21 @@ class PluginChannels:
 
             async def commit_input() -> None:
                 nonlocal accepted
-                # 显式传入原 binding 的 lease；热更新不能让输入落到后来发布的 Root。
                 assert binding is not None and envelope is not None
-                lease = binding.snapshot_lease.fork()
-                async with RuntimeScope(lease):
-                    # root/active/当前 Task/归属检查在 composition owner 内完成；
-                    # 插件侧只拿到已声明的 channel 输入端口，不遍历 snapshot 或 Root。
-                    accept = self._admission.channel_input(lease)
-                    _ = await accept(session_key, raw.message_id, raw.message)
-                    accepted = True
-                    # 此后失败只能保留 cleanup/recovery，不能回滚身份或去重记录。
-                    await custody.complete_channel_input(envelope)
-                    handoff_id = raw.message.metadata.get(DURABLE_HANDOFF_ID)
-                    if isinstance(handoff_id, str):
-                        self._forget_durable_reservation(key, handoff_id)
+                accept = context.require(CHANNEL_INPUT)
+                _ = await accept(session_key, raw.message_id, raw.message)
+                accepted = True
+                # 此后失败只能保留 cleanup/recovery，不能回滚身份或去重记录。
+                await custody.complete_channel_input(envelope)
+                handoff_id = raw.message.metadata.get(DURABLE_HANDOFF_ID)
+                if isinstance(handoff_id, str):
+                    self._forget_durable_reservation(key, handoff_id)
 
-            commit = asyncio.create_task(commit_input(), name=f"channel-input:{raw.message_id}")
-            await _await_task_after_cancellation(commit)
+            await self._run_captured_operation(
+                context,
+                lambda _scope: commit_input(),
+                name=f"channel-input-commit:{raw.message_id}",
+            )
             while len(state.inbound_message_ids) > 500:
                 expired = state.inbound_message_ids.popleft()
                 state.inbound_message_id_set.remove(expired)
@@ -1586,18 +1652,15 @@ class PluginChannels:
                 ) from error
             raise
         finally:
-            try:
-                if not accepted:
-                    if not retained_claim:
-                        state.inbound_message_id_set.discard(dedupe_key)
-                        try:
-                            state.inbound_message_ids.remove(dedupe_key)
-                        except ValueError:
-                            pass
-                    if binding is not None and binding.active:
-                        await binding.aclose()
-            finally:
-                self._release_presentation_operation(key)
+            if not accepted:
+                if not retained_claim:
+                    state.inbound_message_id_set.discard(dedupe_key)
+                    try:
+                        state.inbound_message_ids.remove(dedupe_key)
+                    except ValueError:
+                        pass
+                if binding is not None and binding.active:
+                    await binding.aclose()
 
     async def _rollback_identity_write(self, receipt: object) -> None:
         """精确撤销失败 acceptance 写入且显式暴露 rollback fence 冲突。"""
@@ -1639,7 +1702,7 @@ class PluginChannels:
         state.factory_context = ChannelFactoryContext(
             snapshot_id=state.snapshot_id,
             generation_id=state.generation_id,
-            boot_id=self._boot_id,
+            boot_id=self._host_info.boot_id,
             binding_token=state.binding_token,
             config=state.config,
             ingress=(
@@ -1975,16 +2038,6 @@ class PluginChannels:
         except asyncio.CancelledError:
             state.stopping = True
             raise
-
-    async def _stop_binding_critical(self, key: tuple[str, str]) -> StopReceipt:
-        """Finish one binding cleanup before restoring caller cancellation."""
-
-        state = self._binding(key)
-        if state.stop_task is None or state.stop_task.done():
-            state.stop_task = asyncio.create_task(
-                self._stop_binding(key), name=f"channel-binding-stop:{key[0]}:{key[1]}",
-            )
-        return cast(StopReceipt, await _await_task_after_cancellation(state.stop_task))
 
     def _binding(self, key: tuple[str, str]) -> _ChannelBindingState:
         state = self._bindings.get(key)

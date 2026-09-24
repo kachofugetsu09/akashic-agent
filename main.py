@@ -19,18 +19,14 @@ import os
 import signal
 import sys
 import tomllib
-from contextlib import suppress
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 _DEFAULT_WORKSPACE = "~/.akashic/workspace"
 _PLUGIN_ROLLOUT_OWNER_TURN_ENV = "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"
 _AGENT_INTERNAL_PLUGIN_COMMANDS = frozenset(
     {
-        "plugin-status",
-        "plugin-promote",
-        "plugin-discard",
         "plugin-enable",
         "plugin-disable",
     }
@@ -44,8 +40,8 @@ def _reject_agent_internal_plugin_action(command: str) -> None:
     ):
         raise ValueError(
             f"{command} 是 Core 内部维护动作。当前 turn 只应使用 "
-            "plugin-install、plugin-uninstall 或 plugin-revert；"
-            "安装验证正确后直接结束本轮，系统会自动切换。"
+            "plugin-install 或 plugin-uninstall；"
+            "安装结果需查询 accepted、selected 和 active 状态。"
         )
 
 
@@ -223,12 +219,10 @@ _HELP = """\
   app-server --stdio            在 stdio 上运行程序化控制面
   exec --new|--session ID PROMPT 提交程序输入并等待结果
   dashboard                     单独启动 Dashboard
-  plugin-install --update-id ID 安装 Git 插件候选
+  plugin-install [--update-id ID] 安装 Git 插件
   plugin-install-trusted-batch  离线安装 operator 已信任的 exact v3 插件批次
   plugin-uninstall PLUGIN_ID    卸载插件
   plugin-status [UPDATE_ID]      查询当前插件或指定更新
-  plugin-promote UPDATE_ID       提交候选发布
-  plugin-discard UPDATE_ID       丢弃候选更新
   plugin-doctor [PLUGIN_ID]     检查插件状态
 
 通用选项:
@@ -294,7 +288,7 @@ def _prepare_startup_migrations(
         "dashboard",
     }:
         return None
-    if command == "init" and not workspace.exists():
+    if command in {"init", "setup"} and not workspace.exists():
         # 新建 workspace 由 init_workspace 独占建立基线与空选择；启动迁移
         # 先落 migrations.sqlite3 会把新目录误判成既有 workspace。
         return None
@@ -553,19 +547,23 @@ async def serve(config_path: str, workspace: Path) -> int:
     stop_event = asyncio.Event()
     settings_restart_event = asyncio.Event()
     watched_signals = (signal.SIGINT, signal.SIGTERM)
-    signal_handlers_registered = False
+    registered_signal_handlers: set[int] = set()
+    fallback_signal_handlers: dict[int, Any] = {}
     for sig in watched_signals:
         try:
             loop.add_signal_handler(sig, stop_event.set)
-            signal_handlers_registered = True
+            registered_signal_handlers.add(sig)
         except NotImplementedError:
             # Windows 默认事件循环不支持 add_signal_handler。
-            _ = signal.signal(
+            previous_handler = signal.signal(
                 sig,
                 lambda _sig, _frame: loop.call_soon_threadsafe(stop_event.set),
             )
+            fallback_signal_handlers[sig] = previous_handler
+    restart_signal_registered = False
     if commit_channel is not None and hasattr(signal, "SIGUSR2"):
         loop.add_signal_handler(signal.SIGUSR2, settings_restart_event.set)
+        restart_signal_registered = True
 
     async def commit_settings_restart() -> None:
         await settings_restart_event.wait()
@@ -575,19 +573,127 @@ async def serve(config_path: str, workspace: Path) -> int:
         runtime.core.restart_gate.prepare(request_id)
         await runtime.core.restart_gate.commit(request_id)
 
-    runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
-    stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
-    restart_task = (
-        asyncio.create_task(restart_committed.wait(), name="restart_committed")
-        if commit_channel is not None
-        else None
-    )
-    settings_restart_task = (
-        asyncio.create_task(commit_settings_restart(), name="settings_restart")
-        if commit_channel is not None and hasattr(signal, "SIGUSR2")
-        else None
-    )
+    runtime_task: asyncio.Task[None] | None = None
+    stop_task: asyncio.Task[bool] | None = None
+    restart_task: asyncio.Task[bool] | None = None
+    settings_restart_task: asyncio.Task[None] | None = None
+    runtime_cancel_requested = False
+    result = 0
+    primary_error: BaseException | None = None
+    deferred_cancellation: asyncio.CancelledError | None = None
+
+    def _cause_chain_contains(
+        root: BaseException,
+        target: BaseException,
+    ) -> bool:
+        """Check one standard exception cause chain by identity."""
+
+        current: BaseException | None = root
+        seen: set[int] = set()
+        while current is not None:
+            if current is target:
+                return True
+            identity = id(current)
+            if identity in seen:
+                return False
+            seen.add(identity)
+            current = current.__cause__
+        return False
+
+    def _append_visible_error(error: BaseException) -> None:
+        """Append one later error to the visible cause chain without cycles."""
+
+        assert primary_error is not None
+        existing_ids: set[int] = set()
+        tail = primary_error
+        while True:
+            identity = id(tail)
+            if identity in existing_ids:
+                return
+            existing_ids.add(identity)
+            if tail.__cause__ is None:
+                break
+            tail = tail.__cause__
+
+        candidate: BaseException | None = error
+        candidate_ids: set[int] = set()
+        while candidate is not None:
+            identity = id(candidate)
+            if identity in existing_ids or identity in candidate_ids:
+                return
+            candidate_ids.add(identity)
+            candidate = candidate.__cause__
+        tail.__cause__ = error
+
+    def _record_error(error: BaseException | None) -> None:
+        """Keep a later task error in the existing Python exception chain."""
+
+        nonlocal primary_error
+        if error is None:
+            return
+        if primary_error is None:
+            primary_error = error
+            return
+        if (
+            isinstance(primary_error, asyncio.CancelledError)
+            and isinstance(error, asyncio.CancelledError)
+            and primary_error.__cause__ is None
+            and error.__cause__ is None
+        ):
+            return
+        if primary_error is error or _cause_chain_contains(primary_error, error):
+            return
+        if (
+            isinstance(primary_error, asyncio.CancelledError)
+            and primary_error.__cause__ is None
+            and isinstance(error, asyncio.CancelledError)
+            and error.__cause__ is not None
+        ):
+            primary_error = error
+            return
+        if _cause_chain_contains(error, primary_error):
+            return
+        _append_visible_error(error)
+
+    async def _settle_owned_task(
+        task: asyncio.Task[object],
+        *,
+        request_cancel: bool,
+    ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+        """Retrieve one CLI-owned task once while deferring caller cancellation."""
+
+        cancel_sent = False
+        if request_cancel and not task.done():
+            cancel_sent = task.cancel()
+        caller_cancel: asyncio.CancelledError | None = None
+        while not task.done():
+            try:
+                await asyncio.wait((task,))
+            except asyncio.CancelledError as error:
+                caller_cancel = error
+        try:
+            task.result()
+        except asyncio.CancelledError as task_error:
+            if cancel_sent and task_error.__cause__ is None:
+                return None, caller_cancel
+            return task_error, caller_cancel
+        except BaseException as task_error:
+            return task_error, caller_cancel
+        return None, caller_cancel
+
     try:
+        runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
+        stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
+        restart_task = (
+            asyncio.create_task(restart_committed.wait(), name="restart_committed")
+            if commit_channel is not None
+            else None
+        )
+        settings_restart_task = (
+            asyncio.create_task(commit_settings_restart(), name="settings_restart")
+            if commit_channel is not None and hasattr(signal, "SIGUSR2")
+            else None
+        )
         watched = {runtime_task, stop_task}
         if restart_task is not None:
             watched.add(restart_task)
@@ -598,39 +704,61 @@ async def serve(config_path: str, workspace: Path) -> int:
             return_when=asyncio.FIRST_COMPLETED,
         )
         if runtime_task in done:
-            _ = stop_task.cancel()
-            await runtime_task
-            return 0
-        restart_requested = False
-        if restart_task is not None and restart_task in done:
-            await restart_task
-            if restart_commit_error:
-                raise restart_commit_error[0]
-            restart_requested = True
-        if settings_restart_task is not None and settings_restart_task in done:
-            await settings_restart_task
-            restart_requested = True
-        _ = runtime_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await runtime_task
-        return RESTART_EXIT_CODE if restart_requested else 0
+            pass
+        else:
+            restart_requested = False
+            if restart_task is not None and restart_task in done:
+                restart_requested = True
+            if settings_restart_task is not None and settings_restart_task in done:
+                restart_requested = True
+            runtime_cancel_requested = True
+            result = RESTART_EXIT_CODE if restart_requested else 0
+    except BaseException as error:
+        primary_error = error
+        runtime_cancel_requested = (
+            runtime_task is not None and not runtime_task.done()
+        )
     finally:
-        if signal_handlers_registered:
-            for sig in watched_signals:
-                _ = loop.remove_signal_handler(sig)
-        if commit_channel is not None and hasattr(signal, "SIGUSR2"):
+        for sig in registered_signal_handlers:
+            _ = loop.remove_signal_handler(sig)
+        for sig, previous_handler in fallback_signal_handlers.items():
+            _ = signal.signal(sig, previous_handler)
+        if restart_signal_registered:
             _ = loop.remove_signal_handler(signal.SIGUSR2)
-        _ = stop_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await stop_task
+        if stop_task is not None:
+            stop_error, caller_cancel = await _settle_owned_task(
+                stop_task,
+                request_cancel=True,
+            )
+            deferred_cancellation = caller_cancel or deferred_cancellation
+            _record_error(stop_error)
         if restart_task is not None:
-            _ = restart_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await restart_task
+            restart_error, caller_cancel = await _settle_owned_task(
+                restart_task,
+                request_cancel=True,
+            )
+            deferred_cancellation = caller_cancel or deferred_cancellation
+            _record_error(restart_error)
         if settings_restart_task is not None:
-            _ = settings_restart_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await settings_restart_task
+            settings_error, caller_cancel = await _settle_owned_task(
+                settings_restart_task,
+                request_cancel=True,
+            )
+            deferred_cancellation = caller_cancel or deferred_cancellation
+            _record_error(settings_error)
+        if restart_commit_error:
+            _record_error(restart_commit_error[0])
+        if runtime_task is not None:
+            runtime_error, caller_cancel = await _settle_owned_task(
+                runtime_task,
+                request_cancel=runtime_cancel_requested,
+            )
+            deferred_cancellation = caller_cancel or deferred_cancellation
+            _record_error(runtime_error)
+        _record_error(deferred_cancellation)
+    if primary_error is not None:
+        raise primary_error
+    return result
 
 
 if __name__ == "__main__":
@@ -723,7 +851,7 @@ if __name__ == "__main__":
                         "marketplace": marketplace,
                         "ref": ref_value or "",
                         "sparse": _parse_csv_flag(sparse_value),
-                        "update_id": _get_flag_value(args, "--update-id") or "",
+                        "update_id": _get_flag_value(args, "--update-id") or uuid4().hex,
                     },
                 )
             )
@@ -733,15 +861,11 @@ if __name__ == "__main__":
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         sys.exit(0)
 
-    if args and args[0] in {"plugin-status", "plugin-promote", "plugin-discard"}:
+    if args and args[0] == "plugin-status":
         update_id = args[1] if len(args) > 1 and not args[1].startswith("--") else None
-        if args[0] != "plugin-status" and update_id is None:
-            print(f"{args[0]} 缺少更新 ID", file=sys.stderr)
-            sys.exit(1)
         method = (
             "plugin/status" if update_id is None else
-            "plugin/update" if args[0] == "plugin-status" else
-            "plugin/promote" if args[0] == "plugin-promote" else "plugin/discard"
+            "plugin/update"
         )
         try:
             result = asyncio.run(_request_runtime_control(

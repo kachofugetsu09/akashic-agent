@@ -6,7 +6,11 @@ from scripts.plugin_inventory import build_inventory
 
 def test_inventory_includes_support_packages_and_uses_frozen_boundary_rules(tmp_path):
     files = {
-        "plugins/one/plugin.py": "from agent.plugin_composition.future_private import Hidden\nfrom plugins.two.impl import run\n",
+        "plugins/one/plugin.py": (
+            'api_version = 3\nname = "one"\nversion = "1.0.0"\n'
+            "from agent.plugin_composition.future_private import Hidden\n"
+            "from plugins.two.impl import run\n"
+        ),
         "plugins/two/impl.py": "def run(): pass\n",
         "bootstrap/app.py": "from plugins.two.impl import run\n",
     }
@@ -24,7 +28,8 @@ def test_inventory_includes_support_packages_and_uses_frozen_boundary_rules(tmp_
     assert isinstance(summary, dict)
     assert isinstance(violations, list)
     assert {item["package"] for item in packages} == {"one", "two"}
-    assert summary["support_package_count"] == 2
+    assert summary["support_package_count"] == 1
+    assert summary["manifest_plugin_count"] == 1
     assert {item["kind"] for item in violations} == {
         "R1", "R2", "R3", "not_installable_artifact"}
     assert report["core_consumer_imports"] == [{"file": "bootstrap/app.py", "target": "plugins.two.impl"}]

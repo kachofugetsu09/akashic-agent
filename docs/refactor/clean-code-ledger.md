@@ -501,6 +501,12 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 
 ## 2026-07-23 less-is-more PR27：删除 PersonaMem runtime 转发 wrapper
 
+> 2026-09-24 现状补记：维护者决定退役 LongMemEval；其专属 CLI、数据适配和文档已删除。
+> PersonaMem 仍使用的 runtime、ingest、Turn 数据和纯评分实现已归回 `eval/personamem/`，
+> 没有恢复下述只转发的 wrapper。下面的调用路径、文件计量和测试结果都是 PR27 当时的记录，
+> 不代表当前存在 LongMemEval 包或这些测试。PersonaMem 的旧 CoreRuntime 入口尚未恢复，
+> 具体运行边界见其 README；本次未迁移或删除正式 benchmark 数据。
+
 ### `PR27` `refactor(eval): remove PersonaMem runtime forwarding wrapper`
 
 - base：PR26 committed HEAD `3766dda949802391b97be656d3aea9efc020d544`，分支 `refactor/less-is-more-pr27-remove-personamem-runtime-wrapper`。
@@ -2880,7 +2886,8 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 能力不变：`memorize`、`recall_memory`、`message_push`、`web_fetch`、`web_search`、`tool_search`、`shell` 等工具名由 `plugins/akasha`、`plugins/standard_web`、`plugins/standard_tools`、`plugins/scheduler`、`plugins/message_push` 等插件继续提供；参数 schema、错误语义、外部发送、持久化与插件生命周期均不变。
 - 登记联动：`tests_scenarios/contracts/impact.toml` 把 7 个组（`model_owner`、`recursive_plugin_validation`、`memory`、`shell_finality`、`companion_tool_context`、`companion_external_io`、`companion_shell`）里的对应路径从 `paths` 移入 `deleted_paths`；`coverage-baseline.json` 的 `catalogDigest` 由 `fd714884` 更新为 `506d9885`。
 - 边界账本：`plugin_boundary_baseline.toml` 删除 3 条已还清的 R1 条目（`agent/tools/shell.py`、`web_fetch.py`、`web_search.py` → 插件），R1 由 28 降到 25；`python scripts/plugin_boundary.py check` 通过并打印 `R1=25/25 R2=244/244 R3=238/238`。
-- 保留项：`agent/tools/executor.py` 与 `agent/tools/events.py` 是 R10 Tool 组合事件流水的 reviewed 公开 seam，`events.py` 由合同文档声明 owner，`executor.py` 由 `tests/test_tool_executor.py` 的 11 项合同测试覆盖，符合第 2 步「有任一消费者即保留」规则，故不删除。其归属（R2 不允许插件 import `agent.tools.events`，seam 若被插件消费须先迁入 `agent/plugin_contracts/`）留给第 3 步。
+- 当时保留项（历史状态）：`agent/tools/executor.py` 与 `agent/tools/events.py` 是 R10 Tool 组合事件流水的 reviewed 公开 seam，`events.py` 由合同文档声明 owner，`executor.py` 由 `tests/test_tool_executor.py` 的 11 项合同测试覆盖，符合第 2 步「有任一消费者即保留」规则，故不删除。其归属（R2 不允许插件 import `agent.tools.events`，seam 若被插件消费须先迁入 `agent/plugin_contracts/`）留给第 3 步。
+- 当前边界更正（T-5902a3）：删除无消费者的 `agent/tools/executor.py` 及仅覆盖该 wrapper 的 `tests/test_tool_executor.py`。工具准入、prepare、调用、回执与恢复由 `plugins/tools/execution.py::ToolExecution` 和现有 Tools provider 持有；现有覆盖位于 `tests/test_tool_execution_receipts.py`、`tests/test_standard_tools.py`、`tests/test_message_push_plugin.py`、`tests/test_subagent_messages.py`。`agent/tools/events.py` 与 grant/admission 语义保留。
 - Gate：`docker/debug/gate.py` 的 `audit_catalog` 为 `passed/current`，无 unmapped executable、无 catalog issue；公开 change-impact Gate 以 stacked base 运行，`sourceDigest`/`planDigest` 由交付报告记录。
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。
 - 残余风险：历史 checkpoint 或工作 checkout 可能保留旧模块文本；外部消费者范围按下方复核修正。

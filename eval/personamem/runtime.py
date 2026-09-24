@@ -1,10 +1,4 @@
-"""BenchmarkRuntime: full production stack wired for LongMemEval.
-
-Uses build_core_runtime exactly as production so prompt assembly,
-tool dispatch, memory injection, and retrieval are identical.
-The only delta from a real user workspace: MEMORY.md / SELF.md start
-empty (honest baseline that forces all recall through the memory system).
-"""
+"""PersonaMem's temporary workspace and CoreRuntime owner."""
 
 from __future__ import annotations
 
@@ -14,11 +8,15 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent.plugin_composition import CHAT_MODELS, BoundModelDescriptor
-from agent.plugins.snapshot import lease_runtime_snapshot
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from bootstrap.tools import CoreRuntime
+    from core.net.http import SharedHttpResources
 
 _BENCHMARK_SELF_MD = """\
 # Identity
@@ -66,8 +64,8 @@ Never ask the user for information you might already have in memory.
 
 
 @dataclass
-class BenchmarkRuntime:
-    core: object  # CoreRuntime
+class PersonaMemRuntime:
+    core: CoreRuntime
     workspace: Path
     agent_model: BoundModelDescriptor
 
@@ -77,7 +75,7 @@ async def create_runtime(
     workspace: Path,
     *,
     model_registry_source: Path | None = None,
-) -> BenchmarkRuntime:
+) -> PersonaMemRuntime:
     """Wire the full production stack into a temp workspace.
 
     Args:
@@ -104,34 +102,35 @@ async def create_runtime(
     self_md = workspace / "memory" / "SELF.md"
     self_md.write_text(_BENCHMARK_SELF_MD, encoding="utf-8")
 
-    # 3. Build the full production runtime (providers, tools, memory, loop).
+    # 3. Build CoreRuntime and capture the selected agent model.
     http = SharedHttpResources()
     core = build_core_runtime(config, workspace, http)
     try:
         await core.start()
-        manager = core.plugin_manager
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-        async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
-            root = snapshot.composition_root
-            if root is None:
-                raise RuntimeError("RuntimeSnapshot 缺少 composition Root")
-            chat_models = root.context.require(CHAT_MODELS)
-            async with chat_models.execution() as execution:
-                descriptor = execution.chat("agent").descriptor
-    except BaseException:
-        await core.stop()
-        await http.aclose()
+        root = core.plugin_manager.live_root
+        if root is None:
+            raise RuntimeError("插件初始化成功但没有发布 live Root")
+        chat_models = root.context.require(CHAT_MODELS)
+        async with chat_models.execution() as execution:
+            descriptor = execution.chat("agent").descriptor
+    except BaseException as start_error:
+        try:
+            await _close_owners(core, http)
+        except BaseException as cleanup_error:
+            raise BaseExceptionGroup(
+                "Benchmark runtime start and cleanup failed",
+                [start_error, cleanup_error],
+            ) from start_error
         raise
 
     logger.info(
-        "BenchmarkRuntime ready: workspace=%s model=%s driver=%s revision=%d",
+        "PersonaMemRuntime ready: workspace=%s model=%s driver=%s revision=%d",
         workspace,
         descriptor.model,
         descriptor.driver_id,
         descriptor.model_revision,
     )
-    return BenchmarkRuntime(core=core, workspace=workspace, agent_model=descriptor)
+    return PersonaMemRuntime(core=core, workspace=workspace, agent_model=descriptor)
 
 
 def _seed_model_registry(source: Path, target: Path) -> None:
@@ -160,7 +159,7 @@ def _seed_model_registry(source: Path, target: Path) -> None:
         raise
 
 
-def format_model_trace(rt: BenchmarkRuntime) -> str:
+def format_model_trace(rt: PersonaMemRuntime) -> str:
     """Render the exact public model descriptor captured at runtime start."""
 
     descriptor = rt.agent_model
@@ -173,6 +172,22 @@ def format_model_trace(rt: BenchmarkRuntime) -> str:
     )
 
 
-async def close_runtime(rt: BenchmarkRuntime) -> None:
-    await rt.core.stop()
-    await rt.core.http_resources.aclose()
+async def close_runtime(rt: PersonaMemRuntime) -> None:
+    """Close both runtime owners and report every cleanup failure."""
+
+    await _close_owners(rt.core, rt.core.http_resources)
+
+
+async def _close_owners(core: CoreRuntime, http: SharedHttpResources) -> None:
+    """Finish both acquired owners even if the first close fails."""
+
+    errors: list[BaseException] = []
+    for close in (core.stop, http.aclose):
+        try:
+            await close()
+        except BaseException as error:
+            errors.append(error)
+    if errors:
+        if len(errors) == 1:
+            raise errors[0]
+        raise BaseExceptionGroup("Benchmark runtime cleanup failed", errors)
