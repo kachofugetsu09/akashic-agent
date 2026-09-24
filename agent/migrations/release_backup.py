@@ -27,7 +27,10 @@ _RUNTIME_FILES = {
 def _sqlite_sidecar(source: Path) -> bool:
     """Only a regular SQLite base makes a suffix file forensic evidence."""
 
-    base = source.with_name(source.name[:-4])
+    base_name = source.name[:-4]
+    if not base_name:
+        return False
+    base = source.with_name(base_name)
     if not (base.exists() or base.is_symlink()):
         return False
     if not stat.S_ISREG(base.lstat().st_mode):

@@ -132,7 +132,8 @@ def test_release_backup_restores_opaque_suffixes_without_runtime_controls(tmp_pa
     state = tmp_path / "state"
     data = state / "workspace/plugin-data/opaque-builtin"
     data.mkdir(parents=True)
-    payloads = {"absent-wal": b"no base", "plain-shm": b"plain sidecar",
+    payloads = {"-wal": b"exact opaque wal", "-shm": b"exact opaque shm",
+                "absent-wal": b"no base", "plain-shm": b"plain sidecar",
                 "plain": b"not sqlite", "owner.lock": b"plugin fact",
                 ".instance.lock": b"plugin fact"}
     for name, value in payloads.items():
@@ -164,11 +165,18 @@ def test_release_backup_restores_opaque_suffixes_without_runtime_controls(tmp_pa
     assert not (target / "plugin-home/.publication.lock").exists()
     assert all(not (target / "workspace/runtime" / name).exists() for name in
                ("chat.sock", "web-chat.sock", "dashboard.sock"))
-    assert (data / "absent-wal").read_bytes() == b"no base"
+    assert {name: (data / name).read_bytes() for name in payloads} == payloads
+    files = manifest["files"]
+    assert isinstance(files, list)
+    for name in ("-wal", "-shm"):
+        path = f"workspace/plugin-data/opaque-builtin/{name}"
+        assert any(row["path"] == path and row["kind"] == "file" for row in files)
     sidecars = manifest["forensic_sidecars"]
     assert isinstance(sidecars, list)
-    assert "workspace/plugin-data/opaque-builtin/absent-wal" not in {
-        row["path"] for row in sidecars}
+    assert {"workspace/plugin-data/opaque-builtin/absent-wal",
+            "workspace/plugin-data/opaque-builtin/-wal",
+            "workspace/plugin-data/opaque-builtin/-shm"}.isdisjoint(
+                {row["path"] for row in sidecars})
 
 
 def test_release_readiness_requires_every_selected_fiber() -> None:
