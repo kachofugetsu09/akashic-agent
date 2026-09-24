@@ -11,6 +11,26 @@ from contextlib import closing
 from pathlib import Path
 
 _SQLITE = b"SQLite format 3\0"
+_RUNTIME_FILES = {
+    Path("workspace/.instance.lock"),
+    Path("workspace/.supervisor.lock"),
+    Path("workspace/.supervisor.pid"),
+    Path("workspace/.runtime-ready.json"),
+    Path("workspace/akashic.sock"),
+    Path("plugin-home/.publication.lock"),
+}
+
+
+def _sqlite_sidecar(source: Path) -> bool:
+    """Only a regular SQLite base makes a suffix file forensic evidence."""
+
+    base = source.with_name(source.name[:-4])
+    if not (base.exists() or base.is_symlink()):
+        return False
+    if not stat.S_ISREG(base.lstat().st_mode):
+        return False
+    with base.open("rb") as stream:
+        return stream.read(len(_SQLITE)) == _SQLITE
 
 
 def _sha(path: Path) -> str:
@@ -86,6 +106,9 @@ def backup_release_state(state: Path, backup: Path) -> dict[str, object]:
             source = root / name
             relative = relative_root / name
             target = target_root / name
+            if relative in _RUNTIME_FILES:
+                omitted.append(relative.as_posix())
+                continue
             mode = source.lstat().st_mode
             if stat.S_ISLNK(mode):
                 target.symlink_to(os.readlink(source))
@@ -95,10 +118,7 @@ def backup_release_state(state: Path, backup: Path) -> dict[str, object]:
             if not stat.S_ISREG(mode):
                 omitted.append(relative.as_posix())
                 continue
-            if name in {".instance.lock", ".supervisor.lock", ".publication.lock"}:
-                omitted.append(relative.as_posix())
-                continue
-            if name.endswith(("-wal", "-shm")):
+            if name.endswith(("-wal", "-shm")) and _sqlite_sidecar(source):
                 forensic = backup / "sidecars" / relative
                 forensic.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, forensic)

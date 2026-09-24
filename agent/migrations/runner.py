@@ -24,7 +24,10 @@ from agent.migrations.bundles import (
     validate_pending_requirements,
 )
 from agent.plugins.source_resolver import ResolvedPluginSource
-from agent.plugins.manifest import plugins_root, workspace_plugin_data_dir
+from agent.plugins.source_resolver import resolve_plugin_sources
+from agent.plugins.manifest import load_plugin_manifest, plugins_root, workspace_plugin_data_dir
+from agent.plugins.selection import PluginSelection
+from agent.plugins.static_manifest import load_static_plugin_manifest
 from bootstrap.workspace_lock import WorkspaceInstanceLock, WorkspaceMaintenanceLock
 
 
@@ -51,6 +54,7 @@ class MigrationRunner:
         installed_cache_root: Path | None = None,
         migration_catalog: Path | None = None,
         fixed_sources: Sequence[ResolvedPluginSource] | None = None,
+        startup_selection: bool = False,
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.config_path = config_path.expanduser().resolve()
@@ -64,6 +68,7 @@ class MigrationRunner:
         # 先 resolve 后把越界路径伪装成普通 cache 根。
         self.plugin_dirs = tuple(path.expanduser() for path in plugin_dirs)
         self.fixed_sources = None if fixed_sources is None else tuple(fixed_sources)
+        self.startup_selection = startup_selection
         self.installed_cache_root = (
             (installed_cache_root or (plugins_root() / "cache"))
             .expanduser()
@@ -81,6 +86,8 @@ class MigrationRunner:
         workspace_lock = WorkspaceInstanceLock(self.workspace)
         workspace_lock.acquire()
         try:
+            if self.startup_selection:
+                self.fixed_sources = _startup_sources(self.workspace)
             return self._apply_pending()
         finally:
             workspace_lock.release()
@@ -203,11 +210,58 @@ def _bind_yoyo_username() -> Iterator[None]:
 
 
 def migrate_installation(config_path: Path, workspace: Path) -> MigrationOutcome:
+    """Run startup migrations from the same durable inputs the runtime loads."""
+
     return MigrationRunner(
         repo_root=_PROJECT_ROOT,
         config_path=config_path,
         workspace=workspace,
+        startup_selection=True,
     ).run()
+
+
+def _startup_sources(workspace: Path) -> tuple[ResolvedPluginSource, ...]:
+    """Read exact selected archives, or the enabled inputs of a new selection."""
+
+    selection = PluginSelection(workspace)
+    root_ref = selection.read()
+    if root_ref is None:
+        # First boot has no committed components yet; Manager uses this manifest
+        # to choose installed inputs before it commits the first complete Root.
+        enabled = load_plugin_manifest()
+        return tuple(source for source in resolve_plugin_sources(
+            installed_cache_root=plugins_root() / "cache",
+        ) if enabled.get(f"{source.plugin_name}@{source.marketplace}", True))
+
+    root = selection.archive.read_descriptor(root_ref)
+    components = root["components"]
+    if not isinstance(components, tuple):
+        raise ValueError("selected migration components 无效")
+    sources: list[ResolvedPluginSource] = []
+    for ref in components:
+        if not isinstance(ref, str):
+            raise ValueError("selected migration component ref 无效")
+        descriptor = selection.archive.read_descriptor(ref)
+        plugin_id = descriptor["plugin_id"]
+        code_ref = descriptor["code"]
+        source_type = descriptor["source_type"]
+        if (descriptor["version"] != 4 or not isinstance(plugin_id, str)
+            or not isinstance(code_ref, str)
+            or (source_type != "builtin" and source_type != "installed")
+            or plugin_id.count("@") != 1):
+            raise ValueError(f"selected migration descriptor 无效: {ref}")
+        name, marketplace = plugin_id.split("@")
+        code = selection.archive.open(code_ref)
+        manifest = load_static_plugin_manifest(code)
+        if manifest.name != name:
+            raise ValueError(f"selected migration 身份不一致: {plugin_id}")
+        sources.append(ResolvedPluginSource(
+            plugin_root=code,
+            source_type="builtin" if source_type == "builtin" else "installed",
+            marketplace=marketplace, plugin_name=name,
+            static_manifest=manifest,
+        ))
+    return tuple(sources)
 
 
 def _workspace_is_empty(workspace: Path, config_path: Path) -> bool:

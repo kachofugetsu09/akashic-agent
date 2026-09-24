@@ -670,6 +670,9 @@ listener 与 Dashboard 读写同一副本，discard 不改正式素材，promoti
 | `akashic.sock` | Unix 控制 socket | 进程端点，不能从备份恢复 |
 
 **F-015：** lock、PID、readiness 和 socket 即使落在磁盘，也不属于可恢复业务状态。`.app-server-token` 是例外：它是持久 secret，但恢复策略要与控制客户端配对设计。
+发行恢复按上述精确 owner 路径排除运行控制文件；插件私有目录里同名的普通文件不因此丢失。
+SQLite 逻辑备份覆盖已提交 WAL 页，只有已核对 SQLite base 的 `-wal`/`-shm` 单独留作 forensic
+copy；其他同后缀文件仍是 opaque plugin-data，按字节恢复到隔离 state。
 
 ## 12. 诊断、审计和临时产物
 

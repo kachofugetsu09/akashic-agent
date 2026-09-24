@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import argparse
+import shutil
 import sqlite3
 import subprocess
 from contextlib import closing
@@ -117,9 +118,52 @@ def test_release_backup_reads_committed_wal_and_keeps_sidecars_forensics(tmp_pat
     with closing(sqlite3.connect(tmp_path / "recovery/state/facts.sqlite3")) as saved:
         assert saved.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert saved.execute("SELECT value FROM facts").fetchone() == ("committed-in-wal",)
+    restored = tmp_path / "new-state"
+    shutil.copytree(tmp_path / "recovery/state", restored, symlinks=True)
+    with closing(sqlite3.connect(restored / "facts.sqlite3")) as saved:
+        assert saved.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert saved.execute("SELECT value FROM facts").fetchone() == ("committed-in-wal",)
     sidecars = manifest["forensic_sidecars"]
     assert isinstance(sidecars, list) and sidecars
     assert all(isinstance(row, dict) and row["restore"] is False for row in sidecars)
+
+
+def test_release_backup_restores_opaque_suffixes_without_runtime_controls(tmp_path):
+    state = tmp_path / "state"
+    data = state / "workspace/plugin-data/opaque-builtin"
+    data.mkdir(parents=True)
+    payloads = {"absent-wal": b"no base", "plain-shm": b"plain sidecar",
+                "plain": b"not sqlite", "owner.lock": b"plugin fact",
+                ".instance.lock": b"plugin fact"}
+    for name, value in payloads.items():
+        (data / name).write_bytes(value)
+    workspace = state / "workspace"
+    for name in (".instance.lock", ".supervisor.lock", ".supervisor.pid",
+                 ".runtime-ready.json", "akashic.sock"):
+        (workspace / name).write_text("stale")
+    (state / "plugin-home").mkdir()
+    (state / "plugin-home/.publication.lock").write_text("stale")
+    (state / "config.toml").write_text("setting = 'kept'\n")
+    (data / "current").symlink_to("plain")
+    backup = tmp_path / "recovery"
+    manifest = backup_release_state(state, backup)
+    target = tmp_path / "new-state"
+    assert not target.exists()
+    shutil.copytree(backup / "state", target, symlinks=True)
+    assert {name: (target / "workspace/plugin-data/opaque-builtin" / name).read_bytes()
+            for name in payloads} == payloads
+    assert (target / "config.toml").read_text() == "setting = 'kept'\n"
+    assert (target / "workspace/plugin-data/opaque-builtin/current").is_symlink()
+    assert (target / "workspace/plugin-data/opaque-builtin/current").read_bytes() == b"not sqlite"
+    assert all(not (target / "workspace" / name).exists() for name in
+               (".instance.lock", ".supervisor.lock", ".supervisor.pid",
+                ".runtime-ready.json", "akashic.sock"))
+    assert not (target / "plugin-home/.publication.lock").exists()
+    assert (data / "absent-wal").read_bytes() == b"no base"
+    sidecars = manifest["forensic_sidecars"]
+    assert isinstance(sidecars, list)
+    assert "workspace/plugin-data/opaque-builtin/absent-wal" not in {
+        row["path"] for row in sidecars}
 
 
 def test_release_readiness_requires_every_selected_fiber() -> None:

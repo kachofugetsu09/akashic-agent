@@ -229,6 +229,20 @@ provenance 和代码 digest 在迁移前固定；`prepare_plugin_input` 只在�
 先升级，再由 journal owner 判定 pending/armed；未决事务不被 release 猜测回滚。整个流程不能保证跨文件
 与 SQLite 的原子性，备份 manifest 和 Yoyo ledger 是明确的恢复证据。
 
+`upgrade-bundled` 使用 `exec` 独立退出，不在同一容器内继续启动 Supervisor。随后普通 Core
+容器启动时，migration runner 在 workspace 实例锁内读取完整 `PluginSelection`，只从所选
+component 的精确 archive 加载 migration bundle；缺失或损坏的 archive 使启动失败，不扫描
+cache 顶替。首次初始化的 null selection 尚无完整 archive，runner 按首次装载使用的
+plugin manifest 过滤安装输入；停止期升级仍先单独执行 Core schema migration。迁移落账、selection
+已提交和 Fiber ACTIVE 是不同事实，只有启动及 live 核对后才可写 active receipt。
+
+恢复点保存普通插件文件原字节，包括名称以 `-wal` 或 `-shm` 结尾的 opaque 数据。只有同名
+base 是实际 SQLite 文件时，sidecar 才单独留作 forensic copy，由逻辑 SQLite backup 承担
+恢复。`workspace` 根的实例锁、Supervisor 锁/PID、readiness、控制 socket 与 `plugin-home`
+根的 publication 锁不进入恢复 state；插件私有目录中的同名文件照常保留。目录内相对
+symlink 按链接原样保存，隔离恢复后需核对解析目标；指向外部路径的 symlink 仍依赖外部
+artifact/运行环境可用，恢复点本身不复制其目标。
+
 升级失败后旧服务保持停止，`failed-*.json` 记录 `maintenance_required`、恢复目录和实际错误；不能仅切回
 旧 image 读取可能已迁移的数据。迁移成功但 archive/selection/start/readiness 失败也同样停机。恢复时先
 核对目标 state、迁移账本、selection 和旧快照；需要切回旧版本时，在停机状态显式恢复整份

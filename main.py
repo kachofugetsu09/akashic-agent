@@ -288,7 +288,7 @@ def _prepare_startup_migrations(
         "dashboard",
     }:
         return None
-    if command == "init" and not workspace.exists():
+    if command in {"init", "setup"} and not workspace.exists():
         # 新建 workspace 由 init_workspace 独占建立基线与空选择；启动迁移
         # 先落 migrations.sqlite3 会把新目录误判成既有 workspace。
         return None

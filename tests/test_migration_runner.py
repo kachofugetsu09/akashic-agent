@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,8 @@ import pytest
 import toml
 
 from agent.plugins.artifacts import relative_artifact_pointer, write_pointers
+from agent.plugins.selection import PluginSelection
+from agent.plugin_composition.archive import PluginArchive
 from agent.migrations.bundles import MigrationBundleBlocked, MigrationBundleError
 from agent.migrations.runner import MigrationRunner
 from bootstrap.init_workspace import init_workspace
@@ -364,6 +367,68 @@ def test_future_core_step_runs_after_installed_bundle_is_applied(
     after_ledger = _ledger_rows(runner.ledger_path)
     old_row = next(row for row in before_ledger if row[1] == "installed_step")
     assert next(row for row in after_ledger if row[1] == "installed_step") == old_row
+
+
+def test_startup_uses_selected_archive_not_unselected_cache(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "state"
+    repo = _empty_repo(tmp_path)
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    config = root / "config.toml"
+    config.write_text("version = 'A'\n")
+    data = workspace / "plugin-data/selected_plugin-builtin"
+    data.mkdir(parents=True)
+    (data / "version").write_text("A")
+    selected_step = (
+        "from yoyo import step\n"
+        "from agent.migrations.context import current_migration_context\n"
+        "__depends__ = set()\n__transactional__ = False\n"
+        "def apply(connection):\n"
+        "    context = current_migration_context()\n"
+        "    data = context.bundle_data_roots['selected_plugin'] / 'version'\n"
+        "    data.write_text(data.read_text() + 'B')\n"
+        "    context.config_path.write_text(\"version = 'B'\\n\")\n"
+        "steps = [step(apply)]\n"
+    )
+    selected = _write_bundle(
+        tmp_path / "selected",
+        {"selected_step": ((), selected_step)},
+        bundle_id="selected_plugin",
+    )
+    unused = _write_bundle(
+        root / "plugin-home/cache/marketplace/unused/.artifacts",
+        {"unused_step": ((), _migration_source(tmp_path / "unused.marker"))},
+        bundle_id="unused",
+    )
+    base = root / "plugin-home/cache/marketplace/unused"
+    write_pointers(base, stable=relative_artifact_pointer(base, unused),
+                   latest=relative_artifact_pointer(base, unused))
+    selection = PluginSelection(workspace)
+    selection.initialize()
+    selection.archive = PluginArchive(selection.archive.path)
+    code = selection.archive.save(selected)
+    component = selection.archive.save_descriptor({
+        "version": 4, "plugin_id": "selected_plugin@builtin", "code": code,
+        "source_type": "builtin",
+    })
+    selection.commit((component,), expected_ref=None)
+
+    from agent.migrations import runner as migration_runner
+
+    monkeypatch.setattr(migration_runner, "_PROJECT_ROOT", repo)
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(root / "plugin-home"))
+    first = migration_runner.migrate_installation(config, workspace)
+    second = migration_runner.migrate_installation(config, workspace)
+    assert first.migrations == ("selected_step",)
+    assert second.migrations == ()
+    assert (data / "version").read_text() == "AB"
+    assert config.read_text() == "version = 'B'\n"
+    assert (selection.archive.open(code) / "plugin.py").read_text().startswith("name = 'selected_plugin'")
+    assert not (tmp_path / "unused.marker").exists()
+    shutil.rmtree(selection.archive.path / code)
+    with pytest.raises(FileNotFoundError):
+        migration_runner.migrate_installation(config, workspace)
+    assert not (tmp_path / "unused.marker").exists()
 
 
 def test_applied_bundle_with_retired_core_dependency_does_not_block(
