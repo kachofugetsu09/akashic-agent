@@ -281,7 +281,13 @@ class WorkloadControllerServer:
             return
         request = asyncio.create_task(self._handle(reader, writer))
         self._requests.add(request)
-        request.add_done_callback(self._requests.discard)
+
+        def finish(done: asyncio.Task[None]) -> None:
+            # A task cancelled before its first step never runs _handle's finally.
+            self._requests.discard(done)
+            writer.close()
+
+        request.add_done_callback(finish)
 
     async def _watch_owner(self) -> None:
         """Stop owned containers after the deployment owner disappears."""
