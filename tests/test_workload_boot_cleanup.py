@@ -125,6 +125,53 @@ async def test_controller_cancel_closes_idle_request_and_own_socket(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_controller_cancel_closes_accepted_request_before_handle_starts(
+    tmp_path, monkeypatch,
+):
+    """A queued handler still owns its accepted Unix connection on stop."""
+    server, socket_path, state_path = controller_server(tmp_path)
+    serving = asyncio.create_task(server.serve())
+    handle_entered = asyncio.Event()
+    accepted = asyncio.Event()
+    real_handle = server._handle
+    real_accept = server._accept
+
+    async def checked_handle(reader, writer):
+        handle_entered.set()
+        await real_handle(reader, writer)
+
+    def accept_then_cancel(reader, writer):
+        # Queue serve's cancellation ahead of the new handler's first step.
+        serving.cancel()
+        real_accept(reader, writer)
+        accepted.set()
+
+    monkeypatch.setattr(server, "_handle", checked_handle)
+    monkeypatch.setattr(server, "_accept", accept_then_cancel)
+    reader, writer = await wait_for_controller(socket_path)
+    try:
+        await asyncio.wait_for(accepted.wait(), 2)
+        done, _ = await asyncio.wait({serving}, timeout=1)
+        assert serving in done
+        assert not handle_entered.is_set()
+        with pytest.raises(asyncio.CancelledError):
+            await serving
+        assert await asyncio.wait_for(reader.read(), 1) == b""
+        assert not socket_path.exists()
+        assert not state_path.exists()
+        with state_path.with_suffix(".lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        if not serving.done():
+            serving.cancel()
+            done, _ = await asyncio.wait({serving}, timeout=2)
+            assert serving in done
+
+
+@pytest.mark.asyncio
 async def test_controller_cancel_waits_for_accepted_effect(tmp_path, monkeypatch):
     """A lost reply must not cancel an already accepted external effect."""
 
