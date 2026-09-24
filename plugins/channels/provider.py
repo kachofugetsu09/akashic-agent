@@ -1241,6 +1241,7 @@ class PluginChannels:
                     _workspace_roots=tuple((name, runtime.workspace_root(name)) for name in runtime.workspace_roots),
                     _workspace_files=tuple((name, runtime.workspace_file(name)) for name in runtime.workspace_files),
                     _resolve=resolve,
+                    _context=context,
                 )
         finally:
             active = False
