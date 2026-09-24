@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -11,9 +19,209 @@ from agent.plugins._operation import OperationBusyError, OperationTimeoutError
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import SelectionFormatError
 from agent.workloads.client import WorkloadEffectUnknown
+from agent.workloads.controller import WorkloadControllerServer
 from agent.plugin_composition.execution import WorkloadLease, WorkloadStopReceipt
 from bus.event_bus import EventBus
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
+
+def test_controller_sigterm_releases_own_socket_and_lock(tmp_path):
+    """The public CLI must release its listener before another owner can start."""
+
+    workspace = tmp_path / "workspace"
+    for part in ("plugin-data", "runtime/plugin-validation"):
+        (workspace / part).mkdir(parents=True)
+    sentinel = workspace / "plugin-data" / "keep"
+    sentinel.write_bytes(b"workload data stays\n")
+    socket_path = tmp_path / "run" / "controller.sock"
+    state_path = tmp_path / "state" / "leases.json"
+    command = [
+        sys.executable, "-m", "agent.workloads.controller",
+        "--workspace", str(workspace), "--socket", str(socket_path),
+        "--docker-socket", str(tmp_path / "unused-docker.sock"),
+        "--state", str(state_path), "--network", "test-net",
+        "--allowed-uid", str(os.getuid()), "--socket-uid", str(os.getuid()),
+        "--socket-gid", str(os.getgid()), "--workload-uid", str(os.getuid()),
+        "--workload-gid", str(os.getgid()),
+    ]
+    process = subprocess.Popen(command, cwd=Path(__file__).resolve().parents[1])
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                pytest.fail(f"Controller exited before readiness: {process.returncode}")
+            if socket_path.is_socket():
+                with socket.socket(socket.AF_UNIX) as probe:
+                    try:
+                        probe.connect(str(socket_path))
+                    except ConnectionRefusedError:
+                        pass
+                    else:
+                        probe.sendall(b'{"version":1,"action":"probe","body":{}}\n')
+                        assert b'"ok":false' in probe.recv(4096)
+                        break
+            time.sleep(0.01)
+        else:
+            pytest.fail("Controller listener did not become ready")
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5) == 0
+        assert not socket_path.exists()
+        with state_path.with_suffix(".lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        assert sentinel.read_bytes() == b"workload data stays\n"
+        assert not state_path.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def controller_server(tmp_path):
+    workspace = tmp_path / "workspace"
+    for part in ("plugin-data", "runtime/plugin-validation"):
+        (workspace / part).mkdir(parents=True)
+    state_path = tmp_path / "state" / "leases.json"
+    socket_path = tmp_path / "run" / "controller.sock"
+    return WorkloadControllerServer(
+        workspace=workspace, socket_path=socket_path,
+        docker_socket=tmp_path / "unused-docker.sock", state_path=state_path,
+        network="test-net", allowed_uid=os.getuid(), socket_uid=os.getuid(),
+        socket_gid=os.getgid(), workload_uid=os.getuid(), workload_gid=os.getgid(),
+    ), socket_path, state_path
+
+
+async def wait_for_controller(socket_path):
+    deadline = asyncio.get_running_loop().time() + 5
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            return await asyncio.open_unix_connection(socket_path)
+        except (FileNotFoundError, ConnectionRefusedError):
+            await asyncio.sleep(0.01)
+    pytest.fail("Controller listener did not become ready")
+
+
+@pytest.mark.asyncio
+async def test_controller_cancel_closes_idle_request_and_own_socket(tmp_path):
+    server, socket_path, state_path = controller_server(tmp_path)
+    serving = asyncio.create_task(server.serve())
+    reader, writer = await wait_for_controller(socket_path)
+    try:
+        serving.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(serving, 5)
+        assert await asyncio.wait_for(reader.read(), 2) == b""
+        assert not socket_path.exists()
+        with state_path.with_suffix(".lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        if not serving.done():
+            serving.cancel()
+            await asyncio.gather(serving, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_controller_cancel_waits_for_accepted_effect(tmp_path, monkeypatch):
+    """A lost reply must not cancel an already accepted external effect."""
+
+    server, socket_path, _state_path = controller_server(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+    completed = []
+
+    async def delayed_request(method, path, *, expected, body=None):
+        entered.set()
+        await release.wait()
+        completed.append((method, path))
+        return []
+
+    monkeypatch.setattr(server._engine, "request", delayed_request)
+    serving = asyncio.create_task(server.serve())
+    _reader, writer = await wait_for_controller(socket_path)
+    try:
+        writer.write(
+            (f'{{"version":1,"action":"cleanup_candidates","body":'
+             f'{{"workspace_id":"{server._workspace_id}"}}}}\n').encode()
+        )
+        await writer.drain()
+        await asyncio.wait_for(entered.wait(), 2)
+        serving.cancel()
+        await asyncio.sleep(0)
+        assert not serving.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(serving, 5)
+        assert len(completed) == 1
+        assert completed[0][0] == "GET"
+        assert not socket_path.exists()
+    finally:
+        release.set()
+        writer.close()
+        await writer.wait_closed()
+        if not serving.done():
+            serving.cancel()
+            await asyncio.gather(serving, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_controller_accepts_already_removed_own_socket(tmp_path):
+    server, socket_path, _state_path = controller_server(tmp_path)
+    serving = asyncio.create_task(server.serve())
+    reader, writer = await wait_for_controller(socket_path)
+    writer.write(b'{"version":1,"action":"probe","body":{}}\n')
+    await writer.drain()
+    assert b'"ok":false' in await reader.readline()
+    writer.close()
+    await writer.wait_closed()
+    socket_path.unlink()
+    serving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(serving, 5)
+    assert not socket_path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ["file", "symlink", "socket"])
+async def test_controller_refuses_foreign_socket_path_replacement(tmp_path, replacement):
+    server, socket_path, state_path = controller_server(tmp_path)
+    serving = asyncio.create_task(server.serve())
+    reader, writer = await wait_for_controller(socket_path)
+    writer.write(b'{"version":1,"action":"probe","body":{}}\n')
+    await writer.drain()
+    assert b'"ok":false' in await reader.readline()
+    writer.close()
+    await writer.wait_closed()
+
+    owned_path = socket_path.with_name("owned.sock")
+    socket_path.rename(owned_path)
+    foreign = None
+    if replacement == "file":
+        socket_path.write_bytes(b"foreign file")
+    elif replacement == "symlink":
+        socket_path.symlink_to(tmp_path / "foreign-target")
+    else:
+        foreign = socket.socket(socket.AF_UNIX)
+        foreign.bind(str(socket_path))
+    before = socket_path.lstat()
+    try:
+        serving.cancel()
+        with pytest.raises(RuntimeError, match="已被替换"):
+            await asyncio.wait_for(serving, 5)
+        after = socket_path.lstat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        with state_path.with_suffix(".lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    finally:
+        if foreign is not None:
+            foreign.close()
+        owned_path.unlink()
+        if not serving.done():
+            serving.cancel()
+            await asyncio.gather(serving, return_exceptions=True)
 
 
 def receipt(workspace_id):
