@@ -130,6 +130,36 @@ async def apply(ctx):
 
 
 @pytest.mark.asyncio
+async def test_records_view_reads_from_a_real_consumer_owner(tmp_path):
+    """The public Akasha read service must work from a dependent Fiber."""
+
+    def add_reader(_log, _host):
+        reader = tmp_path / "plugins" / "records_reader"
+        reader.mkdir()
+        (reader / "plugin.py").write_text('''
+from pathlib import Path
+from agent.plugin_composition import RUNTIME_STARTED
+from plugins.akasha.plugin import AKASHA_RECORDS_VIEW
+api_version = 3
+name = "records_reader"
+version = "1.0.0"
+inject = (AKASHA_RECORDS_VIEW,)
+async def apply(ctx):
+    def start(_event):
+        rows = ctx.require(AKASHA_RECORDS_VIEW)().list()
+        (ctx.data_root / "records_count.txt").write_text(str(len(rows)))
+    await ctx.on(RUNTIME_STARTED, start)
+''')
+
+    async with application(tmp_path, before_load=add_reader) as (_log, host):
+        generation = host.generation("records_reader")
+        assert generation is not None
+        count_path = generation.data_dir / "records_count.txt"
+        assert count_path.exists(), host.live_root.receipt().incidents
+        assert count_path.read_text() == "0"
+
+
+@pytest.mark.asyncio
 async def test_actual_plugin_learns_provides_materials_and_runs_recall_tool(tmp_path):
     async with application(tmp_path) as (log, host):
         async with _plugin_context(host, "tools").runtime_scope():

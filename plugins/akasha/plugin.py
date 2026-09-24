@@ -173,11 +173,15 @@ async def apply(ctx: Context) -> None:
     start_lock = asyncio.Lock()
     health = await ctx.health("embedding", required=False)
 
+    # The store belongs to Akasha's apply owner; callers of the public read
+    # service hold their own scope, not Akasha's OwnerCall.
+    record_state = ctx.require(OWNER_STATE).open(ctx)
+
     def records() -> RecallRecords:
-        return RecallRecords(ctx.require(OWNER_STATE).open(ctx))
+        return RecallRecords(record_state)
 
     def records_read() -> RecallRecordsRead:
-        return RecallRecordsRead(ctx.require(OWNER_STATE).open(ctx))
+        return RecallRecordsRead(record_state)
 
     # 公开读取函数不暴露 owner transaction；归档 apply 也不会读取正式数据库。
     def read_recall(identity: str) -> Recall | None:
