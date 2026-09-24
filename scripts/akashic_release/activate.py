@@ -6,8 +6,9 @@ import json
 import re
 import secrets
 import shlex
-import shutil
 import stat
+import sqlite3
+from contextlib import closing
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,9 @@ from scripts.akashic_release.manifest import write_json
 from scripts.akashic_release.model import ReleasePaths
 from scripts.akashic_release.systemd import start_bridge, start_core, stop_runtime
 from agent.plugins.selection import PluginSelection
+from agent.plugins.reload_journal import ReloadJournal
+from agent.migrations.release_backup import _RUNTIME_FILES
+from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 _ROOT_REF = re.compile(r"[0-9a-f]{64}\Z")
@@ -42,6 +46,224 @@ def _plain_external_host(root: Path, plan: Path) -> tuple[Path, Path]:
     if not plan.is_relative_to(root) or plan == root:
         raise ValueError("external plan 必须位于 input root 内")
     return root, plan
+
+
+def _save_environment_backup(source: Path, backup: Path) -> str:
+    """Publish and read back exact runtime.env bytes before stopped mutation."""
+
+    if backup.exists() or backup.is_symlink():
+        raise FileExistsError(f"runtime.env backup 已存在: {backup}")
+    content = source.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    with backup.open("xb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory_fd = os.open(backup.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    if hashlib.sha256(backup.read_bytes()).hexdigest() != digest:
+        raise RuntimeError(f"runtime.env backup 字节核对失败: {backup}")
+    return digest
+
+
+def _state_entries(root: Path) -> tuple[set[str], set[str]]:
+    """List every retained file/link and directory without following links."""
+
+    files: set[str] = set()
+    directories: set[str] = set()
+    for current, names, leaves in os.walk(root, followlinks=False):
+        folder = Path(current)
+        directories.add(folder.relative_to(root).as_posix())
+        for name in list(names):
+            path = folder / name
+            relative = path.relative_to(root)
+            if path.is_symlink():
+                files.add(relative.as_posix())
+                names.remove(name)
+        for name in leaves:
+            path = folder / name
+            relative = path.relative_to(root)
+            if relative not in _RUNTIME_FILES:
+                files.add(relative.as_posix())
+    return files, directories
+
+
+def _verify_full_restore(paths: ReleasePaths, failed: Mapping[str, object], environment_file: Path) -> dict[str, object]:
+    """Compare the stopped state, SQLite and env to one complete saved point."""
+
+    # 1. Fix the referenced backup and the previous environment bytes.
+    backup_raw = failed.get("backupDir")
+    env_raw = failed.get("environmentBackup")
+    env_digest = failed.get("environmentBackupSha256")
+    if (not isinstance(backup_raw, str) or not isinstance(env_raw, str)
+        or not isinstance(env_digest, str) or _ROOT_REF.fullmatch(env_digest) is None):
+        raise ValueError("failure 缺少完整 state/env 恢复链接")
+    backup = Path(backup_raw)
+    env_backup = Path(env_raw)
+    if (paths.state.is_symlink() or not paths.state.is_dir()
+        or environment_file.is_symlink() or not environment_file.is_file()):
+        raise ValueError("restored state/runtime.env 路径无效")
+    backup_root = paths.backups.resolve(strict=True)
+    if (backup.is_symlink() or not backup.is_dir() or backup.resolve(strict=True) != backup
+        or not backup.is_relative_to(backup_root) or not backup.name.startswith("upgrade-")
+        or env_backup.is_symlink() or not env_backup.is_file()
+        or not env_backup.resolve(strict=True).is_relative_to(backup_root)):
+        raise ValueError("failure 恢复链接路径无效")
+    manifest_path = backup / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("release backup manifest 路径无效")
+    manifest = read_json(manifest_path)
+    snapshot = backup / "state"
+    if (manifest.get("version") != 1 or manifest.get("source") != str(paths.state)
+        or manifest.get("backup") != str(snapshot) or snapshot.is_symlink()
+        or not snapshot.is_dir()):
+        raise ValueError("release backup manifest 与目标 state 不匹配")
+    records = manifest.get("files")
+    if not isinstance(records, list):
+        raise ValueError("release backup file list 无效")
+    expected_paths: set[str] = set()
+    sqlite_count = 0
+    # 2. Check every saved file against both the backup and restored state.
+    for raw in records:
+        if not isinstance(raw, dict):
+            raise ValueError("release backup file record 无效")
+        relative = raw.get("path")
+        kind = raw.get("kind")
+        if (not isinstance(relative, str) or relative.startswith("/")
+            or any(part in {"", ".", ".."} for part in relative.split("/"))
+            or relative in expected_paths):
+            raise ValueError("release backup path 重复或越界")
+        expected_paths.add(relative)
+        source = snapshot / relative
+        current = paths.state / relative
+        if kind == "symlink":
+            if (not source.is_symlink() or not current.is_symlink()
+                or os.readlink(source) != raw.get("target")
+                or os.readlink(current) != raw.get("target")):
+                raise RuntimeError(f"state symlink 未完整恢复: {relative}")
+            continue
+        digest = raw.get("sha256")
+        if (kind not in {"file", "sqlite_logical"} or not isinstance(digest, str)
+            or _ROOT_REF.fullmatch(digest) is None):
+            raise ValueError(f"release backup 记录无效: {relative}")
+        for path in (source, current):
+            if (path.is_symlink() or not path.is_file()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != digest):
+                raise RuntimeError(f"state 字节未完整恢复: {relative}")
+        if kind == "sqlite_logical":
+            with closing(sqlite3.connect(f"{current.as_uri()}?mode=ro&immutable=1", uri=True)) as connection:
+                if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                    raise RuntimeError(f"restored SQLite 损坏: {relative}")
+            sqlite_count += 1
+    # 3. Refuse partial restores with extra or missing paths.
+    source_paths, source_dirs = _state_entries(snapshot)
+    current_paths, current_dirs = _state_entries(paths.state)
+    if (source_paths != expected_paths or current_paths != expected_paths
+        or source_dirs != current_dirs):
+        raise RuntimeError(
+            "state 路径集合未完整恢复: "
+            f"backup_extra={sorted(source_paths - expected_paths)[:5]} "
+            f"current_extra={sorted(current_paths - expected_paths)[:5]} "
+            f"current_missing={sorted(expected_paths - current_paths)[:5]} "
+            f"dir_extra={sorted(current_dirs - source_dirs)[:5]}"
+        )
+    if (hashlib.sha256(env_backup.read_bytes()).hexdigest() != env_digest
+        or hashlib.sha256(environment_file.read_bytes()).hexdigest() != env_digest):
+        raise RuntimeError("runtime.env 未完整恢复")
+    return {"manifestSha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "fileCount": len(records), "sqliteCount": sqlite_count,
+            "environmentSha256": env_digest}
+
+
+def _settlement_path(paths: ReleasePaths, failed_path: Path) -> Path:
+    return paths.activation / f"settled-{failed_path.name}"
+
+
+def failure_settled(paths: ReleasePaths, failed_path: Path) -> bool:
+    settlement_path = _settlement_path(paths, failed_path)
+    if not settlement_path.is_file() or settlement_path.is_symlink():
+        return False
+    settlement = read_json(settlement_path)
+    return (settlement.get("status") == "verified_full_restore"
+            and settlement.get("failureSha256") == hashlib.sha256(failed_path.read_bytes()).hexdigest())
+
+
+def _attempt_settled(paths: ReleasePaths, attempt_path: Path) -> bool:
+    for failed_path in paths.activation.glob("failed-*.json"):
+        if (failure_settled(paths, failed_path)
+            and read_json(failed_path).get("attemptPath") == str(attempt_path)):
+            settlement = read_json(_settlement_path(paths, failed_path))
+            if settlement.get("attemptSha256") == hashlib.sha256(attempt_path.read_bytes()).hexdigest():
+                return True
+    return False
+
+
+def settle_restored_failure(
+    *, paths: ReleasePaths, failed_path: Path, environment_file: Path, run: Run,
+) -> dict[str, object]:
+    """Settle a pre-start failure only after exact restore and owner checks."""
+
+    # 1. Bind this operation to one pre-start failure and its durable attempt.
+    if (failed_path.is_symlink() or not failed_path.is_file()
+        or failed_path.parent.resolve(strict=True) != paths.activation.resolve(strict=True)
+        or not failed_path.name.startswith("failed-")):
+        raise ValueError("failure receipt 必须是本 release 的普通文件")
+    failed = read_json(failed_path)
+    if failed.get("status") != "maintenance_required" or failed.get("phase") != "stopped_upgrade":
+        raise ValueError("只有尚未启动目标 runtime 的 external failure 可由完整恢复结算")
+    attempt_raw = failed.get("attemptPath")
+    if not isinstance(attempt_raw, str):
+        raise ValueError("failure 缺少 external attempt")
+    attempt_path = Path(attempt_raw)
+    if (attempt_path.is_symlink() or not attempt_path.is_file()
+        or attempt_path.parent.resolve(strict=True) != paths.activation.resolve(strict=True)):
+        raise ValueError("external attempt 路径无效")
+    attempt = read_json(attempt_path)
+    if (attempt.get("status") != "pending" or attempt.get("backupDir") != failed.get("backupDir")
+        or attempt.get("targetCommit") != failed.get("targetCommit")):
+        raise ValueError("failure 与 pending attempt 不匹配")
+    for unit in ("akashic-core.service", "akashic-host-bridge.service"):
+        state = run(["systemctl", "is-active", unit], check=False, capture_output=True, text=True)
+        if state.stdout.strip() not in {"inactive", "failed"}:
+            raise RuntimeError(f"settlement 需要确认服务已停止: {unit}")
+    # 2. Check the full restored state under the stopped writer locks.
+    workspace = paths.state / "workspace"
+    home = paths.state / "plugin-home"
+    maintenance = WorkspaceMaintenanceLock(workspace)
+    maintenance.acquire()
+    try:
+        publication = PluginPublicationLock(home)
+        publication.acquire()
+        try:
+            verified = _verify_full_restore(paths, failed, environment_file)
+            old_root = attempt.get("oldRootRef")
+            if not isinstance(old_root, str) or PluginSelection(workspace).read() != old_root:
+                raise RuntimeError("restored Root 与原 attempt 不一致")
+            active = read_json(paths.activation / "active.json")
+            if active.get("targetCommit") != failed.get("previousCommit"):
+                raise RuntimeError("旧 active release 与恢复点不一致")
+            with ReloadJournal.inspect_existing(workspace) as journal:
+                if journal.pending_recovery or journal.armed_updates:
+                    raise RuntimeError("reload owner 尚有 pending/armed 记录")
+            # 3. Preserve the original failure and add one separate settlement.
+            result = {"status": "verified_full_restore", "failure": str(failed_path),
+                      "failureSha256": hashlib.sha256(failed_path.read_bytes()).hexdigest(),
+                      "attempt": str(attempt_path), "oldRootRef": old_root,
+                      "attemptSha256": hashlib.sha256(attempt_path.read_bytes()).hexdigest(),
+                      "backupDir": failed["backupDir"], **verified}
+            target = _settlement_path(paths, failed_path)
+            if target.exists() or target.is_symlink():
+                raise FileExistsError(f"settlement 已存在: {target}")
+            write_json(target, result)
+            return result
+        finally:
+            publication.release()
+    finally:
+        maintenance.release()
 
 
 def _stopped_upgrade(
@@ -366,12 +588,16 @@ def activate_release(
     if (external_plan is None) != (external_inputs is None):
         raise ValueError("external plan 与 input root 必须同时提供")
     for failed_path in sorted(paths.activation.glob("failed-*.json")):
-        if read_json(failed_path).get("status") == "maintenance_required":
+        if (read_json(failed_path).get("status") == "maintenance_required"
+            and not failure_settled(paths, failed_path)):
+            stop_runtime(run=run)
             raise RuntimeError(f"未结算 release failure 阻止新尝试: {failed_path}")
     plan_digest: str | None = None
     if external_plan is not None and external_inputs is not None:
         if previous is None:
             raise ValueError("external plan 需要已有 active release 与完整 Root")
+        if environment_file.is_symlink() or not environment_file.is_file():
+            raise ValueError("external plan 需要已有普通 runtime.env")
         external_inputs, external_plan = _plain_external_host(external_inputs, external_plan)
         plan_digest = hashlib.sha256(external_plan.read_bytes()).hexdigest()
         plan = read_json(external_plan)
@@ -399,7 +625,9 @@ def activate_release(
         if plan.get("expected_root_ref") != stable.get("root_ref"):
             raise RuntimeError("external plan expected_root_ref 与当前 selection 不一致")
     for attempt_path in sorted(paths.activation.glob("attempt-external-*.json")):
-        if read_json(attempt_path).get("status") == "pending":
+        if (read_json(attempt_path).get("status") == "pending"
+            and not _attempt_settled(paths, attempt_path)):
+            stop_runtime(run=run)
             raise RuntimeError(f"不完整 external release attempt 需人工结算: {attempt_path}")
     _verify_state_ready(paths)
     if external_plan is None:
@@ -416,11 +644,9 @@ def activate_release(
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = paths.backups / f"runtime.env.before-{target}-{timestamp}"
+    environment_digest: str | None = None
     if environment_file.exists():
-        if backup.exists():
-            raise RuntimeError(f"runtime.env backup 已存在: {backup}")
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(environment_file, backup)
+        environment_digest = _save_environment_backup(environment_file, backup)
     stop_runtime(run=run)
     upgrade_result: dict[str, object] | None = None
     attempt_path: Path | None = None
@@ -440,7 +666,8 @@ def activate_release(
                                           "externalPlanSha256": plan_digest,
                                           "oldRootRef": read_json(paths.state / "workspace/runtime/plugin-stable.json")["root_ref"],
                                           "backupDir": str(backup_dir),
-                                          "environmentBackup": str(backup)})
+                                          "environmentBackup": str(backup),
+                                          "environmentBackupSha256": environment_digest})
             upgrade_result = _stopped_upgrade(
                 paths=paths, candidate=candidate, manifest=manifest,
                 backup_dir=backup_dir, previous_commit=str(previous), run=run,
@@ -476,6 +703,7 @@ def activate_release(
             failed["backupDir"] = str(backup_dir)
             failed["phase"] = "stopped_upgrade"
             failed["environmentBackup"] = str(backup)
+            failed["environmentBackupSha256"] = environment_digest
             failed["attemptPath"] = None if attempt_path is None else str(attempt_path)
             failed["dataCompatibility"] = "unproved"
             write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
@@ -512,6 +740,7 @@ def activate_release(
             failed["phase"] = "target_start_or_readiness"
             failed["attemptPath"] = None if attempt_path is None else str(attempt_path)
             failed["environmentBackup"] = str(backup)
+            failed["environmentBackupSha256"] = environment_digest
             failed["dataCompatibility"] = "unproved"
             if maintenance_stop_detail is not None:
                 failed["maintenanceStopDetail"] = maintenance_stop_detail
@@ -556,7 +785,30 @@ def activate_release(
         receipt["imageId"] = manifest["imageId"]
         receipt["attemptPath"] = None if attempt_path is None else str(attempt_path)
         receipt["environmentBackup"] = str(backup)
-    write_json(paths.activation / "active.json", receipt)
+        receipt["environmentBackupSha256"] = environment_digest
+    try:
+        write_json(paths.activation / "active.json", receipt)
+    except BaseException as error:
+        if upgrade_result is None:
+            raise
+        maintenance_stop_detail = None
+        try:
+            stop_runtime(run=run)
+        except BaseException as stop_error:
+            maintenance_stop_detail = str(stop_error)
+        failed = activation_receipt(
+            status="maintenance_required", target_commit=target,
+            previous_commit=None if previous is None else str(previous), detail=str(error),
+        )
+        failed.update({"phase": "active_receipt", "upgrade": upgrade_result,
+                       "attemptPath": None if attempt_path is None else str(attempt_path),
+                       "environmentBackup": str(backup),
+                       "environmentBackupSha256": environment_digest,
+                       "dataCompatibility": "unproved"})
+        if maintenance_stop_detail is not None:
+            failed["maintenanceStopDetail"] = maintenance_stop_detail
+        write_json(paths.activation / f"failed-{target}-{timestamp}.json", failed)
+        raise RuntimeError("active receipt 发布失败；目标 runtime 已停在 maintenance") from error
     if attempt_path is not None:
         write_json(attempt_path, {"status": "active", "targetCommit": target,
                                   "externalPlanSha256": plan_digest,

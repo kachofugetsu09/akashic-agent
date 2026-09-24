@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import argparse
 import shutil
 import sqlite3
@@ -14,9 +15,11 @@ import pytest
 
 from scripts.akashic_release import activate
 from scripts.akashic_release import cli as release_cli
-from scripts.akashic_release.manifest import write_json
+from scripts.akashic_release.manifest import read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
 from agent.migrations.release_backup import backup_release_state
+from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.selection import PluginSelection
 
 
 def _release_case(tmp_path: Path, monkeypatch) -> tuple[ReleasePaths, Path, Path, list[str]]:
@@ -141,7 +144,225 @@ def test_external_upgrade_crash_marker_blocks_retry_before_stop(tmp_path, monkey
                                   environment_file=environment, mise=tmp_path / "mise",
                                   run=run, upgrade=True,
                                   external_plan=plan, external_inputs=inputs)
-    assert events == before
+    assert events == [*before, "stop"]
+
+
+def test_external_active_receipt_failure_stops_and_blocks_reentry(tmp_path, monkeypatch):
+    paths, manifest, environment, events = _release_case(tmp_path, monkeypatch)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    plan = inputs / "plan.json"
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": "a" * 64,
+                                "targets": [{"plugin_id": "outside@external",
+                                             "bundle_relative_path": "outside.bundle",
+                                             "bundle_sha256": "b" * 64,
+                                             "target_commit": "c" * 40}]}))
+    monkeypatch.setattr(activate, "verify_release", lambda environment: None)
+    monkeypatch.setattr(activate, "_stopped_upgrade", lambda **kwargs:
+                        {"status": "preflight_ok"} if kwargs.get("preflight_only") else
+                        {"status": "selected_not_started", "old_root_ref": "a" * 64,
+                         "new_root_ref": "b" * 64, "ordered_components": ["d" * 64]})
+    monkeypatch.setattr(activate, "_verify_selected_runtime", lambda **kwargs:
+                        {"selection_ref": "b" * 64, "active_selected": 1})
+    original_write = activate.write_json
+
+    def fail_active(path, document):
+        if path == paths.activation / "active.json":
+            raise OSError("injected active receipt fsync failure")
+        return original_write(path, document)
+
+    monkeypatch.setattr(activate, "write_json", fail_active)
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="目标 runtime 已停"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=plan,
+                                  external_inputs=inputs)
+    assert events == ["stop", "bridge", "core", "stop"]
+    failed = next(paths.activation.glob("failed-*.json"))
+    assert read_json(failed)["phase"] == "active_receipt"
+    before = list(events)
+    with pytest.raises(RuntimeError, match="未结算 release failure"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=plan,
+                                  external_inputs=inputs)
+    assert events == [*before, "stop"]
+
+
+def test_same_core_new_external_plan_runs_stopped_preflight(tmp_path, monkeypatch):
+    paths, manifest, environment, events = _release_case(tmp_path, monkeypatch)
+    write_json(paths.activation / "active.json", {"status": "active", "targetCommit": "b" * 40})
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    plan = inputs / "plan.json"
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": "a" * 64,
+                                "targets": [{"plugin_id": "outside@external",
+                                             "bundle_relative_path": "outside.bundle",
+                                             "bundle_sha256": "b" * 64,
+                                             "target_commit": "c" * 40}]}))
+    monkeypatch.setattr(activate, "verify_release", lambda environment: None)
+
+    def conflict(**kwargs):
+        events.append("preflight")
+        raise ValueError("explicit target disabled")
+
+    monkeypatch.setattr(activate, "_stopped_upgrade", conflict)
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="旧 runtime 已恢复"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=plan,
+                                  external_inputs=inputs)
+    assert events == ["stop", "preflight", "bridge", "core"]
+
+
+def test_exact_active_external_replay_is_read_only(tmp_path, monkeypatch):
+    paths = ReleasePaths(tmp_path / "release")
+    paths.create_layout()
+    workspace = paths.state / "workspace"
+    workspace.mkdir()
+    selection = PluginSelection(workspace)
+    selection.initialize()
+    selected_root = selection.commit((), expected_ref=None)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    plan = inputs / "plan.json"
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": "a" * 64,
+                                "targets": [{"plugin_id": "outside@external",
+                                             "bundle_relative_path": "outside.bundle",
+                                             "bundle_sha256": "b" * 64,
+                                             "target_commit": "c" * 40}]}))
+    image = "sha256:" + "b" * 64
+    manifest = paths.release("b" * 40)
+    write_json(manifest, {"sourceCommit": "b" * 40, "imageId": image})
+    write_json(paths.activation / "active.json", {
+        "status": "active", "targetCommit": "b" * 40, "imageId": image,
+        "upgrade": {"old_root_ref": "a" * 64, "new_root_ref": selected_root,
+                    "ordered_components": [],
+                    "external_plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest()},
+    })
+    environment = tmp_path / "runtime.env"
+    environment.write_text("AKASHIC_CONTAINER_NAME=fixture-core\n")
+    monkeypatch.setattr(activate, "verify_release", lambda environment: None)
+    monkeypatch.setattr(activate, "_verify_selected_runtime", lambda **kwargs:
+                        {"selection_ref": selected_root, "active_selected": 0})
+    monkeypatch.setattr(activate, "stop_runtime", lambda **kwargs:
+                        pytest.fail("verified active replay must not stop"))
+
+    def run(command, **kwargs):
+        pytest.fail("verified active replay must not call Docker")
+
+    assert activate.activate_release(paths=paths, manifest_path=manifest,
+                                     environment_file=environment, mise=tmp_path / "mise",
+                                     run=run, upgrade=True, external_plan=plan,
+                                     external_inputs=inputs) == "already_active"
+
+
+def test_environment_backup_is_exact_and_durable(tmp_path):
+    source = tmp_path / "runtime.env"
+    source.write_bytes(b"A=old\nB=\xc3\xa9\n")
+    backup = tmp_path / "backups/runtime.env"
+    digest = activate._save_environment_backup(source, backup)
+    assert backup.read_bytes() == source.read_bytes()
+    assert digest == hashlib.sha256(source.read_bytes()).hexdigest()
+    with pytest.raises(FileExistsError):
+        activate._save_environment_backup(source, backup)
+
+
+def test_external_preflight_conflict_restores_old_runtime_without_attempt(tmp_path, monkeypatch):
+    paths, manifest, environment, events = _release_case(tmp_path, monkeypatch)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    plan = inputs / "plan.json"
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": "a" * 64,
+                                "targets": [{"plugin_id": "outside@external",
+                                             "bundle_relative_path": "outside.bundle",
+                                             "bundle_sha256": "b" * 64,
+                                             "target_commit": "c" * 40}]}))
+    monkeypatch.setattr(activate, "verify_release", lambda environment: None)
+
+    def preflight_conflict(**kwargs):
+        raise ValueError("disabled target")
+
+    monkeypatch.setattr(activate, "_stopped_upgrade", preflight_conflict)
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="旧 runtime 已恢复"):
+        activate.activate_release(paths=paths, manifest_path=manifest,
+                                  environment_file=environment, mise=tmp_path / "mise",
+                                  run=run, upgrade=True, external_plan=plan,
+                                  external_inputs=inputs)
+    assert events == ["stop", "bridge", "core"]
+    assert not list(paths.activation.glob("attempt-external-*.json"))
+    failed = next(paths.activation.glob("failed-*.json"))
+    assert json.loads(failed.read_text())["status"] == "preflight_conflict"
+
+
+def test_stopped_external_failure_settles_only_after_complete_restore(tmp_path):
+    paths = ReleasePaths(tmp_path / "release")
+    paths.create_layout()
+    workspace = paths.state / "workspace"
+    home = paths.state / "plugin-home"
+    workspace.mkdir()
+    home.mkdir()
+    (paths.state / "config.toml").write_text("[runtime]\n")
+    data = workspace / "plugin-data/fixture"
+    data.mkdir(parents=True)
+    opaque = data / "-wal"
+    opaque.write_bytes(b"original opaque bytes")
+    selection = PluginSelection(workspace)
+    selection.initialize()
+    old_root = selection.commit((), expected_ref=None)
+    _ = ReloadJournal(workspace)
+    active = paths.activation / "active.json"
+    write_json(active, {"status": "active", "targetCommit": "a" * 40})
+    environment = tmp_path / "runtime.env"
+    environment.write_bytes(b"OLD=exact\n")
+    env_backup = paths.backups / "runtime.env.before-test"
+    env_digest = activate._save_environment_backup(environment, env_backup)
+    recovery = paths.backups / "upgrade-test"
+    backup_release_state(paths.state, recovery)
+    attempt_path = paths.activation / "attempt-external-test.json"
+    write_json(attempt_path, {"status": "pending", "targetCommit": "b" * 40,
+                              "backupDir": str(recovery), "oldRootRef": old_root})
+    failed_path = paths.activation / "failed-test.json"
+    failure = {"status": "maintenance_required", "phase": "stopped_upgrade",
+               "targetCommit": "b" * 40, "previousCommit": "a" * 40,
+               "backupDir": str(recovery), "environmentBackup": str(env_backup),
+               "environmentBackupSha256": env_digest, "attemptPath": str(attempt_path)}
+    write_json(failed_path, failure)
+
+    def inactive(command, **kwargs):
+        return subprocess.CompletedProcess(command, 3, "inactive\n", "")
+
+    opaque.write_bytes(b"partial restore")
+    with pytest.raises(RuntimeError, match="字节未完整恢复"):
+        activate.settle_restored_failure(paths=paths, failed_path=failed_path,
+                                         environment_file=environment, run=inactive)
+    assert not activate.failure_settled(paths, failed_path)
+    shutil.rmtree(paths.state)
+    shutil.copytree(recovery / "state", paths.state, symlinks=True)
+    settled = activate.settle_restored_failure(paths=paths, failed_path=failed_path,
+                                               environment_file=environment, run=inactive)
+    assert settled["status"] == "verified_full_restore"
+    assert settled["oldRootRef"] == old_root
+    assert activate.failure_settled(paths, failed_path)
+    assert activate._attempt_settled(paths, attempt_path)
+    assert read_json(failed_path) == failure
+    second = paths.activation / "failed-post-start.json"
+    write_json(second, {**failure, "phase": "target_start_or_readiness"})
+    with pytest.raises(ValueError, match="尚未启动目标 runtime"):
+        activate.settle_restored_failure(paths=paths, failed_path=second,
+                                         environment_file=environment, run=inactive)
 
 
 def test_release_backup_reads_committed_wal_and_keeps_sidecars_forensics(tmp_path):

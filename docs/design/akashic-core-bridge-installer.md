@@ -262,6 +262,12 @@ artifact/运行环境可用，恢复点本身不复制其目标。
 完整有序 Root，且 doctor 与 live selected Fiber 均通过，才只读返回 `already_active`。恢复点与
 runtime.env 备份由失败 receipt/attempt 路径关联；实际整份恢复和受影响 owner 的结算须分别取证，
 不能删除失败 receipt 或单靠旧 Root 指针宣称已恢复。
+若失败明确发生在目标 runtime 启动前，且升级镜像无网络、仅挂载 state/backup/只读输入，operator
+完成显式整份恢复后可运行
+`akashic-release settle-restored --failure <activation/failed-*.json>`。该命令在服务停止和既有两把
+workspace/plugin 锁下核对备份清单的每个文件、目录、软链接、SQLite、runtime.env、旧 Root、旧 active
+receipt 与 reload journal，再另写保留原失败记录的 settlement receipt。启动曾被尝试或其他外部
+效果无法证明已结算时，此入口拒绝结算并继续停机。
 
 ### 5.4 软件恢复
 

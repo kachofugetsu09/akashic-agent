@@ -10,7 +10,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from scripts.akashic_release.activate import activate_release
+from scripts.akashic_release.activate import activate_release, settle_restored_failure, failure_settled
 from scripts.akashic_release.doctor import verify_release
 from scripts.akashic_release.manifest import read_json, release_lock
 from scripts.akashic_release.migrate import migration_plan
@@ -128,7 +128,8 @@ def rollback(args: argparse.Namespace) -> dict[str, object]:
     _confirm(previous, "previous prepared generation", None, yes=args.yes)
     with release_lock(paths.run / "release.lock"):
         for failed_path in sorted(paths.activation.glob("failed-*.json")):
-            if read_json(failed_path).get("status") == "maintenance_required":
+            if (read_json(failed_path).get("status") == "maintenance_required"
+                and not failure_settled(paths, failed_path)):
                 raise RuntimeError(
                     f"发行升级仍有待结算的停机恢复记录: {failed_path}；禁止自动旧版 rollback"
                 )
@@ -146,6 +147,15 @@ def pair_mobile(args: argparse.Namespace) -> dict[str, object]:
     from scripts.akashic_release.mobile_pair import pair_mobile as run_pairing
 
     return run_pairing(args.runtime_env)
+
+
+def settle_restored(args: argparse.Namespace) -> dict[str, object]:
+    paths = ReleasePaths(args.root.resolve(strict=True))
+    with release_lock(paths.run / "release.lock"):
+        return settle_restored_failure(
+            paths=paths, failed_path=args.failure,
+            environment_file=args.runtime_env, run=_run,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -181,6 +191,12 @@ def _parser() -> argparse.ArgumentParser:
     rollback_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)
     rollback_parser.add_argument("--yes", action="store_true")
     rollback_parser.set_defaults(handler=rollback)
+
+    settlement_parser = subparsers.add_parser("settle-restored")
+    settlement_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
+    settlement_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
+    settlement_parser.add_argument("--failure", type=Path, required=True)
+    settlement_parser.set_defaults(handler=settle_restored)
 
     pair_parser = subparsers.add_parser("pair-mobile")
     pair_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)

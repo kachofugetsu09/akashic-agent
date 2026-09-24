@@ -84,6 +84,7 @@ def _external_plan(path: Path) -> tuple[str, str, list[dict[str, Any]]]:
             result[key] = value
         return result
 
+    # 1. Parse exact JSON once; duplicated object keys cannot hide an input.
     if not stat.S_ISREG(path.lstat().st_mode):
         raise ValueError("external plan 必须是普通文件")
     raw = path.read_bytes()
@@ -98,6 +99,7 @@ def _external_plan(path: Path) -> tuple[str, str, list[dict[str, Any]]]:
     targets = document["targets"]
     if not isinstance(targets, list) or not targets:
         raise ValueError("external plan targets 必须非空")
+    # 2. Validate every declared target before resolving input bytes.
     seen: set[str] = set()
     for item in targets:
         if not isinstance(item, dict) or set(item) not in ({"plugin_id", "bundle_relative_path", "bundle_sha256", "target_commit"}, {"plugin_id", "bundle_relative_path", "bundle_sha256", "target_commit", "offline_wheels"}):
@@ -137,6 +139,7 @@ def _stage_external_targets(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Fix bundle and wheel bytes in tmpfs and classify every explicit target."""
 
+    # 1. Require each target to own a coherent selected installed input.
     plan_digest, requested_root, targets = _external_plan(plan)
     if requested_root != expected_root_ref:
         raise SelectionConflictError("external plan expected_root_ref 与当前 Root 不符")
@@ -157,6 +160,7 @@ def _stage_external_targets(
         )
         if descriptor["code"] != current_code or _provenance(old_code) != current_source:
             raise SelectionConflictError(f"external target selection/cache 漂移: {plugin_id}")
+        # 2. Copy fixed bundle bytes into tmpfs and resolve its exact commit.
         bundle = _external_path(inputs, target["bundle_relative_path"], directory=False)
         _check_sha256(bundle, target["bundle_sha256"], f"external {plugin_id} bundle")
         local = staged / f"external-{index}.bundle"
@@ -175,6 +179,7 @@ def _stage_external_targets(
         wheels_spec = target.get("offline_wheels")
         if required != (wheels_spec is not None):
             raise ValueError(f"external target wheel 输入与 requirements 不匹配: {plugin_id}")
+        # 3. Check the target interpreter's transitive wheel closure before migration.
         wheels: OfflineWheels | None = None
         if wheels_spec is not None:
             source_wheels = _external_path(inputs, wheels_spec["relative_path"], directory=True)
