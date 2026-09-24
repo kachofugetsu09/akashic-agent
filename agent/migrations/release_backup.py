@@ -17,6 +17,9 @@ _RUNTIME_FILES = {
     Path("workspace/.supervisor.pid"),
     Path("workspace/.runtime-ready.json"),
     Path("workspace/akashic.sock"),
+    Path("workspace/runtime/chat.sock"),
+    Path("workspace/runtime/web-chat.sock"),
+    Path("workspace/runtime/dashboard.sock"),
     Path("plugin-home/.publication.lock"),
 }
 

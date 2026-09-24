@@ -239,7 +239,8 @@ plugin manifest 过滤安装输入；停止期升级仍先单独执行 Core sche
 恢复点保存普通插件文件原字节，包括名称以 `-wal` 或 `-shm` 结尾的 opaque 数据。只有同名
 base 是实际 SQLite 文件时，sidecar 才单独留作 forensic copy，由逻辑 SQLite backup 承担
 恢复。`workspace` 根的实例锁、Supervisor 锁/PID、readiness、控制 socket 与 `plugin-home`
-根的 publication 锁不进入恢复 state；插件私有目录中的同名文件照常保留。目录内相对
+根的 publication 锁，以及 `workspace/runtime` 下的 Chat/Web socket 不进入恢复 state；
+插件私有目录中的同名文件照常保留。目录内相对
 symlink 按链接原样保存，隔离恢复后需核对解析目标；指向外部路径的 symlink 仍依赖外部
 artifact/运行环境可用，恢复点本身不复制其目标。
 

@@ -143,6 +143,9 @@ def test_release_backup_restores_opaque_suffixes_without_runtime_controls(tmp_pa
         (workspace / name).write_text("stale")
     (state / "plugin-home").mkdir()
     (state / "plugin-home/.publication.lock").write_text("stale")
+    (workspace / "runtime").mkdir()
+    for name in ("chat.sock", "web-chat.sock", "dashboard.sock"):
+        (workspace / "runtime" / name).write_text("stale")
     (state / "config.toml").write_text("setting = 'kept'\n")
     (data / "current").symlink_to("plain")
     backup = tmp_path / "recovery"
@@ -159,6 +162,8 @@ def test_release_backup_restores_opaque_suffixes_without_runtime_controls(tmp_pa
                (".instance.lock", ".supervisor.lock", ".supervisor.pid",
                 ".runtime-ready.json", "akashic.sock"))
     assert not (target / "plugin-home/.publication.lock").exists()
+    assert all(not (target / "workspace/runtime" / name).exists() for name in
+               ("chat.sock", "web-chat.sock", "dashboard.sock"))
     assert (data / "absent-wal").read_bytes() == b"no base"
     sidecars = manifest["forensic_sidecars"]
     assert isinstance(sidecars, list)
