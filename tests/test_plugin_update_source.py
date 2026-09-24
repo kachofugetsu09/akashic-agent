@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+from collections.abc import Mapping
+from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -18,6 +22,59 @@ from session.message import ContentPart, Output
 
 REPORT_HEALTH_CONTROL = ServiceKey("test.report-health-control")
 DELIVERY_CONTROL = ServiceKey("test.delivery-control")
+
+
+@pytest.mark.asyncio
+async def test_plugin_management_skill_reaches_prompt_catalog_and_load_tool(tmp_path):
+    """真实插件资产必须同时进入 prompt、检查目录和归档读取工具。"""
+    from agent.plugin_composition.bindings import BINDINGS
+    from agent.plugin_composition.config_input import save_config
+    from plugins.context.materials import MATERIALS
+    from plugins.standard_tools.skill_catalog import SKILL_INSPECTION, skill_body
+    from plugins.tools.plugin import ALL_TOOLS, TOOLS
+    from tests.test_default_reply import application
+
+    def extra_sources(sources):
+        shutil.copytree(Path(__file__).parents[1] / "plugins/standard_tools", sources / "standard_tools",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        # 本例使用真实 standard_tools；不再让模型夹具重复提供 Shell cleanup。
+        provider = sources / "test_provider/plugin.py"
+        provider.write_text(provider.read_text().replace(
+            '    await ctx.provide(ServiceKey("tools.cleanup.v1"), partial(\n'
+            '        shell_cleanup, ctx, ShellOwners(ctx), ctx.require(TASKS).open(ctx),\n'
+            '    ))\n', "",
+        ))
+        save_config(tmp_path / "workspace/plugin-data/context-builtin",
+                    {"summary_source": [], "prompt_sources": {"skills": "standard_tools"}})
+
+    async with application(tmp_path, replying=False, updates=True, extra_sources=extra_sources) as (_, host):
+        root = host.live_root
+        assert root is not None
+        ctx = root.context
+        generation = host.generation("plugin_update")
+        assert generation is not None and generation.state == "active", host.plugin_status()
+        assert generation.fiber is not None and generation.fiber.state.value == "active", repr(root.receipt())
+        catalog = await ctx.require(SKILL_INSPECTION).list_skills()
+        skill = next(item for item in catalog if item["name"] == "plugin-system")
+        assert skill["source_id"] == "plugin_update" and skill["available"] is True
+        async with ctx.require(MATERIALS).bind() as materials:
+            prompt = await materials.prepare((), "conversation")
+            assert "plugin-system" in str(prompt["system_prompt"])
+
+        bindings = ctx.require(BINDINGS)
+        reference = await ctx.require(TOOLS).bind_scoped(ctx.require(ALL_TOOLS)().select("load_skill"), bindings)
+        async with bindings.open(reference, TOOLS) as (tools, metadata):
+            async with tools.open(metadata) as tool:
+                arguments = await tool.prepare({"skill": "plugin-system"})
+                assert isinstance(arguments, Mapping)
+                result = await tool.invoke("read-management-skill", arguments)
+        assert result.outcome == "success"
+        detail = json.loads(cast(str, result.parts[0].value))
+        source = Path(__file__).parents[1] / "plugins/plugin_update/skills/plugin-system/SKILL.md"
+        assert detail["instructions"] == skill_body(source.read_text())
+        archived = Path(detail["base_directory"]) / "SKILL.md"
+        assert archived.read_bytes() == source.read_bytes()
+        assert archived.is_relative_to(tmp_path / "workspace/plugin-data")
 
 
 def test_historical_owner_request_drops_only_retired_validation_fields():

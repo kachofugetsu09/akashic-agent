@@ -1,6 +1,6 @@
 # Builtin Skills Index
 
-本文件描述仓库内置技能（`skills/*/SKILL.md`）。
+本文件导航仓库中的技能源码，不代表运行时已安装目录。运行时只发现普通插件通过资产 provider 注册的固定制品；仓库顶层 `skills/` 不会自动发布。
 
 ## 目录与格式
 
@@ -35,8 +35,8 @@
   - 文件：`skills/skill-creater/SKILL.md`
 
 - `plugin-system`
-  - 说明并执行 Akashic 插件系统的安装、加载、启停、配置、插件内 MCP、skill 与 lifecycle。
-  - 文件：`skills/plugin-system/SKILL.md`
+  - 说明安装、更新时机、局部换代、卸载排空和结果核对；由内置 `plugin_update` 插件注册，与外部 Skill 使用同一资产链。
+  - 文件：[`plugins/plugin_update/skills/plugin-system/SKILL.md`](../plugins/plugin_update/skills/plugin-system/SKILL.md)
 
 - `summarize`
   - 总结 URL/文件/YouTube 内容，支持提取转写。
@@ -48,6 +48,6 @@
 
 ## 维护约定
 
-- 新增内置技能：新增目录与 `SKILL.md`，并更新本索引。
+- 发布内置技能：放入所属插件的制品，通过 `INSTALLED_ASSETS.register` 注册，并验证目录及 `load_skill` 正文；只放顶层目录不算交付。
 - 删除内置技能：移除条目，避免索引悬空。
-- 以本文件为“仓库内置技能真相源”；运行时用户自定义技能应在 workspace 的 `skills/README.md` 维护。
+- 本索引仅用于源码导航；运行时实际可用性以 Skill provider 的目录和读取结果为准，不扫描 workspace 手工技能目录。
