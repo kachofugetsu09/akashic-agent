@@ -497,7 +497,11 @@ def test_install_git_plugin_offline_wheels_keep_previous_state_on_failure(tmp_pa
     store = PythonEnvironments(workspace)
     first_ref = json.loads((first.installed_path / ENVIRONMENT_FILE).read_text())["mcp"]
     record = store.archive.read_descriptor(first_ref)
-    archived = store.archive.open(record["input"]["code"])
+    record_input = record["input"]
+    assert isinstance(record_input, Mapping)
+    code_ref = record_input["code"]
+    assert isinstance(code_ref, str)
+    archived = store.archive.open(code_ref)
     manifest = load_static_plugin_manifest(archived)
     env = store.open(first_ref, archived, manifest.python[0])
     command = materialize_command(archived, manifest.python, ("python", "mcp/run.py"), environment_root=env)
@@ -533,7 +537,11 @@ def test_install_git_plugin_offline_wheels_keep_previous_state_on_failure(tmp_pa
     assert pointer_path.read_bytes() != old_pointer
     assert manifest_path.read_bytes() == old_manifest
     second_record = store.archive.read_descriptor(second_ref)
-    second_code = store.archive.open(second_record["input"]["code"])
+    second_input = second_record["input"]
+    assert isinstance(second_input, Mapping)
+    second_code_ref = second_input["code"]
+    assert isinstance(second_code_ref, str)
+    second_code = store.archive.open(second_code_ref)
     second_env = store.open(second_ref, second_code, load_static_plugin_manifest(second_code).python[0])
     second_command = materialize_command(
         second_code, load_static_plugin_manifest(second_code).python,
