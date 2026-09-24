@@ -11,6 +11,7 @@ import json
 from typing import cast
 
 from agent.plugin_composition.rpc import RpcMethod
+from agent.plugin_composition.runtime_catalog import RuntimeCatalogUnavailable
 from .capabilities import (
     INSPECTION_DOCUMENTS_GET,
     INSPECTION_DOCUMENTS_LIST,
@@ -18,6 +19,7 @@ from .capabilities import (
     INSPECTION_JOBS_LIST,
     INSPECTION_SKILLS_LIST,
     RUNTIME_CATALOG,
+    RUNTIME_MCP_DETAIL,
 )
 from .services import RuntimeInspectionError, RuntimeInspectionService
 
@@ -93,32 +95,15 @@ class ScopedRpcRuntimeInspection:
             return payload
 
     async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]:
-        """Render one MCP detail from the same neutral catalog capability."""
+        """Render tools from one explicitly opened MCP owner session."""
 
         async with self._open_scope() as scope:
-            payload = scope.require(RUNTIME_CATALOG)(scope)
-            _raise_unavailable(payload)
-        servers = payload.get("mcp_servers")
-        if not isinstance(servers, list):
-            raise RuntimeInspectionError("invalid_response", "runtime catalog 缺少 MCP 列表")
-        server = next(
-            (
-                item
-                for item in servers
-                if isinstance(item, Mapping)
-                and item.get("owner_id") == owner_id
-                and item.get("name") == server_name
-            ),
-            None,
-        )
-        if server is None:
-            raise RuntimeInspectionError(
-                "mcp_not_found",
-                f"MCP server 不存在: {owner_id}/{server_name}",
-            )
-        tools = server.get("tools")
+            try:
+                tools = await scope.require(RUNTIME_MCP_DETAIL)(scope, owner_id, server_name)
+            except RuntimeCatalogUnavailable as error:
+                raise RuntimeInspectionError(error.code, str(error)) from error
         if not isinstance(tools, list):
-            raise RuntimeInspectionError("invalid_response", "runtime catalog MCP tools 无效")
+            raise RuntimeInspectionError("invalid_response", "runtime MCP detail tools 无效")
         return {
             "owner_id": owner_id,
             "name": server_name,

@@ -108,6 +108,88 @@ async def test_mcp_is_opened_per_call_and_route_expires(tmp_path):
         assert root is not None
         data = root.plugin_runtime("probe@lab").data_dir
         assert not (data / "first.count").exists()
+        service = root.context.require(MCP_SERVERS)
+        assert service.catalog() == [
+            {"owner_id": "probe@lab", "name": "first", "status": "declared"},
+            {"owner_id": "probe@lab", "name": "second", "status": "declared"},
+        ]
+        assert not (data / "first.count").exists()
+        assert not (data / "second.count").exists()
+        from agent.plugin_composition import CompositionRoot, PluginRuntime
+        from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG, RUNTIME_MCP_DETAIL, RuntimeCatalogUnavailable
+        from plugins.akashic_clients.runtime_inspection import ScopedRpcRuntimeInspection
+        from contextlib import asynccontextmanager
+
+        async def reader_apply(ctx):
+            ctx.require(RUNTIME_CATALOG)
+            ctx.require(RUNTIME_MCP_DETAIL)
+
+        reader = await root.mount(
+            reader_apply, name="inspection-reader",
+            inject=(RUNTIME_CATALOG, RUNTIME_MCP_DETAIL),
+            runtime=PluginRuntime("inspection-reader", "reader:g1", tmp_path, tmp_path / "reader-data", tmp_path / "workspace", {}),
+        )
+        @asynccontextmanager
+        async def open_reader_scope():
+            async with reader.context.runtime_scope():
+                yield reader.context
+
+        async with open_reader_scope() as scope:
+            detail_reader = scope.require(RUNTIME_MCP_DETAIL)
+            details = await service.inspect(scope, detail_reader, "probe@lab", "first")
+        with pytest.raises(CompositionError):
+            await service.inspect(reader.context, detail_reader, "probe@lab", "first")
+        async with open_reader_scope() as scope:
+            with pytest.raises(CompositionError):
+                await service.inspect(scope, object(), "probe@lab", "first")
+        assert details == [
+            {"name": "ping", "description": "fixed A", "input_schema": {"type": "object"}},
+        ]
+        assert (data / "first.count").read_text() == "1"
+        assert not (data / "second.count").exists()
+        async with open_reader_scope() as scope:
+            with pytest.raises(RuntimeCatalogUnavailable, match="wrong-owner/second"):
+                await service.inspect(scope, scope.require(RUNTIME_MCP_DETAIL), "wrong-owner", "second")
+        assert not (data / "second.count").exists()
+
+        async with open_reader_scope() as scope:
+            catalog = scope.require(RUNTIME_CATALOG)(scope)
+        assert catalog["mcp_servers"] == service.catalog()
+        inspection = ScopedRpcRuntimeInspection(open_reader_scope)
+        detail = await inspection.get_mcp("probe@lab", "first")
+        assert detail["tool_count"] == 1
+        assert detail["tools"] == details
+        assert (data / "first.count").read_text() == "2"
+        await reader.dispose()
+        with pytest.raises(CompositionError):
+            await service.inspect(reader.context, detail_reader, "probe@lab", "first")
+        async def unprivileged_apply(ctx):
+            ctx.require(MCP_SERVERS)
+
+        unprivileged = await root.mount(
+            unprivileged_apply, name="unprivileged", inject=(MCP_SERVERS,),
+            runtime=PluginRuntime("unprivileged", "unprivileged:g1", tmp_path, tmp_path / "unprivileged-data", tmp_path / "workspace", {}),
+        )
+        async with unprivileged.context.runtime_scope():
+            with pytest.raises(CompositionError):
+                await service.inspect(unprivileged.context, detail_reader, "probe@lab", "first")
+        await unprivileged.dispose()
+        foreign = CompositionRoot("foreign-inspection")
+        try:
+            await foreign.context.provide(RUNTIME_MCP_DETAIL, detail_reader)
+            async def foreign_apply(ctx):
+                ctx.require(RUNTIME_MCP_DETAIL)
+
+            foreign_reader = await foreign.mount(
+                foreign_apply, name="foreign-reader", inject=(RUNTIME_MCP_DETAIL,),
+                runtime=PluginRuntime("foreign-reader", "foreign:g1", tmp_path, tmp_path / "foreign-data", tmp_path / "workspace", {}),
+            )
+            async with foreign_reader.context.runtime_scope():
+                with pytest.raises(PermissionError, match="跨 Root"):
+                    await service.inspect(foreign_reader.context, detail_reader, "probe@lab", "first")
+        finally:
+            await foreign.dispose()
+        assert (data / "first.count").read_text() == "2"
         identities = []
         for _ in range(2):
             open_server = root.service_value(SERVICE)
@@ -119,7 +201,7 @@ async def test_mcp_is_opened_per_call_and_route_expires(tmp_path):
             with pytest.raises(RuntimeError):
                 await route.call("ping", {})
         assert identities[0] != identities[1]
-        assert (data / "first.count").read_text() == "2"
+        assert (data / "first.count").read_text() == "4"
         assert not (data / "second.count").exists()
         assert root.context.require(MCP_SERVERS).failures() == ()
         assert root.receipt().ready
@@ -525,6 +607,12 @@ for raw in sys.stdin:
         assert not (data / "first.mutated").exists()
         assert not (workspace / "first.count").exists()
         assert not (tmp_path / "workspace" / "plugin-data" / "probe" / "first.count").exists()
+        service = root.context.require(MCP_SERVERS)
+        await probe.dispose()
+        assert service.catalog() == []
+        from agent.plugin_composition.runtime_catalog import RuntimeCatalogUnavailable
+        with pytest.raises(CompositionError):
+            await service.inspect(probe.context, object(), "probe", "first")
     finally:
         await root.dispose()
 

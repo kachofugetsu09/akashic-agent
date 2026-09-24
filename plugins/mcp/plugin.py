@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from collections.abc import Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
 from agent.plugin_composition import Context
@@ -180,10 +181,43 @@ class McpServers:
         await owner._effect.aclose()
 
     def catalog(self):
-        if self._entries:
-            from agent.plugin_composition.runtime_catalog import RuntimeCatalogUnavailable
-            raise RuntimeCatalogUnavailable("mcp_catalog_unavailable", "MCP 工具目录按调用打开，当前没有持久会话目录")
-        return []
+        """List registered targets without claiming a live tool directory."""
+        return [
+            {"owner_id": entry.ctx.runtime.plugin_id, "name": name, "status": "declared"}
+            for name, entry in sorted(self._entries.items())
+        ]
+
+    async def inspect(
+        self, caller: Context, reader: object, owner_id: str, name: str,
+    ) -> list[dict[str, object]]:
+        """Read real tools in one session owned by the original contribution."""
+        from agent.plugin_composition.runtime_catalog import RUNTIME_MCP_DETAIL, RuntimeCatalogUnavailable
+
+        if caller.root_instance_token is not self.root_instance_token:
+            raise PermissionError("MCP provider 不能跨 Root")
+        caller.require_declared_runtime_owner(RUNTIME_MCP_DETAIL, reader)
+        entry = self._entries.get(name)
+        if entry is None or entry.ctx.runtime.plugin_id != owner_id:
+            raise RuntimeCatalogUnavailable("mcp_not_found", f"MCP server 不存在: {owner_id}/{name}")
+        # open checks the original activation and holds its Fiber until close.
+        async with self.open(entry.ctx, name) as server:
+            return [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": _plain_schema(tool.input_schema),
+                }
+                for tool in server.tools.values()
+            ]
+
+
+def _plain_schema(value):
+    """Copy the session's frozen JSON schema before the route expires."""
+    if isinstance(value, Mapping):
+        return {key: _plain_schema(child) for key, child in value.items()}
+    if isinstance(value, tuple):
+        return [_plain_schema(child) for child in value]
+    return value
 
 
 async def apply(ctx: Context):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from agent.plugin_composition.model import HealthView, IncidentView, ServiceKey
@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 RuntimeCatalogReader = Callable[["Context | RequestContext"], dict[str, object]]
 RUNTIME_CATALOG = ServiceKey[RuntimeCatalogReader]("core.runtime_catalog.v1")
+RuntimeMcpDetailReader = Callable[["Context | RequestContext", str, str], Awaitable[list[dict[str, object]]]]
+RUNTIME_MCP_DETAIL = ServiceKey[RuntimeMcpDetailReader]("core.runtime_mcp_detail.v1")
 
 
 class RuntimeCatalogUnavailable(RuntimeError):
@@ -210,7 +212,9 @@ def _mcp_items(root: CompositionRoot) -> list[dict[str, object]]:
 
 __all__ = [
     "RUNTIME_CATALOG",
+    "RUNTIME_MCP_DETAIL",
     "RuntimeCatalogReader",
+    "RuntimeMcpDetailReader",
     "RuntimeCatalogUnavailable",
     "build_runtime_catalog",
 ]
