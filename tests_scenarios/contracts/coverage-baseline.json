@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "683b4791b0c25e3e899d65fe7c028514240414b3",
-  "catalogDigest": "10e43d6be472ca3ffe3795f60eed9b2b8781478631e3d7d56e64843249f2bd3c",
+  "catalogDigest": "fa56ddd231059bcbca7859f345a6a39a03db427480657f38158fb9e647cdbd9f",
   "coveredP0": {
     "companion_control": [
       "companion_control_replay_contract"

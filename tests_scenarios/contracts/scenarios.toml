@@ -421,6 +421,7 @@ command = [
   "tests/test_plugin_uninstall_root_drain.py::test_uninstall_cleanup_failure_keeps_owner_and_explicit_retry_finishes",
   "tests/test_plugin_uninstall_root_drain.py::test_uninstall_accepts_before_target_owner_drains_and_preserves_peer",
   "tests/test_plugin_uninstall_root_drain.py::test_uninstall_deadline_keeps_finalizer_thread_owner_until_joined",
+  "tests/test_plugin_uninstall_root_drain.py::test_uninstall_revoked_before_finalizer_start_keeps_install_for_retry",
   "tests/test_mcp_binding_scope.py::test_isolated_host_grant_and_allowlist_are_host_bound",
   "tests/test_shell_tool.py::test_shell_env_exports_plugin_rollout_owner_turn",
   "tests/test_plugin_install.py::test_plugin_enable_disable_and_uninstall_preserve_data",
