@@ -6,8 +6,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import cast
 from uuid import uuid4
 
-from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot, RestartGate
-from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter
+from agent.plugin_composition.messages import (
+    MessageConflict,
+    MessageReader,
+    MessageWriter,
+)
+from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts import Control, Input, Message, Output
 
 logger = logging.getLogger(__name__)
@@ -24,42 +28,38 @@ def check_source(task: Task, reader: MessageReader, source: str, through_seq: in
     ):
         raise asyncio.CancelledError
 
-
-
-def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool:
-    """来源从输入和控制事实决定是否唤醒；不依赖逻辑 Turn 或消费 cursor。"""
-    # 最近 Input 之前的控制和终结只能覆盖更早的 seq，不影响本次唤醒。
-    if isinstance(messages, MessageReader):
-        head = messages.head()
-        latest = messages.latest_input(source, through_seq=head)
-        if latest is None:
-            return False
-        messages = (latest, *messages.snapshot(after_seq=latest.seq, through_seq=head))
-    boundary = -1
-    latest_input = -1
-    paused_through = -1
-    for message in messages:
-        if message.source != source:
-            continue
-        body = message.body
-        if isinstance(body, Input):
-            latest_input = message.seq
-        elif isinstance(body, Output) and body.finish != "continue":
-            boundary = message.seq
-        elif isinstance(body, Control):
-            if body.action == "abandon":
-                boundary = max(boundary, body.through_seq)
-            elif body.action in {"pause", "failure"}:
-                paused_through = max(paused_through, body.through_seq)
-            elif body.action == "resume" and body.through_seq >= paused_through:
-                paused_through = -1
-    return latest_input > max(boundary, paused_through)
-
-
 class SourceSession:
     """一个已获授权来源的接纳与控制；活动任务短命，重启只重读日志。"""
 
-    needs_reply = staticmethod(needs_reply)
+    @staticmethod
+    def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool:
+        """来源从输入和控制事实决定是否唤醒；不依赖逻辑 Turn 或消费 cursor。"""
+        # 最近 Input 之前的控制和终结只能覆盖更早的 seq，不影响本次唤醒。
+        if isinstance(messages, MessageReader):
+            head = messages.head()
+            latest = messages.latest_input(source, through_seq=head)
+            if latest is None:
+                return False
+            messages = (latest, *messages.snapshot(after_seq=latest.seq, through_seq=head))
+        boundary = -1
+        latest_input = -1
+        paused_through = -1
+        for message in messages:
+            if message.source != source:
+                continue
+            body = message.body
+            if isinstance(body, Input):
+                latest_input = message.seq
+            elif isinstance(body, Output) and body.finish != "continue":
+                boundary = message.seq
+            elif isinstance(body, Control):
+                if body.action == "abandon":
+                    boundary = max(boundary, body.through_seq)
+                elif body.action in {"pause", "failure"}:
+                    paused_through = max(paused_through, body.through_seq)
+                elif body.action == "resume" and body.through_seq >= paused_through:
+                    paused_through = -1
+        return latest_input > max(boundary, paused_through)
 
     def __init__(
         self,
@@ -252,7 +252,7 @@ class SourceSession:
                 def admit(slot: TaskSlot) -> tuple[Task | None, bool]:
                     if slot.current is not None:
                         return slot.current, False
-                    if needs_reply(self._reader, self._source):
+                    if self.needs_reply(self._reader, self._source):
                         return None, False
                     return slot.start(lambda task: program(task, self._reader)), True
 
@@ -327,7 +327,7 @@ class SourceSession:
                     return residual
                 # 旧工作负责的区间已提交持久终态；物理清理转入残留集合。
                 residual.supersede()
-            if not needs_reply(self._reader, self._source):
+            if not self.needs_reply(self._reader, self._source):
                 return None
 
             if self._restart_gate is not None and not self._restart_gate.accepting:
@@ -370,7 +370,7 @@ class SourceSession:
     async def record_failure(self, error: BaseException, *, boundary: int | None = None) -> None:
         """为无持久进展的失败补记 failure Control；只重试保存，不重新执行程序。"""
         def admit(slot: TaskSlot) -> None:
-            if not needs_reply(self._reader, self._source):
+            if not self.needs_reply(self._reader, self._source):
                 return
             head = self._reader.head(source=self._source)
             # 负 boundary 是被伪造的身份，如实拒绝；None 表示调用者要求按当前

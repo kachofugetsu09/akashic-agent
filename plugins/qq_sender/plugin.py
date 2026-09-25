@@ -1,7 +1,7 @@
 """固定 OneBot WebSocket 配置的 QQ 出站。"""
-from collections.abc import AsyncGenerator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Protocol, Self
 from urllib.parse import urlsplit
 
@@ -9,9 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidHandshake
 
-from agent.plugin_composition import CREDENTIALS, Context, CredentialRef, Effect, ServiceKey
+from agent.plugin_composition import (
+    CREDENTIALS,
+    Context,
+    CredentialRef,
+)
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.plugin_contracts.delivery import (
+    DELIVERY_SENDERS as DELIVERY_SENDERS,
+)
 
 from .sender import QQSender
 
@@ -25,18 +32,6 @@ class SenderTarget(Protocol):
     idempotent: bool
 
 
-class SenderRegistry(Protocol):
-    async def register(
-        self,
-        ctx: Context,
-        *,
-        name: str,
-        idempotent: bool,
-        open: Callable[[], AbstractAsyncContextManager[SenderTarget]],
-    ) -> Effect: ...
-
-
-DELIVERY_SENDERS = ServiceKey[SenderRegistry]("delivery.senders.v1")
 inject = (DELIVERY_SENDERS, CREDENTIALS, MESSAGE_CATALOG, ARTIFACT_READ)
 
 

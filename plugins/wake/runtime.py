@@ -4,43 +4,39 @@ import asyncio
 import hashlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import cast
 
-from agent.plugin_composition.timers import TimerReceipt, TimerStatus
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.models import ChatModelSelection
-from agent.plugin_composition.timers import TIMERS
-from agent.plugin_composition.messages import MessageReader, OwnerRecord
-from agent.plugin_contracts import Message
-from agent.plugin_contracts import body_to_dict
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    MessageReader,
+    OwnerRecord,
+)
+from agent.plugin_composition.timers import TIMERS, TimerReceipt, TimerStatus
+from agent.plugin_contracts import Message, body_to_dict
+from agent.plugin_contracts.models import (
+    MODEL_SELECTION as MODEL_SELECTION,
+    ModelSelection as ModelSelection,
+)
 
-from .admission import Admission, Duties
 from ._boundary import (
-    AKASHA_TOOLS,
+    ALL_TOOLS,
     DELIVERY_READ,
     DELIVERY_SENDERS,
     SEMANTIC_INTEREST,
-    STANDARD_WEB_TOOLS,
-    SinkValue,
     TOOLS,
-    ToolView,
     WAKE_TOOLS_VIEW,
+    SinkValue,
+    ToolView,
 )
-from .api import Config, DeliveryTarget, DRIFT_WAKE, EVENTMAIL_WAKE
+from .admission import Admission, Duties
+from .api import DRIFT_WAKE, EVENTMAIL_WAKE, Config, DeliveryTarget
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
-from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
+from .request import TOOLS as WAKE_TOOLS, WAKE_PROGRAM, Request
 from .source import Pointer, Source
 from .state import WakeState, WakeStateReader
-
-
-class ModelSelection(Protocol):
-    def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection: ...
-
-
-MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
 
 
 class DashboardView:
@@ -192,15 +188,13 @@ class Runtime:
         metadata = ctx.require(MESSAGE_CATALOG).reader(target.session_id).metadata()
         model = ctx.require(MODEL_SELECTION).read_saved(metadata if metadata is not None else {})
         catalog = ctx.require(TOOLS)
-        view: ToolView = catalog.view(*(
-            ref
-            for source_view in (
-                ctx.require(WAKE_TOOLS_VIEW),
-                ctx.require(AKASHA_TOOLS),
-                ctx.require(STANDARD_WEB_TOOLS),
-            )
-            for ref in source_view.refs
-        ))
+        allowed = set(self.config.investigation_tools) if owner == "content" else set()
+        view: ToolView = catalog.view(
+            *ctx.require(WAKE_TOOLS_VIEW).refs,
+            *(ref for ref in ctx.require(ALL_TOOLS)().refs if ref.name in allowed),
+        )
+        names = (*WAKE_TOOLS[owner], *(ref.name for ref in view.refs
+                 if ref.name in allowed and ref.name not in WAKE_TOOLS[owner]))
         return Request(
             flow_id=flow_id,
             owner=owner,
@@ -211,7 +205,7 @@ class Runtime:
             program_binding=bindings.bind(WAKE_PROGRAM, {}),
             tools={
                 name: await catalog.bind_scoped(view.select(name), bindings)
-                for name in WAKE_TOOLS[owner]
+                for name in names
             },
             snapshot_seq=admission.pool.snapshot_seq,
             items=tuple(dict(item) for item in admission.pool.items),

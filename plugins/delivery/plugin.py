@@ -1,15 +1,18 @@
 from functools import partial
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, OwnerStore
 from agent.plugin_composition.tasks import TASKS, TaskAdmission
+from agent.plugin_contracts.delivery import (
+    DELIVERY as DELIVERY,
+)
 
+from .api import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
 from .execution import Deliveries
 from .history import DELIVERY_READ, DeliveryHistory
 from .records import DeliveryRecords
 from .senders import DELIVERY_SENDERS, Senders, open_sender
-from .api import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
 
 api_version = 3
 name = "delivery"
@@ -38,9 +41,6 @@ class DeliveryAdmission:
             ctx.require(MESSAGE_CATALOG), self._tasks,
             partial(open_sender, bindings), task_key="delivery",
         )
-
-
-DELIVERY = ServiceKey[DeliveryAdmission]("delivery.v1")
 
 
 async def apply(ctx: Context) -> None:

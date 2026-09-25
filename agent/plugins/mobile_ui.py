@@ -8,10 +8,11 @@ import math
 from collections.abc import Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 from agent.control.context import running_turn_id
 from agent.plugin_composition import (
+    UI_SLOTS,
     CompositionError,
     CompositionRoot,
     Context,
@@ -25,10 +26,12 @@ from agent.plugin_composition import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
     RuntimeScope,
-    UI_SLOTS,
     UiSlots,
 )
 from agent.plugin_composition.diagnostics import plugin_entrypoint
+from agent.plugin_contracts.ui import (
+    MobileUiProvider as MobileUiProvider,
+)
 from agent.plugins._operation import complete_critical
 from core.error_context import current_session_key
 
@@ -38,27 +41,6 @@ MOBILE_UI_QUERY_QUEUE_LIMIT = 16
 logger = logging.getLogger(__name__)
 
 
-class MobileUiProvider(Protocol):
-    async def catalog(self) -> dict[str, object]: ...
-
-    async def asset(
-        self,
-        plugin_id: str,
-        plugin_revision: str,
-        kind: str,
-        sha256: str,
-    ) -> dict[str, object]: ...
-
-    async def query(
-        self,
-        plugin_id: str,
-        plugin_revision: str,
-        method: str,
-        payload: dict[str, object],
-        *,
-        session_id: str | None,
-        turn_id: str | None,
-    ) -> dict[str, object]: ...
 
 
 class PluginMobileUiProvider:

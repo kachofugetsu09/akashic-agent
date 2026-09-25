@@ -8,12 +8,11 @@ import math
 import secrets
 import threading
 import time
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from time import monotonic_ns
 from types import MappingProxyType
-from uuid import uuid4
 from typing import (
     Any,
     AsyncContextManager,
@@ -24,31 +23,30 @@ from typing import (
     Sequence,
     cast,
 )
-
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.tasks import register_task_bound_context
+from uuid import uuid4
 
 from agent.plugin_composition import (
+    CHAT_MODELS,
+    EMBEDDINGS,
+    MODEL_CATALOG,
+    MODEL_DRIVERS,
     BoundChatModel,
     BoundEmbeddingModel,
     BoundModelDescriptor,
-    CHAT_MODELS,
     ChatModelSelection,
     ConnectionDescriptor,
     Context,
+    DiscoveredModel,
+    DriverChatModel,
     DriverConnection,
     DriverConnectionDescriptor,
-    DriverChatModel,
     DriverEmbeddingModel,
     DriverUnavailableError,
-    DiscoveredModel,
     Effect,
-    EMBEDDINGS,
     EmbeddingResult,
     EmbeddingSpaceDescriptor,
+    FiberState,
     LLMResponse,
-    MODEL_CATALOG,
-    MODEL_DRIVERS,
     ModelAvailability,
     ModelCatalogSnapshot,
     ModelDescriptor,
@@ -57,19 +55,21 @@ from agent.plugin_composition import (
     ModelKind,
     ModelRequest,
     ModelUnavailableError,
-    FiberState,
     SavedEmbedding,
     ServiceKey,
 )
+from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.models import ModelContinuation, ModelUsage, ToolCall
+from agent.plugin_composition.tasks import register_task_bound_context
 
 from .settings import (
+    MODEL_SETTINGS,
     AddConnection,
     AddModel,
     CancelConnectionAuth,
     CreateConnectionWithModel,
     DisableConnection,
     FinishConnectionAuth,
-    MODEL_SETTINGS,
     ModelChange,
     SetDefaultModel,
     SettingsReceipt,
@@ -77,7 +77,6 @@ from .settings import (
     SyncModels,
     UpdateConnection,
 )
-from agent.plugin_composition.models import ModelContinuation, ModelUsage, ToolCall
 from .store import (
     MODEL_ROLES,
     ModelsStore,
@@ -1313,7 +1312,7 @@ class ModelsState:
 
     def _check_snapshot_service(
         self,
-        key: ServiceKey[object],
+        key: ServiceKey[Any],
         expected: object,
     ) -> None:
         """Reject a service object that is not provided by this Models Context."""

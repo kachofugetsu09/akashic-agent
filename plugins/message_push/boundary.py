@@ -6,29 +6,37 @@ Delivery、Tools、TurnProjection 或 Content 的内部对象。
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from agent.plugin_composition import Context, Effect, ServiceKey
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.messages import MessageReader, MessageWriter
-from agent.plugin_contracts import Body, CallRef, ContentPart, ContentReferences, Message
-
-
-class CallSource(Protocol):
-    """工具 owner 提供的只读调用前缀。"""
-
-    @property
-    def effect_key(self) -> str: ...
-
-    @property
-    def call_ref(self) -> CallRef: ...
-
-    @property
-    def messages(self) -> tuple[Message, ...]: ...
-
+from agent.plugin_contracts import (
+    ContentPart,
+)
+from agent.plugin_contracts.content import (
+    CONTENT as CONTENT,
+    ContentView as ContentView,
+)
+from agent.plugin_contracts.delivery import (
+    DELIVERY as DELIVERY,
+    DELIVERY_SENDERS as DELIVERY_SENDERS,
+    FINAL_OUTPUT_DELIVERY as FINAL_OUTPUT_DELIVERY,
+    FinalOutputDelivery as FinalOutputDelivery,
+    FinalOutputTurn as FinalOutputTurn,
+    FinalOutputWaiter as FinalOutputWaiter,
+    Receipt as ReceiptView,  # noqa: F401 - 显式再导出给本插件消费者。
+)
+from agent.plugin_contracts.tools import (
+    TOOLS as TOOLS,
+    CallSource as CallSource,
+    ToolCatalog as ToolCatalog,
+    ToolRef as ToolRef,
+)
+from agent.plugin_contracts.turns import (
+    TURN_PROJECTION as TURN_PROJECTION,
+    Turn as ProjectedTurn,  # noqa: F401 - 显式再导出给本插件消费者。
+    TurnProjection as TurnProjection,
+)
 
 ToolOutcome = Literal["success", "denied", "error", "interrupted"]
 
@@ -54,121 +62,3 @@ class BoundTool(Protocol):
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResult: ...
 
     async def query(self, key: str) -> ToolResult | None: ...
-
-
-class ToolRef(Protocol):
-    name: str
-    description: Mapping[str, object]
-
-
-class ToolCatalog(Protocol):
-    async def declare_group(
-        self,
-        ctx: Context,
-        *,
-        always_on: bool = False,
-        description: str = "未声明用途",
-    ) -> Effect: ...
-
-    async def register(
-        self,
-        ctx: Context,
-        *,
-        name: str,
-        description: str,
-        parameters: Mapping[str, object],
-        open: Callable[[Mapping[str, object]], AbstractAsyncContextManager[BoundTool]],
-        capture: Callable[[Mapping[str, object]], Mapping[str, object]] | None = None,
-        public: bool = True,
-        idempotent: bool = False,
-        risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
-        search_hint: str | None = None,
-    ) -> ToolRef: ...
-
-
-TOOLS = ServiceKey[ToolCatalog]("tools.v1")
-
-
-class ReceiptView(Protocol):
-    status: Literal["delivered", "rejected", "failed"]
-    provider_ids: tuple[str, ...]
-    error: str | None
-
-
-class SelectionView(Protocol):
-    sinks: tuple[str, ...]
-
-
-class DeliveryExecution(Protocol):
-    def publish(
-        self,
-        writer: MessageWriter,
-        message_id: str,
-        body: Body,
-        sinks: tuple[Mapping[str, object], ...],
-        *,
-        passive: bool = False,
-    ) -> tuple[Message, SelectionView]: ...
-
-    def selection(self, message_id: str) -> SelectionView | None: ...
-
-    async def send(self, message_id: str, sink: str) -> ReceiptView: ...
-
-
-class DeliveryAdmission(Protocol):
-    def open(self, consumer: Context) -> DeliveryExecution: ...
-
-
-DELIVERY = ServiceKey[DeliveryAdmission]("delivery.v1")
-
-
-class SenderRegistry(Protocol):
-    def bind_all(self, bindings: Bindings) -> Mapping[str, str]: ...
-
-
-DELIVERY_SENDERS = ServiceKey[SenderRegistry]("delivery.senders.v1")
-
-
-class ContentView(Protocol):
-    @property
-    def checks(self) -> Mapping[str, Callable[[ContentPart], ContentReferences]]: ...
-
-
-class ContentProvider(Protocol):
-    def bind(self) -> AbstractAsyncContextManager[ContentView]: ...
-
-
-CONTENT = ServiceKey[ContentProvider]("content.v2")
-
-
-class FinalOutputTurn(Protocol):
-    source: str
-    ending_message_id: str | None
-    message_ids: tuple[str, ...]
-
-
-class FinalOutputWaiter(Protocol):
-    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None: ...
-
-
-class FinalOutputDelivery(Protocol):
-    def register(self, source: str, provider: FinalOutputWaiter) -> None: ...
-
-    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None: ...
-
-
-FINAL_OUTPUT_DELIVERY = ServiceKey[FinalOutputDelivery]("delivery.final_output.v1")
-
-
-class ProjectedTurn(Protocol):
-    source: str
-    ending_message_id: str | None
-    status: Literal["open", "complete", "quiet", "abandoned"]
-    message_ids: tuple[str, ...]
-
-
-class TurnProjection(Protocol):
-    def project(self, messages: Sequence[Message], source: str) -> tuple[ProjectedTurn, ...]: ...
-
-
-TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")

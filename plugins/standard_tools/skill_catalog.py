@@ -7,29 +7,21 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal, Protocol, cast
 
 import yaml
 
 from agent.host_bridge.factory import build_requirements_checker
 from agent.plugin_composition.assets import InstalledAsset
-from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.shell_runtime import resolve_shell
-
+from agent.plugin_contracts.inspection import (
+    SKILL_INSPECTION as SKILL_INSPECTION,
+)
 
 SkillSource = Literal["plugin"]
-
-
-class SkillInspectionReader(Protocol):
-    async def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
-
-
-SKILL_INSPECTION = ServiceKey[SkillInspectionReader](
-    "standard_tools.skill_inspection.v1"
-)
 
 
 class RequirementsChecker(Protocol):

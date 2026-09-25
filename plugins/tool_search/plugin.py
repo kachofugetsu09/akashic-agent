@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import asynccontextmanager
 import json
 import re
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_composition.models import ToolCall as ModelToolCall
-from agent.plugin_contracts import ContentPart
-from agent.plugin_contracts import json_value
+from agent.plugin_contracts import ContentPart, json_value
+from agent.plugin_contracts.tools import (
+    TOOL_SEARCH_PRESENTATION as TOOL_SEARCH_PRESENTATION,
+)
 
 from ._tool_boundary import (
+    TOOLS,
     BoundTool,
     CallSource,
     ToolCatalog,
@@ -21,7 +24,6 @@ from ._tool_boundary import (
     ToolRef,
     ToolResultValue,
     ToolView,
-    TOOLS,
 )
 
 api_version = 3
@@ -29,11 +31,6 @@ name = "tool_search"
 version = "2.0.0"
 desc = "在获授工具 view 内搜索完整 schema，并解码间接调用"
 inject = (TOOLS,)
-
-TOOL_SEARCH_TOOLS = ServiceKey[ToolView]("tool-search.tools.v1")
-TOOL_SEARCH_PRESENTATION = ServiceKey[
-    Callable[[ToolView], ToolPresentation]
-]("tool-search.presentation.v1")
 
 
 def _tool_schema(description: Mapping[str, object]) -> Mapping[str, Any]:
@@ -265,9 +262,8 @@ async def apply(ctx: Context) -> None:
         idempotent=True,
         risk="read-only",
     )
-    view = catalog.view(search_ref)
-    _ = await ctx.provide(TOOL_SEARCH_TOOLS, view)
-    _ = await ctx.provide(
-        TOOL_SEARCH_PRESENTATION,
-        lambda awarded: SearchPresentation(catalog, awarded, search_ref),
-    )
+    def present(awarded: ToolView) -> tuple[ToolView, ToolPresentation]:
+        view = catalog.view(*awarded.refs, search_ref)
+        return view, SearchPresentation(catalog, view, search_ref)
+
+    _ = await ctx.provide(TOOL_SEARCH_PRESENTATION, present)

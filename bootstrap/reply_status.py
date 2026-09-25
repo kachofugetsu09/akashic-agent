@@ -4,19 +4,13 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Any, cast
 from uuid import uuid4
 
 from agent.plugin_composition import CompositionRoot, FiberState, ServiceKey
-
-
-class ReplyStatusRead(Protocol):
-    """客户端只消费已投影的数据，不依赖回复插件内部状态类。"""
-
-    def follow(self, session_id: str) -> AsyncGenerator[tuple[dict[str, object], ...], None]: ...
-
-
-REPLY_STATUS = ServiceKey[ReplyStatusRead]("reply.status.v2")
+from agent.plugin_contracts.reply import (
+    REPLY_STATUS as REPLY_STATUS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +118,7 @@ class RuntimeReplyStatus:
             try:
                 reader = context.require(REPLY_STATUS)
                 provider = context._fiber.dependency_store[  # pyright: ignore[reportPrivateUsage]
-                    cast(ServiceKey[object], REPLY_STATUS)
+                    cast(ServiceKey[Any], REPLY_STATUS)
                 ]
                 snapshot_id = f"{root.generation_id}:{provider.revision}"
 
@@ -173,7 +167,7 @@ class RuntimeReplyStatus:
                 label=f"reply-status-root-close:{subscription_id}",
             )
             subscriber = await root.context.inject(
-                (cast(ServiceKey[object], REPLY_STATUS),),
+                (cast(ServiceKey[Any], REPLY_STATUS),),
                 apply,
                 name=f"reply-status:{subscription_id}",
             )

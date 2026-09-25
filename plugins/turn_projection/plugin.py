@@ -1,30 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Literal
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_contracts import CallRef, Input, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts.turns import (
+    TURN_PROJECTION as TURN_PROJECTION,
+    Turn as Turn,
+)
 
 api_version = 3
 name = "turn_projection"
 version = "1.0.0"
 desc = "从消息读取逻辑 Turn，不保存内容或消费进度"
 inject = ()
-
-
-@dataclass(frozen=True, slots=True)
-class Turn:
-    """一个日志区间的消息引用；不代表运行任务或持久化行。"""
-
-    source: str
-    after_seq: int
-    through_seq: int
-    ending_message_id: str | None
-    status: Literal["open", "complete", "quiet", "abandoned"]
-    message_ids: tuple[str, ...]
-    observations: tuple[tuple[CallRef, str], ...]
 
 
 def _build_turn(
@@ -154,9 +144,6 @@ class TurnProjection:
                 )
             )
         return tuple(turns)
-
-
-TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
 
 
 async def apply(ctx: Context) -> None:

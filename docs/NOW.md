@@ -60,10 +60,15 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 当前缺陷；本地退役、停止期回退和分层证据见单图设计的“本地收口与运行验收边界”一节。
 本地开发与验证不授权 PR 合并、正式数据写入或部署。
 
+## P1 · 外部插件发布兼容
+
+核对外部已安装插件的显式依赖声明、公共合同导入与真实分发组合。
+[Issue 766 本地实现](design/issue-766-orthogonal-capabilities.md) 已完成合同和宿主装配收敛；
+内置插件验证不能代替外部安装、正式发布或真实 Mobile 客户端验收。
+
 ## P0 · 正交化概念基线
 
-- 按 [正交化测试基线](refactor/orthogonality-test-baseline.md) §3，随 [#766](https://github.com/kachofugetsu09/akashic-agent/issues/766) 各 PR 补齐 10 个概念测试；每项先证明在违反该概念的提交上失败。
-- #766 执行归属由框架统一落地时，按新语义重写基线第 11、12 条，不删除它们守护的概念。
+- [正交化测试基线](refactor/orthogonality-test-baseline.md) 的覆盖扩展仍待维护者另行授权。#766 按本次明确要求不新增或改写单元测试，保留既有概念验证；唯一例外为既有夹具补充 TASKS 依赖声明。
 - 建立轻量 `change-intent` 校验，检查实际 diff、允许路径、受保护状态和副作用是否超出声明。
 
 ## P1 · 工作流扩展

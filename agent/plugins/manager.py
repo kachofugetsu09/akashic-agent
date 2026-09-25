@@ -4,89 +4,61 @@ import asyncio
 import copy
 import hashlib
 import importlib.util
-import json
 import logging
 import os
 import secrets
-import shutil
 import sys
-from dataclasses import asdict, dataclass
-from contextvars import Context as TaskContext
-from pathlib import Path
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextvars import Context as TaskContext
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 from uuid import uuid4
 
-
-from agent.plugins.archive import PluginArchive, decode_config
-from agent.plugins._operation import (
-    ManagerOperation, OperationBusyError, OperationTimeoutError,
-    complete_critical as _complete_critical, current_operation,
-    observe_operation, run_operation,
+from agent.control.frame_book import FrameBook
+from agent.host_bridge.plugin_execution import (
+    CodeOwner,
+    ExecutionAccess,
+    cleanup_workloads_for_boot,
 )
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
-from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, PluginUpdates, UpdateStatus
-from session.artifact_store import ArtifactStore
-from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
-from agent.plugin_composition.bindings import BINDINGS, Bindings
-from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
-from agent.plugin_composition.runtime_catalog import (
-    RUNTIME_CATALOG,
-    RUNTIME_MCP_DETAIL,
-    RuntimeCatalogUnavailable,
-    build_runtime_catalog,
-)
-from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
-from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
-from agent.plugin_composition.messages import (
-    MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
-    MessageWriters, OwnerState, SessionAdmission,
-)
-from agent.plugin_composition.tasks import TASKS, PluginTasks
-from session.log import MessageCatalog, MessageLog, MessagePage
-from session.embedding_store import MessageEmbeddings
-from agent.plugin_composition.context import Context, Fiber
-from agent.plugin_composition.requests import RequestContext
-from agent.restart import RESTART_GATE, RestartGate
-from agent.control.frame_book import CONTROL_FRAMES, FrameBook
-
 from agent.plugin_composition import (
-    COMMANDS,
-    INTERACTION_UNDO,
-    CompositionError,
-    TIMERS,
     CompositionRoot,
     FiberState,
-    InteractionUndoService,
     PluginRuntime,
-    PluginTimers,
-    ServiceKey,
 )
-from agent.plugin_composition.host import HOST_INFO, HostInfo
-from agent.plugin_composition.ui import DASHBOARD_ROUTES
 from agent.plugin_composition.channel_io import (
-    INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
-    InputCustody, ChannelIdentity, ChannelAttachmentImport, ChannelAttachmentRead,
-    unavailable, unavailable_input_custody,
+    InputCustody,
 )
-from agent.plugin_composition.processes import PROCESSES, PluginProcesses
-from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
-from agent.host_bridge.plugin_execution import CodeOwner, ExecutionAccess, ControllerAccess, cleanup_workloads_for_boot
+from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
+from agent.plugin_composition.context import Fiber
+from agent.plugin_composition.credentials import CredentialClients
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
     resolve_declared_workspace_root,
 )
-from agent.control.timer import AsyncioOneShotTimer
-from agent.plugins.composable import ComposablePlugin
-from agent.plugins.interaction_undo import InteractionUndoCoordinator
-from agent.plugins.channel_credentials import CoreProviderClientFactory
-
-from agent.plugins.manifest import (
-    ensure_workspace_plugin_data_dir,
-    load_plugin_manifest,
-    plugins_root,
-    validate_workspace_plugin_data_path,
+from agent.plugin_composition.plugin_updates import (
+    UpdateStatus,
 )
+from agent.plugin_composition.processes import PluginProcesses
+from agent.plugin_composition.tasks import PluginTasks
+from agent.plugins._operation import (
+    ManagerOperation,
+    OperationBusyError,
+    OperationTimeoutError,
+    complete_critical as _complete_critical,
+    current_operation,
+    observe_operation,
+    run_operation,
+)
+from agent.plugins.archive import PluginArchive, decode_config
+from agent.plugins.channel_credentials import CoreProviderClientFactory
+from agent.plugins.composable import ComposablePlugin
+from agent.plugins.generation import PluginGeneration
+from agent.plugins.host import (
+    check_host_dependencies as check_host_dependencies,
+    provide_host_services as provide_host_services,
+)
+from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.input_preparation import (
     PLUGIN_ARCHIVE_BINDING_API,
     _resolve_plugin_data_dir,
@@ -94,31 +66,19 @@ from agent.plugins.input_preparation import (
     _source_revision,
     prepare_plugin_input,
 )
-from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
-from agent.plugins.source_resolver import (
-    PluginSourceFailure,
-    scan_plugin_sources,
-)
-from agent.plugins.selection import PluginSelection
-from agent.plugins.scope import CleanupFailure, PluginScope
-from agent.plugins.generation import PluginGeneration
-from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.install import (
-    PluginInstallResult,
     _split_installed_plugin_id,
     finalize_uninstall_plugin,
     install_git_plugin,
     set_installed_plugin_enabled,
 )
-from agent.plugins.static_manifest import (
-    PluginSourceCompileError,
-    PluginSourceContentError,
-    load_static_plugin_manifest,
-    source_error_details,
-    command_python_runtime,
-    materialize_command,
+from agent.plugins.manifest import (
+    ensure_workspace_plugin_data_dir,
+    load_plugin_manifest,
+    plugins_root,
+    validate_workspace_plugin_data_path,
 )
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.reload_journal import (
     RecoveryActionName,
     RecoveryTarget,
@@ -126,15 +86,29 @@ from agent.plugins.reload_journal import (
     ReloadPhase,
     ReloadRecoveryAction,
 )
+from agent.plugins.scope import CleanupFailure, PluginScope
+from agent.plugins.selection import PluginSelection
+from agent.plugins.source_resolver import (
+    PluginSourceFailure,
+    scan_plugin_sources,
+)
+from agent.plugins.static_manifest import (
+    PluginSourceCompileError,
+    PluginSourceContentError,
+    command_python_runtime,
+    load_static_plugin_manifest,
+    materialize_command,
+    source_error_details,
+)
+from agent.restart import RestartGate
 from agent.workloads.client import UnixWorkloadController, WorkloadController
 from bus.event_bus import EventBus
+from infra.channels.artifacts import ChannelAttachmentArtifactStore
+from session.identities import ChannelIdentities
+from session.log import MessageLog
 
 logger = logging.getLogger(__name__)
 U = TypeVar("U")
-
-
-
-
 
 
 def _reject_retired_owner_recovery(action: ReloadRecoveryAction) -> None:
@@ -159,15 +133,9 @@ def _reject_retired_owner_recovery(action: ReloadRecoveryAction) -> None:
     )
 
 
-
-
-
-
-
-
 class PluginManager:
-    # 提交预算覆盖候选准备、整组重建与发布；生产组合规模下挂载数十个
-    # 归档插件远超秒级，预算只用于截断真正挂起的提交，不能按交互延迟设定。
+    # 应用预算覆盖实际输入准备、受影响分支挂载与恢复；
+    # 用于截断挂起操作，不能按交互请求的延迟设定。
     POST_PUBLISH_TIMEOUT_SECONDS = 300.0
     # 冷启动还须归档全部安装输入并挂载完整组合，规模随安装数增长。
     BOOT_COMMIT_TIMEOUT_SECONDS = 7200.0
@@ -198,17 +166,8 @@ class PluginManager:
         self._update_watchers: set[asyncio.Event] = set()
         self._session_manager = session_manager
         self._message_log = message_log
-        self._artifact_read = None if channel_attachment_store is None else ArtifactRead(channel_attachment_store.acquire)
-        self._artifact_import = None if channel_attachment_store is None else ArtifactImport(
-            ChannelOutboundAttachmentImporter(channel_attachment_store).import_source
-        )
         self._plugin_tasks = PluginTasks()
         self._plugin_processes = PluginProcesses()
-        self._interaction_undo = (
-            InteractionUndoCoordinator(session_manager)
-            if session_manager is not None
-            else None
-        )
         self._installed_cache_root = installed_cache_root
         self._disabled_builtin_plugins = disabled_builtin_plugins
         self._source_failures: dict[str, PluginSourceFailure] = {
@@ -248,7 +207,7 @@ class PluginManager:
         # PluginManager 也可以由嵌入式/测试 host 直接构造；该 host 仍需一
         # 次性的 boot identity，不能退回固定的 unmanaged marker。
         self._host_boot_id = restart_gate.boot_id if restart_gate is not None else uuid4().hex
-        self._restart_gate = restart_gate
+        self._restart_gate = restart_gate or RestartGate(boot_id=self._host_boot_id, supervised=False)
         self._owns_control_frames = control_frames is None
         self._control_frames = FrameBook() if control_frames is None else control_frames
         self._workload_workspace_id = hashlib.sha256(
@@ -386,7 +345,6 @@ class PluginManager:
         self._runtime_started_roots.discard(root.instance_token)
 
 
-
     @property
     def cleanup_failures(self) -> list[CleanupFailure]:
         return list(self._cleanup_failures)
@@ -432,24 +390,6 @@ class PluginManager:
     ) -> None:
         self._endpoint_switcher = switcher
 
-    def _resolve_channel_identity(self, channel: str, provider_identity: str) -> str | None:
-        if self._channel_identities is None:
-            raise RuntimeError("Channel identities 未绑定")
-        return self._channel_identities.resolve(channel, provider_identity)
-
-    async def _remember_channel_identity(
-        self, channel: str, provider_identity: str, recipient: str,
-    ) -> ChannelIdentityWriteReceipt:
-        if self._channel_identities is None:
-            raise RuntimeError("Channel identities 未绑定")
-        return self._channel_identities.remember(channel, provider_identity, recipient)
-
-    async def _rollback_channel_identity(self, receipt: object) -> bool:
-        if not isinstance(receipt, ChannelIdentityWriteReceipt):
-            raise TypeError("channel identity rollback receipt 类型无效")
-        if self._channel_identities is None:
-            raise RuntimeError("Channel identities 未绑定")
-        return self._channel_identities.rollback(receipt)
 
 
 
@@ -577,16 +517,13 @@ class PluginManager:
             plugin_id=plugin_id,
         )
 
-    async def _load_one_with_source_diagnostics(
+    async def _prepare_one_with_source_diagnostics(
         self,
         mod: dict[str, str],
-        *,
-        activate: bool = True,
-        stage_stable: bool = False,
     ) -> PluginGeneration | None:
         try:
-            generation = await self._load_one(
-                mod, activate=activate, stage_stable=stage_stable,
+            generation = await self._prepare_one(
+                mod,
             )
         except PluginSourceCompileError as error:
             self._remember_source_failures((self._source_failure_for_error(
@@ -678,8 +615,8 @@ class PluginManager:
         inputs: list[PluginGeneration] = []
         try:
             for mod in selected:
-                generation = await self._load_one_with_source_diagnostics(
-                    mod, activate=False, stage_stable=True,
+                generation = await self._prepare_one_with_source_diagnostics(
+                    mod,
                 )
                 if generation is None:
                     if _source_failure_key_for_mod(mod) in self._source_failures:
@@ -747,7 +684,7 @@ class PluginManager:
             and fiber.runtime is not None
             and fiber.runtime.plugin_id == runtime.plugin_id
             and fiber.runtime.generation_id == runtime.generation_id
-            for fiber in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+            for fiber in root.fibers()
         ):
             raise ValueError("Context 不属于当前 Root 登记的 generation Context")
         return generation
@@ -804,7 +741,7 @@ class PluginManager:
             runnable = tuple(runnable_items)
             self._building_roots[root] = runnable
             await self._provide_composition_services(root, runnable)
-            self._check_live_host_dependencies(runnable)
+            check_host_dependencies(root, runnable)
             for generation in runnable:
                 await self._mount_generation_composition(root, generation)
             # Receipt readiness is diagnostic; each Fiber owns its local failure state.
@@ -900,144 +837,32 @@ class PluginManager:
                 generation.plugin_id,
             )
 
-    def _check_live_host_dependencies(
-        self, generations: tuple[PluginGeneration, ...],
-    ) -> None:
-        """Report known host gaps after the selected code has been loaded."""
-        root = self._live_root
-        if root is None:
-            raise RuntimeError("正式 live Root 尚未建立")
-        host_keys: set[ServiceKey[object]] = {
-            HOST_INFO, DASHBOARD_ROUTES, INPUT_CUSTODY, CHANNEL_IDENTITY,
-            CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
-            EXECUTION, WORKLOAD_CONTROLLER, RUNTIME_CATALOG, RUNTIME_MCP_DETAIL, CREDENTIALS,
-            PLUGIN_UPDATES, RESTART_GATE, CONTROL_FRAMES,
-            MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS,
-            OWNER_STATE, SESSION_ADMISSION, BINDINGS, TASKS, PROCESSES,
-            ARTIFACT_READ, ARTIFACT_IMPORT, TIMERS, INTERACTION_UNDO,
-            ServiceKey[object]("core.message_display.v1"),
-            ServiceKey[object]("core.mobile_ui.v1"),
-        }
-        for generation in generations:
-            plugin = cast(ComposablePlugin, generation.instance)
-            for key in plugin.inject:
-                # Unknown keys may be provided by another plugin Fiber; let the kernel
-                # report PENDING. Only known host-owned capabilities are a migration gate.
-                if key not in host_keys or root.context.get(key) is not None:
-                    continue
-                raise RuntimeError(
-                    f"宿主能力尚未迁移，阻止启用 {generation.plugin_id}: {key.name}"
-                )
 
     def _generation_fibers(self, generation: PluginGeneration) -> tuple[Fiber, ...]:
         """Return the live Root Fibers owned by one exact generation."""
         root = self._live_root
         if root is None:
             return ()
-        return tuple(
-            fiber
-            for fiber in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
-            if fiber.runtime is not None
-            and fiber.runtime.plugin_id == generation.plugin_id
-            and fiber.runtime.generation_id == generation.generation_id
-        )
+        return root.fibers(plugin_id=generation.plugin_id, generation_id=generation.generation_id)
 
     def _capture_local_readiness(
         self, generations: tuple[PluginGeneration, ...],
     ) -> tuple[Fiber, ...]:
-        """Capture actual downstream Fibers before an old provider edge disappears."""
+        """换代前保留实际消费者，服务边撤销后仍能核对原就绪范围。"""
         root = self._live_root
         if root is None:
             return ()
-        owned = {
-            fiber
-            for generation in generations
-            for fiber in self._generation_fibers(generation)
-        }
-        affected = set(owned)
-        changed = True
-        while changed:
-            changed = False
-            for candidate in tuple(root._fibers.values()):  # pyright: ignore[reportPrivateUsage]
-                if candidate in affected or candidate.state == FiberState.DISPOSED:
-                    continue
-                owned_child = candidate.parent in affected
-                provider_consumer = any(
-                    provider.owner in affected
-                    for provider in candidate.dependency_store.values()
-                )
-                if owned_child or provider_consumer:
-                    affected.add(candidate)
-                    changed = True
-        return tuple(affected - owned)
-
-    def _current_local_consumers(
-        self, generation: PluginGeneration,
-    ) -> tuple[Fiber, ...]:
-        """Find current hard consumers from provider identity and declared keys."""
-        root = self._live_root
-        if root is None:
-            return ()
-        target = set(self._generation_fibers(generation))
-        owners = set(target)
-        consumers: set[Fiber] = set()
-        changed = True
-        while changed:
-            changed = False
-            for candidate in tuple(root._fibers.values()):  # pyright: ignore[reportPrivateUsage]
-                if candidate in owners or candidate.state == FiberState.DISPOSED:
-                    continue
-                owned_child = candidate.parent in owners
-                provider_consumer = any(
-                    (provider := root._providers.get(key)) is not None
-                    and provider.owner in owners
-                    for key in candidate.dependencies
-                )
-                if owned_child or provider_consumer:
-                    owners.add(candidate)
-                    consumers.add(candidate)
-                    changed = True
-        return tuple(consumers)
+        return root.consumers(fiber for generation in generations for fiber in self._generation_fibers(generation))
 
     def _require_local_generation_ready(
-        self,
-        generation: PluginGeneration,
-        *,
-        affected: tuple[Fiber, ...] = (),
+        self, generation: PluginGeneration, *, affected: tuple[Fiber, ...] = (),
     ) -> None:
-        """Check the target and captured downstream Fibers without a whole-Root gate."""
+        """只检查本次 generation 和实际受影响范围。"""
         root = self._live_root
         fibers = self._generation_fibers(generation)
         if root is None or not fibers:
             raise RuntimeError(f"目标 generation 未建立 Fiber: {generation.plugin_id}")
-        registered = set(root._fibers.values())  # pyright: ignore[reportPrivateUsage]
-        current_consumers = self._current_local_consumers(generation)
-        seen: set[int] = set()
-        for candidate in (
-            *fibers,
-            *(fiber for fiber in affected if fiber in registered),
-            *current_consumers,
-        ):
-            if id(candidate) in seen:
-                continue
-            seen.add(id(candidate))
-            if candidate.required_for_readiness and candidate.state != FiberState.ACTIVE:
-                raise RuntimeError(
-                    f"目标依赖未 ACTIVE: {candidate.name} state={candidate.state}"
-                )
-            if candidate.error is not None and candidate.required_for_readiness:
-                raise RuntimeError(f"目标依赖启动失败: {candidate.name}") from candidate.error
-            degraded = tuple(
-                entry.name
-                for entry in root._health_entries.values()  # pyright: ignore[reportPrivateUsage]
-                if entry.owner is candidate
-                and entry.required
-                and entry.reason is not None
-            )
-            if degraded:
-                raise RuntimeError(
-                    f"目标依赖 required health 失败: {candidate.name}:{','.join(degraded)}"
-                )
+        root.require_ready((*fibers, *affected, *root.consumers(fibers, declared=True)))
 
     async def _start_local_generation(
         self,
@@ -1056,7 +881,7 @@ class PluginManager:
             await self._retain_pre_fiber_failure(generation)
             raise
         ensure_workspace_plugin_data_dir(generation.data_dir, self._workspace)
-        self._check_live_host_dependencies((generation,))
+        check_host_dependencies(root, (generation,))
         self._active_generations[generation.plugin_id] = generation
         await self._attach_generation_hosts(generation)
         await self._mount_generation_composition(root, generation)
@@ -1148,11 +973,6 @@ class PluginManager:
         return receipts
 
 
-
-
-
-
-
     async def _dispose_generation(
         self,
         generation: PluginGeneration,
@@ -1229,7 +1049,6 @@ class PluginManager:
             raise asyncio.CancelledError
 
 
-
     def _forget_drained_generation(self, generation: PluginGeneration) -> None:
         tracked = self._draining_generations.get(generation.plugin_id)
         if tracked is None:
@@ -1243,7 +1062,6 @@ class PluginManager:
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
         return await self._run_operation(self._reconcile_changed)
-
 
 
     async def install(
@@ -1371,8 +1189,8 @@ class PluginManager:
                 "marketplace": result.marketplace,
                 "source_type": "installed",
             }
-            generation = await self._load_one_with_source_diagnostics(
-                mod, activate=False, stage_stable=True,
+            generation = await self._prepare_one_with_source_diagnostics(
+                mod,
             )
             if generation is None:
                 raise RuntimeError(f"安装目标未进入 live generation: {result.plugin_name}@{result.marketplace}")
@@ -1467,7 +1285,6 @@ class PluginManager:
         )
 
 
-
     def _notify_updates(self) -> None:
         for event in self._update_watchers:
             event.set()
@@ -1484,7 +1301,6 @@ class PluginManager:
                 yield None
         finally:
             self._update_watchers.remove(event)
-
 
 
     def annotate_reload(self, tx_id: str, details: dict[str, object]) -> None:
@@ -1591,8 +1407,8 @@ class PluginManager:
                 and not had_source_failure
             ):
                 continue
-            generation = await self._load_one_with_source_diagnostics(
-                mod, activate=False, stage_stable=True,
+            generation = await self._prepare_one_with_source_diagnostics(
+                mod,
             )
             if generation is None:
                 results.append({
@@ -1781,22 +1597,6 @@ class PluginManager:
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     async def retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
         return await self._run_operation(lambda: self._retry_runtime_recovery(plugin_id))
 
@@ -1849,12 +1649,6 @@ class PluginManager:
             "generation_id": fresh.generation_id,
             "retry_receipt": "selected-local-generation-retried",
         }
-
-
-
-
-
-
 
 
     def plugin_status(self) -> dict[str, object]:
@@ -2039,25 +1833,12 @@ class PluginManager:
         }
 
 
-
-
-
-
-
-
-
-
-    async def _load_one(
+    async def _prepare_one(
         self,
         mod: dict[str, str],
-        *,
-        activate: bool = True,
-        stage_stable: bool = False,
     ) -> PluginGeneration | None:
         """Prepare one fixed archive input without importing or mounting plugin code."""
         plugin_id = _resolve_plugin_id(mod)
-        if activate and plugin_id in self._active_generations:
-            return self._active_generations[plugin_id]
         if load_plugin_manifest(_plugins_home(self._installed_cache_root)).get(plugin_id, True) is False:
             return None
         prepared = prepare_plugin_input(
@@ -2078,20 +1859,7 @@ class PluginManager:
             code_dir_path=prepared.code_dir, source_type=prepared.source_type,
             state="prepared",
         )
-        if stage_stable:
-            return source
-        if activate:
-            await self._dispose_generation(source, state="discarded")
-            raise RuntimeError("旧 local Loader activation 入口已停用；请经 reconcile_changed")
-        # Candidate publication is intentionally blocked until T05 consumers migrate.
-        await self._dispose_generation(source, state="discarded")
-        raise RuntimeError("候选发布入口已停用；T05 consumer migration pending")
-
-
-
-
-
-
+        return source
 
 
     def _archived_generations(
@@ -2193,215 +1961,23 @@ class PluginManager:
             raise asyncio.CancelledError
 
 
-    async def _provide_composition_services(
-        self,
-        root: CompositionRoot,
-        mount_order: tuple[PluginGeneration, ...],
-    ) -> None:
-        """Provide host services to the one live Root."""
-
-        await root.context.provide(
-            HOST_INFO,
-            HostInfo(boot_id=self._host_boot_id, validation=False),
+    async def _provide_composition_services(self, root: CompositionRoot, mount_order: tuple[PluginGeneration, ...]) -> None:
+        """把固定安装事实和宿主输入交给装配层，不解释产品 Service。"""
+        self._live_execution_access, self._live_credentials = await provide_host_services(
+            root, mount_order, boot_id=self._host_boot_id,
+            dashboard_routes=self._dashboard_routes, input_custody=self._input_custody,
+            channel_identities=self._channel_identities, attachments=self._channel_attachment_store,
+            resolve_command=self._resolve_runtime_command,
+            workload_controller=self._workload_controller, workspace_id=self._workload_workspace_id,
+            message_log=self._message_log, archive=self._archive,
+            generation_for_context=self._generation_for_context,
+            runtime_generations=lambda: (self._active_generations, self._draining_generations),
+            live_root=lambda: self._live_root, installer=self,
+            tasks=self._plugin_tasks, processes=self._plugin_processes,
+            restart_gate=self._restart_gate, control_frames=self._control_frames,
+            session_manager=self._session_manager,
         )
-        await root.context.provide(
-            DASHBOARD_ROUTES,
-            () if self._dashboard_routes is None else self._dashboard_routes,
-        )
-        custody = self._input_custody
-        await root.context.provide(INPUT_CUSTODY,
-            unavailable_input_custody() if custody is None else custody)
-        if self._channel_identities is None:
-            identity = ChannelIdentity(unavailable, unavailable, unavailable)
-        else:
-            identity = ChannelIdentity(
-                self._resolve_channel_identity, self._remember_channel_identity,
-                self._rollback_channel_identity,
-            )
-        await root.context.provide(CHANNEL_IDENTITY, identity)
-        attachments = self._channel_attachment_store
-        await root.context.provide(CHANNEL_ATTACHMENT_IMPORT, ChannelAttachmentImport(
-            unavailable if attachments is None else attachments.import_bytes,
-        ))
-        await root.context.provide(CHANNEL_ATTACHMENT_READ, ChannelAttachmentRead(
-            unavailable if attachments is None else attachments.resolve_refs,
-            unavailable if attachments is None else attachments.acquire,
-        ))
-        execution = ExecutionAccess(root.instance_token, {
-            (item.plugin_id, item.generation_id): CodeOwner(item.generation_id, item.code_dir,
-                lambda command, cwd, item=item: self._resolve_runtime_command(item, command, cwd))
-            for item in mount_order
-        }, candidate=False)
-        await root.context.provide(EXECUTION, execution)
-        if root is self._live_root:
-            self._live_execution_access = execution
-        await root.context.provide(WORKLOAD_CONTROLLER,
-            ControllerAccess(execution, self._workload_controller, self._workload_workspace_id))
-        requested = {
-            key
-            for generation in mount_order
-            for key in cast(ComposablePlugin, generation.instance).inject
-        }
-        # Host services remain available when a later local generation arrives.
-        requested.update({
-            RUNTIME_CATALOG, RUNTIME_MCP_DETAIL, PLUGIN_UPDATES, RESTART_GATE,
-            CONTROL_FRAMES, PROCESSES, TIMERS,
-            ServiceKey[object]("core.message_display.v1"),
-            ServiceKey[object]("core.mobile_ui.v1"),
-        })
-        if self._artifact_import is not None:
-            requested.add(ARTIFACT_IMPORT)
-        if self._interaction_undo is not None:
-            requested.add(INTERACTION_UNDO)
-        if RUNTIME_CATALOG in requested:
-            if root is not self._live_root:
-                raise RuntimeError("runtime catalog 只在当前 live Root 提供")
 
-            def read_runtime_catalog(context: Context | RequestContext) -> dict[str, object]:
-                """Read live runtime facts only from the exact owner scope."""
-
-                if isinstance(context, RequestContext):
-                    context = context._require_context(RUNTIME_CATALOG, read_runtime_catalog)
-                if context.root_instance_token is not root.instance_token:
-                    raise RuntimeError("runtime catalog 不属于当前 live Root")
-                if RUNTIME_CATALOG not in context._declared_dependencies():
-                    raise CompositionError(
-                        "UNDECLARED_SERVICE",
-                        "当前 Fiber 未声明 runtime catalog 依赖",
-                    )
-                context.require_runtime_owner(RUNTIME_CATALOG, read_runtime_catalog)
-                return build_runtime_catalog(
-                    root,
-                    self._active_generations,
-                    self._draining_generations,
-                )
-
-            _ = await root.context.provide(RUNTIME_CATALOG, read_runtime_catalog)
-        if RUNTIME_MCP_DETAIL in requested:
-            if root is not self._live_root:
-                raise RuntimeError("MCP detail 只在当前 live Root 提供")
-
-            async def read_runtime_mcp_detail(
-                context: Context | RequestContext, owner_id: str, name: str,
-            ) -> list[dict[str, object]]:
-                """Inspect one target under caller and contributor owner scopes."""
-                from agent.plugin_composition.mcp_slots import MCP_SERVERS
-
-                if isinstance(context, RequestContext):
-                    context = context._require_context(RUNTIME_MCP_DETAIL, read_runtime_mcp_detail)
-                if context.root_instance_token is not root.instance_token:
-                    raise RuntimeError("MCP detail 不属于当前 live Root")
-                context.require_declared_runtime_owner(RUNTIME_MCP_DETAIL, read_runtime_mcp_detail)
-                service = root.context.get(MCP_SERVERS)
-                if service is None:
-                    raise RuntimeCatalogUnavailable("mcp_provider_unavailable", "MCP provider 尚未在当前 Root 提供")
-                if service.root_instance_token is not root.instance_token:
-                    raise RuntimeError("MCP provider 不属于当前 Root")
-                return await service.inspect(context, read_runtime_mcp_detail, owner_id, name)
-
-            _ = await root.context.provide(RUNTIME_MCP_DETAIL, read_runtime_mcp_detail)
-        if CREDENTIALS in requested or root is self._live_root:
-            clients = CredentialClients({
-                (generation.plugin_id, generation.generation_id): CoreProviderClientFactory(
-                    generation.data_dir,
-                    generation.config_projection, generation.config_revision,
-                )
-                for generation in mount_order
-            })
-            _ = await root.context.provide(CREDENTIALS, clients)
-            root._defer_internal_cleanup("credential_clients", clients.aclose)  # pyright: ignore[reportPrivateUsage]
-            if root is self._live_root:
-                self._live_credentials = clients
-        if PLUGIN_UPDATES in requested:
-            _ = await root.context.provide(
-                PLUGIN_UPDATES, PluginUpdates(self),
-            )
-        message_services: set[ServiceKey[object]] = {
-            MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION, BINDINGS
-        }
-        if RESTART_GATE in requested:
-            gate = self._restart_gate
-            if gate is None:
-                # 直接使用 PluginManager 的测试/嵌入式运行没有 Supervisor；仍提供
-                # 一个允许正常 work 的 unmanaged gate，不伪造可提交的重启通道。
-                gate = RestartGate(boot_id=self._host_boot_id, supervised=False)
-                self._restart_gate = gate
-            _ = await root.context.provide(RESTART_GATE, gate)
-        if CONTROL_FRAMES in requested:
-            _ = await root.context.provide(CONTROL_FRAMES, self._control_frames)
-        # Host capabilities are owned by the live process, outside plugin dependencies.
-        if requested & message_services and self._message_log is None:
-            raise RuntimeError("消息能力需要 bootstrap 提供已迁移的 MessageLog")
-        if self._message_log is not None:
-            log = self._message_log
-            _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
-            _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
-            _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
-            _ = await root.context.provide(OWNER_STATE, OwnerState(log))
-            _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
-            _ = await root.context.provide(
-                BINDINGS, Bindings(log, self._archive, root, self._generation_for_context)
-            )
-        if TASKS in requested or self._message_log is not None:
-            _ = await root.context.provide(TASKS, self._plugin_tasks)
-        if PROCESSES in requested:
-            _ = await root.context.provide(PROCESSES, self._plugin_processes)
-        if self._artifact_read is not None:
-            _ = await root.context.provide(ARTIFACT_READ, self._artifact_read)
-        if ARTIFACT_IMPORT in requested and self._artifact_import is not None:
-            _ = await root.context.provide(ARTIFACT_IMPORT, self._artifact_import)
-        if TIMERS in requested:
-            _ = await root.context.provide(TIMERS, PluginTimers(AsyncioOneShotTimer()))
-
-        # Client UI and message display are neutral projections.  The host
-        # publishes stable names; each display request opens only its provider
-        # Context scope while retaining the same live Root.
-        host_ui_requested = {
-            key.name
-            for key in requested
-            if key.name in {
-                "core.message_display.v1",
-                "core.mobile_ui.v1",
-            }
-        }
-        if "core.message_display.v1" in host_ui_requested:
-            from agent.plugin_composition.message_view import project_message_rows
-
-            async def display_message_page(
-                page: MessagePage,
-                *,
-                display_only: bool,
-            ) -> list[dict[str, object]]:
-                return await project_message_rows(
-                    root,
-                    page,
-                    display_only=display_only,
-                )
-
-            _ = await root.context.provide(
-                ServiceKey[object]("core.message_display.v1"),
-                display_message_page,
-            )
-        if "core.mobile_ui.v1" in host_ui_requested:
-            from agent.plugins.mobile_ui import PluginMobileUiProvider
-
-            mobile_ui = PluginMobileUiProvider(root)
-            _ = await root.context.provide(
-                ServiceKey[object]("core.mobile_ui.v1"),
-                mobile_ui,
-            )
-            root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
-                "mobile_ui_provider.close",
-                mobile_ui.aclose,
-            )
-        if any(
-            INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            if self._interaction_undo is None:
-                raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
-            interaction_undo = InteractionUndoService(self._interaction_undo.undo_latest)
-            _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
 
     async def _mount_generation_composition(
         self,
@@ -2437,7 +2013,7 @@ class PluginManager:
             # Keep the exact runtime-identified Fiber if the kernel retained it.
             generation.fiber = next(
                 (
-                    fiber for fiber in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+                    fiber for fiber in root.fibers()
                     if fiber.runtime is not None
                     and fiber.runtime.plugin_id == generation.plugin_id
                     and fiber.runtime.generation_id == generation.generation_id
@@ -2445,8 +2021,6 @@ class PluginManager:
                 None,
             )
             raise
-
-
 
 
     def _resolve_runtime_command(
@@ -2679,24 +2253,12 @@ def _plugins_home(installed_cache_root: Path | None) -> Path:
     return plugins_root()
 
 
-
-
-
-
-
-
-
-
-
-
 async def _copy_in_thread(copy_files: Callable[..., U], *args: Any, **kwargs: Any) -> U:
     """复制完成后才传播取消，避免清理目录时后台线程仍在写入。"""
     result, cancelled = await _complete_critical(asyncio.to_thread(copy_files, *args, **kwargs))
     if cancelled:
         raise asyncio.CancelledError
     return result
-
-
 
 
 def _source_failure_key(failure: PluginSourceFailure) -> str:

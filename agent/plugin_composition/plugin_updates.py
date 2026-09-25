@@ -2,13 +2,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal, Protocol
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
-
-if TYPE_CHECKING:
-    from agent.plugins.manager import PluginManager
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,19 +23,26 @@ class UpdateStatus:
     error: str
 
 
+class PluginInstallPort(Protocol):
+    """安装控制面；不暴露 Root、源码目录、数据库或任意 Manager 方法。"""
+    async def install(self, *, source: str, marketplace: str, ref_name: str, sparse_paths: list[str], update_id: str) -> UpdateStatus: ...
+    def read_update(self, update_id: str) -> UpdateStatus: ...
+    def watch_updates(self) -> AsyncGenerator[None]: ...
+
+
 class PluginUpdates:
     """Expose only install, read, and change notifications."""
 
-    def __init__(self, host: PluginManager | None):
+    def __init__(self, host: PluginInstallPort | None):
         self._host = host
 
-    def _check(self, ctx: Context) -> PluginManager:
+    def _check(self, ctx: Context) -> PluginInstallPort:
         _ = ctx.require_runtime_owner(PLUGIN_UPDATES, self)
         if self._host is None:
             raise PermissionError("插件更新宿主不可用")
         return self._host
 
-    def _request(self, ctx: Context, update_id: str) -> PluginManager:
+    def _request(self, ctx: Context, update_id: str) -> PluginInstallPort:
         host = self._check(ctx)
         if not isinstance(update_id, str) or not update_id or update_id.strip() != update_id:
             raise ValueError("更新 ID 必须是非空且无首尾空白的字符串")

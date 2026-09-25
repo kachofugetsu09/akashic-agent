@@ -10,13 +10,12 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugin_composition.archive import PluginArchive
-from agent.plugin_contracts import ContentPart, Message
-from agent.plugin_contracts import json_value
+from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
+from agent.plugin_contracts import ContentPart, Message, json_value
 
 from ._materials_boundary import MATERIALS
-from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
+from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
 from .skill_catalog import (
     SKILL_INSPECTION,
     SkillCatalogParser,
@@ -24,6 +23,7 @@ from .skill_catalog import (
     SkillRecord,
     skill_body,
 )
+
 
 class SkillQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -117,10 +117,10 @@ async def register_skills(ctx: Context) -> ToolRef:
             cached_assets = assets
         return cached_catalog
 
+    @ctx.entrypoint
     async def read_inspection_catalog() -> tuple[SkillRecord, ...]:
         """在原技能 owner 的短调用作用域内读取安装资产。"""
-        async with ctx.runtime_scope():
-            return read_catalog()
+        return read_catalog()
 
     _ = await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_inspection_catalog))
 

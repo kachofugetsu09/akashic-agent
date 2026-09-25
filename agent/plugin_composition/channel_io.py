@@ -5,11 +5,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.channels import (
-    AttachmentRef, InboundEnvelope, RawInbound,
-    ChannelAttachmentImportPort, ChannelAttachmentReadPort,
+    AttachmentKind,
+    AttachmentReadLease,
+    AttachmentRef,
+    ChannelAttachmentImportPort,
+    ChannelAttachmentReadPort,
+    InboundEnvelope,
+    RawInbound,
 )
+from agent.plugin_composition.model import ServiceKey
 
 
 class PendingInputs(Protocol):
@@ -44,15 +49,23 @@ class ChannelIdentity:
     rollback: Callable[[object], Awaitable[bool]]
 
 
+class ImportAttachment(Protocol):
+    async def __call__(self, data: bytes, *, kind: AttachmentKind, filename: str | None, media_type: str | None) -> AttachmentRef: ...
+
+
+class AcquireAttachment(Protocol):
+    async def __call__(self, ref: AttachmentRef) -> AttachmentReadLease: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ChannelAttachmentImport:
-    import_bytes: Callable[..., Awaitable[AttachmentRef]]
+    import_bytes: ImportAttachment
 
 
 @dataclass(frozen=True, slots=True)
 class ChannelAttachmentRead:
     resolve_refs: Callable[[tuple[str, ...]], tuple[AttachmentRef, ...]]
-    acquire: Callable[..., object]
+    acquire: AcquireAttachment
 
 
 INPUT_CUSTODY = ServiceKey[InputCustody]("core.input_custody")

@@ -1,8 +1,8 @@
 """把宿主执行权限绑定到真实 Root/Context；这不是同 UID Python 沙箱。"""
 from __future__ import annotations
 
-import os
 import asyncio
+import os
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -10,14 +10,15 @@ from pathlib import Path
 from typing import Literal
 
 from agent.plugin_composition.context import Context
-from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
-from agent.workloads.client import WorkloadController
 from agent.plugin_composition.execution import (
+    EXECUTION,
+    WORKLOAD_CONTROLLER,
     ChildProcess,
     PreparedProcess,
     WorkloadLease,
     WorkloadStartRequest,
 )
+from agent.workloads.client import WorkloadController
 from utils.process_group import (
     OwnedProcessGroup,
     owned_process_env,
@@ -252,20 +253,20 @@ class ControllerGrant:
     def __init__(self, controller: WorkloadController, owner: str, mode: Literal["candidate", "formal"], workspace_id: str):
         self._controller = controller
         self._owner = owner
-        self._mode = mode
+        self._mode: Literal["candidate", "formal"] = mode
         self._workspace_id = workspace_id
         self._identity = "resource-" + secrets.token_hex(16)
 
     @property
-    def mode(self):
+    def mode(self) -> Literal["candidate", "formal"]:
         return self._mode
 
     @property
-    def workspace_id(self):
+    def workspace_id(self) -> str:
         return self._workspace_id
 
     @property
-    def identity(self):
+    def identity(self) -> str:
         return self._identity
 
     def _check(self, value: WorkloadStartRequest | WorkloadLease) -> None:

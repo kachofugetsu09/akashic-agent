@@ -1,45 +1,74 @@
 """从消息学习；模型未配置时保持可见的记忆不可用状态。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import UTC, datetime
-
-from importlib import import_module
-from agent.plugin_composition.ui import UI
-
-import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
-from typing import Literal, Protocol, Self
+from datetime import UTC, datetime
 from functools import partial
-from collections.abc import Mapping
+from importlib import import_module
 from pathlib import Path
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from agent.plugin_composition import EMBEDDINGS, RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey, UI_SLOTS, MobileUiDefinition, MobileUiNavigation, MobileUiRpcInvalidRequest
+from agent.plugin_composition import (
+    EMBEDDINGS,
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    UI_SLOTS,
+    Context,
+    MobileUiDefinition,
+    MobileUiNavigation,
+    MobileUiRpcInvalidRequest,
+    ServiceKey,
+)
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import COMMANDS, CommandDefinition, CommandInvocation, CommandResult
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE
+from agent.plugin_composition.commands import (
+    COMMANDS,
+    CommandDefinition,
+    CommandInvocation,
+    CommandResult,
+)
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    MESSAGE_EMBEDDINGS,
+    OWNER_STATE,
+)
+from agent.plugin_composition.models import (
+    DriverUnavailableError,
+    ModelUnavailableError,
+    open_embedding as open_saved_embedding,
+    read_embedding_binding,
+)
+from agent.plugin_composition.ui import UI
 from agent.plugin_contracts import Message
-from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
-from .domain.model import EmbeddingSpaceMismatchError, MemoryRebuildRequiredError
-from ._boundaries import CONTENT, TOOLS, TURN_PROJECTION, ContentCapability, ToolCatalog, ToolRef, ToolView
+from agent.plugin_contracts.context import (
+    MATERIALS as MATERIALS,
+)
 
+from ._boundaries import (
+    CONTENT,
+    TOOLS,
+    TURN_PROJECTION,
+    ContentCapability,
+    ToolCatalog,
+)
 from .application.consumer import MessageConsumer
+from .application.rebuild import manifest_json, rebuild_from_catalog
+from .application.snapshot import read_memory
 from .config import AkashaConfig, resolve_memory_path
+from .domain.model import EmbeddingSpaceMismatchError, MemoryRebuildRequiredError
 from .infrastructure.consumption import load_message_nodes
 from .inspector import RecallInspector
-from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .interest import SEMANTIC_INTEREST, Embed, SemanticInterest
+from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .recall_tool import RecallArguments, RecallTool, check_recall
 from .recalls import Recall, RecallRecords, RecallRecordsRead
 from .runtime import MessageMemory, prepare_materials
-from .application.snapshot import read_memory
-from agent.plugin_composition.models import open_embedding as open_saved_embedding, read_embedding_binding
 from .tools import FeedbackArguments, FeedbackTool, check_feedback
-from .application.rebuild import manifest_json, rebuild_from_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +85,8 @@ workspace_roots = ("memory",)
 MaterialData = Mapping[str, object]
 
 
-class MaterialRegistry(Protocol):
-    async def register(
-        self, ctx: Context, *, name: str,
-        prepare: Callable[[tuple[Message, ...], str], Awaitable[MaterialData]],
-        priority: int = 0, prompt: bool = False, reduce: object | None = None,
-    ) -> object: ...
-
-
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")
-inject = (UI, TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
-          BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, UI_SLOTS, COMMANDS)
+inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
+          BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, COMMANDS)
 
 
 class Config(BaseModel):
@@ -115,12 +135,10 @@ AKASHA_RECORDS = ServiceKey[Callable[[str], Recall | None]]("akasha.recalls.v1")
 AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]](
     "akasha.recall-records.v1"
 )
-AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
 AKASHA_MEMORY_PATH = ServiceKey[Callable[[], Path]]("akasha.memory-path.v1")
 
 
-async def apply(ctx: Context) -> None:
-    """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
+async def _register_ui(ctx: Context) -> None:
     await ctx.require(UI).register(
         ctx, web="web_module.js",
         dashboard=lambda: import_module(".dashboard", __package__),
@@ -130,11 +148,14 @@ async def apply(ctx: Context) -> None:
             "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
         },
     )
+
+
+async def apply(ctx: Context) -> None:
+    """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
     config = Config.model_validate(ctx.config)
     catalog: ToolCatalog = ctx.require(TOOLS)
     content: ContentCapability = ctx.require(CONTENT)
     _ = await catalog.declare_group(ctx, description=desc)
-    tool_refs: list[ToolRef] = []
 
     async def request_reindex(invocation: CommandInvocation) -> CommandResult:
         if invocation.raw_input.strip().casefold() != "confirm":
@@ -225,12 +246,14 @@ async def apply(ctx: Context) -> None:
             return detail
         raise MobileUiRpcInvalidRequest(f"不支持的 Akasha 查询：{method}")
 
-    _ = await ctx.require(UI_SLOTS).register_mobile(
-        ctx, MobileUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
-                                slots=("turn.before_reasoning",),
-                                navigation=MobileUiNavigation(label="Akasha Inspector",
-                                    description="查看实际检索及呈现的原消息")), query=query,
-    )
+    async def register_mobile(child: Context) -> None:
+        _ = await child.require(UI_SLOTS).register_mobile(
+            child, MobileUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
+                                    slots=("turn.before_reasoning",),
+                                    navigation=MobileUiNavigation(label="Akasha Inspector",
+                                        description="查看实际检索及呈现的原消息")), query=ctx.entrypoint(query),
+        )
+    _ = await ctx.inject((UI_SLOTS, AKASHA_RECORDS_VIEW), register_mobile, name="mobile-ui")
 
     def select_learning() -> tuple[str, LearningConfig, str]:
         try:
@@ -337,19 +360,17 @@ async def apply(ctx: Context) -> None:
                 lambda: load_message_nodes(memory_path),
             )
 
-        tool_refs.append(
-            await catalog.register(
-                ctx,
-                name=f"{action}_memory",
-                description=(
-                    "记住明确确认的内容"
-                    if action == "remember"
-                    else "遗忘明确撤回的内容"
-                ),
-                parameters=FeedbackArguments.model_json_schema(),
-                open=open_feedback,
-                idempotent=True,
-            )
+        await catalog.register(
+            ctx,
+            name=f"{action}_memory",
+            description=(
+                "记住明确确认的内容"
+                if action == "remember"
+                else "遗忘明确撤回的内容"
+            ),
+            parameters=FeedbackArguments.model_json_schema(),
+            open=open_feedback,
+            idempotent=True,
         )
 
     def capture_recall(options: Mapping[str, object]) -> Mapping[str, object]:
@@ -381,19 +402,16 @@ async def apply(ctx: Context) -> None:
             open_embedding=partial(open_saved_embedding, bindings), max_chars=settings.inject_max_chars,
         )
 
-    tool_refs.append(
-        await catalog.register(
-            ctx,
-            name="recall_memory",
-            description="从记忆图召回历史对话，返回原始 Message 引用",
-            parameters=RecallArguments.model_json_schema(),
-            open=open_recall,
-            capture=capture_recall,
-            idempotent=True,
-            risk="read-only",
-        )
+    await catalog.register(
+        ctx,
+        name="recall_memory",
+        description="从记忆图召回历史对话，返回原始 Message 引用",
+        parameters=RecallArguments.model_json_schema(),
+        open=open_recall,
+        capture=capture_recall,
+        idempotent=True,
+        risk="read-only",
     )
-    _ = await ctx.provide(AKASHA_TOOLS, catalog.view(*tool_refs))
     # 只读账本按声明的 workspace root 解析学习图；不暴露 writer 或任意路径。
     _ = await ctx.provide(AKASHA_MEMORY_PATH, lambda: memory_path)
 
@@ -558,3 +576,5 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
+    _ = await ctx.inject((UI, AKASHA_RECORDS_VIEW, AKASHA_MEMORY_PATH, MESSAGE_CATALOG),
+                         _register_ui, name="ui")

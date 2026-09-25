@@ -6,9 +6,11 @@ from datetime import datetime
 
 import numpy as np
 
-from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 from agent.plugin_contracts import Input, Output
+from agent.plugin_contracts.proactive import (
+    SEMANTIC_INTEREST as SEMANTIC_INTEREST,
+)
 
 from .learning import Learning, LearningConfig
 from .projection import Sample, input_features
@@ -84,6 +86,3 @@ class SemanticInterest:
                 similarity = max(float(np.dot(candidate / norm, prototype)) for prototype in prototypes)
                 scores[index] = min(0.999, max(0.0, similarity) ** 4)
         return tuple(scores)
-
-
-SEMANTIC_INTEREST = ServiceKey[SemanticInterest]("akasha.semantic-interest.v1")

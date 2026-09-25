@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from agent.plugin_composition.model import CompositionError, ServiceKey
 
@@ -33,10 +33,10 @@ class RequestContext:
         repr=False,
     )
 
-    _resolve: Callable[[ServiceKey[object]], object] | None = field(default=None, repr=False)
+    _resolve: Callable[[ServiceKey[Any]], object] | None = field(default=None, repr=False)
     _context: Context | None = field(default=None, repr=False, compare=False)
 
-    def _require_context(self, key: ServiceKey[object], service: object) -> Context:
+    def _require_context(self, key: ServiceKey[Any], service: object) -> Context:
         """Core 在当前请求许可内取得原 owner，不向插件开放完整 Context API。"""
         if self.require(key) is not service:
             raise CompositionError("SERVICE_SCOPE_MISMATCH", "授权服务不属于当前请求")
@@ -48,7 +48,7 @@ class RequestContext:
         """在 async 路由的当前请求租约内取得声明能力，不暴露宿主 Root。"""
         if self._resolve is None:
             raise CompositionError("REQUEST_SCOPE_MISSING", "插件没有请求能力入口")
-        return cast(T, self._resolve(cast(ServiceKey[object], key)))
+        return cast(T, self._resolve(cast(ServiceKey[Any], key)))
 
     def workspace_root(self, name: str) -> Path:
         """返回与当前插件 generation 相同的声明式 workspace root。"""
