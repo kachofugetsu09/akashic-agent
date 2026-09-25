@@ -38,6 +38,7 @@ from agent.plugin_contracts.tools import (
     TOOLS as TOOLS,
     ToolRef as ToolRef,
     ToolView as ToolView,
+    tool_key,
 )
 
 from .abandon import follow_abandon, reject_start
@@ -236,7 +237,13 @@ class ToolCatalog:
 
             return cleanup
 
-        _ = await ctx.effect(setup, label=f"tool:{name}")
+        effect = await ctx.effect(setup, label=f"tool:{name}")
+        try:
+            _ = await ctx.provide(tool_key(name), reference)
+        except BaseException:
+            # 发布失败时撤销本次目录注册，避免留下无法声明依赖的工具。
+            await effect.aclose()
+            raise
         return reference
 
     async def register_prepare(

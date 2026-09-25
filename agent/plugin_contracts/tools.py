@@ -82,6 +82,11 @@ class ToolRef:
     description: Mapping[str, object]
 
 
+def tool_key(name: str) -> ServiceKey[ToolRef]:
+    """声明对单个已注册工具的依赖，随工具 owner 激活与释放。"""
+    return ServiceKey[ToolRef](f"tools.ref.{name}.v1")
+
+
 @dataclass(frozen=True, slots=True)
 class ToolView:
     """消费者获授的一组真实工具引用。"""
