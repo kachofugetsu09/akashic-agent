@@ -11,8 +11,6 @@ from typing import Literal
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.execution import (
-    EXECUTION,
-    WORKLOAD_CONTROLLER,
     ChildProcess,
     PreparedProcess,
     WorkloadLease,
@@ -90,7 +88,8 @@ class ExecutionAccess:
 
     def bind(self, ctx: Context) -> ExecutionGrant:
         """验证实际代码 owner，不接受自报插件名、模式或数据根。"""
-        if ctx.root_instance_token is not self._root_token or ctx.require(EXECUTION) is not self:
+        # 宿主依赖由 provider 声明；ctx 只标识贡献资源的插件。
+        if ctx.root_instance_token is not self._root_token:
             raise PermissionError("执行授权不能跨 Root")
         runtime = ctx.runtime
         owner = self._owners.get((runtime.plugin_id, runtime.generation_id))
@@ -242,8 +241,6 @@ class ControllerAccess:
     def bind(self, ctx: Context) -> ControllerGrant:
         """每份授权固定 owner 与请求身份，不向插件交出原始 Controller。"""
         execution = self._execution.bind(ctx)
-        if ctx.require(WORKLOAD_CONTROLLER) is not self:
-            raise PermissionError("Controller 授权不属于当前 Root")
         if self._controller is None:
             raise RuntimeError("所选资源 provider 需要宿主 Workload Controller")
         return ControllerGrant(self._controller, ctx.runtime.plugin_id, execution.mode, self._workspace_id)
