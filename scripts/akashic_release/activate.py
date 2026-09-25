@@ -355,6 +355,8 @@ def activate_release(
             if plan.is_symlink() or not plan.is_file():
                 raise ValueError("部署清单必须是普通文件")
             atomic_write(fixed_plan, plan.read_text(encoding="utf-8"))
+        # 清单只含公开发布身份；保留部署者属主，让非 root 容器只读。
+        fixed_plan.chmod(0o444)
         if inputs is None:
             inputs = fixed_plan.parent
         inputs = inputs.resolve(strict=True)
