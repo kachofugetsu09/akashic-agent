@@ -81,7 +81,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           <DesktopMobileNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} onSelectSession={activateSession}
+            themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
             onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
           />
           <h1 title={headingTitle}>{headingTitle}</h1>

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import re
 from typing import cast
-from uuid import uuid4
 
 from agent.plugin_composition import UI_SLOTS, Context, MobileUiDefinition, MobileUiRpcInvalidRequest
 from agent.plugin_composition.messages import (
@@ -23,6 +23,7 @@ inject = (SESSION_ADMISSION, OWNER_STATE, UI_SLOTS)
 DIMENSION = "project"
 _PREFIX = "project:"
 _NAME_LIMIT = 80
+_PROJECT_ID = re.compile(r"p_[0-9a-f]{32}")
 
 
 class Projects:
@@ -36,16 +37,27 @@ class Projects:
         projects = [_project_row(key[len(_PREFIX):], dict(record.value)) for key, record in rows]
         return sorted(projects, key=lambda row: cast(str, row["created_at"]))
 
-    def create(self, project_name: str) -> dict[str, object]:
-        project_id = "p_" + uuid4().hex[:16]
+    def create(self, project_id: str, project_name: str) -> dict[str, object]:
+        """由请求的稳定 ID 创建一次；响应丢失后同名重放返回原记录。"""
+        if _PROJECT_ID.fullmatch(project_id) is None:
+            raise MobileUiRpcInvalidRequest("项目 ID 无效")
+        name = _check_name(project_name)
         value: dict[str, object] = {
-            "name": _check_name(project_name), "archived": False,
+            "name": name, "created_name": name, "archived": False,
             "created_at": datetime.now(UTC).isoformat(),
         }
-        def save(transaction: OwnerTransaction) -> None:
+        def save(transaction: OwnerTransaction) -> dict[str, object]:
+            current = transaction.read(_PREFIX + project_id)
+            if current is not None:
+                if current.value.get("created_name", current.value["name"]) != name:
+                    raise MobileUiRpcInvalidRequest("项目 ID 已用于其他名称")
+                return _project_row(project_id, dict(current.value))
             _ = transaction.save(_PREFIX + project_id, value, expected_version=None)
-        self._store.transact(save)
-        return _project_row(project_id, value)
+            return _project_row(project_id, value)
+        try:
+            return self._store.transact(save)
+        except MessageConflict as error:
+            raise MobileUiRpcInvalidRequest("项目正在并发创建，请重试") from error
 
     def update(self, project_id: str, **changes: object) -> dict[str, object]:
         key = _PREFIX + project_id
@@ -99,8 +111,8 @@ async def apply(ctx: Context) -> None:
               turn_id: str | None) -> dict[str, object]:
         if method == "project.list" and not payload:
             return {"dimension": DIMENSION, "items": projects.list()}
-        if method == "project.create" and set(payload) == {"name"}:
-            return projects.create(_check_name(payload["name"]))
+        if method == "project.create" and set(payload) == {"project_id", "name"}:
+            return projects.create(_project_id(payload), _check_name(payload["name"]))
         if method == "project.rename" and set(payload) == {"project_id", "name"}:
             return projects.update(_project_id(payload), name=_check_name(payload["name"]))
         if method == "project.archive" and set(payload) == {"project_id"}:

@@ -21,8 +21,8 @@
 3. **图是视图，不是分区。** 类比 Kafka：日志只有一份，每张 Akasha 图像一个 consumer group，
    有自己的成员选择器与进度。不相交分区无法表达“共享给全局”，视图可以。
 4. **策略归 Akasha。** 每个 `(维度, 取值)` 一条 `global | isolated | off`，缺失为 global。
-   isolated 在多维间传染并按显式偏键（如 `computer=lab&project=p_x`）命名图，不做 hash 取模，
-   避免 Kafka 分区数变化导致的重排问题。
+   isolated 在多维间传染。图身份是有序维度元组的无歧义 JSON 编码（前缀 `v2:`），
+   不做 hash 取模；维度取值含 `&`、`=` 时仍不能串图。
 5. **策略 set-once。** 只能在该取值尚无 Session 时写入；写入与“尚无 Session”检查在同一个
    写事务内完成，接纳无法插入其间。因此每个 Session 的路由永远确定，首版不需要策略变更重建。
 6. **存储。** default 图保持 `memory/akasha.db` 零迁移；独立图放在
@@ -30,6 +30,13 @@
    消息开始学习，不设 cutover 上界。embedding 与召回记录仍共享。
 7. **记忆槽位。** Akasha 提供 `plugin.claim.embedding_memory`，同一 Root 只允许一个
    embedding 记忆系统；一个 Akasha 实例管理全部图。
+8. **项目创建。** Web 先以稳定项目 ID 提交 Akasha 的 set-once 策略，再让 Projects
+   按该 ID 幂等创建记录。Web 在本地保存未完成请求并重放；策略提交前不存在可接纳
+   Session 的项目。Projects 不解释策略，Akasha 不解释项目名称。
+
+本 PR 内先前预览版本使用分隔符拼接独立图键。新格式改变独立图摘要路径；不自动
+移动、删除或回退读取旧预览图。已有预览工作区应先备份，再由维护者按显式逐图重建
+协议核对。正式 default 图路径保持不变。
 
 ## 需要与不需要独立图的场景
 

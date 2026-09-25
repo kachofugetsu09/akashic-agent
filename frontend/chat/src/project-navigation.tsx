@@ -33,6 +33,7 @@ export function ProjectNavigation({
   onSelectSession,
   onNewProjectChat,
   onCreateProject,
+  onOpenCreateProject,
 }: {
   projects: ProjectRow[];
   sessionsByProject: ReadonlyMap<string, ProjectSessionItem[]>;
@@ -42,9 +43,11 @@ export function ProjectNavigation({
   onSelectSession: (sessionId: string) => void;
   onNewProjectChat: (projectId: string) => void;
   onCreateProject: (name: string, memory: ProjectMemory) => Promise<void>;
+  onOpenCreateProject?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [dialogOpen, setDialogOpen] = useState(false);
+  const openCreate = onOpenCreateProject ?? (() => setDialogOpen(true));
   const toggle = (projectId: string) => setCollapsed((current) => {
     const next = new Set(current);
     if (next.has(projectId)) next.delete(projectId);
@@ -57,12 +60,12 @@ export function ProjectNavigation({
       <header className="project-navigation__header">
         <span>项目</span>
         <button type="button" className="project-navigation__icon" aria-label="新建项目" title="新建项目"
-          onClick={() => setDialogOpen(true)}>
+          onClick={openCreate}>
           <Plus size={15} aria-hidden="true" />
         </button>
       </header>
       {projects.length === 0 ? (
-        <button type="button" className="project-navigation__empty" onClick={() => setDialogOpen(true)}>
+        <button type="button" className="project-navigation__empty" onClick={openCreate}>
           <FolderPlus size={16} aria-hidden="true" />
           <span>新建项目</span>
         </button>
@@ -104,27 +107,29 @@ export function ProjectNavigation({
           </div>
         );
       })}
-      <NewProjectDialog
+      {!onOpenCreateProject ? <NewProjectDialog
         open={dialogOpen}
         memoryInstalled={memoryInstalled}
         onOpenChange={setDialogOpen}
         onCreate={onCreateProject}
-      />
+      /> : null}
     </section>
   );
 }
 
 /** 记忆策略在项目还没有对话时一次选定；之后改变需要显式重建学习图。 */
-function NewProjectDialog({
+export function NewProjectDialog({
   open,
   memoryInstalled,
   onOpenChange,
   onCreate,
+  onCloseFocus,
 }: {
   open: boolean;
   memoryInstalled: boolean;
   onOpenChange: (open: boolean) => void;
   onCreate: (name: string, memory: ProjectMemory) => Promise<void>;
+  onCloseFocus?: () => void;
 }) {
   const [name, setName] = useState("");
   const [memory, setMemory] = useState<ProjectMemory>("global");
@@ -158,7 +163,10 @@ function NewProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={reset}>
-      <DialogContent className="project-dialog">
+      <DialogContent className="project-dialog" onCloseAutoFocus={onCloseFocus ? (event) => {
+        event.preventDefault();
+        onCloseFocus();
+      } : undefined}>
         <form onSubmit={(event) => void submit(event)}>
           <DialogHeader className="project-dialog__header">
             <DialogTitle>新建项目</DialogTitle>

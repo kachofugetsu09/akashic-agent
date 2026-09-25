@@ -21,6 +21,7 @@ export interface DesktopSidebarProjects {
   memoryInstalled: boolean;
   onNewChat: (projectId: string) => void;
   onCreate: (name: string, memory: ProjectMemory) => Promise<void>;
+  onOpenCreate?: () => void;
 }
 
 export interface DesktopSidebarProps {
@@ -103,6 +104,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           onSelectSession={onSelectSession}
           onNewProjectChat={projects.onNewChat}
           onCreateProject={projects.onCreate}
+          onOpenCreateProject={projects.onOpenCreate}
         />
       ) : null}
 

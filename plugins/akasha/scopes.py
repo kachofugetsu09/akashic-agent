@@ -41,8 +41,8 @@ class Route:
 
 
 def graph_key(isolated: tuple[tuple[str, str], ...]) -> str:
-    """显式偏键即图身份；不做 hash 取模，新增维度不重排已有图。"""
-    return "&".join(f"{name}={value}" for name, value in isolated) or DEFAULT_GRAPH
+    """长度与分隔符都由 JSON 编码；不同维度元组不能共用图身份。"""
+    return "v2:" + json.dumps(sorted(isolated), ensure_ascii=False, separators=(",", ":")) if isolated else DEFAULT_GRAPH
 
 
 def graph_path(memory_path: Path, key: str) -> Path:
@@ -61,7 +61,7 @@ def ensure_graph_directory(memory_path: Path, key: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     manifest = path.parent / "manifest.json"
     if not manifest.exists():
-        payload = json.dumps({"schema_version": 1, "graph": key}, ensure_ascii=False, sort_keys=True)
+        payload = json.dumps({"schema_version": 2, "graph": key}, ensure_ascii=False, sort_keys=True)
         descriptor, temporary = tempfile.mkstemp(prefix="manifest.", suffix=".tmp", dir=path.parent)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             _ = handle.write(payload + "\n")
