@@ -3,6 +3,7 @@
 - 日期：2026-08-10
 - 状态：accepted；安装器已实现，真实目标机部署证据仍按验收节记录
 - 上游栈：#353 → #354 → #355 → #352
+- 2026-09-25 部署策略由 [0073](../decisions/0073-deployment-policy-belongs-to-operator.md) 更新；日常命令以[部署操作手册](operator-deployment.md)为准。历史迁入任务的完整备份要求不是每次软件升级前提。
 
 ## 1. 目标与边界
 
@@ -72,7 +73,7 @@ scripts/install-akashic.sh
      ├─ bridge.py    Bridge venv、toolchain identity 与 doctor
      ├─ manifest.py  release manifest、receipt 与原子 JSON
      ├─ systemd.py   unit 安装、启停和状态观察
-     ├─ activate.py  激活、真实健康检查和上一代恢复
+     ├─ activate.py  按清单发布、真实健康检查和恢复启动
      └─ migrate.py   正式 Workspace 迁移编排与停止边界
 
 正式 image 的临时 build context
@@ -94,7 +95,7 @@ scripts/install-akashic.sh
 ├─ run/                             release lock、UDS、readiness
 ├─ secrets/                         Bridge token 等 0600 secret
 ├─ state/                           正式 Workspace/config/plugin-data
-└─ backups/                         runtime.env、unit 与迁移恢复点
+└─ backups/                         部署者选择创建的 state/env/unit 恢复点
 ```
 
 systemd unit 是稳定入口，通常只在模板摘要变化时更新。固定 EnvironmentFile 由安装器通过同目录临时
@@ -174,181 +175,57 @@ WebUI 的局域网需求一并暴露。
 同 commit 的完整 generation 摘要一致时复用；存在同名但摘要不一致、缺 manifest 或身份漂移时
 fail-loud，不覆盖目录。staging 失败只清理本轮 manifest 明确拥有的对象。
 
-### 5.2 激活
+### 5.2 发布与恢复
 
-候选完整后进入短维护窗口：
+现行流程由[部署操作手册](operator-deployment.md)统一维护：
 
 ```text
-记录 previous generation
-  → 备份 runtime.env 与发生变化的 unit
-  → stop Core
-  → stop Bridge
-  → 原子切换 runtime.env
-  → start Bridge
-  → systemd/UDS/commit/toolchain/Shell/File probe
-  → start Core
-  → Docker health/readiness identity/HTTP/DB/plugin-MCP smoke
-  → 写 completed activation receipt
+精确 Core/Bridge generation → 显式清单的在线只读预检
+  → stop Core/Bridge → maintenance/publication 锁
+  → 可选备份 → 已批准 Yoyo → 仅安装显式 targets
+  → 必要时一次完整 Root CAS → 安装变化的 unit/CLI → runtime.env
+  → start Bridge/Core → doctor + 实际完整 selection/Fiber ACTIVE → active
 ```
 
-unit 内容未变化时不重写、不执行无意义的 daemon-reload；每次安装仍显式核对并启用 Core 与 Bridge，
-保证首次安装和同代重装都能在宿主重启后恢复。模板变化时由普通用户执行 installer，仅在安装 system
-unit、daemon-reload、enable 和 unit 控制的窄步骤调用 sudo；服务进程继续使用声明的非 root 用户。
-指定非默认 `--unit-root` 时进入离线验证路径：外围 unit 必须存在于该隔离目录并通过
-`systemd-analyze verify`，Core/Bridge unit 只原子写入该目录，不调用 sudo 或 reload 正式 systemd。
-首次激活从系统 Python 发起时，UDS/gRPC probe 仍以候选 generation 的 Bridge Python 子进程运行；
-系统 Python 缺少 `grpcio` 不得成为部署前置条件。
+无清单只更新 Core/Bridge，保留当前插件。待迁移 ID 必须由部署者批准，备份只在选择 `--backup`
+时创建；两者互不授权。首次 profile 仍只在初始化时安装独立 bundle 与配置；后续 `ensure_profile`
+核对历史 receipt 和当前 manifest/artifact，不重新套用 default profile。
 
-激活事务从 release manifest 原子生成 `runtime.env` 的 generation 字段：
-`AKASHIC_RUNTIME_COMMIT`、`AKASHIC_RUNTIME_TREE`、`AKASHIC_IMAGE`、
-`AKASHIC_RELEASE_MANIFEST` 与 `AKASHIC_RUNTIME_CHECKOUT`。distribution image 内的
-`runtime-info.json` 保存相同 commit/tree 和 Core digest；容器入口每次启动都会比对它们，release doctor
-还会复核 image、Host Bridge checkout、toolchain 与 Bridge RPC。operator 不得手改这些字段来绕过
-identity 检查，应重新准备一个完整 generation。
+`--no-activate` 只准备产物，不改运行单元、CLI 或正式 state。实际发布前的只读预检不停止现有服务；
+停止期失败保留现场和阶段，不自动恢复旧 image/env。完整发布结果已保存时，`resume` 核对同一 Root、
+image 与 active 基线后只重试启动；没有结果时，部署者核对现有事实后用新清单重新安装。
+旧失败记录保留，不再要求完整恢复它们对应的历史备份才能继续部署。
 
-### 5.3 已有 state 的发行升级
+runtime.env 的 commit/tree/image/manifest/checkout 字段仍由发布器原子生成；容器入口、Bridge doctor
+和实际选中 Fiber 共同核对。宿主 bootstrap 只依赖标准库，Root probe 由目标镜像调用选择 owner。
+只有已验收的当前运行版本能成为 active；Root 提交本身不代表运行成功或数据恢复。
 
-`akashic-release install` 在目标 generation 的 Core image 和 Bridge 都已准备、校验后停止旧 Core/Bridge。
-目标 image 在无网络、只读根文件系统中通过 `upgrade-bundled` 使用现有 state：
-
-可选的外部目标由同一个入口传入：
-`akashic-release install --source-checkout <checkout> --commit <Core-commit> --external-inputs <input-dir> --external-plan <input-dir/plan.json> --yes`。
-plan 固定旧完整 Root、每个已选且启用的 installed plugin ID、Git bundle SHA-256、目标 commit，
-以及有非空 requirements 时的 wheel-tree SHA-256。镜像将只读输入复制到 tmpfs，先核对 bundle、
-目标源码和离线 wheel 的目标解释器可解性。外部目标与发行自带目标一起安装、准备，并仅提交一次
-完整且保序的 selection；未列出的外部选项保留原 ref。显式禁用、未选、身份漂移和不完整依赖在
-正式数据迁移前失败，不会转成静默跳过。普通不带外部参数的 Core 发行命令保持原语义。
+### 5.3 CLI 与首次安装
 
 ```text
-release.lock → stop old → workspace maintenance lock → plugin publication lock
-  → 固定目标 bundle 与当前完整 PluginSelection
-  → 备份 state（SQLite online backup、WAL 和完整性核对）
-  → 目标 Core Yoyo → 核对 reload journal pending/armed
-  → 目标 bundle 与保留外部选项的 Yoyo → 安装目标 bundle
-  → 归档迁移后的 config → 完整 selection CAS → start Bridge/Core
-  → release doctor → live selection/Fiber ACTIVE → active receipt
-```
-
-插件自身的 Yoyo step 负责 data/config 变换；release 不解释插件私有 schema。已选外部、禁用、被覆盖或
-已卸载的成员按当前选择和 manifest 保留，不用目标 profile 重新启用。只有 selected provenance 的 commit
-等于上一代已激活发行 commit 且路径匹配目标 bundle，才能由发行替换；同路径但不同 commit 的外部覆盖
-仍保留。目标 bundle 的 Git revision、
-provenance 和代码 digest 在迁移前固定；`prepare_plugin_input` 只在迁移完成后冻结配置。Core schema
-先升级，再由 journal owner 判定 pending/armed；未决事务不被 release 猜测回滚。整个流程不能保证跨文件
-与 SQLite 的原子性，备份 manifest 和 Yoyo ledger 是明确的恢复证据。
-
-`upgrade-bundled` 使用 `exec` 独立退出，不在同一容器内继续启动 Supervisor。随后普通 Core
-容器启动时，migration runner 在 workspace 实例锁内读取完整 `PluginSelection`，只从所选
-component 的精确 archive 加载 migration bundle；缺失或损坏的 archive 使启动失败，不扫描
-cache 顶替。首次初始化的 null selection 尚无完整 archive，runner 按首次装载使用的
-plugin manifest 过滤安装输入；停止期升级仍先单独执行 Core schema migration。迁移落账、selection
-已提交和 Fiber ACTIVE 是不同事实，只有启动及 live 核对后才可写 active receipt。
-
-恢复点保存普通插件文件原字节，包括名称以 `-wal` 或 `-shm` 结尾的 opaque 数据。只有同名
-base 是实际 SQLite 文件时，sidecar 才单独留作 forensic copy，由逻辑 SQLite backup 承担
-恢复。`workspace` 根的实例锁、Supervisor 锁/PID、readiness、控制 socket 与 `plugin-home`
-根的 publication 锁，以及 `workspace/runtime` 下的 Chat/Web socket 不进入恢复 state；
-插件私有目录中的同名文件照常保留。目录内相对
-symlink 按链接原样保存，隔离恢复后需核对解析目标；指向外部路径的 symlink 仍依赖外部
-artifact/运行环境可用，恢复点本身不复制其目标。
-
-升级失败后旧服务保持停止，`failed-*.json` 记录 `maintenance_required`、恢复目录和实际错误；不能仅切回
-旧 image 读取可能已迁移的数据。迁移成功但 archive/selection/start/readiness 失败也同样停机。恢复时先
-核对目标 state、迁移账本、selection 和旧快照；需要切回旧版本时，在停机状态显式恢复整份
-`backups/upgrade-*/state/`、对应 runtime.env 与受影响 unit 后再启动旧版。`akashic-release rollback` 对带升级
-记录的 active release 拒绝自动软件回退。普通 `migrate --snapshot-manifest` 仍是独立的 plan-only 命令。
-外部升级在纯预检后、实际迁移前保存 `attempt-external-*.json`；进程中断或任何未知提交结果均阻断
-新安装、重放和启动，不能由可读目标 Root 推断未启动。只有 active receipt 绑定相同 plan/image、
-完整有序 Root，且 doctor 与 live selected Fiber 均通过，才只读返回 `already_active`。恢复点与
-runtime.env 备份由失败 receipt/attempt 路径关联；实际整份恢复和受影响 owner 的结算须分别取证，
-不能删除失败 receipt 或单靠旧 Root 指针宣称已恢复。
-完成停机升级后，创建 Workload 目录或写入 runtime.env 若失败，release 在尚未调用目标启动入口的
-阶段写 `before_target_start` failure，保留 `targetStarted=false`、原错误、升级结果和恢复点。该明确阶段
-与 `stopped_upgrade` 一样可以在实际整份恢复后结算；启动已被尝试或阶段未知时仍拒绝结算。
-成功启动并核对后，`active.json` 是当前成功的唯一权威 receipt；原 attempt 再保存从该 receipt 得到的
-终态副本，供后续 active 被新计划覆盖时保留历史。若终态副本写入中断而 attempt 仍为 pending，
-同 plan 只读 replay 仍需核对其与 active、Root、doctor 和 live Fiber 的完整绑定。新 plan 入场前
-先以相同核对确认旧成功，再把终态副本写回原 attempt；任一绑定或实时核对失败都不放行新计划。
-若失败明确发生在目标 runtime 启动前，且升级镜像无网络、仅挂载 state/backup/只读输入，operator
-完成显式整份恢复后可运行
-`akashic-release settle-restored --failure <activation/failed-*.json>`。该命令在服务停止和既有两把
-workspace/plugin 锁下核对备份清单的每个文件、目录、软链接、SQLite、runtime.env、旧 Root、旧 active
-receipt 与 reload journal，再另写保留原失败记录的 settlement receipt。启动曾被尝试或其他外部
-效果无法证明已结算时，此入口拒绝结算并继续停机。
-
-### 5.4 软件恢复
-
-候选激活失败时停止候选，原子恢复旧 runtime.env，依次启动并真实验证旧 Bridge 与 Core，再写 failed
-receipt。恢复也失败时停在 maintenance，不循环切换、不启动身份不确定的 Core，并输出精确人工恢复
-命令。`recovery_failed` receipt 同时保存 candidate error、previous recovery error、maintenance stop
-error（若有）和人工命令；不能因第二个异常覆盖第一次失败。候选 manifest、日志和旧恢复点全部保留。
-
-软件恢复不等于数据回滚。包含 Workspace schema/data migration 的运行必须先走第 8 节恢复点与切换
-合同；安装器不得用进程恢复掩盖已发生的数据或外部效果。
-
-### 5.5 CLI
-
-公开 bootstrap 与已安装的稳定 CLI 分工如下：
-
-```text
-scripts/install-akashic.sh [--commit SHA] [--yes] [--no-activate]
-  → 临时 exact checkout
-  → scripts/akashic_release/cli.py install --source-checkout CHECKOUT
-  → build_distribution_release（Core tar + 独立 bundle）
-  → activate_release（runtime.env + systemd + 真实健康检查）
-
+scripts/install-akashic.sh [--commit SHA] [--plan PATH] [--inputs DIR] [--backup] [--yes]
+scripts/install-akashic.sh [--commit SHA] --no-activate [--yes]
 akashic-release doctor
-akashic-release rollback [--yes]
+akashic-release resume --attempt PATH
 akashic-release pair-mobile
 akashic-release migrate --snapshot-manifest PATH
 ```
 
-`akashic-release install` 是 bootstrap 调用的底层命令，必须带一个已经核对过的
-`--source-checkout CHECKOUT`；operator 不应把它当成运行时从当前工作目录扫描插件的入口。正式 builder
-默认是 distribution 模式；`build_host_runtime_release.py --legacy-checkout` 只供旧开发兼容，不能写入
-正式发行操作手册或部署命令。
+`install` 底层入口需要精确目标的 `--source-checkout`；稳定 CLI 从当前 runtime.env 加载当前版本，
+首次采用新 CLI 合同时应使用目标 checkout 或 bootstrap。旧 `rollback`、`settle-restored` 与
+专用 bundled/external 升级入口已退役，不再维护第二套恢复协议。
 
-`pair-mobile` 只访问当前 release 的 loopback WebChat 管理入口，在 SSH 终端用锁定的 `qrcode`
-依赖直接绘制一次性二维码，等待已验签手机 claim，并要求 operator 输入相同的六位确认码后才批准。
-默认 pairing offer 有效期为 8 分钟；延长操作窗口不改变 secret 哈希存储、一次性消费、设备签名或人工确认。
+初次 state/config/plugin-home 由部署者明确准备；尚无 Root 时如需保存导入前状态，自行先备份。
+`distribution-entrypoint.sh --ensure-profile` 的 receipt 只证明安装，不证明业务 setup 已完成。
+首次正式运行前以同一 entrypoint 执行 `setup`，按真实 provider 配置完成业务初始化；不得把
+测试配置或假凭据带入正式 state。Prompt setup 只在正文缺失时创建，不覆盖已有正文或吞掉失败。
 
-`migrate` 只校验预演 snapshot manifest 并输出 `plan_only` 阶段清单，明确返回
-`automaticDataWrites=false`。正式已有 state 的发行升级走上述 `install` 事务；跨机器迁入 state、ingress
-切换和旧系统退役仍按第 8 节单独验收。
+`pair-mobile` 继续通过 loopback 管理入口生成一次性 offer，并要求人工核对手机确认码。
+`migrate --snapshot-manifest` 仍只输出 plan，不自动写入正式数据。跨机器迁入和 ingress 切换
+属于第 8 节历史迁移任务，其数据与外部效果验收不能由一次 software install 代替。
 
-重复安装当前健康 generation 返回 `already_active` 并只执行 verify。active receipt、runtime.env、实际
-Bridge/Core identity 任一不一致时，install/rollback 拒绝继续并要求先运行 doctor。
-
-首次容器启动由 `distribution-entrypoint.sh` 调用
-`scripts/install_plugin_distribution.py --ensure-profile --receipt <workspace>/runtime/distribution-install.json`。
-没有 receipt 时，它先预检 profile 所需的全部 bundle，再初始化空 workspace、正式安装插件并写入配置和
-receipt；已有 receipt 时只校验历史 receipt 与当前 manifest/artifact，不按 shipped profile 重新安装、
-启用或覆盖用户组合。通过普通运行时控制面卸载或替换插件后重启仍保持当前组合；普通卸载保留
-`plugin-data`。无数据迁移的软件 rollback 只恢复上一代 release/env；有数据升级的 active receipt 拒绝
-自动 rollback，须先显式恢复匹配的整份 state 快照。
-
-安装 receipt 只证明 bundle 已安装，不证明业务 setup 已完成。首次正式运行前，operator 以同一
-`distribution-entrypoint.sh` 执行一次 `setup`（例如 `docker run --rm ... <image> setup`），向导会
-读取当前配置并运行已启用、已安装 stable 制品的 `configure.py`；配置已存在时可以保留它。Prompt setup 仅在
-`memory/VEDA.md` 缺失时创建，既有字节、空/损坏文件和 setup 失败都不会被覆盖或伪装成成功。随后再以
-`supervise` 启动服务；候选验证始终把 setup 的 workspace 与正式 workspace 分开。
-
-每个发行候选还要从仓库外的 `core.tar` 证明 Core-only 启停。可复用下面的仓库外制品验收命令；runner
-先执行 Core bootstrap 的 AppRuntime 启动和停止，再执行 bundle 组合，报告中的 `core_bootstrap.status`
-与 stop 证据必须闭合。该结果只证明 Core 制品没有 checkout/plugins 兜底，不能替代默认 profile 和正式
-插件组合验收。
-
-```bash
-release_dir="$(mktemp -d /var/tmp/akashic-distribution.XXXXXX)"
-release_sha="<full-40-character-sha>"
-python scripts/build_plugin_distribution.py \
-  --repository "$PWD" --revision "$release_sha" --output "$release_dir"
-python docker/debug/plugin_external_acceptance.py \
-  --distribution "$release_dir/distribution.json" \
-  --core-tar "$release_dir/core.tar" \
-  --repo-root "$PWD" \
-  --output "$release_dir/acceptance.json"
-```
+制品验收须分别证明 core.tar 不依赖 checkout/plugins、默认组合能启动、真实能力可用。
+`docker/debug/plugin_external_acceptance.py` 的 Core-only 启停不能替代业务消费和持久回读。
 
 ## 6. MCP 与 Skill 修复
 
@@ -375,7 +252,7 @@ identity 查询 SessionDB/tool history。
 Telegram outbound 内容只记录 `content_fp`、字节数和既有 correlation，不使用语义错误的
 `command_fp`，也不把消息正文写入全局日志。
 
-## 8. 正式 Workspace 迁移
+## 8. 首次迁入 hua-home 的历史 Workspace 迁移合同
 
 ### 8.1 前置条件
 
@@ -439,7 +316,9 @@ plugin-data 或外部效果时，禁止自动切回：先冻结两端、保留�
 
 ## 10. 验证与停止条件
 
-### 10.1 确定性测试
+### 10.1 初版历史验收范围
+
+本节保留初版任务的验证范围；当前部署实现按 WORKFLOW 的概念基线与真实场景验证，不恢复已退役的测试/Gate 或自动 rollback。
 
 - 两个不同 session 的 Bridge command 互相等待 marker，证明真并发而非 wall-time 猜测。
 - takeover 关闭 admission、等待在途 operation、清理 execution 空集后才发布新 boot。

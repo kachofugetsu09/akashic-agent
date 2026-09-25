@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 import subprocess
 import grp
 import os
@@ -43,12 +44,12 @@ def verify_external_service_contract(
 def install_units(
     *,
     checkout: Path,
-    backup_root: Path,
+    backup_root: Path | None,
     run: Run,
     unit_root: Path = _SYSTEM_UNIT_ROOT,
     runtime_env: Path | None = None,
 ) -> bool:
-    """Install changed unit templates with a recoverable pre-write backup."""
+    """安装发生变化的单元；备份由部署者选择。"""
 
     source_root = checkout / "docker" / "host-runtime" / "systemd"
     service_user, service_group, service_home = resolve_service_account(
@@ -79,27 +80,24 @@ def install_units(
             run(["sudo", "systemctl", "enable", *_UNITS], check=True)
         return False
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = backup_root / f"systemd-{timestamp}"
-    backup.mkdir(parents=True, exist_ok=False)
-    for name, rendered, target in changed:
-        if target.exists():
-            shutil.copy2(target, backup / target.name)
-        staged = backup / f".{name}.installing"
-        staged.write_bytes(rendered)
-        try:
+    backup = None
+    if backup_root is not None:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup = backup_root / f"systemd-{timestamp}"
+        backup.mkdir(parents=True, exist_ok=False)
+    with tempfile.TemporaryDirectory(prefix="akashic-units-") as temporary_root:
+        for name, rendered, target in changed:
+            if target.exists() and backup is not None:
+                shutil.copy2(target, backup / target.name)
+            staged = Path(temporary_root) / name
+            staged.write_bytes(rendered)
             if unit_root != _SYSTEM_UNIT_ROOT:
                 temporary = target.with_name(f".{target.name}.installing")
                 shutil.copy2(staged, temporary)
                 temporary.chmod(0o644)
                 temporary.replace(target)
-                continue
-            run(
-                ["sudo", "install", "-m", "0644", str(staged), str(target)],
-                check=True,
-            )
-        finally:
-            staged.unlink()
+            else:
+                run(["sudo", "install", "-m", "0644", str(staged), str(target)], check=True)
     if unit_root == _SYSTEM_UNIT_ROOT:
         run(["sudo", "systemctl", "daemon-reload"], check=True)
         run(["sudo", "systemctl", "enable", *_UNITS], check=True)
@@ -240,18 +238,18 @@ def _render_unit(
 def install_operator_entrypoint(
     *,
     checkout: Path,
-    backup_root: Path,
+    backup_root: Path | None,
     target: Path,
 ) -> bool:
-    """Install the stable user CLI with a recoverable pre-write backup."""
+    """安装固定 CLI 入口；备份由部署者选择。"""
 
     source = checkout / "scripts" / "akashic-release"
     if target.exists() and target.read_bytes() == source.read_bytes():
         return False
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = backup_root / f"operator-cli-{timestamp}"
-    backup.mkdir(parents=True, exist_ok=False)
-    if target.exists():
+    if backup_root is not None and target.exists():
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup = backup_root / f"operator-cli-{timestamp}"
+        backup.mkdir(parents=True, exist_ok=False)
         shutil.copy2(target, backup / target.name)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.installing")

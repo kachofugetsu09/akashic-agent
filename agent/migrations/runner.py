@@ -42,7 +42,7 @@ class MigrationOutcome:
 
 
 class MigrationRunner:
-    """在 runtime 启动前执行缺失的 Yoyo 迁移。"""
+    """核对迁移账本，在明确初始化或部署授权下执行缺失 step。"""
 
     def __init__(
         self,
@@ -80,7 +80,7 @@ class MigrationRunner:
         ).expanduser()
 
     def run(self) -> MigrationOutcome:
-        """执行当前目录并返回本次落账的迁移 ID。"""
+        """既有选择只检查迁移；显式首次初始化保留建库流程。"""
 
         # 1. 复用 workspace 锁串行化迁移与 runtime 启动
         workspace_lock = WorkspaceInstanceLock(self.workspace)
@@ -88,12 +88,15 @@ class MigrationRunner:
         try:
             if self.startup_selection:
                 self.fixed_sources = _startup_sources(self.workspace)
-            return self._apply_pending()
+            return self._apply_pending(
+                approved_migrations=() if self.startup_selection and PluginSelection(self.workspace).read() is not None else None,
+            )
         finally:
             workspace_lock.release()
 
     def run_under_maintenance(
         self, maintenance: WorkspaceMaintenanceLock, *, core_only: bool = False,
+        approved_migrations: tuple[str, ...] = (),
     ) -> MigrationOutcome:
         """Apply migrations while the release owns the workspace maintenance lock."""
 
@@ -101,16 +104,22 @@ class MigrationRunner:
             self.workspace / ".supervisor.lock", self.workspace / ".instance.lock",
         ) or len(maintenance._streams) != 2):
             raise RuntimeError("release migration 缺少当前 workspace maintenance owner")
-        return self._apply_pending(core_only=core_only)
+        return self._apply_pending(core_only=core_only, approved_migrations=approved_migrations)
 
-    def _apply_pending(self, *, core_only: bool = False) -> MigrationOutcome:
+    def check(self, approved_migrations: tuple[str, ...] = ()) -> tuple[str, ...]:
+        """只读核对目标代码的待迁移集合，不创建账本或运行 step。"""
+        return self._apply_pending(approved_migrations=approved_migrations, check_only=True).migrations
+
+    def _apply_pending(
+        self, *, core_only: bool = False,
+        approved_migrations: tuple[str, ...] | None = None, check_only: bool = False,
+    ) -> MigrationOutcome:
         """加载不可变目录并提交全部缺失迁移。"""
 
         # 1. 初始化由 workspace 持有的迁移账本
         fresh = _workspace_is_empty(self.workspace, self.config_path)
         baseline = _read_baseline(self.ledger_path)
         try:
-            self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
             core_migrations = _read_migrations(str(self.migrations_root))
             bundles = discover_migration_bundles(
                 plugin_dirs=self.plugin_dirs,
@@ -143,8 +152,24 @@ class MigrationRunner:
                 applied_ids=applied_ids,
                 bundles=bundles,
             )
+            # 既有 workspace 的迁移必须来自部署者清单；先核对再打开写连接。
+            loaded = set(core_ids + bundle_ids)
+            pending_ids = loaded - set(applied_ids) - set(baseline or ())
+            if approved_migrations is not None:
+                unknown = set(approved_migrations) - loaded - set(applied_ids)
+                missing = pending_ids - set(approved_migrations)
+                if unknown or missing:
+                    raise RuntimeError(
+                        f"迁移清单不匹配: 未批准={sorted(missing)}, 未知={sorted(unknown)}"
+                    )
+            if check_only:
+                return MigrationOutcome(state="current", migrations=tuple(sorted(pending_ids)))
             if fresh and baseline is not None:
+                self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
                 _save_baseline(self.ledger_path, baseline)
+            if not pending_ids:
+                return MigrationOutcome(state="current")
+            self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
             backend = get_backend(self._ledger_uri())
             os.chmod(self.ledger_path, 0o600)
 
@@ -333,7 +358,7 @@ def _read_applied_ids(path: Path) -> tuple[str, ...]:
 
     if not path.exists():
         return ()
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(f"file:{quote(path.as_posix(), safe='/')}?mode=ro", uri=True)
     try:
         try:
             rows = connection.execute(

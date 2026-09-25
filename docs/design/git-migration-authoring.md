@@ -2,7 +2,7 @@
 
 本手册只描述当前迁移合同。架构取舍见
 [0021 · Yoyo workspace 账本定义迁移原点](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)
-和 [0066 · 当前基线](../decisions/0066-yoyo-current-baseline.md)。
+和 [0066 · 当前基线](../decisions/0066-yoyo-current-baseline.md)。部署选择见 [0073](../decisions/0073-deployment-policy-belongs-to-operator.md) 与[操作手册](operator-deployment.md)。
 
 ## 1. 目录与所有权
 
@@ -22,7 +22,7 @@ Core 自有脚本 / 已安装插件 migration bundle
 - `migrations/core/` 仅放 Core 自有迁移；业务迁移通过正式安装的插件 bundle 提供。
 - 当前历史迁移已退役；Core catalog 为空。旧 ledger 记录保留，新脚本不得依赖已退役 ID。
 - 其他 migration 子目录是旧 Git cursor 系统的历史源码，不注册、不执行。
-- `agent/migrations/runner.py` 只负责加锁、选择待执行项、调用 Yoyo 和报告失败。
+- `agent/migrations/runner.py` 负责核对待执行 ID 与部署清单、复用写入锁、调用 Yoyo 和报告失败。既有 Root 的普通启动只检查，首次显式初始化允许建库。
 - migration step 拥有自己的变换、校验和恢复边界；它可通过
   `agent.migrations.context.current_migration_context()` 取得 config 与 workspace 路径。
 
@@ -56,7 +56,7 @@ steps = [step(apply_change)]
 ## 3. 实现边界
 
 1. 修改前列出目标、正常增加、允许更新、物理减少条件、owner 和恢复证据。
-2. 删除、覆盖或批量改写权威状态前，先创建名称清楚的恢复点并验证可读。
+2. 说明破坏性写入与局部恢复机制，供部署者决定是否备份及如何恢复。不要在新 step 中强加每次 release 全状态备份策略；不可修改已发布 step 的既有恢复合同。
 3. step 必须可在失败后安全重试；不要捕获错误并伪造成功。
 4. 在 step 内完成结果校验。函数成功返回后，Yoyo 才能记录成功回执。
 5. 不把 Git HEAD、分支名、产品版本号或旧 cursor 用作迁移状态。
@@ -66,11 +66,12 @@ steps = [step(apply_change)]
 
 ## 4. 最小验证
 
+按 [WORKFLOW](../WORKFLOW.md) 使用临时真实 workspace 验证：未批准时只读失败、明确批准后执行、
+成功 ID 不重跑、失败不落账且按 step 合同可重试，以及持有 workspace 锁。
+涉及业务状态时按持久化状态地图核对真实写入范围与完整性，不只检查返回值。
+
 ```bash
-python -m pytest tests/test_migration_runner.py
 python scripts/check_yoyo_migrations.py --base origin/main
 ```
 
-测试至少覆盖：第一次执行、重复启动不重跑、失败不落账且可重试、workspace 锁，以及并行
-sibling migration 合并后的缺失项执行。涉及业务数据时，再按持久化状态地图验证数据库、
-文件、write set 和恢复点，不能只断言返回值。
+新增测试仅按 WORKFLOW 的概念回归范围；普通迁移验证不自动新增单元测试。

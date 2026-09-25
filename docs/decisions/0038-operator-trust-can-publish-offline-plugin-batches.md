@@ -1,6 +1,7 @@
 # 0038 · Operator 信任可以离线发布 exact 插件批次
 
 - 状态：accepted
+- superseded by（2026-09-25，[0073](0073-deployment-policy-belongs-to-operator.md)）：每次离线发布必须创建恢复点的策略改为部署者选择备份；锁、精确输入和真实回执责任保留。
 - 日期：2026-08-22
 - superseded by（2026-09-20，[0072](0072-single-graph-local-plugin-updates.md)）：本文依赖的“普通安装必须 candidate 验证后提交、stable 与 latest 写同一制品”的晋升协议由单图局部换代取代；operator 信任可离线安装 exact 批次的权限、维护锁、恢复点与真实回执责任保留。正文保留为历史记录。
 - refines：[0026](0026-plugin-rollout-is-owned-by-the-parent-turn.md)、[0037](0037-plugin-runtime-is-pure-v3.md)
