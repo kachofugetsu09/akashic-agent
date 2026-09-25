@@ -951,15 +951,15 @@ Session 无论是否可学习，都正常持久化 Input、Control、工具调�
 
 ### TST-001 语义 oracle 独立于实现
 
-P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验证。普通实现 agent 不得在同一 refactor 中同时修改 oracle 的预期结果。
+正交化概念由基线文档列出的受保护测试守护；其余 P0 不变量由静态检查、policy 或真实运行中的黑盒观察验证，不默认新增单元测试。普通实现 agent 不得在同一 refactor 中同时修改受保护测试的预期结果。
 
 ### TST-002 核对完整状态和 write set
 
 持久化语义不能只核对返回值或行数。验收应规范化完整内容，记录 INSERT、UPDATE、DELETE、文件写入、事件和外部调用；即使违规事务最终回滚，也要看见写入尝试。
 
-### TST-003 用已知错误验证验收器
+### TST-003 新增概念测试须先证明会失败
 
-每个 P0 oracle 应有至少一个语义 mutant 或等价故障注入。例如 CTX-001 主动加入 `DELETE FROM messages` 后，门禁必须稳定失败。如果已知错误仍能通过，测试本身没有完成验收职责。
+不再维护变异测试目录。只有新增概念测试时，才需要证明它在违反该概念的提交上会失败；现有保留节点不为此补 mutant。
 
 ### TST-004 Refactor 做差分回放
 
@@ -969,11 +969,9 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 
 备份、rollback 和 previous snapshot 只有经过隔离恢复、重载和关键路径 smoke 后才算有效。文件存在或指针恢复不能单独证明可恢复。
 
-### TST-006 变更影响由版本化 Gate 决定
+### TST-006 测试集合由正交化概念基线文档固定
 
-代码改动必须由版本控制中的 capability、state 和 scenario 索引解释，再从 Git diff 选择语义场景。未知可执行改动先运行全量公开场景，最终仍要 fail-loud，不能由实现者临时猜测或缩减测试。每个场景使用一次性测试 workspace、plugin home、config 和 HOME，不读取正式运行状态。
-
-公开 Gate 只输出能力组、场景和 plan/source/catalog digest，不要求贡献者安装私有插件，也不得暴露 provider 身份。生产路径与受保护合同同时变化时，必须执行完整公开场景；公开结果是当前仓库的合并依据。
+`tests/` 与 CI 的保留节点以 [`docs/refactor/orthogonality-test-baseline.md`](refactor/orthogonality-test-baseline.md) 为权威清单。默认不写单元测试；只有概念不变量回归复现或该文档 §3 待补项可以进入 `tests/`，并必须写明守护哪条概念。change-impact Gate 已退役，不再按 Git diff 选择场景。
 
 ### TST-007 跨仓库证据绑定不可变组合
 
@@ -1053,7 +1051,7 @@ Fitbit 等外部 provider 的 `efficiency` 只以有限数值进入展示；非�
 2. 说明为什么现有语义不再成立，以及对持久数据和外部行为的影响。
 3. 新建决策记录；breaking 变化写迁移、备份、回滚和兼容窗口。
 4. 先批准规格变化，再提交实现。
-5. 更新或新增独立 oracle，并用语义 mutant 验证。
+5. 若需求变化对应一条概念不变量，按基线文档决定是否新增或重写 `tests/` 节点；不为此维护变异测试目录。
 6. 实现完成后从 `NOW.md` 删除对应事项。
 
 证据不足的步骤沿用现有条款，不能用实现代码反向推导“需求原本就是这样”。

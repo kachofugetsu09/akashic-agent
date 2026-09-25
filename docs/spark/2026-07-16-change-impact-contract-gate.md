@@ -1,5 +1,7 @@
 # 变更影响分析与跨仓库契约 Gate
 
+> **change-impact Gate 已退役。** 现行验证见 [`orthogonality-test-baseline.md`](../refactor/orthogonality-test-baseline.md)。下文是 2026-07-16 的历史设计。
+
 日期：2026-07-16
 分支：feature/projectneed
 基线：origin/main@6a0616c8

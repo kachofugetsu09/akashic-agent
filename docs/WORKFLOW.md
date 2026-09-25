@@ -26,7 +26,7 @@
 └──────┬───────┘
        ▼
 ┌──────────────┐
-│ 6. Verify    │  targeted tests → static/build → Gate
+│ 6. Verify    │  概念基线 pytest → 静态检查
 └──────┬───────┘
        ▼
 ┌──────────────┐
@@ -53,10 +53,10 @@
 | Isolate | 核对目标分支、base commit、worktree、唯一 writer、用户未提交改动、恢复点、worktree 本地 CodeGraph 索引和 Python 环境 | 改动不会写进用户当前 checkout、其他 agent 的 worktree 或正式 Akashic workspace；CodeGraph 指向当前 worktree，Python 使用已核对的 venv |
 | Contract | 声明目标、成功标准、`change_type`、`semantic_delta`、受保护状态、允许副作用、验证和回滚 | 高风险歧义已获确认，或任务停止等待确认 |
 | Implement | 只改合同允许的路径和行为；持久化语义从数据库、文件、事件或外部边界观察 | Diff 没有新增未声明副作用 |
-| Verify | 运行相关测试、类型或前端检查，再运行 change-impact Gate | 测试与报告来自当前源码；未运行项有明确状态 |
+| Verify | 运行概念基线 pytest（`pytest -q tests`）与静态检查（pyright、plugin_boundary、yoyo、协议生成物 check、前端 typecheck） | 测试与检查来自当前源码；未运行项有明确状态 |
 | Review | 按基线审查完整 diff；stacked PR 逐层检查相邻 `base..head`，再在最终 head 检查累计行为；架构性 PR 或大改动另做正交性与概念完整性审查 | Findings 带严重度、文件位置、触发路径和证据；概念 Gate 的 must-fix 已清零；需要维护者决定的语义已停止确认 |
 | Reconcile | 获取目标分支最新状态，核对完整 diff、工作手册变化和报告摘要 | 目标分支的新变化没有使任务合同失效 |
-| Deliver | 使用 PR 模板写明改动、Gate 证据、阻塞和回滚方式 | 另一位维护者可以独立评审并继续处理 |
+| Deliver | 使用 PR 模板写明改动、概念基线 pytest 与静态检查证据、阻塞和回滚方式 | 另一位维护者可以独立评审并继续处理 |
 
 历史会话、自动记忆和 `_handbook/` 只提供调查线索。当前工作手册和真实实现负责确认事实。
 
@@ -99,21 +99,31 @@ Git worktree 保存源码、测试和项目文档。Akashic `<workspace>` 保存
 
 [`templates/change-intent.yaml`](templates/change-intent.yaml) 当前只提供填写字段。自动 checker 完成前，PR 模板保存这些字段，不提交临时 YAML。
 
-## 5. Gate
+## 5. 概念基线与静态检查
 
-测试只固定现实可观察的回归、非平凡不变量或边界，以及具体 bug。代码发生变化或覆盖率提高本身不是新增测试的理由。优先复用行为边界上的既有覆盖，不测试字面量、映射、显然控制流、实现细节或已经删除的能力；只有“能力不存在”本身是合同时才验证其缺失。并发测试在实际可行时使用确定性协调或受控调度，不用 sleep 猜测时序。
+默认不写单元测试。功能是否正确，靠真实运行和 scenario 验证。`tests/` 只守护插件正交化概念，权威清单是 [`orthogonality-test-baseline.md`](refactor/orthogonality-test-baseline.md)。
 
-完成相关测试和静态检查后运行：
+只有两种测试可以进入 `tests/`：
+
+1. 某条概念不变量的回归复现：先在出错的提交上失败，再在修复后通过。
+2. 基线文档 §3 待补项。
+
+新增测试的 PR 必须写明守护的是基线 §1 里的哪一条概念，并说明为什么现有保留项守不住。说不清就不收。重构改变了某个保留测试的实现假设时，按新语义重写，不删除它守护的概念。
+
+完成实现后运行：
 
 ```bash
-python docker/debug/gate.py run --base origin/main
+pytest -q tests
+.venv/bin/pyright --level error
+.venv/bin/pyright --project pyrightconfig.tests.json --level error
+python scripts/plugin_boundary.py check --base origin/main
+python scripts/check_yoyo_migrations.py --base origin/main
+.venv/bin/python scripts/generate_control_schema.py --check
+python scripts/generate_host_bridge_protocol.py --check
+npm run typecheck
 ```
 
-Gate 根据 Git diff 选择场景，并把报告写入 `docker/debug/reports/change-gate/<run-id>/`。报告的 `sourceDigest`、`planDigest` 和当前源码必须匹配。源码在计划生成后发生变化会使原计划失效，此时重新运行 Gate。
-
-生产路径与受保护合同同时变化时，Gate 必须扩大为完整公开场景执行，不能以结构性拒绝代替验证。测试失败先归因为实现、环境或契约冲突；修改断言、跳过场景和缩减 Gate 需要独立理由与授权。
-
-普通 Pull Request 运行仓库现有 Python/Web 回归与 change-impact Gate；测试数量和测试文件集合不再由固定预算或保留清单门控，新增测试按真实可观察回归、非平凡不变量、边界和具体 bug 判断。插件候选运行手动 `Plugin v3 Candidate Gates` workflow 的 fleet completeness、Mobile 和公共 WebUI。正式发布所需的真实 workspace 演练由拥有部署输入的发布流程负责，仓库 CI 不伪造该证据。历史清理范围、保留理由、已知取舍与恢复点见[测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)。
+普通 Pull Request 只跑概念基线 pytest 与上述静态检查。正式发布所需的真实 workspace 演练由拥有部署输入的发布流程负责，仓库 CI 不伪造该证据。change-impact Gate 已退役；历史清理范围见[测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)（已被基线文档取代）。
 
 ## 6. Review 模式
 
@@ -159,6 +169,6 @@ Pixel/ADB Gate 只从干净 source commit/tree 构建，同一 Android worktree 
 - 实际 diff 没有超出声明范围。
 - 受保护状态和禁止副作用经过独立核对。
 - 跨仓库或客户端变化已经完成能力 owner 与 runtime patch 归属检查。
-- 相关测试、静态检查和 Gate 已通过；未运行项有明确状态。
+- 概念基线 pytest 与静态检查已通过；未运行项有明确状态。
 - 文档、代码和当前接手点一致，完成事项已从 `NOW.md` 删除。
-- [PR 模板](../.github/pull_request_template.md) 已写明报告摘要、真实阻塞和回滚方式。
+- [PR 模板](../.github/pull_request_template.md) 已写明验证结果、真实阻塞和回滚方式。

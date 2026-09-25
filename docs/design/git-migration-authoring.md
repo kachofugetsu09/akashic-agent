@@ -67,7 +67,7 @@ steps = [step(apply_change)]
 ## 4. 最小验证
 
 ```bash
-python -m pytest tests/test_migration_runner.py tests/test_yoyo_migration_append_only.py
+python -m pytest tests/test_migration_runner.py
 python scripts/check_yoyo_migrations.py --base origin/main
 ```
 

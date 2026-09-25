@@ -31,11 +31,8 @@
 
 ## 验证
 
-- [ ] 相关 targeted tests 已通过。
-- [ ] Python 类型检查或前端 typecheck/lint 已通过；不适用项已说明。
-- [ ] `python docker/debug/gate.py run --base origin/main` 已运行。
-- `sourceDigest`：
-- `planDigest`：
+- [ ] 概念基线 pytest 已通过：`pytest -q tests`。
+- [ ] 静态检查已通过：pyright（主工程与 tests）、`plugin_boundary.py check`、`check_yoyo_migrations.py`、协议生成物 `--check`、前端 `npm run typecheck`；不适用项已说明。
 - 真实设备证据（设备/API、debug application ID、源码/APK 身份；不适用时说明）：
 - 未运行项与原因：
 

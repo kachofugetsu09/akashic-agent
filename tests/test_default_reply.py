@@ -1,25 +1,16 @@
-from plugins.context.api import check_summary as _model_summary_check
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 import shutil
-from collections.abc import Mapping
-from typing import cast
-
 import pytest
-
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
-
 from agent.plugin_composition.config_input import save_config
-
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugin_composition import FiberState
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from session.log import MessageLog
-from session.message import Control, Input, Output, ToolResult
-
+from session.message import Input, Output, ToolResult
 
 @asynccontextmanager
 async def live_root(host: PluginManager):
@@ -27,7 +18,6 @@ async def live_root(host: PluginManager):
     root = host.live_root
     assert root is not None
     yield root
-
 
 @asynccontextmanager
 async def application(tmp_path, *, replying, start=True, missing_tool=False, discovery=False, compaction=False,
@@ -54,7 +44,7 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
             ignore=shutil.ignore_patterns("__pycache__"),
         )
     if updates:
-        from tests.test_delivery_bindings import sources as delivery_sources
+        from tests.support.delivery_sources import sources as delivery_sources
         delivery_sources(sources)
         shutil.copytree(
             Path(__file__).parents[1] / "plugins/delivery_policy",
@@ -230,7 +220,6 @@ async def apply(ctx):
         if cleanup_errors:
             raise BaseExceptionGroup("fixture cleanup failed", cleanup_errors)
 
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replying", [False, True])
 async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, replying):
@@ -259,277 +248,3 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
                 assert all("[Source messages]" in str(call.messages) for call in calls)
             assert log.reader("test:room").snapshot() == (accepted,)
             assert not (tmp_path / "effect.txt").exists()
-
-
-@pytest.mark.asyncio
-async def test_bad_reply_tool_configuration_fails_before_consuming_any_input(tmp_path):
-    async with application(tmp_path, replying=True, start=False, missing_tool=True) as (log, host):
-        reply = host.generation("reply")
-        assert reply is not None and reply.fiber is not None
-        assert reply.fiber.state is FiberState.FAILED
-        assert reply.fiber.error is not None
-        assert log.catalog().snapshot_heads() == {}
-
-
-@pytest.mark.asyncio
-async def test_reply_commits_plugin_metadata_and_history_reads_it_without_the_plugin(tmp_path):
-    """实际插件注册、模型与工具循环、writer 授权和重启读取共用一份附加信息。"""
-    from contextlib import closing
-    from infra.channels.message_view import message_rows
-    from session.message_codec import json_value
-
-    def extra(sources):
-        plugin = sources / "citation"
-        plugin.mkdir()
-        (plugin / "plugin.py").write_text('''
-from plugins.content.plugin import CONTENT
-api_version = 3
-name = "citation"
-version = "1.0.0"
-inject = (CONTENT,)
-async def apply(ctx):
-    async def decode(source, references):
-        return (), {"version": 1, "references": [{"ref": "remembered", "declared": True}]} if source.text else {}
-    await ctx.require(CONTENT).register(ctx, {
-        "name": "citation", "prompt": "", "content": {}, "decode": decode})
-''')
-
-    async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):
-        async with live_root(host) as root:
-            await root.context.require(CHANNEL_INPUT)(
-                "s", "u", ChannelInboundMessage("test", "user", "s", "record evidence",
-                                                 datetime(2026, 9, 5, tzinfo=UTC), {}))
-        async def completed():
-            async for _ in log.catalog().follow():
-                for row in log.reader("s").snapshot():
-                    if isinstance(row.body, Output) and row.body.finish == "complete":
-                        return row
-        output = await asyncio.wait_for(completed(), 5)
-        assert json_value(output.metadata) == {"citation": {"version": 1, "references": [{"ref": "remembered", "declared": True}]}}
-        assert all(part.kind != "citation" for part in output.body.parts)
-    shutil.rmtree(tmp_path / "plugins/citation")
-    with closing(MessageLog(tmp_path / "sessions.db")) as restarted:
-        assert restarted.reader("s").get(output.message_id) == output
-        rows = message_rows(restarted.reader("s").read_page())
-        assert rows[-1]["metadata"] == {"citation": {"version": 1, "references": [{"ref": "remembered", "declared": True}]}}
-
-
-@pytest.mark.asyncio
-async def test_default_reply_discovers_then_calls_tool_without_react_search_branch(tmp_path):
-    from agent.plugin_composition import ServiceKey
-    async with application(tmp_path, replying=True, discovery=True) as (log, host):
-        async with live_root(host) as root:
-            await root.context.require(CHANNEL_INPUT)(
-                "s", "u", ChannelInboundMessage("test", "user", "s", "record evidence",
-                                                 datetime(2026, 9, 5, tzinfo=UTC), {}))
-        async def completed():
-            async for _ in log.catalog().follow():
-                rows = log.reader("s").snapshot()
-                if isinstance(rows[-1].body, Output) and rows[-1].body.finish == "complete":
-                    return rows
-        rows = await asyncio.wait_for(completed(), 5)
-        assert rows is not None
-        assert [type(row.body) for row in rows] == [
-            Input,
-            Output,
-            ToolResult,
-            Output,
-            ToolResult,
-            Output,
-        ]
-        assert rows[2].body.parts[-1].kind == "text"
-        assert (tmp_path / "effect.txt").read_text() == "once\n"
-        async with live_root(host) as root:
-            calls = root.context.require(
-                ServiceKey("fixture.calls")
-            )
-            expected = {"tool_search", "tool_call"}
-            assert {tool["function"]["name"] for tool in calls[0].tools} == expected
-            assert {tool["function"]["name"] for tool in calls[1].tools} == expected
-            import json
-            from agent.plugin_composition import CHAT_MODELS
-            from agent.plugin_composition.bindings import BINDINGS
-            from plugins.models.content import render_content
-            from plugins.models.projection import MODEL_CALLS, MessageProjection
-            from plugins.tools.plugin import TOOLS
-            payload = json.loads(cast(str, rows[2].body.parts[0].value))
-            assert payload["matched_groups"][0]["tools"][0]["function"]["name"] == "write_evidence"
-            assert "matched_groups" in str(calls[1].messages)
-            ctx = root.context
-            # 新投影从持久日志重建；摘要覆盖搜索结果时，只有请求视图失去 schema。
-            async with ctx.require(CHAT_MODELS).execution() as execution:
-                model = execution.chat("agent")
-                bindings = ctx.require(BINDINGS)
-                def tool_name(binding):
-                    return cast(str, cast(Mapping[str, object], bindings.describe(binding, TOOLS)["tool"])["name"])
-                projection = MessageProjection(model, check_summary=_model_summary_check, source="conversation", render_content=lambda part: render_content(part, artifacts={}),
-                                               tool_name=tool_name, read_call=ctx.require(MODEL_CALLS))
-                before = log.reader("s").snapshot()
-                retained = projection.render(before, after_seq=-1)
-                compacted = projection.render(before, after_seq=rows[2].seq)
-                assert "matched_groups" in str(retained.messages)
-                assert "matched_groups" not in str(compacted.messages)
-                assert log.reader("s").snapshot() == before
-
-
-@pytest.mark.asyncio
-async def test_default_reply_applies_provider_tool_capacity_before_first_request(tmp_path):
-    def constrain_provider(sources):
-        module = sources / "test_provider/plugin.py"
-        source = module.read_text()
-        assert source.count("max_tool_schemas = None") == 1
-        assert source.count('parameters={"type":"object"}, open=open)') == 1
-        module.write_text(
-            source.replace("max_tool_schemas = None", "max_tool_schemas = 1")
-        )
-
-    from agent.plugin_composition import ServiceKey
-    async with application(
-        tmp_path, replying=True, discovery=True, extra_sources=constrain_provider
-    ) as (log, host):
-        async with live_root(host) as root:
-            await root.context.require(CHANNEL_INPUT)(
-                "s", "u", ChannelInboundMessage("test", "user", "s", "record evidence",
-                                                 datetime(2026, 9, 5, tzinfo=UTC), {}))
-
-        async def failed():
-            async for _ in log.catalog().follow():
-                rows = log.reader("s").snapshot()
-                if isinstance(rows[-1].body, Control) and rows[-1].body.action == "failure":
-                    return rows
-
-        rows = await asyncio.wait_for(failed(), 5)
-        assert rows is not None
-        assert isinstance(rows[-1].body, Control)
-        assert "容量不足" in (rows[-1].body.reason or "")
-        async with live_root(host) as root:
-            calls = root.context.require(ServiceKey("fixture.calls"))
-            assert calls == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("has_cut,soft_only,large_summary", [(True, False, False), (False, False, False), (False, True, False), (False, False, True)])
-async def test_actual_reply_compacts_history_before_provider_and_records_each_successful_use(tmp_path, has_cut, soft_only, large_summary):
-    from agent.plugin_composition import ServiceKey
-    from plugins.compaction.records import SummaryRecords
-    from plugins.content.plugin import check_text
-    from plugins.models.projection import MODEL_CALLS
-    from session.message import ContentPart, Control
-
-    async with application(tmp_path, replying=True, start=False, compaction=True,
-                           output_tokens=1000 if soft_only or large_summary else 4096,
-                           keep_recent_tokens=6000 if soft_only else 128, summary_padding=2400 if large_summary else 0) as (log, host):
-        writer = log.writer("s", author="test", source="conversation", body_types=(Input, Output),
-                            content={"text": check_text})
-        size = 5000 if has_cut or soft_only or large_summary else 6000
-        for index in range(4 if has_cut or large_summary else 3):
-            writer.append(f"old-u{index}", Input((ContentPart("text", f"old input {index}: " + "x" * size),)))
-            writer.append(f"old-a{index}", Output((ContentPart("text", f"old answer {index}: " + "y" * size),), "complete"))
-        writer.append("current", Input((ContentPart("text", "current request"),)))
-        original = log.reader("s").snapshot()
-        await host.start_runtime()
-        async def completed():
-            async for _ in log.catalog().follow():
-                rows = log.reader("s").snapshot()
-                if any(row.seq > original[-1].seq and (
-                    isinstance(row.body, Output) and row.body.finish == "complete"
-                    or isinstance(row.body, Control) and row.body.action == "failure") for row in rows):
-                    return rows
-        rows = await asyncio.wait_for(completed(), 10)
-        assert rows[:len(original)] == original
-        record = SummaryRecords(log.owner("plugin:compaction")).head("s")
-        if not has_cut:
-            assert record is None
-            assert isinstance(rows[-1].body, Control) and rows[-1].body.action == "failure"
-            reason = rows[-1].body.reason
-            assert reason is not None
-            if large_summary:
-                assert "摘要后的完整请求仍超过" in reason
-            elif soft_only:
-                assert "近期原文保留量内没有合法摘要切点" in reason
-            async with live_root(host) as root:
-                calls = root.context.require(ServiceKey("fixture.calls"))
-                assert len(calls) == (1 if large_summary else 0)
-                assert all("[Source messages]" in str(call.messages) for call in calls)
-            assert not (tmp_path / "effect.txt").exists()
-            return
-        assert record is not None and record.tokens_after < record.tokens_before
-        assert record.source_message_ids == tuple(row.message_id for row in original[4:6])
-        outputs = [row for row in rows[len(original):] if isinstance(row.body, Output)]
-        assert [row.body.finish for row in outputs] == ["continue", "complete"]
-        refs = [next(cast(Mapping[str, object], part.value)["reference"] for part in row.body.parts
-                     if isinstance(part, ContentPart) and part.kind == "context.summary") for row in outputs]
-        assert refs[0] == refs[1]
-        async with live_root(host) as root:
-            ctx = root.context
-            assert all(ctx.require(MODEL_CALLS)(identity)["state"] == "success" for identity in record.model_call_ids)
-            calls = ctx.require(ServiceKey("fixture.calls"))
-            assert len(calls) == 3
-            assert all(all(f"old {role} {index}:" not in str(request.messages)
-                           for role in ("input", "answer") for index in (0, 1)) for request in calls)
-            assert all("current request" in str(request.messages) for request in calls[1:])
-        assert (tmp_path / "effect.txt").read_text() == "once\n"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("bad_call", [
-    'ToolCall("bad-call", "tool_call", {"name": "write_evidence", "arguments": "{}"})',
-    'ToolCall("bad-call", "tool_call", {"name": "uninstalled_tool", "arguments": {}})',
-    'ToolCall("bad-call", "old_direct_tool", {})',
-])
-async def test_reply_recovers_rejected_protocol_without_creating_tool_effect(tmp_path, bad_call):
-    """真实 Reply 反馈格式或过期名称错误，修正后只执行有效调用并可重放。"""
-    from agent.plugin_composition import ServiceKey
-    from session.message import ContentPart, ToolCall
-
-    def extra(sources):
-        provider = sources / "test_provider/plugin.py"
-        code = provider.read_text().replace(
-            'return LLMResponse(None, [ToolCall("provider-call", "write_evidence", {})])',
-            f'return LLMResponse(None, [{bad_call}])\n'
-            '            if len(calls) == 2:\n'
-            '                return LLMResponse(None, [ToolCall("good-call", "tool_call", {"name": "write_evidence", "arguments": {}})])',
-        ).replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")')
-        provider.write_text(code)
-
-    async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):
-        async with live_root(host) as root:
-            ctx = root.context
-            accept = ctx.require(CHANNEL_INPUT)
-            calls = ctx.require(ServiceKey("fixture.calls"))
-            await accept("test:room", "bad-input", ChannelInboundMessage(
-                "test", "user", "room", "do the work", datetime.now(UTC), {},
-            ))
-        async def completed(count):
-            async for _ in log.catalog().follow():
-                rows = log.reader("test:room").snapshot()
-                if any(isinstance(row.body, Control) and row.body.action == "failure" for row in rows):
-                    pytest.fail("模型协议错误终止了回复")
-                if sum(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows) == count:
-                    return rows
-        rows = await asyncio.wait_for(completed(1), 5)
-        assert rows is not None
-        assert (tmp_path / "effect.txt").read_text() == "once\n"
-        assert len(calls) == 3
-        assert [type(row.body) for row in rows] == [Input, Output, Output, ToolResult, Output]
-        rejected = rows[1].body
-        assert isinstance(rejected, Output) and rejected.finish == "continue"
-        assert not any(isinstance(part, ToolCall) for part in rejected.parts)
-        assert any(isinstance(part, ContentPart) and part.kind == "model.tool_rejection" for part in rejected.parts)
-        for request in calls[1:]:
-            rejection = [row for row in request.messages if row.get("tool_call_id") == "bad-call"]
-            assert len(rejection) == 1 and "调用未执行" in str(rejection[0]["content"])
-            system = [row for row in request.messages if row["role"] == "system"]
-            assert "test_provider：Write local evidence" in str(system)
-            assert all("可搜索工具目录" not in str(row) for row in request.messages if row["role"] != "system")
-        before = rows
-        async with live_root(host) as root:
-            await root.context.require(CHANNEL_INPUT)(
-                "test:room", "follow-up", ChannelInboundMessage(
-                    "test", "user", "room", "continue", datetime.now(UTC), {},
-                ),
-            )
-        await asyncio.wait_for(completed(2), 5)
-        assert log.reader("test:room").snapshot()[:len(before)] == before
-        assert any(row.get("tool_call_id") == "bad-call" for row in calls[-1].messages)
-        assert (tmp_path / "effect.txt").read_text() == "once\n"

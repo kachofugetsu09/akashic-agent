@@ -1,37 +1,6 @@
 # Docker 调试沙盒
 
-## 统一变更影响 Gate
-
-实现者只需运行一个公开入口：
-
-```bash
-python docker/debug/gate.py run --base origin/main
-```
-
-Gate 先用 `tests_scenarios/contracts/impact.toml` 解释 Git diff，再运行所选公开语义场景。每个场景都使用新的 `/tmp/akashic-change-gate-*` sandbox，容器只读挂载候选源码，只允许写本次 `/sandbox` 与 tmpfs `/tmp`。`workspace`、`plugin-home`、`HOME` 和 config 都从空目录建立；Gate 不接收正式运行路径。
-
-```text
-Git diff
-   │
-   ▼
-公开 capability/state/scenario catalog
-   │
-   ├── 公开 Docker 场景（所有贡献者可运行）
-   └── plan.json：group + digest，不含 provider 身份
-```
-
-常用维护命令：
-
-```bash
-python docker/debug/gate.py audit
-python docker/debug/gate.py plan --base origin/main
-```
-
-如果同一 diff 同时包含生产 source set 与 protected contract/policy paths，`plan` 和 `run` 会扩大为完整公开场景，同时仍分别列出两组路径。未知可执行改动和触及 baseline gap 仍以非零退出。`migrations/**` 本身不在该 protected 集合内；已注册的 Core 和插件 bundle 迁移由 append-only 检查保护；0066 的历史删除按精确内容身份单独审计。
-
-`init` 只用于仓库第一次建立 coverage baseline。baseline 已存在时再次执行会失败，不能覆盖人工合同。新增未映射可执行文件会先运行全量公开语义场景，最终仍以 `unmapped_change` 失败。报告位于 `docker/debug/reports/change-gate/<run-id>/`。
-
-公开 Gate 不安装也不枚举私有插件，不依赖外部私有验证或 provider 身份；公开报告是当前仓库的合并依据。
+现行 PR 验证是概念基线 pytest（`pytest -q tests`）与静态检查，保留清单见 [`docs/refactor/orthogonality-test-baseline.md`](../../docs/refactor/orthogonality-test-baseline.md)。统一变更影响 Gate（`gate.py`、`tests_scenarios/contracts/`）已删除。本目录下的探针只作按需手动诊断，不是合并门槛。
 
 ## Citation + Meme 纯 v3 WebUI Gate
 
@@ -48,25 +17,6 @@ python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
 
 证据写入 `docker/debug/reports/plugin-passive-webui-v3/gate.json`；模型响应由 Compose 私网内
 的 deterministic model-gate 提供，不调用外部生产 provider。
-
-### Shell execution 固定 Runtime 场景
-
-`shell_execution_contract` 在 change-gate 的只读 Arch Linux runtime 中运行，不读取
-宿主 `HOME` 或正式 workspace。普通路径覆盖短命令、非零退出、显式/默认 shell、
-login 开关、长命令增量输出和多 execution 隔离；edge case 覆盖 PTY 多次输入、等待
-取消、stop 与 initial/poll 竞态、执行进程组清理、输出 head/tail、recent-8 LRU、owner
-隔离、截止点退出、主 ReAct/SubAgent active execution pin、turn owner 回收和 Drift
-owner 隔离。
-
-只运行该固定场景可使用：
-
-```bash
-python docker/debug/gate.py run --base <仅含合同的前置提交>
-```
-
-Gate 根据 runtime source set 自动选择该场景，并验证候选源码只读、临时 workspace、
-Compose cleanup 和无残留容器/网络/卷。完整 diff 同时修改受保护合同与生产源码时必须
-执行完整公开场景，不能用 focused 场景替代。
 
 ## 程序化控制面验收门
 
@@ -155,7 +105,7 @@ Gate 失败。证据位于
 迁移使用普通 pytest 覆盖执行与失败重试，CI 另以精简检查保护已注册 migration 不被改写：
 
 ```bash
-python -m pytest tests/test_migration_runner.py tests/test_yoyo_migration_append_only.py
+python -m pytest tests/test_migration_runner.py
 python scripts/check_yoyo_migrations.py --base origin/main
 ```
 
@@ -377,9 +327,8 @@ pure-v3 候选证据由 fleet、Mobile 和公共 WebUI 三个边界组成。所�
 使用 exact commit 锁、一次性 workspace/plugin-home/HOME 与受控端点，不读写正式
 Akashic workspace、正式凭据或 hua-home 服务。
 
-这些是插件候选与发布 Gate，不是普通 Core Pull Request 的固定矩阵。普通 Pull Request
-运行全部保留回归和按 diff 选场景的统一变更影响 Gate；当改动进入插件候选时，
-`Plugin v3 Candidate Gates` 手动 workflow 只运行 fleet completeness、Mobile 和公共 WebUI。
+这些是插件候选与发布时按需手动运行的诊断，不是 Pull Request 的合并门槛，也没有对应的
+CI workflow。
 
 ```text
 精确能力 lock
@@ -389,7 +338,7 @@ Akashic workspace、正式凭据或 hua-home 服务。
       └── WebUI ─────── Citation / Meme / public WebSocket
 ```
 
-候选 workflow 保留的独立边界：
+手动运行入口：
 
 ```bash
 python docker/debug/plugin_v3_fleet_gate.py \
