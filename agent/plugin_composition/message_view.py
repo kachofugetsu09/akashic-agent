@@ -3,15 +3,18 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AsyncExitStack, aclosing
 from dataclasses import asdict, dataclass, field
-from typing import Protocol, cast
 from types import MappingProxyType
+from typing import cast
 
 from agent.plugin_composition.context import CompositionRoot
 from agent.plugin_composition.model import ServiceKey
+from agent.plugin_contracts.tools import TOOL_DISPLAY_NAME
+from agent.plugin_contracts.ui import (
+    MessageDisplayReader as MessageDisplayReader,
+)
 from session.log import MessagePage, MessageReader, SessionEntry
 from session.message import ContentPart, Control, Input, Message, Output, ToolCall
 from session.message_codec import json_value
-
 
 PartDisplayProvider = Callable[[ContentPart], Mapping[str, object]]
 
@@ -27,10 +30,6 @@ class MessageDisplayProviders:
         object.__setattr__(self, "part_display", MappingProxyType(dict(self.part_display)))
 
 
-class MessageDisplayReader(Protocol):
-    """在自己的资源作用域内投影一页，不让客户端持有插件回调。"""
-
-    async def __call__(self, page: MessagePage, *, display_only: bool) -> list[dict[str, object]]: ...
 
 
 async def project_message_rows(
@@ -72,7 +71,7 @@ async def project_message_rows(
             providers[kind] = cast(PartDisplayProvider, provider)
 
         if has_tool_call:
-            key = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
+            key = TOOL_DISPLAY_NAME
             value = root.service_value(key)
             if value is not None and callable(value):
                 context, provider = root._service_provider(key)

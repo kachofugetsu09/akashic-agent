@@ -1,28 +1,60 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-import re
 from typing import Literal, Protocol, cast
 
-from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
-from agent.plugin_composition.bindings import Bindings
-from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult, freeze_json
-from agent.plugin_composition.messages import MessageReader
-from agent.plugin_composition.tasks import ExternalRootPermit
-
-from .api import (
-    Authorize, BoundTool, CallSource, MessageReply, ProviderBoundTool, Result,
-    coerce_result, display_name, result_message_id,
+from agent.plugin_composition import (
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    Context,
+    Effect,
 )
+from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    MESSAGE_WRITERS,
+    OWNER_STATE,
+    MessageReader,
+)
+from agent.plugin_composition.tasks import TASKS, ExternalRootPermit, TaskAdmission
+from agent.plugin_contracts import (
+    CallRef,
+    ContentPart,
+    ContentReferences,
+    ToolResult,
+    freeze_json,
+)
+from agent.plugin_contracts.content import (
+    CONTENT as CONTENT,
+)
+from agent.plugin_contracts.tools import (
+    ALL_TOOLS as ALL_TOOLS,
+    TOOL_BIND_SAVED as TOOL_BIND_SAVED,
+    TOOL_DISPLAY_NAME as TOOL_DISPLAY_NAME,
+    TOOLS as TOOLS,
+    ToolRef as ToolRef,
+    ToolView as ToolView,
+    tool_key,
+)
+
 from .abandon import follow_abandon, reject_start
+from .api import (
+    Authorize,
+    BoundTool,
+    CallSource,
+    MessageReply,
+    ProviderBoundTool,
+    Result,
+    coerce_result,
+    display_name,
+    result_message_id,
+)
 from .execution import ToolExecution
 from .program import TOOL_PROGRAM, ToolProgramFactory
-from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
-from agent.plugin_composition.tasks import TASKS, TaskAdmission
 
 api_version = 3
 name = "tools"
@@ -38,26 +70,14 @@ class ContentViewCapability(Protocol):
     def checks(self) -> Mapping[str, ContentCheck]: ...
 
 
-class ContentCapability(Protocol):
-    def bind(self) -> AbstractAsyncContextManager[ContentViewCapability]: ...
-
-
 # 与 content owner 共享名字，不共享其实现模块或 Python 类型身份。
-CONTENT = ServiceKey[ContentCapability]("content.v2")
-inject = (CONTENT,)
+
+inject = (CONTENT, BINDINGS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASKS)
 
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[str | None]]
 OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[ProviderBoundTool]]
 Capture = Callable[[Mapping[str, object]], Mapping[str, object]]
-
-
-@dataclass(frozen=True, slots=True)
-class ToolRef:
-    """引用当前 composition Root 中的一次真实工具注册。"""
-
-    name: str
-    description: Mapping[str, object]
 
 
 @dataclass(slots=True)
@@ -68,33 +88,6 @@ class _Registration:
     capture: Capture | None
     preparation: _Preparation | None = None
     authorization: _Authorization | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ToolView:
-    """消费者获授的一组真实工具引用。"""
-
-    refs: tuple[ToolRef, ...]
-
-    def __post_init__(self) -> None:
-        refs = tuple(self.refs)
-        names = tuple(ref.name for ref in refs)
-        if len(set(names)) != len(names):
-            raise ValueError("工具 view 不能包含重复名称")
-        object.__setattr__(self, "refs", refs)
-
-    def select(self, name: str) -> ToolRef:
-        for ref in self.refs:
-            if ref.name == name:
-                return ref
-        raise PermissionError(f"工具不属于获授 view: {name}")
-
-    def without(self, names: frozenset[str]) -> ToolView:
-        return ToolView(tuple(ref for ref in self.refs if ref.name not in names))
-
-    @classmethod
-    def combine(cls, *views: ToolView) -> ToolView:
-        return cls(tuple(ref for view in views for ref in view.refs))
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,7 +237,18 @@ class ToolCatalog:
 
             return cleanup
 
-        _ = await ctx.effect(setup, label=f"tool:{name}")
+        effect = await ctx.effect(setup, label=f"tool:{name}")
+        try:
+            _ = await ctx.provide(tool_key(name), reference)
+        except BaseException as error:
+            # 发布失败时撤销本次目录注册，避免留下无法声明依赖的工具。
+            try:
+                await effect.aclose()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    f"工具发布与目录撤销失败: {name}", [error, cleanup_error],
+                ) from None
+            raise
         return reference
 
     async def register_prepare(
@@ -402,14 +406,14 @@ class ToolCatalog:
             async with contributor.runtime_scope():
                 return self.bind(ref, bindings, configuration=configuration)
 
-    def _bind_saved(
+    def bind_saved(
         self,
         metadata: Mapping[str, object],
         bindings: Bindings,
         *,
         configuration: Mapping[str, object],
     ) -> str:
-        """从已归档的精确注册派生新配置，不按当前名称重选实现。"""
+        """核对原业务描述后派生新配置，不改选另一个工具。"""
         description = metadata.get("tool")
         if not isinstance(description, Mapping):
             raise ValueError("工具 binding 描述无效")
@@ -446,7 +450,7 @@ class ToolCatalog:
 
     @asynccontextmanager
     async def open(self, metadata: Mapping[str, object]) -> AsyncIterator[BoundTool]:
-        """只启动所选目标；资源和环境由实际目标 owner 按归档身份打开。"""
+        """核对固定业务描述后打开当前工具，由实际 owner 保留执行资源。"""
         if not isinstance(metadata.get("tool"), Mapping):
             raise ValueError("工具 binding 描述无效")
         description = cast(Mapping[str, object], metadata["tool"])
@@ -512,14 +516,10 @@ class ToolCatalog:
             async with authorization.context.runtime_scope():
                 return await authorization.authorize(arguments)
 
-TOOLS = ServiceKey[ToolCatalog]("tools.v1")
-ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
-TOOL_DISPLAY_NAME = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
-
 
 @asynccontextmanager
 async def open_tool(bindings: Bindings, binding_id: str) -> AsyncIterator[BoundTool]:
-    """真实 binding 选出归档注册表，目标 facade 拥有其资源 lease。"""
+    """当前注册表校验原 binding，目标 facade 拥有其执行资源。"""
     async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
         async with catalog.open(metadata) as target:
             yield target
@@ -531,9 +531,9 @@ async def bind_saved_tool(
     *,
     configuration: Mapping[str, object],
 ) -> str:
-    """从真实原 binding 派生新配置，并保留它的归档 provider 闭包。"""
+    """从原 binding 派生新配置，由当前兼容 provider 保存来源证据。"""
     async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
-        return catalog._bind_saved(
+        return catalog.bind_saved(
             metadata,
             bindings,
             configuration=configuration,
@@ -543,7 +543,7 @@ async def bind_saved_tool(
 async def apply(ctx: Context) -> None:
     task_admission = ctx.require(TASKS).open(ctx)
     catalog = ToolCatalog(ctx, task_admission)
-    _ = await ctx.provide(ServiceKey("tools.bind-saved.v1"), bind_saved_tool)
+    _ = await ctx.provide(TOOL_BIND_SAVED, bind_saved_tool)
     _ = await ctx.provide(TOOLS, catalog)
     _ = await ctx.provide(TOOL_PROGRAM, ToolProgramFactory(ctx, catalog))
     _ = await ctx.provide(ALL_TOOLS, catalog._all_view)

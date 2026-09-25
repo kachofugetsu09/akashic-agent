@@ -2,27 +2,36 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal, Protocol, cast
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import COMMANDS, CommandExecution, CommandCatalog
-from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
+from agent.plugin_composition.commands import COMMANDS, CommandCatalog, CommandExecution
+from agent.plugin_composition.messages import (
+    MESSAGE_WRITERS,
+    OWNER_STATE,
+    MessageReader,
+)
 from agent.plugin_composition.tasks import Task
-from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
-from agent.plugin_contracts import json_value
-
-class ContentChecks(Protocol):
-    def check_text(self, part: ContentPart) -> ContentReferences: ...
-    def check_artifact(self, part: ContentPart) -> ContentReferences: ...
-
-
-CONTENT = ServiceKey[ContentChecks]("content.v2")
-SOURCE_CHECK = ServiceKey[Callable[[Task, MessageReader, str, int], None]]("source.check.v1")
+from agent.plugin_contracts import (
+    ContentPart,
+    ContentReferences,
+    Control,
+    Input,
+    Message,
+    Output,
+    json_value,
+)
+from agent.plugin_contracts.content import (
+    CONTENT as CONTENT,
+)
+from agent.plugin_contracts.sources import (
+    CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
+    SOURCE_CHECK as SOURCE_CHECK,
+)
 
 Text = Annotated[str, Field(min_length=1)]
 
@@ -151,6 +160,3 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
         return None if selected is None else reader.get(selected.output_id)
     finally:
         writer.expire()
-
-
-CONVERSATION_COMMANDS = ServiceKey[Callable[[Task, MessageReader, str], Awaitable[Message | None]]]("conversation.commands.v1")

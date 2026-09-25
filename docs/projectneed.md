@@ -789,9 +789,13 @@ Channel factory/lifecycle/delivery/presentation、Dashboard module hook/HTTP 和
 内置插件只表示默认随 Core 发布，不获得额外 import、数据或生命周期权限。任一内置插件移到
 独立源码仓库并通过正式插件安装后，功能、持久语义、generation 行为和组合关系必须保持不变。
 插件只能导入公开 Plugin API 和自身包内代码；不得导入兄弟插件源码、Core 私有实现或依赖主
-仓库相对路径。跨插件关系只通过本地声明的版本化 `ServiceKey`、结构合同、事件和 provider
+仓库相对路径。跨插件关系通过版本化 `ServiceKey`、结构合同、事件和 provider
 选择的 Tool 表达。发布 Gate 必须在不加入主仓库源码路径的隔离安装中证明 import、apply、
 provide/inject、Tool、局部换代、卸载和 plugin-data 边界。
+
+公共合同模块已经拥有的 ServiceKey 由提供方和消费者共同导入，不在消费者重建同名 key。
+`get/require` 只读取声明依赖或自身提供的服务；临时可选调用使用有界 `borrow`，通知使用事件。
+程序 provider 捕获自身依赖，调用者只交入本次执行授权和业务选择。
 
 ### PLG-017 Workload 是普通插件原子能力
 

@@ -73,6 +73,7 @@
 
 | 文件或目录 | 回答的问题 | 读取策略 |
 |---|---|---|
+| [能力依赖与执行归属](design/issue-766-orthogonal-capabilities.md) | Issue 766 的职责、取舍与实施边界 | 插件正交化实施入口 |
 | [单图插件系统与局部换代](design/issue-750-plugin-publication-simplification.md) | 0072 的目标、取舍、T01～T07 任务拆分与验收 | 插件简化的固定入口 |
 | [插件整体换代重构](design/plugin-whole-runtime-simplification.md) | 0071 的入口、归属、整体组合与 stacked PR 实施 | 旧实现与迁移对照，不再是新目标入口 |
 | [普通资源 provider](design/plugin-resource-providers.md) | MCP、Workload、进程的实际资源归属与宿主授权 | 使用或修改外部资源 provider 时读取 |

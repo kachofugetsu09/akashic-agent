@@ -1,27 +1,20 @@
 from __future__ import annotations
 
+from functools import partial
+
 from agent.plugin_composition import (
     CHANNELS,
     ChannelCapability,
     ChannelDefinition,
     Context,
     InboundIdentity,
-    ServiceKey,
 )
-
-from functools import partial
-from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.channels import CHANNEL_INPUT, RawInbound
+from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.messages import MessageReader
-from typing import Protocol
-
-
-class SourceState(Protocol):
-    def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
-
-
-SOURCE_STATE = ServiceKey[SourceState]("source.session.v1")
+from agent.plugin_contracts.sources import (
+    SOURCE_SESSION as SOURCE_STATE,
+)
 
 from .channel import TelegramChannelAdapter, build_telegram_channel
 from .config import TelegramChannelConfig

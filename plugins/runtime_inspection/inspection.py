@@ -5,30 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
-from agent.plugin_composition import ServiceKey
-
+from agent.plugin_contracts.inspection import (
+    SCHEDULER_INSPECTION as SCHEDULER_INSPECTION,
+    SKILL_INSPECTION as SKILL_INSPECTION,
+    SchedulerReader as SchedulerReader,
+    SkillReader as SkillReader,
+)
 
 _MAX_DOCUMENT_BYTES = 192 * 1024
-
-
-class SchedulerReader(Protocol):
-    """scheduler 只读投影的窄输入。"""
-
-    def list_jobs(self) -> tuple[Mapping[str, object], ...]: ...
-
-    def get_job(self, job_id: str) -> Mapping[str, object] | None: ...
-
-
-class SkillReader(Protocol):
-    """技能目录只读投影的窄输入。"""
-
-    async def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
-
-
-SCHEDULER_INSPECTION = ServiceKey[SchedulerReader]("scheduler.inspection.v1")
-SKILL_INSPECTION = ServiceKey[SkillReader]("standard_tools.skill_inspection.v1")
 
 
 @dataclass(frozen=True, slots=True)

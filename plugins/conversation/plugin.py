@@ -1,83 +1,63 @@
-from collections.abc import Awaitable, Callable, Mapping, MutableMapping
-from typing import Protocol, cast
+from collections.abc import Awaitable, Callable, Mapping
+from typing import cast
 
-from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.commands import COMMANDS
+from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import ChannelInboundMessage
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION, SessionAttributes
+from agent.plugin_composition.commands import COMMANDS
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    MESSAGE_WRITERS,
+    OWNER_STATE,
+    SESSION_ADMISSION,
+    MessageConflict,
+    MessageReader,
+    SessionAttributes,
+)
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
-from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGate, RESTART_GATE
-from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter
-from agent.plugin_contracts import Body, ContentPart, ContentReferences, Control, Input, Message, Output
+from agent.plugin_composition.tasks import (
+    RESTART_GATE,
+    TASKS,
+    Task,
+)
+from agent.plugin_contracts import (
+    Body,
+    ContentPart,
+    ContentReferences,
+    Control,
+    Input,
+    Message,
+    Output,
+)
+from agent.plugin_contracts.models import (
+    MODEL_SELECTION as MODEL_SELECTION,
+    ModelSelection as ModelSelection,
+)
+from agent.plugin_contracts.sources import (
+    CHECK_ORIGIN as CHECK_ORIGIN,
+    CONVERSATION_COMPLETE as CONVERSATION_COMPLETE,
+    SOURCE_CHANGED,
+    SOURCE_SESSION as SOURCE_SESSION,
+    SOURCES as SOURCES,
+    ConversationComplete as ConversationComplete,
+    SessionFactory as SessionFactory,
+    SourceChanged,
+    SourceSession as SourceSession,
+)
 
+from .commands import CONTENT, CONVERSATION_COMMANDS, SOURCE_CHECK, run_commands
 from .source import update_selection
-from .commands import CONTENT, SOURCE_CHECK, CONVERSATION_COMMANDS, run_commands
-
-
-
-class ModelSelection(Protocol):
-    def check(self, part: ContentPart) -> ContentReferences: ...
-
-    def write_saved(
-        self, metadata: MutableMapping[str, object], selection: ChatModelSelection,
-    ) -> None: ...
-
-
-MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
-
-
-class SourceSession(Protocol):
-    async def accept(self, message_id: str, body: Input) -> Message: ...
-    async def pause(self, message_id: str) -> Message: ...
-    async def resume(self, message_id: str, input_id: str) -> Message: ...
-    async def complete(
-        self, program: Callable[[Task, MessageReader], Awaitable[Message]],
-    ) -> Message: ...
-    async def start(self, program: Callable[[Task, MessageReader, str], Awaitable[object]]) -> Task | None: ...
-
-
-class ConversationComplete(Protocol):
-    async def __call__(
-        self, session_id: str,
-        program: Callable[[Task, MessageReader], Awaitable[Message]],
-    ) -> Message: ...
-
-
-class SessionFactory(Protocol):
-    def __call__(
-        self, *, reader: MessageReader, inputs: MessageWriter, controls: MessageWriter,
-        tasks: TaskAdmission, changed: Callable[[MessageReader, str], None] | None = None,
-        restart_gate: RestartGate | None = None,
-    ) -> SourceSession: ...
-
-    def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
-
-
-class SourceRegistry(Protocol):
-    async def register(
-        self, ctx: Context, *, name: str, open: Callable[[str], SourceSession],
-        needs_reply: Callable[[MessageReader], bool],
-        accept: Callable[[str, str, ChannelInboundMessage], Awaitable[Message]] | None = None,
-        channels: tuple[str, ...] | None = (),
-    ) -> Effect: ...
-
-
-SOURCES = ServiceKey[SourceRegistry]("sources.v2")
-SOURCE_SESSION = ServiceKey[SessionFactory]("source.session.v1")
-SOURCE_CHANGED = ServiceKey[Callable[[MessageReader, str], None]]("source.changed.v1")
-
 
 api_version = 3
 name = "conversation"
 version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
 inject = (
-    COMMANDS, CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SESSION_ADMISSION, SOURCES, SOURCE_SESSION,
-    RESTART_GATE, MODEL_SELECTION,
+    BINDINGS, OWNER_STATE, TASKS, ARTIFACT_READ, COMMANDS, CONTENT, SOURCE_CHECK,
+    MESSAGE_WRITERS, SESSION_ADMISSION, SOURCES, SOURCE_SESSION, RESTART_GATE,
+    MODEL_SELECTION, MESSAGE_CATALOG,
 )
-
-CONVERSATION_COMPLETE = ServiceKey[ConversationComplete]("conversation.complete.v1")
 
 
 async def apply(ctx: Context) -> None:
@@ -91,17 +71,18 @@ async def apply(ctx: Context) -> None:
         ctx, keys=frozenset({"model_selection", "model_runtime_override"}), update=update_metadata,
     )
     def changed(reader: MessageReader, source: str) -> None:
-        listener = ctx.get(SOURCE_CHANGED)
-        if listener is not None:
-            listener(reader, source)
+        ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source))
 
     def open(session_id: str) -> SourceSession:
         def check_model(part: ContentPart) -> ContentReferences:
             references = ctx.require(MODEL_SELECTION).check(part)
             value = cast(Mapping[str, str | None], part.value)
-            _ = ctx.require(MODEL_CATALOG).validate_chat_selection(
-                ChatModelSelection(value["model_id"], value["reasoning_effort"]),
-            )
+            with ctx.borrow(MODEL_CATALOG) as catalog:
+                if catalog is None:
+                    raise ValueError("当前组合不提供模型选择目录")
+                _ = catalog.validate_chat_selection(
+                    ChatModelSelection(value["model_id"], value["reasoning_effort"]),
+                )
             return references
 
         def check_reply_target(part: ContentPart) -> ContentReferences:
@@ -169,17 +150,17 @@ async def apply(ctx: Context) -> None:
         # 3. Input 与全部引用原子提交；传输时间、handoff 和重复 ID 不进入正文。
         return await open(session_id).accept(message_id, Input(parts))
 
+    @ctx.entrypoint
     async def command(task: Task, reader: MessageReader, source: str) -> Message | None:
-        async with ctx.runtime_scope():
-            return await run_commands(ctx, task, reader, source)
+        return await run_commands(ctx, task, reader, source)
 
+    @ctx.entrypoint
     async def complete(
         session_id: str, program: Callable[[Task, MessageReader], Awaitable[Message]],
     ) -> Message:
-        async with ctx.runtime_scope():
-            return await open(session_id).complete(program)
+        return await open(session_id).complete(program)
 
-    _ = await ctx.provide(ServiceKey("conversation.check_origin.v1"), check_origin)
+    _ = await ctx.provide(CHECK_ORIGIN, check_origin)
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,

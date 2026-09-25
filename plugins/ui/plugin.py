@@ -6,27 +6,36 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from types import ModuleType, FunctionType
+from types import FunctionType, ModuleType
 from uuid import uuid4
 
 from agent.plugin_composition import (
-    Context, Effect, FiberState, RUNTIME_STARTING,
+    RUNTIME_STARTING,
+    Context,
+    Effect,
+    FiberState,
 )
+from agent.plugin_composition.host import HOST_INFO
 from agent.plugin_composition.ui import (
-    DASHBOARD_ROUTES, UI, WEB_UI, DashboardBinding, WebModuleDescriptor, WebUiCatalog,
+    DASHBOARD_ROUTES,
+    UI,
+    WEB_UI,
+    DashboardBinding,
+    WebModuleDescriptor,
+    WebUiCatalog,
 )
-
 from agent.plugin_composition.ui_slots import UI_SLOTS
 from agent.plugin_composition.workload_slots import WORKLOADS
 
-from .mobile import MobileUiSlots
 from .dashboard import DashboardResources, _core_routes, _require_routes_available
+from .mobile import MobileUiSlots
 from .web import build_web_ui_catalog, resolve_web_module
 
 api_version = 3
 name = "ui"
 version = "1.0.0"
 desc = "注册并封存插件的 Web 与 Dashboard UI"
+inject = (DASHBOARD_ROUTES, HOST_INFO)
 
 @dataclass
 class Registration:
@@ -110,17 +119,18 @@ class Ui:
             )
             build_web_ui_catalog(modules)
             if resources is not None:
-                occupied = list(_core_routes(ctx.require(DASHBOARD_ROUTES)))
+                occupied = list(_core_routes(self._ctx.require(DASHBOARD_ROUTES)))
                 for entry in self._entries.values():
                     if entry.binding is None:
                         continue
                     _require_routes_available(entry.binding, occupied)
                     occupied.extend(entry.binding.routes)
-                workloads = ctx.get(WORKLOADS)
-                registration.binding = resources.build(
-                    occupied=occupied,
-                    workload_urls={} if workloads is None else workloads.urls(ctx),
-                )
+                with self._ctx.borrow(WORKLOADS) as workloads:
+                    registration.binding = resources.build(
+                        occupied=occupied,
+                        workload_urls={} if workloads is None else workloads.urls(ctx),
+                        validation=self._ctx.require(HOST_INFO).validation,
+                    )
             registration.initialized = True
 
         async def setup():

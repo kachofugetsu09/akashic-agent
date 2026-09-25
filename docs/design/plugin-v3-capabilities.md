@@ -50,15 +50,15 @@ Core 用一个位置参数调用 `apply(ctx)`，不限制参数名字或默认�
 配置从 `ctx.config` 读取，是当前组合固定输入的插件本地副本，不跟随全局文件变化。
 插件自行选择解析方式，例如 `config = Config.model_validate(ctx.config)`；`Config` 只是插件内部普通类，
 Core 不读取它。无配置时输入为空对象。固定输入中的凭据仍使用引用；Models 自有连接
-按 PLG-001 由模型 owner 提供给普通 latest 调用，不受此配置存储协议解释。
+按 PLG-001 由模型 owner 提供给当前调用，不受此配置存储协议解释。
 启用条件写在普通 `apply` 分支中；所有贡献走同一注册路径，没有另一个 `is_active` 协议。
 
 可选的根目录 `configure.py` 是插件自己的配置程序，不是普通辅助模块名称。
 只有显式运行 `main.py setup` 才会从已启用的已安装 stable 制品发现并执行它，使用根目录固定 Python 环境。
-正常加载、候选装配和换代不运行配置程序。旧制品的 `[setup]` 等已删字段必须通过显式重装或格式转换更新，
+正常加载和换代不运行配置程序。旧制品的 `[setup]` 等已删字段必须通过显式重装或格式转换更新，
 普通启动不改写旧制品或正式数据。
 
-### Python 安装输入（0071 过渡层）
+### Python 安装输入
 
 制品根目录和嵌套目录中的 `requirements.txt` 是 Python runtime 的唯一文件约定，
 其父目录拥有该环境。TOML 不再接受 `python` 或 `[[python]]`；`StaticPythonRuntime`
@@ -85,10 +85,10 @@ Computer 的空 requirements 文件已删除；容器内命令不需要 Core 的
 
 根 runtime 与嵌套 runtime 共存时，命令按既有脚本路径/cwd 解析结果选择最近的父 runtime。
 缺少已 staging 的显式环境时失败，不借用 PATH 或制品中的 `.venv`。
-环境只由安装器创建，加载或候选不准备环境，包括空 requirements 文件。
+环境只由安装器创建，加载和换代不准备环境，包括空 requirements 文件。
 源码插件的纯进程内能力可以直接装配；实际 Python 命令缺少固定环境时明确失败。
 
-### 身份读取（0071）
+### 身份读取
 
 安装和每次加载前，loader 只用 AST 读取 `plugin.py` 顶层三个单次字面量赋值：
 `name`、`version`、`api_version`。支持普通赋值和带类型注解的赋值，不接受计算表达式、
@@ -103,8 +103,7 @@ API 必须为整数 `3`。身份由 loader 固定后交给 Composable；运行�
 代码树摘要、source revision、实际导入文件路径和环境引用继续固定原始来源。
 
 v4 组件记录只新增；旧记录和正式数据不改写、不自动迁移或删除。旧格式需用原 Core 和完整
-恢复材料读取，采用新格式须从已更新源码显式重装；旧 binding 不能被解释成新代码身份。
-本层仅编写测试与静态查看，运行验收尚未执行。
+恢复材料读取，采用新格式须从已更新源码显式重装；binding 的来源证据保持原身份；业务选择由当前兼容实现解释，不兼容明确失败。
 
 ## 2. 组合原子能力
 
@@ -112,27 +111,29 @@ v4 组件记录只新增；旧记录和正式数据不改写、不自动迁移�
 `static_semantic_checks` 自测入口，也不把报告存入运行 generation；诊断报告只记录真实装配步骤。
 
 每次 `apply` 都属于一个 generation-bound Fiber。下列注册和任务归该 Fiber 所有，
-编译后组合冻结；换代或卸载关闭整个 Root，依赖者先于 provider 退出，不原位重启 Fiber。
+正式进程只有一个 live Root。局部换代排空受影响的依赖者和 provider，再安装新 Fiber；无关分支保持运行。
 
 | 原子能力 | 最短用法 | 语义 |
 |---|---|---|
 | 硬依赖 | 模块级 `inject = (KEY,)` | 全部 Service 可用时根 Fiber 才激活 |
-| 可选依赖 | `await ctx.inject((KEY,), child)` | 初始化期间按依赖选择子 Fiber，不阻塞 Root readiness；编译后不重绑 |
-| 子 Fiber | `await ctx.mount(child, name="worker")` | 分开生命周期、Health、Effect 和依赖 |
+| 可选依赖 | `await ctx.inject((KEY,), child)` | 独立子 Fiber 随依赖出现、消失而激活或退出，不阻塞父级计算 |
+| 子 Fiber | `await ctx.mount(child, name="worker")` | 分开生命周期、Health、Effect 和依赖；名字在同一父级唯一，path 标识完整层级 |
 | 提供 Service | `await ctx.provide(KEY, value)` | 当前 Fiber 成为该 key 的活动 provider |
-| 读取 Service | `ctx.require(KEY)` / `ctx.get(KEY)` | 必需读取 fail-loud；可选读取返回 `None` |
+| 读取 Service | `ctx.require(KEY)` / `ctx.get(KEY)` | 只允许声明依赖或自身提供的 key；未声明读取失败，已声明但缺席的 get 返回 None |
+| 有界借用 | `with ctx.borrow(KEY) as service` | 按调用选择可选 provider 并保护其寿命；缺席返回 None，不得越过 scope 使用服务 |
+| 执行入口 | `ctx.entrypoint(handler)` | 同步/异步调用均由框架接纳实际 provider；不包装生成器 |
 | Effect | `await ctx.effect(setup, label="client")` | `setup`（可异步）只返回一个 cleanup 或 `None`；不解释 iterable 或生成器。Fiber 逆序关闭，成功才解除 owner；失败保留句柄与依赖供显式重试 |
-| 后台任务 | `await ctx.spawn(run(), name="poll")` | 失败进入 Fiber 状态，卸载时取消并等待 |
+| 后台任务 | `await ctx.spawn(run(), name="poll")` | 任务绑定实际 owner；失败进入 Fiber 状态，卸载先取消并等待任务，再排空外部调用 |
 | Health | `health = await ctx.health("upstream")` | `degrade(reason)` / `recover()`；required 项参与 readiness |
 | Incident | `ctx.report_incident("fetch", "timeout")` | 记录历史失败，不隐式改变 Health |
-| 数据根 | `ctx.data_root` | Core 为 formal 或 candidate 分配的独立数据根；插件可正常读写 |
+| 数据根 | `ctx.data_root` | 插件 owner 的正式数据根；换代不回滚或自动减少数据 |
 | Workspace 路径 | `ctx.workspace_root("memory")` | 返回模块预先声明的原生 `Path`；Core 校验路径归属，但不拦截写入 |
 | 运行身份 | `ctx.runtime`、`ctx.generation_id` | plugin、artifact、generation 和目录身份 |
-| 短运行作用域 | `async with ctx.runtime_scope(): ...` | 后台操作绑定 exact Root lease |
-| 跨 task 作用域 | `scope = ctx.capture_runtime_scope()` | 显式 fork 当前 lease；调用者负责关闭 |
+| 短运行作用域 | `async with ctx.runtime_scope(): ...` | 保护实际 Fiber owner；同步入口使用 entrypoint |
+| 跨 task 作用域 | `scope = ctx.capture_runtime_scope()` | 显式捕获 owner scope；调用者负责移交与关闭 |
 | 诊断 | `ctx.diagnostics.operation(...)` | 记录 generation-bound 边界和有限指标 |
 
-跨插件 Service 使用本地、版本化结构合同：
+跨插件 Service 使用公共模块中的版本化结构合同（下例声明位于公共合同模块）：
 
 ```python
 from typing import Protocol
@@ -147,7 +148,9 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(GREETER, MyGreeter())
 ```
 
-双方各自声明同名、同结构的 key，通过 `inject` 和 `ctx.require()` 连接，不能 import 对方源码。
+双方从同一公共模块导入 key 与 Protocol，通过 `inject` 和 `ctx.require()` 连接，不能 import 对方实现。
+`ServiceKey` 的值类型不变型，提供者必须符合明确的合同。`scripts/plugin_boundary.py check` 拒绝重复声明；
+`python scripts/plugin_boundary.py catalog` 输出能力、提供与消费的静态位置，动态激活以运行时组合图为准。
 
 服务若依赖动态注册者，使用 `await ctx.provide(KEY, value, binding_contributors=read_contexts)`
 声明归档依赖。`read_contexts()` 同步返回当前实际注册者的 `tuple[Context, ...]`，只读原注册状态；
@@ -170,8 +173,8 @@ async def apply(ctx: Context) -> None:
 | `ObserveEventKey[P]` / `await ctx.observe(...)` | 调用全部 observer，再等待异步结果 | 全部 observer 都会被调用；普通 listener 失败隔离为 owner Incident，调用者继续；调用取消仍取消并 drain 未完成 observer |
 
 Runtime lifecycle signal 使用同一 typed event 基础：`RUNTIME_STARTING` 在正式接纳开放前准备资源，
-`RUNTIME_STARTED` 在外部服务就绪后启动工作，`RUNTIME_STOPPING` 在服务停止前收束工作，
-`SNAPSHOT_SEALING` 在 candidate catalog 冻结前完成 seal。`SOURCE_CHANGED`、`EVENTMAIL_CHANGED` 和
+`RUNTIME_STARTED` 在相应 activation 具备启动条件后启动工作，`RUNTIME_STOPPING` 在其停止前收束工作；
+这些信号不是全局 readiness 或第二个提交点。`SOURCE_CHANGED`、`EVENTMAIL_CHANGED` 和
 `DRIFT_CHANGED` 等来源 signal 由各自插件声明和发布；它们不组成 Core 业务事件表。新插件定义自己的
 typed key 或窄 `ServiceKey`，不依赖已退役的 Core 业务事件名。
 
@@ -183,7 +186,7 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 
 | Key | 主要方法 | 用途 |
 |---|---|---|
-| `COMMANDS` | `register(ctx, CommandDefinition(...))` | 显式 `commands` provider 拥有人类命令、alias、封存与执行；消费者声明硬依赖 |
+| `COMMANDS` | `register(ctx, CommandDefinition(...))` | 显式 `commands` provider 拥有人类命令、alias、注册与执行；消费者声明硬依赖 |
 | `TOOLS` | `register(...)`、`bind(...)`、`open(...)` | `plugins.tools` 的工具描述、参数准备、exact binding 与执行入口 |
 | `UI_SLOTS` | `register_mobile(ctx, definition, query=...)` | Mobile 页面、查询和导航 |
 | `CHANNELS` / `CHANNEL_INPUT` | 注册实际 factory，按绑定调用入站入口 | 显式 `channels` provider 拥有连接、接纳、原绑定发送与恢复；来源插件拥有输入消费 |
@@ -191,8 +194,8 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 
 旧 Core `TOOL_CATALOG` 及其注册、冻结和快照装配已删除。旧 `DELIVERIES`、
 `DURABLE_DELIVERIES` ServiceKey 和注入也已退役。旧持久投递记录与恢复实现保留，
-Manager 不扫描这些业务记录来判断候选兼容性；移除检查不会删除记录、结算或重发旧效果。
-工具消费者通过 `tools.v1` ServiceKey 和本地结构接口协作，
+Manager 不扫描这些业务记录来判断业务兼容性；移除检查不会删除记录、结算或重发旧效果。
+工具消费者通过公共 `agent.plugin_contracts.tools` 中的 key 和结构接口协作，
 不能 import `plugins.tools.api` 或其他兄弟插件实现。工具结果提供 `outcome` 与 `parts`；
 Tools owner 在入口校验。ToolResult Message 是对话调用的持久结果正文。
 
@@ -260,9 +263,9 @@ provider 从实际 Context 取得 owner 与固定代码制品根；拒绝跨 Roo
 
 MCP、process 和 Workload 由显式选择的普通 provider 提供，Manager 不补入隐式依赖。
 资源在 `apply` 中取得，Scope 在外部等待前登记关闭责任；失败保留同一资源句柄。
-MCP 的端口引用直接使用 Workload/Process 返回的句柄，provider 检查 owner，Snapshot 不再列举
-三类注册表或解释它们的依赖。Python 命令仍由宿主绑定固定制品环境；候选资源的
-CredentialRef broker 不解析正式凭据，Models 自有连接沿其独立 owner 协议接续。
+MCP 的端口引用直接使用 Workload/Process 返回的句柄，provider 检查 owner。
+Python 命令由宿主绑定固定制品环境；CredentialRef broker 校验 owner 与固定输入授权，
+Models 自有连接沿其独立 owner 协议接续。
 公开协议、每调用 MCP 的关闭语义与未知 Controller 请求限制见[普通资源 provider](plugin-resource-providers.md)。
 
 ### 4.4 模型
@@ -278,7 +281,7 @@ CredentialRef broker 不解析正式凭据，Models 自有连接沿其独立 own
 Provider 返回结构化 `ModelUsage` 和公开错误类型；未知能力保持 unknown，不用默认值伪装。
 
 设置命令与 `MODEL_SETTINGS` 不由 Core 导出；消费者不能 import Models 的命令类型。
-模型选择能力 `models.selection.v1` 由 owner 和消费者分别声明本地窄 key。角色是字符串，
+模型选择能力 `models.selection.v1` 由 owner 和消费者共同导入公共合同 key。角色是字符串，
 当前 Models 的四个预设及 fallback 由插件解释，Core 不维护角色枚举。
 
 `DriverConnection` 可提供异步 `close`。Models 在 chat/embedding scope 结束、取消或部分绑定失败时调用 `aclose()`；嵌套的同一次 chat execution 共用连接，设置探测使用的临时连接在检查后关闭。Bound model 只能在取得它的 scope 内使用。没有资源的旧 driver 可省略 `close`。内置 HTTP driver 延迟创建客户端，在同一连接内复用 socket，每次请求仍读取凭据并独立生成请求头。
@@ -312,7 +315,7 @@ async def apply(ctx):
 Dashboard loader 必须定义在该制品中，返回的模块也必须属于同一制品。
 延迟 loader 保留原包的 Python 类型身份，并让 provider 处理导入失败和资源取得。
 `requires`、`provides` 和 `contract_digests` 是这次注册的领域参数。
-provider 在 `SNAPSHOT_SEALING` 校验并封存目录；重复 provider、合同 digest 不匹配、
+provider 在注册时校验资源和同 Root 归属；重复 provider、合同 digest 不匹配、
 越界资源和无效 JS/CSS 都显式失败。未挂载的浏览器 mount 合同仍允许 consumer 自己等待，
 不把缺少可选 mount 误判为缺少 Python UI 服务。
 
@@ -321,13 +324,13 @@ Dashboard 继续使用 `DashboardContext` 的 `require()`、`workspace_root()`�
 注册 Effect 拥有路由资源，关闭失败保留句柄供原 Effect 重试，不重放初始化。
 初次导入失败仅允许 dashboard-only 插件暂不可用；配套 Web/API 不能半发布。
 Web bootstrap 和 DashboardHost 从所选 Root 的 typed service 读取目录；
-`RuntimeSnapshot` 不复制 Web/UI 字段，Core compiler 不解释 UI 合同。
+宿主投影不复制 Web/UI 注册状态，Core compiler 不解释 UI 合同。
 
 ```text
 贡献插件 apply(ctx) ── UI.register ──┐
                                    ▼
                         本 Root 的 UI provider
-                        ├── seal：Web 目录
+                        ├── Effect：Web 活动目录
                         └── Effect：Dashboard 资源
                                    │
               实际请求租约 ────────┘
@@ -342,51 +345,46 @@ SDK 的 `UiSlots`、`MobileUiRegistry` 是窄 Protocol，具体注册表和资�
 
 ```text
 贡献 Context ── register_mobile ── UI provider 的注册 Effect
-                                      │ SNAPSHOT_SEALING
+                                      │ 注册与释放
                                       ▼
-                             本 Root 的封存目录
+                             本 Root 的活动目录
                                       │
-                   Mobile HTTP/RPC 域消费者按实际 Root 读取
+                   Mobile HTTP/RPC 持实际 provider scope 读取
 ```
 
 provider 校验贡献方属于同一 Root 和服务，资源路径仍固定在该 Context 的代码制品中。
 目录与服务均带实际 Root token；域消费者拒绝借用另一 Root 的服务或目录。
-Core compiler 不再读取、冻结或复制 Mobile 目录，RuntimeSnapshot 不含 Mobile UI 字段。
+Core compiler 不再读取、冻结或复制 Mobile 目录，宿主只持请求 adapter，不拥有 Mobile UI 注册状态。
 注册 Effect 关闭只解除内存归属，不删除代码、plugin-data、消息或历史记录。
 
 `PluginMobileUiProvider` 继续承担已有 RPC 线程池、容量、超时和请求租约；
 MobileHTTP/RPC 的 revision、摘要、slot、授权和响应格式不变。
-Manager 的既有 `core.mobile_ui.v1` 请求 adapter 接线仍保留，但不再检测
+宿主装配模块提供 `core.mobile_ui.v1` 请求 adapter，但不检测
 `inject(UI_SLOTS)` 或创建业务注册表。仓库内 Akasha 的真实安装组合已显式选择 `ui`。
 
-## 6. Generation 与 candidate
+## 6. Generation 与单 Root
 
 ```text
-┌────────────────────┐      ┌────────────────────┐
-│ 固定代码与配置归档 │ ───▶ │ 独立候选 Root 检查 │
-└────────────────────┘      └──────────┬─────────┘
-                                       │ 调用程序授权晋升
-                                       ▼
-┌────────────────────┐      ┌────────────────────┐
-│ 新正式 Root 初始化 │ ◀─── │ 候选退出，旧组排空 │
-│ 完成前保持关闭接纳 │      │ 并成功释放旧 Root │
-└──────────┬─────────┘      └────────────────────┘
-           ▼
-┌────────────────────┐      ┌────────────────────┐
-│ 完整 stable 提交   │ ───▶ │ 开放新请求的 lease │
-└────────────────────┘      └────────────────────┘
+┌────────────────────┐      ┌────────────────────────┐
+│ 安装固定制品和环境 │ ───▶ │ 原子提交 PluginSelection │
+└────────────────────┘      └────────────┬───────────┘
+                                        ▼
+┌────────────────────┐      ┌────────────────────────┐
+│ 原 Root 局部应用   │ ◀─── │ 受影响 owner 排空与释放  │
+│ 无关分支持续运行   │      │ 清理失败保留 owner       │
+└────────────────────┘      └────────────────────────┘
 ```
 
-- Candidate 与正式 Root 使用同一组精确归档，但模块、Scope 和 generation 都重新创建，
-  不把候选实例或目录改作正式实例。候选从独立空数据环境开始，底座不复制正式业务库或目录。
-- Root 不能自行晋升。调用程序拥有业务验证与正常终态/未撤销授权；底座检查候选和基线，
-  只在初始化成功后提交完整 stable。重启只读取该记录，不追随尚未晋升的源码或安装指针。
-- 整组换代先等待旧请求结束，再释放旧资源；不是逐插件无停顿替换。写入结果不确定时保留
-  实际 owner 并关闭接纳，不能自动重放外部启动或声称已回滚。代码恢复不回滚插件数据。
-- Workspace path 是显式授予正式数据 owner 的高权限能力，不应替代窄 Service；candidate
-  只得到声明路径在独立 workspace 内的位置，所需数据由插件自行准备，不是正式目录的副本。
-- 普通卸载删除代码、manifest 和派生投影，默认保留 plugin-data。`manifest.toml` 只接受
-  独立 `[plugins."<id>"]` 条目；旧 `[packages]` 分组不会展开、保留或静默忽略。
+- `PluginSelection` 是持久选择的唯一提交点；accepted 不等于 active。重启使用已提交选择，
+  不跟随未提交的安装输入。没有候选 Root 的晋升或 stable/latest 双视图。
+- Generation 记录实际代码、配置和环境来源。局部排空由组合内核拥有，安装与应用恢复由 Manager 拥有；
+  `agent.plugins.host` 用明确宿主端口装配消息、客户端投影与安装接口，不接收 Manager 实例。
+- `binding` 固定业务选择及来源证据，恢复调用当前兼容 provider；缺失或不兼容明确失败。
+  正在运行的调用持有实际 owner，排空前不会释放其资源；历史归档不启动第二个执行图。
+- 外部效果未知时保留原状态和回执，不自动重放，不把内存恢复说成外部回滚。
+  Workspace 路径只授予已声明的数据 owner；换代不复制或回滚正式数据。
+- 普通卸载保留 plugin-data；归档、消息与历史记录没有自动 GC。安装清单只接受
+  独立 `[plugins."<id>"]` 条目；旧 `[packages]` 分组不再解释。
 
 ## 7. 选择能力
 
@@ -402,11 +400,10 @@ Manager 的既有 `core.mobile_ui.v1` 请求 adapter 接线仍保留，但不再
 
 ### 归档接口版本
 
-组件归档的 `runtime.binding_api` 当前为 3。Core 在打开任何组件源码前核对完整
-闭包的接口版本和 Python tag；ABI 1、2 明确不兼容，不能混用新接口或从当前插件补齐。
-原 descriptor、源码树、binding 引用和已开始效果的回执保持原位，旧归档需要原 Core
-版本及其安装环境恢复。该接口版本与 Python environment descriptor 的版本独立。
-新版本创建的归档仍能在原安装移除后，按原配置与 generation 闭包恢复。
+组件归档的 `runtime.binding_api` 当前为 3。历史格式、Python 环境及源码树只用于校验来源证据；
+读取旧格式需要原工具及完整恢复材料，不自动改写。业务 binding 恢复不从归档启动历史 Root，
+而是将原业务选择交给当前 provider 的 bind 合同。当前 provider 缺席或不能解释选择时明确失败。
+该接口版本与 Python environment descriptor 的版本独立，原始记录与外部效果回执保持原位。
 
 ### 固定配置输入与凭据（0071）
 
@@ -427,7 +424,6 @@ Manager 的既有 `core.mobile_ui.v1` 请求 adapter 接线仍保留，但不再
                  ▼
 ┌────────────────────────────────────┐
 │ Core 固定输入 → 插件请求凭据短租约  │
-│ candidate broker 不解析正式引用     │
 └────────────────────────────────────┘
 ```
 
@@ -441,7 +437,7 @@ factory 合同；Channel host 不再提取配置字段或维护第二份凭据�
 清空。`revoke_credential(data_dir, ref)` 只增加撤销标记，不删除历史版本。新配置原子替换前把
 旧输入保存在私有 `config-history/`。凭据、撤销标记、配置历史没有自动 GC；恢复必须一起保留
 私有目录和对应配置输入。Models 的连接凭据与刷新协议保持自己的 owner，不使用这份存储；
-普通 latest 默认复用已有模型设置和凭据，不要求独立账号，见 PLG-001 与 0071。
+当前调用默认复用已有模型设置和凭据，不要求独立账号，见 PLG-001 与 0071。
 
 普通读取与写入只识别准确的旧入口 `config.local.toml`，存在时明确要求升级。
 缺少固定输入时返回空映射，与业务目录是否存在或含哪些数据无关；安装不写空配置占位文件。
@@ -460,15 +456,15 @@ Telegram Channel 和两个 Sender 的 `configure.py --upgrade` 由插件解释�
 含已删除 TOML 字段的旧安装必须显式重装。历史 Yoyo 脚本保持原字节，若它产生旧配置，随后仍须
 经过显式配置升级，不能把旧输出直接作为新输入。
 
-候选不复制此 broker 的私有凭据根，workspace root/file 授权也不能授予它。新格式不解释
+私有凭据根由 broker 拥有，workspace root/file 授权不能授予它。新格式不解释
 任意 plugin-data、模型自有存储或旧备份；这些数据由各自 owner 使用和接续。
 不能把未知旧目录写一个空输入就声称验收通过。同进程 Python 插件仍属于受信任代码；
-这些窄接口不是操作系统文件沙箱。本层只完成代码与静态 diff 检查，行为验证另行授权。
+这些窄接口不是操作系统文件沙箱。本地验证不代表正式环境的安装与发布验收。
 
 日常向导、发布 profile、旧渠道升级命令、Docker 调试辅助写入器、共享 fixture 和原先列出的
 11 个非秘密测试输入已迁移。迁移历史与备份合同中的旧 TOML 样本保留。Core 的正式数据
 复制职责现已删除；调用程序另行提供样本时仍须取得数据 owner 授权，不能根据文件名猜测
-它不含秘密。候选 broker 禁止正式凭据解析的边界独立生效。
+它不含秘密。凭据解析仍核对实际 owner 和固定配置授权。
 
 SDK 导入路径静态链路：向导从自身 `__file__` 定位宿主源码根，将该根及父进程依赖路径作为
 参数传给安装解释器；`-I -B -c` 启动代码显式加入这些路径，先导入共享 writer，再执行制品内

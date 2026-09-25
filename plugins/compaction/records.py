@@ -3,14 +3,22 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Annotated, Literal, Self, TypeAlias, cast
 from collections.abc import Callable, Mapping
+from typing import Annotated, Literal, Self, TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from agent.plugin_composition import ServiceKey
 
-from agent.plugin_composition.messages import MessageConflict, MessageReader, OwnerStore, OwnerTransaction
+from agent.plugin_composition.messages import (
+    MessageConflict,
+    MessageReader,
+    OwnerStore,
+    OwnerTransaction,
+)
 from agent.plugin_contracts import Message, json_value
+from agent.plugin_contracts.compaction import (
+    COMPACTION_SUMMARIES as COMPACTION_SUMMARIES,
+)
+
 Text = Annotated[str, Field(min_length=1)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -256,9 +264,6 @@ class SummaryLookup:
         if record is None or record.session_id != session_id:
             raise ValueError("摘要 binding 没有对应 Session 的原始记录")
         return _check_lineage(record, self._read, session_id)
-
-
-COMPACTION_SUMMARIES = ServiceKey[SummaryLookup]("compaction.summaries.v1")
 
 
 class SummaryRecords:

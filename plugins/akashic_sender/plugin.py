@@ -1,10 +1,13 @@
-from collections.abc import AsyncGenerator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_contracts import Message
+from agent.plugin_contracts.delivery import (
+    DELIVERY_SENDERS as DELIVERY_SENDERS,
+)
 
 api_version = 3
 name = "akashic_sender"
@@ -29,18 +32,6 @@ class SenderTarget(Protocol):
     async def query(self, key: str, address: str) -> SendResult | None: ...
 
 
-class SenderRegistry(Protocol):
-    async def register(
-        self,
-        ctx: Context,
-        *,
-        name: str,
-        idempotent: bool,
-        open: Callable[[], AbstractAsyncContextManager[SenderTarget]],
-    ) -> Effect: ...
-
-
-DELIVERY_SENDERS = ServiceKey[SenderRegistry]("delivery.senders.v1")
 inject = (DELIVERY_SENDERS,)
 
 

@@ -63,7 +63,7 @@ def _plugin_items(
     receipt = root.receipt()
     fibers = tuple(
         fiber
-        for fiber in root._fibers.values()  # pyright: ignore[reportPrivateUsage]
+        for fiber in root.fibers()
         if fiber.runtime is not None
     )
     current_by_generation: dict[tuple[str, str], list[Fiber]] = {}
@@ -71,14 +71,14 @@ def _plugin_items(
         assert fiber.runtime is not None
         key = (fiber.runtime.plugin_id, fiber.runtime.generation_id)
         current_by_generation.setdefault(key, []).append(fiber)
-    generation_by_fiber_name = {
-        fiber.name: (fiber.runtime.plugin_id, fiber.runtime.generation_id)
+    generation_by_fiber_path = {
+        fiber.path: (fiber.runtime.plugin_id, fiber.runtime.generation_id)
         for fiber in fibers
         if fiber.runtime is not None
     }
     health_by_generation: dict[tuple[str, str], list[HealthView]] = {}
     for item in receipt.health:
-        generation_key = generation_by_fiber_name.get(item.owner)
+        generation_key = generation_by_fiber_path.get(item.owner)
         if generation_key is not None:
             health_by_generation.setdefault(generation_key, []).append(item)
     generation_by_fiber_id = {
@@ -159,9 +159,9 @@ def _fiber_item(root: CompositionRoot, fiber: Fiber) -> dict[str, object]:
 
     parent = fiber.parent
     return {
-        "name": fiber.name,
+        "name": fiber.path,
         "fiber_id": fiber.fiber_id,
-        "parent": None if parent is root.root_fiber else parent.name,
+        "parent": None if parent is root.root_fiber else parent.path,
         "state": fiber.state.value,
         "required": fiber.required_for_readiness,
         "dependencies": [key.name for key in fiber.dependencies],

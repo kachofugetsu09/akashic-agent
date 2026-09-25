@@ -1,45 +1,59 @@
 from __future__ import annotations
 
-from importlib import import_module
-from agent.plugin_composition.ui import UI
-
 import asyncio
-
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from functools import partial
+from importlib import import_module
 
-from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
+from agent.plugin_composition import (
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    Context,
+    ServiceKey,
+)
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    MESSAGE_WRITERS,
+    OWNER_STATE,
+    SESSION_ADMISSION,
+)
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.timers import TIMERS
+from agent.plugin_composition.ui import UI
+from agent.plugin_contracts.models import MODEL_CONTENT, MODEL_SELECTION
+
 from ._boundary import (
-    AKASHA_TOOLS,
+    ALL_TOOLS,
     CONTENT,
     DELIVERY,
     DELIVERY_READ,
     DELIVERY_SENDERS,
     DRIFT_CHANGED,
     SEMANTIC_INTEREST,
-    STANDARD_WEB_TOOLS,
     TOOLS,
     ToolRef,
 )
-from .api import Config, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_CHANGED
+from .api import (
+    DRIFT_DELIVERY,
+    DRIFT_WAKE,
+    EVENTMAIL_CHANGED,
+    EVENTMAIL_DELIVERY,
+    EVENTMAIL_WAKE,
+    Config,
+)
 from .program import REPLY_EXECUTE, run
-from .runtime import Runtime
-from .runtime import DashboardView
 from .request import WAKE_PROGRAM, WAKE_TOOLS_VIEW, check_phase, check_request
-from .tools import DecisionTool, SCHEMAS
-
-REPLY_EXECUTE = ServiceKey("reply.execute.v1")
+from .runtime import DashboardView, Runtime
+from .tools import SCHEMAS, DecisionTool
 
 api_version = 3
 name = "wake"
 version = "4.0.0"
 desc = "内部消息完成初筛、调查与告警，真实送达后确认原职责"
-inject = (UI,
+inject = (
+    MODEL_SELECTION, MODEL_CONTENT,
     REPLY_EXECUTE,
     BINDINGS,
     TASKS,
@@ -58,8 +72,7 @@ inject = (UI,
     TIMERS,
     SEMANTIC_INTEREST,
     DELIVERY_READ,
-    AKASHA_TOOLS,
-    STANDARD_WEB_TOOLS,
+    ALL_TOOLS,
 )
 
 WAKE_DASHBOARD = ServiceKey[Callable[[], DashboardView | None]]("wake.dashboard.v1")
@@ -81,15 +94,7 @@ async def _stop_watcher(watcher: asyncio.Task[None]) -> None:
 
 async def apply(ctx: Context) -> None:
     """归档注册原程序和私有决定工具；消息与领域状态仅在正式来源执行时打开。"""
-    await ctx.require(UI).register(
-        ctx, web="web_module.js",
-        dashboard=lambda: import_module(".dashboard", __package__),
-        requires=("workbench.panels.v2",),
-        provides=(),
-        contract_digests={
-            "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
-        },
-    )
+
     config = Config.model_validate(ctx.config)
     _ = await ctx.require(CONTENT).register(
         ctx,
@@ -159,3 +164,17 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.on(RUNTIME_STOPPING, stop)
     _ = await ctx.on(EVENTMAIL_CHANGED, changed)
     _ = await ctx.on(DRIFT_CHANGED, changed)
+    _ = await ctx.inject((UI, WAKE_DASHBOARD), _register_ui, name="ui")
+
+
+async def _register_ui(ctx: Context) -> None:
+    """界面随 UI provider 换代，不牵动计算与持久状态。"""
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        dashboard=lambda: import_module(".dashboard", __package__),
+        requires=("workbench.panels.v2",),
+        provides=(),
+        contract_digests={
+            "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+        },
+    )

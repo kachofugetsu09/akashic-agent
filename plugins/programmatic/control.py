@@ -1,27 +1,28 @@
 from __future__ import annotations
 
-from typing import Protocol, cast
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context, ServiceKey
-from agent.plugin_composition.control_frames import CONTROL_FRAMES, FrameRouteStage, FrameResolver
+from agent.plugin_composition.control_frames import (
+    CONTROL_FRAMES,
+    FrameResolver,
+    FrameRouteStage,
+)
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    SESSION_ADMISSION,
+    MessageReader,
+    SessionAttributes,
+)
 from agent.plugin_composition.rpc import RequestTransport, RpcMethod
-from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
-from .result import TURN_PROJECTION, TurnProjection
-from agent.plugin_composition.messages import MessageReader, SessionAttributes
 from agent.plugin_contracts import ContentPart, Input
+from agent.plugin_contracts.delivery import (
+    FinalOutputTurn as FinalOutputTurn,
+)
 
-from .result import read_result, read_result_snapshot
-
-
-class FinalOutputTurn(Protocol):
-    @property
-    def source(self) -> str: ...
-    @property
-    def ending_message_id(self) -> str | None: ...
-    @property
-    def message_ids(self) -> tuple[str, ...]: ...
+from .result import TURN_PROJECTION, TurnProjection, read_result, read_result_snapshot
 
 
 class SessionIdParams(BaseModel):
@@ -87,6 +88,7 @@ class Programmatic:
 
     def __init__(self, ctx: Context):
         self.ctx = ctx
+        self.call = ctx.entrypoint(self.call)
         self._frames = ctx.require(CONTROL_FRAMES)
 
     def _resolver(self, session_id: str, input_id: str) -> FrameResolver:
@@ -161,8 +163,7 @@ class Programmatic:
         """为每次公开调用借本 Programmatic Fiber 的短作用域。"""
         session_id = cast(SessionIdParams, params).session_id
         check_session(session_id)
-        async with self.ctx.runtime_scope():
-            return await self._call(method, params, transport, session_id)
+        return await self._call(method, params, transport, session_id)
 
     async def _call(
         self, method: str, params: BaseModel,

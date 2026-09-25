@@ -11,6 +11,7 @@ R3  不得导入兄弟插件实现或经自身绝对路径绕过 generation。
 R4  Core 文件中的字面 ServiceKey 必须在 `plugin_boundary.toml` 登记角色；
     表中登记的 key 也必须真实存在。
 R5  已记录为「文档承诺、代码未实现」的名字必须保持不存在。
+R6  同名 ServiceKey 只允许一处声明；公共合同必须明确值类型。
 
 R1～R3 的既有欠账记在 `plugin_boundary_baseline.toml` 中，只允许减少。
 R4、R5 没有基线；本门不证明角色归属、原子性或运行时隔离。
@@ -19,6 +20,7 @@ R4、R5 没有基线；本门不证明角色归属、原子性或运行时隔离
 ----
     python scripts/plugin_boundary.py check       # 校验，违规时退出码 1
     python scripts/plugin_boundary.py check --base origin/main  # 禁止新增依赖
+    python scripts/plugin_boundary.py catalog     # 输出能力/提供者/消费者静态表
     python scripts/plugin_boundary.py baseline    # 只输出待评审账本，不写文件
 """
 
@@ -107,8 +109,22 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.ui_slots",
     "agent.plugin_composition.workload_slots",
     "agent.plugin_contracts",
+    "agent.plugin_contracts.ui",
+    "agent.plugin_contracts.content",
+    "agent.plugin_contracts.context",
+    "agent.plugin_contracts.turns",
+    "agent.plugin_contracts.delivery",
+    "agent.plugin_contracts.compaction",
+    "agent.plugin_contracts.inspection",
+    "agent.plugin_contracts.proactive",
+    "agent.plugin_contracts.react",
+
     "agent.plugin_contracts.json_store",
     "agent.plugin_contracts.message",
+    "agent.plugin_contracts.sources",
+    "agent.plugin_contracts.tools",
+    "agent.plugin_contracts.models",
+    "agent.plugin_contracts.reply",
     "agent.plugin_composition.message_view",
     "core.common.diagnostic_log",
     "core.error_context",
@@ -144,11 +160,11 @@ class Import:
         return f"{self.importer}|{self.module}"
 
 
-def tracked_python_files() -> list[str]:
-    """返回仓库跟踪的 Python 文件，排除外部 checkout 与生成的插件包。"""
+def source_python_files() -> list[str]:
+    """返回当前源码（包含尚未提交的新文件），排除外部 checkout 与生成的插件包。"""
 
     result = subprocess.run(
-        ["git", "ls-files", "-z", "--", "*.py"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.py"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -356,7 +372,7 @@ def discover_service_keys() -> dict[str, str]:
     """扫描字面 ServiceKey 声明（含别名和小写变量），不推断动态 key。"""
 
     found: dict[str, str] = {}
-    for rel in tracked_python_files():
+    for rel in source_python_files():
         if not is_core_file(rel):
             continue
         path = REPO_ROOT / rel
@@ -378,6 +394,38 @@ def discover_service_keys() -> dict[str, str]:
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 found[arg.value] = rel
     return found
+
+
+def check_shared_contracts() -> list[str]:
+    """服务名只有一个声明 owner；公共合同不能用 Any 隐藏类型错误。"""
+    errors: list[str] = []
+    definitions: dict[str, list[str]] = {}
+    for rel in source_python_files():
+        if not (is_core_file(rel) or rel.startswith("plugins/")):
+            continue
+        tree = ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"), filename=rel)
+        names = {"ServiceKey"}
+        modules: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names.update(alias.asname or alias.name for alias in node.names if alias.name == "ServiceKey")
+            elif isinstance(node, ast.Import):
+                modules.update(alias.asname or alias.name for alias in node.names)
+        for node in ast.walk(tree):
+            call = _is_service_key_call(node, names, modules)
+            if call is None:
+                continue
+            arg = call.args[0] if call.args else next((item.value for item in call.keywords if item.arg == "name"), None)
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                definitions.setdefault(arg.value, []).append(f"{rel}:{call.lineno}")
+                if rel.startswith("agent/plugin_contracts/") and (
+                    not isinstance(call.func, ast.Subscript)
+                    or ast.unparse(call.func.slice) in {"Any", "object"}
+                ):
+                    errors.append(f"R6: 公共合同必须明确值类型: {rel}:{call.lineno}")
+    return errors + [f"R6: 公共合同 {name} 重复声明: {', '.join(paths)}"
+            for name, paths in sorted(definitions.items())
+            if len(paths) > 1]
 
 
 def load_policy() -> dict[str, object]:
@@ -421,7 +469,7 @@ def implementation_python_files() -> list[str]:
 
     return [
         rel
-        for rel in tracked_python_files()
+        for rel in source_python_files()
         if not rel.startswith(("tests/", "tests_scenarios/"))
     ]
 
@@ -502,7 +550,7 @@ def base_findings(base: str) -> dict[str, list[Import]]:
 def run_check(base: str | None = None) -> int:
     policy = load_policy()
     baseline = load_baseline()
-    imports = collect_imports(tracked_python_files())
+    imports = collect_imports(source_python_files())
 
     findings = import_findings(imports)
     previous = base_findings(base) if base else None
@@ -525,6 +573,7 @@ def run_check(base: str | None = None) -> int:
             )
 
     errors.extend(check_capability_table(policy))
+    errors.extend(check_shared_contracts())
     errors.extend(check_phantom_names(policy))
 
     if errors:
@@ -547,7 +596,7 @@ def run_check(base: str | None = None) -> int:
 def print_baseline() -> int:
     """输出待评审账本，不覆盖文件，也不自动批准新增债务。"""
 
-    findings = import_findings(collect_imports(tracked_python_files()))
+    findings = import_findings(collect_imports(source_python_files()))
     lines = [
         "# 插件边界门债务账本：既有违规的精确清单。",
         "# 由 `python scripts/plugin_boundary.py baseline` 输出，人工评审后更新。",
@@ -564,11 +613,91 @@ def print_baseline() -> int:
     return 0
 
 
+def print_catalog() -> int:
+    """输出静态能力声明和调用位置；不导入插件，也不推断运行时激活状态。"""
+    # 1. 收集字面 key、导入和简单别名，支持公共包的再导出。
+    trees = {
+        rel: ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"), filename=rel)
+        for rel in source_python_files()
+        if is_core_file(rel) or is_plugin_file(rel)
+    }
+    symbols: dict[tuple[str, str], str] = {}
+    aliases: dict[tuple[str, str], tuple[str, str]] = {}
+    declarations: dict[str, str] = {}
+    for rel, tree in trees.items():
+        module = rel.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                target = _resolve_relative(rel, node.level, node.module) if node.level else node.module
+                if target:
+                    for alias in node.names:
+                        aliases[module, alias.asname or alias.name] = (target, alias.name)
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                call = _is_service_key_call(node.value, {"ServiceKey"}, set())
+                if call and call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+                    name = call.args[0].value
+                    symbols[module, target.id] = name
+                    declarations[name] = f"{rel}:{node.lineno}"
+                elif isinstance(node.value, ast.Name):
+                    aliases[module, target.id] = (module, node.value.id)
+    while True:
+        resolved = {key: symbols[value] for key, value in aliases.items() if key not in symbols and value in symbols}
+        if not resolved:
+            break
+        symbols.update(resolved)
+
+    # 2. 定位显式提供、声明和有界借用；动态 key 保持为未解析位置。
+    providers: dict[str, set[str]] = {}
+    consumers: dict[str, set[str]] = {}
+    unresolved: set[str] = set()
+    for rel, tree in trees.items():
+        module = rel.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+        for node in ast.walk(tree):
+            expressions: list[ast.AST] = []
+            table = consumers
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr in {"provide", "require", "get", "borrow", "inject"} and node.args:
+                    expressions = [node.args[0]]
+                    if node.func.attr == "provide":
+                        table = providers
+                    # 普通 mapping.get 不是能力读取；只有解析出的 key 才计入。
+                expressions.extend(item.value for item in node.keywords if item.arg == "inject")
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(isinstance(target, ast.Name) and target.id == "inject" for target in targets):
+                    expressions = [node.value]
+            for expression in expressions:
+                names = {symbols[module, part.id] for part in ast.walk(expression)
+                         if isinstance(part, ast.Name) and (module, part.id) in symbols}
+                location = f"{rel}:{node.lineno}"
+                for name in names:
+                    table.setdefault(name, set()).add(location)
+                if not names and table is providers:
+                    unresolved.add(location)
+    print("能力目录（静态位置；不代表已激活，动态选择以运行时组合图为准）。\n")
+    print("| 能力 | 声明 | Provider | Consumer（声明/读取/借用） |")
+    print("|---|---|---|---|")
+    for name, location in sorted(declarations.items()):
+        provide = "<br>".join(sorted(providers.get(name, ()))) or "—"
+        consume = "<br>".join(sorted(consumers.get(name, ()))) or "—"
+        print(f"| `{name}` | {location} | {provide} | {consume} |")
+    if unresolved:
+        print("\n动态 provider 位置（不推断其 key）：" + ", ".join(sorted(unresolved)))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Akashic 插件边界门")
-    parser.add_argument("command", choices=("check", "baseline"))
+    parser.add_argument("command", choices=("check", "baseline", "catalog"))
     parser.add_argument("--base", help="按当前规则比较 Git 基线源码，禁止账本接纳新增依赖")
     args = parser.parse_args()
+    if args.command == "catalog":
+        return print_catalog()
     return run_check(args.base) if args.command == "check" else print_baseline()
 
 

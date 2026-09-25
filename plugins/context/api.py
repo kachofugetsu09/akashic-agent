@@ -1,13 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Protocol, cast
+from typing import cast
 
-from agent.plugin_composition.models import BoundChatModel, ModelRequest
-from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Message, Output, ToolCall, ToolResult
-
+from agent.plugin_composition.models import ModelRequest
+from agent.plugin_contracts import (
+    CallRef,
+    ContentPart,
+    ContentReferences,
+    Control,
+    Message,
+    Output,
+    ToolCall,
+    ToolResult,
+)
+from agent.plugin_contracts.context import (
+    SummaryReducer as SummaryReducer,
+)
+from agent.plugin_contracts.models import ContextModel as ContextModel
 
 MaterialData = Mapping[str, object]
 SummaryData = Mapping[str, object]
@@ -202,38 +214,6 @@ def material_data(materials: Materials) -> MaterialData:
 def decode_summary(value: object) -> Summary | None:
     """在摘要 owner 返回边界创建并校验内部 Summary。"""
     return _summary(value)
-
-
-class ContextModel(Protocol):
-    """Model 的只读请求投影；这里没有 complete 或工具执行权。"""
-
-    @property
-    def context_window(self) -> int | None: ...
-
-    @property
-    def max_tool_schemas(self) -> int | None: ...
-
-    def render(self, messages: tuple[Message, ...], *, after_seq: int,
-               summary_reference: str | None = None, fresh: bool = False) -> ModelRequest:
-        """接收完整事实；after_seq 是摘要覆盖末尾，-1 表示没有覆盖。
-
-        fresh 明确从选定近期窗口开始新请求，不接续旧 opaque 状态。
-        summary_reference 明确要求从这份摘要开始新请求；只有同一摘要下的
-        后续成功响应才接续 opaque state。只给 after_seq 不授权丢弃 replay。
-        """
-        ...
-
-    def estimate(self, request: ModelRequest) -> int: ...
-
-
-class SummaryReducer(Protocol):
-    """摘要 owner 先持久发布再返回；None 表示保留已有摘要，不做缩减。"""
-
-    async def __call__(
-        self, snapshot: tuple[Message, ...], materials: MaterialData,
-        request: ModelRequest, model: BoundChatModel, projection: ContextModel,
-        *, source: str, force: bool,
-    ) -> SummaryData | None: ...
 
 
 class ContextOverflow(ValueError):

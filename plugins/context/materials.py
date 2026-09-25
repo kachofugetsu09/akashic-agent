@@ -4,10 +4,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
-from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_contracts import Message
+from agent.plugin_contracts.context import (
+    MATERIALS as MATERIALS,
+)
 
 from .api import (
     ContextModel,
@@ -229,6 +232,3 @@ class ContextMaterials:
                     yield view
                 finally:
                     view.close()
-
-
-MATERIALS = ServiceKey[ContextMaterials]("context.materials.v3")
