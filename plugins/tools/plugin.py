@@ -240,9 +240,14 @@ class ToolCatalog:
         effect = await ctx.effect(setup, label=f"tool:{name}")
         try:
             _ = await ctx.provide(tool_key(name), reference)
-        except BaseException:
+        except BaseException as error:
             # 发布失败时撤销本次目录注册，避免留下无法声明依赖的工具。
-            await effect.aclose()
+            try:
+                await effect.aclose()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    f"工具发布与目录撤销失败: {name}", [error, cleanup_error],
+                ) from None
             raise
         return reference
 
