@@ -404,14 +404,23 @@ class Context:
                 raise RuntimeError("ACTIVE Service registration 缺少 registration")
             notification = self._root._notify_provider_registered(registration)
             try:
-                notification_task = asyncio.create_task(
-                    notification,
-                    name=f"plugin-service-notify:{key.name}",
-                )
-            except BaseException:
-                notification.close()
+                try:
+                    notification_task = asyncio.create_task(
+                        notification,
+                        name=f"plugin-service-notify:{key.name}",
+                    )
+                except BaseException:
+                    notification.close()
+                    raise
+                await _await_critical(notification_task)
+            except BaseException as error:
+                try:
+                    await effect.aclose()
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        f"Service 发布与撤销失败: {key.name}", [error, cleanup_error],
+                    ) from None
                 raise
-            await _await_critical(notification_task)
         return effect
 
     def get(self, key: ServiceKey[T]) -> T | None:

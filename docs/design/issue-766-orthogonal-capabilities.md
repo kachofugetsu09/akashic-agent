@@ -45,6 +45,20 @@ Akashic 借鉴运行中实例与持久恢复的分工，保留自己的单 Root 
 7. Tools、Models、Reply、Content、Context、Source、Turn、Delivery、Compaction、主动来源与客户端的共享 key/Protocol 统一声明；所有提供与消费方导入同一合同。ServiceKey 值类型不变型，异构图容器才使用 Any。R6 拒绝全仓同名重复声明和公共业务合同的裸 Any；R4 检查角色登记。能力目录由 `python scripts/plugin_boundary.py catalog` 从源码生成，不执行插件。
 8. Manager 的 Fiber 枚举、依赖闭包和局部 readiness 查询由 CompositionRoot 拥有。换代前沿固定 provider 边捕获消费者，换代后沿当前声明边核对就绪，未改安装提交和失败恢复语义。
 
+## 外部 Shell 插件的精确工具依赖
+
+部署预检发现外部 `shell_restore`、`shell_safety` 仍消费旧 `STANDARD_TOOLS`。
+工具注册现在同时由贡献者 Context 发布 `tool_key(name)`，值为该次真实 `ToolRef`。
+消费者声明 `(TOOLS, tool_key("shell"))`，取得 Shell 后注册参数准备或授权行为。
+工具缺席时消费者等待；工具释放或换代时，组合图先排空消费者，再释放工具。
+不以 `ALL_TOOLS` 的瞬时快照代替就绪依赖，不恢复旧工具包服务。
+服务发布失败时，Context 撤销服务，Tools 撤销目录注册；撤销失败保留原 Effect 的清理责任，
+并同时报告发布与撤销错误。持久 binding 仍只保存原业务选择。
+
+两个外部插件直接导入共享合同，删除各自的私有合同副本。此修复只改变工具发现与依赖，
+不改变命令改写、拒绝规则或数据路径；外部历史测试引用已删除的工具包与旧夹具，
+按维护者要求不改写，使用临时真实组合验证部署行为。
+
 ## Turn 与宿主职责取舍
 
 不新增万能 Turn 服务。Wake 的 Input/领取指针、Subagent 的父会话与容量、Scheduler 的触发记录/即时投递分支不是同一份状态。来源继续拥有原事务与结算，模型分支通过同一个 ReplyProgram 入口运行。把它们参数化为大量回调会增加第二套控制模型；SourceSession 继续服务普通会话来源。

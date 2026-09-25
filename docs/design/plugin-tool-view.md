@@ -131,7 +131,8 @@ MCP `tools/list` 得到的工具必须注册进同一引用池并归到声明它
 
 外部 provider 必须通过 `declare_group(description=...)` 声明用途并交付真实 view。
 Calendar、Feed、Fitbit、Steam 和 GitHub Watch 在各自源码仓库迁移；Shell Restore 与
-Shell Safety 按 `STANDARD_TOOLS` 的 shell 引用挂载检查。Observe 在 JSON 持久化边界递归
+Shell Safety 按 `tool_key("shell")` 发布的精确 ToolRef 挂载检查；工具释放时先排空这些贡献者。
+Observe 在 JSON 持久化边界递归
 转换冻结参数，不能只复制最外层字典。正式交付须逐一固定这些仓库的 commit，再走安装链验证。
 
 线上配套恢复保持原 Message 与 receipt：Markdown 仅对可重试的模型失败保留游标，释放
