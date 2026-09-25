@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable, Collection, Iterable
-from contextlib import nullcontext
+from collections.abc import Callable, Collection, Iterable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ContextManager, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
 from agent.plugin_composition.diagnostics import (
     PluginOperation,
@@ -15,7 +15,7 @@ from agent.plugin_composition.diagnostics import (
 from agent.plugin_composition.model import CompositionError, FiberState
 
 if TYPE_CHECKING:
-    from agent.plugin_composition.context import Fiber
+    from agent.plugin_composition.context import Context, Fiber, RuntimeScope
 
 P = TypeVar("P")
 R = TypeVar("R")
@@ -101,6 +101,7 @@ ListenerFailureHandler = Callable[["Fiber", str, BaseException], None]
 class _Listener:
     owner: "Fiber"
     callback: EventListener
+    context: "Context"
 
 
 class EventRegistry:
@@ -151,7 +152,7 @@ class EventRegistry:
 
         # 3. Registration order is the only listener order contract.
         self._contracts[key.name] = key
-        listener = _Listener(owner=owner, callback=callback)
+        listener = _Listener(owner=owner, callback=callback, context=owner.context)
         listeners = self._listeners.setdefault(key, [])
         listeners.append(listener)
         self._on_structure_changed()
@@ -273,7 +274,7 @@ class EventRegistry:
         tasks = [
             asyncio.create_task(
                 _run_parallel_listener(listener, key.name, payload),
-                name=f"plugin-event:{key.name}:{listener.owner.name}",
+                name=f"plugin-event:{key.name}:{listener.owner.path}",
             )
             for listener in listeners
         ]
@@ -340,23 +341,27 @@ class EventRegistry:
         """调用全部 observer，并把各自失败隔离为 Incident。"""
 
         # 1. 冻结并调用完整 observer 列表，不让异步 body 改变后续调用顺序。
-        awaitables: list[tuple[_Listener, object, PluginOperation | None]] = []
+        awaitables: list[tuple[_Listener, object, PluginOperation | None, RuntimeScope | None]] = []
         try:
             for listener in self._active_listeners(
                 cast(EventKey, key), plugin_ids=plugin_ids
             ):
+                scope = listener.context._reserve_scope()
                 operation = _start_listener_operation(
                     listener,
                     "observe",
                     key.name,
                 )
                 try:
-                    if operation is None:
-                        result = listener.callback(payload)
-                    else:
-                        with operation.bind():
+                    with listener.context._call_scope():
+                        if operation is None:
                             result = listener.callback(payload)
+                        else:
+                            with operation.bind():
+                                result = listener.callback(payload)
                 except asyncio.CancelledError as error:
+                    if scope is not None:
+                        scope._close()
                     if operation is not None:
                         operation.finish(error)
                     task = asyncio.current_task()
@@ -369,6 +374,8 @@ class EventRegistry:
                     )
                     continue
                 except Exception as error:
+                    if scope is not None:
+                        scope._close()
                     if operation is not None:
                         operation.finish(error)
                     self._on_listener_failure(
@@ -378,38 +385,58 @@ class EventRegistry:
                     )
                     continue
                 except BaseException as error:
+                    if scope is not None:
+                        scope._close()
                     if operation is not None:
                         operation.finish(error)
                     raise
                 if inspect.isawaitable(result):
-                    awaitables.append((listener, result, operation))
-                elif operation is not None:
-                    operation.finish()
+                    awaitables.append((listener, result, operation, scope))
+                else:
+                    if scope is not None:
+                        scope._close()
+                    if operation is not None:
+                        operation.finish()
         except BaseException as terminal:
             for listener, error in _close_unstarted_observers(
-                [(listener, result) for listener, result, _ in awaitables]
+                [(listener, result) for listener, result, _, _ in awaitables]
             ):
                 self._on_listener_failure(
                     listener.owner,
                     "observer_cleanup_failure",
                     error,
                 )
-            for _, _, operation in awaitables:
+            for _, _, operation, scope in awaitables:
+                if scope is not None:
+                    scope._close()
                 if operation is not None:
                     operation.finish(terminal)
             raise
 
         # 2. 全部 callback 已调用后再统一启动并等待异步 observer。
-        pending = [
-            (
-                listener,
-                asyncio.create_task(
-                    _capture_observer_failure(result, operation),
-                    name=f"plugin-observer:{key.name}:{listener.owner.name}",
-                ),
-            )
-            for listener, result, operation in awaitables
-        ]
+        pending: list[tuple[_Listener, asyncio.Task[BaseException | None]]] = []
+        for listener, result, operation, scope in awaitables:
+            async def run(
+                listener: _Listener = listener, result: object = result,
+                operation: PluginOperation | None = operation, scope: RuntimeScope | None = scope,
+            ) -> BaseException | None:
+                with scope if scope is not None else nullcontext():
+                    return await _capture_observer_failure(result, operation)
+
+            task = asyncio.create_task(run(), name=f"plugin-observer:{key.name}:{listener.owner.path}")
+            # 首指令前取消不会进入 finally；此时仍由派发方结算许可和未开始的 coroutine。
+            def settle(
+                completed: asyncio.Task[BaseException | None], scope: RuntimeScope | None = scope,
+                result: object = result, operation: PluginOperation | None = operation,
+            ) -> None:
+                if scope is not None and not scope._closed:
+                    scope._close()
+                    _close_unexpected_awaitable(result)
+                    if operation is not None:
+                        operation.finish(asyncio.CancelledError())
+
+            task.add_done_callback(settle)
+            pending.append((listener, task))
         if not pending:
             return
         task_owners = {task: listener for listener, task in pending}
@@ -495,7 +522,7 @@ class EventRegistry:
             (
                 _event_descriptor(key),
                 tuple(
-                    listener.owner.name
+                    listener.owner.path
                     for listener in listeners
                     if plugin_ids is None
                     or (
@@ -568,21 +595,23 @@ async def _capture_observer_failure(
     return None
 
 
+@contextmanager
 def _listener_boundary(
     listener: _Listener,
     mode: str,
     event_name: str,
-) -> ContextManager[object]:
+) -> Iterator[object]:
+    """回调始终使用注册时的 Context，不借换代后的 activation。"""
     runtime = listener.owner.runtime
-    if runtime is None:
-        return nullcontext()
-    return plugin_entrypoint(
+    boundary = nullcontext() if runtime is None else plugin_entrypoint(
         plugin_id=runtime.plugin_id,
         generation_id=runtime.generation_id,
-        fiber=listener.owner.name,
+        fiber=listener.owner.path,
         operation=f"event.{mode}",
         entrypoint=event_name,
     )
+    with listener.context._call_scope(), boundary:
+        yield
 
 
 def _start_listener_operation(
@@ -596,7 +625,7 @@ def _start_listener_operation(
     return start_plugin_entrypoint(
         plugin_id=runtime.plugin_id,
         generation_id=runtime.generation_id,
-        fiber=listener.owner.name,
+        fiber=listener.owner.path,
         operation=f"event.{mode}",
         entrypoint=event_name,
     )

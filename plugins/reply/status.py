@@ -3,29 +3,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 
-from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import Task
+from agent.plugin_contracts.reply import (
+    REPLY_STATUS as REPLY_STATUS,
+    ReplyActivity as ReplyActivity,
+    ReplyPreview as ReplyPreview,
+)
+
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
-
-
-@dataclass(frozen=True, slots=True)
-class ReplyPreview:
-    message_id: str
-    text: str = ""
-    thinking: str = ""
-    call_record_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ReplyActivity:
-    session_id: str
-    source: str
-    handle: str
-    active: bool
-    preview: ReplyPreview | None = None
 
 
 class ReplyRead:
@@ -128,6 +116,3 @@ class ReplyState:
         finally:
             del self._items[task.handle]
             self._notify()
-
-
-REPLY_STATUS = ServiceKey[ReplyRead]("reply.status.v2")

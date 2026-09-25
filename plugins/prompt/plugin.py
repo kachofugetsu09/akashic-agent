@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import platform
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from datetime import timedelta
-from typing import Protocol, cast
+from typing import cast
 
-from agent.plugin_composition import Context, ServiceKey
-from agent.plugin_contracts import Input, Message
-from agent.plugin_contracts import json_value
+from agent.plugin_composition import Context
+from agent.plugin_contracts import Input, Message, json_value
+from agent.plugin_contracts.context import (
+    MATERIALS as MATERIALS,
+)
 
 from .persona import read_veda_file
 from .text import build_behavior_rules, build_identity, build_telegram_rendering_prompt
@@ -19,15 +21,6 @@ desc = "每次请求读取人格与行为规则，附带已接纳输入的时间
 workspace_files = ("memory/VEDA.md",)
 
 
-class MaterialRegistry(Protocol):
-    async def register(
-        self, ctx: Context, *, name: str,
-        prepare: Callable[[tuple[Message, ...], str], Awaitable[Mapping[str, object]]],
-        priority: int = 0, prompt: bool = False, reduce: object | None = None,
-    ) -> object: ...
-
-
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")
 inject = (MATERIALS,)
 
 

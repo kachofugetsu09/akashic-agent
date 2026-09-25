@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from agent.plugin_composition import ServiceKey
+from agent.plugin_contracts.inspection import (
+    SCHEDULER_INSPECTION as SCHEDULER_INSPECTION,
+)
 
 from .dashboard import job_detail, job_summary
 from .store import JobStore
@@ -30,6 +32,3 @@ class SchedulerInspectionProvider:
             if job.id == job_id and job.enabled:
                 return job_detail(job)
         return None
-
-
-SCHEDULER_INSPECTION = ServiceKey[SchedulerInspectionProvider]("scheduler.inspection.v1")

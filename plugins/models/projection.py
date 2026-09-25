@@ -12,15 +12,30 @@ from agent.plugin_composition.models import (
     ModelContinuation,
     ModelRequest,
 )
-from agent.plugin_contracts import ContentReferences, CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
-from agent.plugin_contracts import json_value
+from agent.plugin_contracts import (
+    CallRef,
+    ContentPart,
+    ContentReferences,
+    Control,
+    Input,
+    Message,
+    Output,
+    ToolCall,
+    ToolResult,
+    json_value,
+)
+from agent.plugin_contracts.models import (
+    MODEL_CALLS as MODEL_CALLS,
+    MODEL_CHECKS as MODEL_MESSAGE_CHECKS,  # noqa: F401 - 显式再导出给本插件消费者。
+    MODEL_PROJECTION as MODEL_PROJECTION,
+)
+
 from .store import ModelCallReader
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
 ContentCheck = Callable[[ContentPart], ContentReferences]
 DisplayRenderer = Callable[[ContentPart], Mapping[str, object]]
-MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
 MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
     "models.call-history.v1"
 )
@@ -514,7 +529,3 @@ class ProjectionOwner:
 class MessageChecksOwner:
     check_facts = staticmethod(check_facts)
     check_tool_rejection = staticmethod(check_tool_rejection)
-
-
-MODEL_PROJECTION = ServiceKey[ProjectionOwner]("models.projection.v1")
-MODEL_MESSAGE_CHECKS = ServiceKey[MessageChecksOwner]("models.message-checks.v1")

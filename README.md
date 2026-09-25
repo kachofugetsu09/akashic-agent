@@ -39,13 +39,15 @@ Akashic 理想上的动作应该是：
 │  ├─ 识别 GitHub 插件仓库
 │  ├─ 执行 plugin-install
 │  ├─ 检查 manifest.toml 与 plugin.py
-│  └─ Runtime 自动发现并原子发布新快照
-└─ 不重启，下一次执行使用新代际
+│  └─ Controller 保存安装选择，更新唯一 Root 中受影响的插件
+└─ 旧调用排空后释放资源，无关插件继续运行
 ```
 
-安装、升级、启停、源码和 `config.local.toml` 修改都会自动热重载。正在执行的请求保持旧代际，新请求统一使用新代际；候选验证失败时继续保留旧版本。
+安装、升级、启停、源码和 `config.local.toml` 修改会触发局部更新。已经接纳的调用保留实际 activation；更新停止受影响范围的新接纳并等待排空。启动或清理失败会明确保留失败状态，不能把恢复内存指针当作外部效果回滚。
 
-想看完整机制，直接看 [插件系统 Handbook](./_handbook/plugins-tutorial.md)。
+持久 binding 保存业务选择与来源证据。恢复时使用当前兼容实现；服务缺席或业务合同不兼容就失败，不重新执行归档代码。
+
+当前合同见 [工作手册索引](./docs/INDEX.md) 和 [能力依赖与执行归属](./docs/design/issue-766-orthogonal-capabilities.md)。
 
 ---
 

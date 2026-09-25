@@ -3,38 +3,22 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Protocol
 
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, RuntimeScope
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_composition.model import CompositionError
 from agent.plugin_composition.tasks import RestartGate, Task, TaskServiceClosed
 from agent.plugin_contracts import Control, Input, Output
+from agent.plugin_contracts.sources import (
+    Source as Source,
+    Sources as Sources,
+    SourceSession as SourceSession,
+)
 
 logger = logging.getLogger(__name__)
 Program = Callable[[Task, MessageReader, str], Awaitable[object]]
-
-
-class SourceSession(Protocol):
-    async def start(self, program: Program) -> Task | None: ...
-    async def record_failure(self, error: BaseException, *, boundary: int | None = None) -> None: ...
-
-
-class Source(Protocol):
-    @property
-    def context(self) -> Context: ...
-    @property
-    def name(self) -> str: ...
-    @property
-    def open(self) -> Callable[[str], SourceSession]: ...
-
-
-class Sources(Protocol):
-    def entries(self) -> tuple[Source, ...]: ...
-    def changes(self) -> AsyncGenerator[tuple[Source, ...], None]: ...
-    def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -59,9 +43,9 @@ class _Iteration:
     task_joined: bool = False
     task_cancel_requested: bool = False
     task_error: BaseException | None = None
-    reply_scope: object | None = None
+    reply_scope: RuntimeScope | None = None
     reply_entered: bool = False
-    source_scope: object | None = None
+    source_scope: RuntimeScope | None = None
     monitors: list[_Monitor] = field(default_factory=list)
     admission_cancel_requested: bool = False
     monitor_errors: list[BaseException] = field(default_factory=list)

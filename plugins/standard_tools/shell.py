@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
-import hashlib
-import json
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from agent.plugin_composition import Context, PROCESSES, ServiceKey
+from agent.plugin_composition import PROCESSES, Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, TaskSlot
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.process_runtime import (
     DEFAULT_HARD_TIMEOUT_S,
     DEFAULT_INITIAL_YIELD_TIME_MS,
@@ -26,13 +26,23 @@ from agent.plugin_composition.process_runtime import (
     format_execution_result,
 )
 from agent.plugin_composition.shell_runtime import resolve_shell
+from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, TaskSlot
+from agent.plugin_contracts import (
+    CallRef,
+    ContentPart,
+    Control,
+    Message,
+    Output,
+    ToolCall,
+    json_value,
+)
+from agent.plugin_contracts.tools import (
+    TOOL_CLEANUP as TOOL_CLEANUP,
+)
+
+from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
 from .shell_backend import _log_shell_execution, _shell_env
 from .shell_security import validate_command
-from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall
-from agent.plugin_contracts import json_value
-
-from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 
 
 class ShellSettings(BaseModel):
@@ -136,23 +146,6 @@ class ShellOwners:
 
 
 SHELL_OWNERS = ServiceKey[ShellOwners]("shell.owners.v1")
-
-
-class ShellCleanup(Protocol):
-    """标准 Shell 提供给程序组合的真实收尾边界。"""
-
-    def __call__(
-        self,
-        reader: MessageReader,
-        source: str,
-        from_seq: int,
-        *,
-        task: Task | None = None,
-        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]] | None = None,
-    ) -> AbstractAsyncContextManager[None]: ...
-
-
-TOOL_CLEANUP = ServiceKey[ShellCleanup]("tools.cleanup.v1")
 
 
 class ShellTool:

@@ -5,7 +5,7 @@ import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from agent.plugin_composition.model import CompositionError, ServiceKey
 
@@ -32,7 +32,7 @@ class ExecutorService:
     """Run explicit synchronous tasks in one bounded, lifecycle-owned pool."""
 
     name = "executor-service"
-    inject: tuple[ServiceKey[object], ...] = ()
+    inject: tuple[ServiceKey[Any], ...] = ()
 
     def __init__(self, *, max_workers: int = 4) -> None:
         if max_workers <= 0:

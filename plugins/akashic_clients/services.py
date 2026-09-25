@@ -12,19 +12,29 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from agent.plugin_composition.channels import AttachmentRef
-from agent.plugin_composition.messages import InvalidPage, MessageConflict
-from agent.plugin_composition.models import ChatModelSelection, ModelCatalogSnapshot, ModelCallStats
 from agent.plugin_composition.message_view import MessageDisplayReader
+from agent.plugin_composition.messages import InvalidPage, MessageConflict
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
+from agent.plugin_composition.models import (
+    ChatModelSelection,
+    ModelCallStats,
+    ModelCatalogSnapshot,
+)
+from agent.plugin_composition.ui import (
+    WebUiProvider as WebUiProvider,
+)
 from agent.plugin_composition.ui_slots import (
-    MobileUiPluginUnavailable,
-    MobileUiQueryOverloaded,
-    MobileUiQueryTimeout,
-    MobileUiRpcExecutionError,
-    MobileUiRpcInvalidRequest,
-    MobileUiStaleRevision,
+    MobileUiPluginUnavailable,  # noqa: F401 - 显式再导出给本插件消费者。
+    MobileUiQueryOverloaded,  # noqa: F401 - 显式再导出给本插件消费者。
+    MobileUiQueryTimeout,  # noqa: F401 - 显式再导出给本插件消费者。
+    MobileUiRpcExecutionError,  # noqa: F401 - 显式再导出给本插件消费者。
+    MobileUiRpcInvalidRequest,  # noqa: F401 - 显式再导出给本插件消费者。
+    MobileUiStaleRevision,  # noqa: F401 - 显式再导出给本插件消费者。
 )
 from agent.plugin_contracts.message import Message
+from agent.plugin_contracts.ui import (
+    MobileUiProvider as MobileUiProvider,
+)
 
 
 class MessagePagePort(Protocol):
@@ -159,10 +169,6 @@ ModelSelectionReader = Callable[[Mapping[str, object]], Awaitable[ChatModelSelec
 ModelStatsReader = Callable[[str], Awaitable[ModelCallStats]]
 
 
-class MobileUiProvider(Protocol):
-    async def catalog(self) -> dict[str, object]: ...
-    async def asset(self, plugin_id: str, plugin_revision: str, kind: str, sha256: str) -> dict[str, object]: ...
-    async def query(self, plugin_id: str, plugin_revision: str, method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]: ...
 
 
 class ModelCatalogUnavailable(RuntimeError): ...
@@ -183,9 +189,6 @@ class RuntimeInspectionService(Protocol):
     async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]: ...
 
 
-class WebUiProvider(Protocol):
-    async def bootstrap(self) -> bytes: ...
-    async def state(self) -> dict[str, str]: ...
 
 
 class ModelRpcInvoker(Protocol):

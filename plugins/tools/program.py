@@ -5,12 +5,18 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_WRITERS
-from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult
+from agent.plugin_composition.messages import (
+    MESSAGE_WRITERS,
+    MessageReader,
+    MessageWriter,
+)
 from agent.plugin_composition.tasks import ExternalRootPermit
-from agent.plugin_composition.messages import MessageReader, MessageWriter
+from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult
+from agent.plugin_contracts.tools import (
+    TOOL_PROGRAM as TOOL_PROGRAM,
+)
 
 from .api import Authorize, MessageReply, result_message_id
 
@@ -98,6 +104,3 @@ class ToolProgramFactory:
                 fixed_bindings=fixed_bindings,
                 presentation=presentation,
             )
-
-
-TOOL_PROGRAM = ServiceKey[ToolProgramFactory]("tools.program.v1")

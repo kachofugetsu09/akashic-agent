@@ -10,16 +10,21 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, ContextManager, Literal, Protocol, TypeVar, cast
+from typing import Any, ContextManager, Literal, TypeVar, cast
 
-from agent.plugin_composition.context import Context, RuntimeScope
-from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
-from agent.plugin_composition.requests import RequestContext
-from agent.plugin_composition.diagnostics import plugin_entrypoint
+from agent.plugin_composition.channel_io import (
+    CHANNEL_ATTACHMENT_IMPORT,
+    CHANNEL_ATTACHMENT_READ,
+    CHANNEL_IDENTITY,
+    INPUT_CUSTODY,
+    InputCustody,
+)
 from agent.plugin_composition.channels import (
-    CHANNELS,
     CHANNEL_INPUT,
-    ChannelDefinition,
+    CHANNELS,
+    DURABLE_HANDOFF_ID,
+    DURABLE_INBOUND_MARKER,
+    DURABLE_PROVIDER_MESSAGE_ID,
     AttachmentKind,
     AttachmentReadLease,
     AttachmentRef,
@@ -28,7 +33,7 @@ from agent.plugin_composition.channels import (
     ChannelAttachmentReadPort,
     ChannelCapability,
     ChannelCleanupFailure,
-    ChannelControlPort,
+    ChannelDefinition,
     ChannelDeliveryReceipt,
     ChannelFactoryContext,
     ChannelPresentationPorts,
@@ -40,26 +45,23 @@ from agent.plugin_composition.channels import (
     InboundEnvelope,
     InboundIdentity,
     OutboundEnvelope,
+    PresentationReceipt,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
-    PresentationReceipt,
     RawInbound,
-    DURABLE_HANDOFF_ID,
-    DURABLE_INBOUND_MARKER,
-    DURABLE_PROVIDER_MESSAGE_ID,
-    StreamSubscription,
     StopReceipt,
+    StreamSubscription,
+    TurnStartedPresentation,
     TurnStreamCallback,
     TurnStreamEvent,
     TurnStreamEventKind,
     TurnStreamPort,
-    TurnStartedPresentation,
 )
-
+from agent.plugin_composition.context import Context, RuntimeScope
+from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.host import HOST_INFO, HostInfo
-from agent.plugin_composition.channel_io import (
-    InputCustody, INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT, CHANNEL_ATTACHMENT_READ,
-)
+from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
+from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.runtime_lifecycle import RUNTIME_STARTING, RuntimeStarting
 
 _T = TypeVar("_T")
@@ -1226,7 +1228,7 @@ class PluginChannels:
                 allowed = frozenset(context._declared_dependencies())
                 runtime = context.runtime
 
-                def resolve(service_key: ServiceKey[object]) -> object:
+                def resolve(service_key: ServiceKey[Any]) -> object:
                     if not active or asyncio.current_task() is not owner_task:
                         raise CompositionError("REQUEST_SCOPE_MISSING", "插件请求作用域已关闭")
                     if service_key not in allowed:

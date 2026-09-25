@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+
 from agent.plugin_composition import Context
-from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.execution import WORKLOAD_CONTROLLER
+from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.workload_slots import WORKLOADS, Workload
+
 from .definitions import WorkloadBinding, _descriptor, _normalize_workload
 from .host import WorkloadGenerationHost
 
@@ -99,7 +101,9 @@ class Workloads:
         return owner
 
     def urls(self, ctx):
-        self.check(ctx)
+        # 没有注册 Workload 的 UI 贡献方也可查询空目录；实际句柄仍校验声明与 activation。
+        if ctx.root_instance_token is not self.root_instance_token:
+            raise PermissionError("Workload provider 不能跨 Root")
         return {(name, port.name): handle.url(ctx, port.name)
             for (owner, name), handle in self._entries.items()
             if owner == ctx.runtime.plugin_id for port in handle._definition.ports}

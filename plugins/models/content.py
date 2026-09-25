@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
-import json
 from typing import Any, cast
 
 from agent.media import (
@@ -12,14 +12,20 @@ from agent.media import (
     encode_image_bytes,
     validate_image_attachment_budget,
 )
-from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
     ChannelAttachmentReadPort,
 )
-from agent.plugin_contracts import ContentPart, Control, Message, ToolCall, freeze_json
-from agent.plugin_contracts import json_value
+from agent.plugin_contracts import (
+    ContentPart,
+    Control,
+    Message,
+    ToolCall,
+    freeze_json,
+    json_value,
+)
+from agent.plugin_contracts.models import MODEL_CONTENT as MODEL_CONTENT
 
 
 async def load_artifacts(
@@ -100,6 +106,3 @@ class ContentOwner:
 
     load_artifacts = staticmethod(load_artifacts)
     render = staticmethod(render_content)
-
-
-MODEL_CONTENT = ServiceKey[ContentOwner]("models.content.v1")

@@ -2,76 +2,61 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import replace
-from typing import Protocol, Any, cast
+from typing import Any, cast
 from uuid import uuid4
 
-from agent.plugin_composition import Context, RuntimeScope, ServiceKey
+from agent.plugin_composition import Context, RuntimeScope
+from agent.plugin_composition.messages import (
+    MessageConflict,
+    MessageReader,
+    MessageWriter,
+    OwnerStore,
+    OwnerTransaction,
+)
 from agent.plugin_composition.models import (
     BoundChatModel,
     ContextLengthError,
     EmptyResponseError,
     LLMResponse,
     ModelContinuation,
-    ModelRequest,
     ModelError,
+    ModelRequest,
     ModelUnavailableError,
     StreamCallback,
 )
-from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter, OwnerStore, OwnerTransaction
-from agent.plugin_contracts import CallRef, Control, Input, Message, Output, Part, ContentPart, ToolCall, ToolResult
+from agent.plugin_contracts import (
+    CallRef,
+    ContentPart,
+    Control,
+    Input,
+    Message,
+    Output,
+    Part,
+    ToolCall,
+    ToolResult,
+)
+from agent.plugin_contracts.content import (
+    ContentView as ContentView,
+)
+from agent.plugin_contracts.context import (
+    ContextBuilder as ContextBuilder,
+    SummaryReducer as SummaryReducer,
+)
+from agent.plugin_contracts.models import (
+    MessageProjection as MessageProjection,
+)
+from agent.plugin_contracts.react import (
+    REACT as REACT,
+)
+from agent.plugin_contracts.tools import (
+    DecodedCall as DecodedCall,
+    ToolMenu as ToolMenu,
+)
 
 Materials = Mapping[str, object]
-
-
-class ContentView(Protocol):
-    async def decode(self, text: str, references: tuple[Mapping[str, object], ...] = ()) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]: ...
-
-
-class ContextBuilder(Protocol):
-    def build_attempt(self, snapshot: Sequence[Message], *, materials: Materials,
-                      model: MessageProjection, tools: Sequence[Mapping[str, Any]] = (),
-                      max_output_tokens: int, window_start: str | None = None) -> tuple[ModelRequest, str | None]: ...
-    def reminder_content(self, materials: Materials) -> str | None: ...
-
-
-class DecodedCall(Protocol):
-    @property
-    def binding_id(self) -> str | None: ...
-    @property
-    def arguments(self) -> Mapping[str, object]: ...
-    @property
-    def rejection(self) -> Mapping[str, object] | None: ...
-
-
-class ToolMenu(Protocol):
-    @property
-    def schemas(self) -> tuple[Mapping[str, Any], ...]: ...
-    def name(self, binding_id: str) -> str: ...
-    def decode(self, call: Any) -> DecodedCall: ...
-    async def execute(self, call: CallRef) -> object: ...
-    async def settle_abandoned(self, call: CallRef) -> object: ...
-
-
-class SummaryReducer(Protocol):
-    async def __call__(self, snapshot: tuple[Message, ...], materials: Materials,
-                       request: ModelRequest, model: BoundChatModel, projection: MessageProjection,
-                       *, source: str, force: bool) -> Mapping[str, object] | None: ...
-
-
-class MessageProjection(Protocol):
-    @property
-    def context_window(self) -> int | None: ...
-    @property
-    def max_tool_schemas(self) -> int | None: ...
-    def estimate(self, request: ModelRequest) -> int: ...
-    def render(self, messages: tuple[Message, ...], *, after_seq: int,
-               summary_reference: str | None = None, fresh: bool = False) -> ModelRequest: ...
-    def facts(self, response: LLMResponse, call_indices: Sequence[int], *,
-              reminder: str | None = None,
-              actual_calls: Sequence[ToolCall | ContentPart] | None = None) -> ContentPart: ...
 
 
 logger = logging.getLogger(__name__)
@@ -687,9 +672,6 @@ async def react(
                 raise asyncio.CancelledError from None
             if not indices:
                 return message
-
-
-REACT = ServiceKey[Callable[..., Awaitable[Message]]]("react.v2")
 
 
 async def apply(ctx: Context) -> None:

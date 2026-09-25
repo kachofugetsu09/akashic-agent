@@ -3,13 +3,18 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
 
-from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
+from agent.plugin_contracts.sources import (
+    SOURCE_CHECK as SOURCE_CHECK,
+    SOURCE_SESSION as SOURCE_SESSION,
+    SOURCES as SOURCES,
+    Source as Source,
+    SourceSession as SourceSession,
+)
 
 api_version = 3
 name = "sources"
@@ -22,26 +27,6 @@ Changed = Callable[[MessageReader, str], None]
 
 
 from .session import SourceSession as _SourceSession, check_source
-
-
-class SourceSession(Protocol):
-    async def start(
-        self, program: Callable[[Task, MessageReader, str], Awaitable[object]],
-    ) -> Task | None: ...
-
-    async def record_failure(
-        self, error: BaseException, *, boundary: int | None = None,
-    ) -> None: ...
-
-
-@dataclass(frozen=True)
-class Source:
-    context: Context
-    name: str
-    open: Callable[[str], SourceSession]
-    needs_reply: Callable[[MessageReader], bool]
-    accept: Accept | None = None
-    channels: tuple[str, ...] | None = ()
 
 
 @dataclass(slots=True)
@@ -178,12 +163,6 @@ class Sources:
             assert selected.accept is not None
             async with selected.context.runtime_scope():
                 return await selected.accept(session_id, message_id, message)
-
-
-SOURCES = ServiceKey[Sources]("sources.v2")
-SOURCE_CHECK = ServiceKey[Callable[[Task, MessageReader, str, int], None]]("source.check.v1")
-SOURCE_SESSION = ServiceKey[type[_SourceSession]]("source.session.v1")
-SOURCE_CHANGED = ServiceKey[Changed]("source.changed.v1")
 
 
 async def apply(ctx: Context) -> None:

@@ -43,6 +43,7 @@ async def _mount_local_tools(root, tmp_path, events):
     fiber = await root.mount(
         apply,
         name="tools-provider",
+        inject=(TASKS,),
         runtime=_runtime(tmp_path, "tools-provider"),
     )
     return fiber, contexts[0], catalogs[0], plugin_tasks, admissions[0]

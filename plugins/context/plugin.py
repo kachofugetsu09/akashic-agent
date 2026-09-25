@@ -1,28 +1,40 @@
 from __future__ import annotations
 
 import json
-from html import escape
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from html import escape
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_composition.models import ModelRequest
 from agent.plugin_contracts import (
     Message,
 )
-from .api import ContextModel, ContextOverflow, check_summary, MaterialData, Materials, Summary, decode_material, settled_prefixes, summary_range
-from .materials import ContextMaterials, MATERIALS
+from agent.plugin_contracts.context import (
+    CONTEXT as CONTEXT,
+)
+
+from .api import (
+    ContextModel,
+    ContextOverflow,
+    MaterialData,
+    Materials,
+    Summary,
+    check_summary,
+    decode_material,
+    settled_prefixes,
+    summary_range,
+)
+from .materials import MATERIALS, ContextMaterials
 
 api_version = 3
 name = "context"
 version = "1.0.0"
 desc = "用固定日志和已取得材料组成请求，不执行检索或摘要"
 inject = ()
-
-
 
 
 class Config(BaseModel):
@@ -184,9 +196,6 @@ class ContextBuilder:
             ), None
         except ContextOverflow as overflow:
             return overflow.request, str(overflow)
-
-
-CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 
 
 async def apply(ctx: Context) -> None:

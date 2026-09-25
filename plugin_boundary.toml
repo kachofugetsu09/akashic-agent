@@ -105,19 +105,19 @@ note = "有界纯同步 worker 池"
 # ── 人类与模型入口 ───────────────────────────────────────────
 [capabilities."core.commands"]
 role = "seam"
-note = "普通 Commands provider 拥有人类命令、alias、handler 注册及封存目录"
+note = "普通 Commands provider 拥有人类命令、alias、handler 注册及当前活动目录"
 
 [capabilities."core.ui_slots"]
 role = "seam"
-note = "普通 UI provider 拥有 Mobile 页面、查询与导航注册及封存目录"
+note = "普通 UI provider 拥有 Mobile 页面、查询与导航注册及当前活动目录"
 
 [capabilities."core.message_display.v1"]
 role = "core"
-note = "按当前 snapshot 组合 message.display:* 的只读页面投影"
+note = "按当前 live Root 组合 message.display:* 的只读页面投影"
 
 [capabilities."core.mobile_ui.v1"]
 role = "core"
-note = "按当前 snapshot 提供中立 Mobile UI registry 投影"
+note = "按当前 live Root 提供中立 Mobile UI registry 投影"
 
 [capabilities."core.web_ui.v1"]
 role = "seam"
@@ -125,19 +125,19 @@ note = "普通 UI provider 提供当前 Root 的 Web bootstrap 与身份投影"
 
 [capabilities."core.dashboard_routes.v1"]
 role = "core"
-note = "Manager 从实际宿主固定 Dashboard route 列表，UI 插件只读"
+note = "宿主装配从实际端口固定 Dashboard route 列表，UI 插件只读"
 
 [capabilities."core.host_info"]
 role = "core"
-note = "Manager 固定提供 boot identity 与 validation marker 的只读值"
+note = "宿主装配固定提供 boot identity 与 validation marker 的只读值"
 
 [capabilities."ui.v1"]
 role = "seam"
-note = "普通 UI provider 拥有贡献注册、目录封存和 Dashboard 资源"
+note = "普通 UI provider 拥有贡献注册、活动目录和 Dashboard 资源"
 
 [capabilities."core.runtime_catalog.v1"]
 role = "core"
-note = "按当前 snapshot 提供中立插件与 MCP 只读目录投影"
+note = "按当前 live Root 提供中立插件与 MCP 只读目录投影"
 
 [capabilities."core.runtime_mcp_detail.v1"]
 role = "core"
@@ -221,3 +221,159 @@ note = "客户端消费插件已投影的短命回复状态，不取得内部状
 [capabilities."tools.display-name.v1"]
 role = "seam"
 note = "客户端只读历史 binding 名称；工具插件拥有描述解释，不允许打开或执行工具"
+
+[capabilities."tools.v1"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."tools.all.v1"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."tool-search.presentation.v2"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."models.selection.v1"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."models.content.v1"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."models.message-checks.v1"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."models.projection.v1"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."models.calls.v1"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."reply.execute.v1"]
+role = "seam"
+note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+
+[capabilities."akasha.semantic-interest.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."compaction.reader.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."compaction.summaries.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."content.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."context.materials.v3"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."context.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."conversation.check_origin.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."conversation.commands.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."conversation.complete.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."delivery.final_output.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."delivery.input-origin.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."delivery.read.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."delivery.senders.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."delivery.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."drift.delivery.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."drift.wake.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."eventmail.delivery.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."eventmail.wake.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."react.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."reply.completion.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."reply.program.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."scheduler.inspection.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."source.check.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."source.session.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."sources.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."standard_tools.skill_inspection.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."tools.bind-saved.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."tools.cleanup.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."tools.program.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."turn.projection.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
