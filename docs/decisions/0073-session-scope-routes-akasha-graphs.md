@@ -31,8 +31,10 @@
 7. **记忆槽位。** Akasha 提供 `plugin.claim.embedding_memory`，同一 Root 只允许一个
    embedding 记忆系统；一个 Akasha 实例管理全部图。
 8. **项目创建。** Web 先以稳定项目 ID 提交 Akasha 的 set-once 策略，再让 Projects
-   按该 ID 幂等创建记录。Web 在本地保存未完成请求并重放；策略提交前不存在可接纳
-   Session 的项目。Projects 不解释策略，Akasha 不解释项目名称。
+   按该 ID 幂等创建记录。Web 在本地保存未确认请求，刷新和目录读取只展示它；用户显式
+   “继续创建”才以原 ID、原策略重放，或“停止尝试”只移除本地请求，不撤销可能已提交
+   的策略或项目。没有 Projects 记录前，不开放可接纳 Session 的项目。
+   Projects 不解释策略，Akasha 不解释项目名称。
 
 本 PR 内先前预览版本使用分隔符拼接独立图键。新格式改变独立图摘要路径；不自动
 移动、删除或回退读取旧预览图。已有预览工作区应先备份，再由维护者按显式逐图重建

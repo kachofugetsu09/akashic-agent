@@ -41,13 +41,16 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
-    projects, projectsInstalled, memoryInstalled, activeProject, startProjectChat, createProject,
+    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
+    startProjectChat, createProject, continueProject, stopProject,
   } = controller;
   const openPairing = () => setMobilePairingOpen(true);
   const sidebarProjects = useMemo(() => projectsInstalled ? {
-    items: projects, activeProjectId: activeProject?.id ?? "", memoryInstalled,
-    onNewChat: startProjectChat, onCreate: createProject,
-  } : undefined, [activeProject?.id, createProject, memoryInstalled, projects, projectsInstalled, startProjectChat]);
+    items: projects, pending: pendingProjects, pendingError: pendingProjectsError,
+    activeProjectId: activeProject?.id ?? "", memoryInstalled,
+    onNewChat: startProjectChat, onCreate: createProject, onContinue: continueProject, onStop: stopProject,
+  } : undefined, [activeProject?.id, createProject, continueProject, memoryInstalled, pendingProjects,
+    pendingProjectsError, projects, projectsInstalled, startProjectChat, stopProject]);
   const activeTitle = sidebarSessions.find((session) => session.active)?.title || "新会话";
   const headingTitle = activeProject ? `${activeProject.name} / ${activeTitle}` : activeTitle;
   const committed = new Set(timelineMessages.map((message) => message.id));

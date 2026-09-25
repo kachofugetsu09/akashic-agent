@@ -8,7 +8,7 @@ import { memo, useMemo, useState } from "react";
 import { ConversationNavigation, type ConversationSession } from "./conversation-navigation";
 import { MobilePluginSlot } from "./mobile-plugin-runtime";
 import { ProjectNavigation, type ProjectSessionItem } from "./project-navigation";
-import type { ProjectMemory, ProjectRow } from "./web-projects";
+import type { PendingProjectRow, ProjectMemory, ProjectRow } from "./web-projects";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
   active: boolean;
@@ -17,10 +17,14 @@ export interface DesktopSidebarSession extends Omit<ConversationSession, "active
 
 export interface DesktopSidebarProjects {
   items: ProjectRow[];
+  pending: PendingProjectRow[];
+  pendingError: string;
   activeProjectId: string;
   memoryInstalled: boolean;
   onNewChat: (projectId: string) => void;
   onCreate: (name: string, memory: ProjectMemory) => Promise<void>;
+  onContinue: (key: string) => Promise<void>;
+  onStop: (key: string) => void;
   onOpenCreate?: () => void;
 }
 
@@ -97,6 +101,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       {projects ? (
         <ProjectNavigation
           projects={projects.items}
+          pending={projects.pending}
+          pendingError={projects.pendingError}
           sessionsByProject={sessionsByProject}
           activeProjectId={projects.activeProjectId}
           pendingSessionId={pendingSessionId}
@@ -104,6 +110,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           onSelectSession={onSelectSession}
           onNewProjectChat={projects.onNewChat}
           onCreateProject={projects.onCreate}
+          onContinueProject={projects.onContinue}
+          onStopProject={projects.onStop}
           onOpenCreateProject={projects.onOpenCreate}
         />
       ) : null}

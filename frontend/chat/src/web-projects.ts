@@ -20,6 +20,7 @@ export interface ProjectRow {
   archived: boolean;
   createdAt: string;
   memory?: ProjectMemory;
+  memoryUnreadable?: boolean;
 }
 
 interface PendingProject {
@@ -31,18 +32,56 @@ interface PendingProject {
 
 const PENDING_PREFIX = "akashic.project-create.";
 
-/** 浏览器只保存未完成请求；Projects 与 Akasha 各自保存提交后的事实。 */
-function pendingProjects(): PendingProject[] {
-  return Object.keys(localStorage).filter((key) => key.startsWith(PENDING_PREFIX)).map((key) => {
-    const value: unknown = JSON.parse(localStorage.getItem(key) ?? "null");
-    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("待创建项目记录无效");
-    const row = value as Record<string, unknown>;
-    if (typeof row.id !== "string" || key !== PENDING_PREFIX + row.id
-      || typeof row.name !== "string" || !row.name
-      || (row.memory !== "global" && row.memory !== "isolated" && row.memory !== "off")
-      || typeof row.memoryInstalled !== "boolean") throw new Error("待创建项目记录无效");
-    return row as unknown as PendingProject;
-  });
+export interface PendingProjectRow {
+  key: string;
+  id?: string;
+  name: string;
+  memory?: ProjectMemory;
+  invalid: boolean;
+}
+
+function parsePending(key: string, raw: string | null): PendingProject {
+  const value: unknown = JSON.parse(raw ?? "null");
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("待创建项目记录无效");
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string" || key !== PENDING_PREFIX + row.id
+    || typeof row.name !== "string" || !row.name
+    || (row.memory !== "global" && row.memory !== "isolated" && row.memory !== "off")
+    || typeof row.memoryInstalled !== "boolean") throw new Error("待创建项目记录无效");
+  return row as unknown as PendingProject;
+}
+
+function readPending(key: string): PendingProject {
+  return parsePending(key, localStorage.getItem(key));
+}
+
+/** 本地请求只供用户手动恢复；损坏的单条记录不阻断其他项目。 */
+export function listPendingProjects(): { items: PendingProjectRow[]; error: string } {
+  try {
+    const items: PendingProjectRow[] = [];
+    for (const key of Object.keys(localStorage).filter((key) => key.startsWith(PENDING_PREFIX))) {
+      const raw = localStorage.getItem(key);
+      try {
+        const pending = parsePending(key, raw);
+        items.push({ key, id: pending.id, name: pending.name, memory: pending.memory, invalid: false });
+      } catch {
+        items.push({ key, name: "无法读取的本地请求", invalid: true });
+      }
+    }
+    return { items, error: "" };
+  } catch {
+    return { items: [], error: "本地未确认请求暂不可读；已提交项目仍可使用。" };
+  }
+}
+
+export function stopProject(key: string): void {
+  if (!key.startsWith(PENDING_PREFIX)) throw new Error("待创建项目标识无效");
+  localStorage.removeItem(key);
+}
+
+export async function continueProject(key: string, memoryInstalled: boolean): Promise<ProjectRow> {
+  if (!key.startsWith(PENDING_PREFIX)) throw new Error("待创建项目标识无效");
+  return finishProject(readPending(key), memoryInstalled);
 }
 
 async function finishProject(pending: PendingProject, memoryInstalled: boolean, signal?: AbortSignal): Promise<ProjectRow> {
@@ -64,31 +103,33 @@ async function finishProject(pending: PendingProject, memoryInstalled: boolean, 
 }
 
 export async function loadProjects(memoryInstalled: boolean, signal?: AbortSignal): Promise<ProjectRow[]> {
-  for (const pending of pendingProjects()) {
-    await finishProject(pending, memoryInstalled, signal);
-  }
   const result = await queryHostPlugin(PROJECTS_PLUGIN, "project.list", {}, signal);
   if (!Array.isArray(result.items)) throw new Error("项目列表无效");
   const projects = result.items.map(projectRow).filter((project) => !project.archived);
   if (!memoryInstalled) return projects;
-  return Promise.all(projects.map(async (project) => ({
-    ...project,
-    memory: await readProjectMemory(project.id, signal),
-  })));
+  return Promise.all(projects.map(async (project) => {
+    try {
+      return { ...project, memory: await readProjectMemory(project.id, signal) };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return { ...project, memoryUnreadable: true };
+    }
+  }));
 }
 
-/** 固定策略后幂等建项目；失败请求保留到刷新、重开或手动重试。 */
+/** 固定策略后幂等建项目；失败请求只由用户显式继续。 */
 export async function createProject(
   name: string,
   memory: ProjectMemory,
   memoryInstalled: boolean,
 ): Promise<ProjectRow> {
   if (!memoryInstalled && memory !== "global") throw new Error("记忆插件暂不可用，不能创建非全局项目");
-  const previous = pendingProjects().find((item) => item.name === name);
-  if (previous && (previous.memory !== memory || previous.memoryInstalled !== memoryInstalled)) {
-    throw new Error("同名项目仍在等待原记忆策略完成，请恢复原请求");
+  const snapshot = listPendingProjects();
+  if (snapshot.error) throw new Error(snapshot.error);
+  if (snapshot.items.some((item) => item.name === name)) {
+    throw new Error("同名项目存在未确认请求，请在项目栏继续创建或停止尝试");
   }
-  const pending = previous ?? { id: `p_${createUuid().replaceAll("-", "")}`, name, memory, memoryInstalled };
+  const pending = { id: `p_${createUuid().replaceAll("-", "")}`, name, memory, memoryInstalled };
   localStorage.setItem(PENDING_PREFIX + pending.id, JSON.stringify(pending));
   return finishProject(pending, memoryInstalled);
 }

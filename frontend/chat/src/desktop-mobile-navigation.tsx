@@ -45,6 +45,14 @@ export function DesktopMobileNavigation(props: DesktopSidebarProps) {
             onNewChat: (projectId) => {
               closeThen(() => navigationProjects.onNewChat(projectId));
             },
+            onContinue: async (key) => {
+              await navigationProjects.onContinue(key);
+              setOpen(false);
+            },
+            onStop: (key) => {
+              navigationProjects.onStop(key);
+              setOpen(false);
+            },
             onOpenCreate: () => {
               openProjectAfterClose.current = true;
               setOpen(false);
@@ -62,7 +70,10 @@ export function DesktopMobileNavigation(props: DesktopSidebarProps) {
       memoryInstalled={lastProjects.current.memoryInstalled}
       onOpenChange={setProjectDialogOpen}
       onCreate={lastProjects.current.onCreate}
-      onCloseFocus={() => triggerRef.current?.focus()}
+      onCloseFocus={() => {
+        if (lastProjects.current?.pending.length) setOpen(true);
+        else triggerRef.current?.focus();
+      }}
     /> : null}
   </>;
 }

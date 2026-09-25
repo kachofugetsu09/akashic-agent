@@ -10,9 +10,13 @@ import {
   PROJECT_DIMENSION,
   PROJECTS_PLUGIN,
   createProject as createProjectRecord,
+  continueProject as continueProjectRecord,
+  listPendingProjects,
   loadProjects,
+  stopProject as stopProjectRecord,
   type ProjectMemory,
   type ProjectRow,
+  type PendingProjectRow,
 } from "./web-projects";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
@@ -59,6 +63,8 @@ export function useDesktopChatController() {
   );
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [pendingProjects, setPendingProjects] = useState<PendingProjectRow[]>([]);
+  const [pendingProjectsError, setPendingProjectsError] = useState("");
   const [newChatProjectId, setNewChatProjectId] = useState("");
   // Session 宽键在首条消息接纳时固定；之后每次发送重复声明只是幂等核对。
   const sessionScopesRef = useRef(new Map<string, Record<string, string>>());
@@ -424,14 +430,21 @@ export function useDesktopChatController() {
     return () => controller.abort();
   }, [chatReady, reportError]);
 
+  const refreshPendingProjects = useCallback(() => {
+    const snapshot = listPendingProjects();
+    setPendingProjects(snapshot.items);
+    setPendingProjectsError(snapshot.error);
+  }, []);
+
   const refreshProjects = useCallback(async (signal?: AbortSignal) => {
+    refreshPendingProjects();
     if (!projectsInstalled) {
       setProjects([]);
       return;
     }
     const next = await loadProjects(memoryInstalled, signal);
     if (!signal?.aborted) setProjects(next);
-  }, [memoryInstalled, projectsInstalled]);
+  }, [memoryInstalled, projectsInstalled, refreshPendingProjects]);
 
   useEffect(() => {
     if (!chatReady) return;
@@ -590,10 +603,29 @@ export function useDesktopChatController() {
   }, [startNewChat]);
 
   const createProject = useCallback(async (name: string, memory: ProjectMemory) => {
-    const project = await createProjectRecord(name, memory, memoryInstalled);
-    setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
-    startProjectChat(project.id);
-  }, [memoryInstalled, startProjectChat]);
+    try {
+      const project = await createProjectRecord(name, memory, memoryInstalled);
+      setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
+      startProjectChat(project.id);
+    } finally {
+      refreshPendingProjects();
+    }
+  }, [memoryInstalled, refreshPendingProjects, startProjectChat]);
+
+  const continueProject = useCallback(async (key: string) => {
+    try {
+      const project = await continueProjectRecord(key, memoryInstalled);
+      setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
+      startProjectChat(project.id);
+    } finally {
+      refreshPendingProjects();
+    }
+  }, [memoryInstalled, refreshPendingProjects, startProjectChat]);
+
+  const stopProject = useCallback((key: string) => {
+    stopProjectRecord(key);
+    refreshPendingProjects();
+  }, [refreshPendingProjects]);
 
   const activateSession = useCallback((sessionId: string) => {
     if (surface === "chat" && activeSessionRef.current === sessionId) return;
@@ -673,7 +705,8 @@ export function useDesktopChatController() {
     activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
-    projects, projectsInstalled, memoryInstalled, activeProject, startProjectChat, createProject,
+    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
+    startProjectChat, createProject, continueProject, stopProject,
   };
 }
 

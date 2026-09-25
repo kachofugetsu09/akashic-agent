@@ -483,6 +483,29 @@ input {
   background: rgb(20 20 20 / 6%);
 }
 
+.project-pending {
+  display: grid;
+  gap: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+  margin: 4px 6px 10px;
+  padding: 10px;
+  border: 1px solid var(--chat-chip);
+  border-radius: 8px;
+  font-size: 0.75rem;
+  color: var(--chat-muted);
+}
+
+.project-pending strong { color: var(--chat-ink); }
+.project-pending p { margin: 0; line-height: 1.4; }
+.project-pending__item { display: grid; gap: 3px; padding-block: 5px; }
+.project-pending__item + .project-pending__item { border-top: 1px solid var(--chat-chip); }
+.project-pending__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-ink); }
+.project-pending__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.project-pending__actions button { min-height: 32px; padding-inline: 8px; border: 1px solid var(--chat-chip); border-radius: 6px; background: transparent; color: var(--chat-ink); cursor: pointer; }
+.project-pending__actions button:disabled { opacity: 0.5; cursor: default; }
+.project-pending__error { margin: 4px 12px; font-size: 0.75rem; color: var(--md-sys-color-error); }
+
 .project-navigation__empty,
 .project-group__toggle,
 .project-session {
