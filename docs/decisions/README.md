@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0073](0073-session-scope-routes-akasha-graphs.md) | accepted / implemented（首版） | Session scope 宽键路由 Akasha 物化图 | SES-010、MEM-009、MEM-013、CTRL-003 |
 | [0072](0072-single-graph-local-plugin-updates.md) | accepted / 设计已确认，实现未完成 | 单张运行图与局部插件换代 | PLG-001～PLG-018、RUN-007、RUN-009、RUN-016、CTRL-003 |
 | [0071](0071-plugin-composition-and-whole-runtime-updates.md) | accepted / implementing；整图换代部分 superseded by 0072 | 插件底座只解释组合与整体换代 | PLG-001～PLG-018 |
 | [0001](0001-project-workbook-is-shared-reality.md) | superseded | 项目工作手册是协作共享现实 | WBK-001～WBK-006、COM-001～COM-004 |

@@ -84,6 +84,7 @@
 | 38 | `tests/test_message_metadata.py::test_unknown_metadata_survives_restart_history_and_follow_without_plugins` | O：删除插件后核心事实照常可读；SES 公共 Message | 写入元数据的插件不在场时，历史、重启和 follow 仍能完整读回。Session 事实不依赖插件存在。 |
 | 39 | `tests/test_durable_deliveries.py::test_provider_receipt_precedes_one_append_only_session_projection` | C5外部发送留回执 | 先有 provider 回执，再有唯一一条只追加的 Session 投影。 |
 | 40 | `tests/test_durable_deliveries.py::test_provider_started_sigkill_recovers_uncertain_without_resend` | C5结果未知时保持 `uncertain` | 发送中途被 SIGKILL 后恢复为 `uncertain`，不自动重发。外部效果不能被"恢复内存指针"伪装成已回滚。 |
+| 42 | `tests/test_message_log.py::test_session_scope_is_fixed_at_admission_and_absent_for_old_sessions` | C4 Session 固定事实不可改写；O：新增维度不改旧行（SES-010） | 真实 `MessageLog` 上断言 scope 首次接纳后同值幂等、异值失败，已有消息的 Session 不能补写 scope，旧 Session 属性字节不变。Akasha 分图和项目归属都以此为唯一依据。 |
 
 ### 2.4 静态边界（不是 pytest 节点，但属于保留项）
 
@@ -104,7 +105,7 @@
 - 第 35 条用到的 `assert_rows_unchanged`、`assert_no_forbidden_writes` 已内联进 `tests/test_context_history_contract.py`；`tests_scenarios/contracts/` 已删除
 - `docker/debug/plugin_external_acceptance.py`（第 17、18 条要用）
 
-`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 40 个节点（`test_default_reply` 带参数展开为 2 个，合计 41 个用例）。
+`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 41 个节点（`test_default_reply` 带参数展开为 2 个，合计 42 个用例；第 42 条随 0073 加入）。
 
 ## 3. 需要补充的测试（10 个，全部来自 #766 验收）
 

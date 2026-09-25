@@ -1,9 +1,10 @@
 from session.message import ContentReferences
 import sqlite3
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 import pytest
-from session.log import MessageConflict, MessageLog
+from session.log import MessageConflict, MessageLog, SessionAttributes
 from session.message import Input, Output, ToolCall
 
 def text_schema(part):
@@ -62,3 +63,17 @@ def test_missing_resource_rolls_back_message_and_sequence(log):
     assert outputs.append("call", body).seq == 0
     with pytest.raises(MessageConflict):
         log.save_binding("missing", {"artifact": "new-revision"})
+
+def test_session_scope_is_fixed_at_admission_and_absent_for_old_sessions(log, tmp_path):
+    _ = writer(log).append("m1", Input(()))
+    scoped = SessionAttributes.scoped({"project": "p_1"})
+    assert log.ensure_session("web:a", scoped) == scoped
+    assert log.ensure_session("web:a", scoped) == scoped
+    with pytest.raises(MessageConflict):
+        _ = log.ensure_session("web:a", SessionAttributes.scoped({"project": "p_2"}))
+    with pytest.raises(MessageConflict):
+        _ = log.ensure_session("s", scoped)
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as raw:
+        rows = dict(raw.execute("SELECT key, attributes FROM sessions").fetchall())
+    assert rows["s"] == '{"learning": "eligible", "visibility": "listed"}'
+    assert SessionAttributes().dimension("project") == "default"

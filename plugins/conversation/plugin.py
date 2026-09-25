@@ -5,7 +5,7 @@ from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.channels import ChannelInboundMessage
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
+from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION, SessionAttributes
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
 from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGate, RESTART_GATE
 from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter
@@ -72,7 +72,10 @@ api_version = 3
 name = "conversation"
 version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
-inject = (COMMANDS, CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTART_GATE, MODEL_SELECTION)
+inject = (
+    COMMANDS, CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SESSION_ADMISSION, SOURCES, SOURCE_SESSION,
+    RESTART_GATE, MODEL_SELECTION,
+)
 
 CONVERSATION_COMPLETE = ServiceKey[ConversationComplete]("conversation.complete.v1")
 
@@ -134,7 +137,11 @@ async def apply(ctx: Context) -> None:
             if not isinstance(retry, str) or not retry:
                 raise ValueError("重试必须引用已有 Input")
             return await open(session_id).resume(message_id, retry)
-        # 1. 来源只核验已发布附件，不接管传输 lease 或派生另一份元数据。
+        # 1. 带宽键的首条输入先接纳 Session；之后同一 scope 重复声明是幂等核对。
+        dimensions = session_dimensions(message.metadata)
+        if dimensions:
+            _ = ctx.require(SESSION_ADMISSION).ensure(ctx, session_id, SessionAttributes.scoped(dimensions))
+        # 2. 来源只核验已发布附件，不接管传输 lease 或派生另一份元数据。
         if message.attachments:
             artifacts = ctx.require(ARTIFACT_READ)
             for ref in message.attachments:
@@ -159,7 +166,7 @@ async def apply(ctx: Context) -> None:
             parts += (ContentPart("model.selection", {
                 "model_id": model_id.strip() or None, "reasoning_effort": effort.strip() or None,
             }),)
-        # 2. Input 与全部引用原子提交；传输时间、handoff 和重复 ID 不进入正文。
+        # 3. Input 与全部引用原子提交；传输时间、handoff 和重复 ID 不进入正文。
         return await open(session_id).accept(message_id, Input(parts))
 
     async def command(task: Task, reader: MessageReader, source: str) -> Message | None:
@@ -190,6 +197,19 @@ def check_origin(part: ContentPart) -> ContentReferences:
     ):
         raise ValueError("channel.origin 身份无效")
     return ContentReferences()
+
+
+def session_dimensions(metadata: Mapping[str, object]) -> dict[str, str]:
+    """传输只携带维度声明；取值合法性由各维度 owner 在接纳时校验。"""
+    raw = metadata.get("session_dimensions")
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("session_dimensions 必须是对象")
+    dimensions = cast(Mapping[object, object], raw)
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in dimensions.items()):
+        raise ValueError("session_dimensions 只能包含字符串")
+    return {cast(str, key): cast(str, value) for key, value in dimensions.items()}
 
 
 def check_reply(part: ContentPart) -> ContentReferences:

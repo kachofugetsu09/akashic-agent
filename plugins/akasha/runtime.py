@@ -45,10 +45,12 @@ class MessageMemory:
         embeddings: MessageEmbeddings, bindings: Bindings, learning_binding: str,
         records: RecallRecords, embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]],
         limit: int = 40, max_chars: int = 12000,
+        member: Callable[[str], bool] | None = None,
     ):
         if not 1 <= limit <= 40 or max_chars <= 0:
             raise ValueError("召回数量或文本预算无效")
         self._consumer = consumer
+        self._member = member
         self._catalog = catalog
         self._embeddings = embeddings
         self._bindings = bindings
@@ -89,6 +91,7 @@ class MessageMemory:
             return await self._consumer.consume(
                 catalog=self._catalog, learning_binding=self._learning_binding,
                 embeddings=self._embeddings, bindings=self._bindings, embed_batch=self._embed_batch,
+                member=self._member,
             )
 
     async def prepare(self, snapshot: tuple[Message, ...], source: str) -> MaterialData:

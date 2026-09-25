@@ -1165,6 +1165,15 @@ class WebChatChannel:
                 )
                 return session_key
             metadata["reply_to_message_id"] = reply_to_message_id.strip()
+        if "session_dimensions" in payload:
+            dimensions = payload["session_dimensions"]
+            if not isinstance(dimensions, dict) or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in cast(dict[object, object], dimensions).items()
+            ):
+                await self._send_error(websocket, request_id, "session_dimensions 必须是字符串对象")
+                return session_key
+            metadata["session_dimensions"] = dict(cast(dict[str, str], dimensions))
         chat_id = self._chat_id(session_key)
         raw = RawInbound(
             message_id=request_id or uuid4().hex,

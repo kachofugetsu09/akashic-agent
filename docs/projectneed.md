@@ -486,6 +486,12 @@ Message 的 `metadata` 是按插件命名空间组织的普通 JSON 对象，用
 
 metadata 与正文同事务提交，参与同 ID 幂等核对，提交后不可原位更新。未知扩展在存储、历史读取和客户端同步中原样保留；缺少插件不影响正文与通用附件可读。插件不支持扩展版本时明确报告该扩展不可用，不猜测解释或删除数据。后续反馈与消费进度由插件自己保存并关联 message_id。物理减少仍只按 SES-003 执行。
 
+### SES-010 Session scope 是接纳时固定的宽键
+
+Session 的 `scope` 是一组 `维度 → 取值` 的固定事实，例如 `{project: p_x}`，以后可以增加 `computer` 等维度。Message 通过 `session_id` 继承 scope，不逐条复制。scope 与 visibility、learning 一起在 Session 首次接纳时写入并永久不变；同 ID 重试属性相同则幂等，不同则失败。缺失维度一律解释为 `default`，因此增加维度不迁移旧 Session，旧数据自然属于 `(default, …)`。
+
+Core 只保存和比较 scope，不解释维度含义。每个维度必须有唯一 owner 插件注册取值校验；没有 owner 的维度不能接纳，取值只在首次接纳时校验。维度 owner 的记录只能改名或归档，不能删除，使历史 Session 永远可解析。消费者（展示、记忆、检索）只读 scope，各自决定如何分组，不能反向改写。
+
 ## 8. 记忆系统
 
 ### MEM-001 档案重写同时验证结构和事实保全
@@ -554,6 +560,12 @@ Session compaction、Markdown consolidation 的切点和 prompt history 必须�
 Markdown 新草稿逐条引用本次可学习的真实 Message ID。用户事实、偏好、明确要求及关系判断，必须包含 author=user 的 Input 引用；助手转述、工具、后台结果或摘要不能成为唯一依据。
 来源与 Session 学习资格由消息和学习 owner 决定，模型不能自行声明。压缩仍保留跨来源工作进展；Markdown 从摘要覆盖的原始消息读取事实，不把摘要正文作为用户原话。
 既有草稿与 before-image 恢复协议保留；本规则不授权删除、改写或补造旧条目和历史引用。引用资格检查证明来源存在且合格，不证明模型推断的语义必然正确。
+
+### MEM-013 Akasha 图是按 scope 路由的物化视图
+
+`sessions.db/messages` 仍是唯一事实来源；Akasha 的每张图只是日志上的一个物化视图，拥有自己的成员选择与消费进度，不是日志分区。路由由 Akasha 拥有的策略决定：每个 `(维度, 取值)` 一条 `global | isolated | off`，缺失即 `global`，与旧行为一致。global 学习进入并召回 default 图；isolated 只在本范围自己的图内学习和召回，多个维度同为 isolated 时按显式偏键合成一张图；off 不写入任何图但仍召回其所属图。`learning=excluded` 仍是 Core 的硬排除，优先于任何策略。
+
+default 图沿用 `memory/akasha.db`，不迁移已有数据；独立图位于 `memory/akasha-graphs/<规范键摘要>/`，附带记录规范键的 `manifest.json`，embedding 仍按 Message 共享。策略只能在该取值还没有任何 Session 时一次写入；已有 Session 后改变策略需要另行批准的显式重建协议，普通 UI 不提供改写。显式重建逐图执行，每张图各自按 MEM-009 留恢复点并原子替换。
 
 ## 9. 运行时、并发和出站
 

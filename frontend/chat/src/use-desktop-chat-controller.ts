@@ -4,7 +4,16 @@ import { Duration, Effect, Fiber, Schedule } from "effect";
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
+import { loadWebPluginCatalog, useMobilePluginCatalogVersion } from "./mobile-plugin-runtime";
+import {
+  MEMORY_PLUGIN,
+  PROJECT_DIMENSION,
+  PROJECTS_PLUGIN,
+  createProject as createProjectRecord,
+  loadProjects,
+  type ProjectMemory,
+  type ProjectRow,
+} from "./web-projects";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
 import type { ChatStatus } from "./web-chat-status";
@@ -49,6 +58,14 @@ export function useDesktopChatController() {
     () => new URLSearchParams(window.location.search).get("surface") === "runtime" ? "runtime" : "chat",
   );
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [newChatProjectId, setNewChatProjectId] = useState("");
+  // Session 宽键在首条消息接纳时固定；之后每次发送重复声明只是幂等核对。
+  const sessionScopesRef = useRef(new Map<string, Record<string, string>>());
+  const newChatScopeRef = useRef<Record<string, string> | null>(null);
+  const pluginCatalog = useMobilePluginCatalogVersion();
+  const projectsInstalled = pluginCatalog.installed(PROJECTS_PLUGIN);
+  const memoryInstalled = pluginCatalog.installed(MEMORY_PLUGIN);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
   const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
@@ -160,6 +177,9 @@ export function useDesktopChatController() {
         if (cursors.has(query)) throw new Error("会话目录游标未前进");
         cursors.add(query);
       }
+      items.forEach((session) => {
+        if (session.scope && Object.keys(session.scope).length) sessionScopesRef.current.set(session.key, session.scope);
+      });
       setSessions([...items.values()]);
     } finally {
       if (sessionsRequestRef.current === controller) sessionsRequestRef.current = null;
@@ -404,6 +424,24 @@ export function useDesktopChatController() {
     return () => controller.abort();
   }, [chatReady, reportError]);
 
+  const refreshProjects = useCallback(async (signal?: AbortSignal) => {
+    if (!projectsInstalled) {
+      setProjects([]);
+      return;
+    }
+    const next = await loadProjects(memoryInstalled, signal);
+    if (!signal?.aborted) setProjects(next);
+  }, [memoryInstalled, projectsInstalled]);
+
+  useEffect(() => {
+    if (!chatReady) return;
+    const controller = new AbortController();
+    void refreshProjects(controller.signal).catch((error: unknown) => {
+      if (!isAbortError(error)) reportError(error);
+    });
+    return () => controller.abort();
+  }, [chatReady, pluginCatalog.version, refreshProjects, reportError]);
+
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) {
       const sessionId = activeSessionRef.current;
@@ -411,6 +449,8 @@ export function useDesktopChatController() {
       return sessionId;
     }
     const sessionId = `akashic:${createUuid().replaceAll("-", "")}`;
+    if (newChatScopeRef.current) sessionScopesRef.current.set(sessionId, newChatScopeRef.current);
+    newChatScopeRef.current = null;
     activeSessionRef.current = sessionId;
     followAfterRef.current = -1;
     followSession(socketRef.current, sessionId, -1);
@@ -460,6 +500,8 @@ export function useDesktopChatController() {
         media: media.map((item) => item.artifact_id),
       };
       if (reply) payload.reply_to_message_id = reply.id;
+      const scope = sessionScopesRef.current.get(sessionId);
+      if (scope) payload.session_dimensions = scope;
       if (modelSelectionDirty) {
         payload.model_runtime_id = selectedRuntimeId;
         payload.model_reasoning_effort = selectedReasoningEffort;
@@ -536,8 +578,22 @@ export function useDesktopChatController() {
     setSelectedRuntimeId("");
     setSelectedReasoningEffort("");
     setModelSelectionDirty(false);
+    newChatScopeRef.current = null;
+    setNewChatProjectId("");
     void loadModels("").catch((error: unknown) => reportError(error));
   }, [closeConnection, loadModels, reportError, setMessages, setTimelineMessages]);
+
+  const startProjectChat = useCallback((projectId: string) => {
+    startNewChat();
+    newChatScopeRef.current = { [PROJECT_DIMENSION]: projectId };
+    setNewChatProjectId(projectId);
+  }, [startNewChat]);
+
+  const createProject = useCallback(async (name: string, memory: ProjectMemory) => {
+    const project = await createProjectRecord(name, memory, memoryInstalled);
+    setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
+    startProjectChat(project.id);
+  }, [memoryInstalled, startProjectChat]);
 
   const activateSession = useCallback((sessionId: string) => {
     if (surface === "chat" && activeSessionRef.current === sessionId) return;
@@ -588,7 +644,12 @@ export function useDesktopChatController() {
     preview: `${session.message_count ?? 0} 条消息`,
     updatedLabel: formatNavigationTime(session.updated_at),
     active: activeSessionId === session.key,
+    projectId: session.scope?.[PROJECT_DIMENSION] ?? "",
   })), [activeSessionId, sessions]);
+  // 新对话在首条消息进入目录前沿用发起时选定的项目。
+  const activeRow = activeSessionId ? sessions.find((session) => session.key === activeSessionId) : undefined;
+  const activeProjectId = activeRow ? activeRow.scope?.[PROJECT_DIMENSION] ?? "" : newChatProjectId;
+  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const retry = useCallback(() => {
     setError("");
     closeConnection();
@@ -612,6 +673,7 @@ export function useDesktopChatController() {
     activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
+    projects, projectsInstalled, memoryInstalled, activeProject, startProjectChat, createProject,
   };
 }
 

@@ -42,16 +42,47 @@ _T = TypeVar("_T")
 _logger = logging.getLogger(__name__)
 
 
+_SCOPE_DIMENSION = re.compile(r"[a-z][a-z0-9_]{0,31}")
+_SCOPE_VALUE_LIMIT = 128
+
+
 @dataclass(frozen=True, slots=True)
 class SessionAttributes:
-    """会话接纳时固定的独立事实；存储不替展示或学习消费者作决定。"""
+    """会话接纳时固定的独立事实；存储不替展示或学习消费者作决定。
+
+    scope 是宽键中已声明的维度；缺失维度即 default，Core 不解释维度含义。
+    """
 
     visibility: Literal["listed", "internal"] = "listed"
     learning: Literal["eligible", "excluded"] = "eligible"
+    scope: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.visibility not in ("listed", "internal") or self.learning not in ("eligible", "excluded"):
             raise ValueError("Session 属性无效")
+        names = [name for name, _ in self.scope]
+        if names != sorted(set(names)):
+            raise ValueError("Session scope 维度必须唯一且有序")
+        for name, value in self.scope:
+            if not isinstance(name, str) or _SCOPE_DIMENSION.fullmatch(name) is None:
+                raise ValueError(f"Session scope 维度名无效: {name!r}")
+            if (
+                not isinstance(value, str) or not value or value == "default"
+                or len(value) > _SCOPE_VALUE_LIMIT or value != value.strip()
+            ):
+                raise ValueError(f"Session scope 维度值无效: {name}")
+
+    @classmethod
+    def scoped(
+        cls, dimensions: Mapping[str, str], *,
+        visibility: Literal["listed", "internal"] = "listed",
+        learning: Literal["eligible", "excluded"] = "eligible",
+    ) -> SessionAttributes:
+        return cls(visibility, learning, tuple(sorted(dimensions.items())))
+
+    def dimension(self, name: str) -> str:
+        """缺失维度按 default 解析；新增维度不需要迁移旧 Session。"""
+        return dict(self.scope).get(name, "default")
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,21 +122,34 @@ class InvalidPage(ValueError):
 
 
 def encode_attributes(attributes: SessionAttributes) -> str:
-    return json.dumps({"visibility": attributes.visibility, "learning": attributes.learning}, sort_keys=True)
+    # 空 scope 不写键，已有 Session 行与默认列值保持逐字节一致。
+    payload: dict[str, object] = {"visibility": attributes.visibility, "learning": attributes.learning}
+    if attributes.scope:
+        payload["scope"] = dict(attributes.scope)
+    return json.dumps(payload, sort_keys=True)
 
 
 def decode_attributes(raw: str) -> SessionAttributes:
     """属性只有一份固定 schema，不从会话名称或任意 metadata 猜测。"""
-    def fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        if len(pairs) != 2 or {key for key, _ in pairs} != {"visibility", "learning"}:
-            raise ValueError("Session 属性字段无效")
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        if len(pairs) != len({key for key, _ in pairs}):
+            raise ValueError("Session 属性字段重复")
         return dict(pairs)
-    value: object = json.loads(raw, object_pairs_hook=fields)
+    value: object = json.loads(raw, object_pairs_hook=unique)
     if not isinstance(value, dict):
         raise ValueError("Session 属性必须是对象")
     data = cast(dict[str, object], value)
+    if set(data) - {"scope"} != {"visibility", "learning"}:
+        raise ValueError("Session 属性字段无效")
+    raw_scope = data.get("scope", {})
+    if not isinstance(raw_scope, dict) or ("scope" in data and not raw_scope):
+        raise ValueError("Session scope 必须是非空对象")
+    scope = cast(dict[str, object], raw_scope)
+    if any(not isinstance(item, str) for item in scope.values()):
+        raise ValueError("Session scope 维度值必须是字符串")
     return SessionAttributes(cast(Literal["listed", "internal"], data["visibility"]),
-                             cast(Literal["eligible", "excluded"], data["learning"]))
+                             cast(Literal["eligible", "excluded"], data["learning"]),
+                             tuple(sorted(cast(dict[str, str], scope).items())))
 
 
 _OLD_SESSION_SCHEMA = """CREATE TABLE sessions (

@@ -125,6 +125,10 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `markdown-profile-writes.db` | Markdown plugin 按 `source_ref + memory/self kind` INSERT model、draft、before-image 和 applied receipt | 每个文档独立推进；完整 model draft 是准备恢复点，部分 order/document draft 由原出处重放补齐；文件或 receipt 单侧领先时重启确定性收敛。同 Session 的已应用进度从现有 receipts 派生，已应用 child 之后不再重写迟到 ancestor | 当前没有自动删除协议；它是 MEMORY/SELF 和旧 PENDING 的恢复证据 |
 | `memory2.db/*` | 无当前 writer；经典记忆退出前曾写入结构化记忆和替换关系 | runtime 不再读取、导入或更新 | 只作为历史归档备份，不自动删除 |
 | `akasha.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录；重建与在线学习共用同一个 `MessageConsumer` | 可以用同一组输入确定性重建；用户整组撤销 interaction 后由 Akasha owner 串行全量替换；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 或 interaction 撤销协调流程替换；模型或维度不匹配必须 fail-loud；缺少固定向量的单个 turn 明确跳过并记账（`consumption.skipped`），不计入图 |
+| `memory/akasha-graphs/<摘要>/akasha.db` 与 `manifest.json` | MEM-013 的 isolated 范围第一次有成员 Session 时建立；与 default 图同一 `MessageConsumer`，只消费路由到本图的 Session，从成员第一条消息开始学习；`manifest.json` 只记录规范键 | 与 `akasha.db` 相同：同输入确定性重建，显式重建逐图建立恢复点（`backups/rebuild/graphs/<摘要>/`）后原子替换 | 与 `akasha.db` 相同，没有自动减少协议；范围归档不删除图文件 |
+| `sessions.db/owner_records` 的 Akasha `scope-policy` 子空间 | 每个 `(维度, 取值)` 至多一条 `{learn}`，只在该取值尚无 Session 时由同一写事务创建；缺失即 global | 不允许原位更新；同值重放幂等，不同值失败 | 无减少协议；改写需要另行批准的重建协议 |
+| `sessions.db/owner_records` 的 `projects` 记录 | projects 插件按 `project:<id>` 创建项目记录（名称、归档标记、创建时间） | 只允许改名和归档；归档后不再接纳新 Session | 无删除协议；历史 Session 的 scope 必须始终能解析到记录 |
+| `sessions.db/sessions.attributes.scope` | SES-010：Session 首次接纳时由 conversation 调 `SESSION_ADMISSION` 写入；空 scope 不写键，旧行字节不变 | 不允许原位更新；冲突接纳失败 | 只随 SES-003 删除 Session 一起减少 |
 | 新链路 `sessions.db/owner_records` 的 Akasha `recall:*` | Akasha 在实际查询完成后只创建一条版本化出处，含绑定、查询来源、图版本、命中 Message 引用及顺序，不复制聊天正文；单条最多 1 MiB、45 个命中 | 正常路径不原位更新，也不随后续学习改写。模型取消或未生成最终回答不使“发生过查询”失效；该记录不证明请求已发送或消息已送达 | 无自动减少协议。恢复读取同一 workspace SQLite 备份，失败的记录事务不发布引用；未来删除必须由独立管理合同列出已有 Citation 的影响。本项属于第 08 层新接口，正式插件接线仍待完成 |
 
 ### 3.3 自主运行、扩展与控制状态

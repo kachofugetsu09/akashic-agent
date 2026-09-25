@@ -334,6 +334,33 @@ function isRenderer(value: unknown): value is MobilePluginRenderer {
     && (renderer.prefetch === undefined || typeof renderer.prefetch === "function");
 }
 
+/** 宿主自身的导航按插件 ID 组合能力；目录变化时返回新版本号以便重读。 */
+export function useMobilePluginCatalogVersion(): { version: number; installed: (pluginId: string) => boolean } {
+  const version = useSyncExternalStore(
+    (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    () => registryVersion,
+  );
+  return {
+    version,
+    installed: (pluginId) => !catalog.updating && catalog.plugins.some((plugin) => plugin.id === pluginId),
+  };
+}
+
+/** 宿主侧栏直接调用插件查询；插件缺失或目录更新中都作为普通错误返回。 */
+export async function queryHostPlugin(
+  pluginId: string,
+  method: string,
+  payload: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const plugin = catalog.updating ? undefined : catalog.plugins.find((item) => item.id === pluginId);
+  if (!plugin) throw new Error(`插件未安装或正在更新: ${pluginId}`);
+  return queryWebPluginUi({
+    pluginId, pluginRevision: plugin.revision, method, payload, slot: "drawer.panel",
+    signal: signal ?? new AbortController().signal,
+  });
+}
+
 export function useMobilePluginDashboards(): MobilePluginDashboardEntry[] {
   useSyncExternalStore(
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
