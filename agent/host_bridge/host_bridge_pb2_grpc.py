@@ -50,6 +50,11 @@ class HostBridgeStub(object):
                 request_serializer=agent_dot_host__bridge_dot_host__bridge__pb2.ContextRequest.SerializeToString,
                 response_deserializer=agent_dot_host__bridge_dot_host__bridge__pb2.IdentityReply.FromString,
                 _registered_method=True)
+        self.OpenManager = channel.unary_unary(
+                '/akashic.host.v2.HostBridge/OpenManager',
+                request_serializer=agent_dot_host__bridge_dot_host__bridge__pb2.ContextRequest.SerializeToString,
+                response_deserializer=agent_dot_host__bridge_dot_host__bridge__pb2.HeartbeatReply.FromString,
+                _registered_method=True)
         self.Heartbeat = channel.unary_unary(
                 '/akashic.host.v2.HostBridge/Heartbeat',
                 request_serializer=agent_dot_host__bridge_dot_host__bridge__pb2.ContextRequest.SerializeToString,
@@ -114,6 +119,12 @@ class HostBridgeServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def Probe(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def OpenManager(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -190,6 +201,11 @@ def add_HostBridgeServicer_to_server(servicer, server):
                     servicer.Probe,
                     request_deserializer=agent_dot_host__bridge_dot_host__bridge__pb2.ContextRequest.FromString,
                     response_serializer=agent_dot_host__bridge_dot_host__bridge__pb2.IdentityReply.SerializeToString,
+            ),
+            'OpenManager': grpc.unary_unary_rpc_method_handler(
+                    servicer.OpenManager,
+                    request_deserializer=agent_dot_host__bridge_dot_host__bridge__pb2.ContextRequest.FromString,
+                    response_serializer=agent_dot_host__bridge_dot_host__bridge__pb2.HeartbeatReply.SerializeToString,
             ),
             'Heartbeat': grpc.unary_unary_rpc_method_handler(
                     servicer.Heartbeat,
@@ -319,6 +335,33 @@ class HostBridge(object):
             '/akashic.host.v2.HostBridge/Probe',
             agent_dot_host__bridge_dot_host__bridge__pb2.ContextRequest.SerializeToString,
             agent_dot_host__bridge_dot_host__bridge__pb2.IdentityReply.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def OpenManager(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akashic.host.v2.HostBridge/OpenManager',
+            agent_dot_host__bridge_dot_host__bridge__pb2.ContextRequest.SerializeToString,
+            agent_dot_host__bridge_dot_host__bridge__pb2.HeartbeatReply.FromString,
             options,
             channel_credentials,
             insecure,
