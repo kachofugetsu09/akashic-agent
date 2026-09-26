@@ -113,7 +113,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
                   activity={activity} committed={committed} processMessages={replyGroups.active.get(activity.handle)} toolResults={toolResults} onError={reportError} />)}
               </MessageRendererErrorBoundary>
             )}
-            {status === "submitted" ? <ThinkingPlaceholder /> : null}
+            {status === "submitted" && !replyActivities.some((activity) => activity.active) ? <ThinkingPlaceholder /> : null}
           </ConversationContent>
           <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore}
             timelineMessages={timelineMessages} replyActivities={replyActivities} />

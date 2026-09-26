@@ -20,7 +20,7 @@ import {
 } from "./web-projects";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
-import type { ChatStatus } from "./web-chat-status";
+import { replyChatStatus, type ChatStatus } from "./web-chat-status";
 import {
   chatHistoryPage,
   chatModelState,
@@ -51,12 +51,6 @@ function followSession(socket: WebSocket | null, sessionId: string, afterSeq: nu
   }));
 }
 
-function replyChatStatus(items: ReplyActivity[], pending: number): ChatStatus {
-  if (pending) return "submitted";
-  if (items.some((item) => item.active)) return "streaming";
-  return items.length ? "finalizing" : "idle";
-}
-
 export function useDesktopChatController() {
   const [surface, setSurface] = useState<"chat" | "runtime">(
     () => new URLSearchParams(window.location.search).get("surface") === "runtime" ? "runtime" : "chat",
@@ -84,7 +78,12 @@ export function useDesktopChatController() {
   const followAfterRef = useRef<number | null>(null);
   const [replyActivities, setReplyActivities] = useState<ReplyActivity[]>([]);
   const replyActivitiesRef = useRef<ReplyActivity[]>([]);
-  const [replyAvailable, setReplyAvailable] = useState<boolean | null>(null);
+  const [replyAvailable, setReplyAvailableState] = useState<boolean | null>(null);
+  const replyAvailableRef = useRef<boolean | null>(null);
+  const setReplyAvailable = useCallback((next: boolean | null) => {
+    replyAvailableRef.current = next;
+    setReplyAvailableState(next);
+  }, []);
   const [historyThroughSeq, setHistoryThroughSeq] = useState<number | null>(null);
   const [messages, setMessagesState] = useState<ChatMessage[]>([]);
   const [historyBeforeSeq, setHistoryBeforeSeq] = useState<number | null>(null);
@@ -212,6 +211,8 @@ export function useDesktopChatController() {
       streamStore.clear();
       setMessages([]);
       setTimelineMessages(page.items);
+      setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length,
+        page.items, replyAvailableRef.current));
       followAfterRef.current = page.throughSeq;
       setHistoryThroughSeq(page.throughSeq);
       setHistoryBeforeSeq(page.beforeSeq);
@@ -223,7 +224,7 @@ export function useDesktopChatController() {
         setHistoryLoading(false);
       }
     }
-  }, [setMessages, setTimelineMessages, streamStore]);
+  }, [setMessages, setStatusLive, setTimelineMessages, streamStore]);
 
   const loadOlderMessages = useCallback(async () => {
     const sessionId = activeSessionRef.current;
@@ -329,13 +330,13 @@ export function useDesktopChatController() {
                   followAfterRef.current = frame.next_after_seq;
                   const saved = new Set(frame.items.map((item) => item.id));
                   setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
-                  setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length));
+                  setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
                   void loadSessionsSafely();
                 } else if (frame.type === "reply.status") {
                   replyActivitiesRef.current = frame.items;
                   setReplyActivities(frame.items);
                   setReplyAvailable(frame.available);
-                  setStatusLive(replyChatStatus(frame.items, messagesRef.current.length));
+                  setStatusLive(replyChatStatus(frame.items, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, frame.available));
                 }
                 return;
               }
@@ -370,7 +371,7 @@ export function useDesktopChatController() {
         replyActivitiesRef.current = [];
         setReplyActivities([]);
         setReplyAvailable(null);
-        setStatusLive(replyChatStatus([], messagesRef.current.length));
+        setStatusLive(replyChatStatus([], messagesRef.current.length, [], false));
         if (event.code !== 1000 && event.code !== 1013) setConnectionError("连接已断开，正在重新连接…");
         yield* reconnect.next(undefined);
         socket = yield* Effect.sync(() => new WebSocket(url));
@@ -378,7 +379,7 @@ export function useDesktopChatController() {
       }
     }).pipe(Effect.catchAll(() => Effect.sync(() => setConnectionError("暂时无法连接，请重试")))));
     return first;
-  }, [closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reportError, setMessages, setStatusLive, setTimelineMessages]);
+  }, [closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reportError, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
 
   useEffect(() => {
     // 只等待首次启动就绪；此后的断线与恢复由聊天连接负责。
@@ -594,7 +595,7 @@ export function useDesktopChatController() {
     newChatScopeRef.current = null;
     setNewChatProjectId("");
     void loadModels("").catch((error: unknown) => reportError(error));
-  }, [closeConnection, loadModels, reportError, setMessages, setTimelineMessages]);
+  }, [closeConnection, loadModels, reportError, setMessages, setReplyAvailable, setTimelineMessages]);
 
   const startProjectChat = useCallback((projectId: string) => {
     startNewChat();
@@ -657,7 +658,7 @@ export function useDesktopChatController() {
       .finally(() => {
         if (activeSessionRef.current === sessionId) setPendingSessionId("");
       });
-  }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setStatusLive, surface]);
+  }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface]);
 
   const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
   const handleModelChange = useCallback((runtimeId: string, effort: string) => {
@@ -695,7 +696,7 @@ export function useDesktopChatController() {
     if (shellState?.chatReady) {
       void loadModels(activeSessionRef.current).catch((reason: unknown) => reportError(reason));
     }
-  }, [closeConnection, connect, loadMessagesSafely, loadModels, loadSessionsSafely, reportError, shellState?.chatReady]);
+  }, [closeConnection, connect, loadMessagesSafely, loadModels, loadSessionsSafely, reportError, setReplyAvailable, shellState?.chatReady]);
 
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
