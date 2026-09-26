@@ -1,4 +1,6 @@
 # 0066 · 保留 Yoyo，以当前状态清除历史迁移负担
+> 2026-09-25 勘误：[0074](0074-deployment-policy-belongs-to-operator.md) 将既有 selected Root 的普通启动改为迁移检查；执行与备份由部署者显式选择。Yoyo 成功账本、首次初始化及已发布 step 合同保留。
+
 
 - 状态：accepted
 - 日期：2026-09-13

@@ -58,6 +58,5 @@ class ReleasePaths:
             self.run,
             self.secrets,
             self.state,
-            self.backups,
         ):
             path.mkdir(parents=True, exist_ok=True)

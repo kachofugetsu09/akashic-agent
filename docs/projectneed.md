@@ -861,11 +861,11 @@ Workload writer；容器名、镜像和 endpoint 都不是持久状态 owner。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 
-迁移框架读取 Core 自有脚本和正式安装插件声明的 migration bundle，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。未来已发布 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。业务 schema 由相应插件拥有，Core 只负责通用装配与执行。
+迁移框架读取 Core 自有脚本和正式安装插件声明的 migration bundle，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。既有 selected Root 的普通启动只检查待迁移，发现缺失时明确失败；部署者以清单批准 migration ID，发布器在 runtime、provider 和业务写入 owner 停止且持有 maintenance 锁时执行。首次显式初始化允许建库迁移。任一步失败时不得记录成功回执，runtime 不得启动。未来已发布 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。业务 schema 由相应插件拥有，Core 只负责通用装配与执行。
 
 ### MIG-002 当前结构是迁移基线，Yoyo 保留未来兼容能力
 
-本次基线假定现有用户的数据、schema 和配置已经是当前状态。按 [0066](decisions/0066-yoyo-current-baseline.md) 删除已经完成使命的历史脚本、`legacy_upgrade` 及其专属兼容代码，清空历史业务 requirement；保留 Yoyo、runner、插件迁移声明和账本。既有历史回执和用户数据不删除、不重跑、不伪造成功。未来迁移不得依赖源码已经退役的历史 ID；新脚本继续遵守 append-only、备份和失败重试合同。
+本次基线假定现有用户的数据、schema 和配置已经是当前状态。按 [0066](decisions/0066-yoyo-current-baseline.md) 删除已经完成使命的历史脚本、`legacy_upgrade` 及其专属兼容代码，清空历史业务 requirement；保留 Yoyo、runner、插件迁移声明和账本。既有历史回执和用户数据不删除、不重跑、不伪造成功。未来迁移不得依赖源码已经退役的历史 ID；新脚本继续遵守 append-only、明确写入范围和失败重试合同。部署级备份由部署者选择，不由迁移发现或普通代码更新隐式触发；已发布 step 内部恢复机制保持原合同，见 [0074](decisions/0074-deployment-policy-belongs-to-operator.md)。
 
 ### FS-001 文件写入限于 allowed root
 
@@ -946,6 +946,8 @@ pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
 由 Wake 通过 EventMail 的窄 transition 能力逻辑标记 expired；权威信封和 transition 不物理删除。
 
 ### BAK-001 备份必须能验证和恢复
+
+部署时是否备份、备份范围和恢复方案由部署者决定；`--backup` 是可选操作，不是每次安装的前提。以下约束描述选择备份后的质量，不授权自动恢复或删除。
 
 普通文件完整复制，SQLite 使用 backup API 与 integrity check；临时 snapshot、manifest 和 hash 全部完成后原子发布，新快照成功后才 prune。必须定期恢复到隔离 workspace 并运行应用级只读 smoke。
 
