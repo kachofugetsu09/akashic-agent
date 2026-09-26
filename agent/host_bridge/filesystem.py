@@ -7,8 +7,8 @@ import builtins
 import difflib
 import logging
 import os
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -30,6 +30,50 @@ class _FileMutationState:
 
 
 _FILE_MUTATION_LOCKS: dict[str, _FileMutationState] = {}
+
+
+@dataclass
+class _FileIoState:
+    slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(4))
+    users: int = 0
+
+
+_FILE_IO_SLOTS: dict[asyncio.AbstractEventLoop, _FileIoState] = {}
+
+
+async def _run_file_io(fn: Callable[[], T]) -> T:
+    """最多四个磁盘操作并行；取消后仍等物理工作结束才归还锁与 owner。"""
+    # 1. 等待名额时可以取消；线程启动后不能把取消当作工作已结束。
+    loop = asyncio.get_running_loop()
+    state = _FILE_IO_SLOTS.setdefault(loop, _FileIoState())
+    state.users += 1
+    try:
+        async with state.slots:
+            work = asyncio.create_task(asyncio.to_thread(fn))
+            cancelled: asyncio.CancelledError | None = None
+            while not work.done():
+                try:
+                    await asyncio.shield(work)
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+                except Exception:
+                    # 实际错误由 result 取回；同时发生取消时保留两种失败。
+                    break
+            # 2. 到这里线程已结束，外层才可以释放文件锁和 manager operation。
+            try:
+                result = work.result()
+            except Exception as exc:
+                if cancelled is not None:
+                    raise BaseExceptionGroup("文件操作取消且物理工作失败", [cancelled, exc]) from None
+                raise
+            if cancelled is not None:
+                raise cancelled
+            return result
+    finally:
+        state.users -= 1
+        if state.users == 0:
+            del _FILE_IO_SLOTS[loop]
+
 
 
 def _is_inside(path: Path, allowed_dir: Path) -> bool:
@@ -106,12 +150,12 @@ def _get_file_mutation_key(file_path: Path) -> str:
 
 
 async def _run_with_file_mutation_lock(
-    file_path: Path, fn: Callable[[], Awaitable[T]]
+    file_path: Path, fn: Callable[[], T]
 ) -> T:
     """按规范化路径串行执行文件变更，并在异常或取消后回收锁状态。"""
 
     # 1. 登记当前调用，等待者也必须计入生命周期
-    key = _get_file_mutation_key(file_path)
+    key = await _run_file_io(lambda: _get_file_mutation_key(file_path))
     state = _FILE_MUTATION_LOCKS.get(key)
     if state is None:
         state = _FileMutationState(lock=asyncio.Lock())
@@ -121,7 +165,7 @@ async def _run_with_file_mutation_lock(
     try:
         # 2. 同一文件串行执行，取消也由 async with 释放底层锁
         async with state.lock:
-            return await fn()
+            return await _run_file_io(fn)
     finally:
         # 3. 最后一个持有者或等待者退出后再移除路径映射
         state.users -= 1
@@ -271,7 +315,7 @@ class ReadFileOperation(_FileOperation):
                 allowed_dir=self._allowed_dir,
                 arguments={"path": path, **kwargs},
             )
-        return self.read_from_disk(path, **kwargs)
+        return await _run_file_io(lambda: self.read_from_disk(path, **kwargs))
 
     def read_from_disk(self, path: str, **kwargs: Any) -> str | ToolResult:
         """Read host bytes without applying the current Turn model projection."""
@@ -363,9 +407,9 @@ class WriteFileOperation(_FileOperation):
             )
             return result
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = await _run_file_io(lambda: _resolve_path(path, self._allowed_dir))
 
-            async def _write() -> str | ToolResult:
+            def _write() -> str | ToolResult:
                 if file_path.exists() and file_path.is_dir():
                     return ToolResult(
                         text=f"写入文件失败：目标路径是目录：{path}", is_error=True
@@ -401,9 +445,9 @@ class EditFileOperation(_FileOperation):
             )
             return result
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = await _run_file_io(lambda: _resolve_path(path, self._allowed_dir))
 
-            async def _edit() -> str | ToolResult:
+            def _edit() -> str | ToolResult:
                 if not file_path.exists():
                     return ToolResult(text=f"错误：文件不存在：{path}", is_error=True)
                 if not file_path.is_file():
@@ -468,6 +512,10 @@ class ListDirOperation(_FileOperation):
                 arguments={"path": path, **kwargs},
             )
             return result
+        return await _run_file_io(lambda: self._list_from_disk(path))
+
+    def _list_from_disk(self, path: str) -> str | ToolResult:
+        """在线程中完成路径解析、目录遍历和文件类型查询。"""
         try:
             dir_path = _resolve_path(path, self._allowed_dir)
             if not dir_path.exists():

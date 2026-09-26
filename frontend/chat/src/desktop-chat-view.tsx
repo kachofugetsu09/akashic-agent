@@ -9,6 +9,7 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
+import { HostBridgeNotice } from "./host-bridge-notice";
 import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
@@ -128,6 +129,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           />
           <ComposerStatsLine messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} />
           {replyAvailable === false ? <p className="reply-unavailable" role="status">当前未加载回复插件</p> : null}
+          <HostBridgeNotice />
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton>
           </div> : null}

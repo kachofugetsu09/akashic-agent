@@ -639,7 +639,7 @@ Codex、OpenCode 等 Provider 插件的权威目录优先提供模型能力；�
 
 ### RUN-013 正式容器通过 Host Bridge 保留宿主执行能力
 
-原生开发运行继续使用本地执行后端。正式容器运行只能注册与 Core 同版本的 Python Host Bridge 后端；Bridge 未就绪、版本不匹配或能力探针失败时 readiness 必须失败并退出，不得静默回退到容器内执行。主 Turn、programmatic Turn、subagent 与 Drift 的 Agent-facing Shell、File 和 Process 工具默认以 Bridge 宿主用户身份工作，能力边界等同该用户通过 SSH 登录后可执行的操作；Core control plane、SessionDB、插件 generation、MCP/managed service、Supervisor 和 restart 事务仍由 Core 容器拥有。
+原生开发运行继续使用本地执行后端。正式容器运行只能注册与 Core 同版本的 Python Host Bridge 后端；启动时必须确认 Bridge 就绪、同版本和 boot ownership，失败不得进入 readiness；运行期身份或 ownership 错误仍明确失败。运行期暂时传输失败只降级宿主执行能力，保留 Core 与聊天连接并继续探测，客户端可见降级与恢复；不得静默回退到容器内执行。恢复传输不得重放可能已生效的操作，也不得重建已过期的 manager 后继续使用旧执行句柄。主 Turn、programmatic Turn、subagent 与 Drift 的 Agent-facing Shell、File 和 Process 工具默认以 Bridge 宿主用户身份工作，能力边界等同该用户通过 SSH 登录后可执行的操作；Core control plane、SessionDB、插件 generation、MCP/managed service、Supervisor 和 restart 事务仍由 Core 容器拥有。
 
 ### RUN-014 运行镜像拥有不可变且可诊断的身份
 

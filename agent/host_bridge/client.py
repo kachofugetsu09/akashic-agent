@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,26 @@ from agent.process_runtime import ExecutionCleanupReport, ExecutionResult
 from core.common.diagnostic_log import current_diagnostic_context
 
 _HEARTBEAT_INTERVAL_S = 2.0
+logger = logging.getLogger(__name__)
+
+
+class HostBridgeRpcError(RuntimeError):
+    """保留传输状态；只有明确的暂时失联允许恢复探测和心跳。"""
+
+    def __init__(self, method: str, code: grpc.StatusCode, detail: str | None) -> None:
+        self.method = method
+        self.code = code
+        uncertainty = (
+            "；操作可能已生效，不得自动重发"
+            if method in {"Exec", "WriteStdin", "FileTool"}
+            else ""
+        )
+        super().__init__(f"Host Bridge {method} 失败: {code.name}: {detail}{uncertainty}")
+
+    @property
+    def transient(self) -> bool:
+        return self.code in {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED}
+
 
 
 @dataclass(frozen=True)
@@ -121,6 +142,8 @@ class HostBridgeShellProcessManager:
         self._stub = rpc.HostBridgeStub(self._channel)
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._lease_error: Exception | None = None
+        self._opened = False
+        self._open_lock = asyncio.Lock()
         self._unconfirmed_owners: dict[str, str] = {}
         self._closed = False
 
@@ -142,6 +165,7 @@ class HostBridgeShellProcessManager:
             pb.ContextRequest(context=self._request_context()),
             method="Probe",
             timeout=5,
+            lease=False,
         )
         return self._identity_reply(reply)
 
@@ -150,6 +174,7 @@ class HostBridgeShellProcessManager:
             self._stub.Inspect,
             pb.ContextRequest(context=self._request_context()),
             method="Inspect",
+            timeout=5,
             lease=False,
         )
         return self._identity_reply(reply)
@@ -288,6 +313,9 @@ class HostBridgeShellProcessManager:
     async def shutdown(self) -> ExecutionCleanupReport:
         if self._closed:
             return ExecutionCleanupReport((), (), ())
+        if not self._opened:
+            await self.close_transport()
+            return ExecutionCleanupReport((), (), ())
         await self._stop_heartbeat()
         reply: pb.CleanupReply = await self._call(
             self._stub.ShutdownManager,
@@ -358,10 +386,10 @@ class HostBridgeShellProcessManager:
         """发起一次 RPC；失败或取消均不重放可能已生效的操作。"""
         if self._closed:
             raise RuntimeError("Host Bridge manager 已关闭")
-        if method not in {"Heartbeat", "ShutdownManager"} and self._lease_error is not None:
-            raise RuntimeError(f"Host Bridge lease 已失效: {self._lease_error}")
+        if lease and self._lease_error is not None:
+            raise self._lease_error
         if lease:
-            self._ensure_heartbeat()
+            await self._open_manager()
         try:
             return await call(
                 request,
@@ -369,14 +397,31 @@ class HostBridgeShellProcessManager:
                 metadata=(("authorization", f"Bearer {self._token}"),),
             )
         except grpc.aio.AioRpcError as exc:
-            uncertainty = (
-                "；操作可能已生效，不得自动重发"
-                if method in {"Exec", "WriteStdin", "FileTool"}
-                else ""
+            error = HostBridgeRpcError(method, exc.code(), exc.details())
+            if self._opened and error.code in {
+                grpc.StatusCode.NOT_FOUND, grpc.StatusCode.PERMISSION_DENIED,
+                grpc.StatusCode.UNAUTHENTICATED, grpc.StatusCode.FAILED_PRECONDITION,
+            }:
+                self._lease_error = error
+            raise error from exc
+
+    async def _open_manager(self) -> None:
+        """业务调用前只登记一次；失联续期不能重新创建已丢失的 manager。"""
+        async with self._open_lock:
+            if self._opened:
+                return
+            reply: pb.HeartbeatReply = await self._call(
+                self._stub.OpenManager,
+                pb.ContextRequest(context=self._request_context()),
+                method="OpenManager",
+                lease=False,
+                timeout=5,
             )
-            raise RuntimeError(
-                f"Host Bridge {method} 失败: {exc.code().name}: {exc.details()}{uncertainty}"
-            ) from exc
+            require_fields(reply, "alive")
+            if not reply.alive:
+                raise RuntimeError("Host Bridge 未确认 manager 登记")
+            self._opened = True
+            self._ensure_heartbeat()
 
     def _ensure_heartbeat(self) -> None:
         if self._heartbeat_task is None:
@@ -385,22 +430,36 @@ class HostBridgeShellProcessManager:
             )
 
     async def _heartbeat_loop(self) -> None:
+        """暂时传输失败继续续期；租约丢失和身份错误终结旧 manager。"""
+        failures = 0
         try:
             while True:
-                await asyncio.sleep(_HEARTBEAT_INTERVAL_S)
-                reply: pb.HeartbeatReply = await self._call(
-                    self._stub.Heartbeat,
-                    pb.ContextRequest(context=self._request_context()),
-                    method="Heartbeat",
-                    timeout=5,
-                )
+                await asyncio.sleep(min(_HEARTBEAT_INTERVAL_S * (2 ** min(failures, 3)), 10))
+                try:
+                    reply: pb.HeartbeatReply = await self._call(
+                        self._stub.Heartbeat,
+                        pb.ContextRequest(context=self._request_context()),
+                        method="Heartbeat",
+                        lease=False,
+                        timeout=5,
+                    )
+                except HostBridgeRpcError as exc:
+                    if not exc.transient:
+                        raise
+                    failures += 1
+                    logger.warning("Host Bridge 心跳暂时失败，继续探测: %s", exc)
+                    continue
                 require_fields(reply, "alive")
                 if not reply.alive:
                     raise RuntimeError("Host Bridge 未确认 lease 存活")
+                if failures:
+                    logger.info("Host Bridge 心跳恢复")
+                failures = 0
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._lease_error = exc
+            logger.error("Host Bridge manager 已失效: %s", exc)
 
 
 def _check_client_identity(socket_path: Path, boot_id: str, token: str) -> None:

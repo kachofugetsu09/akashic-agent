@@ -7,6 +7,7 @@ service HostBridge {
   rpc Inspect(ContextRequest) returns (IdentityReply);
   rpc ClaimBoot(ContextRequest) returns (ClaimBootReply);
   rpc Probe(ContextRequest) returns (IdentityReply);
+  rpc OpenManager(ContextRequest) returns (HeartbeatReply);
   rpc Heartbeat(ContextRequest) returns (HeartbeatReply);
   rpc Exec(ExecRequest) returns (ExecutionReply);
   rpc WriteStdin(WriteStdinRequest) returns (ExecutionReply);
