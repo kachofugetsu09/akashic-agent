@@ -1,454 +1,78 @@
 [![欢迎加入交流群](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-%E6%AC%A2%E8%BF%8E%E5%8A%A0%E5%85%A5-2ea44f?style=for-the-badge)](./COMMUNICATION.md)
 
-# akashic Agent
+# Akashic Agent
 
-一个**会主动找你**的 AI 伙伴——不只是被动回答问题，还能根据你订阅的信息源主动判断"现在该不该发消息、发什么"，在空闲时自主执行后台任务。
+Akashic 是一个会主动找你的 AI 伙伴。它可以对话，也能根据订阅的信息源判断何时主动发消息，并在空闲时执行后台任务。
 
----
+## 启动方式
 
-## 先装常用插件
+下面两种方式适用于 Linux；Windows 用户请在 WSL2 中运行。启动后访问 <http://127.0.0.1:2236>，在 WebUI 中添加模型和认证信息。首次安装仍有终端步骤；[issue #774](https://github.com/kachofugetsu09/akashic-agent/issues/774) 跟踪将其收敛到少量命令和 WebUI 配置。
 
-如果你想让自己的 Akashic 具备和作者差不多的扩展能力，先看社区插件组织：
+### 1. 普通启动：本地源码
 
-- <https://github.com/orgs/akashic-plugins/repositories>
-
-很多能力现在都不是写死在主仓里，而是做成独立插件仓库，例如：
-
-- `steam-mcp`
-- `feed-mcp`
-- `huayue-skills`
-
-如果 Akashic 已经在运行，你通常可以直接像聊天一样让它安装：
-
-```text
-帮我安装这个插件试试看：
-https://github.com/akashic-plugins/steam-mcp
-```
-
-或者更自然一点：
-
-```text
-steam mcp 我想用插件方式加载，你帮我把这个插件装一下看看能不能用：
-https://github.com/akashic-plugins/steam-mcp
-```
-
-Akashic 理想上的动作应该是：
-
-```text
-┌─ 安装插件
-│  ├─ 识别 GitHub 插件仓库
-│  ├─ 执行 plugin-install
-│  ├─ 检查 manifest.toml 与 plugin.py
-│  └─ Controller 保存安装选择，更新唯一 Root 中受影响的插件
-└─ 旧调用排空后释放资源，无关插件继续运行
-```
-
-安装、升级、启停、源码和 `config.local.toml` 修改会触发局部更新。已经接纳的调用保留实际 activation；更新停止受影响范围的新接纳并等待排空。启动或清理失败会明确保留失败状态，不能把恢复内存指针当作外部效果回滚。
-
-持久 binding 保存业务选择与来源证据。恢复时使用当前兼容实现；服务缺席或业务合同不兼容就失败，不重新执行归档代码。
-
-当前合同见 [工作手册索引](./docs/INDEX.md) 和 [能力依赖与执行归属](./docs/design/issue-766-orthogonal-capabilities.md)。
-
----
-
-## Quickstart
-
-需要 Python 3.12。
+需要 Git、Python 3.12 或更新版本、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和 Node/npm。下面是**全新 workspace** 的流程；已有数据请先确认实际 workspace 和插件安装目录，不要当作首次安装重复执行。
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/kachofugetsu09/akashic-agent.git
 cd akashic-agent
-uv venv && uv pip install -r requirements.txt -e sdk/python
-```
+uv venv
+uv pip install -r requirements.txt -e sdk/python
+npm ci
+npm run build
 
-没有 uv？先 `pip install uv`。
+# 第一次 setup 创建 Core 配置、workspace 和空插件选择。
+uv run python main.py setup
 
-**1. 首次配置并启动 Akashic Web**
+# 安装默认插件组合；distribution 从已提交的 HEAD 构建。
+dist_parent="$(mktemp -d)"
+uv run python scripts/build_plugin_distribution.py \
+  --revision HEAD --output "$dist_parent/distribution"
+uv run python scripts/install_plugin_distribution.py \
+  --distribution "$dist_parent/distribution" \
+  --profile "$dist_parent/distribution/profiles/default.json" \
+  --workspace "$HOME/.akashic/workspace" \
+  --plugins-home "$HOME/.akashic-plugin" \
+  --config "$PWD/config.toml"
 
-正式 profile 安装完成后，先运行一次通用 setup 向导；它会让已安装插件执行各自声明的
-setup。Prompt 包的 setup 只创建缺失的 `memory/VEDA.md`，不会覆盖已有人格。未完成这一步
-就直接启动时，Prompt 会对缺失人格明确失败：
-
-```bash
-uv run python main.py setup --config /path/to/config.toml --workspace /path/to/workspace
-```
-
-发行容器同样使用入口的 `setup` 命令完成首次配置：
-
-```bash
-docker run --rm --env-file /path/to/runtime.env \
-  -v /srv/data/services/akashic/state:/srv/data/services/akashic/state \
-  <akashic-image> setup
-```
-
-配置已存在时，向导默认保留它并继续运行已安装插件 setup；只有确认覆盖才会生成新的 Core 配置。
-setup 失败会保持失败可见，不应直接启动首个 Prompt。
-
-```bash
+# 第二次 setup 运行已安装插件的首次配置；保留现有 Core 配置。
+uv run python main.py setup
 uv run python main.py
 ```
 
-Supervisor 会始终提供唯一的本机 Web 入口：<http://127.0.0.1:2236>。访问后直接进入
-Chat；没有模型配置时，Chat 会保留完整界面并引导进入“模型与认证”。
+两次 `setup` 之间要安装默认 profile：第一次只建立 Core 起点，第二次才会运行已安装插件的配置命令。向导询问是否覆盖已有 `config.toml` 时，按回车保留它。`main.py` 无参数时由 Supervisor 启动 Gateway 和 Web Shell。没有模型时，打开 2236 后按页面提示连接模型即可。
 
-第一次运行不需要先创建 `config.toml`。打开设置中心，选择一种认证方式：
+### 2. Docker Compose：已准备的正式发行
 
-| 认证方式 | 适用场景 |
-|---|---|
-| API Key | 任意 OpenAI Chat Completions 兼容端点 |
-| OpenCode Go | 粘贴 OpenCode Go Key，或复用本机已有的 OpenCode Go 登录 |
-| Codex Auth | 复用本机 Codex 登录，未登录时按页面提示完成设备授权 |
+现有 Compose 文件运行**已经构建并激活的 release**。先按[部署操作手册](./docs/design/operator-deployment.md)准备镜像、`runtime.env`、Host Bridge、workspace 和外围服务网络；全新 checkout 目前不能直接运行 `docker compose up`。Docker Compose 需要 v2。
 
-```text
-打开 2236 Chat
-   │
-   ├── 点击“连接模型”
-   ├── 选择 Provider 与认证
-   ├── 读取或填写模型
-   ├── 发送最小真实请求验证
-   └── 保存配置 → 同一页面自动恢复对话
-```
-
-模型连接和凭据由内置 `models` 普通插件写入
-`<workspace>/model-registry.sqlite3`，文件权限为 `0600`；设置 API 和页面不会回显
-已经保存的密钥。切换连接时，旧模型仍会保留，切回来无需重新输入密钥。
-
-OpenCode Go 会动态读取订阅当前提供的模型，隐藏已知走 Messages API 的型号，其余型号
-默认按 Chat Completions 验证。因此新增 Chat Completions 型号通常不需要更新 Akashic。
-
-**2. 仅初始化 Core（不创建业务人格）**
-
-仍然可以使用原有命令：
+正式服务器通常由 `akashic-core.service` 管理，它内部运行 Compose。仅在该单元没有运行、Host Bridge 与外围服务已经就绪、需要手动启动同一 release 时，在宿主执行：
 
 ```bash
-uv run python main.py setup    # 交互向导
-uv run python main.py init     # 非交互，CI/自动化用
+runtime_env="$HOME/.config/akashic-container/runtime.env"
+runtime_checkout="$(sed -n 's/^AKASHIC_RUNTIME_CHECKOUT=//p' "$runtime_env")"
+test -n "$runtime_checkout"
+docker compose --project-name akashic-core --env-file "$runtime_env" \
+  --file "$runtime_checkout/docker/host-runtime/compose.experiment.yaml" \
+  --file "$runtime_checkout/docker/host-runtime/compose.external-services.yaml" \
+  up
 ```
 
-`init` 只创建 Core 和 workspace 配置；它不创建 VEDA。模型仍在 2236 的“模型”页添加。
-根 `config.toml` 只接受 Core 中立设置，最小示例：
+不要让手动 Compose 和 `akashic-core.service` 同时管理同一 workspace。正常由 systemd 托管时，使用 `systemctl start akashic-core.service`；首次发布和升级使用部署工具，不用手动 `compose up` 代替发行激活。
 
-```toml
-[runtime]
-workspace = "~/.akashic/workspace"
+## 在 WebUI 中配置
 
-[app_server]
-enabled = true
-listen = ""
-max_connections = 32
-ingress_queue_size = 128
-outbound_queue_size = 512
-```
+打开 <http://127.0.0.1:2236>，进入“模型与认证”，添加 Provider、凭据和模型，并发送一次请求验证。模型连接保存在 workspace 中；页面不会回显已保存的密钥。安装更多插件时，先看[社区插件仓库](https://github.com/orgs/akashic-plugins/repositories)和[插件教程](./_handbook/plugins-tutorial.md)。
 
-安装 `akashic_clients` 正式插件后，在其安装身份对应的 workspace data root
-（默认为 `<workspace>/plugin-data/akashic_clients-release/config.local.toml`）配置 Web/Mobile：
+源码工作区保存代码；运行时 `<workspace>` 保存会话、记忆、附件和插件数据，默认在 `~/.akashic/workspace`。切换代码分支或重建容器时，不要把运行时 workspace 当作临时文件删除。[持久状态地图](./docs/design/persistence-state-map.md)说明各类数据的 owner 和恢复边界。
 
-```toml
-enabled = true
+## 更多文档
 
-[web]
-enabled = true
-
-[mobile_realtime]
-enabled = false
-```
-
-Telegram、QQ 和其他业务配置同样由各自已安装插件的 `config.local.toml` 拥有；Core 不读取
-`[channels.*]`、`[mobile_realtime]` 或模型业务表。若安装市场身份不是 `release`，以安装清单给出的
-`plugin-data/<name>-<marketplace>/` 为准。
-
-当前状态作为新的迁移基线，历史兼容脚本已经退役；Yoyo 保留用于未来升级。
-Core 只加载自有迁移和正式安装插件声明的 bundle，以 `<workspace>/migrations.sqlite3`
-记录成功回执。旧账本与用户数据保留，不依赖 Git 历史，也不重新执行已退役步骤。
-
-新增迁移前请阅读 [Yoyo 迁移维护手册](./docs/design/git-migration-authoring.md) 与
-[当前基线决定](./docs/decisions/0066-yoyo-current-baseline.md)。未来已发布脚本只追加不修改；
-业务迁移由相应插件拥有。
-
-`workspace` 默认是 `~/.akashic/workspace`。临时切换隔离环境时传
-`--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。
-
-**个人推荐**：主模型使用 DeepSeek，轻量和视觉任务使用 Qwen。通信渠道推荐
-Telegram；只想先本机试用时，打开 2236 绑定模型后即可直接对话。
-
-**3. 正式发行、运行与安全切换**
-
-正式发行使用 `scripts/install-akashic.sh`，它把精确 commit 的 Core 分发制品交给
-`akashic-release` 完成构建和激活。未指定 commit 时固定本次执行开始时 `main` 的最新完整 SHA；需要
-复现或回滚测试时显式指定 40 位 SHA：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh \
-  | sh -s -- --yes
-
-curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh \
-  | sh -s -- --commit <full-40-character-sha> --yes
-```
-
-安装器会显示 current/target identity 并等待确认；无人值守时加 `--yes`。只准备镜像、Bridge venv、
-manifest 而不改变运行单元、CLI 和 state 时加 `--no-activate`。首次激活前，
-`/srv/data/services/akashic/state/config.toml`、`workspace/` 和 `plugin-home/` 必须已经由 operator
-准备好；没有现成配置时从 `config.example.toml` 复制后按目标机编辑，不能把测试配置或假凭据带入正式
-state。若配置没有 OpenCode Go 凭据，安装进程还必须从受保护的环境变量取得
-`OPENCODE_GO_API_KEY`。安装器不会把软件更新授权解释成正式数据迁移授权。
-
-这条路径的构建边界是：
-
-```text
-exact commit
-  └─ 临时 clean checkout（只作为构建和 Host Bridge identity 输入）
-       ├─ Core distribution builder → core.tar + 独立 *.bundle + profile/report
-       └─ Host Bridge / systemd / Compose → runtime-sources/<commit>
-```
-
-正式 Docker image 从 `core.tar` 解出 Core，并在构建时拒绝 `plugins/` 业务源码；插件只能由 profile
-声明的独立 bundle 通过正式 installer 安装。宿主上的 `runtime-sources/<commit>` 供 Host Bridge、Compose
-模板和 identity 校验使用，不是 Core 的业务插件搜索路径。`build_host_runtime_release.py --legacy-checkout`
-只保留给旧开发兼容，不能用于正式发行，也不能让镜像通过 checkout 自动装配插件。
-
-日常升级默认只更新 Core/Bridge，不备份、不自动更新插件；`--backup` 才开启部署备份。
-插件和迁移用 `--plan` 明确列出，待迁移未批准时在停机前失败。完整命令、清单示例及恢复步骤见
-[部署操作手册](docs/design/operator-deployment.md)。安装后核对实际身份：
-
-```bash
-akashic-release doctor
-```
-
-`runtime.env` 由激活事务原子生成，至少闭合 `AKASHIC_RUNTIME_COMMIT`、
-`AKASHIC_RUNTIME_TREE`、`AKASHIC_IMAGE`、`AKASHIC_RELEASE_MANIFEST` 和
-`AKASHIC_RUNTIME_CHECKOUT`。容器入口会用镜像内 `runtime-info.json` 对照 commit/tree；`doctor` 还会核对
-release manifest、content-addressed image、Host Bridge checkout、toolchain 和 Bridge RPC。不要手改这些
-generation 字段；需要更新时重新准备并激活一个完整 release。
-
-首次正式启动时，distribution entrypoint 先用 default profile 校验并安装独立 bundle，随后在
-`<workspace>/runtime/distribution-install.json` 写入安装 receipt。后续重启只校验历史 receipt、当前
-manifest 和 stable artifact，不重新安装、启用默认 profile 或覆盖插件配置；因此 operator 后续禁用、卸载
-或用不同名称的 provider 替换插件后，重启仍保持当前组合。卸载走正在运行的 Core 控制面，例如
-`python main.py plugin-uninstall <plugin-id> --config PATH --workspace PATH`；普通卸载保留该插件的
-`plugin-data`。部署在停止期失败时保留现场；已经记录完整发布结果的尝试用
-`akashic-release resume --attempt <deploy-receipt>` 只重试启动验收。是否恢复数据或降级由部署者决定，
-工具不自动回退旧 image，也不把服务启动当成业务数据或外部效果已回滚。
-
-发布验收还必须单独证明 Core-only 启停。下面的命令把分发制品写到仓库外；runner 会先从 `core.tar`
-启动并停止无业务源码的 Core，再安装 bundle 组合。检查报告中的 `core_bootstrap.status` 与 stop 证据；
-空 selection 不要求 Channel provider，`channel_host_present` 只作观察值。这一步证明 Core tar
-不依赖 checkout 或业务源码，不等于默认 profile 的全量业务验收。真实能力、持久消息回读和
-运行中替换须另用显式业务组合 oracle；该模式经 `Manager.live_root` 调用能力，并用正常
-`Manager.install` 替换 provider，报告旧 Consumer Fiber 排空、新代际、artifact 来源和
-`resource_close` 的 Root、MessageLog、EventBus 关闭状态。
-
-```bash
-release_parent="$(mktemp -d /var/tmp/akashic-distribution.XXXXXX)"
-release_dir="$release_parent/distribution"
-release_sha="<full-40-character-sha>"
-python scripts/build_plugin_distribution.py \
-  --repository "$PWD" --revision "$release_sha" --output "$release_dir"
-python docker/debug/plugin_external_acceptance.py \
-  --distribution "$release_dir/distribution.json" \
-  --core-tar "$release_dir/core.tar" \
-  --repo-root "$PWD" \
-  --output "$release_dir/acceptance.json"
-
-business_json="/absolute/isolated/business-composition.json"
-python docker/debug/plugin_external_acceptance.py \
-  --business-composition-json "$business_json" \
-  --core-tar "$release_dir/core.tar" \
-  --repo-root "$PWD" \
-  --output "$release_parent/business-acceptance.json"
-```
-
-完整边界见 [Core 与 Host Bridge 安装设计](./docs/design/akashic-core-bridge-installer.md)。
-
-无参数启动会先进入内置 supervisor，再由它启动正式 gateway。这样核心代码或主配置
-确需完整重载时，Agent 可以通过当轮 `tool_search` 解锁 `agent_restart`，并在回复持久化、
-送达和私有提交证据全部完成后安全拉起下一代进程。需要让调试器直接附着未托管 gateway
-时，显式运行 `uv run python main.py gateway`；该模式不会注册自重启工具。
-
-在 2236 的“模型与认证”切换 Provider、模型或默认角色时，Gateway 会原子发布新模型代际，不停止接收新
-turn，也不重启进程。已经开始的执行继续使用旧代，下一个真正开始的执行使用新代；候选
-配置或真实请求校验失败时保持原配置和当前代际。
-
-从终端或 supervisor 切换到 PyCharm 前，先优雅停止当前 workspace 的 runtime：
-
-```bash
-./scripts/stop-runtime.sh
-```
-
-脚本遵循 `--workspace`、`AKASHIC_WORKSPACE`、`config.toml` 的 workspace
-优先级，优先停止 supervisor，并等待 runtime 真正释放实例锁。它不会删除锁文件，
-也不会在超时后自动强制终止进程。PyCharm 仍直接运行 `main.py`，默认同样进入
-supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也可以把
-`scripts/stop-runtime.sh` 配置为 Run Configuration 的 Before Launch external tool。
-
-如果配置了 Telegram / QQ，也可以直接给 bot 发一条消息开始对话。
-
----
-
-## 用 Android 手机接入
-
-Akashic Mobile 是一个通过独立实时网关连接 Akashic Agent 的 Android 客户端。远程接入推荐使用 Cloudflare Tunnel：Web Chat 和模型设置继续留在本机 `127.0.0.1:2236`，Tunnel 只转发由 Akashic 设备认证保护的 `6323` 端口。
-
-```text
-1. 在 `<workspace>/plugin-data/akashic_clients-<marketplace>/config.local.toml`
-   启用 `[mobile_realtime]`（默认正式安装身份是 `release`）
-2. 用 Cloudflare Tunnel 把一个公共域名转到 https://127.0.0.1:6323
-3. 在本机 Web Chat 点击“连接手机”，用 Akashic Mobile 扫描二维码
-4. 两端核对六位确认码，在电脑上批准设备
-```
-
-- Android 安装包：<https://github.com/kachofugetsu09/akashic-mobile/releases/latest>
-- 配置、Cloudflare、验证与排障：[移动端接入手册](./_handbook/mobile-access.md)
-
-首次配对成功后，手机会保存设备密钥，正常升级应用或重连无需再次扫码。
-
-### 把前端改动更新到移动端
-
-Android 的对话界面与 Web Chat 共用 `frontend/chat/src`。只修改 React、CSS 或插件插槽时，
-不需要重新打包 APK；服务端把构建结果发布成不可变 WebUI generation，支持 OTA 的客户端会
-下载、校验并切换到所选频道。只有原生壳、Native Bridge 协议或最低原生 build 发生变化时
-才需要发布新的 APK。
-
-先从发布仓读取当前服务身份，并为指针和可达资源创建恢复点：
-
-```bash
-AKASHIC_WEBUI_SERVER_ID="$(sqlite3 -readonly \
-  ~/.akashic/workspace/mobile-webui/publication.sqlite3 \
-  "SELECT value FROM webui_meta WHERE key = 'server_id'")"
-AKASHIC_PLUGIN_HOME="${AKASHIC_PLUGIN_HOME:-$HOME/.akashic-plugin}"
-AKASHIC_CLIENT_ARTIFACT="$AKASHIC_PLUGIN_HOME/cache/release/akashic_clients/.artifacts/<installed-revision>"
-test -f "$AKASHIC_CLIENT_ARTIFACT/mobile_webui/release_cli.py"
-
-.venv/bin/python "$AKASHIC_CLIENT_ARTIFACT/mobile_webui/release_cli.py" backup \
-  --workspace ~/.akashic/workspace \
-  --server-id "$AKASHIC_WEBUI_SERVER_ID" \
-  --destination ~/.akashic/backups/mobile-webui-"$(date +%Y%m%d-%H%M%S)"
-```
-
-开发中的 dirty 前端只能发布到 Preview，适合在配置为 Preview 频道的真机上验收：
-
-```bash
-.venv/bin/python "$AKASHIC_CLIENT_ARTIFACT/mobile_webui/release_cli.py" publish \
-  --source-repository "$PWD" \
-  --workspace ~/.akashic/workspace \
-  --server-id "$AKASHIC_WEBUI_SERVER_ID" \
-  --allow-dirty \
-  --actor local-preview
-```
-
-合并后切到最新且干净的 `main`，再从确定的 commit 发布 Stable；普通设备随后会通过 OTA
-取得该 generation：
-
-```bash
-git checkout main
-git pull --ff-only origin main
-test -z "$(git status --porcelain)"
-
-AKASHIC_WEBUI_SOURCE_COMMIT="$(git rev-parse HEAD)"
-.venv/bin/python "$AKASHIC_CLIENT_ARTIFACT/mobile_webui/release_cli.py" publish \
-  --source-repository "$PWD" \
-  --workspace ~/.akashic/workspace \
-  --server-id "$AKASHIC_WEBUI_SERVER_ID" \
-  --source-commit "$AKASHIC_WEBUI_SOURCE_COMMIT" \
-  --stable \
-  --actor local-stable
-```
-
-用 `python "$AKASHIC_CLIENT_ARTIFACT/mobile_webui/release_cli.py" inspect` 核对 Stable/Preview 的 generation、协议窗口和
-`minimum_native_build`。发布只更新 WebUI 发布仓，不会改写会话、记忆或插件数据。
-
----
-
-## 系统全景
-
-```
-你的消息 → [被动回复] ──→ agent loop ──→ 回复
-                │
-                ├── 记忆系统 ─── 每轮注入长期记忆 + 模型窗口水位 compaction
-                │
-                └── 插件系统 ─── 拦截命令、注入协议、阻断工具、挂载新工具...
-
-[主动推送] ──→ 定期轮询 ──→ 三路数据 (alert/content/context) ──→ LLM 决策 ──→ 推送或跳过
-                │
-                └── [Drift] ──→ 没东西推时执行后台任务 (SKILL.md)
-```
-
-| 想看什么 | 文档 |
-|---------|------|
-| 怎么首次配置或切换 Provider | 启动后访问 `http://127.0.0.1:2236/#models`，支持 API Key、OpenCode Go 和 Codex Auth |
-| 怎么打开本机 Web Chat | 启动后访问 `http://127.0.0.1:2236`；没有模型时页面会直接引导配置 |
-| 怎么用 Android 手机远程连接 | [移动端接入手册](./_handbook/mobile-access.md) |
-| 怎么让 agent 主动推送消息、怎么配数据源 | [_handbook/proactive-guide.md](./_handbook/proactive-guide.md) |
-| 怎么写后台任务让 agent 空闲时自动干活 | [_handbook/drift-guide.md](./_handbook/drift-guide.md) |
-| MEMORY.md / SELF.md / consolidation / 记忆怎么流转 | [_handbook/memory-markdown.md](./_handbook/memory-markdown.md) |
-| 怎么写插件介入生命周期、注册工具 | [_handbook/plugins-tutorial.md](./_handbook/plugins-tutorial.md) |
-
----
-
-## 被动回复
-
-收到消息 → 记忆检索 → 工具调用 → 流式回复。每轮经过 6 个 Phase（BeforeTurn → BeforeReasoning → PromptRender → Reasoner → AfterReasoning → AfterTurn）。
-
-插件有 **4 种介入方式**：PhaseModule 链（7 个 Phase 方法 + slot 依赖声明）、EventBus 装饰器（9 种事件）、`@on_tool_pre`（工具拦截）、`@tool`（注册工具）。见 [插件系统](./_handbook/plugins-tutorial.md)。
-
-## 主动推送（Proactive）
-
-Agent 根据电量模型自适应调整轮询频率——你刚聊完时不烦你（8 分钟一次），半天没动静就加速到 1 分钟一次。每轮拉取三路 MCP 数据：
-
-- **alert** — 高优先级告警，直接透传
-- **content** — 内容流，逐条 LLM 评分分类
-- **context** — 背景上下文，概率注入做 fallback
-
-见 [Proactive 配置指南](./_handbook/proactive-guide.md)。
-
-## 记忆系统
-
-对话通过 session context compaction ledger 按模型真实 context window 压缩；Markdown consolidation 从 checkpoint 的 exact source plan 提取 PENDING 候选，并发布 `ConsolidationCommitted` 供语义记忆消费。**Optimizer** 定时将 PENDING 归档到 MEMORY.md；当前运行时不创建或写入 `HISTORY.md`。
-
-见 [记忆系统](./_handbook/memory-markdown.md)。
-
-## Drift 空闲任务
-
-没内容可推时 agent 不空转——执行你写的 `SKILL.md`（分步操作指南），比如审计长期记忆是否准确、补用户画像、自我诊断。
-
-见 [Drift 指南](./_handbook/drift-guide.md)。
-
----
-
-## 其他命令
-
-```bash
-uv run python main.py exec --new --final-only "总结最近上下文"
-uv run python main.py app-server --stdio # 父进程托管 JSON-RPC app-server
-uv run python main.py dashboard # 单独运行 Dashboard 调试入口
-# 正式 Supervisor 只提供 http://127.0.0.1:2236，根页面是统一壳层并默认选中 Chat
-uv run python main.py --help    # 查看全部子命令
-
-pytest tests/
-akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
-```
-
-## 工作区
-
-所有运行时数据都在 `[runtime].workspace` 指定的目录下。默认值是
-`~/.akashic/workspace`；可设置 `AKASHIC_WORKSPACE`，也可以为单条命令传入
-`--workspace /absolute/path`。优先级为 `--workspace`、`AKASHIC_WORKSPACE`、
-`config.toml`。不同测试环境使用不同目录，不共享会话、记忆、附件或插件数据。
-开发 checkout 的插件代码缓存和启停清单默认仍位于 `$HOME/.akashic-plugin`；需要完整隔离插件安装状态时，
-额外设置 `AKASHIC_PLUGIN_HOME=/absolute/test/plugin-home`。正式分发使用
-`/srv/data/services/akashic/state/plugin-home`，只接受 release profile 或普通插件控制面发布的 artifact，
-不会扫描仓库 checkout 的 `plugins/`。
-
-从旧版升级时，第一次重启前显式复制旧插件数据；命令保留旧目录，目标已存在时拒绝覆盖：
-
-```bash
-uv run python scripts/migrate_plugin_data.py \
-  --workspace "$HOME/.akashic/workspace" \
-  --plugins-home "$HOME/.akashic-plugin"
-```
-
-客户端连接 workspace 下的 `akashic.sock`，先以协议版本 `2.0` 完成 JSON-RPC
-`initialize`/`initialized`，再使用 `session/create`、`message/send`、`message/read`
-和 `session/follow`。发送 ACK 表示原始输入已经保存；回复随后追加。关闭连接只停止读取，
-重连后按已处理的 `seq` 补读。旧 Thread/Turn 方法已由 Message v2 替代。
-
-完整用法见 [Python SDK](sdk/python/README.md) 和 [协议 schema](schema/app-server-v2.json)。
+| 主题 | 文档 |
+| --- | --- |
+| 正式发行、升级和恢复 | [部署操作手册](./docs/design/operator-deployment.md) |
+| 插件开发与安装 | [插件教程](./_handbook/plugins-tutorial.md) |
+| 手机接入 | [移动端接入手册](./_handbook/mobile-access.md) |
+| 主动推送 | [Proactive 指南](./_handbook/proactive-guide.md) |
+| 记忆与 Drift | [记忆手册](./_handbook/memory-markdown.md)、[Drift 指南](./_handbook/drift-guide.md) |
+| Python 客户端与协议 | [Python SDK](./sdk/python/README.md)、[协议 schema](./schema/app-server-v2.json) |
+| 项目需求与开发流程 | [工作手册索引](./docs/INDEX.md) |
