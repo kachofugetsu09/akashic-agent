@@ -41,8 +41,18 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
+    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
+    startProjectChat, createProject, continueProject, stopProject,
   } = controller;
   const openPairing = () => setMobilePairingOpen(true);
+  const sidebarProjects = useMemo(() => projectsInstalled ? {
+    items: projects, pending: pendingProjects, pendingError: pendingProjectsError,
+    activeProjectId: activeProject?.id ?? "", memoryInstalled,
+    onNewChat: startProjectChat, onCreate: createProject, onContinue: continueProject, onStop: stopProject,
+  } : undefined, [activeProject?.id, createProject, continueProject, memoryInstalled, pendingProjects,
+    pendingProjectsError, projects, projectsInstalled, startProjectChat, stopProject]);
+  const activeTitle = sidebarSessions.find((session) => session.active)?.title || "新会话";
+  const headingTitle = activeProject ? `${activeProject.name} / ${activeTitle}` : activeTitle;
   const committed = new Set(timelineMessages.map((message) => message.id));
   const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
 
@@ -65,7 +75,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} onSelectSession={activateSession}
+            themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
             onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
           />
 
@@ -74,10 +84,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           <DesktopMobileNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} onSelectSession={activateSession}
+            themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
             onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
           />
-          <h1 title={sidebarSessions.find((s) => s.active)?.title || "新会话"}>{sidebarSessions.find((session) => session.active)?.title || "新会话"}</h1>
+          <h1 title={headingTitle}>{headingTitle}</h1>
         </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>

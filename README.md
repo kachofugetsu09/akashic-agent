@@ -186,7 +186,7 @@ curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/s
 ```
 
 安装器会显示 current/target identity 并等待确认；无人值守时加 `--yes`。只准备镜像、Bridge venv、
-manifest、unit 和稳定 CLI 而不启动服务时加 `--no-activate`。首次激活前，
+manifest 而不改变运行单元、CLI 和 state 时加 `--no-activate`。首次激活前，
 `/srv/data/services/akashic/state/config.toml`、`workspace/` 和 `plugin-home/` 必须已经由 operator
 准备好；没有现成配置时从 `config.example.toml` 复制后按目标机编辑，不能把测试配置或假凭据带入正式
 state。若配置没有 OpenCode Go 凭据，安装进程还必须从受保护的环境变量取得
@@ -206,11 +206,12 @@ exact commit
 模板和 identity 校验使用，不是 Core 的业务插件搜索路径。`build_host_runtime_release.py --legacy-checkout`
 只保留给旧开发兼容，不能用于正式发行，也不能让镜像通过 checkout 自动装配插件。
 
-安装后用稳定 CLI 核对实际身份或恢复上一代软件：
+日常升级默认只更新 Core/Bridge，不备份、不自动更新插件；`--backup` 才开启部署备份。
+插件和迁移用 `--plan` 明确列出，待迁移未批准时在停机前失败。完整命令、清单示例及恢复步骤见
+[部署操作手册](docs/design/operator-deployment.md)。安装后核对实际身份：
 
 ```bash
 akashic-release doctor
-akashic-release rollback --yes
 ```
 
 `runtime.env` 由激活事务原子生成，至少闭合 `AKASHIC_RUNTIME_COMMIT`、
@@ -224,8 +225,9 @@ generation 字段；需要更新时重新准备并激活一个完整 release。
 manifest 和 stable artifact，不重新安装、启用默认 profile 或覆盖插件配置；因此 operator 后续禁用、卸载
 或用不同名称的 provider 替换插件后，重启仍保持当前组合。卸载走正在运行的 Core 控制面，例如
 `python main.py plugin-uninstall <plugin-id> --config PATH --workspace PATH`；普通卸载保留该插件的
-`plugin-data`。要恢复软件代际使用 `akashic-release rollback --yes`，它恢复 runtime/env 和服务身份，
-不回滚已经写入 Workspace 的业务数据或外部效果。
+`plugin-data`。部署在停止期失败时保留现场；已经记录完整发布结果的尝试用
+`akashic-release resume --attempt <deploy-receipt>` 只重试启动验收。是否恢复数据或降级由部署者决定，
+工具不自动回退旧 image，也不把服务启动当成业务数据或外部效果已回滚。
 
 发布验收还必须单独证明 Core-only 启停。下面的命令把分发制品写到仓库外；runner 会先从 `core.tar`
 启动并停止无业务源码的 Core，再安装 bundle 组合。检查报告中的 `core_bootstrap.status` 与 stop 证据；

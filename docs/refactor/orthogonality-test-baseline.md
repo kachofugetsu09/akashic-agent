@@ -24,7 +24,7 @@
 - Gate 元治理测试：`tests/semantic/test_change_gate.py` 整个文件（路径映射、超时、catalog 完整性）。
 - 静态检查器自身的单元测试：`test_plugin_boundary.py`、`test_yoyo_migration_append_only.py`。检查器脚本本身留在 CI 中直接运行（见 §4）。
 
-## 2. 保留清单（41 个测试节点）
+## 2. 保留清单（42 个测试节点）
 
 ### 2.1 插件内核：接线、局部更新、失败局部化、清理（C1）
 
@@ -84,6 +84,8 @@
 | 38 | `tests/test_message_metadata.py::test_unknown_metadata_survives_restart_history_and_follow_without_plugins` | O：删除插件后核心事实照常可读；SES 公共 Message | 写入元数据的插件不在场时，历史、重启和 follow 仍能完整读回。Session 事实不依赖插件存在。 |
 | 39 | `tests/test_durable_deliveries.py::test_provider_receipt_precedes_one_append_only_session_projection` | C5外部发送留回执 | 先有 provider 回执，再有唯一一条只追加的 Session 投影。 |
 | 40 | `tests/test_durable_deliveries.py::test_provider_started_sigkill_recovers_uncertain_without_resend` | C5结果未知时保持 `uncertain` | 发送中途被 SIGKILL 后恢复为 `uncertain`，不自动重发。外部效果不能被"恢复内存指针"伪装成已回滚。 |
+| 42 | `tests/test_message_log.py::test_session_scope_is_fixed_at_admission_and_absent_for_old_sessions` | C4 Session 固定事实不可改写；O：新增维度不改旧行（SES-010） | 真实 `MessageLog` 上断言 scope 首次接纳后同值幂等、异值失败，已有消息的 Session 不能补写 scope，旧 Session 属性字节不变。Akasha 分图和项目归属都以此为唯一依据。 |
+| 43 | `tests/test_akasha_graphs.py::test_unavailable_graph_does_not_stop_other_graphs` | O：故障局部化；MEM-013 独立图消费进度 | 真实安装 Akasha 与 MessageLog，default 或独立图缺少消费出处时，另一图仍完成学习与召回，原图错误保持可见。既有插件生命周期测试没有覆盖同一记忆插件内的独立图。 |
 
 ### 2.4 静态边界（不是 pytest 节点，但属于保留项）
 
@@ -104,7 +106,7 @@
 - 第 35 条用到的 `assert_rows_unchanged`、`assert_no_forbidden_writes` 已内联进 `tests/test_context_history_contract.py`；`tests_scenarios/contracts/` 已删除
 - `docker/debug/plugin_external_acceptance.py`（第 17、18 条要用）
 
-`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 40 个节点（`test_default_reply` 带参数展开为 2 个，合计 41 个用例）。
+`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 42 个节点（`test_default_reply` 与第 43 条各带 2 组参数，合计 44 个用例；第 42、43 条随 0073 加入）。
 
 ## 3. 需要补充的测试（10 个，全部来自 #766 验收）
 

@@ -80,14 +80,16 @@ class MessageConsumer:
     async def load(
         cls, path: Path, *, catalog: MessageCatalog,
         embeddings: MessageEmbeddings, bindings: Bindings,
-        config: MemoryConfig,
+        config: MemoryConfig, cutover: bool = True,
     ) -> MessageConsumer:
         """先按原绑定还原材料，再取得唯一 writer 装载图；缺失来源不自动重学。"""
         from ..learning import AKASHA_LEARNING, LearningConfig
 
         # 1. 第一次启用固定已有日志上界，重启前也必须把空图与起点一起发布。
+        #    独立图的成员从接纳起就固定路由到它，不设上界而从头学习。
         if not path.exists():
-            state = Consumption(cutover_heads=tuple(sorted(catalog.snapshot_heads().items())))
+            heads = catalog.snapshot_heads().items() if cutover else ()
+            state = Consumption(cutover_heads=tuple(sorted(heads)))
             return cls(path, turns=[], state=state, config=config)
         state = load_consumption(path)
         if state is None:
@@ -140,8 +142,12 @@ class MessageConsumer:
         embeddings: MessageEmbeddings, bindings: Bindings,
         embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]],
         skip_missing_embeddings: bool = False,
+        member: Callable[[str], bool] | None = None,
     ) -> int:
-        """追赶一个固定日志前缀；在线只补缺向量，学习与进度仍一次发布。"""
+        """追赶一个固定日志前缀；在线只补缺向量，学习与进度仍一次发布。
+
+        member 选出路由到本图的 Session；每张图只消费自己的成员。
+        """
         from agent.plugin_contracts import Input, Output
         from ..projection import Sample, applied_source
 
@@ -152,7 +158,10 @@ class MessageConsumer:
             rule = LearningConfig.model_validate(dict(metadata))
             # 图空间从原出处恢复；切换模型不能把新向量接到旧图中。
             self.check_embedding_space(rule.embedding_model, rule.dimension, bindings)
-            heads = catalog.snapshot_heads()
+            heads = {
+                session: head for session, head in catalog.snapshot_heads().items()
+                if member is None or member(session)
+            }
             cutover = dict(self.state.cutover_heads)
             applied = {entry.ending[1] for entry in self.state.applied}
             skipped = {item.ending[1] for item in self.state.skipped}

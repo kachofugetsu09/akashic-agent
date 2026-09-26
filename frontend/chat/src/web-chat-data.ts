@@ -7,6 +7,8 @@ export interface SessionRow {
   updated_at?: string;
   message_count?: number;
   first_message_content?: string;
+  /** Session 接纳时固定的宽键；缺失维度即 default。 */
+  scope?: Record<string, string>;
 }
 
 export interface ChatHistoryPage {
@@ -79,6 +81,7 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
     || (item.first_message_content !== undefined && typeof item.first_message_content !== "string")
     || (item.updated_at !== undefined && typeof item.updated_at !== "string")
     || (item.message_count !== undefined && (typeof item.message_count !== "number" || !Number.isFinite(item.message_count)))
+    || (item.scope !== undefined && !isStringRecord(item.scope))
   ))) {
     throw new Error("/api/chat/sessions 返回了无效 session 行");
   }
@@ -226,4 +229,9 @@ function recordValue(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  const record = recordValue(value);
+  return record !== null && Object.values(record).every((item) => typeof item === "string");
 }
