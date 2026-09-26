@@ -334,29 +334,36 @@ function isRenderer(value: unknown): value is MobilePluginRenderer {
     && (renderer.prefetch === undefined || typeof renderer.prefetch === "function");
 }
 
-/** 宿主自身的导航按插件 ID 组合能力；目录变化时返回新版本号以便重读。 */
-export function useMobilePluginCatalogVersion(): { version: number; installed: (pluginId: string) => boolean } {
+/** 宿主按插件名找能力；调用时保留目录中的完整 name@marketplace 身份。 */
+function hostPlugins(pluginName: string): MobilePluginCatalogItem[] {
+  return catalog.updating ? [] : catalog.plugins.filter((plugin) => plugin.id.split("@")[0] === pluginName);
+}
+
+/** 宿主自身的导航按插件名组合能力；目录变化时返回新版本号以便重读。 */
+export function useMobilePluginCatalogVersion(): { version: number; installed: (pluginName: string) => boolean } {
   const version = useSyncExternalStore(
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     () => registryVersion,
   );
   return {
     version,
-    installed: (pluginId) => !catalog.updating && catalog.plugins.some((plugin) => plugin.id === pluginId),
+    installed: (pluginName) => hostPlugins(pluginName).length > 0,
   };
 }
 
 /** 宿主侧栏直接调用插件查询；插件缺失或目录更新中都作为普通错误返回。 */
 export async function queryHostPlugin(
-  pluginId: string,
+  pluginName: string,
   method: string,
   payload: Record<string, unknown> = {},
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const plugin = catalog.updating ? undefined : catalog.plugins.find((item) => item.id === pluginId);
-  if (!plugin) throw new Error(`插件未安装或正在更新: ${pluginId}`);
+  const matches = hostPlugins(pluginName);
+  if (matches.length > 1) throw new Error(`存在多个同名插件，无法选择: ${matches.map((plugin) => plugin.id).join(", ")}`);
+  const plugin = matches[0];
+  if (!plugin) throw new Error(`插件未安装或正在更新: ${pluginName}`);
   return queryWebPluginUi({
-    pluginId, pluginRevision: plugin.revision, method, payload, slot: "drawer.panel",
+    pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "drawer.panel",
     signal: signal ?? new AbortController().signal,
   });
 }
