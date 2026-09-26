@@ -172,13 +172,13 @@ export function useDesktopChatController() {
     try {
       const items = new Map<string, SessionRow>();
       const cursors = new Set<string>();
-      let query = "page_size=80";
+      let query = "page_size=200";
       while (true) {
         const page = sessionPage(await fetchChatJson<unknown>(`/api/chat/sessions?${query}`, { signal: controller.signal }));
         if (controller.signal.aborted) return;
         page.items.forEach((session) => { if (!items.has(session.key)) items.set(session.key, session); });
         if (!page.nextCursor) break;
-        query = `page_size=80&after_time=${encodeURIComponent(page.nextCursor.updated_at)}&after_key=${encodeURIComponent(page.nextCursor.session_id)}`;
+        query = `page_size=200&after_time=${encodeURIComponent(page.nextCursor.updated_at)}&after_key=${encodeURIComponent(page.nextCursor.session_id)}`;
         if (cursors.has(query)) throw new Error("会话目录游标未前进");
         cursors.add(query);
       }
@@ -403,14 +403,33 @@ export function useDesktopChatController() {
     return closeConnection;
   }, [closeConnection, connect]);
 
+  // 启动即并行拉目录与模型；网关未就绪时静默失败，chatReady 翻转后同一 effect 自动重试缺失部分。
+  const startupProgressRef = useRef<Record<"sessions" | "models", "idle" | "loading" | "done">>(
+    { sessions: "idle", models: "idle" },
+  );
+  const startupLoad = useCallback(async () => {
+    const pending = startupProgressRef.current;
+    const silent = shellState?.chatReady !== true;
+    const run = async (key: "sessions" | "models", task: () => Promise<void>) => {
+      if (pending[key] !== "idle") return;
+      pending[key] = "loading";
+      try {
+        await task();
+        pending[key] = "done";
+      } catch (error) {
+        pending[key] = "idle";
+        if (!silent && !isAbortError(error)) reportError(error);
+      }
+    };
+    await Promise.all([
+      run("sessions", loadSessions),
+      run("models", () => loadModels(activeSessionRef.current)),
+    ]);
+  }, [loadModels, loadSessions, reportError, shellState?.chatReady]);
+
   useEffect(() => {
-    if (!chatReady) return;
-    void loadSessionsSafely();
-    void loadModels(activeSessionRef.current).catch((error: unknown) => reportError(error));
-    if (activeSessionRef.current && timelineRef.current.length === 0) {
-      void loadMessagesSafely(activeSessionRef.current);
-    }
-  }, [chatReady, loadModels, loadMessagesSafely, loadSessionsSafely, reportError]);
+    void startupLoad();
+  }, [startupLoad]);
 
   // 健康探测暂时失败不取消用户已经发送的请求或正在读取的历史。
   useEffect(() => () => {
