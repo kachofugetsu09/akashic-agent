@@ -308,11 +308,12 @@ async def apply(ctx: Context) -> None:
         raise MobileUiRpcInvalidRequest(f"不支持的 Akasha 查询：{method}")
 
     async def register_mobile(child: Context) -> None:
+        # UI provider 在事件循环持有调用作用域，线程回调不能再次进入 entrypoint。
         _ = await child.require(UI_SLOTS).register_mobile(
             child, MobileUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
                                     slots=("turn.before_reasoning",),
                                     navigation=MobileUiNavigation(label="Akasha Inspector",
-                                        description="查看实际检索及呈现的原消息")), query=ctx.entrypoint(query),
+                                        description="查看实际检索及呈现的原消息")), query=query,
         )
     _ = await ctx.inject((UI_SLOTS, AKASHA_RECORDS_VIEW), register_mobile, name="mobile-ui")
 
