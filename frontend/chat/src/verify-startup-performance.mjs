@@ -132,7 +132,7 @@ try {
     coldSessionRows.push(await measureLoad(sessionContext, `${server.origin}/?session=perf-session`));
     await sessionContext.close();
 
-    // 4. 会话切换：A → B → 回到 A，回访不应再次请求历史页。
+    // 4. 会话切换：A 首访 → 悬停预取 B → 回 A 回访。悬停预取与回访都应命中尾页缓存。
     const page = await context.newPage();
     const messageRequests = [];
     page.on("request", (request) => {
@@ -142,11 +142,23 @@ try {
     await page.goto(`${server.origin}/`, { waitUntil: "commit" });
     await page.getByText("纯文本性能会话", { exact: true }).click({ timeout: 60_000 });
     await page.locator('[data-message-id="desktop-plain-99"]').waitFor();
+    await page.getByText("性能基线会话", { exact: true }).hover();
+    await page.waitForTimeout(400);
     messageRequests.length = 0;
-    const revisitStart = await page.evaluate(() => performance.now());
+    const prefetchStart = await page.evaluate(() => performance.now());
     await page.getByText("性能基线会话", { exact: true }).click();
     await page.locator('[data-message-id="desktop-rich-99"]').waitFor();
     revisitRows.push({
+      kind: "prefetched",
+      visibleMs: await page.evaluate((start) => performance.now() - start, prefetchStart),
+      messageRequests: messageRequests.length,
+    });
+    messageRequests.length = 0;
+    const revisitStart = await page.evaluate(() => performance.now());
+    await page.getByText("纯文本性能会话", { exact: true }).click();
+    await page.locator('[data-message-id="desktop-plain-99"]').waitFor();
+    revisitRows.push({
+      kind: "revisit",
       visibleMs: await page.evaluate((start) => performance.now() - start, revisitStart),
       messageRequests: messageRequests.length,
     });
@@ -169,15 +181,19 @@ try {
     warm: { fcp: medianOf(warmRows, "firstContentfulPaintMs"), sessionList: medianOf(warmRows, "sessionListMs"),
       assetBytes: medianOf(warmRows, "assetTransferBytes"), assetCacheHits: medianOf(warmRows, "assetCacheHits") },
     coldSession: { message: medianOf(coldSessionRows, "messageMs"), apiHops: medianOf(coldSessionRows, "apiSerialHops") },
-    revisit: { visibleMs: medianOf(revisitRows, "visibleMs"), messageRequests: medianOf(revisitRows, "messageRequests") },
+    prefetched: { visibleMs: medianOf(revisitRows.filter((row) => row.kind === "prefetched"), "visibleMs"),
+      messageRequests: medianOf(revisitRows.filter((row) => row.kind === "prefetched"), "messageRequests") },
+    revisit: { visibleMs: medianOf(revisitRows.filter((row) => row.kind === "revisit"), "visibleMs"),
+      messageRequests: medianOf(revisitRows.filter((row) => row.kind === "revisit"), "messageRequests") },
   };
   console.log(JSON.stringify(summary, null, 2));
   if (!baseline) {
-    // 暖启动时哈希资产必须命中缓存，回访会话不得再发历史请求。
+    // 暖启动时哈希资产必须命中缓存；悬停预取与回访激活不再重复拉取尾页。
     assert.ok(summary.warm.assetBytes === 0, `暖启动仍传输 ${summary.warm.assetBytes}B 哈希资产`);
     assert.ok(summary.warm.assetCacheHits >= 1, "暖启动没有命中任何资产缓存");
+    assert.ok(summary.prefetched.messageRequests === 0, `预取命中后激活仍请求 ${summary.prefetched.messageRequests} 次历史`);
     assert.ok(summary.revisit.messageRequests === 0, `回访会话仍请求 ${summary.revisit.messageRequests} 次历史`);
-    assert.ok(summary.cold.apiHops <= 2, `启动 API 串行深度仍有 ${summary.cold.apiHops} 层`);
+    assert.ok(summary.cold.apiHops <= 1, `启动 API 串行深度仍有 ${summary.cold.apiHops} 层`);
   }
 } finally {
   await browser?.close();

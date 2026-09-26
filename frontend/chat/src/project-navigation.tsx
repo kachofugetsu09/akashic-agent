@@ -38,6 +38,7 @@ export function ProjectNavigation({
   pendingSessionId,
   memoryInstalled,
   onSelectSession,
+  onPrefetchSession,
   onNewProjectChat,
   onCreateProject,
   onContinueProject,
@@ -52,6 +53,7 @@ export function ProjectNavigation({
   pendingSessionId: string;
   memoryInstalled: boolean;
   onSelectSession: (sessionId: string) => void;
+  onPrefetchSession?: (sessionId: string) => void;
   onNewProjectChat: (projectId: string) => void;
   onCreateProject: (name: string, memory: ProjectMemory) => Promise<void>;
   onContinueProject: (key: string) => Promise<void>;
@@ -155,7 +157,9 @@ export function ProjectNavigation({
                     aria-current={session.active ? "true" : undefined}
                     aria-busy={pendingSessionId === session.id || undefined}
                     title={session.title}
-                    onClick={() => onSelectSession(session.id)}>
+                    onClick={() => onSelectSession(session.id)}
+                    onPointerEnter={() => onPrefetchSession?.(session.id)}
+                    onFocus={() => onPrefetchSession?.(session.id)}>
                     <span>{session.title}</span>
                     {session.updatedLabel ? <time>{session.updatedLabel}</time> : null}
                   </button>
