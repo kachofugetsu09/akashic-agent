@@ -1,45 +1,76 @@
 """从消息学习；模型未配置时保持可见的记忆不可用状态。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import UTC, datetime
-
-from importlib import import_module
-from agent.plugin_composition.ui import UI
-
-import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
-from typing import Literal, Protocol, Self
+from datetime import UTC, datetime
 from functools import partial
-from collections.abc import Mapping
+from importlib import import_module
 from pathlib import Path
+from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from agent.plugin_composition import EMBEDDINGS, RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey, UI_SLOTS, MobileUiDefinition, MobileUiNavigation, MobileUiRpcInvalidRequest
+from agent.plugin_composition import (
+    EMBEDDING_MEMORY_PLUGIN,
+    EMBEDDINGS,
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    UI_SLOTS,
+    Context,
+    MobileUiDefinition,
+    MobileUiNavigation,
+    MobileUiRpcInvalidRequest,
+    ServiceKey,
+)
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import COMMANDS, CommandDefinition, CommandInvocation, CommandResult
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE
+from agent.plugin_composition.commands import (
+    COMMANDS,
+    CommandDefinition,
+    CommandInvocation,
+    CommandResult,
+)
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    MESSAGE_EMBEDDINGS,
+    OWNER_STATE,
+)
+from agent.plugin_composition.models import (
+    DriverUnavailableError,
+    ModelUnavailableError,
+    open_embedding as open_saved_embedding,
+    read_embedding_binding,
+)
+from agent.plugin_composition.ui import UI
 from agent.plugin_contracts import Message
-from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
-from .domain.model import EmbeddingSpaceMismatchError, MemoryRebuildRequiredError
-from ._boundaries import CONTENT, TOOLS, TURN_PROJECTION, ContentCapability, ToolCatalog, ToolRef, ToolView
+from agent.plugin_contracts.context import (
+    MATERIALS as MATERIALS,
+)
 
+from ._boundaries import (
+    CONTENT,
+    TOOLS,
+    TURN_PROJECTION,
+    ContentCapability,
+    ToolCatalog,
+)
 from .application.consumer import MessageConsumer
+from .application.rebuild import manifest_json, rebuild_from_catalog
+from .application.snapshot import read_memory
 from .config import AkashaConfig, resolve_memory_path
+from .domain.model import EmbeddingSpaceMismatchError, MemoryRebuildRequiredError
 from .infrastructure.consumption import load_message_nodes
 from .inspector import RecallInspector
-from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .interest import SEMANTIC_INTEREST, Embed, SemanticInterest
+from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .recall_tool import RecallArguments, RecallTool, check_recall
 from .recalls import Recall, RecallRecords, RecallRecordsRead
 from .runtime import MessageMemory, prepare_materials
-from .application.snapshot import read_memory
-from agent.plugin_composition.models import open_embedding as open_saved_embedding, read_embedding_binding
 from .tools import FeedbackArguments, FeedbackTool, check_feedback
-from .application.rebuild import manifest_json, rebuild_from_catalog
+from .scopes import DEFAULT_GRAPH, LEARN_POLICIES, LearnPolicy, PolicyLocked, ScopePolicies, ensure_graph_directory, graph_path
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +87,8 @@ workspace_roots = ("memory",)
 MaterialData = Mapping[str, object]
 
 
-class MaterialRegistry(Protocol):
-    async def register(
-        self, ctx: Context, *, name: str,
-        prepare: Callable[[tuple[Message, ...], str], Awaitable[MaterialData]],
-        priority: int = 0, prompt: bool = False, reduce: object | None = None,
-    ) -> object: ...
-
-
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")
-inject = (UI, TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
-          BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, UI_SLOTS, COMMANDS)
+inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
+          BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, COMMANDS)
 
 
 class Config(BaseModel):
@@ -115,12 +137,10 @@ AKASHA_RECORDS = ServiceKey[Callable[[str], Recall | None]]("akasha.recalls.v1")
 AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]](
     "akasha.recall-records.v1"
 )
-AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
 AKASHA_MEMORY_PATH = ServiceKey[Callable[[], Path]]("akasha.memory-path.v1")
 
 
-async def apply(ctx: Context) -> None:
-    """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
+async def _register_ui(ctx: Context) -> None:
     await ctx.require(UI).register(
         ctx, web="web_module.js",
         dashboard=lambda: import_module(".dashboard", __package__),
@@ -130,11 +150,14 @@ async def apply(ctx: Context) -> None:
             "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
         },
     )
+
+
+async def apply(ctx: Context) -> None:
+    """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
     config = Config.model_validate(ctx.config)
     catalog: ToolCatalog = ctx.require(TOOLS)
     content: ContentCapability = ctx.require(CONTENT)
     _ = await catalog.declare_group(ctx, description=desc)
-    tool_refs: list[ToolRef] = []
 
     async def request_reindex(invocation: CommandInvocation) -> CommandResult:
         if invocation.raw_input.strip().casefold() != "confirm":
@@ -166,16 +189,52 @@ async def apply(ctx: Context) -> None:
         "name": "akasha",
         "content": {"akasha.feedback": check_feedback, "akasha.recall": check_recall},
     })
-    memory: MessageMemory | None = None
+    # 同一 Root 只允许一个 embedding 记忆系统；一个 Akasha 实例管理全部图。
+    _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
+    memories: dict[str, MessageMemory] = {}
     memory_rule: LearningConfig | None = None
     watcher: asyncio.Task[None] | None = None
     running = False
     start_lock = asyncio.Lock()
     health = await ctx.health("embedding", required=False)
+    graph_health = await ctx.health("graphs", required=False)
+    graph_errors: dict[str, str] = {}
+
+    def set_graph_error(key: str, reason: str | None) -> None:
+        """逐图保存不可用原因；健康图不能清除其他图的故障。"""
+        if reason is None:
+            graph_errors.pop(key, None)
+        else:
+            if graph_errors.get(key) != reason:
+                logger.error("Akasha 图 %s 不可用：%s", key, reason)
+            graph_errors[key] = reason
+        if graph_errors:
+            graph_health.degrade("；".join(f"图 {graph}: {error}" for graph, error in sorted(graph_errors.items())))
+        else:
+            graph_health.recover()
 
     # The store belongs to Akasha's apply owner; callers of the public read
     # service hold their own scope, not Akasha's OwnerCall.
     record_state = ctx.require(OWNER_STATE).open(ctx)
+    policies = ScopePolicies(
+        ctx.require(OWNER_STATE).open_scoped(ctx, "scope-policy"), ctx.require(MESSAGE_CATALOG),
+    )
+
+    def read_path(session_id: str | None) -> Path:
+        """显式召回与反馈共用图路由，已知故障不能绕过。"""
+        key = DEFAULT_GRAPH if session_id is None else policies.route(session_id).read
+        if key in graph_errors:
+            raise MemoryRebuildRequiredError(f"图 {key} 不可用：{graph_errors[key]}")
+        return graph_path(memory_path, key)
+
+    def member(key: str) -> Callable[[str], bool]:
+        return lambda session_id: policies.route(session_id).write == key
+
+    def write_graphs() -> tuple[str, ...]:
+        """default 图总在；独立图只在有成员 Session 后才建立。"""
+        heads = ctx.require(MESSAGE_CATALOG).snapshot_heads()
+        routed = {policies.route(session_id).write for session_id in heads}
+        return (DEFAULT_GRAPH, *sorted(key for key in routed if key is not None and key != DEFAULT_GRAPH))
 
     def records() -> RecallRecords:
         return RecallRecords(record_state)
@@ -197,8 +256,31 @@ async def apply(ctx: Context) -> None:
             raise MobileUiRpcInvalidRequest("Akasha 查询读取尚未启动")
         return inspector
 
+    def query_policy(method: str, payload: dict[str, object]) -> dict[str, object]:
+        """宽键策略只按 (维度, 取值) 读写；Akasha 不知道维度由哪个插件拥有。"""
+        dimension, value = payload.get("dimension"), payload.get("value")
+        if not isinstance(dimension, str) or not isinstance(value, str) or not value:
+            raise MobileUiRpcInvalidRequest("记忆策略需要维度和取值")
+        try:
+            if method == "scope.policy.get":
+                if set(payload) != {"dimension", "value"}:
+                    raise MobileUiRpcInvalidRequest("记忆策略查询参数无效")
+                return {"learn": policies.read(dimension, value), "choices": list(LEARN_POLICIES)}
+            learn = payload.get("learn")
+            if set(payload) != {"dimension", "value", "learn"} or learn not in LEARN_POLICIES:
+                raise MobileUiRpcInvalidRequest("记忆策略只能是 global、isolated 或 off")
+            return {"learn": policies.set(dimension, value, cast(LearnPolicy, learn))}
+        except MobileUiRpcInvalidRequest:
+            raise
+        except PolicyLocked as error:
+            raise MobileUiRpcInvalidRequest(str(error)) from error
+        except ValueError as error:
+            raise MobileUiRpcInvalidRequest(f"记忆策略范围无效: {error}") from error
+
     def query(method: str, payload: dict[str, object], *, session_id: str | None,
               turn_id: str | None) -> dict[str, object]:
+        if method in ("scope.policy.get", "scope.policy.set"):
+            return query_policy(method, payload)
         inspector = get_inspector()
         if method == "recall.turn":
             offset = payload.get("offset", 0)
@@ -225,12 +307,15 @@ async def apply(ctx: Context) -> None:
             return detail
         raise MobileUiRpcInvalidRequest(f"不支持的 Akasha 查询：{method}")
 
-    _ = await ctx.require(UI_SLOTS).register_mobile(
-        ctx, MobileUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
-                                slots=("turn.before_reasoning",),
-                                navigation=MobileUiNavigation(label="Akasha Inspector",
-                                    description="查看实际检索及呈现的原消息")), query=query,
-    )
+    async def register_mobile(child: Context) -> None:
+        # UI provider 在事件循环持有调用作用域，线程回调不能再次进入 entrypoint。
+        _ = await child.require(UI_SLOTS).register_mobile(
+            child, MobileUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
+                                    slots=("turn.before_reasoning",),
+                                    navigation=MobileUiNavigation(label="Akasha Inspector",
+                                        description="查看实际检索及呈现的原消息")), query=query,
+        )
+    _ = await ctx.inject((UI_SLOTS, AKASHA_RECORDS_VIEW), register_mobile, name="mobile-ui")
 
     def select_learning() -> tuple[str, LearningConfig, str]:
         try:
@@ -248,6 +333,7 @@ async def apply(ctx: Context) -> None:
         rule = LearningConfig(embedding_model=descriptor.identity, dimension=descriptor.dimensions,
                               sources=config.sources)
         identity = ctx.require(BINDINGS).bind(AKASHA_LEARNING, rule.model_dump())
+        health.recover()
         return identity, rule, descriptor.model_id
 
     @asynccontextmanager
@@ -275,9 +361,11 @@ async def apply(ctx: Context) -> None:
         learning, ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS), select_interest,
     ))
 
-    def unavailable() -> MaterialData:
+    def unavailable(key: str) -> MaterialData:
+        reason = health.reason or graph_errors.get(key)
+        assert reason is not None
         reminder: Mapping[str, object] = {
-            "name": "status", "text": f"## Akasha 状态\n召回不可用：{health.reason}",
+            "name": "status", "text": f"## Akasha 状态\n图 {key} 召回不可用：{reason}",
             "priority": 300,
         }
         return {
@@ -285,25 +373,29 @@ async def apply(ctx: Context) -> None:
         }
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
+        key = policies.route(snapshot[0].session_id).read if snapshot else DEFAULT_GRAPH
         if running:
-            if not await start_if_available():
-                return unavailable()
-            assert memory is not None
-            return await memory.prepare(snapshot, source)
+            if not await start_if_available(key):
+                return unavailable(key)
+            try:
+                return await memories[key].prepare(snapshot, source)
+            except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+                set_graph_error(key, str(error))
+                return unavailable(key)
+            except (ModelUnavailableError, DriverUnavailableError) as error:
+                health.degrade(str(error))
+                return unavailable(key)
         # 归档和显式程序只查询已发布图的副本，不取得正式学习 writer。
         try:
             identity, rule, model_id = select_learning()
         except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
-            return unavailable()
-        except MemoryRebuildRequiredError as error:
-            health.degrade(str(error))
-            return unavailable()
+            return unavailable(key)
         bindings = ctx.require(BINDINGS)
         query_records = records()
         try:
             async with bindings.open(identity, AKASHA_LEARNING) as (selected, _metadata):
                 async with read_memory(
-                    memory_path, catalog=ctx.require(MESSAGE_CATALOG),
+                    graph_path(memory_path, key), catalog=ctx.require(MESSAGE_CATALOG),
                     embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=bindings,
                     config=settings.memory_config(), embedding_space=(rule.embedding_model, rule.dimension),
                     allow_initial=True,
@@ -315,10 +407,13 @@ async def apply(ctx: Context) -> None:
                         records=query_records, embed_batch=embedder(rule, model_id),
                         limit=settings.context_recall_limit, max_chars=settings.inject_max_chars,
                     )
-        except EmbeddingSpaceMismatchError as error:
+        except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+            set_graph_error(key, str(error))
+            return unavailable(key)
+        except (ModelUnavailableError, DriverUnavailableError) as error:
             health.degrade(str(error))
-            return unavailable()
-        health.recover()
+            return unavailable(key)
+        set_graph_error(key, None)
         return result
 
     _ = await ctx.require(MATERIALS).register(ctx, name="akasha", prepare=prepare, priority=400)
@@ -334,22 +429,20 @@ async def apply(ctx: Context) -> None:
                 action,
                 learning,
                 ctx.require(BINDINGS),
-                lambda: load_message_nodes(memory_path),
+                lambda session_id: load_message_nodes(read_path(session_id)),
             )
 
-        tool_refs.append(
-            await catalog.register(
-                ctx,
-                name=f"{action}_memory",
-                description=(
-                    "记住明确确认的内容"
-                    if action == "remember"
-                    else "遗忘明确撤回的内容"
-                ),
-                parameters=FeedbackArguments.model_json_schema(),
-                open=open_feedback,
-                idempotent=True,
-            )
+        await catalog.register(
+            ctx,
+            name=f"{action}_memory",
+            description=(
+                "记住明确确认的内容"
+                if action == "remember"
+                else "遗忘明确撤回的内容"
+            ),
+            parameters=FeedbackArguments.model_json_schema(),
+            open=open_feedback,
+            idempotent=True,
         )
 
     def capture_recall(options: Mapping[str, object]) -> Mapping[str, object]:
@@ -375,103 +468,103 @@ async def apply(ctx: Context) -> None:
             identity = bindings.bind(AKASHA_LEARNING, rule.model_dump())
             return identity, selected.embedding_binding
         yield RecallTool(
-            memory=memory_path, config=settings.memory_config(),
+            memory=read_path, config=settings.memory_config(),
             catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
             bindings=bindings, select_learning=select, records=records(),
             open_embedding=partial(open_saved_embedding, bindings), max_chars=settings.inject_max_chars,
         )
 
-    tool_refs.append(
-        await catalog.register(
-            ctx,
-            name="recall_memory",
-            description="从记忆图召回历史对话，返回原始 Message 引用",
-            parameters=RecallArguments.model_json_schema(),
-            open=open_recall,
-            capture=capture_recall,
-            idempotent=True,
-            risk="read-only",
-        )
+    await catalog.register(
+        ctx,
+        name="recall_memory",
+        description="从记忆图召回历史对话，返回原始 Message 引用",
+        parameters=RecallArguments.model_json_schema(),
+        open=open_recall,
+        capture=capture_recall,
+        idempotent=True,
+        risk="read-only",
     )
-    _ = await ctx.provide(AKASHA_TOOLS, catalog.view(*tool_refs))
     # 只读账本按声明的 workspace root 解析学习图；不暴露 writer 或任意路径。
     _ = await ctx.provide(AKASHA_MEMORY_PATH, lambda: memory_path)
 
     async def close_memory() -> None:
-        if memory is not None:
-            await memory.close()
+        while memories:
+            _key, closing = memories.popitem()
+            await closing.close()
     _ = await ctx.effect(lambda: close_memory, label="message-memory")
 
-    async def start_if_available() -> bool:
-        """模型设置后在首次实际使用时启用；同一 Root 只取得一个学习 writer。"""
-        nonlocal memory, memory_rule
+    async def start_if_available(key: str = DEFAULT_GRAPH) -> bool:
+        """模型设置后在首次实际使用时启用；每张图只取得一个学习 writer。"""
+        nonlocal memory_rule
         async with start_lock:
             # 1. 未配置或空间变化只停用记忆；其他数据损坏仍明确失败。
             try:
                 identity, rule, model_id = select_learning()
             except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
                 return False
-            except MemoryRebuildRequiredError as error:
-                # 旧消费版本的图只能由显式重建替换，不能假装可用。
-                health.degrade(str(error))
-                return False
-            if memory is not None:
-                health.recover()
-                return True
+            if key in memories:
+                return key not in graph_errors
             try:
                 consumer = await MessageConsumer.load(
-                    memory_path, catalog=ctx.require(MESSAGE_CATALOG),
+                    ensure_graph_directory(memory_path, key), catalog=ctx.require(MESSAGE_CATALOG),
                     embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=ctx.require(BINDINGS),
-                    config=settings.memory_config(),
+                    config=settings.memory_config(), cutover=key == DEFAULT_GRAPH,
                 )
-            except MemoryRebuildRequiredError as error:
-                health.degrade(str(error))
+            except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+                set_graph_error(key, str(error))
                 return False
             runtime_records = records()
             prepared = MessageMemory(
                 consumer, catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
                 bindings=ctx.require(BINDINGS), learning_binding=identity, records=runtime_records,
                 embed_batch=embedder(rule, model_id), limit=settings.context_recall_limit,
-                max_chars=settings.inject_max_chars,
+                max_chars=settings.inject_max_chars, member=member(key),
             )
             # 2. 新选择必须与已有图一致；失败先归还 writer，绝不自动重建。
             try:
                 await prepared.consume()
-            except EmbeddingSpaceMismatchError as error:
+            except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
                 await prepared.close()
-                health.degrade(str(error))
+                set_graph_error(key, str(error))
                 return False
-            except MemoryRebuildRequiredError as error:
+            except (ModelUnavailableError, DriverUnavailableError) as error:
                 await prepared.close()
                 health.degrade(str(error))
                 return False
             except BaseException:
                 await prepared.close()
                 raise
-            memory, memory_rule = prepared, rule
-            health.recover()
+            memories[key], memory_rule = prepared, rule
+            set_graph_error(key, None)
             return True
 
     async def rebuild_now() -> str:
         """全量重放 canonical 来源；失败时已发布学习图保持不变。"""
-        nonlocal memory, memory_rule
+        nonlocal memory_rule
         # 1. 先确认 embedding 空间可用，避免无谓地停掉在线学习。
         identity, rule, model_id = select_learning()
         async with start_lock:
-            # 2. 先归还唯一 writer，再生成候选；同一时刻只有一个学习 writer。
-            if memory is not None:
-                await memory.close()
-                memory, memory_rule = None, None
-            report = await rebuild_from_catalog(
-                catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
-                bindings=ctx.require(BINDINGS), config=settings.memory_config(),
-                learning_binding=identity, embed_batch=embedder(rule, model_id),
-                memory_path=memory_path, backup_root=rebuild_backup_root,
-            )
+            # 2. 先归还全部 writer，再逐图生成候选；每张图各自原子替换并留恢复点。
+            await close_memory()
+            memory_rule = None
+            reports: list[str] = []
+            for key in write_graphs():
+                path = ensure_graph_directory(memory_path, key)
+                backup_root = rebuild_backup_root if key == DEFAULT_GRAPH else (
+                    rebuild_backup_root / "graphs" / path.parent.name
+                )
+                report = await rebuild_from_catalog(
+                    catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
+                    bindings=ctx.require(BINDINGS), config=settings.memory_config(),
+                    learning_binding=identity, embed_batch=embedder(rule, model_id),
+                    memory_path=path, backup_root=backup_root, member=member(key),
+                )
+                set_graph_error(key, None)
+                reports.append(manifest_json(report))
         # 3. 用同一启动边界重新装载；装载失败必须让调用者看到。
         if not await start_if_available():
             raise RuntimeError("Akasha 重建后无法重新装载学习图")
-        return manifest_json(report)
+        return "\n".join(reports)
 
     async def run_rebuild() -> CommandResult:
         """操作者显式确认后全量重建。"""
@@ -525,9 +618,15 @@ async def apply(ctx: Context) -> None:
         async for _heads in ctx.require(MESSAGE_CATALOG).follow():
             async with ctx.runtime_scope():
                 await run_pending_rebuild()
-                if await start_if_available():
-                    assert memory is not None
-                    _ = await memory.consume()
+                for key in write_graphs():
+                    if not await start_if_available(key):
+                        continue
+                    try:
+                        _ = await memories[key].consume()
+                    except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+                        set_graph_error(key, str(error))
+                    except (ModelUnavailableError, DriverUnavailableError) as error:
+                        health.degrade(str(error))
 
     async def start(_event: object) -> None:
         nonlocal watcher, running, inspector
@@ -558,3 +657,5 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
+    _ = await ctx.inject((UI, AKASHA_RECORDS_VIEW, AKASHA_MEMORY_PATH, MESSAGE_CATALOG),
+                         _register_ui, name="ui")

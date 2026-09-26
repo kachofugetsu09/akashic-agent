@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 import json
+import re
 from collections.abc import (
     AsyncGenerator,
     Callable,
@@ -10,30 +10,38 @@ from collections.abc import (
 )
 from contextlib import AsyncExitStack, asynccontextmanager
 from types import MappingProxyType
-from typing import Protocol, cast
+from typing import cast
 
 from markdown_it import MarkdownIt
 
-from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.model import FiberState
-from agent.plugin_contracts import ContentPart, ContentReferences, freeze_metadata
-from agent.plugin_contracts import json_value
+from agent.plugin_contracts import (
+    ContentPart,
+    ContentReferences,
+    freeze_metadata,
+    json_value,
+)
+from agent.plugin_contracts.content import (
+    CONTENT as CONTENT,
+    ContentView as ContentView,
+)
 
 # 类型属于 Content 的公开 API；不同归档实现共享当前已校验的 binding ABI。
 from .api import (
-    check_artifact,
-    is_user_input,
-    legacy_post_commit_effect,
     ContentCheck,
     ContentSchema,
     Reference,
     ReferenceData,
     Span,
-    TextProtocol,
     TextDecoder,
+    TextProtocol,
     TextSource,
+    check_artifact,
     decode_reference,
+    is_user_input,
+    legacy_post_commit_effect,
 )
 
 api_version = 3
@@ -155,20 +163,6 @@ async def _decode_text(
     if cursor < len(text):
         parts.append(ContentPart("text", text[cursor:]))
     return tuple(parts), freeze_metadata(metadata)
-
-
-class ContentView(Protocol):
-    def check_metadata(self, metadata: Mapping[str, object]) -> None: ...
-
-    @property
-    def prompts(self) -> tuple[str, ...]: ...
-
-    @property
-    def checks(self) -> Mapping[str, ContentCheck]: ...
-
-    async def decode(
-        self, text: str, references: Sequence[ReferenceData] = ()
-    ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]: ...
 
 
 class _ContentView:
@@ -353,9 +347,6 @@ class Content:
                     yield view
                 finally:
                     view.close()
-
-
-CONTENT = ServiceKey[Content]("content.v2")
 
 
 @asynccontextmanager

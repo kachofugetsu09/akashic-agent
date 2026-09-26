@@ -3,18 +3,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.context import (
     CompositionRoot,
     Context,
-    _lifecycle_binding,
     _current_runtime_scope,
+    _lifecycle_binding,
 )
+from agent.plugin_composition.model import ServiceKey
 from session.log import MessageLog
 from session.message_codec import json_value
 
@@ -45,7 +44,7 @@ class BindingScope:
 
 
 class Bindings:
-    """保存 binding 事实，并在调用者选定的 runtime scope 中打开服务。"""
+    """保存业务选择与来源证据；打开当前 provider，由它校验业务兼容性。"""
 
     def __init__(
         self,
@@ -62,17 +61,17 @@ class Bindings:
     @property
     def _log(self) -> MessageLog:
         if self._storage is None:
-            raise RuntimeError("candidate 验证期禁止固定或打开正式 binding")
+            raise RuntimeError("未提供 MessageLog，不能固定或打开持久 binding")
         return self._storage
 
     def bind(
         self,
-        service: ServiceKey[object],
+        service: ServiceKey[Any],
         metadata: Mapping[str, object],
         *,
         contributors: tuple[Context, ...] = (),
     ) -> str:
-        """从当前 OwnerCall 和真实 provider Context 固定实现。"""
+        """从当前许可保存业务选择与来源归档；归档不用于恢复历史执行图。"""
         log = self._log
         current = _current_runtime_scope()
         if current is not None:
@@ -91,10 +90,10 @@ class Bindings:
         root = self._root
         selected: set[str] = set()
         pending: list[Context] = []
-        services: set[ServiceKey[object]] = set()
+        services: set[ServiceKey[Any]] = set()
         contexts: dict[int, Context] = {}
 
-        def provider_for(key: ServiceKey[object], requester: Context):
+        def provider_for(key: ServiceKey[Any], requester: Context):
             frozen = requester._fiber.dependency_store.get(  # pyright: ignore[reportPrivateUsage]
                 key,
             )
@@ -120,7 +119,7 @@ class Bindings:
             selected.add(contributor)
             pending.append(context)
 
-        def include_service(key: ServiceKey[object], requester: Context) -> None:
+        def include_service(key: ServiceKey[Any], requester: Context) -> None:
             if key in services:
                 return
             services.add(key)
@@ -171,7 +170,7 @@ class Bindings:
         log.save_binding(identity, descriptor)
         return identity
 
-    def describe(self, identity: str, service: ServiceKey[object]) -> Mapping[str, object]:
+    def describe(self, identity: str, service: ServiceKey[Any]) -> Mapping[str, object]:
         """只读绑定的业务选择；展示或请求投影无需启动归档目标。"""
         return cast(Mapping[str, object], self._read_descriptor(identity, service)["metadata"])
 
@@ -179,7 +178,7 @@ class Bindings:
     async def open(
         self, identity: str, service: ServiceKey[_T]
     ) -> AsyncIterator[tuple[_T, Mapping[str, object]]]:
-        """在调用者已选的 Root 中打开 provider-owned 服务 scope。"""
+        """在当前 Root 打开真实 provider；业务兼容性由该服务的 open 检查。"""
         metadata = self.describe(identity, service)
         current = _current_runtime_scope()
         if current is not None and current._call._fiber.root is not self._root:  # pyright: ignore[reportPrivateUsage]
@@ -189,7 +188,7 @@ class Bindings:
             yield cast(_T, value), cast(Mapping[str, object], metadata)
 
     def _read_descriptor(
-        self, identity: str, service: ServiceKey[object]
+        self, identity: str, service: ServiceKey[Any]
     ) -> Mapping[str, object]:
         """读取并校验 binding descriptor 的共同结构。"""
         descriptor = self._log.read_binding(identity)
@@ -199,7 +198,6 @@ class Bindings:
         if not isinstance(metadata, Mapping):
             raise ValueError("binding metadata 必须是对象")
         return descriptor
-
 
 
 BINDINGS = ServiceKey[Bindings]("core.bindings")

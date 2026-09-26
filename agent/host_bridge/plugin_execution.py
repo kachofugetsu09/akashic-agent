@@ -1,8 +1,8 @@
 """把宿主执行权限绑定到真实 Root/Context；这不是同 UID Python 沙箱。"""
 from __future__ import annotations
 
-import os
 import asyncio
+import os
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -10,14 +10,13 @@ from pathlib import Path
 from typing import Literal
 
 from agent.plugin_composition.context import Context
-from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
-from agent.workloads.client import WorkloadController
 from agent.plugin_composition.execution import (
     ChildProcess,
     PreparedProcess,
     WorkloadLease,
     WorkloadStartRequest,
 )
+from agent.workloads.client import WorkloadController
 from utils.process_group import (
     OwnedProcessGroup,
     owned_process_env,
@@ -89,7 +88,8 @@ class ExecutionAccess:
 
     def bind(self, ctx: Context) -> ExecutionGrant:
         """验证实际代码 owner，不接受自报插件名、模式或数据根。"""
-        if ctx.root_instance_token is not self._root_token or ctx.require(EXECUTION) is not self:
+        # 宿主依赖由 provider 声明；ctx 只标识贡献资源的插件。
+        if ctx.root_instance_token is not self._root_token:
             raise PermissionError("执行授权不能跨 Root")
         runtime = ctx.runtime
         owner = self._owners.get((runtime.plugin_id, runtime.generation_id))
@@ -241,8 +241,6 @@ class ControllerAccess:
     def bind(self, ctx: Context) -> ControllerGrant:
         """每份授权固定 owner 与请求身份，不向插件交出原始 Controller。"""
         execution = self._execution.bind(ctx)
-        if ctx.require(WORKLOAD_CONTROLLER) is not self:
-            raise PermissionError("Controller 授权不属于当前 Root")
         if self._controller is None:
             raise RuntimeError("所选资源 provider 需要宿主 Workload Controller")
         return ControllerGrant(self._controller, ctx.runtime.plugin_id, execution.mode, self._workspace_id)
@@ -252,20 +250,20 @@ class ControllerGrant:
     def __init__(self, controller: WorkloadController, owner: str, mode: Literal["candidate", "formal"], workspace_id: str):
         self._controller = controller
         self._owner = owner
-        self._mode = mode
+        self._mode: Literal["candidate", "formal"] = mode
         self._workspace_id = workspace_id
         self._identity = "resource-" + secrets.token_hex(16)
 
     @property
-    def mode(self):
+    def mode(self) -> Literal["candidate", "formal"]:
         return self._mode
 
     @property
-    def workspace_id(self):
+    def workspace_id(self) -> str:
         return self._workspace_id
 
     @property
-    def identity(self):
+    def identity(self) -> str:
         return self._identity
 
     def _check(self, value: WorkloadStartRequest | WorkloadLease) -> None:

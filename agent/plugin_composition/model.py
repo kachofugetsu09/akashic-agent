@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Generic, TypeVar
 
 T = TypeVar("T", covariant=True)
+Service = TypeVar("Service")
 
 
 class CompositionError(RuntimeError):
@@ -25,7 +26,7 @@ class FiberState(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class ServiceKey(Generic[T]):
+class ServiceKey(Generic[Service]):
     name: str
 
     def __post_init__(self) -> None:

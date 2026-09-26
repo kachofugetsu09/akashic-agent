@@ -67,6 +67,14 @@ class _ManagerLease:
         self.operations_drained.set()
 
 
+class _ManagerUnavailable(Exception):
+    """manager 已停止接纳操作，不能继续复用。"""
+
+
+class _ManagerNotFound(Exception):
+    """已登记的 manager 不再存在，旧执行句柄不能恢复使用。"""
+
+
 def _rpc[Request: Message, Reply: Message](
     handler: Callable[["HostBridgeService", Request], Awaitable[Reply]],
 ) -> Callable[
@@ -114,6 +122,14 @@ def _rpc[Request: Message, Reply: Message](
         except asyncio.CancelledError:
             # 2. 取消只结束本次 RPC 等待，不承诺进程未执行或输入未写入。
             raise
+        except _ManagerUnavailable as exc:
+            self._log_rpc_failure(method, identity.request_id, identity.boot_id,
+                                  identity.manager_id, started, exc, "manager_unavailable")
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+        except _ManagerNotFound as exc:
+            self._log_rpc_failure(method, identity.request_id, identity.boot_id,
+                                  identity.manager_id, started, exc, "manager_not_found")
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
         except (KeyError, TypeError, ValueError) as exc:
             self._log_rpc_failure(
                 method,
@@ -324,7 +340,8 @@ class HostBridgeService(rpc.HostBridgeServicer):
 
     @_rpc
     async def Probe(self, request: pb.ContextRequest) -> pb.IdentityReply:
-        _ = await self._lease(request.context)
+        async with self._lock:
+            self._assert_active_boot(request.context.boot_id)
         return self._probe_payload()
 
     def _probe_payload(self) -> pb.IdentityReply:
@@ -343,6 +360,12 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 "skill-requirements",
             ],
         )
+
+    @_rpc
+    async def OpenManager(self, request: pb.ContextRequest) -> pb.HeartbeatReply:
+        """唯一的首次登记入口，业务调用和心跳都不能创建 manager。"""
+        _ = await self._lease(request.context, create=True)
+        return pb.HeartbeatReply(alive=True)
 
     @_rpc
     async def Heartbeat(self, request: pb.ContextRequest) -> pb.HeartbeatReply:
@@ -440,7 +463,7 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 self._assert_active_boot(key[0])
                 lease = self._managers.get(key)
                 if lease is None:
-                    return encode_cleanup(ExecutionCleanupReport((), (), ()))
+                    raise _ManagerNotFound("Host Bridge manager 已不存在，无法确认本次清理")
                 lease.reaping = True
             await lease.operations_drained.wait()
             report = await lease.manager.shutdown()
@@ -479,9 +502,9 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 if read.HasField("limit"):
                     require_positive(read.limit, "limit")
                 async with self._manager_operation(request.context):
-                    result = ReadFileOperation(
+                    result = await ReadFileOperation(
                         allowed_dir=allowed_dir, enable_bridge=False
-                    ).read_from_disk(
+                    ).read_raw(
                         read.path,
                         offset=read.offset,
                         limit=read.limit if read.HasField("limit") else None,
@@ -563,12 +586,14 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 exc_info=True,
             )
 
-    async def _lease(self, context: pb.RequestContext) -> _ManagerLease:
+    async def _lease(self, context: pb.RequestContext, *, create: bool = False) -> _ManagerLease:
         key = (context.boot_id, context.manager_id)
         async with self._lock:
             self._assert_active_boot(key[0])
             lease = self._managers.get(key)
             if lease is None:
+                if not create:
+                    raise _ManagerNotFound("Host Bridge manager 已不存在，旧执行句柄已失效")
                 manager_root = self._artifact_root / key[0] / key[1]
                 lease = _ManagerLease(
                     ShellProcessManager(output_dir=manager_root),
@@ -577,9 +602,9 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 self._managers[key] = lease
             else:
                 if lease.cleanup_failure is not None:
-                    raise RuntimeError("Host Bridge manager cleanup 未确认，拒绝复用")
+                    raise _ManagerUnavailable("Host Bridge manager cleanup 未确认，拒绝复用")
                 if lease.reaping:
-                    raise RuntimeError("Host Bridge manager lease 正在回收，拒绝复用")
+                    raise _ManagerUnavailable("Host Bridge manager lease 正在回收，拒绝复用")
                 lease.last_seen = time.monotonic()
             return lease
 
@@ -595,7 +620,7 @@ class HostBridgeService(rpc.HostBridgeServicer):
         async with self._lock:
             self._assert_active_boot(key[0])
             if self._managers.get(key) is not lease or lease.reaping:
-                raise RuntimeError("Host Bridge manager admission 已关闭，拒绝执行")
+                raise _ManagerUnavailable("Host Bridge manager admission 已关闭，拒绝执行")
             lease.active_operations += 1
             lease.operations_drained.clear()
         try:

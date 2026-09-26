@@ -1,30 +1,39 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
 import json
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.messages import MessageReader
+from agent.plugin_composition.tasks import Task
+from agent.plugin_contracts import (
+    ContentPart,
+    ContentReferences,
+    Control,
+    Input,
+    Message,
+    json_value,
+)
 
-from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
-from agent.plugin_contracts import json_value
-
+from ._boundary import (  # noqa: F401 - 显式再导出给本插件消费者。
+    WAKE_TOOLS_VIEW,
+    SinkValue,
+)
 from .api import DeliveryTarget
-from ._boundary import SinkValue, WAKE_TOOLS_VIEW
 
 Owner = Literal["content", "drift", "alert"]
 Stage = Literal["screen", "investigate", "drift", "alert"]
 TOOLS: dict[Owner, tuple[str, ...]] = {
-    "content": ("screen_content", "recall_memory", "web_fetch", "share_content", "skip_content"),
+    "content": ("screen_content", "share_content", "skip_content"),
     "drift": ("share_content", "skip_content"),
     "alert": ("share_alert",),
 }
 STAGE_TOOLS: dict[Stage, tuple[str, ...]] = {
     "screen": ("screen_content",),
-    "investigate": ("recall_memory", "web_fetch", "share_content", "skip_content"),
+    "investigate": ("share_content", "skip_content"),
     "drift": ("share_content", "skip_content"),
     "alert": ("share_alert",),
 }
@@ -54,7 +63,9 @@ class Request(BaseModel):
 
     @model_validator(mode="after")
     def check_choices(self) -> Self:
-        if set(self.tools) != set(TOOLS[self.owner]) or any(not value for value in self.tools.values()):
+        if (not set(TOOLS[self.owner]) <= set(self.tools)
+                or (self.owner != "content" and set(self.tools) != set(TOOLS[self.owner]))
+                or any(not name or not value for name, value in self.tools.items())):
             raise ValueError("Wake 原工具集合与职责不一致")
         if (
             self.target.channel != self.sink["name"] or self.target.recipient != self.sink["address"]

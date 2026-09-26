@@ -4,26 +4,45 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE, MessageReader
+from agent.plugin_composition.channels import ChannelAttachmentReadPort
+from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .inputs import (
-    Authorize, CallReader, Content, ContentRenderer, ContextBuilder, ContextMaterials,
-    ContextModel, Materials, MODEL_CHECKS, MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION,
-    SOURCE_CHECK, Preview, Reminder, Summary, ToolCatalog, ToolCleanup, TOOL_PROGRAM, ToolPresentation,
-    ToolView, TurnProjection,
+    Authorize,
+    CallReader,
+    Content,
+    ContentRenderer,
+    ContextBuilder,
+    ContextMaterials,
+    ContextModel,
+    Materials,
+    ModelChecks,
+    ModelContent,
+    ModelProjections,
+    ModelSelection,
+    Preview,
+    Reminder,
+    Summary,
+    ToolCatalog,
+    ToolCleanup,
+    ToolPresentation,
+    ToolProgram,
+    ToolView,
+    TurnProjection,
 )
-
-
 
 
 async def run_reply(
     ctx: Context, task: Task, reader: MessageReader, source: str, *,
     models: ChatModels, content: Content, context: ContextBuilder, tools: ToolCatalog,
     cleanup: ToolCleanup,
+    check_source: Callable[[Task, MessageReader, str, int], None],
+    selection: ModelSelection, tool_program: ToolProgram,
+    model_checks: ModelChecks, model_content: ModelContent, model_projection: ModelProjections,
+    writers: MessageWriters, owner_state: OwnerState, artifact_reader: ChannelAttachmentReadPort,
     react: Callable[..., Awaitable[Message]],
     materials: ContextMaterials,
     turn_projection: TurnProjection,
@@ -51,16 +70,15 @@ async def run_reply(
         ):
             raise ValueError("旧工具名称与原固定 binding 不一致")
     # 1. 内容检查器与模型绑定覆盖整个程序，取消时先排空已开始的工具。
-    check_source = ctx.require(SOURCE_CHECK)
     prompt_hints = tuple(prompt_hints)
     reader = reader.incremental()
     source_head = reader.head(source=source)
     snapshot = reader.snapshot()
     turns = turn_projection.project(snapshot, source)
     open_ids: set[str] = set(turns[-1].message_ids) if turns and turns[-1].status == "open" else set()
-    chosen = ctx.require(MODEL_SELECTION).read(tuple(message for message in snapshot if message.message_id in open_ids))
+    chosen = selection.read(tuple(message for message in snapshot if message.message_id in open_ids))
     if chosen is None:
-        chosen = ctx.require(MODEL_SELECTION).read_saved(reader.metadata() or {})
+        chosen = selection.read_saved(reader.metadata() or {})
     from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
     async with (
         cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
@@ -69,12 +87,11 @@ async def run_reply(
         materials.bind(exclude=exclude_materials) as material_view,
     ):
         model = execution.chat("agent")
-        writers = ctx.require(MESSAGE_WRITERS)
         keep_input_ids = tuple(
             item.message_id for item in snapshot
             if item.message_id in open_ids and isinstance(item.body, Input)
         )
-        menu = await ctx.require(TOOL_PROGRAM).create_menu(
+        menu = await tool_program.create_menu(
             reader, source, content=view.checks,
             check_start=lambda: check_source(task, reader, source, source_head),
             authorize=authorize, view=tool_view, limit=model.max_tool_schemas,
@@ -86,13 +103,13 @@ async def run_reply(
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
             check_metadata=view.check_metadata,
-            content={**view.checks, "model.facts": ctx.require(MODEL_CHECKS).check_facts, "model.tool_rejection": ctx.require(MODEL_CHECKS).check_tool_rejection, "context.summary": context.check_summary}, check_call=menu.check_call,
+            content={**view.checks, "model.facts": model_checks.check_facts, "model.tool_rejection": model_checks.check_tool_rejection, "context.summary": context.check_summary}, check_call=menu.check_call,
         )(reader.session_id)
         task.on_close(output.expire)
         artifacts: Mapping[str, tuple[Mapping[str, Any], ...]] = {}
         def render(part: ContentPart):
-            return ctx.require(MODEL_CONTENT).render(part, artifacts=artifacts, read_message=reader.get)
-        projection = ctx.require(MODEL_PROJECTION).create(
+            return model_content.render(part, artifacts=artifacts, read_message=reader.get)
+        projection = model_projection.create(
             model, source=source, render_content=render if render_content is None else render_content,
             tool_name=menu.name, read_call=read_call, check_summary=context.check_summary, keep_input_ids=keep_input_ids,
         )
@@ -111,8 +128,8 @@ async def run_reply(
                     if index >= start or message.message_id in keep_input_ids
                 ))
                 if refs:
-                    artifacts = await ctx.require(MODEL_CONTENT).load_artifacts(
-                        ctx.require(ARTIFACT_READ), refs,
+                    artifacts = await model_content.load_artifacts(
+                        artifact_reader, refs,
                         accepts_images="image" in model.descriptor.capabilities.input_modalities,
                     )
             check_source(task, reader, source, source_head)
@@ -135,7 +152,7 @@ async def run_reply(
                 materials=build_materials, content=view, tools=menu,
                 max_output_tokens=max_output_tokens, max_steps=max_steps,
                 reduce=reduce, preview=preview, terminal_tools=terminal_tools,
-                state=ctx.require(OWNER_STATE).open_scoped(ctx, "generation"),
+                state=owner_state.open_scoped(ctx, "generation"),
             )
         finally:
             output.expire()

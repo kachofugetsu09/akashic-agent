@@ -7,46 +7,40 @@ host resolves these keys inside each request scope.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING
 
-from agent.plugin_composition import MODEL_CALL_STATS, MODEL_CATALOG, ServiceKey
+from agent.plugin_composition import MODEL_CALL_STATS, MODEL_CATALOG
 from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.rpc import rpc_method_key
-from agent.plugin_composition.message_view import MessageDisplayReader
-from agent.plugin_composition.requests import RequestContext
-
-from .services import MobileUiProvider, WebUiProvider
+from agent.plugin_composition.runtime_catalog import (
+    RUNTIME_CATALOG as RUNTIME_CATALOG,
+    RUNTIME_MCP_DETAIL as RUNTIME_MCP_DETAIL,
+)
+from agent.plugin_composition.ui import (
+    WEB_UI as WEB_UI,
+)
+from agent.plugin_contracts.models import (
+    MODEL_SELECTION as MODEL_SELECTION,
+    ModelSelection as ModelSelectionReader,
+)
+from agent.plugin_contracts.reply import (
+    REPLY_STATUS as REPLY_STATUS,
+    ReplyStatus as ReplyStatusReader,
+)
+from agent.plugin_contracts.ui import (
+    MESSAGE_DISPLAY as MESSAGE_DISPLAY,
+    MOBILE_UI as MOBILE_UI,
+)
 
 if TYPE_CHECKING:
-    from agent.plugin_composition.context import Context
-
-
-class ReplyStatusReader(Protocol):
-    """Read-only reply activity for one session."""
-
-    async def follow(self, session_id: str): ...
-
-
-class ModelSelectionReader(Protocol):
-    """Read one saved model selection from session metadata."""
-
-    def read_saved(self, metadata: Mapping[str, object]) -> Any: ...
+    pass
 
 
 # These identities belong to the providers that publish the capabilities.  A
 # duplicate local ServiceKey is intentional: ServiceKey connects by its stable
 # name, so this module remains independent from the provider plugin package.
-REPLY_STATUS = ServiceKey[ReplyStatusReader]("reply.status.v2")
-MODEL_SELECTION = ServiceKey[ModelSelectionReader]("models.selection.v1")
-MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
-MOBILE_UI = ServiceKey[MobileUiProvider]("core.mobile_ui.v1")
-WEB_UI = ServiceKey[WebUiProvider]("core.web_ui.v1")
-RuntimeCatalogReader = Callable[["Context | RequestContext"], dict[str, object]]
-RUNTIME_CATALOG = ServiceKey[RuntimeCatalogReader]("core.runtime_catalog.v1")
-RuntimeMcpDetailReader = Callable[["Context | RequestContext", str, str], Awaitable[list[dict[str, object]]]]
-RUNTIME_MCP_DETAIL = ServiceKey[RuntimeMcpDetailReader]("core.runtime_mcp_detail.v1")
+
 
 INSPECTION_DOCUMENTS_LIST = rpc_method_key("inspection/documents.list")
 INSPECTION_DOCUMENTS_GET = rpc_method_key("inspection/documents.get")

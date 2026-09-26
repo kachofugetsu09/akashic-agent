@@ -134,12 +134,45 @@ class SessionAdmission:
 
     def __init__(self, log: _MessageLog | None):
         self._log = log
+        self._dimensions: dict[str, tuple[Context, Callable[[str], None]]] = {}
+
+    # 每个 scope 维度只有一个 owner 负责校验取值；卸载只释放内存注册。
+    async def register_dimension(
+        self, ctx: Context, *, name: str, check: Callable[[str], None],
+    ) -> Effect:
+        if ctx.require(SESSION_ADMISSION) is not self:
+            raise PermissionError("维度注册不属于当前 SessionAdmission")
+        _ = SessionAttributes(scope=((name, "probe"),))
+        def setup():
+            if name in self._dimensions:
+                raise ValueError(f"Session 维度已有 owner: {name}")
+            self._dimensions[name] = (ctx, check)
+            def cleanup() -> None:
+                del self._dimensions[name]
+            return cleanup
+        return await ctx.effect(setup, label="session-dimension:" + name)
 
     def ensure(self, ctx: Context, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
         if self._log is None:
             raise RuntimeError("candidate 验证期禁止接纳正式 Session")
         _ = ctx.require_runtime_owner(SESSION_ADMISSION, self)
+        # 1. 维度值只在首次接纳时由其 owner 校验；已有 Session 只比较固定事实。
+        if attributes.scope and not self._admitted(session_id):
+            for name, value in attributes.scope:
+                grant = self._dimensions.get(name)
+                if grant is None:
+                    raise PermissionError(f"Session 维度没有 owner: {name}")
+                grant[1](value)
+        # 2. 固定事实写入与冲突检查仍由同一个 create-once 事务完成。
         return self._log.ensure_session(session_id, attributes)
+
+    def _admitted(self, session_id: str) -> bool:
+        assert self._log is not None
+        try:
+            _ = self._log.catalog().attributes(session_id)
+        except ValueError:
+            return False
+        return True
 
 
 MESSAGE_WRITERS = ServiceKey[MessageWriters]("core.message_writers")

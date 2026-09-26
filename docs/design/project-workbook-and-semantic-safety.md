@@ -703,10 +703,10 @@ Prompt 精简优先删除：
 **F（当前 pilot）：** 现有落点是：
 
 ```text
-tests/semantic/test_context_history_contract.py
-tests_scenarios/contracts/oracles.py
-tests_scenarios/contracts/scenarios.toml
+tests/test_context_history_contract.py
 ```
+
+change-impact Gate 与 `tests_scenarios/contracts/` 已退役；历史节点现只保留真实回复不改写历史这一条，oracle 已内联。原落点是：
 
 `test_full_context_projection_preserves_append_only_history` 使用真实 `SessionManager` 和 `DefaultReasoner.run_turn`，只替换有界模型结果。它证明单一 `full_context` 计划从 session projection 读取全部历史，记录 SQLite trace，比较完整 messages/embeddings 快照，重启后再追加消息验证 seq 续接。`test_history_oracle_rejects_historical_delete_mutant` 直接在 fixture 数据库执行历史 DELETE，证明同一组快照和 write-set oracle 会拒绝已知坏状态。
 

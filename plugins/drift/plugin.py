@@ -5,6 +5,12 @@ from datetime import datetime
 from typing import Protocol
 
 from agent.plugin_composition import Context, EmitEventKey, ServiceKey
+from agent.plugin_contracts.proactive import (
+    DRIFT_DELIVERY as DRIFT_DELIVERY,
+    DRIFT_WAKE as DRIFT_WAKE,
+    DriftWakeServices as DriftWakeServices,
+)
+
 from .store import DriftStore
 
 api_version = 3
@@ -15,28 +21,6 @@ author = "Akashic Core"
 inject = ()
 workspace_roots = ()
 workspace_files = ()
-
-
-class DriftWakeServices(Protocol):
-    def snapshot(self, now: datetime) -> Mapping[str, object]: ...
-
-    def select(
-        self,
-        ref: Mapping[str, object],
-        accepted_turn: Mapping[str, object],
-        now: datetime,
-    ) -> Mapping[str, object]: ...
-
-    def transition(self, token: str, action: str) -> Mapping[str, object]: ...
-
-    def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
-
-    def selection(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None: ...
-
-
-DRIFT_WAKE = ServiceKey[DriftWakeServices]("drift.wake.v1")
 
 
 class DriftProposalServices(Protocol):
@@ -53,21 +37,6 @@ class DriftProposalServices(Protocol):
 
 DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
 DRIFT_CHANGED = EmitEventKey[None]("drift.changed")
-
-
-class DriftDeliveryServices(Protocol):
-    def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
-
-    def lookup(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None: ...
-
-    def settle(
-        self, selection_token: str, settlement_ref: str
-    ) -> Mapping[str, object]: ...
-
-
-DRIFT_DELIVERY = ServiceKey[DriftDeliveryServices]("drift.delivery.v1")
 
 
 class _WakeServices:

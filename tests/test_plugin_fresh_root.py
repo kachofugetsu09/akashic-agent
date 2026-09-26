@@ -1,13 +1,10 @@
 """局部更新保留同一 Root 和未受影响的 Fiber。"""
-
 import pytest
-
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from tests.test_plugin_install import _commit, _write_v3_plugin
-
 
 MODULE = '''from agent.plugin_composition import ServiceKey, RUNTIME_STARTED
 api_version = 3
@@ -29,10 +26,8 @@ async def apply(ctx):
         raise ValueError("formal rejected after acquisition")
 '''
 
-
 def module(name, *, reject=False, fail_close=False):
     return MODULE.replace("NAME", name).replace("REJECT_FORMAL", repr(reject)).replace("FAIL_CLOSE", repr(fail_close))
-
 
 def installed_pair(tmp_path):
     workspace, home = tmp_path / "workspace", tmp_path / "home"
@@ -45,7 +40,6 @@ def installed_pair(tmp_path):
     return PluginManager(
         [], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache",
     )
-
 
 @pytest.mark.asyncio
 async def test_live_update_replaces_only_target_fiber_in_one_root(tmp_path):

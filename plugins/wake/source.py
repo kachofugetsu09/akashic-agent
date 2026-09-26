@@ -4,34 +4,58 @@ import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    MESSAGE_WRITERS,
+    OWNER_STATE,
+    SESSION_ADMISSION,
+    MessageReader,
+    OwnerRecord,
+    OwnerTransaction,
+    SessionAttributes,
+)
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message, Output
+from agent.plugin_contracts import (
+    ContentPart,
+    Input,
+    Message,
+    Output,
+)
+from agent.plugin_contracts.models import (
+    MODEL_SELECTION as MODEL_SELECTION,
+    ModelSelection as ModelSelection,
+)
 
 from ._boundary import CONTENT, DELIVERY
-from .api import EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY
-from .content import (_candidate_id, _content_candidates, _datetime, _mapping,
-                      _message_with_source_links, _selected_content_refs, _string)
+from .api import DRIFT_DELIVERY, DRIFT_WAKE, EVENTMAIL_DELIVERY, EVENTMAIL_WAKE
+from .content import (
+    _candidate_id,
+    _content_candidates,
+    _datetime,
+    _mapping,
+    _message_with_source_links,
+    _selected_content_refs,
+    _string,
+)
 from .messages import decision, finished, screened_candidates
-from .request import (Phase, Request, Stage, WAKE_PROGRAM, check_phase,
-                      check_request, read_request, retryable)
+from .request import (
+    WAKE_PROGRAM,
+    Phase,
+    Request,
+    Stage,
+    check_phase,
+    check_request,
+    read_request,
+    retryable,
+)
 from .selection import propose_content, propose_drift
 from .state import WakeState
 from .tools import Alert, Screen, Share, Skip
-
-
-class ModelSelection(Protocol):
-    def check(self, part: ContentPart) -> ContentReferences: ...
-
-
-MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
 
 
 class Pointer(BaseModel):

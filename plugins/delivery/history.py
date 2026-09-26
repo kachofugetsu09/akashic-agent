@@ -8,10 +8,11 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MessageCatalog, OwnerStore
-from agent.plugin_contracts import Message
-from agent.plugin_contracts import json_value
+from agent.plugin_contracts import Message, json_value
+from agent.plugin_contracts.delivery import (
+    DELIVERY_READ as DELIVERY_READ,
+)
 
 from .api import Text
 
@@ -103,6 +104,3 @@ class DeliveryHistory:
                     return tuple(result)
             stop = rows[-1][0]
         return tuple(result)
-
-
-DELIVERY_READ = ServiceKey[DeliveryHistory]("delivery.read.v1")

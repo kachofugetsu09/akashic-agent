@@ -9,12 +9,19 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import ServiceKey, Context, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition import (
+    RUNTIME_STARTED,
+    RUNTIME_STARTING,
+    RUNTIME_STOPPING,
+    Context,
+)
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.plugin_composition.messages import MESSAGE_CATALOG, MessageReader
 from agent.plugin_composition.tasks import ExternalRootPermit, RestartRejectedError
-from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
+from agent.plugin_contracts.delivery import (
+    INPUT_ORIGIN as INPUT_ORIGIN,
+)
 
 from .boundary import (
     DELIVERY,
@@ -107,14 +114,13 @@ class DeliveryFinalOutput:
         self._ctx = ctx
         self._delivery = delivery
         self._timeout_s = timeout_s
+        self.wait = ctx.entrypoint(self.wait)
 
     async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
         ending = turn.ending_message_id
         if ending is None:
             raise RestartRejectedError("最终 Turn 没有 Output")
-        # 只在取得正式 Delivery owner 时持有 Root lease；记录读取本身不等待外部 I/O。
-        async with self._ctx.runtime_scope():
-            delivery = self._delivery()
+        delivery = self._delivery()
         async with asyncio.timeout(self._timeout_s):
             # ReplyCompletion 在 run_reply 的资源 cleanup 之后才创建首次选路；
             # 日志 follower 可能先看到 complete Output，先等待 Delivery owner 的真实 selection。
@@ -147,7 +153,7 @@ async def apply(ctx: Context) -> None:
 
     final_delivery = DeliveryFinalOutput(ctx, current_delivery)
     origin_check = ctx.require(ORIGIN_CHECK)
-    _ = await ctx.provide(ServiceKey("delivery.input-origin.v1"), partial(input_origin, check_origin=origin_check))
+    _ = await ctx.provide(INPUT_ORIGIN, partial(input_origin, check_origin=origin_check))
     final_outputs = ctx.require(FINAL_OUTPUT_DELIVERY)
 
     def register_final_outputs() -> Callable[[], None]:

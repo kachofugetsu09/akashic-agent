@@ -1,35 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 
-from typing import Protocol
-
-from agent.plugin_composition import Context, ServiceKey
-from agent.plugin_composition.messages import MESSAGE_WRITERS
+from agent.plugin_composition import Context
+from agent.plugin_composition.messages import MESSAGE_WRITERS, MessageReader
 from agent.plugin_composition.models import ModelError
 from agent.plugin_composition.tasks import Task
-from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import ContentPart, Control, Message
+from agent.plugin_contracts import Control, Message
+from agent.plugin_contracts.models import (
+    MODEL_CONTENT as MODEL_CONTENT,
+    ModelContent as ModelContent,
+)
+from agent.plugin_contracts.reply import REPLY_EXECUTE as REPLY_EXECUTE
 
 from .messages import HINTS, render
-from .request import Request, STAGE_TOOLS, WakeFailure, read_phase
+from .request import STAGE_TOOLS, Request, WakeFailure, read_phase
 
-
-REPLY_EXECUTE = ServiceKey[Callable[..., Awaitable[Message]]]("reply.execute.v1")
-
-
-class ModelContent(Protocol):
-    def render(self, part: ContentPart, *, artifacts: Mapping[str, tuple[Mapping[str, object], ...]]) -> tuple[Mapping[str, object], ...]: ...
-
-
-MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v1")
 
 async def run(ctx: Context, task: Task, reader: MessageReader, request: Request) -> Message:
     """按归档程序和原工具运行一个真实阶段，已知失败也保存为普通 Control。"""
     request = Request.model_validate(request.model_dump())
     _, phase = read_phase(reader.snapshot(), request)
-    names = STAGE_TOOLS[phase.stage]
+    names = (tuple(name for name in request.tools if name != "screen_content")
+             if phase.stage == "investigate" else STAGE_TOOLS[phase.stage])
     fixed = {name: request.tools[name] for name in names}
 
     async def authorize(binding: str, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
@@ -62,7 +56,7 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
                 else 40
             ),
             terminal_tools=frozenset(
-                name for name in names if name not in {"recall_memory", "web_fetch"}
+                name for name in names if name in STAGE_TOOLS[phase.stage]
             ),
             exclude_materials=(
                 frozenset({"akasha", "markdown_memory"})

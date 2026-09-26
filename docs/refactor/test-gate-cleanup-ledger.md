@@ -1,5 +1,7 @@
 # 测试与 Gate 清理账本
 
+> **已被 [`orthogonality-test-baseline.md`](orthogonality-test-baseline.md) 取代。** 现行 `tests/` 保留清单、新增规则和 CI 收敛以该文件为准。下文只保留历史清理记录。
+
 本账本记录测试与 Gate 的永久收敛。数量只是历史观察指标，不是删除依据；取舍按用户可观察失败、持久化与安全边界、并发 finality、恢复能力和插件 v3 生命周期排序。
 
 ## 2026-09-23：Issue 750 绿色集成 R1 的测试入口迁移

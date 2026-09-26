@@ -1,14 +1,26 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Literal, cast
 
 from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerStore
-from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
-
+from agent.plugin_contracts import (
+    CallRef,
+    Control,
+    Output,
+    ToolCall,
+    ToolResult,
+)
+from agent.plugin_contracts.tools import (
+    BoundTool as BoundTool,
+    CallSource as CallSource,
+    ProviderBoundTool as ProviderBoundTool,
+    Result as Result,
+    ResultLike as ResultLike,
+    durable_call_key as durable_call_key,
+)
 
 Outcome = Literal["success", "denied", "error", "interrupted"]
 
@@ -18,41 +30,6 @@ def result_message_id(call_ref: CallRef) -> str:
     return f"tool-result:{call_ref.message_id}:{call_ref.part_index}"
 
 
-def durable_call_key(call_ref: CallRef) -> str:
-    """Return the stable effect key already used by a submitted ToolCall."""
-    if not isinstance(call_ref, CallRef):
-        raise TypeError("工具调用引用无效")
-    return "message:" + json.dumps(
-        [call_ref.message_id, call_ref.part_index],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class Result:
-    outcome: Outcome
-    parts: tuple[ContentPart, ...]
-
-    def __post_init__(self) -> None:
-        if self.outcome not in {"success", "denied", "error", "interrupted"}:
-            raise ValueError("工具结果状态无效")
-        parts = tuple(self.parts)
-        if any(not isinstance(part, ContentPart) for part in parts):
-            raise TypeError("工具结果必须是内容块")
-        object.__setattr__(self, "parts", parts)
-
-
-@runtime_checkable
-class ResultLike(Protocol):
-    """provider 返回的结构结果；tools owner 不依赖 provider 的类身份。"""
-
-    @property
-    def outcome(self) -> Outcome: ...
-    @property
-    def parts(self) -> tuple[ContentPart, ...]: ...
-
-
 def coerce_result(value: object) -> Result:
     """在 tools 执行边界接纳 provider 结果并重新校验内容。"""
     if isinstance(value, Result):
@@ -60,18 +37,6 @@ def coerce_result(value: object) -> Result:
     if not isinstance(value, ResultLike):
         raise TypeError("工具结果必须提供 outcome 和 parts")
     return Result(value.outcome, tuple(value.parts))
-
-
-@dataclass(frozen=True, slots=True)
-class CallSource:
-    """实际调用的不可变消息前缀；不携带 reader 或任何写入能力。"""
-
-    call_ref: CallRef
-    messages: tuple[Message, ...]
-
-    @property
-    def effect_key(self) -> str:
-        return durable_call_key(self.call_ref)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,38 +128,6 @@ class InvalidArguments(ValueError):
 
 class Denied(Exception):
     """授权 owner 明确拒绝当前最终参数；没有发生本次调用。"""
-
-
-class ProviderBoundTool(Protocol):
-    @property
-    def idempotent(self) -> bool: ...
-
-    async def prepare(
-        self, arguments: Mapping[str, object], source: CallSource | None = None
-    ) -> Mapping[str, object] | str: ...
-
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ResultLike: ...
-
-    async def query(self, key: str) -> ResultLike | None:
-        """查询原调用；None 只表示无法确定，不能解释为没有效果。"""
-        ...
-
-
-class BoundTool(Protocol):
-    """tools owner 暴露给执行器的已归一化工具 facade。"""
-
-    @property
-    def idempotent(self) -> bool: ...
-
-    async def prepare(
-        self, arguments: Mapping[str, object], source: CallSource | None = None
-    ) -> Mapping[str, object] | str: ...
-
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result: ...
-
-    async def query(self, key: str) -> Result | None:
-        """查询原调用；None 只表示无法确定，不能解释为没有效果。"""
-        ...
 
 
 OpenTool = Callable[[str], AbstractAsyncContextManager[BoundTool]]

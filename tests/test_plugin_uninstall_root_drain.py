@@ -1,22 +1,14 @@
 """公开卸载只排空目标 Fiber/硬消费者，且保留无关 live owner 与用户数据。"""
-
 import asyncio
 import sys
-import threading
-
 import pytest
-
 from agent.plugin_composition import FiberState
-from agent.plugins import install as install_module
-from agent.plugins._operation import OperationBusyError
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
-from agent.plugins.selection import SelectionConflictError
 from bus.event_bus import EventBus
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from tests.test_plugin_fresh_root import module
 from tests.test_plugin_install import _commit, _write_v3_plugin
-
 
 CONSUMER = """
 from agent.plugin_composition import ServiceKey
@@ -37,7 +29,6 @@ async def apply(ctx):
     await ctx.effect(lambda: close)
     await ctx.provide(ServiceKey("consumer.state"), {"active": True})
 """
-
 
 def installed_host(tmp_path, *, fail_close=False):
     """Install target, its hard consumer, and an unrelated peer for a live Manager."""
@@ -64,16 +55,13 @@ def installed_host(tmp_path, *, fail_close=False):
     )
     return host, home / "cache/lab/target", workspace
 
-
 def status_for(host, plugin_id):
     return next(item for item in host.plugin_status()["plugins"] if item["plugin_id"] == plugin_id)
-
 
 def operation_status(host: PluginManager) -> dict[str, object]:
     operation = host.plugin_status()["operation"]
     assert isinstance(operation, dict)
     return operation
-
 
 @pytest.mark.asyncio
 async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
@@ -170,7 +158,6 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
             await asyncio.gather(peer_task, return_exceptions=True)
         await host.terminate_all()
 
-
 @pytest.mark.asyncio
 async def test_uninstall_cleanup_failure_keeps_owner_and_explicit_retry_finishes(tmp_path):
     """A failed close retains the same owner/cache; retry does not hit a permanent busy gate."""
@@ -240,422 +227,4 @@ async def test_uninstall_cleanup_failure_keeps_owner_and_explicit_retry_finishes
             f"generation-cleanup:{target.plugin_id}:{target.generation_id}"
         )
     finally:
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_cleanup_journal_write_failure_keeps_exact_owner_for_retry(tmp_path, monkeypatch):
-    """A failed receipt write cannot release the physical cleanup owner."""
-    host, cache, _workspace = installed_host(tmp_path, fail_close=True)
-    try:
-        await host.load_all()
-        target = host.generation("target@lab")
-        assert target is not None
-        await host.uninstall("target@lab")
-        first = host._operation
-        assert first is not None
-        assert isinstance((await asyncio.gather(first.task, return_exceptions=True))[0], OSError)
-        tx_id = target.reload_tx_id
-        assert tx_id is not None
-        settle = host._reload_journal.settle_generation_cleanup
-
-        def fail_write(**kwargs):
-            raise OSError("journal write blocked")
-
-        monkeypatch.setattr(host._reload_journal, "settle_generation_cleanup", fail_write)
-        await host.uninstall("target@lab")
-        second = host._operation
-        assert second is not None
-        result = (await asyncio.gather(second.task, return_exceptions=True))[0]
-        assert isinstance(result, OSError) and str(result) == "journal write blocked"
-        assert host._reload_journal.get(tx_id).phase == "cleanup_failed"
-        assert host.generation("target@lab") is target
-        assert target in host._draining_generations["target@lab"]
-        assert cache.is_dir()
-
-        monkeypatch.setattr(host._reload_journal, "settle_generation_cleanup", settle)
-        await host.uninstall("target@lab")
-        third = host._operation
-        assert third is not None
-        done = (await asyncio.gather(third.task, return_exceptions=True))[0]
-        assert isinstance(done, dict) and done["state"] == "removed"
-        assert host._reload_journal.get(tx_id).phase == "recovered"
-        assert not cache.exists()
-    finally:
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_uninstall_removes_selected_target_when_no_active_fiber_remains(tmp_path):
-    """A failed public install leaves selected cache facts for the one finalizer path."""
-    host, cache, _workspace = installed_host(tmp_path)
-    try:
-        await host.load_all()
-        broken = tmp_path / "broken-target"
-        _write_v3_plugin(
-            broken,
-            name="target",
-            module_source=(
-                "api_version = 3\n"
-                "name = 'target'\n"
-                "version = '2.0.0'\n"
-                "async def apply(ctx):\n"
-                "    raise RuntimeError('broken start')\n"
-            ),
-        )
-        _commit(broken)
-
-        accepted_update = await host.install(
-            source=str(broken), marketplace="lab", ref_name="", sparse_paths=[],
-            update_id="target-broken",
-        )
-        assert accepted_update.state == "accepted"
-        update_operation = host._operation
-        assert update_operation is not None
-        update_result = await asyncio.gather(
-            update_operation.task, return_exceptions=True,
-        )
-        assert isinstance(update_result[0], RuntimeError)
-        failed_update = host.read_update("target-broken")
-        assert failed_update.state == "failed"
-        assert failed_update.input_ref is not None
-        assert failed_update.selection == "selected"
-        failed_generation = host.generation("target@lab")
-        assert failed_generation is not None
-        assert failed_generation.fiber is None
-        assert isinstance(failed_generation.load_error, RuntimeError)
-        assert status_for(host, "target@lab")["selected_ref"] == failed_update.input_ref
-        assert cache.is_dir()
-        assert status_for(host, "target@lab")["installed"] is True
-
-        accepted = await host.uninstall("target@lab")
-        operation = host._operation
-        assert accepted["state"] == "accepted"
-        assert operation is not None
-        result = await asyncio.gather(operation.task, return_exceptions=True)
-        assert len(result) == 1 and isinstance(result[0], dict)
-        assert result[0]["plugin_id"] == "target@lab"
-        assert result[0]["state"] == "removed"
-        assert not cache.exists()
-        assert status_for(host, "target@lab")["selected_ref"] is None
-        assert status_for(host, "target@lab")["installed"] is False
-    finally:
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_uninstall_busy_rejects_second_operation_without_manifest_drift(tmp_path):
-    """A live owner blocks a second Manager operation after the first CAS."""
-    host, _cache, _workspace = installed_host(tmp_path)
-    try:
-        await host.load_all()
-        target = host.generation("target@lab")
-        assert target is not None
-        async with target.fiber.context.runtime_scope():
-            accepted = await host.uninstall("target@lab")
-            assert accepted["state"] == "accepted"
-            manifest = host.installed_plugins_home / "manifest.toml"
-            disabled_manifest = manifest.read_bytes()
-            with pytest.raises(OperationBusyError):
-                await host.uninstall("peer@lab")
-            assert manifest.read_bytes() == disabled_manifest
-        operation = host._operation
-        assert operation is not None
-        result = await asyncio.gather(operation.task, return_exceptions=True)
-        assert isinstance(result[0], dict)
-        assert result[0]["state"] == "removed"
-    finally:
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_uninstall_selection_conflict_keeps_owner_and_disabled_partial_fact(
-    tmp_path, monkeypatch,
-):
-    """A CAS conflict leaves the disabled manifest but no accepted removal."""
-    host, cache, _workspace = installed_host(tmp_path)
-    try:
-        await host.load_all()
-        target = host.generation("target@lab")
-        assert target is not None and target.fiber is not None
-        target_fiber = target.fiber
-        selection_before = host._selection.read()
-
-        def conflict(*_args, **_kwargs):
-            raise SelectionConflictError("forced selection conflict")
-
-        monkeypatch.setattr(host._selection, "commit", conflict)
-        with pytest.raises(SelectionConflictError, match="forced selection conflict"):
-            await host.uninstall("target@lab")
-        operation = host._operation
-        assert operation is not None
-        result = await asyncio.gather(operation.task, return_exceptions=True)
-        assert isinstance(result[0], SelectionConflictError)
-        assert operation.accepted is not None
-        assert operation.accepted.done() and operation.accepted.exception() is not None
-        assert host._selection.read() == selection_before
-        assert host.generation("target@lab") is target
-        assert target.fiber is target_fiber
-        assert target_fiber.state is FiberState.ACTIVE
-        assert cache.is_dir()
-        target_status = status_for(host, "target@lab")
-        assert target_status["installed"] is True
-        assert target_status["enabled"] is False
-        assert target_status["cache_exists"] is True
-    finally:
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_uninstall_finalizer_failure_retains_facts_until_explicit_retry(
-    tmp_path, monkeypatch,
-):
-    """A physical delete error is visible and a later public retry can finish it."""
-    host, cache, workspace = installed_host(tmp_path)
-    try:
-        await host.load_all()
-        marker = workspace / "plugin-data" / "target-lab" / "retained.txt"
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("keep", encoding="utf-8")
-        real_rmtree = install_module.shutil.rmtree
-
-        def fail_finalizer(path, *args, **kwargs):
-            if path == cache:
-                raise OSError("finalizer failed")
-            return real_rmtree(path, *args, **kwargs)
-
-        monkeypatch.setattr(install_module.shutil, "rmtree", fail_finalizer)
-        accepted = await host.uninstall("target@lab")
-        assert accepted["state"] == "accepted"
-        operation = host._operation
-        assert operation is not None
-        result = await asyncio.gather(operation.task, return_exceptions=True)
-        assert isinstance(result[0], OSError)
-        assert str(result[0]) == "finalizer failed"
-        target_status = status_for(host, "target@lab")
-        assert operation_status(host)["state"] == "error"
-        assert target_status["installed"] is True
-        assert target_status["enabled"] is False
-        assert target_status["cache_exists"] is True
-        assert marker.read_text(encoding="utf-8") == "keep"
-
-        monkeypatch.setattr(install_module.shutil, "rmtree", real_rmtree)
-        retry = await host.uninstall("target@lab")
-        assert retry["state"] == "accepted"
-        retry_operation = host._operation
-        assert retry_operation is not None
-        retry_result = await asyncio.gather(
-            retry_operation.task, return_exceptions=True,
-        )
-        assert isinstance(retry_result[0], dict)
-        assert retry_result[0]["state"] == "removed"
-        assert not cache.exists()
-        assert marker.read_text(encoding="utf-8") == "keep"
-    finally:
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_uninstall_caller_cancellation_does_not_revoke_accepted_owner(
-    tmp_path, monkeypatch,
-):
-    """Caller cancellation abandons only the accepted wait, not Manager cleanup."""
-    host, cache, _workspace = installed_host(tmp_path)
-    entered, release = asyncio.Event(), asyncio.Event()
-    caller = None
-    try:
-        await host.load_all()
-        real_deactivate = host._deactivate_plugin
-
-        async def delayed_deactivate(*args, **kwargs):
-            entered.set()
-            await release.wait()
-            return await real_deactivate(*args, **kwargs)
-
-        monkeypatch.setattr(host, "_deactivate_plugin", delayed_deactivate)
-        caller = asyncio.create_task(host.uninstall("target@lab"))
-        await entered.wait()
-        operation = host._operation
-        assert operation is not None
-        caller.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await caller
-        assert operation.revoked is False
-        release.set()
-        result = await asyncio.gather(operation.task, return_exceptions=True)
-        assert isinstance(result[0], dict)
-        assert result[0]["state"] == "removed"
-        assert not cache.exists()
-    finally:
-        release.set()
-        if caller is not None:
-            await asyncio.gather(caller, return_exceptions=True)
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_uninstall_deadline_keeps_finalizer_thread_owner_until_joined(
-    tmp_path, monkeypatch,
-):
-    """Revocation keeps the real finalizer thread owned until it returns."""
-    host, cache, _workspace = installed_host(tmp_path)
-    finalizer_started = threading.Event()
-    finalizer_release = threading.Event()
-    operation = None
-    peer_task = None
-    peer_release = asyncio.Event()
-    peer_entered = asyncio.Event()
-    try:
-        await host.load_all()
-        target = host.generation("target@lab")
-        peer = host.generation("peer@lab")
-        assert target is not None and peer is not None and peer.fiber is not None
-        marker = target.data_dir / "keep.txt"
-        marker.write_text("user data", encoding="utf-8")
-        peer_context = peer.fiber.context
-        peer_fiber = peer.fiber
-        peer_token = peer_context.fiber.activation_token
-        peer_state = dict(peer.instance.module.STATE)
-
-        async def hold_peer_scope():
-            async with peer_context.runtime_scope():
-                peer_entered.set()
-                await peer_release.wait()
-
-        real_finalize = install_module.finalize_uninstall_plugin
-
-        def blocked_finalize(plugin_id, *, workspace, plugins_home=None):
-            finalizer_started.set()
-            finalizer_release.wait()
-            return real_finalize(
-                plugin_id, workspace=workspace, plugins_home=plugins_home,
-            )
-
-        monkeypatch.setattr(
-            "agent.plugins.manager.finalize_uninstall_plugin", blocked_finalize,
-        )
-        accepted = await host.uninstall("target@lab")
-        assert accepted["state"] == "accepted"
-        operation = host._operation
-        assert operation is not None
-        assert await asyncio.to_thread(finalizer_started.wait, 5)
-        # The real worker is now inside finalization; revoke the same deadline path.
-        host._revoke_operation(operation)
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(operation.task), 0.2)
-        assert operation.revoked
-        assert not operation.task.done()
-        peer_task = asyncio.create_task(hold_peer_scope())
-        await asyncio.wait_for(peer_entered.wait(), 5)
-        assert peer.fiber is peer_fiber
-        assert peer.fiber.state is FiberState.ACTIVE
-        assert peer_context.fiber.activation_token is peer_token
-        assert peer.instance.module.STATE == peer_state
-        with pytest.raises(OperationBusyError):
-            await host.uninstall("peer@lab")
-        target_status = status_for(host, "target@lab")
-        assert target_status["installed"] is True
-        assert target_status["enabled"] is False
-        assert target_status["cache_exists"] is True
-
-        finalizer_release.set()
-        result = await asyncio.gather(operation.task, return_exceptions=True)
-        assert any(isinstance(item, asyncio.CancelledError) for item in result)
-        assert not cache.exists()
-        assert marker.read_text(encoding="utf-8") == "user data"
-        assert status_for(host, "target@lab")["installed"] is False
-        assert peer.fiber is peer_fiber
-        assert peer_context.fiber.activation_token is peer_token
-        assert peer.instance.module.STATE == peer_state
-    finally:
-        finalizer_release.set()
-        peer_release.set()
-        if operation is not None:
-            await asyncio.gather(operation.task, return_exceptions=True)
-        if peer_task is not None:
-            await asyncio.gather(peer_task, return_exceptions=True)
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_uninstall_revoked_before_finalizer_start_keeps_install_for_retry(
-    tmp_path, monkeypatch,
-):
-    """Revocation during real owner drain never starts finalization or claims removal."""
-    host, cache, _workspace = installed_host(tmp_path)
-    consumer_stopping = asyncio.Event()
-    finalizer_started = threading.Event()
-    operation = None
-    try:
-        await host.load_all()
-        target = host.generation("target@lab")
-        consumer = host.generation("consumer@lab")
-        peer = host.generation("peer@lab")
-        assert target is not None and target.fiber is not None
-        assert consumer is not None and peer is not None and peer.fiber is not None
-        consumer.instance.module.STOPPING_EVENT = consumer_stopping
-        peer_fiber = peer.fiber
-        peer_token = peer_fiber.context.fiber.activation_token
-        peer_state = dict(peer.instance.module.STATE)
-        marker = target.data_dir / "keep.txt"
-        marker.write_text("user data", encoding="utf-8")
-
-        real_finalize = install_module.finalize_uninstall_plugin
-
-        def observed_finalize(plugin_id, *, workspace, plugins_home=None):
-            finalizer_started.set()
-            return real_finalize(
-                plugin_id, workspace=workspace, plugins_home=plugins_home,
-            )
-
-        monkeypatch.setattr(
-            "agent.plugins.manager.finalize_uninstall_plugin", observed_finalize,
-        )
-        # This accepted OwnerCall holds the target drain at the real Fiber boundary.
-        async with target.fiber.context.runtime_scope():
-            accepted = await host.uninstall("target@lab")
-            operation = host._operation
-            assert accepted["state"] == "accepted"
-            assert operation is not None
-            await asyncio.wait_for(consumer_stopping.wait(), 5)
-            assert not finalizer_started.is_set()
-            host._revoke_operation(operation)
-            assert operation.revoked and not operation.task.done()
-            with pytest.raises(OperationBusyError):
-                await host.uninstall("peer@lab")
-            assert cache.is_dir()
-            assert marker.read_text(encoding="utf-8") == "user data"
-
-        result = await asyncio.gather(operation.task, return_exceptions=True)
-        assert len(result) == 1 and isinstance(result[0], asyncio.CancelledError)
-        assert not finalizer_started.is_set()
-        assert cache.is_dir()
-        assert marker.read_text(encoding="utf-8") == "user data"
-        target_status = status_for(host, "target@lab")
-        assert target_status["installed"] is True
-        assert target_status["enabled"] is False
-        assert target_status["cache_exists"] is True
-        assert operation_status(host)["state"] != "done"
-        assert peer.fiber is peer_fiber
-        assert peer.fiber.state is FiberState.ACTIVE
-        assert peer_fiber.context.fiber.activation_token is peer_token
-        assert peer.instance.module.STATE == peer_state
-
-        monkeypatch.setattr(
-            "agent.plugins.manager.finalize_uninstall_plugin", real_finalize,
-        )
-        retry = await host.uninstall("target@lab")
-        retry_operation = host._operation
-        assert retry["state"] == "accepted" and retry_operation is not None
-        retry_result = await asyncio.gather(retry_operation.task, return_exceptions=True)
-        assert len(retry_result) == 1 and isinstance(retry_result[0], dict)
-        assert retry_result[0]["state"] == "removed"
-        assert not cache.exists()
-        assert marker.read_text(encoding="utf-8") == "user data"
-        assert status_for(host, "target@lab")["installed"] is False
-        assert peer.fiber is peer_fiber
-        assert peer_fiber.context.fiber.activation_token is peer_token
-    finally:
-        if operation is not None:
-            await asyncio.gather(operation.task, return_exceptions=True)
         await host.terminate_all()

@@ -102,7 +102,7 @@ class RecallTool:
     idempotent = True
 
     def __init__(
-        self, *, memory: Path, config: MemoryConfig,
+        self, *, memory: Callable[[str | None], Path], config: MemoryConfig,
         catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
         select_learning: Callable[[], tuple[str, str]], records: RecallRecords,
         open_embedding: Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]],
@@ -148,8 +148,9 @@ class RecallTool:
         # 1. 打开工具实际固定的学习规则；读副本也校验图的 embedding 空间。
         async with self._bindings.open(request.learning_binding, AKASHA_LEARNING) as (learning, metadata):
             rule = LearningConfig.model_validate(dict(metadata))
+            # 调用所在 Session 决定读取哪张图；显式程序没有 Session 时读 default 图。
             async with read_memory(
-                self._memory, catalog=self._catalog,
+                self._memory(None if request.source is None else request.source.session_id), catalog=self._catalog,
                 embeddings=self._embeddings, bindings=self._bindings, config=self._config,
                 embedding_space=(rule.embedding_model, rule.dimension),
             ) as (cycle, state):

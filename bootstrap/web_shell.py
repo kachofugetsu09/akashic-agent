@@ -139,6 +139,10 @@ def create_web_shell_app(
             "chatReady": chat_ready,
         }
 
+    @app.get("/api/runtime/host-bridge")
+    async def proxy_host_bridge_status(request: Request) -> Response:
+        return await _proxy_http(request, dashboard_socket, "/api/runtime/host-bridge")
+
     @app.api_route(
         "/api/chat/{proxy_path:path}",
         methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],

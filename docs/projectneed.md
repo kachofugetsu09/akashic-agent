@@ -486,6 +486,12 @@ Message 的 `metadata` 是按插件命名空间组织的普通 JSON 对象，用
 
 metadata 与正文同事务提交，参与同 ID 幂等核对，提交后不可原位更新。未知扩展在存储、历史读取和客户端同步中原样保留；缺少插件不影响正文与通用附件可读。插件不支持扩展版本时明确报告该扩展不可用，不猜测解释或删除数据。后续反馈与消费进度由插件自己保存并关联 message_id。物理减少仍只按 SES-003 执行。
 
+### SES-010 Session scope 是接纳时固定的宽键
+
+Session 的 `scope` 是一组 `维度 → 取值` 的固定事实，例如 `{project: p_x}`，以后可以增加 `computer` 等维度。Message 通过 `session_id` 继承 scope，不逐条复制。scope 与 visibility、learning 一起在 Session 首次接纳时写入并永久不变；同 ID 重试属性相同则幂等，不同则失败。缺失维度一律解释为 `default`，因此增加维度不迁移旧 Session，旧数据自然属于 `(default, …)`。
+
+Core 只保存和比较 scope，不解释维度含义。每个维度必须有唯一 owner 插件注册取值校验；没有 owner 的维度不能接纳，取值只在首次接纳时校验。维度 owner 的记录只能改名或归档，不能删除，使历史 Session 永远可解析。消费者（展示、记忆、检索）只读 scope，各自决定如何分组，不能反向改写。
+
 ## 8. 记忆系统
 
 ### MEM-001 档案重写同时验证结构和事实保全
@@ -554,6 +560,14 @@ Session compaction、Markdown consolidation 的切点和 prompt history 必须�
 Markdown 新草稿逐条引用本次可学习的真实 Message ID。用户事实、偏好、明确要求及关系判断，必须包含 author=user 的 Input 引用；助手转述、工具、后台结果或摘要不能成为唯一依据。
 来源与 Session 学习资格由消息和学习 owner 决定，模型不能自行声明。压缩仍保留跨来源工作进展；Markdown 从摘要覆盖的原始消息读取事实，不把摘要正文作为用户原话。
 既有草稿与 before-image 恢复协议保留；本规则不授权删除、改写或补造旧条目和历史引用。引用资格检查证明来源存在且合格，不证明模型推断的语义必然正确。
+
+### MEM-013 Akasha 图是按 scope 路由的物化视图
+
+`sessions.db/messages` 仍是唯一事实来源；Akasha 的每张图只是日志上的一个物化视图，拥有自己的成员选择与消费进度，不是日志分区。路由由 Akasha 拥有的策略决定：每个 `(维度, 取值)` 一条 `global | isolated | off`，缺失即 `global`，与旧行为一致。global 学习进入并召回 default 图；isolated 只在本范围自己的图内学习和召回，多个维度同为 isolated 时按显式偏键合成一张图；off 不写入任何图但仍召回其所属图。`learning=excluded` 仍是 Core 的硬排除，优先于任何策略。
+
+default 图沿用 `memory/akasha.db`，不迁移已有数据；独立图位于 `memory/akasha-graphs/<规范键摘要>/`，附带记录规范键的 `manifest.json`，embedding 仍按 Message 共享。策略只能在该取值还没有任何 Session 时一次写入；已有 Session 后改变策略需要另行批准的显式重建协议，普通 UI 不提供改写。显式重建逐图执行，每张图各自按 MEM-009 留恢复点并原子替换。
+
+单张图需要重建或 embedding 空间不匹配时，必须明确报告该图身份和原因，停止该图的学习与召回，其他图继续运行。访问故障图不得回退到全局图；健康图成功不得清除故障图状态。公共 embedding 依赖不可用时，按实际依赖范围报告不可用。未预期异常继续传播，不作为可跳过的图故障。
 
 ## 9. 运行时、并发和出站
 
@@ -625,7 +639,7 @@ Codex、OpenCode 等 Provider 插件的权威目录优先提供模型能力；�
 
 ### RUN-013 正式容器通过 Host Bridge 保留宿主执行能力
 
-原生开发运行继续使用本地执行后端。正式容器运行只能注册与 Core 同版本的 Python Host Bridge 后端；Bridge 未就绪、版本不匹配或能力探针失败时 readiness 必须失败并退出，不得静默回退到容器内执行。主 Turn、programmatic Turn、subagent 与 Drift 的 Agent-facing Shell、File 和 Process 工具默认以 Bridge 宿主用户身份工作，能力边界等同该用户通过 SSH 登录后可执行的操作；Core control plane、SessionDB、插件 generation、MCP/managed service、Supervisor 和 restart 事务仍由 Core 容器拥有。
+原生开发运行继续使用本地执行后端。正式容器运行只能注册与 Core 同版本的 Python Host Bridge 后端；启动时必须确认 Bridge 就绪、同版本和 boot ownership，失败不得进入 readiness；运行期身份或 ownership 错误仍明确失败。运行期暂时传输失败只降级宿主执行能力，保留 Core 与聊天连接并继续探测，客户端可见降级与恢复；不得静默回退到容器内执行。恢复传输不得重放可能已生效的操作，也不得重建已过期的 manager 后继续使用旧执行句柄。主 Turn、programmatic Turn、subagent 与 Drift 的 Agent-facing Shell、File 和 Process 工具默认以 Bridge 宿主用户身份工作，能力边界等同该用户通过 SSH 登录后可执行的操作；Core control plane、SessionDB、插件 generation、MCP/managed service、Supervisor 和 restart 事务仍由 Core 容器拥有。
 
 ### RUN-014 运行镜像拥有不可变且可诊断的身份
 
@@ -777,9 +791,13 @@ Channel factory/lifecycle/delivery/presentation、Dashboard module hook/HTTP 和
 内置插件只表示默认随 Core 发布，不获得额外 import、数据或生命周期权限。任一内置插件移到
 独立源码仓库并通过正式插件安装后，功能、持久语义、generation 行为和组合关系必须保持不变。
 插件只能导入公开 Plugin API 和自身包内代码；不得导入兄弟插件源码、Core 私有实现或依赖主
-仓库相对路径。跨插件关系只通过本地声明的版本化 `ServiceKey`、结构合同、事件和 provider
+仓库相对路径。跨插件关系通过版本化 `ServiceKey`、结构合同、事件和 provider
 选择的 Tool 表达。发布 Gate 必须在不加入主仓库源码路径的隔离安装中证明 import、apply、
 provide/inject、Tool、局部换代、卸载和 plugin-data 边界。
+
+公共合同模块已经拥有的 ServiceKey 由提供方和消费者共同导入，不在消费者重建同名 key。
+`get/require` 只读取声明依赖或自身提供的服务；临时可选调用使用有界 `borrow`，通知使用事件。
+程序 provider 捕获自身依赖，调用者只交入本次执行授权和业务选择。
 
 ### PLG-017 Workload 是普通插件原子能力
 
@@ -843,11 +861,11 @@ Workload writer；容器名、镜像和 endpoint 都不是持久状态 owner。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 
-迁移框架读取 Core 自有脚本和正式安装插件声明的 migration bundle，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。未来已发布 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。业务 schema 由相应插件拥有，Core 只负责通用装配与执行。
+迁移框架读取 Core 自有脚本和正式安装插件声明的 migration bundle，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。既有 selected Root 的普通启动只检查待迁移，发现缺失时明确失败；部署者以清单批准 migration ID，发布器在 runtime、provider 和业务写入 owner 停止且持有 maintenance 锁时执行。首次显式初始化允许建库迁移。任一步失败时不得记录成功回执，runtime 不得启动。未来已发布 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。业务 schema 由相应插件拥有，Core 只负责通用装配与执行。
 
 ### MIG-002 当前结构是迁移基线，Yoyo 保留未来兼容能力
 
-本次基线假定现有用户的数据、schema 和配置已经是当前状态。按 [0066](decisions/0066-yoyo-current-baseline.md) 删除已经完成使命的历史脚本、`legacy_upgrade` 及其专属兼容代码，清空历史业务 requirement；保留 Yoyo、runner、插件迁移声明和账本。既有历史回执和用户数据不删除、不重跑、不伪造成功。未来迁移不得依赖源码已经退役的历史 ID；新脚本继续遵守 append-only、备份和失败重试合同。
+本次基线假定现有用户的数据、schema 和配置已经是当前状态。按 [0066](decisions/0066-yoyo-current-baseline.md) 删除已经完成使命的历史脚本、`legacy_upgrade` 及其专属兼容代码，清空历史业务 requirement；保留 Yoyo、runner、插件迁移声明和账本。既有历史回执和用户数据不删除、不重跑、不伪造成功。未来迁移不得依赖源码已经退役的历史 ID；新脚本继续遵守 append-only、明确写入范围和失败重试合同。部署级备份由部署者选择，不由迁移发现或普通代码更新隐式触发；已发布 step 内部恢复机制保持原合同，见 [0074](decisions/0074-deployment-policy-belongs-to-operator.md)。
 
 ### FS-001 文件写入限于 allowed root
 
@@ -929,6 +947,8 @@ pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
 
 ### BAK-001 备份必须能验证和恢复
 
+部署时是否备份、备份范围和恢复方案由部署者决定；`--backup` 是可选操作，不是每次安装的前提。以下约束描述选择备份后的质量，不授权自动恢复或删除。
+
 普通文件完整复制，SQLite 使用 backup API 与 integrity check；临时 snapshot、manifest 和 hash 全部完成后原子发布，新快照成功后才 prune。必须定期恢复到隔离 workspace 并运行应用级只读 smoke。
 
 ### CTRL-001 控制协议严格握手和 typed params
@@ -951,15 +971,15 @@ Session 无论是否可学习，都正常持久化 Input、Control、工具调�
 
 ### TST-001 语义 oracle 独立于实现
 
-P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验证。普通实现 agent 不得在同一 refactor 中同时修改 oracle 的预期结果。
+正交化概念由基线文档列出的受保护测试守护；其余 P0 不变量由静态检查、policy 或真实运行中的黑盒观察验证，不默认新增单元测试。普通实现 agent 不得在同一 refactor 中同时修改受保护测试的预期结果。
 
 ### TST-002 核对完整状态和 write set
 
 持久化语义不能只核对返回值或行数。验收应规范化完整内容，记录 INSERT、UPDATE、DELETE、文件写入、事件和外部调用；即使违规事务最终回滚，也要看见写入尝试。
 
-### TST-003 用已知错误验证验收器
+### TST-003 新增概念测试须先证明会失败
 
-每个 P0 oracle 应有至少一个语义 mutant 或等价故障注入。例如 CTX-001 主动加入 `DELETE FROM messages` 后，门禁必须稳定失败。如果已知错误仍能通过，测试本身没有完成验收职责。
+不再维护变异测试目录。只有新增概念测试时，才需要证明它在违反该概念的提交上会失败；现有保留节点不为此补 mutant。
 
 ### TST-004 Refactor 做差分回放
 
@@ -969,11 +989,9 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 
 备份、rollback 和 previous snapshot 只有经过隔离恢复、重载和关键路径 smoke 后才算有效。文件存在或指针恢复不能单独证明可恢复。
 
-### TST-006 变更影响由版本化 Gate 决定
+### TST-006 测试集合由正交化概念基线文档固定
 
-代码改动必须由版本控制中的 capability、state 和 scenario 索引解释，再从 Git diff 选择语义场景。未知可执行改动先运行全量公开场景，最终仍要 fail-loud，不能由实现者临时猜测或缩减测试。每个场景使用一次性测试 workspace、plugin home、config 和 HOME，不读取正式运行状态。
-
-公开 Gate 只输出能力组、场景和 plan/source/catalog digest，不要求贡献者安装私有插件，也不得暴露 provider 身份。生产路径与受保护合同同时变化时，必须执行完整公开场景；公开结果是当前仓库的合并依据。
+`tests/` 与 CI 的保留节点以 [`docs/refactor/orthogonality-test-baseline.md`](refactor/orthogonality-test-baseline.md) 为权威清单。默认不写单元测试；只有概念不变量回归复现或该文档 §3 待补项可以进入 `tests/`，并必须写明守护哪条概念。change-impact Gate 已退役，不再按 Git diff 选择场景。
 
 ### TST-007 跨仓库证据绑定不可变组合
 
@@ -1053,7 +1071,7 @@ Fitbit 等外部 provider 的 `efficiency` 只以有限数值进入展示；非�
 2. 说明为什么现有语义不再成立，以及对持久数据和外部行为的影响。
 3. 新建决策记录；breaking 变化写迁移、备份、回滚和兼容窗口。
 4. 先批准规格变化，再提交实现。
-5. 更新或新增独立 oracle，并用语义 mutant 验证。
+5. 若需求变化对应一条概念不变量，按基线文档决定是否新增或重写 `tests/` 节点；不为此维护变异测试目录。
 6. 实现完成后从 `NOW.md` 删除对应事项。
 
 证据不足的步骤沿用现有条款，不能用实现代码反向推导“需求原本就是这样”。

@@ -55,6 +55,7 @@ async def rebuild_from_catalog(
     memory_path: Path,
     backup_root: Path,
     skip_missing_embeddings: bool = True,
+    member: Callable[[str], bool] | None = None,
 ) -> RebuildReport:
     """唯一重建实现：空图 + 无切换上界，跑与在线相同的 MessageConsumer。"""
 
@@ -86,7 +87,7 @@ async def rebuild_from_catalog(
             _ = await consumer.consume(
                 catalog=catalog, learning_binding=learning_binding, embeddings=embeddings,
                 bindings=bindings, embed_batch=counting_embed,
-                skip_missing_embeddings=skip_missing_embeddings,
+                skip_missing_embeddings=skip_missing_embeddings, member=member,
             )
             turns = tuple(consumer.cycle.turns)
             skipped = len(consumer.state.skipped)

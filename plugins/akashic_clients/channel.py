@@ -495,7 +495,7 @@ class _GenerationAkashicAdapter:
         _ = await self._web_adapter.start()
         self._started_children.append(self._web_adapter)
         socket_path = self._config.web.socket_path or str(
-            self._workspace / "runtime" / "chat.sock"
+            self._workspace / "runtime" / "web-chat.sock"
         )
         artifact_store = self._artifact_store
         if artifact_store is None:

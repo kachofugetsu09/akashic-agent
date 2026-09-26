@@ -1,45 +1,49 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
-
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
-
-
-
-from .inputs import CONTENT, CHECK_ORIGIN, CONVERSATION_COMPLETE, TOOL_BIND_SAVED
-
-from .inputs import DELIVERY
-from .inputs import DELIVERY_SENDERS
-from .inputs import REPLY_PROGRAM
-
-from .inputs import ALL_TOOLS, TOOLS
-
-from agent.plugin_composition.tasks import TASKS, Task
-from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
+from agent.plugin_composition import (
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    Context,
+)
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MessageReader
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG,
+    MESSAGE_WRITERS,
+    OWNER_STATE,
+    SESSION_ADMISSION,
+    MessageReader,
+)
+from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_contracts import Message
+from agent.plugin_contracts.reply import REPLY_EXECUTE as REPLY_EXECUTE
 
+from .inputs import (
+    ALL_TOOLS,
+    CHECK_ORIGIN,
+    CONTENT,
+    CONVERSATION_COMPLETE,
+    DELIVERY,
+    DELIVERY_SENDERS,
+    REPLY_PROGRAM,
+    TOOL_BIND_SAVED,
+    TOOLS,
+)
 from .prompts import build_spawn_subagent_prompt
 from .request import PROFILE_TOOLS, Request, SpawnInput
 from .runtime import SUBAGENT_PROGRAM, Subagents
 from .tools import Manage, ManageInput, Spawn
 
-REPLY_EXECUTE = ServiceKey[Callable[..., Awaitable[Message]]]("reply.execute.v1")
-
-
 api_version = 3
 name = "subagent"
 version = "4.0.0"
 desc = "独立内部消息任务，固定工具权限并向父会话回传"
-
-
 
 
 inject = (
@@ -87,14 +91,14 @@ async def apply(ctx: Context) -> None:
                 raise ValueError("子任务原能力目录损坏")
         yield Spawn(ctx, cast(Mapping[str, str], state["tools"]), cast(Mapping[str, str], state["senders"]))
 
-    def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
+    async def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
             raise ValueError("spawn 不接收额外 binding 配置")
         allowed = {name for names in PROFILE_TOOLS.values() for name in names}
         refs = ctx.require(ALL_TOOLS)()
         return {
             "tools": {
-                ref.name: catalog.bind(ref, ctx.require(BINDINGS))
+                ref.name: await catalog.bind_scoped(ref, ctx.require(BINDINGS))
                 for ref in refs.refs
                 if ref.name in allowed
             },

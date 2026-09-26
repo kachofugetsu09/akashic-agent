@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import ModuleType
-from typing import cast
+from typing import Any, cast
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugins.static_manifest import StaticPluginManifest
@@ -22,7 +22,7 @@ class ComposablePlugin:
     version: str
     desc: str
     author: str
-    inject: tuple[ServiceKey[object], ...]
+    inject: tuple[ServiceKey[Any], ...]
     workspace_roots: tuple[str, ...]
     workspace_files: tuple[str, ...]
     _apply: Callable[[Context], object] = field(repr=False)
@@ -47,7 +47,7 @@ class ComposablePlugin:
         if not all(isinstance(item, ServiceKey) for item in raw_items):
             raise ValueError("v3 插件 inject 必须是 ServiceKey 序列")
         inject = tuple(
-            cast(ServiceKey[object], item)
+            cast(ServiceKey[Any], item)
             for item in raw_items
             if isinstance(item, ServiceKey)
         )
