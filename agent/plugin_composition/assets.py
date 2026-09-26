@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from contextlib import AbstractAsyncContextManager
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
@@ -33,6 +34,12 @@ class InstalledAssets(Protocol):
     """读取精确作用域的资产，或登记调用方自己的代码目录。"""
 
     def __call__(self, consumer: Context) -> tuple[InstalledAsset, ...]: ...
+
+    def open(
+        self, consumer: Context, *, category: str,
+    ) -> AbstractAsyncContextManager[tuple[InstalledAsset, ...]]:
+        """读取期间持有本次资产贡献者，退出后不得保留目录用于后续工作。"""
+        ...
 
     async def register(
         self, ctx: Context, category: str, relative_path: str,

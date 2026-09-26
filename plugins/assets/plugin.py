@@ -1,6 +1,7 @@
 """资产目录由贡献插件登记，生命周期随注册 Effect。"""
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import PurePosixPath
 
 from agent.plugin_composition import Context, Effect
@@ -68,6 +69,19 @@ class Assets:
             self._entries,
             key=lambda item: (item.owner_id, item.category, str(item.root_dir)),
         ))
+
+    @asynccontextmanager
+    async def open(
+        self, consumer: Context, *, category: str,
+    ) -> AsyncIterator[tuple[InstalledAsset, ...]]:
+        """异步读取跨越换代时，持有选中资产的原贡献者。"""
+        async with self._ctx.runtime_scope(), AsyncExitStack() as stack:
+            # 取得目录与接纳原 owner 之间没有可挂起的业务操作。
+            assets = tuple(item for item in self(consumer) if item.category == category)
+            owners = tuple(dict.fromkeys(self._entries[item] for item in assets))
+            for owner in owners:
+                await stack.enter_async_context(owner.runtime_scope())
+            yield assets
 
     def contributors(self) -> tuple[Context, ...]:
         return tuple(dict.fromkeys(self._entries.values()))

@@ -94,12 +94,12 @@ class ToolProgramFactory:
                 }
                 presentation = selected
                 view = None
+            if fixed_bindings is None:
+                raise ValueError("工具菜单缺少 current view 或固定 binding")
             return ToolMenu(
-                self._catalog,
                 bindings,
                 execution,
                 self.bind_reply(reader, source, content=content, check_start=check_start),
-                view=view,
                 limit=limit,
                 fixed_bindings=fixed_bindings,
                 presentation=presentation,
