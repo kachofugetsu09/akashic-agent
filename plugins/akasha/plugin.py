@@ -221,7 +221,10 @@ async def apply(ctx: Context) -> None:
     )
 
     def read_path(session_id: str | None) -> Path:
+        """显式召回与反馈共用图路由，已知故障不能绕过。"""
         key = DEFAULT_GRAPH if session_id is None else policies.route(session_id).read
+        if key in graph_errors:
+            raise MemoryRebuildRequiredError(f"图 {key} 不可用：{graph_errors[key]}")
         return graph_path(memory_path, key)
 
     def member(key: str) -> Callable[[str], bool]:

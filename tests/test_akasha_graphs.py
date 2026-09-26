@@ -2,18 +2,22 @@
 import asyncio
 from contextlib import closing
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 
 import pytest
 
 from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, CallSource
 from agent.plugin_contracts.context import MATERIALS
 from plugins.akasha.infrastructure.persistence import load_consumption
 from plugins.akasha.scopes import ScopePolicies, graph_key, graph_path
 from plugins.content.plugin import check_text
 from session.log import SessionAttributes
-from session.message import ContentPart, Input, Output
+from session.message import CallRef, ContentPart, Input, Output, ToolCall
+from plugins.tools.plugin import open_tool
 from tests.test_default_reply import application
 
 
@@ -102,3 +106,19 @@ async def test_unavailable_graph_does_not_stop_other_graphs(tmp_path: Path, brok
         assert "healthy-output" in str(recalled)
         assert any(broken_key in (item.reason or "") and "重建" in (item.reason or "")
                    for item in root.receipt().health)
+
+        # 4. 显式反馈也必须拒绝已知故障图，不能接受之后无法学习的标记。
+        bindings = root.context.require(BINDINGS)
+        tools = root.context.require(TOOLS)
+        view = root.context.require(ALL_TOOLS)()
+        tool_ids = [await tools.bind_scoped(view.select(name), bindings)
+                    for name in ("remember_memory", "forget_memory")]
+        arguments = {"message_ids": ["current_user_message"]}
+        log.writer("broken", author="assistant", source="conversation", body_types=(Output,),
+                   content={"text": check_text}, check_call=lambda call: None).append(
+            "feedback", Output(tuple(ToolCall(identity, arguments) for identity in tool_ids), "continue"))
+        for index, identity in enumerate(tool_ids):
+            async with open_tool(bindings, identity) as tool:
+                with pytest.raises(RuntimeError, match=re.escape(broken_key) + ".*重建"):
+                    await tool.prepare(arguments, CallSource(CallRef("feedback", index),
+                                                            log.reader("broken").snapshot()))
