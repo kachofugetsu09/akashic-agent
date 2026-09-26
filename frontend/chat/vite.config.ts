@@ -60,6 +60,13 @@ export default defineConfig({
         entryFileNames: "[name]-[hash].js",
         chunkFileNames: "[name]-[hash].js",
         assetFileNames: "[name]-[hash][extname]",
+        // 稳定的框架代码单独成块，发版时浏览器只失效应用层那一小块。
+        // 不做兜底 vendor 桶：懒加载依赖必须留在自然 chunk 里，避免被打包进首屏。
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (/[/\\](react|react-dom|scheduler)[/\\]/u.test(id)) return "vendor-react";
+          if (id.includes("/effect/")) return "vendor-effect";
+        },
       },
     },
   },

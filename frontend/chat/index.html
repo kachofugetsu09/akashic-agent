@@ -4,9 +4,89 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Akashic Chat</title>
+    <style>
+      /* 启动壳：在 JS 下载与执行前先画出应用外形，React 首次提交时整棵替换。 */
+      .boot-shell {
+        display: grid;
+        grid-template-rows: 48px minmax(0, 1fr);
+        height: 100dvh;
+        background: var(--ak-paper-canvas, #faf9f6);
+      }
+      .boot-shell__band {
+        border-bottom: 1px solid var(--ak-rule-subtle, #e6e2d9);
+      }
+      .boot-shell__body {
+        display: grid;
+        grid-template-columns: 14rem minmax(0, 1fr);
+        min-height: 0;
+      }
+      .boot-shell__rail {
+        padding: 16px 12px;
+        background: var(--ak-paper-quiet, #f3f1ea);
+        border-right: 1px solid var(--ak-rule-subtle, #e6e2d9);
+      }
+      .boot-shell__rail i,
+      .boot-shell__main i {
+        display: block;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--ak-ink-muted, #8a8578) 14%, transparent);
+      }
+      .boot-shell__rail-head {
+        width: 55%;
+        height: 14px;
+        margin-bottom: 18px;
+      }
+      .boot-shell__rail-row {
+        height: 34px;
+        margin-bottom: 8px;
+      }
+      .boot-shell__main {
+        display: flex;
+        flex-direction: column;
+        padding: 20px 24px;
+        min-width: 0;
+      }
+      .boot-shell__heading {
+        width: 9rem;
+        height: 20px;
+      }
+      .boot-shell__composer {
+        margin-top: auto;
+        margin-bottom: 24px;
+        height: 56px;
+        border-radius: 16px;
+        background: var(--ak-paper-sheet, #f5f3ec);
+        border: 1px solid var(--ak-rule-subtle, #e6e2d9);
+      }
+      @media (max-width: 760px) {
+        .boot-shell__body {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .boot-shell__rail {
+          display: none;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot-shell" role="status" aria-label="界面载入中">
+        <div class="boot-shell__band"></div>
+        <div class="boot-shell__body">
+          <aside class="boot-shell__rail">
+            <i class="boot-shell__rail-head"></i>
+            <i class="boot-shell__rail-row"></i>
+            <i class="boot-shell__rail-row"></i>
+            <i class="boot-shell__rail-row"></i>
+            <i class="boot-shell__rail-row"></i>
+          </aside>
+          <main class="boot-shell__main">
+            <i class="boot-shell__heading"></i>
+            <div class="boot-shell__composer"></div>
+          </main>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

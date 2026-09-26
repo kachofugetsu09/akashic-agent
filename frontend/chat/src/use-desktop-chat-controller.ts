@@ -42,6 +42,19 @@ import {
 import { parseChatFrame, sendWhenOpen } from "./web-chat-transport";
 import { webTurnTrace } from "./web-turn-trace";
 
+/** 回访会话时先展示的尾页快照；只做展示缓存，事实仍以服务端分页与实时帧为准。 */
+interface SessionTail {
+  items: TimelineMessage[];
+  throughSeq: number;
+  beforeSeq: number | null;
+  hasMore: boolean;
+  fetchedAt: number;
+}
+
+const SESSION_TAIL_CACHE_LIMIT = 8;
+// 新鲜快照激活时不再重复拉尾页；超过窗口或实时跟随断档仍回到权威分页。
+const SESSION_TAIL_FRESH_MS = 30_000;
+
 function followSession(socket: WebSocket | null, sessionId: string, afterSeq: number): void {
   if (!sessionId || socket?.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify({
@@ -68,6 +81,10 @@ export function useDesktopChatController() {
   const memoryInstalled = pluginCatalog.installed(MEMORY_PLUGIN);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
+  // 通知入口统一使用网页导航，会话参数在 chatReady 后消费一次。
+  const [requestedSessionId, setRequestedSessionId] = useState(
+    () => new URLSearchParams(window.location.search).get("session") ?? "",
+  );
   const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
   const [timelineMessages, setTimelineState] = useState<TimelineMessage[]>([]);
   const timelineRef = useRef<TimelineMessage[]>([]);
@@ -148,6 +165,8 @@ export function useDesktopChatController() {
   const modelsRequestRef = useRef<AbortController | null>(null);
   const sendRequestRef = useRef<AbortController | null>(null);
   const stopRequestRef = useRef<AbortController | null>(null);
+  const tailCacheRef = useRef(new Map<string, SessionTail>());
+  const prefetchInflightRef = useRef(new Map<string, AbortController>());
   const chatReady = shellState?.chatReady === true;
 
   useEffect(() => {
@@ -165,6 +184,40 @@ export function useDesktopChatController() {
     if (nextStatus) setStatus(nextStatus);
   }, []);
 
+  // LRU 写回；capacity 足够覆盖最近几个会话，超出后淘汰最久未命中项。
+  const cacheSessionTail = useCallback((sessionId: string, tail: SessionTail) => {
+    const cache = tailCacheRef.current;
+    cache.delete(sessionId);
+    cache.set(sessionId, tail);
+    while (cache.size > SESSION_TAIL_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  }, []);
+
+  // 预取只写尾页缓存，不触碰会话状态；失败由正式激活路径兜底，无需打扰用户。
+  const prefetchSessionTail = useCallback((sessionId: string) => {
+    if (!sessionId || tailCacheRef.current.has(sessionId) || prefetchInflightRef.current.has(sessionId)) return;
+    const controller = new AbortController();
+    prefetchInflightRef.current.set(sessionId, controller);
+    const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
+    void fetchChatJson<unknown>(`${endpoint}?page_size=50`, { signal: controller.signal })
+      .then((payload) => {
+        const page = chatHistoryPage(payload, endpoint);
+        if (controller.signal.aborted
+          || page.items.some((row) => row.session_id !== sessionId)) return;
+        cacheSessionTail(sessionId, {
+          items: page.items, throughSeq: page.throughSeq,
+          beforeSeq: page.beforeSeq, hasMore: page.hasMore, fetchedAt: Date.now(),
+        });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (prefetchInflightRef.current.get(sessionId) === controller) prefetchInflightRef.current.delete(sessionId);
+      });
+  }, [cacheSessionTail]);
+
   const loadSessions = useCallback(async () => {
     sessionsRequestRef.current?.abort();
     const controller = new AbortController();
@@ -172,13 +225,13 @@ export function useDesktopChatController() {
     try {
       const items = new Map<string, SessionRow>();
       const cursors = new Set<string>();
-      let query = "page_size=80";
+      let query = "page_size=200";
       while (true) {
         const page = sessionPage(await fetchChatJson<unknown>(`/api/chat/sessions?${query}`, { signal: controller.signal }));
         if (controller.signal.aborted) return;
         page.items.forEach((session) => { if (!items.has(session.key)) items.set(session.key, session); });
         if (!page.nextCursor) break;
-        query = `page_size=80&after_time=${encodeURIComponent(page.nextCursor.updated_at)}&after_key=${encodeURIComponent(page.nextCursor.session_id)}`;
+        query = `page_size=200&after_time=${encodeURIComponent(page.nextCursor.updated_at)}&after_key=${encodeURIComponent(page.nextCursor.session_id)}`;
         if (cursors.has(query)) throw new Error("会话目录游标未前进");
         cursors.add(query);
       }
@@ -208,6 +261,10 @@ export function useDesktopChatController() {
         || activeSessionRef.current !== sessionId
       ) return;
       if (page.items.some((row) => row.session_id !== sessionId)) throw new Error("历史页属于其他会话");
+      cacheSessionTail(sessionId, {
+        items: page.items, throughSeq: page.throughSeq,
+        beforeSeq: page.beforeSeq, hasMore: page.hasMore, fetchedAt: Date.now(),
+      });
       streamStore.clear();
       setMessages([]);
       setTimelineMessages(page.items);
@@ -224,7 +281,7 @@ export function useDesktopChatController() {
         setHistoryLoading(false);
       }
     }
-  }, [setMessages, setStatusLive, setTimelineMessages, streamStore]);
+  }, [cacheSessionTail, setMessages, setStatusLive, setTimelineMessages, streamStore]);
 
   const loadOlderMessages = useCallback(async () => {
     const sessionId = activeSessionRef.current;
@@ -243,7 +300,10 @@ export function useDesktopChatController() {
       if (page.throughSeq !== historyThroughSeq || page.items.some((row) => row.session_id !== sessionId)) {
         throw new Error("历史页上界或会话发生变化");
       }
-      setTimelineMessages(mergeTimelineMessages(timelineRef.current, page.items));
+      const merged = mergeTimelineMessages(timelineRef.current, page.items);
+      setTimelineMessages(merged);
+      const cached = tailCacheRef.current.get(sessionId);
+      if (cached) cacheSessionTail(sessionId, { ...cached, items: merged, beforeSeq: page.beforeSeq, hasMore: page.hasMore });
       setHistoryBeforeSeq(page.beforeSeq);
       setHistoryHasMore(page.hasMore);
     } finally {
@@ -252,7 +312,7 @@ export function useDesktopChatController() {
         setHistoryLoadingOlder(false);
       }
     }
-  }, [historyBeforeSeq, historyThroughSeq, historyLoadingOlder, setTimelineMessages]);
+  }, [cacheSessionTail, historyBeforeSeq, historyThroughSeq, historyLoadingOlder, setTimelineMessages]);
 
   useEffect(() => {
     streamStore.reconcileBaseline(messages);
@@ -326,7 +386,10 @@ export function useDesktopChatController() {
                 if (frame.session_id !== activeSessionRef.current) return;
                 if (frame.type === "messages.appended") {
                   if (frame.after_seq !== followAfterRef.current) throw new Error("实时消息游标不连续，请重新连接");
-                  setTimelineMessages(mergeTimelineMessages(timelineRef.current, frame.items));
+                  const merged = mergeTimelineMessages(timelineRef.current, frame.items);
+                  setTimelineMessages(merged);
+                  const cached = tailCacheRef.current.get(frame.session_id);
+                  if (cached) cacheSessionTail(frame.session_id, { ...cached, items: merged, throughSeq: frame.next_after_seq, fetchedAt: Date.now() });
                   followAfterRef.current = frame.next_after_seq;
                   const saved = new Set(frame.items.map((item) => item.id));
                   setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
@@ -379,7 +442,7 @@ export function useDesktopChatController() {
       }
     }).pipe(Effect.catchAll(() => Effect.sync(() => setConnectionError("暂时无法连接，请重试")))));
     return first;
-  }, [closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reportError, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
+  }, [cacheSessionTail, closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reportError, setMessages, setReplyAvailable, setStatusLive, setTimelineMessages]);
 
   useEffect(() => {
     // 只等待首次启动就绪；此后的断线与恢复由聊天连接负责。
@@ -403,14 +466,35 @@ export function useDesktopChatController() {
     return closeConnection;
   }, [closeConnection, connect]);
 
+  // 启动即并行拉目录与模型；网关未就绪时静默失败，chatReady 翻转后同一 effect 自动重试缺失部分。
+  const startupProgressRef = useRef<Record<"sessions" | "models", "idle" | "loading" | "done">>(
+    { sessions: "idle", models: "idle" },
+  );
+  const startupLoad = useCallback(async () => {
+    const pending = startupProgressRef.current;
+    const silent = shellState?.chatReady !== true;
+    const run = async (key: "sessions" | "models", task: () => Promise<void>) => {
+      if (pending[key] !== "idle") return;
+      pending[key] = "loading";
+      try {
+        await task();
+        pending[key] = "done";
+      } catch (error) {
+        pending[key] = "idle";
+        if (!silent && !isAbortError(error)) reportError(error);
+      }
+    };
+    // ?session= 直达会话时同步预热尾页缓存；激活仍等 chatReady，命中后立即可见。
+    if (requestedSessionId) prefetchSessionTail(requestedSessionId);
+    await Promise.all([
+      run("sessions", loadSessions),
+      run("models", () => loadModels(activeSessionRef.current)),
+    ]);
+  }, [loadModels, loadSessions, prefetchSessionTail, reportError, requestedSessionId, shellState?.chatReady]);
+
   useEffect(() => {
-    if (!chatReady) return;
-    void loadSessionsSafely();
-    void loadModels(activeSessionRef.current).catch((error: unknown) => reportError(error));
-    if (activeSessionRef.current && timelineRef.current.length === 0) {
-      void loadMessagesSafely(activeSessionRef.current);
-    }
-  }, [chatReady, loadModels, loadMessagesSafely, loadSessionsSafely, reportError]);
+    void startupLoad();
+  }, [startupLoad]);
 
   // 健康探测暂时失败不取消用户已经发送的请求或正在读取的历史。
   useEffect(() => () => {
@@ -636,7 +720,9 @@ export function useDesktopChatController() {
     sendRequestRef.current?.abort();
     stopRequestRef.current?.abort();
     closeConnection();
-    followAfterRef.current = null;
+    const cached = tailCacheRef.current.get(sessionId);
+    const cachedFresh = cached !== undefined && Date.now() - cached.fetchedAt < SESSION_TAIL_FRESH_MS;
+    followAfterRef.current = cached?.throughSeq ?? null;
     replyActivitiesRef.current = [];
     setReplyActivities([]);
     setReplyAvailable(null);
@@ -645,29 +731,29 @@ export function useDesktopChatController() {
     olderMessagesRequestRef.current?.abort();
     setActiveSessionId(sessionId);
     setPendingSessionId(sessionId);
-    setTimelineMessages([]);
+    setTimelineMessages(cached?.items ?? []);
     setMessages([]);
-    setHistoryBeforeSeq(null);
-    setHistoryHasMore(false);
+    setHistoryThroughSeq(cached?.throughSeq ?? null);
+    setHistoryBeforeSeq(cached?.beforeSeq ?? null);
+    setHistoryHasMore(cached?.hasMore ?? false);
     setReplyTarget(null);
     setModelState(null);
     setSelectedRuntimeId("");
     setModelSelectionDirty(false);
-    void Promise.all([loadMessages(sessionId), loadModels(sessionId)])
+    void Promise.all([cachedFresh ? Promise.resolve() : loadMessages(sessionId), loadModels(sessionId)])
       .catch((reason: unknown) => reportError(reason))
       .finally(() => {
         if (activeSessionRef.current === sessionId) setPendingSessionId("");
       });
+    // 新鲜快照跳过了分页拉取，仍需恢复 WebSocket 增量跟随。
+    if (cachedFresh) connectRef.current?.();
   }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface]);
 
-  // 通知入口统一使用网页导航，就绪后消费一次会话参数。
-  const requestedSessionRef = useRef(new URLSearchParams(window.location.search).get("session") ?? "");
   useEffect(() => {
-    const sessionId = requestedSessionRef.current;
-    if (!chatReady || !sessionId) return;
-    requestedSessionRef.current = "";
-    activateSession(sessionId);
-  }, [activateSession, chatReady]);
+    if (!chatReady || !requestedSessionId) return;
+    setRequestedSessionId("");
+    activateSession(requestedSessionId);
+  }, [activateSession, chatReady, requestedSessionId]);
 
 
   const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
@@ -713,7 +799,7 @@ export function useDesktopChatController() {
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError, mobilePairingOpen,
-    activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
+    activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
