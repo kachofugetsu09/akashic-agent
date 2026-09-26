@@ -660,6 +660,16 @@ export function useDesktopChatController() {
       });
   }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface]);
 
+  // 通知入口统一使用网页导航，就绪后消费一次会话参数。
+  const requestedSessionRef = useRef(new URLSearchParams(window.location.search).get("session") ?? "");
+  useEffect(() => {
+    const sessionId = requestedSessionRef.current;
+    if (!chatReady || !sessionId) return;
+    requestedSessionRef.current = "";
+    activateSession(sessionId);
+  }, [activateSession, chatReady]);
+
+
   const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
   const handleModelChange = useCallback((runtimeId: string, effort: string) => {
     setSelectedRuntimeId(runtimeId);

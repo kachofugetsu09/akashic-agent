@@ -58,6 +58,20 @@ function toolIcon() {
   return icon;
 }
 
+// 通知入口的 ?session= 只消费一次，避免刷新后反复跳回同一会话。
+function takeRequestedSession() {
+  const url = new URL(window.location.href);
+  const sessionId = url.searchParams.get("session");
+  if (!sessionId) return "";
+  url.searchParams.delete("session");
+  window.history.replaceState(window.history.state, "", url);
+  return sessionId;
+}
+
+function frameSource(sessionId) {
+  return sessionId ? `/chat?embedded=1&session=${encodeURIComponent(sessionId)}` : "/chat?embedded=1";
+}
+
 function renderConversation(host, view) {
   const tools = view.child("conversation.tools.v1");
   const entries = checkTabs(tools.entries);
@@ -66,7 +80,7 @@ function renderConversation(host, view) {
   const frame = document.createElement("iframe");
   frame.className = "conversation-page-frame";
   frame.title = "Akashic 对话";
-  frame.src = "/chat?embedded=1";
+  frame.src = frameSource(takeRequestedSession());
   root.appendChild(frame);
 
   if (entries.length === 0) {
