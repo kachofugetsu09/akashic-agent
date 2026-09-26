@@ -18,30 +18,31 @@ export function desktopSessions(messageCount = 100) {
         first_message_content: "纯文本性能会话",
       },
     ],
+    next_cursor: null,
+    total: 2,
   };
 }
 
-export function desktopMessages(count = 100, { profile = "rich" } = {}) {
+export function desktopMessages(count = 100, { profile = "rich", sessionId = SESSION_ID } = {}) {
   return {
-    items: Array.from({ length: count }, (_, index) => ({
-      id: `desktop-${profile}-${index}`,
-      seq: index,
-      role: index % 2 === 0 ? "user" : "assistant",
-      content: profile === "plain" ? plainFixtureContent(index) : fixtureContent(index),
-      timestamp: new Date(BASE_TIME + index * 1_000).toISOString(),
-      tool_chain: profile === "rich" && index % 10 === 9 ? [{
-        call_id: `tool-${index}`,
-        name: "performance_probe",
-        status: "success",
-        arguments: { index },
-        result_preview: `完成 ${index}`,
-      }] : [],
-      reasoning_content: profile === "rich" && index % 10 === 9 ? `检查第 ${index} 个历史节点。` : "",
-      reply_to_message_id: profile === "rich" && index === count - 1 ? `desktop-${profile}-10` : undefined,
-      reply_role: profile === "rich" && index === count - 1 ? "user" : undefined,
-      reply_preview: profile === "rich" && index === count - 1 ? "性能消息 10" : undefined,
-      extra: {},
-    })),
+    items: Array.from({ length: count }, (_, index) => {
+      const input = index % 2 === 0;
+      const parts = [{ kind: "text", value: profile === "plain" ? plainFixtureContent(index) : fixtureContent(index) }];
+      if (profile === "rich" && index === count - 1) parts.push({ kind: "reply_ref", value: `desktop-${profile}-10` });
+      return {
+        id: `desktop-${profile}-${index}`,
+        seq: index,
+        session_id: sessionId,
+        timestamp: new Date(BASE_TIME + index * 1_000).toISOString(),
+        author: input ? "user" : "assistant",
+        source: "akashic",
+        attachments: [],
+        metadata: {},
+        body: input
+          ? { kind: "input", parts }
+          : { kind: "output", parts, finish: "complete" },
+      };
+    }),
   };
 }
 
@@ -233,8 +234,8 @@ export const fixtureSessionId = SESSION_ID;
 export const plainFixtureSessionId = PLAIN_SESSION_ID;
 
 export function desktopMessagesForSession(sessionId, count = 100) {
-  if (sessionId === SESSION_ID) return desktopMessages(count, { profile: "rich" });
-  if (sessionId === PLAIN_SESSION_ID) return desktopMessages(count, { profile: "plain" });
+  if (sessionId === SESSION_ID) return desktopMessages(count, { profile: "rich", sessionId });
+  if (sessionId === PLAIN_SESSION_ID) return desktopMessages(count, { profile: "plain", sessionId });
   return undefined;
 }
 

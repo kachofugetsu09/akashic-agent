@@ -784,7 +784,10 @@ async function startStaticFixtureServer(root, { stripAssetsPrefix }) {
 function fixtureApiResponse(pathname) {
   if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true };
   if (pathname === "/api/chat/sessions") return desktopSessions();
-  if (pathname === `/api/chat/sessions/${fixtureSessionId}/messages`) return desktopMessages();
+  if (pathname === `/api/chat/sessions/${fixtureSessionId}/messages`) {
+    const history = desktopMessages();
+    return { version: 2, items: history.items, through_seq: history.items.at(-1).seq, has_more: false, before_seq: null };
+  }
   if (pathname === "/api/chat/models") return desktopModels();
   if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };
   return undefined;

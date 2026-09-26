@@ -76,8 +76,9 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
       const start = Math.max(0, beforeSeq - pageSize);
       const items = history.items.slice(start, beforeSeq);
       return sendJson(response, {
+        version: 2,
         items,
-        total: history.items.length,
+        through_seq: history.items.at(-1).seq,
         has_more: start > 0,
         before_seq: start > 0 ? start : null,
       });
@@ -147,7 +148,7 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
       response.writeHead(404).end("not found");
       return;
     }
-    response.writeHead(200, { "content-type": contentType(file), "cache-control": "no-store" });
+    response.writeHead(200, { "content-type": contentType(file), "cache-control": staticCacheControl(url.pathname) });
     createReadStream(file).pipe(response);
   });
 
@@ -256,6 +257,7 @@ function fixtureApiResponse(url, messageCount) {
   if (pathname === "/api/chat/sessions") return desktopSessions(messageCount);
   if (pathname === "/api/chat/models") return desktopModels();
   if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };
+  if (pathname === "/api/runtime/host-bridge") return { state: "healthy" };
   const runtimeOverview = desktopRuntimeOverview(pathname);
   if (runtimeOverview !== undefined) return runtimeOverview;
   const runtimeDetail = desktopRuntimeDetail(url);
@@ -355,6 +357,13 @@ function sendJson(response, payload, status = 200) {
   }
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
   response.end(JSON.stringify(payload));
+}
+
+/** 与 bootstrap/settings_api.py 的缓存合同保持一致，确保实验测到生产行为。 */
+function staticCacheControl(pathname) {
+  if (/\/assets\/[^/]*-[\w-]{8}\.[\w]+$/u.test(pathname)) return "public, max-age=31536000, immutable";
+  if (pathname.endsWith(".html") || pathname === "/") return "no-cache";
+  return "no-store";
 }
 
 function contentType(file) {

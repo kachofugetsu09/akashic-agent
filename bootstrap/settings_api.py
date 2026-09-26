@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 from pathlib import Path
@@ -11,6 +12,17 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger(__name__)
+
+# Vite 产物文件名内嵌内容哈希，命中后才允许永久缓存；入口 HTML 仍需每次校验。
+_HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
+
+
+def _cache_control_for(path: str) -> str:
+    if _HASHED_ASSET.search(path):
+        return "public, max-age=31536000, immutable"
+    if path.endswith(".html") or path in ("/", "/chat", "/chat/"):
+        return "no-cache"
+    return "no-store"
 
 
 class SettingsServer(uvicorn.Server):
@@ -47,8 +59,12 @@ def create_settings_app() -> FastAPI:
     @app.middleware("http")
     async def secure_static_response(request: Request, call_next):
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Pragma"] = "no-cache"
+        cache_control = _cache_control_for(request.url.path)
+        response.headers["Cache-Control"] = cache_control
+        if cache_control == "no-store":
+            response.headers["Pragma"] = "no-cache"
+        else:
+            response.headers.pop("Pragma", None)
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = (
