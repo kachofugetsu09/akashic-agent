@@ -197,6 +197,21 @@ async def apply(ctx: Context) -> None:
     running = False
     start_lock = asyncio.Lock()
     health = await ctx.health("embedding", required=False)
+    graph_health = await ctx.health("graphs", required=False)
+    graph_errors: dict[str, str] = {}
+
+    def set_graph_error(key: str, reason: str | None) -> None:
+        """逐图保存不可用原因；健康图不能清除其他图的故障。"""
+        if reason is None:
+            graph_errors.pop(key, None)
+        else:
+            if graph_errors.get(key) != reason:
+                logger.error("Akasha 图 %s 不可用：%s", key, reason)
+            graph_errors[key] = reason
+        if graph_errors:
+            graph_health.degrade("；".join(f"图 {graph}: {error}" for graph, error in sorted(graph_errors.items())))
+        else:
+            graph_health.recover()
 
     # The store belongs to Akasha's apply owner; callers of the public read
     # service hold their own scope, not Akasha's OwnerCall.
@@ -314,6 +329,7 @@ async def apply(ctx: Context) -> None:
         rule = LearningConfig(embedding_model=descriptor.identity, dimension=descriptor.dimensions,
                               sources=config.sources)
         identity = ctx.require(BINDINGS).bind(AKASHA_LEARNING, rule.model_dump())
+        health.recover()
         return identity, rule, descriptor.model_id
 
     @asynccontextmanager
@@ -341,9 +357,11 @@ async def apply(ctx: Context) -> None:
         learning, ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS), select_interest,
     ))
 
-    def unavailable() -> MaterialData:
+    def unavailable(key: str) -> MaterialData:
+        reason = health.reason or graph_errors.get(key)
+        assert reason is not None
         reminder: Mapping[str, object] = {
-            "name": "status", "text": f"## Akasha 状态\n召回不可用：{health.reason}",
+            "name": "status", "text": f"## Akasha 状态\n图 {key} 召回不可用：{reason}",
             "priority": 300,
         }
         return {
@@ -354,16 +372,20 @@ async def apply(ctx: Context) -> None:
         key = policies.route(snapshot[0].session_id).read if snapshot else DEFAULT_GRAPH
         if running:
             if not await start_if_available(key):
-                return unavailable()
-            return await memories[key].prepare(snapshot, source)
+                return unavailable(key)
+            try:
+                return await memories[key].prepare(snapshot, source)
+            except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+                set_graph_error(key, str(error))
+                return unavailable(key)
+            except (ModelUnavailableError, DriverUnavailableError) as error:
+                health.degrade(str(error))
+                return unavailable(key)
         # 归档和显式程序只查询已发布图的副本，不取得正式学习 writer。
         try:
             identity, rule, model_id = select_learning()
         except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
-            return unavailable()
-        except MemoryRebuildRequiredError as error:
-            health.degrade(str(error))
-            return unavailable()
+            return unavailable(key)
         bindings = ctx.require(BINDINGS)
         query_records = records()
         try:
@@ -381,10 +403,13 @@ async def apply(ctx: Context) -> None:
                         records=query_records, embed_batch=embedder(rule, model_id),
                         limit=settings.context_recall_limit, max_chars=settings.inject_max_chars,
                     )
-        except EmbeddingSpaceMismatchError as error:
+        except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+            set_graph_error(key, str(error))
+            return unavailable(key)
+        except (ModelUnavailableError, DriverUnavailableError) as error:
             health.degrade(str(error))
-            return unavailable()
-        health.recover()
+            return unavailable(key)
+        set_graph_error(key, None)
         return result
 
     _ = await ctx.require(MATERIALS).register(ctx, name="akasha", prepare=prepare, priority=400)
@@ -473,21 +498,16 @@ async def apply(ctx: Context) -> None:
                 identity, rule, model_id = select_learning()
             except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
                 return False
-            except MemoryRebuildRequiredError as error:
-                # 旧消费版本的图只能由显式重建替换，不能假装可用。
-                health.degrade(str(error))
-                return False
             if key in memories:
-                health.recover()
-                return True
+                return key not in graph_errors
             try:
                 consumer = await MessageConsumer.load(
                     ensure_graph_directory(memory_path, key), catalog=ctx.require(MESSAGE_CATALOG),
                     embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=ctx.require(BINDINGS),
                     config=settings.memory_config(), cutover=key == DEFAULT_GRAPH,
                 )
-            except MemoryRebuildRequiredError as error:
-                health.degrade(str(error))
+            except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+                set_graph_error(key, str(error))
                 return False
             runtime_records = records()
             prepared = MessageMemory(
@@ -499,11 +519,11 @@ async def apply(ctx: Context) -> None:
             # 2. 新选择必须与已有图一致；失败先归还 writer，绝不自动重建。
             try:
                 await prepared.consume()
-            except EmbeddingSpaceMismatchError as error:
+            except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
                 await prepared.close()
-                health.degrade(str(error))
+                set_graph_error(key, str(error))
                 return False
-            except MemoryRebuildRequiredError as error:
+            except (ModelUnavailableError, DriverUnavailableError) as error:
                 await prepared.close()
                 health.degrade(str(error))
                 return False
@@ -511,7 +531,7 @@ async def apply(ctx: Context) -> None:
                 await prepared.close()
                 raise
             memories[key], memory_rule = prepared, rule
-            health.recover()
+            set_graph_error(key, None)
             return True
 
     async def rebuild_now() -> str:
@@ -535,6 +555,7 @@ async def apply(ctx: Context) -> None:
                     learning_binding=identity, embed_batch=embedder(rule, model_id),
                     memory_path=path, backup_root=backup_root, member=member(key),
                 )
+                set_graph_error(key, None)
                 reports.append(manifest_json(report))
         # 3. 用同一启动边界重新装载；装载失败必须让调用者看到。
         if not await start_if_available():
@@ -595,8 +616,13 @@ async def apply(ctx: Context) -> None:
                 await run_pending_rebuild()
                 for key in write_graphs():
                     if not await start_if_available(key):
-                        break
-                    _ = await memories[key].consume()
+                        continue
+                    try:
+                        _ = await memories[key].consume()
+                    except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+                        set_graph_error(key, str(error))
+                    except (ModelUnavailableError, DriverUnavailableError) as error:
+                        health.degrade(str(error))
 
     async def start(_event: object) -> None:
         nonlocal watcher, running, inspector
