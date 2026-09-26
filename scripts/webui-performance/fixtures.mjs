@@ -112,19 +112,14 @@ export function desktopRuntimeDetail(url) {
   return undefined;
 }
 
+/** v11 快照：消息为 Message v2 行，流式草稿放在 replyStatus 预览而不是消息行里。 */
 export function mobileSnapshot(count = 300, { streaming = false } = {}) {
   const messages = Array.from({ length: count }, (_, index) => mobileMessage(index));
-  if (streaming && messages.length > 0) {
-    messages[messages.length - 1] = {
-      ...messages[messages.length - 1],
-      role: "assistant",
-      content: "",
-      streaming: true,
-      blocks: [],
-    };
-  }
   return {
-    protocolVersion: 8,
+    protocolVersion: 11,
+    downloads: [],
+    throughSeq: count - 1,
+    replyStatus: streaming ? mobileReplyStatus(MOBILE_DRAFT_ID, "") : null,
     connection: { label: "性能测试", status: "ready" },
     sessions: [{
       id: SESSION_ID,
@@ -182,51 +177,53 @@ export function mobileSnapshot(count = 300, { streaming = false } = {}) {
   };
 }
 
+export const MOBILE_DRAFT_ID = "mobile-stream-draft";
+
+/** 流式更新走 receiveMessageEvent：reply.status 草稿预览逐帧增长。 */
 export function mobileStreamPatch(snapshot, index, delta) {
-  const messageIndex = snapshot.messages.length - 1;
-  const message = snapshot.messages[messageIndex];
   return {
-    protocolVersion: 3,
+    protocolVersion: 1,
     projectionGeneration: snapshot.projectionGeneration,
-    selectedSessionId: snapshot.selectedSessionId,
-    messageIndex,
-    messageId: message.id,
-    searchRevision: index + 1,
-    contentAppend: delta,
+    event: mobileReplyStatus(MOBILE_DRAFT_ID, delta.repeat(index + 1)),
   };
 }
 
+/** 终态由 messages.appended 提交同 id 正式行，随后清空回复活动。 */
 export function mobileTerminalPatch(snapshot, content) {
-  const messageIndex = snapshot.messages.length - 1;
-  const message = {
-    ...snapshot.messages[messageIndex],
-    content,
-    searchRevision: 601,
-    streaming: false,
-  };
-  const nextSnapshot = {
-    ...snapshot,
-    sessions: snapshot.sessions.map((session) => ({ ...session, isRunning: false })),
-    messages: [...snapshot.messages.slice(0, -1), message],
-    composer: {
-      ...snapshot.composer,
-      isStreaming: false,
-      canStop: false,
-      canSend: true,
+  const seq = snapshot.throughSeq + 1;
+  return [
+    {
+      protocolVersion: 1,
+      projectionGeneration: snapshot.projectionGeneration,
+      event: {
+        type: "messages.appended", version: 2, session_id: SESSION_ID,
+        after_seq: snapshot.throughSeq, through_seq: seq, next_after_seq: seq, has_more: false,
+        items: [{
+          id: MOBILE_DRAFT_ID, seq, session_id: SESSION_ID,
+          timestamp: new Date(BASE_TIME + seq * 1_000).toISOString(),
+          author: "Akashic", source: "conversation", attachments: [], metadata: {},
+          body: { kind: "output", parts: [{ kind: "text", value: content }], finish: "complete" },
+        }],
+      },
     },
-  };
-  const { protocolVersion, messages, ...state } = nextSnapshot;
-  void protocolVersion;
-  void messages;
+    {
+      protocolVersion: 1,
+      projectionGeneration: snapshot.projectionGeneration,
+      event: {
+        type: "reply.status", version: 2, session_id: SESSION_ID, snapshot_id: "perf-final",
+        available: true, items: [{ session_id: SESSION_ID, source: "conversation", handle: "perf-reply", active: false, preview: null }],
+      },
+    },
+  ];
+}
+
+function mobileReplyStatus(draftId, text) {
   return {
-    protocolVersion: 3,
-    projectionGeneration: snapshot.projectionGeneration,
-    selectedSessionId: snapshot.selectedSessionId,
-    messageIndex,
-    messageId: message.id,
-    searchRevision: message.searchRevision,
-    message,
-    state: { protocolVersion: 1, ...state },
+    type: "reply.status", version: 2, session_id: SESSION_ID, snapshot_id: "perf-snap", available: true,
+    items: [{
+      session_id: SESSION_ID, source: "conversation", handle: "perf-reply", active: true,
+      preview: { message_id: draftId, text, thinking: "" },
+    }],
   };
 }
 
@@ -240,25 +237,20 @@ export function desktopMessagesForSession(sessionId, count = 100) {
 }
 
 function mobileMessage(index) {
+  const input = index % 2 === 0;
+  const parts = [{ kind: "text", value: fixtureContent(index) }];
   return {
     id: `mobile-${index}`,
-    sessionId: SESSION_ID,
-    role: index % 2 === 0 ? "user" : "assistant",
-    content: fixtureContent(index),
-    createdAt: BASE_TIME + index * 1_000,
-    searchRevision: index,
-    replyable: true,
-    blocks: index % 10 === 9 ? [{
-      id: `block-${index}`,
-      kind: "thinking",
-      title: "已思考",
-      detail: `检查第 ${index} 个历史节点。`,
-      state: "completed",
-      durationMillis: 12,
-    }] : [],
-    streaming: false,
-    interrupted: false,
+    seq: index,
+    session_id: SESSION_ID,
+    timestamp: new Date(BASE_TIME + index * 1_000).toISOString(),
+    author: input ? "花月" : "Akashic",
+    source: "conversation",
     attachments: [],
+    metadata: {},
+    body: input
+      ? { kind: "input", parts }
+      : { kind: "output", parts, finish: "complete" },
   };
 }
 
