@@ -12,6 +12,8 @@ import { startDesktopFixtureServer } from "../../../scripts/webui-performance/de
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const output = resolve(process.argv.find((value, index) => index > 1 && !value.startsWith("--")) ?? "artifacts/startup-performance");
 const baseline = process.argv.includes("--baseline");
+// --throttle 用接近移动网络的往返放大瀑布与字节开销，验证缓存与启动壳的真实价值。
+const throttled = process.argv.includes("--throttle");
 const runs = 3;
 const root = mkdtempSync(resolve(tmpdir(), "akashic-startup-perf-"));
 let browser;
@@ -27,15 +29,23 @@ const medianOf = (rows, key) => percentile(rows.map((row) => row[key]).filter((v
 /** 页面加载的关键里程碑与网络瀑布：插入时间戳、资源字节与 API 串行深度。 */
 async function measureLoad(context, url) {
   const page = await context.newPage();
+  if (throttled) {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Network.enable");
+    await cdp.send("Network.emulateNetworkConditions", {
+      offline: false, latency: 150, downloadThroughput: 1.6 * 1024 * 1024 / 8, uploadThroughput: 750 * 1024 / 8,
+    });
+  }
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(url, { waitUntil: "commit" });
-  await page.waitForFunction(() => "sessionList" in (window.__startupMarks ?? {}), null, { timeout: 15_000 });
-  await page.waitForFunction(() => "composer" in (window.__startupMarks ?? {}), null, { timeout: 15_000 });
+  await page.waitForFunction(() => "sessionList" in (window.__startupMarks ?? {}), null, { timeout: 60_000 });
+  await page.waitForFunction(() => "composer" in (window.__startupMarks ?? {}), null, { timeout: 60_000 });
   if (new URL(url).searchParams.get("session")) {
-    await page.waitForFunction(() => "message" in (window.__startupMarks ?? {}), null, { timeout: 15_000 });
+    await page.waitForFunction(() => "message" in (window.__startupMarks ?? {}), null, { timeout: 30_000 });
   }
-  await page.waitForLoadState("networkidle");
+  // 节流网络下 networkidle 可能永不满足；里程碑达标后固定等一拍收集资源计时。
+  await page.waitForTimeout(500);
   const measured = await page.evaluate(() => ({
     marks: window.__startupMarks,
     paints: Object.fromEntries(performance.getEntriesByType("paint").map((entry) => [entry.name, entry.startTime])),
@@ -60,6 +70,7 @@ async function measureLoad(context, url) {
   return {
     firstContentfulPaintMs: measured.paints["first-contentful-paint"] ?? null,
     domContentLoadedMs: measured.navigation.domContentLoadedEventEnd,
+    shellMs: measured.marks.shell ?? null,
     sessionListMs: measured.marks.sessionList ?? null,
     composerMs: measured.marks.composer ?? null,
     messageMs: measured.marks.message ?? null,
@@ -128,8 +139,8 @@ try {
       const path = new URL(request.url()).pathname;
       if (/^\/api\/chat\/sessions\/[^/]+\/messages$/.test(path)) messageRequests.push(path);
     });
-    await page.goto(`${server.origin}/`, { waitUntil: "networkidle" });
-    await page.getByText("纯文本性能会话", { exact: true }).click();
+    await page.goto(`${server.origin}/`, { waitUntil: "commit" });
+    await page.getByText("纯文本性能会话", { exact: true }).click({ timeout: 60_000 });
     await page.locator('[data-message-id="desktop-plain-99"]').waitFor();
     messageRequests.length = 0;
     const revisitStart = await page.evaluate(() => performance.now());
@@ -153,7 +164,7 @@ try {
   };
   writeFileSync(`${output}/results.json`, `${JSON.stringify(report, null, 2)}\n`);
   const summary = {
-    cold: { fcp: medianOf(coldRows, "firstContentfulPaintMs"), sessionList: medianOf(coldRows, "sessionListMs"),
+    cold: { fcp: medianOf(coldRows, "firstContentfulPaintMs"), shell: medianOf(coldRows, "shellMs"), sessionList: medianOf(coldRows, "sessionListMs"),
       composer: medianOf(coldRows, "composerMs"), assetBytes: medianOf(coldRows, "assetTransferBytes"), apiHops: medianOf(coldRows, "apiSerialHops") },
     warm: { fcp: medianOf(warmRows, "firstContentfulPaintMs"), sessionList: medianOf(warmRows, "sessionListMs"),
       assetBytes: medianOf(warmRows, "assetTransferBytes"), assetCacheHits: medianOf(warmRows, "assetCacheHits") },
