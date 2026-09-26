@@ -161,3 +161,78 @@ Web 阶段的产品交互矩阵已全部实施。最终结构审计覆盖 106 �
 - [You Might Not Need an Effect](https://react.dev/learn/you-might-not-need-an-effect)：可从 props/state 派生的展示值在 render 期计算，不用 Effect 再同步一份。
 
 后续移动端工作继续使用同一能力矩阵，但单独记录 Android 真机指标，不修改本阶段 Web 基线来掩盖平台差异。
+
+## 11. Android 薄壳的 Web 性能定义（2026-09-26）
+
+本轮参考 [How we made claude.ai 3x faster in two weeks](https://claude.dev/blog/how-we-made-claude-ai-faster/)
+的用户旅程测量与回归约束方法。文章的收益不是本项目的基线，也不构成引入状态库的理由。
+当前薄壳通过 WebView 加载 Web 入口；旧 Mobile bridge、Room 和原生投影的历史数据不能替代本轮证据。
+
+| 用户操作 | 测量起止与指标 | 优化约束 |
+|---|---|---|
+| 打开聊天 | 导航开始 → 输入框能接收并保留文字；冷/热加载分开 | 不用可见的空壳冒充可输入，不丢按键 |
+| 切换会话 | 点击 → 目标近期消息显示；请求数、渲染耗时 | 不显示另一会话的旧内容，不复制权威消息状态 |
+| 输入与发送 | 按键 → 显示、发送 → 自己的消息显示；输入延迟 | IME、附件、取消与仅发送一次保持不变 |
+| 接收长回复 | 每次草稿到达 → 显示；历史渲染次数、脚本/布局耗时、长任务 | 已完成消息不随纯草稿更新重渲染；提交、过程分组、引用和复制仍可更新 |
+
+首轮只优化第四项中可复现的历史重复渲染。60 Hz 的帧预算是约 16.7 ms，120 Hz 是约 8.3 ms；
+它们是分析目标，不把 headless Chromium 的时间冒充真机帧率。首屏、切换和输入暂未完成本轮测量。
+
+能力 owner 为 Web 聊天展示；消费者为桌面 Web 与 Android 薄壳。`change_type=performance`，
+`semantic_delta=none`，`runtime_patch=false`。消息事实仍由服务器 Session/Message 日志拥有；
+本轮不改变消息、通知游标、协议、插件生命周期或正式 workspace，不部署服务或发布 APK。
+允许修改 `frontend/chat/src` 的展示和浏览器实验，以及本设计的验收说明。
+基线为 `56f0b6189484a812d0ecbf2ca8975a9b1fdbfa55`，源码恢复副本保存在实验输出目录。
+
+状态选型先保留 React 的现有状态和订阅方式。Zustand 可用于局部订阅，TanStack Query 可用于
+服务端数据请求缓存，但都不能直接消除不必要的历史渲染；只有对应测量证明需要时才引入。
+缓存必须有明确的服务端地址、会话和消息身份，不让草稿、历史页与通知各保存一份可写正文。
+
+本轮只在历史组件的 `React.memo` 比较中忽略未被该组件读取的草稿字段。
+消息、活动身份/来源/顺序、状态、复制反馈、回调或引用容器变化仍会更新历史。
+若历史组件以后开始读取活动的其他字段，必须同步更新比较条件与浏览器验收。
+
+```text
+reply.status
+├─ 草稿正文变化 ─────────────→ 活动回复行更新
+└─ 活动身份 / 来源 / 顺序变化 → 历史分组与引用导航更新
+messages.appended ───────────→ 历史列表更新
+```
+
+实验入口为 `frontend/chat/src/verify-timeline-performance.mjs`：生产构建加仅供实验使用的渲染计数器，
+本地 HTTP/真实 WebSocket 使用当前 Message v2 合同；固定 200 条历史、120 次草稿更新。
+窄屏 412×915 使用 4 倍 CPU 限速，桌面 1440×1000 使用原速，各运行三次。旧版本用 `--baseline`
+记录开销，新版本默认断言纯草稿更新期间历史组件执行为零；同时验证身份、来源、顺序变化、
+最终消息提交、复制反馈和引用操作。计数是确定性回归约束，耗时只作为同机方向性证据。
+
+### 本轮测量与验收
+
+Chromium `153.0.8010.52`，Node `22.23.1`；各场景三轮取中位数。时间为整段 120 次更新的累计值，
+不是单次输入延迟、真实手机耗时或端到端模型响应时间。基线与候选使用同一依赖目录、夹具和构建配置。
+
+| 指标 | 窄屏基线 → 候选 | 桌面基线 → 候选 |
+|---|---|---|
+| 历史组件执行次数 | 120 → 0 | 120 → 0 |
+| 脚本执行时间 | 9,335 → 5,343 ms（减少 42.8%） | 2,735 → 1,665 ms（减少 39.1%） |
+| 浏览器 TaskDuration | 22,044 → 17,437 ms（减少 20.9%） | 6,770 → 5,692 ms（减少 15.9%） |
+| 布局时间 | 2,592 → 2,528 ms | 788 → 795 ms |
+
+窄屏每轮最长任务仍为 98～115 ms，不能宣称卡顿已消除；布局没有明显改善。
+真实 Android WebView、首屏、切换、输入与网络延迟仍未测量。下一轮应从真实手机 trace 判断
+布局、Markdown 或入口加载谁占主要成本，再决定是否需要虚拟列表、分包或请求缓存。
+
+运行 `node frontend/chat/src/verify-timeline-performance.mjs <输出目录>` 验证候选；
+相同实验脚本在原基线源码上添加 `--baseline` 记录原始开销。
+本次原始结果、截图、日志和 `source-identity.json` 保存于
+`/mnt/data/coding/mobile-perf-artifacts-20260926/`。
+历史组件基线 SHA-256 为 `b56c51dc9738841c6931c6bf3fcdcd02882b2c4b207b39d682aabe790aa60531`，
+候选为 `77f726e0efe6b2692582cbeb4b9f20e5977124a1567707fac74b3d80bf5bacc8`；
+实验脚本 SHA-256 为 `d363443950f0d3c54eb9b0bd839ddcb54361634a016c93afb694776fae5cc02c`。
+
+性能场景六轮通过；既有 `verify-reply-waiting.mjs` 的九个场景通过，覆盖接纳/活动先后顺序、
+草稿保留、活动撤权、静默完成、暂停/恢复/失败/放弃、来源隔离、能力恢复和重新打开历史。
+概念基线 pytest 为 44 passed；两组 Pyright、前端 typecheck、改动组件 ESLint、插件边界、
+迁移和两组协议生成物检查通过。共享 venv 缺少 `grpcio-tools`，Host Bridge 检查改用
+`uv run --isolated --no-project --with grpcio-tools==1.78.0 python scripts/generate_host_bridge_protocol.py --check`，
+没有修改共享环境。构建仍有既有的第三方 PURE 注释与大 chunk 提示。
+这份结果属于本地验证，未创建 PR、运行远端 CI、部署服务或更新手机。

@@ -264,7 +264,7 @@ function formatMessageTime(value: string) {
 }
 
 /** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
-export function DesktopTimelineMessages({ messages, activities, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
+export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
   messages: TimelineMessage[];
   activities: ReplyActivity[];
   status: ChatStatus;
@@ -315,4 +315,20 @@ export function DesktopTimelineMessages({ messages, activities, status, messageE
         onCopy={() => { void navigator.clipboard.writeText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }} />
     </div> : null}
   </div>)}</>;
-}
+}, (previous, next) => {
+  // 历史分组和引用导航只读取活动的身份、来源和顺序；草稿正文由活动行展示。
+  return previous.messages === next.messages
+    && previous.status === next.status
+    && previous.messageElementsRef === next.messageElementsRef
+    && previous.copiedMessageId === next.copiedMessageId
+    && previous.onReply === next.onReply
+    && previous.onCopied === next.onCopied
+    && previous.onError === next.onError
+    && previous.activities.length === next.activities.length
+    && previous.activities.every((activity, index) => {
+      const other = next.activities[index];
+      return activity.handle === other.handle
+        && activity.session_id === other.session_id
+        && activity.source === other.source;
+    });
+});
