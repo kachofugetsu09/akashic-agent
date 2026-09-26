@@ -115,7 +115,7 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
-      {!draft && !text && !flow.length ? <ThinkingPlaceholder /> : null}
+      {activity.active && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}
       {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
     </div>
   </div>;
