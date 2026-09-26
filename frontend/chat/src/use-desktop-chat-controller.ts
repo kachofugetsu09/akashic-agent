@@ -660,7 +660,7 @@ export function useDesktopChatController() {
       });
   }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface]);
 
-  // 通知入口：首次就绪时打开 ?session=，之后由外层对话页经 postMessage 切换。
+  // 通知入口统一使用网页导航，就绪后消费一次会话参数。
   const requestedSessionRef = useRef(new URLSearchParams(window.location.search).get("session") ?? "");
   useEffect(() => {
     const sessionId = requestedSessionRef.current;
@@ -668,16 +668,7 @@ export function useDesktopChatController() {
     requestedSessionRef.current = "";
     activateSession(sessionId);
   }, [activateSession, chatReady]);
-  useEffect(() => {
-    const openRequestedSession = (event: MessageEvent<unknown>) => {
-      if (event.origin !== window.location.origin || typeof event.data !== "object" || event.data === null) return;
-      const message = event.data as Record<string, unknown>;
-      if (message.type !== "akashic.open-session" || typeof message.sessionId !== "string") return;
-      if (message.sessionId.startsWith("akashic:")) activateSession(message.sessionId);
-    };
-    window.addEventListener("message", openRequestedSession);
-    return () => window.removeEventListener("message", openRequestedSession);
-  }, [activateSession]);
+
 
   const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
   const handleModelChange = useCallback((runtimeId: string, effort: string) => {

@@ -72,27 +72,6 @@ function frameSource(sessionId) {
   return sessionId ? `/chat?embedded=1&session=${encodeURIComponent(sessionId)}` : "/chat?embedded=1";
 }
 
-// 对话页挂载期间向手机壳暴露切换会话入口；页面未就绪时改为带参数重载 iframe。
-function exposeSessionOpener(frame) {
-  let loaded = false;
-  const markLoaded = () => { loaded = true; };
-  frame.addEventListener("load", markLoaded);
-  const open = (sessionId) => {
-    if (typeof sessionId !== "string" || !sessionId.startsWith("akashic:")) return false;
-    if (loaded && frame.contentWindow) {
-      frame.contentWindow.postMessage({ type: "akashic.open-session", sessionId }, window.location.origin);
-    } else {
-      frame.src = frameSource(sessionId);
-    }
-    return true;
-  };
-  window.akashicOpenSession = open;
-  return () => {
-    frame.removeEventListener("load", markLoaded);
-    if (window.akashicOpenSession === open) delete window.akashicOpenSession;
-  };
-}
-
 function renderConversation(host, view) {
   const tools = view.child("conversation.tools.v1");
   const entries = checkTabs(tools.entries);
@@ -103,13 +82,11 @@ function renderConversation(host, view) {
   frame.title = "Akashic 对话";
   frame.src = frameSource(takeRequestedSession());
   root.appendChild(frame);
-  const stopSessionOpener = exposeSessionOpener(frame);
 
   if (entries.length === 0) {
     host.replaceChildren(root);
     const stopThemeSync = syncFrameTheme(frame);
     return () => {
-      stopSessionOpener();
       stopThemeSync();
       host.replaceChildren();
     };
@@ -334,7 +311,6 @@ function renderConversation(host, view) {
     window.removeEventListener("resize", resize);
     activeListeners.clear();
     for (const dispose of disposers.reverse()) dispose();
-    stopSessionOpener();
     stopThemeSync();
     host.replaceChildren();
   };
