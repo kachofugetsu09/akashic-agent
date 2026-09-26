@@ -193,7 +193,11 @@ try {
     assert.ok(summary.warm.assetCacheHits >= 1, "暖启动没有命中任何资产缓存");
     assert.ok(summary.prefetched.messageRequests === 0, `预取命中后激活仍请求 ${summary.prefetched.messageRequests} 次历史`);
     assert.ok(summary.revisit.messageRequests === 0, `回访会话仍请求 ${summary.revisit.messageRequests} 次历史`);
-    assert.ok(summary.cold.apiHops <= 1, `启动 API 串行深度仍有 ${summary.cold.apiHops} 层`);
+    // 串行深度断言只在节流模式生效：localhost 的亚毫秒 RTT 无法区分真实依赖与调度抖动，
+    // 且 chatReady 后的非关键请求（插件目录、项目列表）也会被计入为新一轮。
+    if (throttled) {
+      assert.ok(summary.cold.apiHops <= 1, `启动 API 串行深度仍有 ${summary.cold.apiHops} 层`);
+    }
   }
 } finally {
   await browser?.close();
