@@ -91,14 +91,14 @@ async def apply(ctx: Context) -> None:
                 raise ValueError("子任务原能力目录损坏")
         yield Spawn(ctx, cast(Mapping[str, str], state["tools"]), cast(Mapping[str, str], state["senders"]))
 
-    def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
+    async def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
             raise ValueError("spawn 不接收额外 binding 配置")
         allowed = {name for names in PROFILE_TOOLS.values() for name in names}
         refs = ctx.require(ALL_TOOLS)()
         return {
             "tools": {
-                ref.name: catalog.bind(ref, ctx.require(BINDINGS))
+                ref.name: await catalog.bind_scoped(ref, ctx.require(BINDINGS))
                 for ref in refs.refs
                 if ref.name in allowed
             },

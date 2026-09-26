@@ -398,6 +398,24 @@ MobileHTTP/RPC 的 revision、摘要、slot、授权和响应格式不变。
 8. 找不到匹配能力时先定义窄 Service，不给 Manager 增加新的固定插件方法。
 
 
+### 工具绑定与异步资产读取
+
+`await tools.bind(...)`、`await tools.bind_scoped(...)` 与 `await tools.bind_saved(...)`
+在返回 binding ID 前完成准备。`capture` 可返回 JSON mapping 或可等待的 mapping；
+普通同步回调仍在调用者任务内执行，文件密集型回调自行异步等待文件工作。
+调用期间保留工具、参数准备和授权贡献者的作用域；准备失败或取消不提交该 binding。
+原先同步调用 `bind` / `bind_saved` 的插件必须随提供方一起更新为 `await`。
+绑定的持久 metadata 格式保持不变。
+
+`async with installed_assets.open(ctx, category="skills") as assets` 固定当前目录与
+资产贡献者的作用域；目录只能在作用域内使用。后台文件工作必须实际结束后再退出，
+不能把等待取消当作物理工作结束。技能归档按既有合同追加并校验，不新增自动删除。
+
+`core.common.file_io.run_file_io` 是公开的窄文件工作入口，复用 HostBridge 原有
+实现：每个事件循环最多四项文件工作并行，取消后等待实际线程结束，保留文件错误。
+它只拥有并发上限与取消排空，不拥有 Context、权限、注册或 binding；这些作用域仍由
+调用方持有。传入函数不得访问 Context/Fiber，绑定提交也不得移入文件线程。
+
 ### 归档接口版本
 
 组件归档的 `runtime.binding_api` 当前为 3。历史格式、Python 环境及源码树只用于校验来源证据；

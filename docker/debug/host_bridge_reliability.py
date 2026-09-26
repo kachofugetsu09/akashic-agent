@@ -25,6 +25,7 @@ from bootstrap.app import _run_primary_tasks
 from bootstrap.dashboard_api import create_dashboard_app
 from bootstrap.web_shell import create_web_shell_app
 from bootstrap.web_runtime import dashboard_socket_path
+from core.common import file_io
 
 COMMIT = "a" * 40
 DIGEST = "b" * 64
@@ -269,7 +270,7 @@ async def run() -> None:
             read = await io.execute_file_tool("read_file", allowed_dir=root, arguments={"path": "slow.txt"})
             listing = await io.execute_file_tool("list_dir", allowed_dir=root, arguments={"path": "."})
             assert "third" in str(read) and "slow.txt" in str(listing)
-            assert not filesystem._FILE_MUTATION_LOCKS and not filesystem._FILE_IO_SLOTS
+            assert not filesystem._FILE_MUTATION_LOCKS and not file_io._FILE_IO_SLOTS
             results.append("slow_disk_probe_cancel_drain_and_four_file_operations")
 
             # 认证错误不能被恢复策略吞掉；旧 boot 的所有执行入口被 fencing。

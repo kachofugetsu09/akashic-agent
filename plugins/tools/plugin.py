@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
@@ -77,7 +78,7 @@ inject = (CONTENT, BINDINGS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASK
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[str | None]]
 OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[ProviderBoundTool]]
-Capture = Callable[[Mapping[str, object]], Mapping[str, object]]
+Capture = Callable[[Mapping[str, object]], Mapping[str, object] | Awaitable[Mapping[str, object]]]
 
 
 @dataclass(slots=True)
@@ -207,7 +208,7 @@ class ToolCatalog:
         if any(type(value) is not bool for value in (idempotent, public)):
             raise TypeError("工具执行和发现选项必须是 bool")
         if capture is not None and not callable(capture):
-            raise TypeError("工具 capture 必须是同步回调")
+            raise TypeError("工具 capture 必须是可调用对象")
         descriptor = cast(
             Mapping[str, object],
             freeze_json(
@@ -359,12 +360,11 @@ class ToolCatalog:
                     if caller is not None and caller.cancelling():
                         raise
 
-    def bind(
+    async def bind(
         self, ref: ToolRef, bindings: Bindings, *,
         configuration: Mapping[str, object] | None = None,
     ) -> str:
         """从真实注册 Context 固定闭包，不让调用者省略准备贡献或重选目标。"""
-        name = ref.name
         registration = self._registration(ref)
         preparation = registration.preparation
         authorization = registration.authorization
@@ -375,38 +375,42 @@ class ToolCatalog:
             *(() if preparation is None else (preparation.context,)),
             *(() if authorization is None else (authorization.context,)),
         )
-        state: Mapping[str, object] | None = None
-        if registration.capture is not None:
-            _ = self._ctx.require_runtime_owner(TOOLS, self)
-            options = freeze_json({} if configuration is None else configuration)
-            if not isinstance(options, Mapping):
-                raise TypeError("工具 binding 配置必须是 JSON 对象")
-            captured = freeze_json(registration.capture(cast(Mapping[str, object], options)))
-            if not isinstance(captured, Mapping):
-                raise TypeError("工具 binding state 必须是 JSON 对象")
-            state = cast(Mapping[str, object], captured)
-        return bindings.bind(
-            TOOLS,
-            {
-                "tool": ref.description,
-                "prepare": None if preparation is None else preparation.name,
-                **({"authorize": authorization.name} if authorization is not None else {}),
-                **({"state": state} if state is not None else {}),
-            },
-            contributors=contributors,
-        )
+        async with self._ctx.runtime_scope(), AsyncExitStack() as stack:
+            # capture 可以挂起；实际贡献者在绑定提交前都不能被排空。
+            for contributor in dict.fromkeys(contributors):
+                await stack.enter_async_context(contributor.runtime_scope())
+            state: Mapping[str, object] | None = None
+            if registration.capture is not None:
+                _ = self._ctx.require_runtime_owner(TOOLS, self)
+                options = freeze_json({} if configuration is None else configuration)
+                if not isinstance(options, Mapping):
+                    raise TypeError("工具 binding 配置必须是 JSON 对象")
+                prepared = registration.capture(cast(Mapping[str, object], options))
+                if inspect.isawaitable(prepared):
+                    prepared = await prepared
+                captured = freeze_json(prepared)
+                if not isinstance(captured, Mapping):
+                    raise TypeError("工具 binding state 必须是 JSON 对象")
+                state = cast(Mapping[str, object], captured)
+            return bindings.bind(
+                TOOLS,
+                {
+                    "tool": ref.description,
+                    "prepare": None if preparation is None else preparation.name,
+                    **({"authorize": authorization.name} if authorization is not None else {}),
+                    **({"state": state} if state is not None else {}),
+                },
+                contributors=contributors,
+            )
 
     async def bind_scoped(
         self, ref: ToolRef, bindings: Bindings, *,
         configuration: Mapping[str, object] | None = None,
     ) -> str:
         """Capture one tool under both its registry and contributor owners."""
-        contributor = self._registration(ref).context
-        async with self._ctx.runtime_scope():
-            async with contributor.runtime_scope():
-                return self.bind(ref, bindings, configuration=configuration)
+        return await self.bind(ref, bindings, configuration=configuration)
 
-    def bind_saved(
+    async def bind_saved(
         self,
         metadata: Mapping[str, object],
         bindings: Bindings,
@@ -435,7 +439,7 @@ class ToolCatalog:
             raise ValueError("工具 binding 参数准备与归档注册不一致")
         if authorization is not None and metadata["authorize"] != authorization.name:
             raise ValueError("工具 binding 限制与归档注册不一致")
-        return self.bind(
+        return await self.bind_scoped(
             registration.ref,
             bindings,
             configuration=configuration,
@@ -533,7 +537,7 @@ async def bind_saved_tool(
 ) -> str:
     """从原 binding 派生新配置，由当前兼容 provider 保存来源证据。"""
     async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
-        return catalog.bind_saved(
+        return await catalog.bind_saved(
             metadata,
             bindings,
             configuration=configuration,

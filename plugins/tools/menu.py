@@ -11,7 +11,7 @@ from agent.plugin_contracts import CallRef, ToolCall
 from agent.plugin_contracts.tools import ToolPresentation as ToolPresentation
 
 from .execution import MessageReply, Result, ToolExecution
-from .plugin import TOOLS, ToolCatalog, ToolView
+from .plugin import TOOLS
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,41 +78,23 @@ class ToolMenu:
 
     def __init__(
         self,
-        catalog: ToolCatalog,
         bindings: Bindings,
         execution: ToolExecution,
         reply: Callable[[CallRef], MessageReply | Awaitable[MessageReply]],
         *,
-        view: ToolView | None = None,
         limit: int | None = None,
-        fixed_bindings: Mapping[str, str] | None = None,
+        fixed_bindings: Mapping[str, str],
         presentation: ToolPresentation | None = None,
     ):
-        if (view is None) == (fixed_bindings is None):
-            raise ValueError("工具菜单必须且只能取得 current view 或固定 binding")
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError("工具菜单容量必须为正整数或 None")
         self._bindings = bindings
         self._execution = execution
         self._reply = reply
 
-        if fixed_bindings is not None:
-            self._bound = dict(fixed_bindings)
-            descriptions = self._descriptions()
-            self._presentation = presentation or NativePresentation(descriptions)
-        else:
-            assert view is not None
-            current = {ref.name: ref for ref in view.refs}
-            descriptions = {name: ref.description for name, ref in current.items()}
-            self._presentation = presentation or NativePresentation(descriptions)
-            self._bound = {
-                name: catalog.bind(
-                    ref,
-                    bindings,
-                    configuration=self._presentation.configuration(name),
-                )
-                for name, ref in current.items()
-            }
+        self._bound = dict(fixed_bindings)
+        descriptions = self._descriptions()
+        self._presentation = presentation or NativePresentation(descriptions)
         if limit is not None and len(self._presentation.schemas) > limit:
             raise ValueError(
                 "模型工具容量不足以容纳固定展示: "

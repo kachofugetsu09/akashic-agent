@@ -117,7 +117,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
                 return "binding"
 
         captured = CapturingBindings()
-        catalog.bind(refs["first"], cast(Bindings, captured))
+        await catalog.bind(refs["first"], cast(Bindings, captured))
         assert captured.metadata["prepare"] == "first-prepare"
         assert captured.metadata["authorize"] == "first-authorize"
 
@@ -126,7 +126,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
         await root.mount(
             lambda ctx: target(ctx, "second"), name="second", runtime=runtime("second")
         )
-        catalog.bind(refs["second"], cast(Bindings, captured))
+        await catalog.bind(refs["second"], cast(Bindings, captured))
         assert captured.metadata == {
             "tool": refs["second"].description,
             "prepare": None,

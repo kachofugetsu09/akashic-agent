@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncGenerator, Mapping
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from core.common.file_io import run_file_io
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.archive import PluginArchive
@@ -49,14 +52,15 @@ def body_hash(content: str) -> str:
     return hashlib.sha256(skill_body(content).encode("utf-8")).hexdigest()
 
 
-def save_skill(record: SkillRecord, archive: PluginArchive) -> SkillFile:
+def save_skill(record: SkillRecord, archive: PluginArchive) -> tuple[SkillFile, Path | None]:
     """绑定形成前增加恢复文件；正文和相对资源使用同一不可变文件树。"""
     tree_ref = archive.save(record.root_dir) if record.available else None
     expected = body_hash(record.content)
-    if tree_ref is not None and body_hash((archive.open(tree_ref) / "SKILL.md").read_text(encoding="utf-8")) != expected:
+    root = archive.open(tree_ref) if tree_ref is not None else None
+    if root is not None and body_hash((root / "SKILL.md").read_text(encoding="utf-8")) != expected:
         raise RuntimeError("技能目录与归档正文不一致")
     return SkillFile(source=record.source, source_id=record.source_id, available=record.available,
-                     missing=record.missing, body_sha256=expected, tree_ref=tree_ref)
+                     missing=record.missing, body_sha256=expected, tree_ref=tree_ref), root
 
 
 class SkillTool:
@@ -77,6 +81,10 @@ class SkillTool:
             return ToolResultValue("error", (ContentPart("text", f"此绑定没有技能：{name}"),))
         if not record.available:
             return ToolResultValue("error", (ContentPart("text", f"技能不可用：{name}；缺少依赖：{record.missing}"),))
+        return await run_file_io(lambda: self._read(name, record))
+
+    def _read(self, name: str, record: SkillFile) -> ToolResultValue:
+        """在文件线程中校验固定归档并读取正文。"""
         # 正常恢复只能读取已存在的材料，不通过建空目录掩盖丢失。
         if not self._path.is_dir():
             raise FileNotFoundError(f"技能恢复归档缺失：{self._path}")
@@ -108,36 +116,54 @@ async def register_skills(ctx: Context) -> ToolRef:
     cached_assets: tuple[InstalledAsset, ...] | None = None
     cached_catalog: tuple[SkillRecord, ...] | None = None
 
-    def read_catalog() -> tuple[SkillRecord, ...]:
-        """每次先取得当前租约的资产；缓存不能绕过作用域或保留旧目录。"""
+    io_lock = asyncio.Lock()
+
+    async def read_catalog(assets: tuple[InstalledAsset, ...]) -> tuple[SkillRecord, ...]:
+        """目录已被调用方租约固定；解析与同步能力检查在文件线程完成。"""
         nonlocal cached_assets, cached_catalog
-        assets = read_assets(ctx)
         if cached_catalog is None or assets != cached_assets:
-            cached_catalog = parser.parse(assets)
+            cached_catalog = await run_file_io(lambda: parser.parse(assets))
             cached_assets = assets
         return cached_catalog
 
     @ctx.entrypoint
     async def read_inspection_catalog() -> tuple[SkillRecord, ...]:
-        """在原技能 owner 的短调用作用域内读取安装资产。"""
-        return read_catalog()
+        """读取结束前保留技能 owner 与资产贡献者。"""
+        async with io_lock, read_assets.open(ctx, category="skills") as assets:
+            return await read_catalog(assets)
 
     _ = await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_inspection_catalog))
 
-    def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
+    async def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
+        """绑定发布前完成归档；取消时先排空文件线程再释放目录租约。"""
         if configuration:
             raise ValueError("技能读取没有调用者配置")
-        archive = PluginArchive(archive_path)
-        return SkillState(skills={record.name: save_skill(record, archive) for record in read_catalog()}).model_dump()
+        async with io_lock, read_assets.open(ctx, category="skills") as assets:
+            records = await read_catalog(assets)
+
+            def save() -> Mapping[str, object]:
+                archive = PluginArchive(archive_path)
+                return SkillState(skills={
+                    record.name: save_skill(record, archive)[0] for record in records
+                }).model_dump()
+
+            return await run_file_io(save)
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[SkillTool]:
         yield SkillTool(archive_path, SkillState.model_validate(json_value(state)))
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
+        """常驻技能与工具绑定使用同一条受租约保护的文件工作路径。"""
+        async with io_lock, read_assets.open(ctx, category="skills") as assets:
+            records = await read_catalog(assets)
+            return await run_file_io(lambda: build_prompt(records))
+
+    def build_prompt(records: tuple[SkillRecord, ...]) -> Mapping[str, object]:
+        """在文件线程构造技能提示，同次准备复用已校验的归档目录。"""
         catalog_lines: list[str] = []
         active: list[str] = []
-        for record in read_catalog():
+        for record in records:
             catalog_lines.append(
                 f"- {record.name}: {record.description}\n"
                 f"  适用：{record.when_to_use}；来源：{record.source}/{record.source_id}；"
@@ -146,11 +172,11 @@ async def register_skills(ctx: Context) -> ToolRef:
             if record.always and record.available:
                 # 自动上下文与读取工具共用不可变归档和相对资源路径。
                 archive = PluginArchive(archive_path)
-                saved = save_skill(record, archive)
-                assert saved.tree_ref is not None
+                _, root = save_skill(record, archive)
+                assert root is not None
                 active.append(
                     f"### {record.name}\n来源：{record.source}/{record.source_id}\n"
-                    f"资源目录：{archive.open(saved.tree_ref)}\n\n{skill_body(record.content)}"
+                    f"资源目录：{root}\n\n{skill_body(record.content)}"
                 )
         if not catalog_lines:
             return {"system_prompt": "", "reminders": ()}

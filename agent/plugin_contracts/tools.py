@@ -175,7 +175,7 @@ class ToolCatalog(Protocol):
         open: Callable[
             [Mapping[str, object]], AbstractAsyncContextManager[ProviderBoundTool]
         ],
-        capture: Callable[[Mapping[str, object]], Mapping[str, object]] | None = None,
+        capture: Callable[[Mapping[str, object]], Mapping[str, object] | Awaitable[Mapping[str, object]]] | None = None,
         public: bool = True,
         idempotent: bool = False,
         risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
@@ -200,7 +200,7 @@ class ToolCatalog(Protocol):
     def view(self, *refs: ToolRef) -> ToolView: ...
     def group_description(self, ref: ToolRef) -> str: ...
     def group_always_on(self, ref: ToolRef) -> bool: ...
-    def bind(
+    async def bind(
         self,
         ref: ToolRef,
         bindings: Bindings,
@@ -214,7 +214,7 @@ class ToolCatalog(Protocol):
         *,
         configuration: Mapping[str, object] | None = None,
     ) -> str: ...
-    def bind_saved(
+    async def bind_saved(
         self,
         metadata: Mapping[str, object],
         bindings: Bindings,
