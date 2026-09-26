@@ -20,7 +20,6 @@ from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
 from bootstrap.settings_api import SettingsServer, create_settings_app
-from bootstrap.web_auth import WebAuth, WebAuthMiddleware, include_auth_routes
 from bootstrap.web_runtime import chat_socket_path, dashboard_socket_path
 
 _REQUEST_HEADERS_EXCLUDED = {
@@ -92,8 +91,6 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
 def create_web_shell_app(
     config_path: Path,
     workspace: Path,
-    *,
-    auth: WebAuth | None = None,
 ) -> FastAPI:
     """Serve the only public Web entry and relay ready Gateway capabilities."""
 
@@ -101,9 +98,6 @@ def create_web_shell_app(
     dashboard_socket = dashboard_socket_path(workspace)
     dashboard_static = Path(__file__).resolve().parent.parent / "static" / "dashboard"
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    include_auth_routes(app, auth)
-    if auth is not None:
-        app.add_middleware(WebAuthMiddleware, auth=auth)
 
     @app.get("/")
     @app.get("/dashboard")
@@ -257,10 +251,9 @@ def create_web_shell_server(
     *,
     host: str = "127.0.0.1",
     port: int = 2236,
-    auth: WebAuth | None = None,
 ) -> SettingsServer:
     config = uvicorn.Config(
-        create_web_shell_app(config_path, workspace, auth=auth),
+        create_web_shell_app(config_path, workspace),
         host=host,
         port=port,
         log_level="warning",

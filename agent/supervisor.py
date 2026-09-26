@@ -641,7 +641,6 @@ def _start_settings_server(
 
     import asyncio
 
-    from bootstrap.web_auth import WebAuth
     from bootstrap.web_shell import create_web_shell_server
 
     host = os.environ.get("AKASHIC_WEB_HOST", "127.0.0.1")
@@ -655,16 +654,11 @@ def _start_settings_server(
         raise RuntimeError("AKASHIC_WEB_PORT 必须是 1 到 65535 的整数") from error
     if not 1 <= port <= 65_535:
         raise RuntimeError("AKASHIC_WEB_PORT 必须是 1 到 65535 的整数")
-    try:
-        auth = WebAuth.from_env()
-    except ValueError as error:
-        raise RuntimeError(str(error)) from error
     server = create_web_shell_server(
         config_path,
         workspace,
         host=host,
         port=port,
-        auth=auth,
     )
     thread = threading.Thread(
         target=lambda: asyncio.run(server.serve()),

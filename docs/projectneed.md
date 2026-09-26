@@ -220,6 +220,10 @@ APK 或 IPA 必须保留 embedded baseline，远程发现、下载、校验、�
 
 `Resolve/Ensure` 只能得到 `Ready`、`RetryAfter`、`WaitFor(trigger)` 或 `RejectTarget`。同一 Target 进入 `WaitFor(space)` 后，前台、重连和普通 hint 可以重新 Resolve 当前选择，但不得重复 prepare、manifest 或 blob 下载；只有 Target 变化、显式清理、用户明确重试、reset 或 revoke 解除该等待事实。同 Target 的永久 reject 也只能由 Target/兼容指纹变化或针对当前 Target 的显式用户重试解除。
 
+实验例外：维护者在 2026-09-26 授权独立 `com.akashic.shell` 客户端直接访问远程 Web 页面，
+先不提供登录。该实验不替换正式 Mobile 的配对、历史同步或本地 OTA 合同；其通知仅消费已提交
+Message 的只读投影，边界与验收见 [Android 极薄壳通知实验](design/android-shell-experiment.md)。
+
 ### WEBUI-006 WebUI OTA 不取得原生与业务状态所有权
 
 纯样式、布局、组件组合和只使用既有 bridge capability 的交互通过服务端 WebUI 发布交付，不要求发布移动二进制。新增或改变原生 capability、bridge/snapshot 兼容边界、平台生命周期、数据库、网络或安全逻辑时必须发布对应平台二进制，并用 manifest 的兼容范围阻止旧客户端加载。
