@@ -1,4 +1,4 @@
-import { ChevronRight, FolderPlus, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder, FolderPlus, Lightbulb, Plus } from "lucide-react";
 import { useRef, useState, type FormEvent } from "react";
 import {
   Dialog,
@@ -9,6 +9,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
+  DropdownMenuRadioItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   PROJECT_MEMORY_CHOICES,
   projectMemoryLabel,
@@ -126,8 +130,12 @@ export function ProjectNavigation({
         return (
           <div key={project.id} className={`project-group ${activeProjectId === project.id ? "active" : ""}`}>
             <div className="project-group__row">
-              <button type="button" className="project-group__toggle" aria-expanded={open} onClick={() => toggle(project.id)}>
+              <button type="button" className="project-group__toggle" aria-label={`${open ? "收起" : "展开"} ${project.name} 的对话`} aria-expanded={open} onClick={() => toggle(project.id)}>
                 <ChevronRight size={14} aria-hidden="true" className="project-group__chevron" />
+              </button>
+              <button type="button" className="project-group__open" onClick={() => onNewProjectChat(project.id)}
+                aria-current={activeProjectId === project.id ? "page" : undefined} title={`打开 ${project.name}`}>
+                <Folder size={18} strokeWidth={1.75} aria-hidden="true" />
                 <span className="project-group__name">{project.name}</span>
                 {project.memory && project.memory !== "global" ? (
                   <small className="project-group__memory">{projectMemoryLabel(project.memory)}</small>
@@ -213,41 +221,49 @@ export function NewProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={reset}>
-      <DialogContent className="project-dialog" onCloseAutoFocus={onCloseFocus ? (event) => {
+      <DialogContent className="project-dialog" overlayClassName="project-dialog-overlay" onCloseAutoFocus={onCloseFocus ? (event) => {
         event.preventDefault();
         onCloseFocus();
       } : undefined}>
         <form onSubmit={(event) => void submit(event)}>
           <DialogHeader className="project-dialog__header">
-            <DialogTitle>新建项目</DialogTitle>
-            <DialogDescription>项目里的对话会带上同一个项目标识。</DialogDescription>
+            <DialogTitle>创建项目</DialogTitle>
           </DialogHeader>
           <label className="project-dialog__field">
-            <span>名称</span>
-            <Input autoFocus value={name} maxLength={80} placeholder="例如：论文写作"
-              onChange={(event) => setName(event.target.value)} />
+            <span>项目名称</span>
+            <span className="project-dialog__name-input">
+              <Folder size={20} strokeWidth={1.75} aria-hidden="true" />
+              <Input autoFocus value={name} maxLength={80} placeholder="例如：论文写作" disabled={submitting}
+                onChange={(event) => setName(event.target.value)} />
+            </span>
           </label>
-          {memoryInstalled ? (
-            <fieldset className="project-dialog__memory">
-              <legend>记忆</legend>
-              {PROJECT_MEMORY_CHOICES.map((choice) => (
-                <label key={choice.value} className={`project-dialog__choice ${memory === choice.value ? "selected" : ""}`}>
-                  <input type="radio" name="project-memory" value={choice.value}
-                    checked={memory === choice.value} onChange={() => setMemory(choice.value)} />
-                  <span>
-                    <strong>{choice.label}</strong>
-                    <small>{choice.description}</small>
-                  </span>
-                </label>
-              ))}
-              <small className="project-dialog__note">有对话之后，记忆选项就不能再修改。</small>
-            </fieldset>
-          ) : null}
+          <DialogDescription className="project-dialog__description">
+            <Lightbulb size={22} strokeWidth={1.5} aria-hidden="true" />
+            <span>把相关对话放在一起，方便持续开展同一项工作。创建时可以选择记忆范围。</span>
+          </DialogDescription>
           {error ? <p className="project-dialog__error" role="alert">{error}。若项目栏出现未确认请求，可在那里继续创建或停止尝试。</p> : null}
           <DialogFooter className="project-dialog__footer">
-            <button type="button" className="project-dialog__button" onClick={() => reset(false)} disabled={submitting}>{error ? "关闭" : "取消"}</button>
+            {memoryInstalled ? <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button type="button" className="project-dialog__memory-trigger" disabled={submitting}
+                  aria-label={`记忆设置：${projectMemoryLabel(memory)}`}>
+                  {projectMemoryLabel(memory)} <ChevronDown size={15} aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="project-memory-menu" align="start" sideOffset={8} collisionPadding={16}>
+                <DropdownMenuRadioGroup value={memory} aria-label="项目记忆">
+                  {PROJECT_MEMORY_CHOICES.map((choice) => (
+                    <DropdownMenuRadioItem key={choice.value} value={choice.value}
+                      className="project-memory-menu__choice" onSelect={() => setMemory(choice.value)}>
+                      <span><strong>{choice.label}</strong><small>{choice.description}</small></span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+                <p className="project-memory-menu__note">开始对话后，记忆选项将固定。</p>
+              </DropdownMenuContent>
+            </DropdownMenu> : <span className="project-dialog__no-memory">记忆功能未启用</span>}
             <button type="submit" className="project-dialog__button primary" disabled={!name.trim() || submitting}>
-              {submitting ? "正在创建…" : "创建"}
+              {submitting ? "正在创建…" : "创建项目"}
             </button>
           </DialogFooter>
         </form>
