@@ -363,6 +363,9 @@ def _emit_operation(
         fields["duration_ms"] = round(duration_ms, 3)
     if error is not None:
         fields["error_type"] = type(error).__name__
+        if not isinstance(error, asyncio.CancelledError):
+            # finish 也可能在 except 之外调用，必须保留传入异常的原始栈。
+            fields["exc_info"] = (type(error), error, error.__traceback__)
     _safe_log_event(
         level,
         f"plugin.operation.{terminal}",

@@ -6,6 +6,7 @@ import re
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
+from types import TracebackType
 from typing import Any, Iterator, Mapping, cast
 
 from pythonjsonlogger.json import JsonFormatter
@@ -207,7 +208,7 @@ def log_event(
     event: str,
     *,
     message: str = "",
-    exc_info: bool = False,
+    exc_info: bool | tuple[type[BaseException], BaseException, TracebackType | None] = False,
     **fields: object,
 ) -> None:
     """Emit one allow-listed event without attaching arbitrary payloads."""

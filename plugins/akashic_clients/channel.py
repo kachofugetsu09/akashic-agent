@@ -458,9 +458,13 @@ class _GenerationAkashicAdapter:
             self._mobile.attach_presentation(ports)
 
     async def _start_server(self, server: uvicorn.Server, *, name: str) -> None:
+        """等待监听就绪；失败时保留启动耗时与调度间隔。"""
         spawn_owned = self._context.spawn_owned
         if spawn_owned is None:
             raise RuntimeError(f"akashic {name} 缺少 host-owned task scope")
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        max_poll_gap = 0.0
         task = await spawn_owned(server.serve(), name=name)
         try:
             async with asyncio.timeout(_SERVER_START_TIMEOUT_SECONDS):
@@ -470,8 +474,20 @@ class _GenerationAkashicAdapter:
                     if task.done():
                         task.result()
                         raise RuntimeError(f"akashic {name} 在监听就绪前退出")
-                    await asyncio.sleep(0)
+                    polled_at = loop.time()
+                    try:
+                        await asyncio.sleep(0)
+                    finally:
+                        # 取消也记录最后一段间隔，才能看见超时前的事件循环阻塞。
+                        max_poll_gap = max(max_poll_gap, loop.time() - polled_at)
         except BaseException as error:
+            error.add_note(
+                f"listener={name} elapsed_seconds={loop.time() - started_at:.3f} "
+                f"timeout_seconds={_SERVER_START_TIMEOUT_SECONDS:.3f} "
+                f"max_poll_gap_seconds={max_poll_gap:.3f} "
+                f"server_started={server.started} task_done={task.done()} "
+                f"task_cancelled={task.cancelled()}"
+            )
             server.should_exit = True
             if not task.done():
                 task.cancel()
