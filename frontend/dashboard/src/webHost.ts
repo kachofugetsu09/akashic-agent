@@ -561,12 +561,14 @@ function activationOrder(modules: WebModulePayload[]): WebModulePayload[] {
 }
 
 export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
-  const response = await fetch("/api/chat/web-ui/bootstrap", {
+  // 配置请求与 React DOM 下载并行；插件仍在运行库发布后按依赖顺序激活。
+  const [response, runtime] = await Promise.all([fetch("/api/chat/web-ui/bootstrap", {
     headers: { Accept: "application/json" },
-    cache: "no-store",
-  });
+    cache: "no-cache",
+  }), import("./design/runtime")]);
   if (!response.ok) throw new Error(`Web UI bootstrap failed: ${response.status}`);
   const bootstrap = parseBootstrap(await response.json());
+  runtime.exposeRuntime();
   host.dataset.akashicCatalog = bootstrap.catalogId;
   const session = new BrowserCatalogSession(bootstrap);
   await session.activateModules();
