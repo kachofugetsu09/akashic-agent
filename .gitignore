@@ -94,3 +94,6 @@ lme_error_log_*.txt
 
 # Codex 运行期自动备份目录（不进版本库，避免干扰 change-gate 审计）
 .codex-backup-*/
+
+# 本地性能实验报告，不进版本库
+/artifacts/

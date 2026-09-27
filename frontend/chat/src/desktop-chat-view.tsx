@@ -39,7 +39,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
-    activateSession, startNewChat, handleReplyMessage, handleCopiedMessage,
+    activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
@@ -77,6 +77,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
+            onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
           />
 
@@ -86,6 +87,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
+            onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
           />
           <h1 title={headingTitle}>{headingTitle}</h1>

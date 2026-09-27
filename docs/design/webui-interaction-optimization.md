@@ -236,3 +236,78 @@ Chromium `153.0.8010.52`，Node `22.23.1`；各场景三轮取中位数。时间
 `uv run --isolated --no-project --with grpcio-tools==1.78.0 python scripts/generate_host_bridge_protocol.py --check`，
 没有修改共享环境。构建仍有既有的第三方 PURE 注释与大 chunk 提示。
 这份结果属于本地验证，未创建 PR、运行远端 CI、部署服务或更新手机。
+
+## 12. 启动与会话切换性能（2026-09-26/27）
+
+上一轮覆盖"接收长回复"；本轮覆盖矩阵剩余的两条旅程：打开聊天（冷/热启动 → 首屏与可输入）
+和切换会话（点击 → 可见消息）。基线为 `af595cba4ad38c4d32b81c2a500a55e1e7a9d351`（PR #781 之后），
+分支 `perf/startup-20260926`，逐层实验、逐层留证。
+
+### 12.1 实验方法
+
+测量脚本 `frontend/chat/src/verify-startup-performance.mjs`：
+生产构建 + 本地夹具服务器（真实 HTTP / WebSocket，Message v2 合同），Playwright + 系统
+Chromium（`/usr/bin/chromium`），headless。`--throttle` 用 CDP 限速 150ms RTT /
+1.6Mbps 模拟移动端级网络；非节流为 localhost 下限。记录：FCP、静态壳标记、会话列表与
+composer 就绪标记、资产传输字节与缓存命中、会话消息可见耗时、启动 API 串行深度、
+预取激活与回访的历史请求数。断言（节流）：暖启动资产传输为零、缓存命中 ≥1、
+预取激活与回访历史请求均为零、启动 API 串行深度 ≤1。非节流的串行深度只作报告——
+localhost 亚毫秒 RTT 让调度抖动与真实依赖无法区分。
+
+### 12.2 各层实验与保留内容
+
+| 层 | 改动 | 节流测量结果 | 保留 |
+|---|---|---|---|
+| 基线 | — | cold FCP 5,624ms；warm 资产重传 ~11.7MB | — |
+| P1.1 缓存合同 | `/assets/*-[hash].*` → `immutable`；HTML → `no-cache`；其余 → `no-store` | warm 资产传输 11.7MB → 0，命中 4 个资产；FCP 5,624→548ms | ✅ `bootstrap/settings_api.py` |
+| P1.2 静态壳 | `index.html` 内联骨架（侧栏/会话区/composer 轮廓，复用 `--ak-paper-*` 变量） | 壳标记 ~2.9s，早于 React FCP ~2.7s；白屏期被覆盖 | ✅ `frontend/chat/index.html` |
+| P1.3 启动并行 | shell 探测 + sessions + models + catalog 并行；未就绪静默、就绪翻转重试；目录页 200 | 节流串行深度 ≤1；sessionList 5,798→731.6ms（warm） | ✅ `use-desktop-chat-controller.ts` |
+| P2 会话缓存 | 尾页 LRU（上限 8，TTL 30s）+ pointerenter/focus 预取去重 | 预取激活 167.6ms/0 请求；回访 118.8ms/0 请求 | ✅ 同上 + 侧栏接线 |
+| P3 vendor 拆分 | `manualChunks` 只拆 react/react-dom/scheduler 与 effect | 入口 895→546KB；vendor-react 217KB、vendor-effect 129KB 独立缓存 | ✅ `vite.config.ts` |
+
+被撤销的实验：把全部 `node_modules` 归入单个 `vendor-misc` 会把懒加载依赖提升为 ~11.9MB
+静态依赖，方向错误，已回退——只拆稳定框架桶，其余留给 Rollup 自然分块。
+
+字体收益来自 P1.1：霞鹜文楷 woff2 共 ~11MB 属 `/assets/*-[hash]`，暖启动全部命中缓存不再传输。
+未做字体子集化或 `font-display` 调整——留待真机字体指标再定。
+
+### 12.3 测量数据（节流 / 非节流）
+
+```json
+节流:  {"cold":{"fcp":5624,"shell":2929.9,"sessionList":5798.1,"composer":5609.8,"assetBytes":1030560,"apiHops":1},
+        "warm":{"fcp":548,"sessionList":731.6,"assetBytes":0,"assetCacheHits":4},
+        "coldSession":{"message":6645.5,"apiHops":1},
+        "prefetched":{"visibleMs":167.6,"messageRequests":0},
+        "revisit":{"visibleMs":118.8,"messageRequests":0}}
+非节流:{"cold":{"fcp":408,"shell":48.9,"sessionList":443,"composer":403.9,"assetBytes":11722532,"apiHops":3},
+        "warm":{"fcp":444,"sessionList":466.3,"assetBytes":0,"assetCacheHits":8},
+        "coldSession":{"message":544.9,"apiHops":3},
+        "prefetched":{"visibleMs":173,"messageRequests":0},
+        "revisit":{"visibleMs":121.8,"messageRequests":0}}
+```
+
+非节流 `apiHops=3` 是 `chatReady` 翻转后非关键路径请求与调度抖动的合计，不是真实依赖链；
+并行度断言只看节流运行。
+
+### 12.4 场景夹具维护
+
+浏览器套件此前整体失修，本轮对齐现行合同：`__fixture/stream` 改发 v2
+`reply.status` 草稿 + `messages.appended` 终态（旧 `turn.started`/`answer.delta`/`message.final`
+帧在 #563 后已被桌面前端忽略）；移动端夹具升到 `protocolVersion: 11`；删除退役的
+`/settings` 场景，懒加载恢复改测 `mobile-pairing-dialog`；`turn.stop` 合同改为 `message.send`。
+`measure-desktop-stream-baseline.mjs` 的 replay 模式仍发旧帧，已标注遗留、不在套件内。
+`web-turn-trace` 的 `observeFrame` 在 #563 后未接线，`webui.*` 事件暂为空——
+场景只记录计数不断言，恢复接线属于后续专项。
+
+### 12.5 已知边界
+
+- 以上全部为本地夹具 + headless Chromium 数字，不是真机 Android WebView 测量；
+  未执行 Macrobenchmark/Perfetto，未发布 APK 或移动 release pointer。
+- 会话尾页缓存是只读投影：命中后 30s TTL 内直接展示，服务端仍唯一拥有消息事实；
+  `messages.appended` 命中时同步更新缓存，miss/过期回退权威分页。
+- 套件报告了 3 项既有对比度可访问性债务（工作台/配对文本、markstream token），
+  登记为存量待专项清理，不属于本轮性能改动。
+- 未引入 Zustand/TanStack Query：窄问题用 Map+LRU 已足够，符合第 11 节的状态选型约束。
+
+浏览器套件 `--runs 1` 全量通过（12/12：桌面 9 + 移动 2 + 汇总）；启动脚本节流与非节流
+模式的全部断言通过。

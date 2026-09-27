@@ -38,6 +38,7 @@ export interface DesktopSidebarProps {
   themeLabel: string;
   projects?: DesktopSidebarProjects;
   onSelectSession: (sessionId: string) => void;
+  onPrefetchSession?: (sessionId: string) => void;
   onCycleTheme: () => void;
   onOpenPairing: () => void;
   onNewChat: () => void;
@@ -51,6 +52,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   pendingSessionId,
   projects,
   onSelectSession,
+  onPrefetchSession,
   onOpenPairing,
   onNewChat,
 }: DesktopSidebarProps) {
@@ -108,6 +110,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           pendingSessionId={pendingSessionId}
           memoryInstalled={projects.memoryInstalled}
           onSelectSession={onSelectSession}
+          onPrefetchSession={onPrefetchSession}
           onNewProjectChat={projects.onNewChat}
           onCreateProject={projects.onCreate}
           onContinueProject={projects.onContinue}
@@ -126,6 +129,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           state: surface === "chat" && session.active ? <Check size={18} /> : null,
         }))}
         onSessionActivate={onSelectSession}
+        onSessionPrefetch={onPrefetchSession}
         pendingSessionId={pendingSessionId}
         sessionAfterContent={surface === "chat" && activeSessionId ? (
           <MobilePluginSlot name="drawer.panel" sessionId={activeSessionId} />

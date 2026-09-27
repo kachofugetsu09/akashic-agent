@@ -12,8 +12,11 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextvars import Context as TaskContext
 from dataclasses import asdict
 from pathlib import Path
+from time import monotonic
 from typing import Any, Literal, TypeVar, cast
 from uuid import uuid4
+
+from core.common.diagnostic_log import log_event
 
 from agent.control.frame_book import FrameBook
 from agent.host_bridge.plugin_execution import (
@@ -2046,9 +2049,26 @@ class PluginManager:
                 for item in runtimes
                 if item.runtime_root == runtime_root
             )
-            environment = self._python_environments.open(
-                refs[runtime.runtime_root], generation.code_dir, runtime
-            )
+            environment_ref = refs[runtime.runtime_root]
+            started_at = monotonic()
+            try:
+                environment = self._python_environments.open(
+                    environment_ref, generation.code_dir, runtime
+                )
+            finally:
+                duration = monotonic() - started_at
+                if duration >= 1.0:
+                    try:
+                        log_event(
+                            logger, logging.WARNING, "plugin.python_environment.slow",
+                            plugin_id=generation.plugin_id,
+                            generation_id=generation.generation_id,
+                            source=environment_ref,
+                            duration_ms=round(duration * 1000, 3),
+                        )
+                    except Exception:
+                        # 诊断出口失败不能改变环境校验结果或掩盖原始异常。
+                        pass
         return materialize_command(
             generation.code_dir, runtimes, command, cwd, environment_root=environment
         )

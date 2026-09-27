@@ -39,6 +39,7 @@ export function ConversationNavigation({
   destinations,
   sessions,
   onSessionActivate,
+  onSessionPrefetch,
   pendingSessionId,
   actions,
   closeAction,
@@ -52,6 +53,7 @@ export function ConversationNavigation({
   destinations: ConversationDestination[];
   sessions: ConversationSession[];
   onSessionActivate: (sessionId: string) => void;
+  onSessionPrefetch?: (sessionId: string) => void;
   pendingSessionId?: string;
   actions: ConversationAction[];
   closeAction?: ReactNode;
@@ -100,6 +102,8 @@ export function ConversationNavigation({
               aria-busy={pendingSessionId === session.id || undefined}
               title={session.preview ? `${session.title} · ${session.preview}` : session.title}
               onClick={() => onSessionActivate(session.id)}
+              onPointerEnter={() => onSessionPrefetch?.(session.id)}
+              onFocus={() => onSessionPrefetch?.(session.id)}
             >
               <span className="conversation-session__copy">
                 <span className="conversation-session__title">
