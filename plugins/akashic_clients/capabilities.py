@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agent.plugin_composition import MODEL_CALL_STATS, MODEL_CATALOG
-from agent.plugin_composition.commands import COMMANDS
+from agent.plugin_composition import MODEL_CATALOG
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.runtime_catalog import (
@@ -30,7 +29,7 @@ from agent.plugin_contracts.reply import (
 )
 from agent.plugin_contracts.ui import (
     MESSAGE_DISPLAY as MESSAGE_DISPLAY,
-    MOBILE_UI as MOBILE_UI,
+    PLUGIN_UI as PLUGIN_UI,
 )
 
 if TYPE_CHECKING:
@@ -69,12 +68,10 @@ CLIENT_CAPABILITIES = (
     RUNTIME_CATALOG,
     RUNTIME_MCP_DETAIL,
     MESSAGE_CATALOG,
-    COMMANDS,
     MESSAGE_DISPLAY,
-    MOBILE_UI,
+    PLUGIN_UI,
     WEB_UI,
     MODEL_CATALOG,
-    MODEL_CALL_STATS,
     MODEL_SELECTION,
     REPLY_STATUS,
     *INSPECTION_RPC_KEYS,
@@ -91,7 +88,6 @@ __all__ = [
     "INSPECTION_RPC_KEYS",
     "INSPECTION_SKILLS_LIST",
     "MODEL_CALL",
-    "MODEL_CALL_STATS",
     "MODEL_CATALOG",
     "MODEL_CATALOG_RPC",
     "MODEL_COMMAND",
@@ -99,7 +95,7 @@ __all__ = [
     "MODEL_RPC_KEYS",
     "MODEL_SELECTION",
     "MESSAGE_DISPLAY",
-    "MOBILE_UI",
+    "PLUGIN_UI",
     "WEB_UI",
     "ReplyStatusReader",
     "ModelSelectionReader",

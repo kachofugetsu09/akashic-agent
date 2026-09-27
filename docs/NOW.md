@@ -27,18 +27,9 @@
 验收必须覆盖 Core-only CLI/AppRuntime、独立子集和异名 provider、generation/归档生命周期、
 实际 Message 与持久送达闭环；不能以 import 数量清零代替这些证据。
 
-## P0 · Akashic Channel 与 Web/Mobile Adapter 实现
+## P1 · Android Shell 真实设备验收
 
-[Akashic Channel 与 Web/Mobile Adapter 规格](design/akashic-channel-client-adapters.md) 已确认
-一个 `akashic` Channel、两个薄 adapter 和一次 breaking rekey。渠道归属按
-[0067](decisions/0067-clients-are-ordinary-plugin.md) 修订为普通插件。实现已获授权，当前核对
-Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步；不得直接迁正式 workspace。
-
-## P1 · 移动端主题 token 边界
-
-[`移动端投影审计 D2`](design/mobile-projection-audit.md) 已确认原生壳 Compose 色板与 Core WebUI CSS token 是两个渲染层的表示，不是重复 owner。仍需决定色值一致性由构建期产物还是显式 token 边界保证。
-
-- 移动端用户 checkout 存在未提交 Theme diff（Theme.kt 等 5 个文件）；D2 决策（原生壳与 WebUI token 边界）完成前不得合入。
+按 [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) 完成旧移动协议与 OTA 源码退役。正式部署后另行核对 Shell 的 Web 聊天、后台通知和断线重放；旧 workspace 数据物理清理需独立清单、备份和授权。
 
 ## P0 · 单图插件系统与局部换代（Issue 750）
 
@@ -64,7 +55,7 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 核对外部已安装插件的显式依赖声明、公共合同导入与真实分发组合。
 [Issue 766 本地实现](design/issue-766-orthogonal-capabilities.md) 已完成合同和宿主装配收敛；
-内置插件验证不能代替外部安装、正式发布或真实 Mobile 客户端验收。
+内置插件验证不能代替外部安装、正式发布或真实 Android Shell 客户端验收。
 
 ## P0 · 正交化概念基线
 

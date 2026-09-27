@@ -72,7 +72,7 @@ class ScopedRpcRuntimeInspection:
         return await self._call(INSPECTION_JOBS_GET, {"job_id": job_id})
 
     async def list_capabilities(self) -> dict[str, object]:
-        """Restore the existing Mobile aggregate from one request generation."""
+        """Restore the existing Web aggregate from one request generation."""
 
         async with self._open_scope() as scope:
             payload = dict(scope.require(RUNTIME_CATALOG)(scope))

@@ -7,14 +7,14 @@
 
 ## 背景
 
-Akashic 服务一个人。Telegram、QQ、Mobile、Web Chat、设备和 session 是同一位用户与同一个 Agent 相遇的渠道，不构成多租户权限边界。此前安全扫描把认证、Origin、per-channel ACL、peer trust 和 device isolation 混入待办，既不符合产品模型，也会割裂全局记忆和跨渠道陪伴。既有 Mobile QR pairing、控制面握手、查询授权、设备撤销和实时协议仍然有效；本决定不削弱这些控制面机制。
+Akashic 服务一个人。Telegram、QQ、Web Chat、Android Shell、设备和 session 是同一位用户与同一个 Agent 相遇的渠道，不构成多租户权限边界。此前安全扫描把认证、Origin、per-channel ACL、peer trust 和 device isolation 混入待办，既不符合产品模型，也会割裂全局记忆和跨渠道陪伴。旧客户端控制面已由 [0076](0076-android-shell-retires-legacy-mobile-stack.md) 退役。
 
 ## 决定
 
 1. 所有已进入渠道的消息按服务对象本人处理；本轮不增加认证、Origin 或渠道/设备/session ACL。
 2. runtime provenance 与模型参数分离。普通工具不接受原始 channel/chat/session；`message_push` 与 Schedule 只在语义需要时接受显式 target。
 3. Peer 能力整体退役，不保留第二套主体或路由。
-4. 只为外部边界、容量、持久化连续性和错误可观察性建立限制：Schedule 10、MCP material window 100、receipt 7 天/10,000 条/64 MiB、control replay 256 events/4 MiB/32 MiB/5 分钟。
+4. 只为外部边界、容量、持久化连续性和错误可观察性建立限制；旧客户端的 receipt 与 control replay 限额随其入口退役。
 5. `web_fetch` 可按单人本地使用需要访问 localhost、私网和内网 HTTP 服务；大响应仍转入 execution-owned 临时文件，合法大响应不是拒绝理由。MCP 坏 item quarantine；receipt、reservoir、replay 的物理减少各自遵守 owner 和恢复证据。
 6. 可恢复失败不会结束 runtime，也不回滚已经提交的 turn 或外部效果；权威状态损坏和无法建立 owner 才 fail-loud。
 

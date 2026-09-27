@@ -6,7 +6,6 @@ Protocol；客户端插件不导入 bootstrap、Core runtime 或其他插件实�
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -17,23 +16,22 @@ from agent.plugin_composition.messages import InvalidPage, MessageConflict
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from agent.plugin_composition.models import (
     ChatModelSelection,
-    ModelCallStats,
     ModelCatalogSnapshot,
 )
 from agent.plugin_composition.ui import (
     WebUiProvider as WebUiProvider,
 )
 from agent.plugin_composition.ui_slots import (
-    MobileUiPluginUnavailable,  # noqa: F401 - 显式再导出给本插件消费者。
-    MobileUiQueryOverloaded,  # noqa: F401 - 显式再导出给本插件消费者。
-    MobileUiQueryTimeout,  # noqa: F401 - 显式再导出给本插件消费者。
-    MobileUiRpcExecutionError,  # noqa: F401 - 显式再导出给本插件消费者。
-    MobileUiRpcInvalidRequest,  # noqa: F401 - 显式再导出给本插件消费者。
-    MobileUiStaleRevision,  # noqa: F401 - 显式再导出给本插件消费者。
+    PluginUiPluginUnavailable,  # noqa: F401 - 显式再导出给本插件消费者。
+    PluginUiQueryOverloaded,  # noqa: F401 - 显式再导出给本插件消费者。
+    PluginUiQueryTimeout,  # noqa: F401 - 显式再导出给本插件消费者。
+    PluginUiRpcExecutionError,  # noqa: F401 - 显式再导出给本插件消费者。
+    PluginUiRpcInvalidRequest,  # noqa: F401 - 显式再导出给本插件消费者。
+    PluginUiStaleRevision,  # noqa: F401 - 显式再导出给本插件消费者。
 )
 from agent.plugin_contracts.message import Message
 from agent.plugin_contracts.ui import (
-    MobileUiProvider as MobileUiProvider,
+    PluginUiProvider as PluginUiProvider,
 )
 
 
@@ -121,7 +119,7 @@ class ToolCallCompletedEvent(Protocol):
 
 
 class AttachmentStorePort(Protocol):
-    """客户端临时上传与 Mobile 分片共享的文件 owner。"""
+    """客户端临时上传与 旧上传分片共享的文件 owner。"""
 
     root: Path
     def create_path(self, prefix: str, suffix: str) -> Path: ...
@@ -166,7 +164,6 @@ class MessageCatalogPort(Protocol):
 ReplyStatusPort = Callable[[str], AsyncGenerator[dict[str, object], None]]
 ModelCatalogReader = Callable[[], Awaitable[ModelCatalogSnapshot]]
 ModelSelectionReader = Callable[[Mapping[str, object]], Awaitable[ChatModelSelection]]
-ModelStatsReader = Callable[[str], Awaitable[ModelCallStats]]
 
 
 
@@ -189,21 +186,8 @@ class RuntimeInspectionService(Protocol):
     async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]: ...
 
 
-
-
 class ModelRpcInvoker(Protocol):
     async def invoke_rpc(self, method: str, params: Mapping[str, object]) -> object: ...
-
-
-class MobilePairingAdminPort(Protocol):
-    def create_offer(self) -> dict[str, object]: ...
-    def pending_claim(self, pairing_id: str) -> dict[str, object] | None: ...
-    def approve(self, pairing_id: str, confirmation_code: str) -> dict[str, object]: ...
-
-
-def turn_milestone(logger: logging.Logger, event: str, **fields: object) -> None:
-    """记录不含正文的客户端时序观察；权威状态仍由宿主 owner 保存。"""
-    logger.info(event, extra={"event": event, **fields})
 
 
 def default_chat_model_id(snapshot: ModelCatalogSnapshot) -> str:
@@ -212,7 +196,7 @@ def default_chat_model_id(snapshot: ModelCatalogSnapshot) -> str:
 
 
 def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, object]]:
-    """把公共模型目录投影为既有 Web/Mobile DTO。"""
+    """把公共模型目录投影为既有 Web DTO。"""
     roles_by_model: dict[str, list[str]] = {}
     for role, model_id in snapshot.role_bindings.items():
         roles_by_model.setdefault(model_id, []).append(role)
@@ -253,7 +237,7 @@ __all__ = [
     "MessagePagePort", "MessageReaderPort", "SessionEntryPort", "SessionPagePort", "Message",
     "StreamDeltaReadyEvent", "ToolCallCompletedEvent", "ToolCallStartedEvent", "TurnOutputCompletedEvent",
     "TurnStartedEvent",
-    "ModelCatalogReader", "ModelCatalogSnapshot", "ModelCallStats", "ModelControlUnavailable",
-    "ModelSelectionReader", "ModelStatsReader", "MobilePairingAdminPort", "RuntimeInspectionError", "RuntimeInspectionService",
-    "default_chat_model_id", "project_chat_runtimes", "turn_milestone",
+    "ModelCatalogReader", "ModelCatalogSnapshot", "ModelControlUnavailable",
+    "ModelSelectionReader", "RuntimeInspectionError", "RuntimeInspectionService",
+    "default_chat_model_id", "project_chat_runtimes",
 ]

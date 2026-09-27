@@ -21,9 +21,9 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     UI_SLOTS,
     Context,
-    MobileUiDefinition,
-    MobileUiNavigation,
-    MobileUiRpcInvalidRequest,
+    PluginUiDefinition,
+    PluginUiNavigation,
+    PluginUiRpcInvalidRequest,
     ServiceKey,
 )
 from agent.plugin_composition.bindings import BINDINGS
@@ -253,29 +253,29 @@ async def apply(ctx: Context) -> None:
     def get_inspector() -> RecallInspector:
         """返回正式 runtime 绑定的只读查询投影。"""
         if not running or inspector is None:
-            raise MobileUiRpcInvalidRequest("Akasha 查询读取尚未启动")
+            raise PluginUiRpcInvalidRequest("Akasha 查询读取尚未启动")
         return inspector
 
     def query_policy(method: str, payload: dict[str, object]) -> dict[str, object]:
         """宽键策略只按 (维度, 取值) 读写；Akasha 不知道维度由哪个插件拥有。"""
         dimension, value = payload.get("dimension"), payload.get("value")
         if not isinstance(dimension, str) or not isinstance(value, str) or not value:
-            raise MobileUiRpcInvalidRequest("记忆策略需要维度和取值")
+            raise PluginUiRpcInvalidRequest("记忆策略需要维度和取值")
         try:
             if method == "scope.policy.get":
                 if set(payload) != {"dimension", "value"}:
-                    raise MobileUiRpcInvalidRequest("记忆策略查询参数无效")
+                    raise PluginUiRpcInvalidRequest("记忆策略查询参数无效")
                 return {"learn": policies.read(dimension, value), "choices": list(LEARN_POLICIES)}
             learn = payload.get("learn")
             if set(payload) != {"dimension", "value", "learn"} or learn not in LEARN_POLICIES:
-                raise MobileUiRpcInvalidRequest("记忆策略只能是 global、isolated 或 off")
+                raise PluginUiRpcInvalidRequest("记忆策略只能是 global、isolated 或 off")
             return {"learn": policies.set(dimension, value, cast(LearnPolicy, learn))}
-        except MobileUiRpcInvalidRequest:
+        except PluginUiRpcInvalidRequest:
             raise
         except PolicyLocked as error:
-            raise MobileUiRpcInvalidRequest(str(error)) from error
+            raise PluginUiRpcInvalidRequest(str(error)) from error
         except ValueError as error:
-            raise MobileUiRpcInvalidRequest(f"记忆策略范围无效: {error}") from error
+            raise PluginUiRpcInvalidRequest(f"记忆策略范围无效: {error}") from error
 
     def query(method: str, payload: dict[str, object], *, session_id: str | None,
               turn_id: str | None) -> dict[str, object]:
@@ -289,33 +289,33 @@ async def apply(ctx: Context) -> None:
                 or not isinstance(offset, int) or isinstance(offset, bool) or offset < 0
                 or not isinstance(payload["message_id"], str) or not payload["message_id"]
                 or not isinstance(payload["source"], str)):
-                raise MobileUiRpcInvalidRequest("检索卡片缺少消息或会话")
+                raise PluginUiRpcInvalidRequest("检索卡片缺少消息或会话")
             return inspector.for_turn(session_id, payload["message_id"], payload["source"],
                                       ctx.require(TURN_PROJECTION), offset=offset)
         if method == "inspector.recent":
             try:
                 page = InspectorPage.model_validate(payload)
             except ValidationError as error:
-                raise MobileUiRpcInvalidRequest("检索页码或每页数量无效") from error
+                raise PluginUiRpcInvalidRequest("检索页码或每页数量无效") from error
             return inspector.recent(page=page.page, page_size=page.page_size)
         if method == "inspector.detail":
             if set(payload) != {"query_id"} or not isinstance(payload["query_id"], str):
-                raise MobileUiRpcInvalidRequest("请选择一条检索记录")
-            detail = inspector.mobile_detail(payload["query_id"])
+                raise PluginUiRpcInvalidRequest("请选择一条检索记录")
+            detail = inspector.plugin_detail(payload["query_id"])
             if detail is None:
-                raise MobileUiRpcInvalidRequest("检索记录不存在，请刷新列表")
+                raise PluginUiRpcInvalidRequest("检索记录不存在，请刷新列表")
             return detail
-        raise MobileUiRpcInvalidRequest(f"不支持的 Akasha 查询：{method}")
+        raise PluginUiRpcInvalidRequest(f"不支持的 Akasha 查询：{method}")
 
-    async def register_mobile(child: Context) -> None:
+    async def register_plugin_ui(child: Context) -> None:
         # UI provider 在事件循环持有调用作用域，线程回调不能再次进入 entrypoint。
-        _ = await child.require(UI_SLOTS).register_mobile(
-            child, MobileUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
                                     slots=("turn.before_reasoning",),
-                                    navigation=MobileUiNavigation(label="Akasha Inspector",
+                                    navigation=PluginUiNavigation(label="Akasha Inspector",
                                         description="查看实际检索及呈现的原消息")), query=query,
         )
-    _ = await ctx.inject((UI_SLOTS, AKASHA_RECORDS_VIEW), register_mobile, name="mobile-ui")
+    _ = await ctx.inject((UI_SLOTS, AKASHA_RECORDS_VIEW), register_plugin_ui, name="plugin-ui")
 
     def select_learning() -> tuple[str, LearningConfig, str]:
         try:

@@ -19,7 +19,6 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
   const sockets = new Set();
   const receivedFrames = [];
   const receivedRequests = [];
-  let pairingCreateCount = 0;
   let historyDelayMs = 0;
   const websocketServer = new WebSocketServer({ noServer: true });
   websocketServer.on("connection", (socket) => {
@@ -56,20 +55,6 @@ export async function startDesktopFixtureServer(root, { port = 0, historyCount =
         sha256: "a".repeat(64),
         upload_url: `/api/chat/artifacts/fixture-artifact-${filename}`,
       });
-    }
-    if (request.method === "POST" && url.pathname === "/api/chat/mobile-pairing") {
-      pairingCreateCount += 1;
-      await delay(300);
-      return sendJson(response, desktopPairingOffer(pairingCreateCount));
-    }
-    if (request.method === "GET" && /^\/api\/chat\/mobile-pairing\/fixture-pairing-/u.test(url.pathname)) {
-      return sendJson(response, {
-        pairing_id: url.pathname.split("/").at(-1), status: "waiting_for_desktop_confirmation",
-        device_name: "Pixel 7", confirmation_code: "358864", capabilities: ["chat"],
-      });
-    }
-    if (request.method === "POST" && /\/approve$/u.test(url.pathname)) {
-      return sendJson(response, { device_id: "pixel-7", display_name: "Pixel 7" });
     }
     const settings = await settingsFixtureResponse(request, url, receivedRequests);
     if (settings !== undefined) return sendJson(response, settings);
@@ -262,21 +247,6 @@ async function readJson(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-}
-
-function desktopPairingOffer(sequence) {
-  return {
-    protocol_version: 1,
-    server_id: "fixture-server",
-    server_application_key_fingerprint: "fixture-fingerprint",
-    server_application_public_key: "fixture-public-key",
-    lan_endpoints: ["wss://192.0.2.1/ws"],
-    tunnel_endpoints: [],
-    tls_spki_pins: ["fixture-pin"],
-    pairing_id: `fixture-pairing-${sequence}`,
-    one_time_secret: `fixture-secret-${sequence}`,
-    expires_at: new Date(Date.now() + 60_000).toISOString(),
-  };
 }
 
 function fixtureApiResponse(url, messageCount) {

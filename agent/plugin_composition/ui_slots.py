@@ -12,7 +12,7 @@ from agent.plugin_composition.model import (
 
 
 @dataclass(frozen=True)
-class MobileUiAsset:
+class PluginUiAsset:
     module: str
     module_sha256: str
     module_bytes: int
@@ -24,14 +24,14 @@ class MobileUiAsset:
     slots: tuple[str, ...]
 
 
-MobileUiSlot = Literal[
+PluginUiSlot = Literal[
     "turn.before_reasoning",
     "turn.before_tool",
     "turn.after_answer",
     "drawer.panel",
 ]
 
-MOBILE_UI_SLOTS = frozenset(
+PLUGIN_UI_SLOTS = frozenset(
     {
         "turn.before_reasoning",
         "turn.before_tool",
@@ -41,7 +41,7 @@ MOBILE_UI_SLOTS = frozenset(
 )
 
 
-class MobileUiQueryHandler(Protocol):
+class PluginUiQueryHandler(Protocol):
     def __call__(
         self,
         method: str,
@@ -52,47 +52,47 @@ class MobileUiQueryHandler(Protocol):
     ) -> object: ...
 
 
-class MobileUiRpcInvalidRequest(ValueError):
-    """Signal a request rejected by the plugin-owned mobile projection."""
+class PluginUiRpcInvalidRequest(ValueError):
+    """Signal a request rejected by the plugin-owned UI projection."""
 
 
-class MobileUiPluginUnavailable(LookupError):
-    """Signal that the requested Mobile UI owner is not available."""
+class PluginUiPluginUnavailable(LookupError):
+    """Signal that the requested Plugin UI owner is not available."""
 
 
-class MobileUiStaleRevision(LookupError):
-    """Signal that a Mobile UI request names an old registration revision."""
+class PluginUiStaleRevision(LookupError):
+    """Signal that a Plugin UI request names an old registration revision."""
 
 
-class MobileUiQueryTimeout(TimeoutError):
-    """Signal that a Mobile UI query exceeded its caller-visible deadline."""
+class PluginUiQueryTimeout(TimeoutError):
+    """Signal that a Plugin UI query exceeded its caller-visible deadline."""
 
 
-class MobileUiQueryOverloaded(RuntimeError):
-    """Signal that the bounded Mobile UI query admission is full."""
+class PluginUiQueryOverloaded(RuntimeError):
+    """Signal that the bounded Plugin UI query admission is full."""
 
 
-class MobileUiRpcExecutionError(RuntimeError):
-    """Signal that a Mobile UI handler failed while executing its RPC."""
+class PluginUiRpcExecutionError(RuntimeError):
+    """Signal that a Plugin UI handler failed while executing its RPC."""
 
 
 @dataclass(frozen=True, slots=True)
-class MobileUiNavigation:
+class PluginUiNavigation:
     label: str
     description: str
 
 
 @dataclass(frozen=True, slots=True)
-class MobileUiDefinition:
+class PluginUiDefinition:
     module: str
     stylesheet: str | None = None
-    navigation: MobileUiNavigation | None = None
-    slots: tuple[MobileUiSlot, ...] = ()
+    navigation: PluginUiNavigation | None = None
+    slots: tuple[PluginUiSlot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
-class MobileUiDescriptor:
-    """Describe immutable mobile assets without retaining executable handlers."""
+class PluginUiDescriptor:
+    """Describe immutable plugin assets without retaining executable handlers."""
 
     owner: str
     module_sha256: str
@@ -104,29 +104,29 @@ class MobileUiDescriptor:
     slots: tuple[str, ...]
 
 @dataclass(frozen=True, slots=True)
-class MobileUiBinding:
+class PluginUiBinding:
     """Bind one descriptor and its handlers to one exact contributor Context."""
 
-    descriptor: MobileUiDescriptor
-    asset: MobileUiAsset
-    query: MobileUiQueryHandler
+    descriptor: PluginUiDescriptor
+    asset: PluginUiAsset
+    query: PluginUiQueryHandler
     available: Callable[[], bool]
     context: Context
     registration_uuid: str
 
 
 class UiSlots(Protocol):
-    """Expose the current Mobile registrations owned by the UI provider."""
+    """Expose the current plugin registrations owned by the UI provider."""
 
     @property
     def root_instance_token(self) -> object: ...
 
-    async def register_mobile(
-        self, ctx: Context, definition: MobileUiDefinition, *,
-        query: MobileUiQueryHandler, available: Callable[[], bool] | None = None,
+    async def register_plugin_ui(
+        self, ctx: Context, definition: PluginUiDefinition, *,
+        query: PluginUiQueryHandler, available: Callable[[], bool] | None = None,
     ) -> Effect: ...
 
-    def bindings(self) -> tuple[MobileUiBinding, ...]: ...
+    def bindings(self) -> tuple[PluginUiBinding, ...]: ...
 
 
 UI_SLOTS = ServiceKey[UiSlots]("core.ui_slots")

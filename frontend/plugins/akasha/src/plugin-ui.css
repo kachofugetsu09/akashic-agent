@@ -1,0 +1,65 @@
+@import "../../../../plugins/akasha/plugin_ui.css";
+
+.akasha-plugin-ui-inspector .akasha-plugin-ui-memories li > div {
+  min-width: 0;
+}
+
+.akasha-plugin-ui-inspector article {
+  margin-block-start: 12px;
+}
+
+.akasha-plugin-ui-inspector small {
+  overflow-wrap: anywhere;
+  color: var(--ak-color-text-secondary, var(--ak-color-text-primary));
+}
+
+.akasha-plugin-ui-inspector > nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.akasha-plugin-ui-inspector > nav button,
+.akasha-plugin-ui-inspector > button {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--akasha-plugin-ui-rule-strong);
+  border-radius: var(--akasha-plugin-ui-radius-sm);
+  background: var(--ak-color-bg-surface);
+  color: var(--ak-color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.akasha-plugin-ui-inspector > nav button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.akasha-plugin-ui-inspector button:focus-visible {
+  outline: 2px solid var(--akasha-plugin-ui-accent);
+  outline-offset: 2px;
+}
+
+.akasha-plugin-ui-query-status {
+  margin-block: 8px;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+.akasha-plugin-ui-query-status button {
+  min-height: 44px;
+  padding-inline: 12px;
+  border: 0;
+  border-radius: var(--akasha-plugin-ui-radius-sm);
+  background: transparent;
+  color: var(--akasha-plugin-ui-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.akasha-plugin-ui-query-status button:focus-visible {
+  outline: 2px solid var(--akasha-plugin-ui-accent);
+  outline-offset: 2px;
+}

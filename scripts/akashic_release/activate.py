@@ -164,9 +164,6 @@ def release_environment(
             "AKASHIC_PUBLISHED_WEB_PORT": values.get(
                 "AKASHIC_PUBLISHED_WEB_PORT", "2236"
             ),
-            "AKASHIC_PUBLISHED_MOBILE_PORT": values.get(
-                "AKASHIC_PUBLISHED_MOBILE_PORT", "6323"
-            ),
             "AKASHIC_SERVICES_NETWORK": values.get(
                 "AKASHIC_SERVICES_NETWORK", "akashic-services"
             ),

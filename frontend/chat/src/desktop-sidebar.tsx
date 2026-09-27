@@ -2,11 +2,10 @@ import {
   Check,
   MessageSquarePlus,
   Search,
-  Smartphone,
 } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import { ConversationNavigation, type ConversationSession } from "./conversation-navigation";
-import { MobilePluginSlot } from "./mobile-plugin-runtime";
+import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ProjectNavigation, type ProjectSessionItem } from "./project-navigation";
 import type { PendingProjectRow, ProjectMemory, ProjectRow } from "./web-projects";
 
@@ -40,7 +39,6 @@ export interface DesktopSidebarProps {
   onSelectSession: (sessionId: string) => void;
   onPrefetchSession?: (sessionId: string) => void;
   onCycleTheme: () => void;
-  onOpenPairing: () => void;
   onNewChat: () => void;
 }
 
@@ -53,7 +51,6 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   projects,
   onSelectSession,
   onPrefetchSession,
-  onOpenPairing,
   onNewChat,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
@@ -123,6 +120,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         destinationHeading={false}
         sessionHeading="最近会话"
         destinations={[]}
+        actions={[]}
         sessions={recentSessions.map((session) => ({
           ...session,
           active: surface === "chat" && session.active,
@@ -132,16 +130,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onSessionPrefetch={onPrefetchSession}
         pendingSessionId={pendingSessionId}
         sessionAfterContent={surface === "chat" && activeSessionId ? (
-          <MobilePluginSlot name="drawer.panel" sessionId={activeSessionId} />
+          <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} />
         ) : undefined}
-        actions={[
-          {
-            id: "connect-mobile",
-            icon: <Smartphone size={18} />,
-            label: "连接手机",
-            onActivate: onOpenPairing,
-          },
-        ]}
       />
     </aside>
   );

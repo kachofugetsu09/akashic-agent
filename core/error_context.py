@@ -9,12 +9,6 @@ current_session_key: ContextVar[str | None] = ContextVar(
     "akashic_current_session_key", default=None
 )
 
-# 当前 turn 的客户端消息标识（mobile message.send 的 client_message_id），
-# 用于跨端 turn 时间链在 provider/context 里程碑处保持同一关联身份。
-current_client_message_id: ContextVar[str] = ContextVar(
-    "akashic_current_client_message_id", default=""
-)
-
 # 一次逻辑 provider 调用的中性 telemetry 身份（唯一 neutral owner 定义在这里）。
 # 高层（passive_turn 的 _call_provider / _call_compaction_summary）在逻辑调用
 # 起点 set、finally 精确 reset；底层（ChatCompletions transport/http/raw、

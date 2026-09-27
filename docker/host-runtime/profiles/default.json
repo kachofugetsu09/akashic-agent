@@ -23,9 +23,6 @@
           "web": {
             "enabled": true,
             "socket_path": ""
-          },
-          "mobile_realtime": {
-            "enabled": false
           }
         }
       }
@@ -115,7 +112,7 @@
     {
       "name": "runtime_inspection",
       "depends_on": [],
-      "reason": "提供 Web/Mobile 所需的文档、技能和任务只读检查投影。"
+      "reason": "提供 Web 所需的文档、技能和任务只读检查投影。"
     },
     {
       "name": "prompt",
@@ -155,7 +152,7 @@
     {
       "name": "akashic_clients",
       "depends_on": ["models", "reply", "runtime_inspection", "ui", "commands", "channels"],
-      "reason": "提供可替换的 Akashic Web/Mobile 普通 channel；客户端配置和生命周期归插件。"
+      "reason": "提供可替换的 Akashic Web 普通 channel；客户端配置和生命周期归插件。"
     },
     {
       "name": "eventmail",
@@ -170,7 +167,7 @@
     {
       "name": "akashic_sender",
       "depends_on": ["delivery"],
-      "reason": "确认已提交到 Akashic Session 的消息；Web/Mobile 继续从日志同步。"
+      "reason": "确认已提交到 Akashic Session 的消息；Web 继续从日志同步。"
     },
     {
       "name": "delivery_policy",

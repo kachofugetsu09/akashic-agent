@@ -1,5 +1,7 @@
 # Issue 750：单图插件系统与局部换代任务拆分
 
+2026-09-28 对账：本文件按工单保留的旧 Mobile、Gateway、ticket、OTA 和客户端 Gate 记录均为历史证据，不再是当前能力、接口或验收要求。当前 Android Shell 分工见 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md)；插件公开接口以 [V3 能力手册](plugin-v3-capabilities.md) 和真实源码为准。
+
 ## 2026-09-24 · 本地收口与运行验收边界
 
 本节说明单图收口后的代码和验收边界。下方按日期、工单保存的 WIP、旧失败和
@@ -1413,169 +1415,19 @@ T-e87866 当批不改 production、测试源码或 formal durable data：Message
 | 4 Binding 持久 metadata/真实引用（事实已纠正） | bindings.py:66-… bind（验 lease root、service，归档 components/root_ref/service/metadata）；channels/provider.py:879 `_bindings` 是内存 dict 键 `(snapshot_id, channel_name)`，:942-949 已有 uuid `binding_token` 与 `activation_token`；bus/queue.py durable 用 handoff_id/channel/session/message 身份 | 内存键与运行期 fence 按 snapshot_id | binding 归档身份不变；运行期 fence 与内存键随消费者迁移（T03b 按真实消费者改）；持久描述若无已证实变化不迁，不发明"全图冻结 ID" | T03b/T04 按真实消费者迁运行 binding/fence；本轮不写数据 |
 | 5 UI/状态只读身份（非单纯展示） | ui/plugin.py 的 live catalog/state；**frontend/dashboard/src/webHost.ts 与 agent/plugins/dashboard_host.py 用 snapshotId/catalogId/module generation 拒绝旧页面请求**；plugins/ui/web.py `build_web_ui_catalog` identity 含 registration UUID、plugin_id、generation_id、模块/样式/contract 摘要；Mobile 使用 Root generation_id 与 registration UUID 派生 plugin_revision | snapshotId/catalogId/plugin_revision 兼作请求 fence | Web snapshotId 用 Root generation_id，catalogId 与 Mobile revision 都来自真实登记事实；不为只读字段持全图 lease | Web/Dashboard 与 Mobile 目标接线，均待 review |
 
-#### T03a-UI · 单一登记图与公开身份契约（Dashboard R3/A1-A3 与 Mobile R2 静态通过；测试未运行）
+#### T03a-UI · Web 与插件 UI 的当前登记边界
 
-这一节是当前 Web/Dashboard 实现与待审验收合同。当前真实 owner 和消费者如下；
-Core 只提供组合、Fiber/Effect 和实际 owner scope，不另建第二 registry、全局 `ACTIVE` 或 UI 专用
-lease。
+`plugins/ui/plugin.py` 的 `Ui.register` 只登记 Web/Dashboard module；同一贡献 Context 的 registration Effect 拥有撤销。`DashboardResources` 持有实际 app/module/closeables，Host 仅持请求路由。浏览器请求用 Root、catalog 与 module generation 核对当前登记，目标 Context 的 scope 保护实际调用。UI catalog 是活动登记的只读投影，不建立第二个发布指针或持久 generation。
 
-| owner / 事实 | 当前真实登记、资源和消费者 | 只读投影 | 不由它拥有的事实 |
-|---|---|---|---|
-| `plugins/ui/plugin.py:Ui` | `Ui.register` 创建一个共享 `registration_uuid` 的 `Registration`；登记 Effect 先可见，再由同一 contributor 的 `RUNTIME_STARTING`/ACTIVE helper 建立 `DashboardResources`；Effect 持有 close/retry | `_entries` 是唯一登记表；`build_web_ui_catalog` 与 bindings 是无副作用当前 ACTIVE 投影 | Loader/PluginGeneration 持有模块、importer 与代码；Workload 持有进程；安装选择、归档来源、业务 artifact 不由 UI 持有 |
-| `plugins/ui/mobile.py:MobileUiSlots` | `_registrations` 以 `MobileUiBinding` 为唯一记录；`register_mobile` 的 Effect 撤销自己的 binding；binding 持有实际贡献 Context 与 registration UUID | `bindings()`/`contributors()` 只投影当前 Context；旧 owner 入口拒绝 `STALE_ACTIVATION` | 设备连接、query 结果、Message、artifact 与 plugin-data 不由 slots 持有 |
-| Dashboard | `DashboardResources` 持有 app/module/返回 closeables；bootstrap 在 `core.start/load` 前把同一 app.routes 交给 Manager；live host 使用 Root/UI provider，binding 携带原 contributor Context | app、route 与 Web 请求的 Root generation/catalog/module/generation fence | DashboardHost 不是资源 owner；Workload 进程也不归 host；资源关闭后不得裸调用 app |
-| Mobile query | `agent/plugins/mobile_ui.py:PluginMobileUiProvider` 持有 ThreadPoolExecutor、`_admitted_queries`、`_draining_queries`；`mobile_realtime/plugin_ui.py` 只持设备/插件 gate 与 request Task | catalog/asset/query 的当前 registration projection 与物理线程 drain | diagnostic `ContextVar` 不是 permit；ticket、设备撤销、plugin selection 与 archive 由各自 owner 解释 |
-| 客户端 wire | Web `frontend/dashboard/src/webHost.ts` 读取 state 并发送 header/WS identity；Mobile 使用 `plugin_revision`、`catalog_revision`、request owner 与 cancel | 页面/请求接受或拒绝其声明的当前 fence | 不把 per-request UUID、`id(ctx)` 或 RuntimeCatalog 展示 id 当成 incarnation |
-
-**登记、ACTIVE 与关闭顺序：**
+`plugins/ui/plugin_ui.py` 的 `PluginUiSlots.register_plugin_ui` 登记 Web 聊天中的插件卡片、导航和查询。唯一 binding 保留贡献 Context、registration UUID 与制品摘要；Effect 关闭只解除这条登记。`agent/plugins/plugin_ui.py` 的 `LivePluginUiProvider` 在实际 Root/贡献 Context scope 中读取 catalog、asset 和 query；同步 handler 的物理线程结束后才释放 admission 与目标许可，超时和取消不能提前宣称工作已结束。HTTP 层只通过 `core.plugin_ui.v1` 请求服务，不持有插件业务状态。
 
 ```text
-Ui/MobileUiSlots.register + registration Effect
-    → 登记在实际 Root 中可见
-    → 请求在实际目标 owner 上取得 admission
-    → 关闭新 admission
-    → 排空已接纳的 HTTP/query 与物理线程
-    → Effect 关闭 DashboardResources/移动端资源
+贡献 Context ── register_plugin_ui ── UI_SLOTS binding / Effect
+                                       │
+Web Chat ── HTTP catalog/asset/query ──┴─▶ 目标 Context scope ─▶ 有界 query
 ```
 
-`plugins/ui/apply` 提供 `UI` 与 `UI_SLOTS`，registration Effect 是每个 contributor 的登记与撤销 owner；
-Mobile 不再 seal，也不维护 snapshot projection。`DashboardResources.build` 在入口
-就把 `_started` 置为 true；它只在真实 contributor 的 `RUNTIME_STARTING`/ACTIVE scope 内执行，route tuple
-来自 host 的 `DASHBOARD_ROUTES`，不读目录、不创建第二 host route、不容忍失败。build/import/route 冲突失败
-不能重放 build；已经产生的 closeables 仍由原 Registration Effect 持有并可重试 close，原注册成功关闭后
-才允许新注册再 build。ACTIVE 目录读取只返回当前投影，不重放模块副作用。启动/关闭 hook 仍明确不支持；
-Loader 持有永久的 module/importer/code，DashboardResources 持有本次 closeables。注册类型/owner 与 Web
-合同由 provider 在边界校验；`build_web_ui_catalog` 只做纯 contract/digest/总字节投影，
-`_require_routes_available` 在 contributor 初始化前检查 route 冲突。可选 contract 语义保留。
-
-**身份：内容、来源与运行时 incarnation 分开。** `resolve_web_module` 的 JS/CSS/contract byte
-digest 只回答制品内容；当前 `build_web_ui_catalog` 的 identity 已包含 registration UUID、plugin id、generation id
-和这些摘要，并非“只 hash bytes”。registration UUID 已是现有登记记录的单一事实：同一 Context
-重新登记会生成新 UUID，catalog projection、live initializer、host 和请求 fence 只读取实际登记记录，
-不另造 activation 表或旁路状态：
-
-- Web 在 `Ui.register` 完成 provider/owner/path/contract 校验、创建 `Registration` 前生成一次，
-  写入该记录；`Ui.register` 是唯一 writer，Effect cleanup 只删除自己这条记录。catalog projection、
-  live initializer、host 和请求 fence 都只读该 UUID、generation、activation 与制品摘要。
-- Mobile 在 `MobileUiSlots.register_mobile` 完成 asset 和 callback 校验后生成一次，写入现有
-  `MobileUiBinding`；该注册函数是唯一 writer，`_register`/cleanup 不另造 identity。provider、
-  catalog、asset、query 和 cancel 只读实际 binding。
-- Web 的 artifact catalog bytes 仍是现有排序模块、原始 bytes、hash 与 contract 的 wire payload；
-  artifact digest、payload identity 和 registration-aware runtime fence 是三个不同事实。正式 live
-  Root 由 `agent/plugins/manager.py:802` 以 `plugins-live:` 加随机 token 创建；现有 wire 的
-  `snapshotId` 使用 `root.generation_id` 作为 Root incarnation。现有 `catalogId` wire slot 继续
-  是 opaque aggregate fence，固定 JSON 元组按 `plugin_id` 排序：
-  `(plugin_id, registration_uuid, generation_id, module_sha256, stylesheet_sha256 or "", contract_sha256)`，
-  对 UTF-8 JSON 做 SHA-256；不新增 schema 或字段，不使用 Root 全局 revision，也不拉回 SnapshotStore。
-- Mobile 的 `plugin_revision` 对固定 JSON 元组
-  `("mobile-ui", root.generation_id, plugin_id, registration_uuid)` 的 UTF-8 编码做 SHA-256，
-  不依赖不存在于 `PluginRuntime` 的 `source_revision`，也不另造 generation cache；asset byte sha
-  仍只回答内容。`catalog_revision` 仍是实际目录 payload 的 hash。现有 ticket/header 字段保持
-  opaque，不改签名或 schema。
-
-同一 `Context` 在相同 activation 内重新登记必须得到新 registration UUID；同一 Fiber 新 activation
-也必须得到新 runtime fence。无关 UI 插件的登记变化只改变 UI aggregate，不重启无关 backend；无关
-非 UI 插件不得改变 UI fence。Root incarnation 由现有 `root.generation_id` 表示，不能用 generation
-以外的全局 revision、byte hash、archive provenance 或 per-request UUID 冒充它。
-
-**Web owner 与 socket 关闭前置条件：** `Ui.bootstrap/state` 必须先进入 UI `Context.runtime_scope`
-再执行业务读取。`DashboardBinding`/resolver 必须携带现有 Registration 的原始 contributor
-Context；resolver 调 `ctx.require_runtime_owner(UI, ctx.require(UI))`，ASGI app 是可执行插件代码，
-不能在 scope 外裸调用。Core 只提供已经实现的 `RuntimeScope.wait_admission_closed()`：它只等待
-该 scope 所持 OwnerCall 捕获的 activation-local Event，不调用业务回调、不取得第二份资源所有权，
-也不改变正常 HTTP/query 排空。
-
-```text
-Fiber 撤 token / UNLOADING → admission Event.set → 现有 consumer 与 OwnerCall drain
-                                      └→ Dashboard future monitor wait
-                                           → cancel app → host join → app scope release
-```
-
-实现边界是：Fiber 在撤 token、置 `UNLOADING` 后同步 set Event，再执行现有
-`_owner_became_inactive → consumer/call drain → children → STOPPING → Effect` 顺序；Event 引用随
-OwnerCall 及其 `_retain` 固定在原 activation，重试卸载不 clear，下次 activation 新建 Event。Event
-不是新接纳条件，monitor 读到它也不能得到 `_current_runtime_scope`、capture 或执行许可；scope
-close 只结算 permit，已 close 的 scope 仍可观察原 Event。
-
-Dashboard 已接线：从现有 Registration 取得 exact Context，UI lookup 只做 catalog/binding/fence
-选择与 target capture；stale/forbidden 的 status/code 决定在 scope 内形成，实际拒绝 wire 在 scope
-退出后发送。已准入 request 在 target scope 内 capture 给 app child；独立 monitor 等同一 scope 的
-撤接纳 Event，返回后 cancel app，host 负责 cancel/join app 与 monitor。create_task 失败或 app
-首指令前取消时，创建方 close 未 enter 的 captured scope；已 enter 的 scope 只能由 app Task 的
-finally close。正常 app 先结束则 cancel/join monitor，不等待未来 unload；反复取消不能提前释放
-物理工作，不存新 socket/owner 表。Web/Dashboard consumer 已接线，R3 生产接线与 A1-A3 测试源已静态通过；
-行为测试未运行。Mobile consumer 同批已迁移到 async host 与真实 Root/Context scope；R2 已由主审与独立只读复核静态通过，测试未运行。
-
-**Mobile async 自持 scope 与结算：** `PluginMobileUiProvider` 只接受当前
-`CompositionRoot`。`catalog`、`asset`、`query` 先从该 Root 的 `UI_SLOTS` 取得真实 provider Context；
-catalog 对每个当前 ACTIVE registration 进入其贡献 Context，asset/query 也在目标 scope 内调用同步
-`available`。false 会从 catalog 省略并让 asset/query 明确不可用，不读资产或提交 handler；callback
-异常保持原样传播。asset/query 固定目标 binding、核对 registration-derived revision，再进入目标
-Context；外层 client request scope 只是 client boundary，不是 UI 授权。没有 Root snapshot、lease、
-fork 或同步/异步双模式 fallback。
-
-```text
-Root owns executor
-    └─ UI registration lookup
-         └─ exact contributor permit
-              └─ capture / child Task
-                   └─ physical thread
-                        └─ release → registration Effect
-```
-
-`plugins/ui/mobile.py` 的 `_registrations` 是唯一登记真相；每次注册只生成一个
-`uuid4().hex`，binding 保存原贡献 Context，Effect 关闭只删除自己的记录。同一 Context 关闭旧记录后
-重新登记得到新的 UUID；同 Fiber 新 activation 也得到新 revision。`available` 仍是同步 callback，
-但只在实际目标 Context scope 内运行。
-
-query 的第一步是冻结实际 registration、generation 与 permit，再创建 coroutine/Task；已由同一 Task
-保留目标 permit 的旧请求在 UNLOADING 中完成旧 handler，新 Task 的 stale/non-ACTIVE 请求明确失败。
-每个请求必须按以下表一次结算：
-
-| 阶段 | owner / 状态 | 失败或取消时的唯一结算 |
-|---|---|---|
-| slot reserve | provider 的 `_admission_lock`、`_admitted_queries` 与 scheduler request map | 未 reserve 不释放；已 reserve 只能由 query done/取消路径释放一次 |
-| target admission/capture | 实际 MobileUiBinding 的 Fiber/activation 与 request scope | capture 失败退还 slot；不能留下 partial OwnerCall |
-| coroutine/create_task | `PluginMobileUiProvider.query` 的 child Task | 同步 create 失败立即退还 capture 与 slot；首条指令前取消也走同一 done 结算 |
-| executor submit | provider 已登记的 physical query 与 bounded ThreadPoolExecutor | submit 失败保留可观察错误并释放逻辑 admission；不得伪造成功 |
-| timeout/caller cancel | scheduler/provider 只撤销等待方并进入 `_draining_queries` | shield/取消不能提前释放目标 permit；必须等待物理 worker settlement |
-| physical thread finish | `run_in_executor` wrapper 完成、取回异常/结果 | 线程真正返回后才从 draining/admitted 移除 |
-| final release | query Task done callback、OwnerCall、slot | release 与 map 删除幂等一次；provider `aclose` 关闭新 admission，累计取消并等待旧 work 与 executor shutdown；取消先发生而 shutdown 再失败时同时保留两类错误，失败保留同一 owner/retry |
-
-**本批 Web/Dashboard 与 Mobile 实现、删除合同（Dashboard R3 生产与 T98 A1-A3、Mobile R2 静态通过；测试未运行）：**
-本批盘点并迁移 Web/Dashboard 与 Mobile 的真实调用面：
-
-- 登记与协议：`plugins/ui/plugin.py` 的模块级 `apply` 与 `Ui.register/catalog/bootstrap/state`，`plugins/ui/mobile.py` 的 `MobileUiSlots` construction、
-  `register_mobile/_register`，以及 `agent/plugin_composition/ui.py`、`ui_slots.py` 的 protocol、
-  record 和 binding 字段；
-- Dashboard：`plugins/ui/dashboard.py` 的 resolver/build/closeables、`plugins/ui/web.py` 的
-  `resolve_web_module/build_web_ui_catalog/_validate_web_contracts`、`agent/plugins/dashboard_host.py`
-  的 live registry lookup、middleware、`_web_request_matches`、HTTP/WS app task，及
-  `bootstrap/dashboard_api.py` 的真实 construction；
-- Mobile：`MobileUiProvider`、handler/thread/query admission、Mobile wire fence、realtime
-  channel/provider 的 catalog/asset/query/cancel 已迁移到 async host 与真实 Root/Context owner；
-  gateway、ticket、设备 gate 和 wire shape 不变；本批只记录源码与测试源静态状态；
-- wire 与测试：Web `checkCurrent`、headers、WebSocket identity，Mobile `plugin_revision`/
-  `catalog_revision` 与 ticket 首先按 opaque 字段检查，只有源级契约证明需要时才改 passthrough；
-  现有生命周期/客户端测试必须观察真实 Task、listener、线程、owner 和 wire 结果。
-
-本批已删除 Web/Dashboard 直接调用点上的 whole-Root UI seal listener、`_catalog` 第二投影、
-旧 snapshot lease 的 construction/read、以 `snapshot.accepting_leases` 停止轮询及只为旧 preparer
-服务的分支；Mobile 同批删除 `FrozenMobileUiRegistry`、`_frozen`、`seal`、host 的 snapshot/lease/
-`current_snapshot`/`source_revision` 和同步 catalog/asset 双模式。不能删除整个 SnapshotStore、
-历史读取或其它仍有真实消费者的 candidate/freeze 结构，除非其所有直接消费者已经在同一批完成对账。
-
-**确定性 oracle（仅设计）：** 三个入口分别执行 `available`、false/异常回执、同一 Context
-re-register、同一 Fiber 新 activation、无关 UI 与
-非 UI identity、旧 HTTP/async query drain、物理 timeout thread、精确
-`RuntimeScope.wait_admission_closed()` 驱动的 socket cancel/join、新请求拒绝、owner permit 下
-`available` 同步 true、合法 UNLOADING retain、query 的 reserve/capture、
-create_task 与首指令前取消三种早失败、app/resource close failure 保留 owner 并 retry，以及原有
-wire/auth/ticket/bytes contract；Root shutdown cancellation/retry 与 stale registry projection
-也必须可观察。DSH 固定 commit `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8` 只可
-作为 Provider/Fiber shape 对照，不能证明 Akashic OwnerCall 或 UI fence 等价。本批已实现 Core
-等待原语并接入 Web/Dashboard consumer；T-7aeefe 的 Mobile R2 源码与测试源已定点修订，补齐
-取消后二次等待、真实 timeout、取消与 shutdown 失败组合及 finally 清理保留，仍待独立 review，测试未运行。
+旧原生客户端的 gateway、ticket、设备授权、独立 WebUI generation 与 OTA 不属于当前 UI 登记链；其源码已按 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 退役。下面按工单记录的旧 Mobile 静态评审仅是历史证据，不再作为当前接口或合并 Gate。动态消费者须使用 `PluginUiDefinition`、`register_plugin_ui` 与 `core.plugin_ui.v1`，外部插件迁移后才能与此版本组合。
 
 #### T03a-Models · M2 当前合同（T-c46d11 review 未通过；T-59017c 定点返修待复核）
 
