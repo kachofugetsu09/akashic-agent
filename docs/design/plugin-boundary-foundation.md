@@ -479,6 +479,8 @@ Core 不再提供 veda-reset，也不在启动前读取 VEDA；用户显式运�
 
 Core init 只准备配置和空 workspace；不再写 VEDA、Context 默认授权、meme 清单
 或业务目录，已有文件即便 --force 也不会被这些已移出的动作改写。首次配置由
+> 2026-09-28 更新：下段记录旧流程；当前 setup 不再执行插件问答，见[插件引导](plugin-onboarding-projection.md#113-安装与旧入口退役)。
+
 通用 `main.py setup` 发现已安装 stable 制品根目录的 `configure.py` 并显式执行；新安装组合须
 明确完成这一步，不能把纯 bundle 安装当成业务初始化，也不保留隐式 builtin 产品组装
 作为兼容 fallback。

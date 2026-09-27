@@ -16,7 +16,10 @@ from .plugin import AKASHA_MEMORY_PATH, AKASHA_RECORDS_VIEW
 from .recalls import ContextSource, Hit, ProgramSource, Recall, RecallRecordsRead, ToolSource
 
 
-inject = (AKASHA_RECORDS_VIEW, AKASHA_MEMORY_PATH, MESSAGE_CATALOG)
+from agent.plugin_contracts.configuration import register_routes
+from .settings import SETTINGS
+
+inject = (SETTINGS, AKASHA_RECORDS_VIEW, AKASHA_MEMORY_PATH, MESSAGE_CATALOG)
 
 
 def _records(context: DashboardContext) -> RecallRecordsRead:
@@ -24,7 +27,10 @@ def _records(context: DashboardContext) -> RecallRecordsRead:
 
 
 def _memory_path(context: DashboardContext) -> Path:
-    return context.require(AKASHA_MEMORY_PATH)()
+    path = context.require(AKASHA_MEMORY_PATH)()
+    if not path.is_file():
+        raise HTTPException(409, "情景记忆尚未建立学习图；开启并配置向量模型后开始学习")
+    return path
 
 
 def _turn_messages(context: DashboardContext, row: dict[str, object]) -> dict[str, object]:
@@ -139,6 +145,7 @@ def _row(identity: str, recall: Recall, context: DashboardContext, *, full_text:
 
 def register(app: FastAPI, context: DashboardContext) -> None:
     """Register read-only routes over the learned turns, Recall and the Message log."""
+    register_routes(app, context, SETTINGS, "/api/dashboard/akasha/config")
 
     @app.get("/api/dashboard/akasha-ledger/overview")
     async def get_ledger_overview() -> dict[str, object]:

@@ -165,6 +165,7 @@ def _fiber_item(root: CompositionRoot, fiber: Fiber) -> dict[str, object]:
         "state": fiber.state.value,
         "required": fiber.required_for_readiness,
         "dependencies": [key.name for key in fiber.dependencies],
+        "dependency_providers": {key.name: root.plugin_service_owners().get(key) for key in fiber.dependencies},
         "missing_services": list(fiber.missing_services),
         "error": None if fiber.error is None else str(fiber.error),
     }

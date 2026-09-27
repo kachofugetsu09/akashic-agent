@@ -18,7 +18,7 @@ class QQChannelConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    enabled: bool = False
+    enabled: bool | None = False
     bot_uin: str = ""
     allow_from: tuple[str, ...] = ()
     groups: tuple[QQGroupConfig, ...] = ()

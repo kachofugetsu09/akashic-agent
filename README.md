@@ -20,8 +20,8 @@ uv pip install -r requirements.txt -e sdk/python
 npm ci
 npm run build
 
-# 第一次 setup 创建 Core 配置、workspace 和空插件选择。
-uv run python main.py setup
+# 创建 Core 配置、workspace 和空插件选择，不再进行业务问答。
+uv run python main.py init
 
 # 安装默认插件组合；distribution 从已提交的 HEAD 构建。
 dist_parent="$(mktemp -d)"
@@ -34,12 +34,10 @@ uv run python scripts/install_plugin_distribution.py \
   --plugins-home "$HOME/.akashic-plugin" \
   --config "$PWD/config.toml"
 
-# 第二次 setup 运行已安装插件的首次配置；保留现有 Core 配置。
-uv run python main.py setup
 uv run python main.py
 ```
 
-两次 `setup` 之间要安装默认 profile：第一次只建立 Core 起点，第二次才会运行已安装插件的配置命令。向导询问是否覆盖已有 `config.toml` 时，按回车保留它。`main.py` 无参数时由 Supervisor 启动 Gateway 和 Web Shell。没有模型时，打开 2236 后按页面提示连接模型即可。
+`main.py` 无参数时由 Supervisor 启动 Gateway 和 Web Shell。打开 2236 的“初始配置”，先连接模型，再逐项选择开启或关闭。插件未安装时不会出现对应步骤；“功能设置”也能独立修改配置。Core 不自动安装插件。
 
 ### 2. Docker Compose：已准备的正式发行
 

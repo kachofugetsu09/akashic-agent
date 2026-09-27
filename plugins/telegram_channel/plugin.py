@@ -24,11 +24,11 @@ name = "telegram_channel"
 version = "3.0.0"
 desc = "Telegram inbound and outbound v3 channel adapter"
 author = "Akashic"
-inject = (CHANNELS, CHANNEL_INPUT, CREDENTIALS, MESSAGE_CATALOG, SOURCE_STATE)
+function_inject = (CHANNELS, CHANNEL_INPUT, CREDENTIALS, MESSAGE_CATALOG, SOURCE_STATE)
 Config = TelegramChannelConfig
 
 
-async def apply(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     """Register Telegram only when its ordinary plugin config enables it."""
     config = Config.model_validate(ctx.config)
 
@@ -71,3 +71,17 @@ __all__ = [
     "name",
     "version",
 ]
+
+
+from agent.plugin_composition import CREDENTIALS
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+
+inject = (PLUGIN_CONFIG, RUNTIME_CATALOG, CREDENTIALS)
+
+
+async def apply(ctx: Context) -> None:
+    """设置入口常驻，业务依赖只影响功能分支。"""
+    from .settings import mount
+    function = await ctx.inject(function_inject, run, name="function")
+    await mount(ctx, Config, function)

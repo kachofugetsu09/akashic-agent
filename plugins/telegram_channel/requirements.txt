@@ -1,2 +1,1 @@
-click
 httpx[socks]>=0.28.0

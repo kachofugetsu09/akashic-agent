@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""离线升级一个明确不含凭据的插件配置；含秘密的配置由所属 configure.py 升级。"""
+"""离线升级一个明确不含凭据的插件配置；含秘密的配置由所属 upgrade_config.py 升级。"""
 from __future__ import annotations
 
 import argparse

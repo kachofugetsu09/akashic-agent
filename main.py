@@ -212,7 +212,7 @@ _HELP = """\
 用法: python main.py [命令] [选项]
 
 命令:
-  setup                         运行交互式初始化向导
+  setup                         初始化 Core（业务配置在 Web 页面完成）
   init                          非交互初始化配置和工作区
   gateway                       启动未托管 Agent 服务（调试）
   supervise                     显式进入 supervisor（兼容别名）

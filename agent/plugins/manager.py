@@ -32,7 +32,7 @@ from agent.plugin_composition import (
 from agent.plugin_composition.channel_io import (
     InputCustody,
 )
-from agent.plugin_composition.config_input import CONFIG_INPUT, load_config
+from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config, config_bytes, config_refs, _credential_path
 from agent.plugin_composition.context import Fiber
 from agent.plugin_composition.credentials import CredentialClients
 from agent.plugin_composition.model import (
@@ -53,7 +53,7 @@ from agent.plugins._operation import (
     observe_operation,
     run_operation,
 )
-from agent.plugins.archive import PluginArchive, decode_config
+from agent.plugins.archive import PluginArchive, decode_config, encode_config
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
@@ -582,6 +582,7 @@ class PluginManager:
 
     async def _load_all(self) -> None:
         """从唯一完整选择启动；null 只允许首次固定安装输入。"""
+        self._recover_config_updates()
         orphaned = self._reload_journal.orphaned_armed_updates()
         if orphaned:
             names = ", ".join(f"{item.update_id}:{item.plugin_id}" for item in orphaned)
@@ -730,6 +731,8 @@ class PluginManager:
                 operation.committed = committed
             runnable_items: list[PluginGeneration] = []
             for generation in generations:
+                if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
+                    self._publish_config_input(self._generation_archive_ref(generation))
                 try:
                     await self._load_live_generation(generation)
                 except Exception:
@@ -1066,6 +1069,108 @@ class PluginManager:
     async def reconcile_changed(self) -> list[dict[str, object]]:
         return await self._run_operation(self._reconcile_changed)
 
+
+    def read_config_input(self, plugin_id: str) -> dict[str, object]:
+        generation = self._active_generations[plugin_id]
+        return {"input_ref": generation.archive_ref, "config_revision": generation.config_revision}
+
+    async def apply_config_input(self, plugin_id: str, request_id: str,
+                                 expected_input: str, config: Mapping[str, object]) -> dict[str, object]:
+        """归档候选并立即返回；独立宿主任务拥有正式提交和排空。"""
+        # 1. 校验输入身份与凭据归属，重放同一请求只读取回执。
+        if not request_id or len(request_id) > 128 or request_id.strip() != request_id:
+            raise ValueError("配置请求 ID 无效")
+        content = config_bytes(config)
+        revision = hashlib.sha256(content).hexdigest()
+        try:
+            previous_request = self._reload_journal.config_update(request_id)
+        except KeyError:
+            previous_request = None
+        if previous_request is not None:
+            if previous_request["plugin_id"] != plugin_id or previous_request["previous_input"] != expected_input:
+                raise ValueError("配置请求 ID 已被其他输入使用")
+            saved = self._archive.read_descriptor(cast(str, previous_request["input_ref"]))
+            if saved["config_revision"] != revision:
+                raise ValueError("同一请求 ID 不允许修改配置")
+            return self.read_config_update(plugin_id, request_id)
+        try:
+            self._require_operation_idle()
+        except OperationBusyError as error:
+            raise ValueError("另一个配置或插件操作正在完成，请稍后重试") from error
+        generation = self._active_generations[plugin_id]
+        if generation.archive_ref != expected_input:
+            raise ValueError("配置已更新，请刷新后重试")
+        for ref in config_refs(config):
+            path = _credential_path(generation.data_dir, ref)
+            if path.is_symlink() or path.with_suffix(".revoked").exists() or hashlib.sha256(path.read_bytes()).hexdigest() != ref.path[1]:
+                raise ValueError("凭据版本无效或不属于当前插件")
+        # 2. 固定同一制品的新输入，不先改可见配置文件。
+        record = dict(self._archive.read_descriptor(expected_input))
+        record.update(config=encode_config(config), config_revision=revision)
+        input_ref = self._archive.save_descriptor(record)
+        self._reload_journal.create_config_update(request_id, plugin_id, expected_input, input_ref)
+        self._start_operation(lambda: self._apply_config_update(request_id), background=True)
+        return self.read_config_update(plugin_id, request_id)
+
+    def read_config_update(self, plugin_id: str, request_id: str) -> dict[str, object]:
+        row = self._reload_journal.config_update(request_id)
+        if row["plugin_id"] != plugin_id:
+            raise PermissionError("不能读取其他插件的配置回执")
+        selected_ref = self._selection.read()
+        selected = selected_ref is not None and row["input_ref"] in self._selection_components(selected_ref)
+        generation = self._active_generations.get(plugin_id)
+        settled = row["state"] == "active" or (row["state"] == "selected" and self._operation is None)
+        if settled and selected and generation is not None and generation.state == "active" and generation.archive_ref == row["input_ref"] and self._generation_is_locally_ready(generation):
+            row["state"] = "active"
+        elif row["state"] == "active":
+            row["state"] = "superseded" if not selected else "failed"
+        row["selected"] = selected
+        return row
+
+    def _publish_config_input(self, input_ref: str) -> None:
+        record = self._archive.read_descriptor(input_ref)
+        config = decode_config(record["config"])
+        if not isinstance(config, dict):
+            raise ValueError("配置输入不是映射")
+        data_dir = self._workspace / cast(str, record["data_dir"])
+        validate_workspace_plugin_data_path(data_dir, self._workspace)
+        _, revision = load_config(data_dir)
+        if revision != record["config_revision"]:
+            save_config(data_dir, config)
+
+    async def _apply_config_update(self, request_id: str) -> dict[str, object]:
+        """沿既有 selection CAS 与局部换代路径应用自身配置。"""
+        row = self._reload_journal.config_update(request_id)
+        plugin_id = cast(str, row["plugin_id"])
+        try:
+            previous = self._active_generations[plugin_id]
+            if previous.archive_ref != row["previous_input"]:
+                raise ValueError("提交前配置已改变，请刷新后重试")
+            root = self._live_root
+            if root is None:
+                raise RuntimeError("运行图尚未建立")
+            generation = self._archived_generations((cast(str, row["input_ref"]),), root,
+                workspace=self._workspace, sources={plugin_id: previous}, register_live=False)[plugin_id]
+            await self._update_live_generation(generation, previous, expected_ref=self._selection.read(),
+                                               config_request_id=request_id)
+            self._reload_journal.finish_config_update(request_id, "active")
+        except BaseException as error:
+            self._reload_journal.finish_config_update(request_id, "failed", str(error) or type(error).__name__)
+            raise
+        return self.read_config_update(plugin_id, request_id)
+
+    def _recover_config_updates(self) -> None:
+        """启动时只修复已正式采用的输入，不自动重试未提交的请求。"""
+        selection_ref = self._selection.read()
+        components = () if selection_ref is None else self._selection_components(selection_ref)
+        for row in self._reload_journal.pending_config_updates():
+            request_id = cast(str, row["request_id"])
+            input_ref = cast(str, row["input_ref"])
+            if input_ref in components:
+                self._publish_config_input(input_ref)
+                self._reload_journal.finish_config_update(request_id, "selected")
+            elif row["state"] != "failed":
+                self._reload_journal.finish_config_update(request_id, "failed", "配置应用中断，正式选择未采用；请重新提交")
 
     async def install(
         self, *, source: str, marketplace: str, ref_name: str,
@@ -1447,6 +1552,7 @@ class PluginManager:
         expected_ref: str | None,
         update_id: str | None = None,
         accepted: asyncio.Future[UpdateStatus] | None = None,
+        config_request_id: str | None = None,
     ) -> dict[str, object]:
         """Commit B, drain A, and mount B on the same live Root."""
         root = self._live_root
@@ -1483,6 +1589,9 @@ class PluginManager:
                 expected_ref=expected_ref,
             )
             operation.committed = selection_ref
+            if config_request_id is not None:
+                self._reload_journal.finish_config_update(config_request_id, "selected")
+                self._publish_config_input(replacement_ref)
             if update_id is not None and accepted is not None and not accepted.done():
                 accepted.set_result(self.read_update(update_id))
             if not self._operation_can_continue():
@@ -1844,8 +1953,12 @@ class PluginManager:
         plugin_id = _resolve_plugin_id(mod)
         if load_plugin_manifest(_plugins_home(self._installed_cache_root)).get(plugin_id, True) is False:
             return None
+        selection_ref = self._selection.read()
+        selected_ids = set() if selection_ref is None else {
+            self._archive.read_descriptor(ref)["plugin_id"] for ref in self._selection_components(selection_ref)
+        }
         prepared = prepare_plugin_input(
-            mod, workspace=self._workspace, archive=self._archive,
+            mod, workspace=self._workspace, archive=self._archive, initial=plugin_id not in selected_ids,
         )
         plugin_id = prepared.plugin_id
         # 1. Preparation owns only the returned generation; no candidate Root is built.

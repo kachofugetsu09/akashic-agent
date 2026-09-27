@@ -578,10 +578,25 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
       console.warn("[web-host] catalog state unavailable", error);
     });
   };
+  let applyingTimer: number | undefined;
+  const submitted = (): void => {
+    window.clearInterval(applyingTimer);
+    let attempts = 0;
+    applyingTimer = window.setInterval(() => {
+      attempts += 1;
+      void session.checkCurrent().then(current => {
+        if (!current) { window.clearInterval(applyingTimer); window.location.reload(); }
+        else if (attempts >= 60) window.clearInterval(applyingTimer);
+      }).catch(() => { if (attempts >= 60) window.clearInterval(applyingTimer); });
+    }, 500);
+  };
+  window.addEventListener("akashic:configuration-submitted", submitted);
   window.addEventListener("focus", checkCurrent);
   document.addEventListener("visibilitychange", checkCurrent);
   const close = session.close.bind(session);
   session.close = once(() => {
+    window.clearInterval(applyingTimer);
+    window.removeEventListener("akashic:configuration-submitted", submitted);
     window.removeEventListener("focus", checkCurrent);
     document.removeEventListener("visibilitychange", checkCurrent);
     close();
