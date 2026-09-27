@@ -466,35 +466,33 @@ export function useDesktopChatController() {
     return closeConnection;
   }, [closeConnection, connect]);
 
-  // 启动即并行拉目录与模型；网关未就绪时静默失败，chatReady 翻转后同一 effect 自动重试缺失部分。
-  const startupProgressRef = useRef<Record<"sessions" | "models", "idle" | "loading" | "done">>(
-    { sessions: "idle", models: "idle" },
-  );
-  const startupLoad = useCallback(async () => {
-    const pending = startupProgressRef.current;
-    const silent = shellState?.chatReady !== true;
-    const run = async (key: "sessions" | "models", task: () => Promise<void>) => {
-      if (pending[key] !== "idle") return;
-      pending[key] = "loading";
+  // 就绪后继续等待在途请求；只有旧请求失败才补发一次，成功结果直接复用。
+  const startupRequestsRef = useRef<Partial<Record<"sessions" | "models", Promise<void>>>>({});
+  useEffect(() => {
+    let cancelled = false;
+    const run = async (key: "sessions" | "models", task: () => Promise<void>): Promise<void> => {
+      const previous = startupRequestsRef.current[key];
+      const request = previous ?? task();
+      startupRequestsRef.current[key] = request;
       try {
-        await task();
-        pending[key] = "done";
+        await request;
       } catch (error) {
-        pending[key] = "idle";
-        if (!silent && !isAbortError(error)) reportError(error);
+        if (cancelled) return;
+        delete startupRequestsRef.current[key];
+        if (!chatReady || isAbortError(error)) return;
+        if (previous) await run(key, task);
+        else reportError(error);
       }
     };
-    // ?session= 直达会话时同步预热尾页缓存；激活仍等 chatReady，命中后立即可见。
-    if (requestedSessionId) prefetchSessionTail(requestedSessionId);
-    await Promise.all([
-      run("sessions", loadSessions),
-      run("models", () => loadModels(activeSessionRef.current)),
-    ]);
-  }, [loadModels, loadSessions, prefetchSessionTail, reportError, requestedSessionId, shellState?.chatReady]);
+    void run("sessions", loadSessions);
+    void run("models", () => loadModels(activeSessionRef.current));
+    return () => { cancelled = true; };
+  }, [chatReady, loadModels, loadSessions, reportError]);
 
+  // ?session= 直达会话时同步预热尾页缓存；激活仍等 chatReady，命中后立即可见。
   useEffect(() => {
-    void startupLoad();
-  }, [startupLoad]);
+    if (requestedSessionId) prefetchSessionTail(requestedSessionId);
+  }, [prefetchSessionTail, requestedSessionId]);
 
   // 健康探测暂时失败不取消用户已经发送的请求或正在读取的历史。
   useEffect(() => () => {
