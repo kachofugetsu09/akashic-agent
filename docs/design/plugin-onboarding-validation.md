@@ -1,6 +1,6 @@
 # 内置插件引导验收记录
 
-状态：实现及运行验收完成，独立评审修复后复核中。
+状态：实现、运行验收及独立概念 Gate 已完成。
 
 ## 隔离与恢复
 
@@ -29,6 +29,7 @@
 - 卸载已选 Akashic sender 后，已开启 Wake 变为 blocked，仍可下一步，原选择保持 true；重装 sender 后恢复 ready。
 - 卸载 Wake 后目录由七项变六项，其余项可用。卸载 onboarding 后 Akasha 独立设置页仍可用；重启后已关闭选择仍保留。
 - 在临时 Wake 数据库通过 owner API 写入一条明确标记的场景历史，未开启时能读取，启用、sender 撤回/恢复后记录仍在。
+- 最终重启及正式重装后，9 个配置/VEDA 文件哈希未变，已有 Wake 历史逐条保持，SQLite integrity_check 为 ok。
 - 旧 TOML 离线转换保留恢复原件、原 enabled，固定配置只含自身 CredentialRef；旧 Akasha/Wake 缺省仍为 true。
 - 缺 Core 配置的全新发行组合 workspace 能重建配置、进入欢迎弹窗和模型页；未配置模型时下一步与后续步骤禁用。发行初始化仍必须提供 context provider 绑定和 Web 入口配置，Core 不猜测插件身份或代为安装。
 
@@ -55,6 +56,6 @@
 - Control schema 与 Host Bridge 协议生成物 check 通过。共享 venv 缺 grpcio-tools 元数据，使用固定版本隔离环境运行 Host Bridge check，没有修改共享环境。
 - `npm run typecheck`、完整前端构建、完整 PR `git diff --check` 通过。
 - 固定提交 `470f4fd8` 的发行构建通过，输出 `/tmp/onboarding-distribution-470f4fd8/distribution.json`；后续修改仅修正表单草稿竞态及文档。发行构建不等于生产安装验收。
-- 独立内置 subagent：`gpt-6-sol`，`xhigh`，只读审查 `6b38687f`。两项 finding 为 sender 缺席的 blocked 判断、failed 回执后的原样重试；均已修复并用上述场景验证。后续复核发现自动刷新响应覆盖新草稿的竞态；响应应用前检查编辑状态和请求序号后，用确定性 CDP 延迟真实响应验证。首跑、主题与表单修复交回同一 reviewer 复核。
+- 独立内置 subagent：`gpt-6-sol`，`xhigh`，只读审查 `6b38687f`。两项 finding 为 sender 缺席的 blocked 判断、failed 回执后的原样重试；均已修复并用上述场景验证。后续复核发现自动刷新响应覆盖新草稿的竞态；响应应用前检查编辑状态和请求序号后，用确定性 CDP 延迟真实响应验证。最终复核 `2b357d017e1908ab8e4f28dc6bbeaf772010f45b`：PASS，剩余 must-fix 0；本记录提交仅补充验收结论。
 
 尚未验证：真实 Codex/OpenCode 登录、外部模型与 Telegram/QQ 账号、真实外部送达、Android 设备、生产发布。远端 CI 状态在 PR 中单列。

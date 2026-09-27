@@ -1,6 +1,6 @@
 # 插件 Onboarding 投影设计
 
-- 状态：实现与验收中。维护者于 2026-09-28 授权完成内置插件、CDP 场景、独立评审与 PR；不包含生产部署。
+- 状态：内置实现、运行验收与独立评审完成。维护者于 2026-09-28 授权完成内置插件、CDP 场景、独立评审与 PR；不包含生产部署。
 - 核对基线：d99dd2b4b4ae2fdb146d9265554262cb39fdcdb5。
 - 关联需求：ONB-001、PLG-003、PLG-006、PLG-010、PLG-014、PLG-016、STA-001～STA-003、ERR-001。
 - 关联设计：[能力与执行归属](issue-766-orthogonal-capabilities.md)、[单图插件系统](issue-750-plugin-publication-simplification.md)、[模型配置](runtime-model-registry-and-onboarding.md)、[WebUI 组合](web-ui-plugin-composition.md)、[持久化状态地图](persistence-state-map.md)。
