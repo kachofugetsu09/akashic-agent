@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -252,7 +253,7 @@ def create_chat_app(
         return {"status": "ready"}
 
     @app.get("/api/chat/web-ui/bootstrap")
-    async def web_ui_bootstrap() -> Response:
+    async def web_ui_bootstrap(request: Request) -> Response:
         if web_ui_provider is None:
             raise HTTPException(status_code=503, detail="Web 插件界面服务不可用")
         try:
@@ -262,15 +263,18 @@ def create_chat_app(
                 status_code=503,
                 detail="Web 插件界面服务暂不可用",
             ) from error
-        return Response(
-            content=payload,
-            media_type="application/json",
-            headers={
-                "Cache-Control": "no-store",
-                "Pragma": "no-cache",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        # 每次仍读取当前 snapshot；只有完整响应字节相同才复用浏览器缓存。
+        etag = f'"{hashlib.sha256(payload).hexdigest()}"'
+        headers = {
+            "Cache-Control": "private, no-cache",
+            "ETag": etag,
+            "X-Content-Type-Options": "nosniff",
+        }
+        # 压缩代理可能把强 ETag 改为弱 ETag；GET 的条件校验按弱比较匹配。
+        validators = request.headers.get("if-none-match", "").split(",")
+        if any(value.strip().removeprefix("W/") in {"*", etag} for value in validators):
+            return Response(status_code=304, headers=headers)
+        return Response(content=payload, media_type="application/json", headers=headers)
 
     @app.get("/api/chat/web-ui/state")
     async def web_ui_state() -> Response:

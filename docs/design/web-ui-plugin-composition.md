@@ -343,7 +343,7 @@ candidate plugin Root
 - catalog 中的全部 module 必须来自同一个 committed snapshot，不能混用新旧资源。
 - active page 不在用户填写表单时热替换。发现新 catalog 后，当前 `BrowserCatalogSession` 标记 stale 并显示轻量“界面已更新，重新打开”提示。
 - session 已把所有 JS/CSS 装入内存，因此 stale 后仍可切换并显示任何已发布页面；所有新 Host HTTP 请求只返回 `stale_catalog`，不能提交旧表单或落到 current handler。
-- HTML 与 `WebUiBootstrap` 使用 `no-store`；浏览器可以把已验证 bytes 按摘要放入普通 cache。首版没有独立 asset 请求、lazy chunk 和延迟静态资源，因此不需要 WebUI 专用 retention manager、浏览器长 snapshot lease 或 GC grace period。
+- HTML 使用 `no-store`；`WebUiBootstrap` 使用 `private, no-cache` 和完整响应字节的强 ETag。每次打开仍从当前 snapshot 生成响应并重新校验，字节相同才返回 304，浏览器复用先前收到的完整 bytes；发布新 snapshot 或资源变化时必须返回新的完整响应。浏览器不能跳过校验直接启用旧 bootstrap。首版没有独立 asset 请求、lazy chunk 和延迟静态资源，因此不需要 WebUI 专用 retention manager、浏览器长 snapshot lease 或 GC grace period。
 - 每个 Host client 请求自动携带 `snapshot_id`、`catalog_id`、`module_id` 和 `generation_id`。既有 Dashboard middleware 不等待、不 fallback：它租用该 exact snapshot，核对 active Web module，再只匹配同 owner 的插件路由。任一不符立即返回 `stale_catalog` 或 `forbidden_contract`。
 - 成功 lease 绑定整个 HTTP handler、插件 entrypoint 和 action commit，直到 response 或持久事务结束才释放。检查后不能重新读取 current Root，现有 settings/Chat/Dashboard handler 必须通过该绑定进入；不能只在 router 前检查一次 catalog。
 
