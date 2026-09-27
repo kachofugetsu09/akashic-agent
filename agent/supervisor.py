@@ -273,8 +273,12 @@ def run_supervisor(
     config_path = config_path.expanduser().resolve()
     workspace = workspace.expanduser().resolve()
     if not config_path.exists():
-        from bootstrap.init_workspace import init_workspace
-        init_workspace(config_path=config_path, workspace=workspace)
+        print(
+            f"未找到配置文件：{config_path}。请先运行 `python main.py init` "
+            "或 `python main.py setup`。",
+            file=sys.stderr,
+        )
+        return 2
     # 1. 建立 workspace owner、设置线程和停止信号边界。
     _enable_child_subreaper()
     lock = _SupervisorLock(workspace)

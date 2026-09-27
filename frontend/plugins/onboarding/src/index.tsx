@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import type { WebHostContextV1, WebMountView, WebUiDisposer } from "@akashic/web-ui-v1";
 import { Confirm, request, settingsIcon, type Status } from "../../shared/src/configuration";
 import "./style.css";
@@ -104,6 +105,6 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
         <footer className="onboarding-footer"><button type="button" disabled={index <= 0} onClick={() => choose(steps[index - 1])}>上一步</button><span>{dirty ? "请先保存本页选择" : label(state)}</span><button className="config-primary" type="button" disabled={!done(state) || dirty} onClick={() => void next()}>{index === steps.length - 1 ? "查看完成情况" : "下一步"}</button></footer>
       </section></div>}
     {leave && <Confirm title="离开前要放弃修改吗？" accept={() => { setDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页尚有未保存的修改。离开不会改变已保存的配置。</Confirm>}
-    <dialog ref={invitation} className="config-dialog" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>关闭窗口</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>
+    {createPortal(<dialog ref={invitation} className="config-dialog" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>关闭窗口</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, document.body)}
   </main>;
 }

@@ -36,12 +36,14 @@ class Settings:
             message = session.first_message
             if message is None or not isinstance(message.body, Input):
                 continue
+            preview = next((part.value.strip() for part in message.body.parts
+                            if part.kind == "text" and isinstance(part.value, str) and part.value.strip()), "")
             for part in message.body.parts:
                 if part.kind == "channel.origin" and isinstance(part.value, Mapping):
                     channel, recipient = part.value.get("channel"), part.value.get("chat_id")
                     if isinstance(channel, str) and channel in senders and isinstance(recipient, str):
                         targets.append({"channel": channel, "recipient": recipient, "session_id": session.session_id,
-                                        "label": f"{channel} · {recipient}"})
+                                        "label": f"{channel} · {preview[:48] or recipient}"})
         return targets
 
     async def read(self) -> dict[str, object]:
@@ -71,8 +73,10 @@ class Settings:
             elif not self.targets():
                 reason = "还没有可用发送目标，请先开启发送渠道并建立对话"
             can_enable = not reason
-            if not reason and selected_missing:
-                reason, blocked = "当前发送渠道不可用，请在功能设置中改选目标或重新开启该渠道", True
+            if selected_missing:
+                blocked = True
+                if not reason:
+                    reason = "当前发送渠道不可用，请在功能设置中改选目标或重新开启该渠道"
             enabled = config["enabled"]
             return {**self.ctx.require(PLUGIN_CONFIG).read(self.ctx), "enabled": enabled,
                 "ready": enabled is True and not reason and self.function.state.value == "active",

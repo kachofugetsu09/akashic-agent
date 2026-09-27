@@ -32,7 +32,7 @@ Markdown 记忆保持原行为；prompt 只接住旧 setup 中创建缺失人格
 后台新插件通知、热更新专用向导或协作编辑。打开页面、提交后和下一步时重读即可。
 关闭和卸载均不删除会话、记忆、凭据、调度或主动流程恢复记录。
 
-## 2. 当前事实与差距
+## 2. 实现前的基线事实与差距
 
 | 已核对事实 | 代码入口 | 需要补齐 |
 |---|---|---|
@@ -47,7 +47,7 @@ Markdown 记忆保持原行为；prompt 只接住旧 setup 中创建缺失人格
 | supervisor 在 config.toml 缺失时退出 | agent/supervisor.py | 补齐 ONB-001 无配置 Web 存活 |
 
 [模型配置设计](runtime-model-registry-and-onboarding.md) §7.1 的固定连续步骤与新模型有差异；
-其首跑流程后续按本稿替换；模型目录、连接、revision 与运行绑定仍归 models。
+其首跑流程由本稿替换；模型目录、连接、revision 与运行绑定仍归 models。
 
 ## 3. 职责与 Core 增量
 
@@ -489,12 +489,21 @@ onboarding 不 import Wake、不 inject WAKE_*、不要求固定步骤数量或 
 
 - 新安装制品可以提供 `initial_config.json`。内置可选功能用 `enabled: null`；只有首次固定输入采用它。选中输入在业务启动前写入缺失的配置文件，防止后来更新把“未决定”误读成老用户默认开启。
 - 旧输入缺少 enabled 时保留既有默认：渠道 false，Akasha/Wake true。已有配置始终优先；关闭和卸载均不删除数据或凭据。
-- `setup` 收窄为幂等 Core 初始化，已有配置不覆盖；Supervisor 缺配置时调用同一初始化路径。Core 不擅自安装业务插件，插件组合仍由 distribution profile 拥有。
+- `setup` 收窄为幂等 Core 初始化，已有配置不覆盖；默认启动入口在迁移之前调用同一初始化路径，Supervisor 接收已准备好的配置。Core 不擅自安装业务插件，插件组合仍由 distribution profile 拥有。
 - 默认 profile 加入内置渠道、记忆、Wake、引导及模型连接方式；未决定的功能不运行。安装操作与业务配置不再混为一套 CLI 问答。
 - 删除四个渠道 `configure.py` 的问答，旧 TOML 转换移到各自 `upgrade_config.py --data-dir PATH`；不在引导中自动迁移。
 - 删除 prompt 的 configure.py；首次 apply 只创建缺失 VEDA，已有合法字节不变，损坏内容仍明确报错。
 - models 的首次配置专属布局退役；Chat 不再把所有启动等待都解释成“模型已保存”。README 去掉第二次 setup。
 
-### 11.4 验证记录
+### 11.4 运行验收后的修正
+
+- 原有启动入口先做迁移，再进入 Supervisor；把初始化放在 Supervisor 已经太迟。本次由 `main.py` 在首次迁移前建立空选择，防止新目录误判为旧 workspace。既有 workspace 缺 stable 仍明确失败，不猜测或重建权威选择。
+- Shell 保留隐藏页面，所以表单在真正可见时重读配置与前置；有草稿或应用中的请求不被刷新覆盖。这样“先聊天、再设置 Wake”能立即看到新会话。
+- 欢迎弹窗通过 React portal 挂在 body，避免隐藏引导页面使一个不可见 modal 锁住其他页面。弹窗仍由普通 onboarding 模块创建和回收。
+- 新表单和弹窗使用现有 Material 主题语义色；深色模式与浅色模式分别做对比度检查。
+- 已选 sender 缺席无条件标记 Wake blocked，即使没有可替代目标；其他目标可用时，独立设置允许改选。
+- 收到应用失败回执后恢复当前草稿的可提交状态，用户可以直接重试。
+
+### 11.5 验证记录
 
 实现与实际验收记录保存在同目录的 `plugin-onboarding-validation.md`。测试只用一次性 workspace、安装目录与 CloakBrowser profile；未写正式 workspace、未登录用户账号、未向真实 Telegram/QQ 发送消息。外部 Provider 的协议替身证据与真实外部认证/送达严格分开。

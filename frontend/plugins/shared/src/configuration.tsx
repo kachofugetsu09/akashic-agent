@@ -63,6 +63,9 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const [leave, setLeave] = useState<(() => void) | null>(null);
   const path = `/api/dashboard/${definition.id}/config`;
   const alive = useRef(true);
+  const article = useRef<HTMLElement>(null);
+  const editing = useRef(false);
+  editing.current = dirty || busy;
   const load = async () => {
     try { const next = await request<Status>(ctx, path); if (!alive.current) return;
       setStatus(next); setEnabled(next.enabled); setValues(next.values); setDirty(false); setError("");
@@ -76,7 +79,19 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       }
     } catch (reason) { if (alive.current) setError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  useEffect(() => { alive.current = true; void load(); return () => { alive.current = false; }; }, [ctx, path]);
+  useEffect(() => {
+    alive.current = true;
+    let visible = false;
+    // Shell 保留隐藏页面；每次真正打开时重读前置，不能沿用启动时的状态。
+    const refresh = () => { if (visible && !editing.current) void load(); };
+    const observer = new IntersectionObserver(entries => {
+      visible = entries[0].isIntersecting;
+      refresh();
+    });
+    observer.observe(article.current!);
+    window.addEventListener("focus", refresh);
+    return () => { alive.current = false; observer.disconnect(); window.removeEventListener("focus", refresh); };
+  }, [ctx, path]);
   useEffect(() => { embed.dirty?.(dirty); return () => embed.dirty?.(false); }, [dirty, embed.dirty]);
   useEffect(() => {
     if (!dirty) return;
@@ -105,18 +120,18 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
         await new Promise(resolve => window.setTimeout(resolve, 500));
         if (!alive.current) return;
         const result = await request<{state: string; error: string}>(ctx, `${path}/receipts/${receipt.request_id}`);
-        if (result.state === "failed") throw new Error(result.error);
+        if (result.state === "failed") { setDirty(true); embed.dirty?.(true); throw new Error(result.error); }
         if (result.state === "active") { await load(); setNotice("配置已生效"); embed.changed?.(); return; }
       }
       if (alive.current) setNotice("配置仍在应用，可刷新查看实际状态。");
     } catch (reason) { if (alive.current) { setNotice(""); setError(reason instanceof Error ? reason.message : String(reason)); } }
     finally { if (alive.current) setBusy(false); }
   };
-  return <article className={`config-form ${embed.embedded ? "is-embedded" : ""}`} aria-busy={busy}>
+  return <article ref={article} className={`config-form ${embed.embedded ? "is-embedded" : ""}`} aria-busy={busy}>
     {!embed.embedded && <header><span className="config-kicker">功能设置</span><h1>{definition.title}</h1><p>{definition.description}</p></header>}
     {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy} onClick={() => { if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新读取</button></div>}
     {!status ? !error && <p role="status">正在读取配置…</p> : <form onSubmit={event => void save(event)}>
-      {status.reason && <p className="config-hint" role="status">{status.reason}</p>}
+      {status.reason && !(embed.embedded && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
       {!(embed.embedded && status.blocked) && <>
         <fieldset className="config-choices" disabled={busy}><legend>是否开启{definition.title}？</legend>
           <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { setEnabled(true); setDirty(true); }} /><strong>开启</strong><span>配置并使用此功能</span></label>
