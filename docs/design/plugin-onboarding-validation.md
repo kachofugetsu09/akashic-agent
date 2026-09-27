@@ -41,6 +41,7 @@
 - `/tmp/onboarding-cdp-chat-wake.log`：真实持久对话回复与 Wake 目标选择。
 - `/tmp/onboarding-cdp-after-restart.log`：引导卸载后独立设置和重启恢复。
 - `/tmp/onboarding-cdp-fresh.log`：缺配置首跑欢迎弹窗、无跳过、axe 无违规。
+- `/tmp/onboarding-cdp-draft-race.log`：延迟真实 GET 响应期间编辑，返回后草稿与保存按钮保持。
 - `/tmp/onboarding-cdp-theme.log`：深色表单 axe 无违规，移动引导无水平溢出。
 - `/tmp/onboarding-cdp-retry.log`：仅浏览器拦截注入 failed 回执，验证原草稿可直接重试。此项是前端失败路径证据，不冒充真实宿主失败恢复证据。
 
@@ -52,7 +53,8 @@
 - 主工程、tests 与新增插件路径 pyright：0 errors。
 - plugin_boundary：R1/R2/R3 均 0；yoyo migration 检查通过。
 - Control schema 与 Host Bridge 协议生成物 check 通过。共享 venv 缺 grpcio-tools 元数据，使用固定版本隔离环境运行 Host Bridge check，没有修改共享环境。
-- `npm run typecheck`、完整前端构建、`git diff --check` 通过。
-- 独立内置 subagent：`gpt-6-sol`，`xhigh`，只读审查 `6b38687f`。两项 finding 为 sender 缺席的 blocked 判断、failed 回执后的原样重试；均已修复并用上述场景验证。后续首跑和表单刷新修复交回同一 reviewer 复核。
+- `npm run typecheck`、完整前端构建、完整 PR `git diff --check` 通过。
+- 固定提交 `470f4fd8` 的发行构建通过，输出 `/tmp/onboarding-distribution-470f4fd8/distribution.json`；后续修改仅修正表单草稿竞态及文档。发行构建不等于生产安装验收。
+- 独立内置 subagent：`gpt-6-sol`，`xhigh`，只读审查 `6b38687f`。两项 finding 为 sender 缺席的 blocked 判断、failed 回执后的原样重试；均已修复并用上述场景验证。后续复核发现自动刷新响应覆盖新草稿的竞态；响应应用前检查编辑状态和请求序号后，用确定性 CDP 延迟真实响应验证。首跑、主题与表单修复交回同一 reviewer 复核。
 
 尚未验证：真实 Codex/OpenCode 登录、外部模型与 Telegram/QQ 账号、真实外部送达、Android 设备、生产发布。远端 CI 状态在 PR 中单列。

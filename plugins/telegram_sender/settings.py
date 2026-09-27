@@ -105,4 +105,3 @@ async def mount(ctx: Context, model: type[BaseModel], function: FiberHandle) -> 
         await child.require(DELIVERY_SENDERS).candidate(child, name=str(ctx.config.get("channel", "telegram")),
             title="Telegram 发送", route="telegram_sender-settings", status=settings.choice)
     await ctx.inject((DELIVERY_SENDERS,), candidate, name="sender-candidate")
-

@@ -69,4 +69,3 @@ async def mount(ctx: Context, model: type[BaseModel], function: FiberHandle) -> 
         await child.require(ONBOARDING).group(child, "memory", "情景记忆")
         await child.require(ONBOARDING).register(child, Step("configure", "Akasha 情景记忆", "memory", "akasha-settings", settings.read, (function.fiber_id,)))
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
-

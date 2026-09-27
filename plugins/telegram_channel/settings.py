@@ -100,4 +100,3 @@ async def mount(ctx: Context, model: type[BaseModel], function: FiberHandle) -> 
         await child.require(UI).register(child, web="web_module.js", dashboard=lambda: import_module(".dashboard", __package__), requires=("shell.pages.v1",))
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
     await ctx.inject((UI, SETTINGS), ui, name="settings-ui")
-

@@ -141,7 +141,7 @@ export function activate(ctx) {
         const chatModels = catalog.models.filter((model) => model.kind === "chat");
         const chatConnections = catalog.connections;
         const hasConnections = chatConnections.length > 0;
-        
+
         title.textContent = "模型连接";
         description.textContent = hasConnections
           ? "每套账号或 API Key 都是独立连接；未知模型能力不会被猜测。"
@@ -149,7 +149,7 @@ export function activate(ctx) {
         search.hidden = !hasConnections;
         connectedSection.hidden = !hasConnections;
         roles.hidden = !hasConnections;
-        
+
         templatesTitle.textContent = hasConnections ? "添加其他连接" : "选择连接方式";
         templatesDetail.textContent = hasConnections
           ? "可以继续添加另一个账号或服务。"

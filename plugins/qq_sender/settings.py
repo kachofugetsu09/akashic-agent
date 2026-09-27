@@ -101,4 +101,3 @@ async def mount(ctx: Context, model: type[BaseModel], function: FiberHandle) -> 
         await child.require(DELIVERY_SENDERS).candidate(child, name=str(ctx.config.get("channel", "qq")),
             title="QQ 发送", route="qq_sender-settings", status=settings.choice)
     await ctx.inject((DELIVERY_SENDERS,), candidate, name="sender-candidate")
-

@@ -66,8 +66,11 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const article = useRef<HTMLElement>(null);
   const editing = useRef(false);
   editing.current = dirty || busy;
-  const load = async () => {
-    try { const next = await request<Status>(ctx, path); if (!alive.current) return;
+  const loads = useRef(0);
+  const load = async (preserveDraft = false) => {
+    const sequence = ++loads.current;
+    try { const next = await request<Status>(ctx, path);
+      if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
       setStatus(next); setEnabled(next.enabled); setValues(next.values); setDirty(false); setError("");
       const pending = sessionStorage.getItem(`config-request:${definition.id}`);
       if (pending) {
@@ -83,7 +86,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     alive.current = true;
     let visible = false;
     // Shell 保留隐藏页面；每次真正打开时重读前置，不能沿用启动时的状态。
-    const refresh = () => { if (visible && !editing.current) void load(); };
+    const refresh = () => { if (visible && !editing.current) void load(true); };
     const observer = new IntersectionObserver(entries => {
       visible = entries[0].isIntersecting;
       refresh();
