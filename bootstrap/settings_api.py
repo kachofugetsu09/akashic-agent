@@ -64,7 +64,7 @@ def create_settings_app() -> FastAPI:
         if cache_control == "no-store":
             response.headers["Pragma"] = "no-cache"
         else:
-            response.headers.pop("Pragma", None)
+            del response.headers["Pragma"]
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = (
