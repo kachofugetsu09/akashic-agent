@@ -58,6 +58,8 @@ export interface ProviderActions {
 export interface ProviderProps {
   readonly state: ProviderState;
   readonly actions: ProviderActions;
+  /** Report unsaved changes; the host owns close and navigation checks. */
+  dirty(value: boolean): void;
   close(): void;
   changed(message: string): void;
 }

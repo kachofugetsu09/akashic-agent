@@ -254,11 +254,12 @@ export function activate(ctx) {
         const select = form.elements.connection;
         for (const connection of catalog.connections.filter(item => item.availability === "available")) select.append(new Option(connection.name, connection.id));
         const error = form.querySelector('[role="alert"]');
-        let dirty = false, busy = false;
+        let dirty = false, busy = false, closed = false;
+        const stopGuard = guardDialog(dialog, () => ({dirty, busy}));
         form.addEventListener("input", () => { dirty = true; props.dirty?.(true); });
-        const cancel = () => { if (!busy && (!dirty || window.confirm("放弃尚未保存的向量模型？"))) dialog.close(); };
+        const cancel = () => dialog.dispatchEvent(new Event("cancel", {cancelable:true}));
         form.querySelector("[data-cancel]").addEventListener("click", cancel);
-        dialog.addEventListener("cancel", event => { event.preventDefault(); cancel(); });
+
         form.addEventListener("submit", async event => {
           event.preventDefault(); if (busy) return;
           const connectionId = select.value, model = form.elements.model.value.trim(), dimensions = Number(form.elements.dimensions.value);
@@ -271,15 +272,17 @@ export function activate(ctx) {
             const receipt = await command({type:"add_model", expected_revision:catalog.revision, model_id:modelId, connection_id:connectionId,
               kind:"embedding", model, capabilities:{embedding_dimensions:dimensions, embedding_normalization:"none"},
               capability_sources:{embedding_dimensions:"manual", embedding_normalization:"manual"}, driver_config:{format_version:1}});
+            if (closed) return;
             await command({type:"set_default", expected_revision:receipt.revision, role:null, model_id:modelId});
+            if (closed) return;
             dirty = false; dialog.close(); showNotice("向量模型已验证并设为默认");
-          } catch (reason) { error.textContent = reason instanceof Error ? reason.message : String(reason); error.hidden = false; }
-          finally { busy = false; controls.forEach(item => { item.disabled = false; }); form.querySelector('button[type="submit"]').textContent = "验证并保存"; }
+          } catch (reason) { if (!closed) { error.textContent = reason instanceof Error ? reason.message : String(reason); error.hidden = false; } }
+          finally { busy = false; if (!closed) { controls.forEach(item => { item.disabled = false; }); form.querySelector('button[type="submit"]').textContent = "验证并保存"; } }
         });
-        const close = () => { props.dirty?.(false); dialog.remove(); trigger.focus(); };
+        const close = () => disposeDialog();
         dialog.addEventListener("close", close, {once:true});
         page.appendChild(dialog); dialog.showModal(); form.elements.model.focus();
-        disposeDialog = () => { props.dirty?.(false); dialog.remove(); };
+        disposeDialog = () => { closed = true; stopGuard(); props.dirty?.(false); dialog.removeEventListener("close", close); dialog.close(); dialog.remove(); restoreFocus(trigger); disposeDialog = () => {}; };
       }
 
       function bindingRow({label, detail, models, value, change}) {
@@ -324,6 +327,35 @@ export function activate(ctx) {
         return row;
       }
 
+      function restoreFocus(trigger) {
+        queueMicrotask(() => {
+          if (trigger.isConnected && trigger.getClientRects().length) trigger.focus();
+          else document.querySelector('.primary-band button[aria-current="page"]')?.focus();
+        });
+      }
+
+      function guardDialog(dialog, state) {
+        // 1. 原生关闭和路由离开共享一次判断，不读取表单来猜草稿。
+        const leave = () => {
+          const {dirty, busy} = state();
+          if (busy) {
+            let notice = dialog.querySelector("[data-leave-status]");
+            if (!notice) { notice = document.createElement("p"); notice.dataset.leaveStatus = ""; notice.setAttribute("role", "status"); dialog.firstElementChild.append(notice); }
+            notice.textContent = "请求正在执行，请等待结果后再离开。关闭页面不会撤销已提交的操作。";
+            return false;
+          }
+          return !dirty || window.confirm("放弃尚未保存的修改？选择取消可继续填写。");
+        };
+        const cancel = event => { event.preventDefault(); if (leave()) dialog.close(); };
+        const navigate = event => { if (!dialog.open || event.defaultPrevented) return; if (leave()) dialog.close(); else event.preventDefault(); };
+        const unload = event => { const current = state(); if (current.dirty || current.busy) { event.preventDefault(); event.returnValue = ""; } };
+        dialog.addEventListener("cancel", cancel);
+        window.addEventListener("akashic:before-navigate", navigate);
+        window.addEventListener("beforeunload", unload);
+        // 2. 模块卸载释放监听；持久化和 auth 取消仍由原 owner 处理。
+        return () => { dialog.removeEventListener("cancel", cancel); window.removeEventListener("akashic:before-navigate", navigate); window.removeEventListener("beforeunload", unload); };
+      }
+
       function openProvider(entry, trigger, connection = null, template = null) {
         disposeDialog();
         const connectionId = connection?.id ?? `${entry.id}-${randomToken()}`;
@@ -337,13 +369,14 @@ export function activate(ctx) {
           },
         ));
         const setDefaultIfMissing = async (revision, preferredModelId = "") => {
-          if (catalog.roleBindings.default) return;
+          if (auth.closed || catalog.roleBindings.default) return;
           const modelId = preferredModelId || catalog.models.find(
             (model) => model.connectionId === connectionId && model.kind === "chat",
           )?.id;
           if (modelId) await command({type: "set_default", expected_revision: revision, role: "default", model_id: modelId});
         };
-        const actions = Object.freeze({
+        let dirty = false, busy = false;
+        const operations = {
           async discover(input, signal) {
             if (connection) throw new Error("已有连接请使用重新检测");
             const result = await request("/api/dashboard/models/discover", {
@@ -420,7 +453,20 @@ export function activate(ctx) {
             const receipt = await command({type: "sync_models", expected_revision: catalog.revision, connection_id: connectionId});
             await setDefaultIfMissing(receipt.revision);
           },
-        });
+        };
+        // 请求生命周期归宿主；表单只报告自己的未保存草稿。
+        const actions = Object.freeze(Object.fromEntries(Object.entries(operations).map(([name, action]) => [name, async (...args) => {
+          if (name === "cancelAuth") return action(...args);
+          if (auth.closed) throw new Error("窗口已关闭；已提交请求以实际结果为准。");
+          if (busy) throw new Error("请求仍在执行，请等待结果后再操作。");
+          busy = true;
+          try {
+            const result = await action(...args);
+            if (auth.closed) throw new Error("窗口已关闭；已提交请求以实际结果为准。");
+            return result;
+          }
+          finally { busy = false; }
+        }])));
         const scrim = document.createElement("dialog");
         scrim.className = "settings-scrim";
         scrim.setAttribute("aria-label", entry.label);
@@ -428,6 +474,7 @@ export function activate(ctx) {
         dialogHost.className = "settings-dialog";
         scrim.appendChild(dialogHost);
         page.appendChild(scrim);
+        const stopGuard = guardDialog(scrim, () => ({dirty, busy}));
         let disposeEntry;
         try {
           disposeEntry = connectionTypes.render(entry.id, dialogHost, {
@@ -439,13 +486,17 @@ export function activate(ctx) {
               });
             },
             actions,
-            close() { scrim.close(); },
+            dirty(value) { if (!auth.closed) { dirty = value; props.dirty?.(value); } },
+            close() { scrim.dispatchEvent(new Event("cancel", {cancelable:true})); },
             changed(message) {
+              if (auth.closed) return;
+              dirty = false; props.dirty?.(false);
               showNotice(message);
               scrim.close();
             },
           });
         } catch (error) {
+          stopGuard();
           scrim.remove();
           showError(error);
           return;
@@ -465,15 +516,21 @@ export function activate(ctx) {
           list.append(summary, items);
           dialogHost.querySelector(".settings-dialog-body").append(list);
         }
+        const leaveDocument = event => { if (!event.persisted) report(auth.close()); };
+        window.addEventListener("pagehide", leaveDocument);
         const close = () => disposeDialog();
         scrim.addEventListener("close", close, {once: true});
-        // 不用点击空白关闭：provider 表单没有脏状态契约，误触会丢弃已填内容。
+        // 背景点击不关闭；所有显式离开复用同一草稿和请求判断。
         disposeDialog = () => {
+          stopGuard();
+          window.removeEventListener("pagehide", leaveDocument);
+          props.dirty?.(false);
           report(auth.close());
           scrim.removeEventListener("close", close);
           disposeEntry();
+          scrim.close();
           scrim.remove();
-          if (trigger.isConnected) trigger.focus();
+          restoreFocus(trigger);
           disposeDialog = () => {};
         };
         scrim.showModal();

@@ -27,6 +27,9 @@ export function activate(ctx) {
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
         <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会显示在页面中</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>检测已保存连接</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并同步" : "保存并同步模型与能力"}</button></span></footer></form>`;
       const form = host.querySelector("form");
+      const changed = () => props.dirty(true);
+      form.addEventListener("input", changed);
+      form.addEventListener("change", changed);
       form.elements.name.value = existing?.name ?? "OpenCode Go";
       form.elements.endpoint.value = existing ? "" : "https://opencode.ai/zen/go/v1";
       const showKey = host.querySelector("[data-show-key]");
@@ -84,7 +87,7 @@ function requireProps(value) {
   if (!value || typeof value !== "object" || typeof value.actions !== "object"
     || typeof value.actions.update !== "function" || typeof value.actions.startAuth !== "function"
     || typeof value.actions.finishAuth !== "function" || typeof value.actions.sync !== "function"
-    || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
+    || typeof value.dirty !== "function" || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
     throw new Error("models.connection-types.v1 props 无效");
   }
   if (value.state.connection !== null && value.state.connection !== undefined

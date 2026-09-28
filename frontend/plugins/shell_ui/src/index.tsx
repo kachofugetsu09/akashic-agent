@@ -41,6 +41,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const settingsDialog = useRef<HTMLDialogElement>(null);
 
   const openPage = useCallback((entry: ShellPage): void => {
+    if (entry.id === activeId) { settingsDialog.current?.close(); return; }
     const go = () => {
       setActiveId(entry.id);
       const base = `${window.location.pathname}${window.location.search}`;
@@ -48,7 +49,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       settingsDialog.current?.close();
     };
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
-  }, []);
+  }, [activeId]);
 
   useLayoutEffect(() => {
     const disposers: WebUiDisposer[] = [];
@@ -64,7 +65,17 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   useEffect(() => {
     const syncLocation = (): void => {
       const entry = pageFromLocation(entries, defaultPage);
-      if (entry) setActiveId(entry.id);
+      if (!entry || entry.id === activeId) return;
+      const previous = entries.find(item => item.id === activeId);
+      const base = `${window.location.pathname}${window.location.search}`;
+      const restore = () => window.history.replaceState(window.history.state, "", previous?.route ? `${base}#${previous.route}` : base);
+      const go = () => {
+        window.history.replaceState(window.history.state, "", entry.route ? `${base}#${entry.route}` : base);
+        setActiveId(entry.id);
+        settingsDialog.current?.close();
+      };
+      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable:true, detail:{go}}))) go();
+      else restore();
     };
     window.addEventListener("hashchange", syncLocation);
     window.addEventListener("popstate", syncLocation);
@@ -72,7 +83,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       window.removeEventListener("hashchange", syncLocation);
       window.removeEventListener("popstate", syncLocation);
     };
-  }, [defaultPage, entries]);
+  }, [activeId, defaultPage, entries]);
 
   const onBandKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;

@@ -56,6 +56,7 @@ export function activate(ctx) {
         props.actions.startAuth({})
           .then((receipt) => {
             attemptId = receipt.attemptId;
+            props.dirty(true);
             if (disposed) return props.actions.cancelAuth(attemptId);
             const challenge = host.querySelector("[data-challenge]");
             challenge.hidden = false;
@@ -115,7 +116,7 @@ function requireProps(value) {
   if (!value || typeof value !== "object" || typeof value.actions !== "object"
     || typeof value.actions.startAuth !== "function" || typeof value.actions.finishAuth !== "function"
     || typeof value.actions.cancelAuth !== "function" || typeof value.actions.sync !== "function"
-    || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
+    || typeof value.dirty !== "function" || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
     throw new Error("models.connection-types.v1 props 无效");
   }
   if (value.state.connection !== null && value.state.connection !== undefined

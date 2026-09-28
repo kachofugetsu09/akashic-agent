@@ -63,6 +63,9 @@ export function activate(ctx) {
         </section><p class="settings-inline-error" data-error role="alert" hidden></p></div>
         <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}连接信息会在保存前验证</span><div class="settings-dialog-actions"><button type="button" class="settings-secondary-button" data-rescan>${existing ? "检测已保存连接" : "重新检测"}</button><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
       const form = host.querySelector("form");
+      const changed = () => props.dirty(true);
+      form.addEventListener("input", changed);
+      form.addEventListener("change", changed);
       form.elements.name.value = existing?.name ?? defaults.name ?? "";
       form.elements.endpoint.value = defaults.endpoint ?? "";
       if (form.elements.provider) form.elements.provider.value = provider;
@@ -124,7 +127,7 @@ function requireProps(value) {
   if (!value || typeof value !== "object" || typeof value.actions !== "object"
     || typeof value.actions.discover !== "function" || typeof value.actions.createManual !== "function"
     || typeof value.actions.update !== "function" || typeof value.actions.sync !== "function"
-    || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
+    || typeof value.dirty !== "function" || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
     throw new Error("models.connection-types.v1 props 无效");
   }
   if (value.state.connection !== null && value.state.connection !== undefined
