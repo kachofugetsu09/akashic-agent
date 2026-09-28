@@ -38,14 +38,13 @@ class ScopedRpcRuntimeInspection:
     ) -> dict[str, object]:
         """Invoke one declared inspection RPC in the caller's exact scope."""
 
-        method = scope.require(key)
-        if not isinstance(method, RpcMethod):
-            raise RuntimeInspectionError(
-                "invalid_provider",
-                "runtime inspection provider 类型无效",
-            )
-        params = method.params.model_validate(dict(payload))
-        result = await method.invoke(params, None)
+        with scope.borrow(key) as method:
+            if method is None:
+                raise RuntimeInspectionError("inspection_unavailable", "运行检查能力不可用")
+            if not isinstance(method, RpcMethod):
+                raise RuntimeInspectionError("invalid_provider", "runtime inspection provider 类型无效")
+            params = method.params.model_validate(dict(payload))
+            result = await method.invoke(params, None)
         if not isinstance(result, Mapping):
             raise RuntimeInspectionError("invalid_response", "runtime inspection RPC 返回值必须是对象")
         return cast(dict[str, object], dict(result))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -34,6 +35,7 @@ class RequestContext:
     )
 
     _resolve: Callable[[ServiceKey[Any]], object] | None = field(default=None, repr=False)
+    _borrow: Callable[[ServiceKey[Any]], AbstractContextManager[object | None]] | None = field(default=None, repr=False)
     _context: Context | None = field(default=None, repr=False, compare=False)
 
     def _require_context(self, key: ServiceKey[Any], service: object) -> Context:
@@ -49,6 +51,12 @@ class RequestContext:
         if self._resolve is None:
             raise CompositionError("REQUEST_SCOPE_MISSING", "插件没有请求能力入口")
         return cast(T, self._resolve(cast(ServiceKey[Any], key)))
+
+    def borrow[T](self, key: ServiceKey[T]) -> AbstractContextManager[T | None]:
+        """在当前请求内借用可选能力；缺席返回 None，借用期间保护 provider。"""
+        if self._borrow is None:
+            raise CompositionError("REQUEST_SCOPE_MISSING", "插件没有请求借用入口")
+        return cast(AbstractContextManager[T | None], self._borrow(key))
 
     def workspace_root(self, name: str) -> Path:
         """返回与当前插件 generation 相同的声明式 workspace root。"""
