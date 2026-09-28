@@ -6,6 +6,9 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import importlib.metadata
+import platform
+import subprocess
 import os
 from pathlib import Path
 import sqlite3
@@ -20,6 +23,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--turns", type=int, default=272)
     args = parser.parse_args()
+    if args.turns < 32:
+        parser.error("turns 至少为 32")
     args.output.mkdir(parents=True, exist_ok=False)
     for key in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[key] = "1"
@@ -64,6 +69,32 @@ def main() -> None:
             ending=(node * 2 + 1, assistant), members=((node * 2, user), (node * 2 + 1, assistant)),
             observations=(), source_digest=hashlib.sha256(str(node).encode()).hexdigest(),
         ))
+    # 固定实际加载的源码、依赖、场景和输入；Git HEAD 不能替代文件摘要。
+    source = args.source.resolve()
+    git_identity = None
+    if (source / ".git").exists():
+        git_identity = {
+            key: subprocess.check_output(["git", "-C", str(source), *command], text=True).strip()
+            for key, command in {
+                "head": ["rev-parse", "HEAD"], "tree": ["rev-parse", "HEAD^{tree}"],
+                "status": ["status", "--porcelain"],
+            }.items()
+        }
+    input_json = json.dumps([asdict(turn) for turn in turns], sort_keys=True,
+                            default=lambda value: value.tolist())
+    manifest = {
+        "source": str(source), "git": git_identity,
+        "source_files": {str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest()
+                         for path in sorted((source / "plugins/akasha").rglob("*.py"))},
+        "loaded_cycle": cycle_module.__file__, "loaded_persistence": persistence.__file__,
+        "scenario_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "input_sha256": hashlib.sha256(input_json.encode()).hexdigest(),
+        "seed": 20260929, "turns": args.turns, "dimension": 33,
+        "python": sys.version, "platform": platform.platform(),
+        "packages": {name: importlib.metadata.version(name) for name in ("numpy", "pydantic")},
+        "blas": np.__config__.show(mode="dicts"), "blas_threads": 1,
+    }
+    (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2))
     state = Consumption(cutover_heads=())
     cycle = MemoryCycle(config)
     cycle.context = ContextState((), None, ())
@@ -179,6 +210,10 @@ def main() -> None:
               "incremental_seconds": timings, "all_tables_equal": True,
               "query_unchanged": True, "faults": faults}
     (args.output / "result.json").write_text(json.dumps(result, indent=2))
+    (args.output / "receipt.json").write_text(json.dumps({
+        name: hashlib.sha256((args.output / name).read_bytes()).hexdigest()
+        for name in ("manifest.json", "result.json")
+    }, indent=2))
     print(json.dumps(result))
 
 
