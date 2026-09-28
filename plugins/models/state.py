@@ -55,6 +55,7 @@ from agent.plugin_composition import (
     ModelKind,
     ModelRequest,
     ModelUnavailableError,
+    ModelTimeoutError,
     SavedEmbedding,
     ServiceKey,
 )
@@ -96,6 +97,8 @@ _LOCAL_ROOT = secrets.token_hex(8)
 _LIVE_CALLS: set[str] = set()
 _RUN_ADMISSION = threading.Lock()
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
+_SETTINGS_MAX_MODEL_PROBES = 16
+_SETTINGS_MODEL_PROBE_SECONDS = 60
 _DEFAULT_ROLE = "default"
 _AGENT_ROLE = "agent"
 _VISION_ROLE = "vision"
@@ -1502,9 +1505,28 @@ class ModelsState:
                 connection.connection_id, command.auth_identity
             )
         )
+        # 1. 用途证据绑定地址、凭证和协议；仅改名称不启动模型调用。
+        changed = (connection.endpoint != existing.endpoint
+                   or command.credential is not None
+                   or connection.auth_identity != existing.auth_identity
+                   or connection.driver_config != existing.driver_config)
+        models = tuple(model for model in snapshot.models.values()
+                       if changed and model.connection_id == connection.connection_id and model.enabled)
+        if len(models) > _SETTINGS_MAX_MODEL_PROBES:
+            raise ValueError(f"连接有 {len(models)} 个已启用模型，超出一次验证上限 {_SETTINGS_MAX_MODEL_PROBES}。请新建连接选择需要的型号，再显式停用旧连接。")
         selected = self._select_driver_records((connection,))
         async with _driver_scope(self, (connection,), selected=selected) as opened:
             await self._probe_connection(connection, credential, opened)
+            if not models:
+                return
+            # 2. 所有候选调用成功才允许原事务更新；失败不改写旧凭证或用途。
+            definition, driver = await self._open_driver(connection, opened, credential=credential)
+            try:
+                async with asyncio.timeout(_SETTINGS_MODEL_PROBE_SECONDS):
+                    for model in models:
+                        await self._check_bound_model(snapshot, connection, model, definition, driver)
+            except TimeoutError as error:
+                raise ModelTimeoutError("模型验证超过一分钟；连接未更新，请稍后重试。") from error
 
     async def _probe_connection(
         self,

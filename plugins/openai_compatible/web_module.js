@@ -42,7 +42,7 @@ export function activate(ctx) {
       const isDeepSeek = !existing && provider === "deepseek";
       const title = existing ? `编辑 ${existing.name}` : isDeepSeek ? "连接 DeepSeek" : "连接自定义 API";
       const description = existing
-        ? "更新连接信息，或重新读取服务的模型目录。"
+        ? "更新地址、密钥或协议前会逐个验证已启用模型（最多16个，总计一分钟）；会产生真实服务调用，失败保留原配置。仅改名称不调用模型。"
         : "填写连接信息，然后检测账号可用的模型。";
       host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(title)}</h2><p class="settings-dialog-description">${description}</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
