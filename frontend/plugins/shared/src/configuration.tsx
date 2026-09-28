@@ -106,6 +106,8 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           return;
         }
         if (receipt.state === "failed") {
+          sessionStorage.setItem(lastKey, id);
+          settled.current = id;
           setBusy(false); setDirty(true); setNotice(""); setError(receipt.error || "配置未能生效，请检查后重试");
           sessionStorage.removeItem(pendingKey); return;
         }

@@ -36,6 +36,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const [selected, setSelected] = useState(() => sessionStorage.getItem("onboarding-page") ?? "");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [withdrawn, setWithdrawn] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [leave, setLeave] = useState<(() => void) | null>(null);
   const [finished, setFinished] = useState(false);
@@ -54,7 +55,11 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
       if (!alive.current) return;
       const next = Object.fromEntries(statuses);
       setSteps(catalog.steps); setStates(next); setError("");
-      setSelected(current => catalog.steps.some(step => step.id === current) ? current : (catalog.steps.find(step => !done(next[step.id])) ?? catalog.steps[0])?.id ?? "");
+      setSelected(current => {
+        if (catalog.steps.some(step => step.id === current)) return current;
+        if (current) setWithdrawn(true);
+        return (catalog.steps.find(step => !done(next[step.id])) ?? catalog.steps[0])?.id ?? "";
+      });
       if (catalog.steps.length && statuses.every(([, status]) => "enabled" in status && status.enabled === null)
           && !window.location.hash && !sessionStorage.getItem("onboarding-invited")) {
         sessionStorage.setItem("onboarding-invited", "1"); invitation.current?.showModal();
@@ -110,6 +115,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
       <button type="button" disabled={loading || dirty} onClick={() => void refresh()}>刷新状态</button>
     </header>
     {error && <div className="config-error" role="alert">{error}</div>}
+    {withdrawn && <p role="status" className="config-hint">刚才的配置项已不在当前安装组合中，已转到可用步骤；已有配置和数据会保留。</p>}
     {loading ? <p role="status">正在读取已安装的功能…</p> : !steps.length && !error ? <div className="config-hint">当前没有需要配置的插件。你仍可使用功能设置。</div> : finished && allDone ?
       <section className="onboarding-complete">
         <div className="onboarding-complete-badge" aria-hidden="true">✓</div>
