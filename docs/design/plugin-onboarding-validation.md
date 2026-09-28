@@ -169,3 +169,20 @@ Chromium 146 / 真实 CDP 13/13 PASS，无页面异常：
 - 重启核对 11 组持久行的计数与哈希：Message/Session、模型配置/绑定/向量定义、记忆 Turn/反馈/Hub；正常随新进程变化的 `model_registry_meta.host_epoch` 单独排除，不声称进程身份应保持。重启前有原生 SQLite 备份；12 个 SQLite integrity_check 全部 ok。
 - 检查 9 项退出码 0，概念基线 pytest 47 passed；前端 typecheck、Core/tests pyright、plugin_boundary、yoyo、两项协议生成物与 diff 检查均通过。独立概念 Gate 的身份与结论见本 PR。
 - 本机证据根 `/mnt/data/akashic-onboarding-fixes-20260928` 的 `issue807-accepted.json` 固定 scenario SHA 与逐项来源；原始配置、日志、数据库和凭据不上传。联合栈首次安装、#808 记忆展示恢复、生产与 Android 尚未在本层执行。恢复点为该目录的原生备份；源码可通过本 PR revert 回退，不需删运行数据。
+
+
+## Issue #808 · 记忆展示恢复（2026-09-29）
+
+接受源码 `bb83dd15a1064dfaa6cda638d35d901f11fdba18`，tree `46f3f00eb70f3102fe877bd5794bf98dfdc7e24f`；base #807 `1b33d47f`。独立正式制品与安装身份匹配，Core676文件/42插件；三个UI插件在本层显式补装，默认组合由联合验收证明。
+
+本机 `issue808-accepted.json` 固定22项逐项完成场景与scenario SHA；中断运行仅计入已完成PASS，所有红记录保留，不声称整个中断脚本通过。真实模型、1024维向量、两个会话与跨会话回忆已执行，第二会话回答豆包、生日与海边庆祝，真实召回hit引用第一会话原Message，12条Message与2个学习Turn存在。
+
+- 保持浏览器的真实隔离重启产生明确stale409；只读取一次正式目录，旧POST不重放，当前模块自己合法查询。原页面、卡片、展开状态保留。
+- 正式CLI卸载实际unavailable404，不冒充stale自动恢复；用户明确刷新移除旧模块，旧答案继续显示。正式重装后新renderer显示原真实卡片。
+- 普通409字符串/其他code、403、429、503、网络失败保留真实卡片、展开和答案，不误刷新目录。精确stale+目录503只有一次有界自动尝试，提供实际刷新操作。真实重启加受控模块503保留同一上下文旧卡片，禁止过期query，明确刷新有效。
+- 只对可选lane存储注入SecurityError/QuotaExceededError，真实卡片与清理继续工作；旧真实200响应在Session切换后迟到不能污染新上下文。90个受控lane标志被上限64收敛、实际标志读取即消费；不存正文/结果/revision。warning仅在源码核对，未声称浏览器观察到console事件。
+- 320px明暗错误文字/重试按钮可读、可聚焦，无水平溢出。受控故障与仅pending轮询调度不造hit或回忆，不作为云服务证据。
+
+重启、卸载重装及asset失败前原生SQLite备份，11组受保护行计数/哈希保持，host_epoch正常boot变化单独排除。12库integrity_check ok。10项检查退出0、pytest47；独立Gate PASS/must-fix0，reviewer/model请求及实际不可核验边界见PR。
+
+证据根 `/mnt/data/akashic-onboarding-fixes-20260928`：`issue808-accepted.json`、`issue808-v2-{artifacts,checks,recovery-browser,faults-browser,uninstall-browser,storage-browser,asset-browser,presentation-browser}.json`。恢复点为本机`backups/issue808/`及`backups/issue808-v2/`；原始配置、凭据、数据库和日志不上传。组合默认首次配置单独验证；生产、Android及重复真实Telegram未运行，没有第二Telegram poller、merge或deploy。源码回退可revert本PR，不删除运行数据。
