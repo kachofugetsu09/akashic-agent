@@ -1118,7 +1118,10 @@ class PluginManager:
         selected_ref = self._selection.read()
         selected = selected_ref is not None and row["input_ref"] in self._selection_components(selected_ref)
         generation = self._active_generations.get(plugin_id)
-        settled = row["state"] == "active" or (row["state"] == "selected" and self._operation is None)
+        settled = row["state"] == "active" or (
+            row["state"] == "selected"
+            and (self._operation is None or self._operation.task.done())
+        )
         if settled and selected and generation is not None and generation.state == "active" and generation.archive_ref == row["input_ref"] and self._generation_is_locally_ready(generation):
             row["state"] = "active"
         elif row["state"] == "active":
