@@ -75,17 +75,20 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   editing.current = dirty || busy;
   const loads = useRef(0);
   const pendingKey = `config-request:${definition.id}`;
+  const lastKey = `config-last-request:${definition.id}`;
   const polling = useRef<AbortController | null>(null);
   const settled = useRef<string | null>(null);
   const poll = async (id: string): Promise<void> => {
     polling.current?.abort();
     const controller = new AbortController(); polling.current = controller;
-    const current = (): boolean => alive.current && !controller.signal.aborted && sessionStorage.getItem(pendingKey) === id;
+    const current = (): boolean => alive.current && !controller.signal.aborted && (sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey)) === id;
     for (let attempt = 0; attempt < 30 && current(); attempt += 1) {
       try {
         const receipt = await request<{state: string; error: string}>(ctx, `${path}/receipts/${id}`, {signal: controller.signal});
         if (!current()) return;
         if (receipt.state === "active" || receipt.state === "superseded") {
+          sessionStorage.setItem(lastKey, id);
+          if (sessionStorage.getItem(pendingKey) === id) sessionStorage.removeItem(pendingKey);
           setNotice(receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
           setBusy(false);
           if (sentEdit.current !== null && sentEdit.current === edits.current) { setDirty(false); embed.dirty?.(false); }
@@ -133,7 +136,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       const next = await request<Status>(ctx, path);
       if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
       setStatus(next); setEnabled(next.enabled); setValues(next.values); setDirty(false); setError("");
-      const pending = sessionStorage.getItem(pendingKey);
+      const pending = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey);
       if (pending) void poll(pending);
     } catch (reason) { if (alive.current && sequence === loads.current) setError(reason instanceof Error ? reason.message : String(reason)); }
   };
