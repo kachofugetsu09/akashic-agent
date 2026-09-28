@@ -37,7 +37,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const settingsEntries = useMemo(() => entries.filter((entry) => entry.section === "settings"), [entries]);
   const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0] ?? entries[0];
   const requestedRoute = window.location.hash.slice(1);
-  const [withdrawn] = useState(() => !!requestedRoute && !entries.some(entry => entry.route === requestedRoute));
+  const [withdrawn, setWithdrawn] = useState(() => !!requestedRoute && !entries.some(entry => entry.route === requestedRoute));
   const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const settingsDialog = useRef<HTMLDialogElement>(null);
@@ -45,10 +45,10 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const focusAfterNavigation = useRef(false);
 
   const openPage = useCallback((entry: ShellPage): void => {
-    if (entry.id === activeId) { settingsDialog.current?.close(); return; }
+    if (entry.id === activeId) { setWithdrawn(false); settingsDialog.current?.close(); return; }
     const go = () => {
       focusAfterNavigation.current = true;
-      setActiveId(entry.id);
+      setActiveId(entry.id); setWithdrawn(false);
       const base = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(null, "", entry.route ? `${base}#${entry.route}` : base);
       settingsDialog.current?.close();
@@ -86,14 +86,20 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   useEffect(() => {
     const syncLocation = (): void => {
       const entry = pageFromLocation(entries, defaultPage);
-      if (!entry || entry.id === activeId) return;
+      if (!entry) return;
+      const requested = window.location.hash.slice(1);
+      const missing = !!requested && !entries.some(item => item.route === requested);
+      if (entry.id === activeId) {
+        if (missing) window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}${entry.route ? `#${entry.route}` : ""}`);
+        setWithdrawn(missing); return;
+      }
       const previous = entries.find(item => item.id === activeId);
       const base = `${window.location.pathname}${window.location.search}`;
       const restore = () => window.history.replaceState(window.history.state, "", previous?.route ? `${base}#${previous.route}` : base);
       const go = () => {
         window.history.replaceState(window.history.state, "", entry.route ? `${base}#${entry.route}` : base);
         focusAfterNavigation.current = true;
-        setActiveId(entry.id);
+        setActiveId(entry.id); setWithdrawn(missing);
         settingsDialog.current?.close();
       };
       if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable:true, detail:{go}}))) go();
