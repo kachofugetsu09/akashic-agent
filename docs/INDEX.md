@@ -298,7 +298,7 @@ docs/
 │   ├── 0073-session-scope-routes-akasha-graphs.md
 │   ├── 0074-deployment-policy-belongs-to-operator.md
 │   ├── 0075-host-bridge-runtime-recovery.md
-│   └── 0076-parallel-tool-calls-commit-in-model-order.md
+│   └── 0079-parallel-tool-calls-commit-in-model-order.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-channel-client-adapters.md

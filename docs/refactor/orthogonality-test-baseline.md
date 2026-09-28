@@ -86,8 +86,8 @@
 | 40 | `tests/test_durable_deliveries.py::test_provider_started_sigkill_recovers_uncertain_without_resend` | C5结果未知时保持 `uncertain` | 发送中途被 SIGKILL 后恢复为 `uncertain`，不自动重发。外部效果不能被"恢复内存指针"伪装成已回滚。 |
 | 42 | `tests/test_message_log.py::test_session_scope_is_fixed_at_admission_and_absent_for_old_sessions` | C4 Session 固定事实不可改写；O：新增维度不改旧行（SES-010） | 真实 `MessageLog` 上断言 scope 首次接纳后同值幂等、异值失败，已有消息的 Session 不能补写 scope，旧 Session 属性字节不变。Akasha 分图和项目归属都以此为唯一依据。 |
 | 43 | `tests/test_akasha_graphs.py::test_unavailable_graph_does_not_stop_other_graphs` | O：故障局部化；MEM-013 独立图消费进度 | 真实安装 Akasha 与 MessageLog，default 或独立图缺少消费出处时，另一图仍完成学习与召回，原图错误保持可见。既有插件生命周期测试没有覆盖同一记忆插件内的独立图。 |
-| 44 | `tests/test_parallel_tool_calls.py`（2 个节点） | C4/SES-002：重叠执行不得改变同一来源事实的提交顺序 | 0076 引入受控重叠后，"ToolResult 按模型顺序落盘"成为新的失败面，同一不变量只留两条最直接路径：`test_parallel_calls_overlap_but_results_commit_in_model_order`（正常提交按模型顺序落盘）与 `test_parallel_failure_does_not_commit_later_results_first`（前驱失败时后继不得抢先落盘）；旧串行实现没有 `parallel` 注册与提交门，这些用例在其上直接失败。分组、容量与取消竞态属于 §1 不保留的实现细节。 |
-| 45 | `tests/test_tool_bindings.py::test_parallel_flag_stays_out_of_binding_description` | PLG-018 工具按引用而非名字；0076 | `parallel` 是目录注册事实，不进入 binding 描述与归档比较；写入工具声明重叠必须被拒绝。 |
+| 44 | `tests/test_parallel_tool_calls.py`（2 个节点） | C4/SES-002：重叠执行不得改变同一来源事实的提交顺序 | 0079 引入受控重叠后，"ToolResult 按模型顺序落盘"成为新的失败面，同一不变量只留两条最直接路径：`test_parallel_calls_overlap_but_results_commit_in_model_order`（正常提交按模型顺序落盘）与 `test_parallel_failure_does_not_commit_later_results_first`（前驱失败时后继不得抢先落盘）；旧串行实现没有 `parallel` 注册与提交门，这些用例在其上直接失败。分组、容量与取消竞态属于 §1 不保留的实现细节。 |
+| 45 | `tests/test_tool_bindings.py::test_parallel_flag_stays_out_of_binding_description` | PLG-018 工具按引用而非名字；0079 | `parallel` 是目录注册事实，不进入 binding 描述与归档比较；写入工具声明重叠必须被拒绝。 |
 
 ### 2.4 静态边界（不是 pytest 节点，但属于保留项）
 
@@ -108,7 +108,7 @@
 - 第 35 条用到的 `assert_rows_unchanged`、`assert_no_forbidden_writes` 已内联进 `tests/test_context_history_contract.py`；`tests_scenarios/contracts/` 已删除
 - `docker/debug/plugin_external_acceptance.py`（第 17、18 条要用）
 
-`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 42 个节点（`test_default_reply` 与第 43 条各带 2 组参数，合计 44 个用例；第 42、43 条随 0073 加入）。第 44、45 条随 0076 加入；第 44 条随后按 §1"同一不变量只留一到两个最直接的测试"收敛为 2 个节点，收集数变为 45 个节点、47 个用例。
+`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 42 个节点（`test_default_reply` 与第 43 条各带 2 组参数，合计 44 个用例；第 42、43 条随 0073 加入）。第 44、45 条随 0079 加入；第 44 条随后按 §1"同一不变量只留一到两个最直接的测试"收敛为 2 个节点，收集数变为 45 个节点、47 个用例。
 
 ## 3. 需要补充的测试（10 个，全部来自 #766 验收）
 
