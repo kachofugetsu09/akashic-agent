@@ -2577,6 +2577,13 @@ form.composer:focus-within [data-slot="input-group"] {
 .model-capsule__copy small { white-space: normal; overflow-wrap: anywhere; }
 .model-capsule__close { min-width: 44px; min-height: 44px; display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; }
 
+@media (max-width: 820px) {
+  .model-capsule--compact .model-capsule__model-view { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .model-capsule--compact .model-capsule__model-view > .model-capsule__rails { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+  .model-capsule--compact .model-capsule__model-view > .model-capsule__rails button { width: auto; }
+  .model-capsule--compact .model-capsule__main { border-inline-start: 0; border-block-start: 1px solid var(--chat-line); }
+}
+
 /* 键盘和横屏下保持原消息滚动 owner，输入区回到文档流，不盖住导航。 */
 @media (max-width: 820px) and (max-height: 30rem) {
   .compact-navigation-dialog { overflow-y: auto; }
