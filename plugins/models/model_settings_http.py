@@ -318,7 +318,7 @@ async def _command_body(
 def create_model_settings_router(
     control: ModelControl,
     *,
-    prefix: str = "/api/chat/model-settings",
+    prefix: str,
 ) -> APIRouter:
     """Expose the models plugin's provider-neutral HTTP contract."""
 

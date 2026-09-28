@@ -47,11 +47,6 @@ INSPECTION_JOBS_LIST = rpc_method_key("inspection/jobs.list")
 INSPECTION_JOBS_GET = rpc_method_key("inspection/jobs.get")
 INSPECTION_SKILLS_LIST = rpc_method_key("inspection/skills.list")
 
-MODEL_CALL = rpc_method_key("models/call_stats")
-MODEL_CATALOG_RPC = rpc_method_key("models/catalog")
-MODEL_DISCOVER = rpc_method_key("models/discover")
-MODEL_COMMAND = rpc_method_key("models/command")
-
 INSPECTION_RPC_KEYS = (
     INSPECTION_DOCUMENTS_LIST,
     INSPECTION_DOCUMENTS_GET,
@@ -59,7 +54,6 @@ INSPECTION_RPC_KEYS = (
     INSPECTION_JOBS_GET,
     INSPECTION_SKILLS_LIST,
 )
-MODEL_RPC_KEYS = (MODEL_CALL, MODEL_CATALOG_RPC, MODEL_DISCOVER, MODEL_COMMAND)
 
 # 聊天启动只等待基础能力；诊断 RPC 在请求中借用，未接线的旧模型 RPC 不阻塞启动。
 CLIENT_CAPABILITIES = (
@@ -83,12 +77,7 @@ __all__ = [
     "INSPECTION_JOBS_LIST",
     "INSPECTION_RPC_KEYS",
     "INSPECTION_SKILLS_LIST",
-    "MODEL_CALL",
     "MODEL_CATALOG",
-    "MODEL_CATALOG_RPC",
-    "MODEL_COMMAND",
-    "MODEL_DISCOVER",
-    "MODEL_RPC_KEYS",
     "MODEL_SELECTION",
     "MESSAGE_DISPLAY",
     "PLUGIN_UI",

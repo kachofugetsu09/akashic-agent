@@ -9,12 +9,12 @@
 | 切片 | 目标行为 | 关键验收 |
 |---|---|---|
 | 聊天与诊断 RPC | 诊断缺席或换代不关闭聊天渠道；移除未接线的旧模型 RPC 启动依赖 | 检查请求明确 unavailable；借用保护当前 provider；越权和过期请求失败 |
-| Web 连接地址 | 监听与代理使用同一份地址合同 | 自定义地址可达；未启用聊天与启动中可区分 |
+| Web 连接地址 | 监听与代理使用同一份地址合同 | 自定义地址可达；不可达明确 unavailable，不猜测启动状态 |
 | 渠道控制 | 输入与中断由同一个来源路由决定 | 异名来源接管 Telegram 后仍可停止；原消息与确认顺序不变 |
 | 材料选择 | 执行场景表达材料用途，不列实现名 | 异名同用途 provider 遵守相同选择；默认提示词集合保持 |
 | 文档与资源说明 | 文档 owner 发布读取与资源描述，消费者不掌握私有路径 | 检查接口保持原 DTO；缺席可见；不迁移原文件 |
 | 重启回执 | 来源提供自己的完成凭据，不由重启消费者猜 source 名 | frame 与 delivery 的确切完成门槛保留；未知效果不重放 |
-| 遗留表示 | 删除有证据的来回转换，不删除持久恢复协议 | 附件事实、旧接管解码与公开 API 保持 |
+| 遗留表示 | 删除有证据的来回转换，不删除持久恢复协议 | 附件事实与旧接管解码保持；现行统计入口修复，废弃入口明确退役 |
 
 各层只改变自己的能力选择和缺席行为。Message/source ID、Session 属性、
 配置值、文档位置、binding、归档和外部回执保持原 owner、格式与读写协议。
@@ -165,6 +165,31 @@ Bus 不再定义第二个 AttachmentKind，而是继续从原 import 路径导�
 临时实测覆盖旧 pickle/JSON、两个真实导入入口、SQLite metadata 与有界 read lease；
 只在 TemporaryDirectory 中创建文件。恢复点 6ad739de 与
 /tmp/akashic-orthology-before-attachment-kind-6ad739de.tar。
+
+### 模型统计与管理各走自己的窄入口
+
+聊天输入栏原来仍请求已断开接线的 /api/settings/model/calls/{id}。现在改为
+/api/chat/model-calls/{id}；Channel 声明 MODEL_CALL_STATS 可选能力，在当前请求 scope
+借用实际 owner，只序列化已有 ModelCallStats。缺 owner 返回 503，未知调用返回 404；
+不增加聊天启动依赖，也不获得模型配置写入权限。Models 仍独占模型配置与调用记录。
+删除未接线的客户端管理 RPC 桥接、重复 Protocol 与能力列表；旧 settings/model
+路径统一返回已有退役响应 410。现行模型选择保持原接口与错误处理。
+
+Dashboard 的 Models HTTP 需要当前模块身份，不能被 Chat 或无 UI 客户端裸调用。
+程序化/Akasha 探针与 Harbor 配置改用现有 SDK 控制连接的 models/catalog、
+models/command，通过显式 --control-endpoint 选择 UDS；无需聊天或 Dashboard bootstrap。
+管理写入失败不自动重试，保持 revision、Models 错误与 generation 作用域。
+
+临时场景 orthology_model_stats.py 使用真实 Channel provider/客户端 listener 与
+ModelsStore，由 Node 执行真实前端 loader，经 Shell → Chat 可选读取口 → SQLite，
+验证耗时、404、owner 卸载后 503 且聊天仍健康、旧入口 410、无私有字段及记录不变。
+Docker 独占 sandbox 的真实 Gateway/Models generation 中，fixture 经正式 Control RPC
+完成 add_connection/add_model/三项 set_default，catalog revision=5 且角色绑定一致。
+不请求外部模型，不改变 Dashboard 身份校验。旧完整 probe 仍有早于本栈的
+Config.channels 拒绝，未声称整份 probe 或 Harbor benchmark 通过。
+47 项概念测试与必需静态检查、前端类型和构建证据分别记录在 PR。
+恢复点 a04eac84 与 /tmp/akashic-orthology-before-model-stats-a04eac84.tar；
+后续评审修复另有 before-model-fixtures-ac985807 与 before-live-model-scope-4f47e3e7 源码归档。
 
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
