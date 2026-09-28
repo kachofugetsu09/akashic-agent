@@ -138,6 +138,20 @@ context.materials.v4 / reply.execute.v2 显式标出新能力。新贡献者和�
 provider 排空、未知用途拒绝以及旧名称选择；没有模型调用或持久化更改。
 恢复点 13655abe 与 /tmp/akashic-orthology-before-material-policy-13655abe.tar。
 
+### 重启等待精确完成回执
+
+RestartWatcher 不再判断 source == programmatic。已准备的 frame claim 拥有精确连接
+排空，先等它并核对 ending_message_id；没有 claim 则由已有 FINAL_OUTPUT_DELIVERY
+目录选择来源自己的完成协议。任一路径失败都 abort，不从失败 frame 切换到另一条
+回执路径。来源名本身不能证明送达；缺 provider、缺 route、断线、错误终点和取消
+均不得提交重启。gate 仍等既有外部 Root permit 排空，再提交原 opaque request ID。
+
+这一层不新增目录或重启状态，也不移动 Programmatic 的实际 frame writer。临时场景
+使用真实 MessageLog/TurnProjection/FrameBook/RestartGate，控制 writer future 与外部
+commit 回调，验证异名来源、送达前不提交、失败恢复准入和 claim 释放。它不是生产
+supervisor 重启验收，不执行进程切换。恢复点 61ea27d8 与
+/tmp/akashic-orthology-before-restart-receipts-61ea27d8.tar；无持久语义或 schema 变化。
+
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
 ## 目标与取舍
