@@ -2571,3 +2571,43 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 
 }
+
+/* 模型名必须能区分版本，不能在选择列表里只留下相同的省略前缀。 */
+.model-capsule__copy strong,
+.model-capsule__copy small { white-space: normal; overflow-wrap: anywhere; }
+.model-capsule__close { min-width: 44px; min-height: 44px; display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; }
+
+@media (max-width: 820px) {
+  .model-capsule--compact .model-capsule__panel { display: block; overflow-y: auto; }
+  .model-capsule--compact .model-capsule__header { position: sticky; top: 0; z-index: 3; background: var(--ak-paper-sheet); }
+  .model-capsule--compact .model-capsule__model-view { display: block; }
+  .model-capsule--compact .model-capsule__model-view > .model-capsule__rails { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+  .model-capsule--compact .model-capsule__model-view > .model-capsule__rails button { width: auto; }
+  .model-capsule--compact .model-capsule__main { display: block; border-inline-start: 0; border-block-start: 1px solid var(--chat-line); }
+  .model-capsule--compact .model-capsule__list,
+  .model-capsule--compact .model-capsule__effort-list { overflow: visible; }
+  .model-capsule--compact .model-capsule__source-title { position: static; }
+}
+
+/* 键盘和横屏下保持原消息滚动 owner，输入区回到文档流，不盖住导航。 */
+@media (max-width: 820px) and (max-height: 30rem) {
+  .compact-navigation-dialog { overflow-y: auto; }
+  .compact-navigation-dialog .chat-sidebar { height: auto; min-height: 100%; }
+  .compact-navigation-dialog .conversation-navigation { flex: none; overflow: visible; }
+  .compact-navigation-dialog .conversation-navigation__sessions { overflow: visible; }
+  .chat-main,
+  :root[data-embedded-shell="true"] .chat-main { overflow-y: auto; }
+  .chat-main .conversation { flex: none; block-size: max(120px, 60dvh); }
+  .chat-main .composer-wrap,
+  .chat-main .composer-wrap.home { position: relative; inset: auto; inline-size: auto; flex: none; margin: 8px 16px; }
+  .chat-main .composer-wrap::before { display: none; }
+  .chat-main .home-state { padding: 16px; }
+  .model-capsule--compact .model-capsule__panel {
+    inset: 8px !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none;
+    display: block;
+    overflow-y: auto;
+  }
+}

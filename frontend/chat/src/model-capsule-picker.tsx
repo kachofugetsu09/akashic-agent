@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Search, Sparkles } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Search, Sparkles, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import codexIcon from "./assets/provider-icons/codex.svg";
 import deepseekIcon from "./assets/provider-icons/deepseek.svg";
@@ -203,6 +203,7 @@ export function ModelCapsulePicker({
       onKeyDown={movePickerFocus}
     >
       <header className="model-capsule__header">
+        <button type="button" className="model-capsule__close" aria-label="关闭模型选择" onClick={() => closePicker(true)}><X size={18} aria-hidden="true" /></button>
         {view === "efforts" ? (
           <button type="button" className="model-capsule__back" onClick={showModels}>
             <ChevronLeft size={17} aria-hidden="true" />
