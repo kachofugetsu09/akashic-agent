@@ -47,6 +47,8 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const [dirty, setDirty] = useState(false);
   const [leave, setLeave] = useState<{kind: "navigate"; go: () => void} | {kind: "catalog"} | null>(null);
   const [finished, setFinished] = useState(false);
+  const [checkingRemoval, setCheckingRemoval] = useState(false);
+  const confirmRead = useRef(false);
   const formHost = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const invitation = useRef<HTMLDialogElement>(null);
@@ -58,14 +60,19 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const markDirty = useCallback((value: boolean) => { editing.current = value; setDirty(value); }, []);
   const selection = useRef(selected); selection.current = selected;
   const refresh = useCallback(async (discardRemoved = false) => {
+    if (confirmRead.current && !discardRemoved) return undefined;
+    const signal = discardRemoved ? AbortSignal.timeout(30_000) : undefined;
     const sequence = ++refreshes.current;
     try {
-      const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog");
+      const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog", {signal});
       const statuses = await Promise.all(catalog.steps.map(async step => {
-        try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${encodeURIComponent(step.id)}`)] as const; }
+        try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${encodeURIComponent(step.id)}`, {signal})] as const; }
         catch (reason) { return [step.id, {fault: reason instanceof Error ? reason.message : String(reason)}] as const; }
       }));
       if (!alive.current || sequence !== refreshes.current) return;
+      if (discardRemoved && statuses.some(([, status]) => status.fault)) {
+        throw new Error("配置状态没有完整读取，原草稿保留。请重新核对。");
+      }
       // 读取失败只保留上次确知的选择，不能把故障当成新决定。
       const next: Record<string, StepStatus> = Object.fromEntries(statuses.map(([id, status]) =>
         [id, status.fault ? {...knownStates.current[id], ...status} : status]));
@@ -91,7 +98,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
       return {steps: catalog.steps, states: next};
     } catch (reason) {
       if (alive.current && sequence === refreshes.current) {
-        const fault = `目录读取失败：${reason instanceof Error ? reason.message : String(reason)}`;
+        const fault = `配置读取失败：${reason instanceof Error ? reason.message : String(reason)}`;
         setError(fault);
         setStates(Object.fromEntries(Object.entries(knownStates.current).map(([id, status]) => [id, {...status, fault}])));
       }
@@ -126,11 +133,11 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
     // 子插件可能拥有独立 React root；等父页面提交结束后销毁，避免提前清空子节点。
     return () => queueMicrotask(dispose);
   }, [current?.id, current?.route, pages, finished, changed, markDirty]);
-  const navigate = (go: () => void) => { if (dirty) setLeave({kind: "navigate", go}); else go(); };
+  const navigate = (go: () => void) => { if (editing.current) setLeave({kind: "navigate", go}); else go(); };
   const choose = (step: Step) => navigate(() => { setSelected(step.id); setFinished(false); });
   const next = async () => {
     const fresh = await refresh();
-    if (!fresh || !canAdvance(fresh.states[selected])) return;
+    if (!fresh || selection.current !== selected || !canAdvance(fresh.states[selected])) return;
     const at = fresh.steps.findIndex(step => step.id === selected);
     if (at >= 0 && at + 1 < fresh.steps.length) choose(fresh.steps[at + 1]);
     else if (fresh.steps.every(step => canAdvance(fresh.states[step.id]))) navigate(() => setFinished(true));
@@ -190,7 +197,14 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
           </footer>
         </section>
       </div>}
-    {leave && <Confirm title="离开前要放弃修改吗？" accept={() => { const pending = leave; setLeave(null); if (pending.kind === "catalog") { void refresh(true); } else { markDirty(false); pending.go(); } }} cancel={() => setLeave(null)}>本页尚有未保存的修改。离开不会改变已保存的配置。</Confirm>}
+    {leave && <Confirm title="离开前要放弃修改吗？" busy={checkingRemoval} accept={() => {
+      if (confirmRead.current) return;
+      const pending = leave;
+      if (pending.kind === "catalog") {
+        confirmRead.current = true; setCheckingRemoval(true);
+        void refresh(true).finally(() => { confirmRead.current = false; if (alive.current) { setCheckingRemoval(false); setLeave(null); } });
+      } else { setLeave(null); markDirty(false); pending.go(); }
+    }} cancel={() => setLeave(null)}>{checkingRemoval ? "正在核对当前安装组合，请稍等。原草稿保留，核对完成前不能继续编辑；读取失败后可继续填写。" : "本页尚有未保存的修改。离开不会改变已保存的配置。"}</Confirm>}
     {createPortal(<dialog ref={invitation} className="config-dialog onboarding-invite" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, document.body)}
   </main>;
 }

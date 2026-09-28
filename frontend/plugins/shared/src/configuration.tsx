@@ -29,12 +29,12 @@ export async function request<T>(ctx: WebHostContextV1, path: string, init?: Req
   return body as T;
 }
 
-export function Confirm({ title, children, accept, cancel }: {title: string; children: ReactNode; accept: () => void; cancel: () => void}) {
+export function Confirm({ title, children, accept, cancel, busy = false }: {title: string; children: ReactNode; accept: () => void; cancel: () => void; busy?: boolean}) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
-  return <dialog ref={ref} className="config-dialog" aria-labelledby="config-confirm-title" onCancel={event => { event.preventDefault(); cancel(); }}>
+  return <dialog ref={ref} className="config-dialog" aria-labelledby="config-confirm-title" onCancel={event => { event.preventDefault(); if (!busy) cancel(); }}>
     <h2 id="config-confirm-title">{title}</h2><p>{children}</p>
-    <footer><button type="button" autoFocus className="config-primary" onClick={cancel}>继续填写</button><button type="button" onClick={accept}>放弃修改并离开</button></footer>
+    <footer><button type="button" autoFocus disabled={busy} className="config-primary" onClick={cancel}>继续填写</button><button type="button" disabled={busy} onClick={accept}>放弃修改并离开</button></footer>
   </dialog>;
 }
 
