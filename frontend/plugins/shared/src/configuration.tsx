@@ -155,11 +155,11 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       } catch (reason) {
         if (!current()) return;
         if (reason instanceof RequestError && [401, 403].includes(reason.status)) {
-          setBusy(inFlightRequest.current !== null); setError(`原操作回执无法读取：${reason.message}`); return;
+          setBusy(inFlightRequest.current !== null || verifyRequired.current === id); setError(`原操作回执无法读取：${reason.message}`); return;
         }
         if (reason instanceof RequestError && reason.status === 404) {
           setNotice("尚未找到原操作回执，结果未确认。请重新核对后再决定是否提交。");
-          setBusy(inFlightRequest.current !== null); return;
+          setBusy(inFlightRequest.current !== null || verifyRequired.current === id); return;
         }
         setNotice("原操作结果仍在核对，设置服务可能正在更新…");
       }
@@ -169,7 +169,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
         controller.signal.addEventListener("abort", finish, {once: true});
       });
     }
-    if (current()) { setBusy(inFlightRequest.current !== null); setNotice("原操作尚未确认；请重新读取以核对回执，不会自动重复提交。"); }
+    if (current()) { setBusy(inFlightRequest.current !== null || verifyRequired.current === id); setNotice("原操作尚未确认；请重新读取以核对回执，不会自动重复提交。"); }
   };
   const load = async (preserveDraft = false): Promise<void> => {
     const sequence = ++loads.current;
