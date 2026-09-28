@@ -356,7 +356,19 @@ export function activate(ctx) {
             if (closed) return;
             dirty = false; dialog.close(); showNotice("向量模型已验证、保存并设为默认；记忆开关保持你的选择。");
           } catch (reason) {
-            if (!closed) { error.textContent = `${reason instanceof Error ? reason.message : String(reason)} 请重新试算后再保存。`; error.hidden = false; invalidate(); }
+            // HTTP 回执丢失时只读取权威目录，不重发可能已经提交的新增请求。
+            let recovered = false;
+            if (!reason?.status && !closed) {
+              try {
+                await load();
+                const saved = catalog.models.find(item => item.id === modelId && item.connectionId === draftId);
+                recovered = !!saved && catalog.defaultEmbeddingModelId === modelId;
+                if (recovered && !closed) { dirty = false; dialog.close(); showNotice("已核对最新设置：向量模型已保存并设为默认。"); }
+              } catch (readError) {
+                if (!closed) { error.textContent = `保存结果尚未确认，读取最新设置也失败。请恢复网络后重新加载模型页面，先核对结果再操作。${readError instanceof Error ? readError.message : String(readError)}`; error.hidden = false; }
+              }
+            }
+            if (!closed && !recovered) { error.textContent = `${reason instanceof Error ? reason.message : String(reason)} 保存结果以模型页面最新设置为准；请重新试算后再操作。`; error.hidden = false; invalidate(); }
           } finally {
             busy = false;
             if (!closed) { controls.forEach(item => { item.disabled = false; }); save.textContent = "保存并设为默认"; save.disabled = !preview; for (const name of ["name","endpoint","key"]) form.elements[name].disabled = !select.value.startsWith("new:"); }
