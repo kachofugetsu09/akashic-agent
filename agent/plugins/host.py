@@ -54,6 +54,7 @@ from agent.plugin_composition.messages import (
     OwnerState,
     SessionAdmission,
 )
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG, PluginConfig
 from agent.plugin_composition.plugin_updates import (
     PLUGIN_UPDATES,
     PluginInstallPort,
@@ -296,6 +297,7 @@ async def provide_host_services(
     )
     _ = await root.context.provide(CREDENTIALS, clients)
     root._defer_internal_cleanup("credential_clients", clients.aclose)  # pyright: ignore[reportPrivateUsage]
+    _ = await root.context.provide(PLUGIN_CONFIG, PluginConfig(installer))
     if PLUGIN_UPDATES in requested:
         _ = await root.context.provide(
             PLUGIN_UPDATES,
@@ -407,6 +409,7 @@ def check_host_dependencies(
         RUNTIME_MCP_DETAIL,
         CREDENTIALS,
         PLUGIN_UPDATES,
+        PLUGIN_CONFIG,
         RESTART_GATE,
         CONTROL_FRAMES,
         MESSAGE_CATALOG,

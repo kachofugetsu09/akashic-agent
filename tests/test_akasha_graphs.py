@@ -25,6 +25,8 @@ def add_memory(sources: Path) -> None:
     """安装真实 Akasha；确定性 embedding provider 只控制外部模型边界。"""
     shutil.copytree(Path(__file__).parents[1] / "plugins/akasha", sources / "akasha",
                     ignore=shutil.ignore_patterns("__pycache__"))
+    from agent.plugin_composition.config_input import save_config
+    save_config(sources.parent / "workspace/plugin-data/akasha-builtin", {"enabled": True})
     provider = sources / "test_provider/plugin.py"
     with provider.open("a") as stream:
         stream.write('''

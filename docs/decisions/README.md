@@ -79,6 +79,8 @@
 
 | [0070](0070-plugins-own-persisted-data.md) | accepted | 插件系统负责依赖与切换，插件负责自己的持久化数据 | PLG-018、RUN-008～RUN-009、ERR-001 |
 
+| [0078](0078-plugin-config-and-onboarding-ownership.md) | accepted | 配置由业务插件拥有，普通引导只组合当前状态 | ONB-001、PLG-003、PLG-014、PLG-016 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

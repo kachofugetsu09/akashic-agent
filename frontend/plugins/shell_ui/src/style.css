@@ -59,8 +59,13 @@
     scrollbar-width: none;
     scroll-snap-type: x mandatory;
     padding-inline: max(0px, calc(50% - 40px));
-    scroll-behavior: smooth;
     mask-image: linear-gradient(to right, transparent, black 18px, black calc(100% - 18px), transparent);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .primary-band-nav {
+      scroll-behavior: smooth;
+    }
   }
 
   .primary-band-nav::-webkit-scrollbar {
@@ -93,8 +98,7 @@
     font-weight: 550;
     white-space: nowrap;
     cursor: pointer;
-    opacity: 0.7;
-    filter: blur(0.35px);
+    opacity: 1;
     flex: 0 0 auto;
     scroll-snap-align: center;
     transition-property: color, background-color, scale, filter, opacity;
@@ -248,3 +252,10 @@
       box-shadow: none;
     }
 }
+
+.shell-settings-dialog{width:min(460px,calc(100vw - 40px));padding:24px;border:1px solid var(--md-sys-color-outline-variant,#ddd);border-radius:14px;background:var(--md-sys-color-surface,#fff);color:inherit}.shell-settings-dialog::backdrop{background:#0006}.shell-settings-dialog header{display:flex;align-items:center;justify-content:space-between}.shell-settings-dialog nav{display:grid;gap:8px}.shell-settings-dialog button{min-height:44px;font:inherit;border:1px solid var(--md-sys-color-outline-variant,#ddd);border-radius:8px;padding:8px 14px;background:transparent;color:inherit;text-align:left;cursor:pointer}
+
+.primary-band-nav { padding-inline: 0; justify-content: flex-end; mask-image: none; }
+.primary-band-footer { flex-shrink: 0; }
+.primary-band-footer .theme-cycle-button, .primary-rail-button { min-height: 44px; }
+@media(max-width:600px) { .primary-band-brand strong { display: none; } .primary-band-nav { justify-content: flex-start; } .primary-band-footer { padding-inline-start: 6px; } }

@@ -91,7 +91,7 @@ def config_refs(config: object) -> frozenset[CredentialRef]:
     return frozenset(ref for value in values for ref in config_refs(value))
 
 
-def _config_bytes(config: Mapping[str, object]) -> bytes:
+def config_bytes(config: Mapping[str, object]) -> bytes:
     if not isinstance(config, Mapping) or not all(isinstance(key, str) for key in config):
         raise TypeError("固定配置输入必须是字符串键映射")
     return json.dumps({"version": 1, "config": encode_config(config)},
@@ -121,7 +121,7 @@ def save_config(data_dir: Path, config: Mapping[str, object]) -> None:
     # 1. 编码和格式核对先于持久化，旧 TOML 只能经过显式升级入口。
     data_dir = _data_dir(data_dir)
     check_config_format(data_dir)
-    content = _config_bytes(config)
+    content = config_bytes(config)
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / CONFIG_INPUT
     if path.is_symlink():
@@ -183,7 +183,7 @@ def upgrade_config(data_dir: Path, convert: Callable[[bytes], Mapping[str, objec
     if (backup / "original" / _LEGACY).read_bytes() != content:
         raise RuntimeError("备份期间旧配置变化；原件与恢复点均保留")
     # 2. 配置程序解释字段并保存私有凭据，传回只含引用的输入。
-    encoded = _config_bytes(convert(content))
+    encoded = config_bytes(convert(content))
     _write(input_path, encoded)
     # 3. 顶层旧入口最后退役；此前中断仍会明确要求完成升级。
     for old in sorted(legacy, key=lambda path: path == source):

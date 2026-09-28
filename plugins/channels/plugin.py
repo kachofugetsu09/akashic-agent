@@ -15,6 +15,11 @@ inject = (HOST_INFO, INPUT_CUSTODY, CHANNEL_IDENTITY, CHANNEL_ATTACHMENT_IMPORT,
 
 
 async def apply(ctx: Context) -> None:
+    from agent.plugin_contracts.onboarding import ONBOARDING
+    async def contribute(child: Context):
+        await child.require(ONBOARDING).group(child, "channels", "渠道")
+    await ctx.inject((ONBOARDING,), contribute, name="onboarding")
+
     """目录和连接生命周期由普通 provider 实例拥有。"""
     channels = PluginChannels(ctx)
     await ctx.provide(CHANNELS, channels)

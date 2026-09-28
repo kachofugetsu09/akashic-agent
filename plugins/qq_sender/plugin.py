@@ -32,12 +32,12 @@ class SenderTarget(Protocol):
     idempotent: bool
 
 
-inject = (DELIVERY_SENDERS, CREDENTIALS, MESSAGE_CATALOG, ARTIFACT_READ)
+function_inject = (DELIVERY_SENDERS, CREDENTIALS, MESSAGE_CATALOG, ARTIFACT_READ)
 
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    enabled: bool = False
+    enabled: bool | None = False
     endpoint: str | None = None
     token: CredentialRef | None = None
     channel: str = Field(default="qq", pattern=r"^[a-z][a-z0-9_-]{0,63}$")
@@ -55,7 +55,7 @@ class Config(BaseModel):
         return self
 
 
-async def apply(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     if not config.enabled:
         return
@@ -80,3 +80,16 @@ async def apply(ctx: Context) -> None:
                 raise ConnectionError(f"QQ 连接握手失败：{type(error).__name__}") from None
 
     _ = await ctx.require(DELIVERY_SENDERS).register(ctx, name=config.channel, idempotent=False, open=open_sender)
+
+
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+
+inject = (PLUGIN_CONFIG, RUNTIME_CATALOG, CREDENTIALS)
+
+
+async def apply(ctx: Context) -> None:
+    """设置入口常驻，业务依赖只影响功能分支。"""
+    from .settings import mount
+    function = await ctx.inject(function_inject, run, name="function")
+    await mount(ctx, Config, function)

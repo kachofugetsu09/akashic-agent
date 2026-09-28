@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent.plugin_composition.models import MODEL_CATALOG, ModelAvailability
+
 import asyncio
 import hashlib
 from collections.abc import Callable, Mapping
@@ -230,9 +232,24 @@ class Runtime:
                 _ = group.create_task(self._due(), name="wake:due")
             _ = group.create_task(self._maintenance(), name="wake:maintenance")
 
+    def _blocked(self) -> str | None:
+        reason = self.ctx.require(SEMANTIC_INTEREST).status()
+        if reason is not None:
+            return reason
+        catalog = self.ctx.require(MODEL_CATALOG).snapshot()
+        model_id = catalog.role_bindings.get("default")
+        if model_id is None or catalog.model(model_id).availability != ModelAvailability.AVAILABLE:
+            return "默认聊天模型不可用"
+        return None
+
     async def _due(self) -> None:
         while True:
             self.changed.clear()
+            async with self.ctx.runtime_scope():
+                blocked = self._blocked()
+            if blocked is not None:
+                await self._wait(self.now() + timedelta(seconds=30), changed=True)
+                continue
             async with self.ctx.runtime_scope():
                 deadline = self.duties.deadline(self.now())
             if deadline is None:
@@ -293,6 +310,9 @@ class Runtime:
             receipt = await self._wait(deadline, changed=False)
             if receipt.status == TimerStatus.CANCELLED:
                 continue
+            async with self.ctx.runtime_scope():
+                if self._blocked() is not None:
+                    continue
             flow_id = self._begin(receipt)
             try:
                 async with self.ctx.runtime_scope():

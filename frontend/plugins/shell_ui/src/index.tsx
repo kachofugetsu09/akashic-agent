@@ -15,7 +15,12 @@ type ShellPage = WebEntry & {
   label: string;
   route: string;
   iconSvg: string;
+  section?: string;
 };
+
+function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
 
 /** Register the ordinary Shell plugin as the only owner of the outer frame. */
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
@@ -36,26 +41,31 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const navRef = useRef<HTMLElement>(null);
+  const settingsDialog = useRef<HTMLDialogElement>(null);
   const [focusId, setFocusId] = useState(activeId);
 
   useEffect(() => {
     const nav = navRef.current;
     const current = nav?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (nav && current) nav.scrollTo({ left: current.offsetLeft - nav.offsetLeft - (nav.clientWidth - current.clientWidth) / 2, behavior: "smooth" });
+    if (nav && current) nav.scrollTo({ left: current.offsetLeft - nav.offsetLeft - (nav.clientWidth - current.clientWidth) / 2, behavior: scrollBehavior() });
     setFocusId(activeId);
   }, [activeId]);
 
   const openPage = useCallback((entry: ShellPage): void => {
+    const go = () => {
     setActiveId(entry.id);
     const base = `${window.location.pathname}${window.location.search}`;
     window.history.replaceState(null, "", entry.route ? `${base}#${entry.route}` : base);
+    settingsDialog.current?.close();
+    };
+    if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go}}))) go();
   }, []);
 
   useLayoutEffect(() => {
     const disposers: WebUiDisposer[] = [];
     for (const entry of entries) {
       const target = pageHosts.current.get(entry.id);
-      if (target) disposers.push(pages.render(entry.id, target));
+      if (target) disposers.push(pages.render(entry.id, target, {pages}));
     }
     return () => {
       for (const dispose of disposers.reverse()) dispose();
@@ -89,9 +99,9 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
           if (nearest?.dataset.pageId) setFocusId(nearest.dataset.pageId);
         }} onWheel={(event) => {
           if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
-          event.currentTarget.scrollBy({ left: event.deltaY, behavior: "smooth" });
+          event.currentTarget.scrollBy({ left: event.deltaY, behavior: scrollBehavior() });
         }}>
-        {entries.map((entry) => <button
+        {entries.filter(entry => entry.section !== "settings").map((entry) => <button
           key={entry.id}
           type="button"
           data-page-id={entry.id}
@@ -105,7 +115,12 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
           <span>{entry.label}</span>
         </button>)}
       </nav>
-      <div className="primary-band-footer"><ThemeToggle /></div>
+      <div className="primary-band-footer">
+          <button type="button" className="theme-cycle-button" onClick={() => settingsDialog.current?.showModal()}>功能设置</button>
+          <dialog ref={settingsDialog} className="shell-settings-dialog" aria-label="功能设置">
+            <header><h2>功能设置</h2><button type="button" onClick={() => settingsDialog.current?.close()} aria-label="关闭设置目录">关闭</button></header>
+            <nav>{entries.filter(entry => entry.section === "settings").map(entry => <button key={entry.id} type="button" onClick={() => openPage(entry)}>{entry.label}</button>)}</nav>
+          </dialog><ThemeToggle /></div>
     </header>
     <div className="shell-view-stack">
       {entries.map((entry) => <section

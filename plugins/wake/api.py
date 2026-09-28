@@ -34,6 +34,7 @@ class DeliveryTarget(BaseModel):
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    enabled: bool | None = True
     delivery: DeliveryTarget | None = None
     timezone: str = "Asia/Shanghai"
     investigation_tools: tuple[str, ...] = ("recall_memory", "web_fetch")

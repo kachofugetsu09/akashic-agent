@@ -63,6 +63,8 @@ class Senders(Protocol):
         idempotent: bool,
         open: Callable[[], AbstractAsyncContextManager[Sender]],
     ) -> Effect: ...
+    async def candidate(self, ctx: Context, *, name: str, title: str, route: str, status: Callable[[], Mapping[str, object]]) -> Effect: ...
+    def candidates(self) -> tuple[Mapping[str, object], ...]: ...
     def registered_names(self) -> tuple[str, ...]: ...
     def bind(self, name: str, bindings: Bindings) -> str: ...
     def bind_all(self, bindings: Bindings) -> Mapping[str, str]: ...
@@ -182,3 +184,11 @@ class InputOrigin(Protocol):
 
 
 INPUT_ORIGIN = ServiceKey[InputOrigin]("delivery.input-origin.v1")
+
+
+def sender_key(name: str) -> ServiceKey[object]:
+    """具名发送能力与实际 sender 注册同寿命。"""
+    import re
+    if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name) is None:
+        raise ValueError("发送 adapter 名称无效")
+    return ServiceKey[object](f"delivery.sender.{name}.v1")
