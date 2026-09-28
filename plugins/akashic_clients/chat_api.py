@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+from agent.plugin_composition.models import ModelCallStats
+
 import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
@@ -79,6 +82,7 @@ def create_chat_app(
     plugin_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
+    model_call_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None,
     model_selection_reader: Callable[
         [Mapping[str, object]], Awaitable[ChatModelSelection]
     ] | None = None,
@@ -332,6 +336,18 @@ def create_chat_app(
         ) as error:
             raise _plugin_ui_http_error(error) from error
 
+    @app.get("/api/chat/model-calls/{call_id}")
+    async def model_call_stats(call_id: str) -> dict[str, object]:
+        """只返回模型 owner 的公开统计，不转发模型管理命令。"""
+        if model_call_stats_reader is None:
+            raise HTTPException(status_code=503, detail="模型调用统计不可用")
+        try:
+            return asdict(await model_call_stats_reader(call_id))
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="模型调用记录不存在") from error
+        except ModelControlUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
     @app.get("/api/chat/runtime/documents")
     async def list_runtime_documents() -> dict[str, object]:
         try:
@@ -507,6 +523,7 @@ def build_chat_server(
     plugin_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
+    model_call_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None,
     model_selection_reader: Callable[
         [Mapping[str, object]], Awaitable[ChatModelSelection]
     ] | None = None,
@@ -527,6 +544,7 @@ def build_chat_server(
             plugin_ui_scope=plugin_ui_scope,
             web_ui_provider=web_ui_provider,
             model_catalog_reader=model_catalog_reader,
+            model_call_stats_reader=model_call_stats_reader,
             model_selection_reader=model_selection_reader,
             messages=messages,
             reply_status=reply_status,

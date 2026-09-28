@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from agent.plugin_composition.models import MODEL_CALL_STATS, ModelCallStats
+from agent.plugin_composition.model_settings_http import ModelControlUnavailable
+
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager
@@ -389,6 +392,14 @@ class _GenerationAkashicAdapter:
                     "items": [dict(item) for item in frame],
                 }
 
+    async def _read_model_call_stats(self, call_id: str) -> ModelCallStats:
+        """借用实际统计 owner；缺席不关闭聊天，也不获取模型修改权限。"""
+        async with self._open_request_scope() as scope:
+            with scope.borrow(MODEL_CALL_STATS) as reader:
+                if reader is None:
+                    raise ModelControlUnavailable("模型调用统计不可用")
+                return reader(call_id)
+
     async def _read_model_catalog(self) -> Any:
         open_scope = self._context.open_scope
         if open_scope is None:
@@ -482,6 +493,7 @@ class _GenerationAkashicAdapter:
             channel=self._web,
             runtime_inspection=self._runtime_inspection,
             model_catalog_reader=self._model_catalog_reader,
+            model_call_stats_reader=self._read_model_call_stats,
             model_selection_reader=self._model_selection_reader,
             message_display=self._message_display,
             plugin_ui_scope=self._plugin_ui_scope,

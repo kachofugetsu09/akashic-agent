@@ -854,7 +854,7 @@ def _configure_model_gate(*, context_window: int = 64_000) -> None:
     """Configure the scripted model through the ordinary public plugin API."""
 
     add_openai_models(
-        "http://akashic-control-gate:2236/api/dashboard/models",
+        "/sandbox/akashic.sock",
         connection_id="model-gate",
         endpoint="http://model-gate:8090/v1",
         api_key="model-gate-local",

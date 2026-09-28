@@ -182,12 +182,12 @@ def _embedding_environment() -> tuple[str, str, str]:
     return cast(tuple[str, str, str], values)
 
 
-def _configure_embedding(settings_url: str) -> None:
+def _configure_embedding(control_endpoint: str) -> None:
     """Register the external embedding binding without exposing its credential."""
 
     key, url, model = _embedding_environment()
     add_openai_models(
-        settings_url,
+        control_endpoint,
         connection_id="akasha-embedding",
         endpoint=url,
         api_key=key,
@@ -483,7 +483,7 @@ def _inside_scenario(report_dir: Path) -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
     events_path = report_dir / "akasha-v2-events.jsonl"
     model_url = os.environ.get("AKASHIC_MODEL_GATE_URL", "http://model-gate:8090")
-    settings_url = "http://akashic-control-gate:2236/api/dashboard/models"
+    control_endpoint = "/sandbox/akashic.sock"
     endpoint = Path("/sandbox/akashic.sock")
     memory_path = Path("/sandbox/workspace/memory/akasha.db")
     checks: list[CheckResult] = []
@@ -492,7 +492,7 @@ def _inside_scenario(report_dir: Path) -> int:
     try:
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _configure_model_gate()
-        _configure_embedding(settings_url)
+        _configure_embedding(control_endpoint)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         client = _connect_client(endpoint, events_path)
         status_before = client.request("server/status", {}).get("result")

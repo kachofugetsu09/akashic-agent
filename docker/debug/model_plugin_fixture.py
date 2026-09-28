@@ -1,63 +1,40 @@
 #!/usr/bin/env python3
-"""Configure ordinary model plugins through the public Models HTTP contract."""
+"""Configure ordinary model plugins through the public Models control RPC contract."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import time
 from collections.abc import Mapping
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from akashic_sdk import Akashic, ConnectionClosedError
 
 
-def _request(method: str, url: str, payload: object | None = None) -> dict:
-    body = None if payload is None else json.dumps(payload).encode("utf-8")
-    parsed = urlsplit(url)
-    request = Request(
-        url,
-        data=body,
-        method=method,
-        headers={
-            "Content-Type": "application/json",
-            "Origin": f"{parsed.scheme}://{parsed.netloc}",
-            "X-Akasic-CSRF": "1",
-        },
-    )
-    try:
-        with urlopen(request, timeout=10) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise HTTPError(
-            error.url,
-            error.code,
-            f"{error.reason}: {detail}",
-            error.headers,
-            None,
-        ) from error
-    if not isinstance(result, dict):
-        raise ValueError(f"model settings returned non-object: {url}")
-    return result
+def _request(control_endpoint: str, method: str, payload: dict | None = None) -> dict:
+    """通过正式控制连接调用 Models owner；失败写入绝不自动重试。"""
+    with Akashic.connect(control_endpoint) as client:
+        result = client.request(method, payload or {})
+    if not isinstance(result, dict) or not isinstance(result.get("body"), dict):
+        raise ValueError(f"invalid Models RPC response: {method}")
+    if result.get("status") != 200:
+        raise RuntimeError(f"Models RPC failed: {method} status={result.get('status')}")
+    return result["body"]
 
 
-def wait_for_settings(settings_url: str, timeout: float = 30.0) -> dict:
-    """Wait until the public model catalog is ready."""
-
+def wait_for_models(control_endpoint: str, timeout: float = 30.0) -> dict:
+    """只重试尚未建立的控制连接；不掩盖服务或配置错误。"""
     deadline = time.monotonic() + timeout
     while True:
         try:
-            return _request("GET", f"{settings_url}/catalog")
-        except (OSError, URLError):
+            return _request(control_endpoint, "models/catalog")
+        except (OSError, ConnectionClosedError):
             if time.monotonic() >= deadline:
                 raise
             time.sleep(0.1)
 
 
 def add_openai_models(
-    settings_url: str,
+    control_endpoint: str,
     *,
     connection_id: str,
     endpoint: str,
@@ -71,7 +48,7 @@ def add_openai_models(
 ) -> None:
     """Add and select one connection using only the public model contract."""
 
-    catalog = wait_for_settings(settings_url)
+    catalog = wait_for_models(control_endpoint)
     models = catalog.get("models")
     if not isinstance(models, list):
         raise ValueError("model catalog is missing models")
@@ -93,8 +70,8 @@ def add_openai_models(
         return
     revision = int(catalog["revision"])
     receipt = _request(
-        "POST",
-        f"{settings_url}/command",
+        control_endpoint,
+        "models/command",
         {
             "type": "add_connection",
             "expected_revision": revision,
@@ -113,8 +90,8 @@ def add_openai_models(
     if chat_model is not None:
         model_id = f"{connection_id}:chat"
         receipt = _request(
-            "POST",
-            f"{settings_url}/command",
+            control_endpoint,
+            "models/command",
             {
                 "type": "add_model",
                 "expected_revision": revision,
@@ -138,8 +115,8 @@ def add_openai_models(
         revision = int(receipt["revision"])
         for role in ("default", "fast", "agent"):
             receipt = _request(
-                "POST",
-                f"{settings_url}/command",
+                control_endpoint,
+                "models/command",
                 {
                     "type": "set_default",
                     "expected_revision": revision,
@@ -151,8 +128,8 @@ def add_openai_models(
     if embedding_model is not None:
         model_id = f"{connection_id}:embedding"
         receipt = _request(
-            "POST",
-            f"{settings_url}/command",
+            control_endpoint,
+            "models/command",
             {
                 "type": "add_model",
                 "expected_revision": revision,
@@ -173,8 +150,8 @@ def add_openai_models(
         )
         revision = int(receipt["revision"])
         _request(
-            "POST",
-            f"{settings_url}/command",
+            control_endpoint,
+            "models/command",
             {
                 "type": "set_default",
                 "expected_revision": revision,
@@ -186,7 +163,7 @@ def add_openai_models(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--settings-url", required=True)
+    parser.add_argument("--control-endpoint", required=True)
     parser.add_argument("--connection", required=True)
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--api-key-env", required=True)
@@ -200,7 +177,7 @@ def main() -> int:
     if not api_key:
         raise ValueError(f"missing credential environment: {arguments.api_key_env}")
     add_openai_models(
-        arguments.settings_url,
+        arguments.control_endpoint,
         connection_id=arguments.connection,
         endpoint=arguments.endpoint,
         api_key=api_key,

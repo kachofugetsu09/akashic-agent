@@ -166,22 +166,30 @@ Bus 不再定义第二个 AttachmentKind，而是继续从原 import 路径导�
 只在 TemporaryDirectory 中创建文件。恢复点 6ad739de 与
 /tmp/akashic-orthology-before-attachment-kind-6ad739de.tar。
 
-### 模型统计直接读取 Models owner
+### 模型统计与管理各走自己的窄入口
 
-聊天输入栏原来仍请求 /api/settings/model/calls/{id}，但旧 Chat model_control 已不再
-接入 Channel factory，实际统计读取断链。前端现在使用 Models 已拥有的
-/api/dashboard/models/calls/{id}。删除未接线的客户端 Model RPC 桥接、重复 Protocol
-与能力列表；路由工厂要求调用者明确给出前缀，不再默认猜旧客户端地址。
-Shell 将旧 settings/model 路径统一返回已有退役响应 410，不再代理到 Chat。
-程序化/Akasha Docker 探针与 Harbor benchmark 的模型配置也迁到同一 Models 公开前缀。
-实际模型选择与它的错误处理保持；Models 仍是唯一配置、调用记录与统计 owner。
+聊天输入栏原来仍请求已断开接线的 /api/settings/model/calls/{id}。现在改为
+/api/chat/model-calls/{id}；Channel 声明 MODEL_CALL_STATS 可选能力，在当前请求 scope
+借用实际 owner，只序列化已有 ModelCallStats。缺 owner 返回 503，未知调用返回 404；
+不增加聊天启动依赖，也不获得模型配置写入权限。Models 仍独占模型配置与调用记录。
+删除未接线的客户端管理 RPC 桥接、重复 Protocol 与能力列表；旧 settings/model
+路径统一返回已有退役响应 410。现行模型选择保持原接口与错误处理。
 
-临时场景 orthology_model_stats.py 用真实 ModelsStore 写入受控调用记录，再由 Node
-执行真实前端 loadWebModelCallStats，经 Shell HTTP → Models router → SQLite 读取。
-验证耗时字段、未知 ID 404、旧 GET/POST 410、无私有凭据泄漏及记录前后不变。
-场景不是模型请求或完整插件发布验收。47 项概念测试、Core/tests 与本层插件 Pyright、
-边界、Yoyo、协议、前端类型及 Vite 构建通过；构建仅写 /tmp。
-恢复点 a04eac84 与 /tmp/akashic-orthology-before-model-stats-a04eac84.tar。
+Dashboard 的 Models HTTP 需要当前模块身份，不能被 Chat 或无 UI 客户端裸调用。
+程序化/Akasha 探针与 Harbor 配置改用现有 SDK 控制连接的 models/catalog、
+models/command，通过显式 --control-endpoint 选择 UDS；无需聊天或 Dashboard bootstrap。
+管理写入失败不自动重试，保持 revision、Models 错误与 generation 作用域。
+
+临时场景 orthology_model_stats.py 使用真实 Channel provider/客户端 listener 与
+ModelsStore，由 Node 执行真实前端 loader，经 Shell → Chat 可选读取口 → SQLite，
+验证耗时、404、owner 卸载后 503 且聊天仍健康、旧入口 410、无私有字段及记录不变。
+Docker 独占 sandbox 的真实 Gateway/Models generation 中，fixture 经正式 Control RPC
+完成 add_connection/add_model/三项 set_default，catalog revision=5 且角色绑定一致。
+不请求外部模型，不改变 Dashboard 身份校验。旧完整 probe 仍有早于本栈的
+Config.channels 拒绝，未声称整份 probe 或 Harbor benchmark 通过。
+47 项概念测试与必需静态检查、前端类型和构建证据分别记录在 PR。
+恢复点 a04eac84 与 /tmp/akashic-orthology-before-model-stats-a04eac84.tar；
+后续评审修复另有 before-model-fixtures-ac985807 与 before-live-model-scope-4f47e3e7 源码归档。
 
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
