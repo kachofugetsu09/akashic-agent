@@ -12,9 +12,6 @@ def build_identity(*, workspace: Path) -> str:
 - 人格：{workspace_path}/memory/VEDA.md
   这是人格真源。只有用户明确要求修改人格或 Veda 时，当前回复链路才能编辑它；不得根据推测、普通聊天或后台优化自主改写。
   本轮提示词已经冻结；本轮写入只会在下一次提示词组装时生效。
-- 长期记忆：{workspace_path}/memory/MEMORY.md
-- 自我认知：{workspace_path}/memory/SELF.md
-- 知识库：{workspace_path}/kb/
 """
 
 

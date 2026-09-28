@@ -90,6 +90,28 @@ WebSocket ping/pong、默认/自定义切换、缺席状态、冲突拒绝与节
 不调用模型、不访问正式 workspace。恢复点 c2fad5e8 与
 /tmp/akashic-orthology-before-web-endpoint-c2fad5e8.tar；无 schema 或数据迁移。
 
+### 文档与 Prompt 资源归真实 owner
+
+`inspection.documents.v1` 只注册展示元数据和有界读取 callable；诊断插件不再获授
+MEMORY/SELF/VEDA 文件路径，也不内置这些 ID。Markdown owner 发布两份档案，Prompt
+owner 发布人格；各自用可选子 Fiber 连接诊断目录，缺诊断不影响原功能，卸载 owner
+移除其目录项但不删除文件。同步读取入口由贡献者 Context 保护；重复 ID 明确失败。
+默认安装的 ID、标题、分组、相对路径、排序与正文格式不变。未安装的 owner 不再
+显示为可读文件；缺文件、超过 192 KiB、非法 UTF-8 保持原错误码，实际读取有界。
+
+```text
+Markdown ── 两份档案的窄读取口 ──┐
+Prompt ──── 人格的窄读取口 ─────┼── 诊断目录 ── 原 RPC / HTTP
+其他 owner ─ 自己的文档 ────────┘
+```
+
+档案位置提示移入 Markdown 自己的材料；Prompt 不再声称别的插件文件或未声明 kb
+目录一定存在，子任务根据本次材料/工具判断资源，不猜 SELF.md 或 skills 物理目录。
+人格保护规则仍归 Prompt。本层允许提示文本变化，不改变文档内容或持久化 writer。
+恢复点 6dd58b0a 与 /tmp/akashic-orthology-before-documents-6dd58b0a.tar。
+临时场景用真实 Prompt、Markdown、Context 和 Inspection，验证可选安装/卸载/重装、
+异名 owner、文件缺失/编码/大小与卸载后文件保留。没有模型调用或正式数据操作。
+
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
 ## 目标与取舍
