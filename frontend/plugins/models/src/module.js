@@ -339,10 +339,11 @@ export function activate(ctx) {
           busy = true; error.hidden = true;
           const controls = [...form.querySelectorAll("input,select,button")]; controls.forEach(item => { item.disabled = true; });
           save.textContent = "正在验证并保存…";
+          const chosen = preview.model, isNew = select.value.startsWith("new:");
+          const connectionId = isNew ? draftId : select.value.slice(6);
+          const existing = catalog.models.find(item => item.connectionId === connectionId && item.kind === "embedding" && item.model === chosen.model);
+          const targetModelId = existing?.id ?? modelId;
           try {
-            const chosen = preview.model, isNew = select.value.startsWith("new:");
-            const connectionId = isNew ? draftId : select.value.slice(6);
-            const existing = catalog.models.find(item => item.connectionId === connectionId && item.kind === "embedding" && item.model === chosen.model);
             if (existing) {
               if (isNew) throw new Error("此连接已经保存。请取消当前窗口，在已连接的卡片中核对或编辑；这里不会覆盖已保存的地址与密钥。");
               if (existing.capabilities.embeddingDimensions !== chosen.capabilities.embeddingDimensions) throw new Error("试算维度与已保存模型不同。请新建独立连接；不会改变已有记忆空间。");
@@ -362,8 +363,8 @@ export function activate(ctx) {
             if (!reason?.status && !closed) {
               try {
                 await load();
-                const saved = catalog.models.find(item => item.id === modelId && item.connectionId === draftId);
-                recovered = !!saved && catalog.defaultEmbeddingModelId === modelId;
+                const saved = catalog.models.find(item => item.id === targetModelId && item.connectionId === connectionId && item.kind === "embedding" && item.model === chosen.model && item.capabilities.embeddingDimensions === chosen.capabilities.embeddingDimensions);
+                recovered = !!saved && catalog.defaultEmbeddingModelId === targetModelId;
                 if (recovered && !closed) { dirty = false; dialog.close(); showNotice("已核对最新设置：向量模型已保存并设为默认。"); }
               } catch (readError) {
                 recoveryError = `保存结果尚未确认，读取最新设置也失败。请恢复网络后重新加载模型页面，先核对结果再操作。${readError instanceof Error ? readError.message : String(readError)}`;
