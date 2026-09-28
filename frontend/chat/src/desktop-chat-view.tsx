@@ -178,6 +178,10 @@ function DesktopEmptyState({ shellStatus, loadingSession }: { shellStatus: strin
       <span>对话尚未就绪</span><h1>请完成所需配置</h1>
       <p>绑定 Codex、OpenCode 或自己的 API Key 后，就可以在这里直接对话。</p>
       <a href="/#models">连接模型</a>
+    </div> : shellStatus === "unavailable" ? <div className="model-connection-state">
+      <span>对话暂不可用</span><h1>尚未连接到聊天服务</h1>
+      <p>服务可能正在启动、已停用或启动失败。连接恢复后，这个页面会自动更新。</p>
+      <a href="/">查看管理面板</a>
     </div> : shellStatus === "starting" ? <div className="model-connection-state">
       <span>正在启动</span><h1>Akashic 正在准备对话</h1>
       <p>这个页面会自动恢复，不需要切换端口或刷新浏览器。</p>

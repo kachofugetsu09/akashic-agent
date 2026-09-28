@@ -127,7 +127,7 @@ def create_web_shell_app(
             "status": (
                 "ready"
                 if chat_ready
-                else "starting" if config_path.exists() else "needs_setup"
+                else "unavailable" if config_path.exists() else "needs_setup"
             ),
             "configured": config_path.exists(),
             "chatReady": chat_ready,
