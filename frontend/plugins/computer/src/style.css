@@ -4,3 +4,5 @@
   max-block-size: calc(100% - 46px);
   overflow: auto;
 }
+
+.computer-clipboard > p { font-size: 1rem; line-height: 1.5; }
