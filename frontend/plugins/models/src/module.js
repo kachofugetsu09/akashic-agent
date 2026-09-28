@@ -404,6 +404,10 @@ export function activate(ctx) {
             });
             return result.models;
           },
+          async disableConnection() {
+            if (!connection) throw new Error("请选择已保存连接");
+            await command({type:"disable_connection", expected_revision:catalog.revision, connection_id:connectionId});
+          },
           async verifyModel(modelId) {
             if (!connection || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
             await request("/api/dashboard/models/command", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({type:"verify_model", expected_revision:catalog.revision, model_id:modelId})});
@@ -534,7 +538,17 @@ export function activate(ctx) {
             item.textContent = `${model.model}${model.kind === "embedding" ? " · 向量模型" : ""}`;
             items.append(item);
           }
-          list.append(summary, items);
+          const disable = document.createElement("button");
+          disable.type = "button"; disable.className = "settings-text-button";
+          disable.textContent = "停用此连接（保留数据）";
+          disable.addEventListener("click", () => {
+            if (busy || !window.confirm(`停用 ${connection.name} 的全部模型？未保存的修改会放弃，历史对话和记忆保留。`)) return;
+            void actions.disableConnection().then(() => {
+              if (auth.closed) return;
+              dirty = false; props.dirty?.(false); showNotice("连接已停用，历史数据保留。请添加正确用途的新连接。"); scrim.close();
+            }).catch(showError);
+          });
+          list.append(summary, items, disable);
           dialogHost.querySelector(".settings-dialog-body").append(list);
         }
         const leaveDocument = event => { if (!event.persisted) report(auth.close()); };

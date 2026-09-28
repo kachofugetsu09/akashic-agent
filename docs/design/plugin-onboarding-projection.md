@@ -537,9 +537,9 @@ provider 动作在已有 auth owner 的 closed 边界前后检查存活状态。
 └───────────────────────────────────────────┘
 ```
 
-Models 独占凭证、候选校验、模型记录和默认绑定。`discoverSaved` 仅在 owner 内读取凭证，返回候选与已有 revision 的 CAS 结果，不向浏览器回显 Key；`verifyModel` 不修改旧用途、启停、默认、模型 ID 或 revision。旧记录保留原证据，不宣称被自动重新验证。不能为修复错误用途自动删除模型、会话、向量或图。
+Models 独占凭证、候选校验、模型记录和默认绑定。`discoverSaved` 仅在 owner 内读取凭证，返回候选与已有 revision 的 CAS 结果，不向浏览器回显 Key；`verifyModel` 不修改旧用途、启停、默认、模型 ID 或 revision。旧记录保留原证据，不宣称被自动重新验证。显式“停用此连接”复用既有 DisableConnection，确认后逻辑停用该连接的全部模型，保留所有持久行；不是单个模型的静默修复或删除。不能为修复错误用途自动删除模型、会话、向量或图。
 
-公开 connection-type ABI 对账 `discover/discoverSaved/addModel/verifyModel`；三个 provider 与宿主同步 contract digest。短聊天 probe 有界输出，不使用目录 HTTP 200 代替完成结果。候选失败不写连接或模型；正常写入仍由原事务 owner 校验 revision。
+公开 connection-type ABI 对账 `discover/discoverSaved/addModel/verifyModel/disableConnection`；三个 provider 与宿主同步 contract digest。短聊天 probe 有界输出，不使用目录 HTTP 200 代替完成结果。候选失败不写连接或模型；正常写入仍由原事务 owner 校验 revision。
 
 DeepSeek 的私有 thinking 字段与 SSE 行为属于连接的 `thinking_format`，不由模型名推断。官方模板选择 deepseek，自定义模板默认 none，可在高级设置明确选择。既有连接保留配置，不静默迁移。依据 [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)，关闭思考须实际发送 `thinking.type=disabled`。
 
