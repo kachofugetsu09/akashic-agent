@@ -6,9 +6,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition import CompositionRoot
+from agent.plugin_composition.channel_io import unavailable
 from agent.plugin_composition.model import PluginRuntime
 from agent.plugin_contracts.context import MATERIALS, MATERIALS_V4
 from plugins.context import plugin as context
+from plugins.context.materials import ContextMaterials
+from plugins.reply_program import plugin as reply
+from agent.plugin_contracts.reply import REPLY_EXECUTE, REPLY_EXECUTE_V2
 
 
 async def check(workspace: Path) -> None:
@@ -62,6 +66,18 @@ async def check(workspace: Path) -> None:
             assert "kind" in str(error)
         await undeclared.dispose()
         assert "akasha" not in materials._sources and "markdown_memory" not in materials._sources
+        # 只有新材料接口时，真实 Reply 的新入口已就绪，旧入口局部缺席。
+        isolated = CompositionRoot("new-material-api-only")
+        try:
+            new_materials = ContextMaterials(isolated.context, prompt_sources={})
+            for key in reply.inject:
+                await isolated.context.provide(key, new_materials if key == MATERIALS_V4 else unavailable)
+            mounted = await isolated.mount(reply.apply, name="reply", inject=reply.inject, runtime=runtime("reply"))
+            assert mounted.error is None
+            assert isolated.context.get(REPLY_EXECUTE_V2) is not None
+            assert isolated.context.get(REPLY_EXECUTE) is None
+        finally:
+            await isolated.dispose()
     finally:
         await root.dispose()
 

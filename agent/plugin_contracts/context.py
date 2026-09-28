@@ -93,18 +93,35 @@ class ContextMaterials(Protocol):
         *,
         name: str,
         prepare: Prepare,
-        kind: MaterialKind | None = None,
         priority: int = 0,
         prompt: bool = False,
         reduce: SummaryReducer | None = None,
     ) -> Effect: ...
     def bind(
-        self, *, exclude: frozenset[str] = frozenset(),
-        exclude_kinds: frozenset[MaterialKind] | None = None
+        self, *, exclude: frozenset[str] = frozenset()
+    ) -> AbstractAsyncContextManager[MaterialView]: ...
+
+
+class ContextMaterialsV4(Protocol):
+    """注册 Effect 归贡献者；bind 固定并保护本次实际使用的材料。"""
+
+    async def register(
+        self,
+        ctx: Context,
+        *,
+        name: str,
+        prepare: Prepare,
+        kind: MaterialKind,
+        priority: int = 0,
+        prompt: bool = False,
+        reduce: SummaryReducer | None = None,
+    ) -> Effect: ...
+    def bind(
+        self, *, exclude_kinds: frozenset[MaterialKind] = frozenset()
     ) -> AbstractAsyncContextManager[MaterialView]: ...
 
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 MATERIALS = ServiceKey[ContextMaterials]("context.materials.v3")
 
-MATERIALS_V4 = ServiceKey[ContextMaterials]("context.materials.v4")
+MATERIALS_V4 = ServiceKey[ContextMaterialsV4]("context.materials.v4")
