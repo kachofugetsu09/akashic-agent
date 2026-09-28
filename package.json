@@ -15,7 +15,8 @@
     "serve:webui-performance:fixture": "node scripts/webui-performance/serve-desktop-fixture.mjs",
     "baseline:webui-performance:build": "node scripts/webui-performance/run-build-baseline.mjs --update-baseline",
     "baseline:webui-performance:browser": "node scripts/webui-performance/run-browser-scenarios.mjs --update-baseline",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:narrow-ui": "node scripts/check_narrow_ui.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
