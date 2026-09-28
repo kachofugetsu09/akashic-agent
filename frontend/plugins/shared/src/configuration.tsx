@@ -69,6 +69,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const path = `/api/dashboard/${definition.id}/config`;
   const alive = useRef(true);
   const article = useRef<HTMLElement>(null);
+  const draftEditing = useRef(dirty); draftEditing.current = dirty;
   const editing = useRef(false);
   const edits = useRef(0);
   const sentEdit = useRef<number | null>(null);
@@ -90,25 +91,27 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           sessionStorage.setItem(lastKey, id);
           if (sessionStorage.getItem(pendingKey) === id) sessionStorage.removeItem(pendingKey);
           setNotice(receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
-          setBusy(false);
+          setBusy(true);
           if (sentEdit.current !== null && sentEdit.current === edits.current) { setDirty(false); embed.dirty?.(false); }
           try {
             const sequence = ++loads.current;
             const next = await request<Status>(ctx, path, {signal: controller.signal});
-            if (current() && sequence === loads.current && !editing.current) {
-              setStatus(next); setEnabled(next.enabled); setValues(next.values);
+            if (current() && sequence === loads.current) {
+              setStatus(next);
+              if (!draftEditing.current) { setEnabled(next.enabled); setValues(next.values); }
             }
           } catch (reason) {
             if (current()) setError(`配置结果已确认，但最新表单读取失败：${reason instanceof Error ? reason.message : String(reason)}`);
           }
           if (!current()) return;
+          setBusy(false);
           if (settled.current !== id) { settled.current = id; embed.changed?.(); }
           return;
         }
         if (receipt.state === "failed") {
           sessionStorage.setItem(lastKey, id);
           settled.current = id;
-          setBusy(false); setDirty(true); setNotice("");
+          setBusy(true); setDirty(true); setNotice("");
           setError(`${receipt.selected ? "配置已保存，但原操作报告应用失败" : "原配置操作失败"}：${receipt.error || "请检查后重试"}`);
           sessionStorage.removeItem(pendingKey);
           try {
@@ -116,6 +119,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
             const next = await request<Status>(ctx, path, {signal: controller.signal});
             if (current() && sequence === loads.current) setStatus(next);
           } catch (reason) { if (current()) setNotice(`原操作失败已确认，但实际配置暂未核对：${reason instanceof Error ? reason.message : String(reason)}`); }
+          if (current()) setBusy(false);
           return;
         }
         setNotice("配置已受理，正在等待新配置生效…");
