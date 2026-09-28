@@ -619,7 +619,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     checking = true;
     try {
       const state = await session.checkCurrent();
-      if (state === "updating") { sawChange = true; show("配置仍在应用，原操作会继续核对。等待较久时可重新核对。"); return; }
+      if (state === "updating") { sawChange = true; show(attempts >= 60 ? "自动核对已结束；操作不因此取消。请点击重新核对查看实际结果。" : "配置仍在应用，原操作会继续核对。等待较久时可重新核对。"); return; }
       if (state === "current") { if (sawChange) { window.clearInterval(timer); notice.remove(); } return; }
       sawChange = true;
       const next = await open();
@@ -650,7 +650,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     }, 500);
   };
   const focus = (): void => { void check(); };
-  retry.onclick = submitted;
+  retry.onclick = () => { submitted(); sawChange = true; };
   window.addEventListener("akashic:configuration-submitted", submitted);
   window.addEventListener("focus", focus);
   document.addEventListener("visibilitychange", focus);

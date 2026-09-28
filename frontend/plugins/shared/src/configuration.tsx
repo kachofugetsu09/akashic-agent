@@ -117,15 +117,22 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
         if (receipt.state === "failed") {
           sessionStorage.setItem(lastKey, id);
           settled.current = id;
-          setBusy(true); if (sentEdit.current !== null) setDirty(true); setNotice("");
+          setBusy(true);
+          if (sentEdit.current !== null && sentEdit.current === edits.current) {
+            setDirty(!receipt.selected); embed.dirty?.(!receipt.selected);
+          }
+          setNotice("");
           setError(`${receipt.selected ? "配置已保存，但原操作报告应用失败" : "原配置操作失败"}：${receipt.error || "请检查后重试"}`);
           sessionStorage.removeItem(pendingKey);
           try {
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
-            if (current() && sequence === loads.current) setStatus(next);
+            if (current() && sequence === loads.current) {
+              setStatus(next);
+              if (!draftEditing.current) { setEnabled(next.enabled); setValues(next.values); }
+            }
           } catch (reason) { if (current()) setNotice(`原操作失败已确认，但实际配置暂未核对：${reason instanceof Error ? reason.message : String(reason)}`); }
-          if (current()) setBusy(false);
+          if (current()) setBusy(needsRebind.current && !draftEditing.current);
           return;
         }
         setNotice("配置已受理，正在等待新配置生效…");
@@ -179,7 +186,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     const navigate = (event: Event) => {
       const detail = (event as CustomEvent<{go: () => void; reason?: string}>).detail;
       if (detail.reason === "catalog" && needsRebind.current && !draftEditing.current && sessionStorage.getItem(lastKey)) return;
-      event.preventDefault(); if (busy) { setNotice("原操作正在核对，请等待结果；离开不会撤销已提交配置。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
+      event.preventDefault(); if (detail.reason === "catalog") return; if (busy) { setNotice("原操作正在核对，请等待结果；离开不会撤销已提交配置。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
     window.addEventListener("beforeunload", unload); window.addEventListener("akashic:before-navigate", navigate);
     return () => { window.removeEventListener("beforeunload", unload); window.removeEventListener("akashic:before-navigate", navigate); };
   }, [dirty, busy]);
