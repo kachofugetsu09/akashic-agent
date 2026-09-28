@@ -75,6 +75,10 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const edits = useRef(0);
   const sentEdit = useRef<number | null>(null);
   editing.current = dirty || busy;
+  const markDirty = (next: boolean): void => {
+    // 事件内即刻保护草稿，异步响应不能抢在 React 提交前覆盖它。
+    draftEditing.current = next; editing.current = next || busy; setDirty(next);
+  };
   const loads = useRef(0);
   const pendingKey = `config-request:${definition.id}`;
   const lastKey = `config-last-request:${definition.id}`;
@@ -97,7 +101,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           if (sessionStorage.getItem(pendingKey) === id) sessionStorage.removeItem(pendingKey);
           setNotice(receipt.state === "active" ? "已确认配置生效，正在核对设置界面…" : "原操作已被较新的配置替代，正在核对最新界面…");
           setBusy(true);
-          if (sentEdit.current !== null && sentEdit.current === edits.current) { setDirty(false); embed.dirty?.(false); }
+          if (sentEdit.current !== null && sentEdit.current === edits.current) { markDirty(false); embed.dirty?.(false); }
           let refreshed = false;
           try {
             const sequence = ++loads.current;
@@ -120,7 +124,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           settled.current = id;
           setBusy(true);
           if (sentEdit.current !== null && sentEdit.current === edits.current) {
-            setDirty(!receipt.selected); embed.dirty?.(!receipt.selected);
+            markDirty(!receipt.selected); embed.dirty?.(!receipt.selected);
           }
           setNotice("");
           setError(`${receipt.selected ? "配置已保存，但原操作报告应用失败" : "原配置操作失败"}：${receipt.error || "请检查后重试"}`);
@@ -138,7 +142,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           return;
         }
         setNotice("配置已受理，正在等待新配置生效…");
-        if (sentEdit.current !== null && sentEdit.current === edits.current) { setDirty(false); embed.dirty?.(false); }
+        if (sentEdit.current !== null && sentEdit.current === edits.current) { markDirty(false); embed.dirty?.(false); }
       } catch (reason) {
         if (!current()) return;
         if (reason instanceof RequestError && [401, 403].includes(reason.status)) {
@@ -163,7 +167,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     try {
       const next = await read<Status>(path);
       if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
-      setStatus(next); setEnabled(next.enabled); setValues(next.values); setDirty(false); setError("");
+      setStatus(next); setEnabled(next.enabled); setValues(next.values); markDirty(false); setError("");
       const pending = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey);
       if (pending) void poll(pending);
     } catch (reason) { if (alive.current && sequence === loads.current) setError(reason instanceof Error ? reason.message : String(reason)); }
@@ -192,7 +196,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     window.addEventListener("beforeunload", unload); window.addEventListener("akashic:before-navigate", navigate);
     return () => { window.removeEventListener("beforeunload", unload); window.removeEventListener("akashic:before-navigate", navigate); };
   }, [dirty, busy]);
-  const change = (key: string, value: unknown) => { edits.current += 1; setValues(previous => ({...previous, [key]: value})); setDirty(true); setNotice(""); };
+  const change = (key: string, value: unknown) => { edits.current += 1; setValues(previous => ({...previous, [key]: value})); markDirty(true); setNotice(""); };
   const saving = useRef(false);
   const save = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault(); if (!status || enabled === null || saving.current || busy) return;
@@ -210,7 +214,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       });
       if (!alive.current) return;
       if (receipt.request_id !== id) throw new Error("配置回执身份不一致");
-      setDirty(false); embed.dirty?.(false);
+      markDirty(false); embed.dirty?.(false);
       setNotice("配置已受理，正在等待新配置生效…");
       await poll(id);
     } catch (reason) {
@@ -231,14 +235,14 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       {status.reason && !(embed.embedded && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
       {!(embed.embedded && status.blocked) && <>
         <fieldset className="config-choices" disabled={busy}><legend>是否开启{definition.title}？</legend>
-          <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { edits.current += 1; setEnabled(true); setDirty(true); }} /><strong>开启</strong><span>配置并使用此功能</span></label>
-          <label className={enabled === false ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === false} onChange={() => { edits.current += 1; setEnabled(false); setDirty(true); }} /><strong>关闭</strong><span>保留已有配置和数据</span></label>
+          <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { edits.current += 1; setEnabled(true); markDirty(true); }} /><strong>开启</strong><span>配置并使用此功能</span></label>
+          <label className={enabled === false ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === false} onChange={() => { edits.current += 1; setEnabled(false); markDirty(true); }} /><strong>关闭</strong><span>保留已有配置和数据</span></label>
         </fieldset>
         {enabled === true && definition.fields && <fieldset disabled={busy} className="config-fields"><legend className="sr-only">连接配置</legend>{definition.fields({values, change, status})}</fieldset>}
         <footer className="config-actions"><span>{!dirty && (status.enabled === false ? "已关闭" : status.ready ? "已开启" : "尚未完成配置")}</span><button className="config-primary" type="submit" disabled={busy || enabled === null || !dirty}>{busy ? "正在应用…" : "保存配置"}</button></footer>
       </>}
       {notice && <div role="status" className="config-hint">{notice}{!busy && sessionStorage.getItem(pendingKey) && <button type="button" onClick={() => { const id = sessionStorage.getItem(pendingKey); if (id) void poll(id); }}>核对原操作</button>}</div>}
     </form>}
-    {leave && <Confirm title="放弃尚未保存的修改？" accept={() => { setDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页修改还没有保存，已有配置保持不变。</Confirm>}
+    {leave && <Confirm title="放弃尚未保存的修改？" accept={() => { markDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页修改还没有保存，已有配置保持不变。</Confirm>}
   </article>;
 }
