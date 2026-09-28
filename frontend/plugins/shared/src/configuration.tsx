@@ -90,6 +90,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     if (response.headers.get("X-Akashic-Web-Rebound") === "1") needsRebind.current = true;
   });
   const poll = async (id: string): Promise<void> => {
+    const wasPending = sessionStorage.getItem(pendingKey) === id;
     polling.current?.abort();
     const controller = new AbortController(); polling.current = controller;
     const current = (): boolean => alive.current && !controller.signal.aborted && (sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey)) === id;
@@ -102,21 +103,21 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           sessionStorage.setItem(lastKey, id);
           if (sessionStorage.getItem(pendingKey) === id) sessionStorage.removeItem(pendingKey);
           setNotice(receipt.state === "active" ? "已确认配置生效，正在核对设置界面…" : "原操作已被较新的配置替代，正在核对最新界面…");
-          setBusy(true);
+          if (wasPending) setBusy(true);
           if (sentEdit.current !== null && sentEdit.current === edits.current) { markDirty(false); embed.dirty?.(false); }
           let refreshed = false;
           try {
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
             if (current() && sequence === loads.current) {
-              setStatus(next); refreshed = true;
-              if (!draftEditing.current) { setEnabled(next.enabled); setValues(next.values); }
+              refreshed = true;
+              if (!draftEditing.current) { setStatus(next); setEnabled(next.enabled); setValues(next.values); }
             }
           } catch (reason) {
             if (current()) setError(`配置结果已确认，但最新表单读取失败：${reason instanceof Error ? reason.message : String(reason)}`);
           }
           if (!current()) return;
-          setBusy(needsRebind.current || !refreshed);
+          setBusy((wasPending && !refreshed) || (needsRebind.current && !draftEditing.current));
           setNotice(needsRebind.current ? "配置结果已确认，正在更新设置界面…" : receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
           if (settled.current !== id) { settled.current = id; embed.changed?.(); }
           return;
@@ -125,7 +126,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           if (inFlightRequest.current === id) inFlightRequest.current = null;
           sessionStorage.setItem(lastKey, id);
           settled.current = id;
-          setBusy(true);
+          if (wasPending) setBusy(true);
           if (sentEdit.current !== null && sentEdit.current === edits.current) {
             markDirty(!receipt.selected); embed.dirty?.(!receipt.selected);
           }
@@ -137,11 +138,11 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
             if (current() && sequence === loads.current) {
-              setStatus(next); refreshed = true;
-              if (!draftEditing.current) { setEnabled(next.enabled); setValues(next.values); }
+              refreshed = true;
+              if (!draftEditing.current) { setStatus(next); setEnabled(next.enabled); setValues(next.values); }
             }
           } catch (reason) { if (current()) setNotice(`原操作失败已确认，但实际配置暂未核对：${reason instanceof Error ? reason.message : String(reason)}`); }
-          if (current()) setBusy(!refreshed || (needsRebind.current && !draftEditing.current));
+          if (current()) setBusy((wasPending && !refreshed) || (needsRebind.current && !draftEditing.current));
           return;
         }
         setNotice("配置已受理，正在等待新配置生效…");
