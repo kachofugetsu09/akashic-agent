@@ -39,16 +39,27 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const settingsDialog = useRef<HTMLDialogElement>(null);
+  const settingsTrigger = useRef<HTMLButtonElement>(null);
+  const focusAfterNavigation = useRef(false);
 
   const openPage = useCallback((entry: ShellPage): void => {
     if (entry.id === activeId) { settingsDialog.current?.close(); return; }
     const go = () => {
+      focusAfterNavigation.current = true;
       setActiveId(entry.id);
       const base = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(null, "", entry.route ? `${base}#${entry.route}` : base);
       settingsDialog.current?.close();
     };
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
+  }, [activeId]);
+
+  useLayoutEffect(() => {
+    if (!focusAfterNavigation.current) return;
+    focusAfterNavigation.current = false;
+    // 页面可见性已提交；弹窗不能在旧页面上猜测导航后的焦点。
+    const current = document.querySelector<HTMLButtonElement>('.primary-band button[aria-current="page"]');
+    (current ?? settingsTrigger.current)?.focus();
   }, [activeId]);
 
   useLayoutEffect(() => {
@@ -71,7 +82,8 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       const restore = () => window.history.replaceState(window.history.state, "", previous?.route ? `${base}#${previous.route}` : base);
       const go = () => {
         window.history.replaceState(window.history.state, "", entry.route ? `${base}#${entry.route}` : base);
-        setActiveId(entry.id);
+        focusAfterNavigation.current = true;
+      setActiveId(entry.id);
         settingsDialog.current?.close();
       };
       if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable:true, detail:{go}}))) go();
@@ -124,7 +136,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
         </div>
       </nav>
       <div className="primary-band-footer">
-        <button type="button" className="theme-cycle-button" onClick={() => settingsDialog.current?.showModal()}>功能设置</button>
+        <button ref={settingsTrigger} type="button" className="theme-cycle-button" onClick={() => settingsDialog.current?.showModal()}>功能设置</button>
         <dialog ref={settingsDialog} className="shell-settings-dialog" aria-label="功能设置">
           <header><h2>功能设置</h2><button type="button" onClick={() => settingsDialog.current?.close()} aria-label="关闭设置目录">关闭</button></header>
           <nav>{settingsEntries.map((entry) => <button key={entry.id} type="button" onClick={() => openPage(entry)}>
