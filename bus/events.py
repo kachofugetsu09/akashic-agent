@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
-from agent.plugin_composition.channels import AttachmentRef
+from agent.plugin_composition.channels import AttachmentKind as AttachmentKind, AttachmentRef
 
 class TurnDisposition(StrEnum):
     """标识无需进入完整提交阶段的合法 turn 结果。"""
@@ -28,11 +28,6 @@ class TurnTerminalStatus(StrEnum):
     FAILED = "failed"
     INTERRUPTED = "interrupted"
     CANCELLED = "cancelled"
-
-
-class AttachmentKind(StrEnum):
-    FILE = "file"
-    IMAGE = "image"
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,6 +6,7 @@ from typing import TypeVar
 from agent.plugin_composition import Context
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.rpc import rpc_method_key
+from agent.plugin_contracts.inspection import DOCUMENTS
 from .rpc import rpc_methods
 
 from .inspection import (
@@ -17,8 +18,7 @@ from .inspection import (
 api_version = 3
 name = "runtime_inspection"
 version = "1.0.0"
-desc = "提供固定文档与可选任务、技能的只读运行时检查投影"
-workspace_files = ("memory/MEMORY.md", "memory/SELF.md", "memory/VEDA.md")
+desc = "汇总 owner 文档与可选任务、技能的只读运行时检查投影"
 inject = ()
 
 _T = TypeVar("_T")
@@ -51,15 +51,10 @@ async def _bind_optional(
 
 
 async def apply(ctx: Context) -> None:
-    """发布文档 owner，并在依赖存在时组合任务与技能只读 provider。"""
+    """发布文档目录，并在依赖存在时组合任务与技能只读 provider。"""
 
-    provider = RuntimeInspectionProvider(
-        {
-            "memory": ctx.workspace_file("memory/MEMORY.md"),
-            "self": ctx.workspace_file("memory/SELF.md"),
-            "veda": ctx.workspace_file("memory/VEDA.md"),
-        }
-    )
+    provider = RuntimeInspectionProvider(ctx)
+    _ = await ctx.provide(DOCUMENTS, provider)
     for name, operation in rpc_methods(provider).items():
         _ = await ctx.provide(rpc_method_key(name), operation)
     await _bind_optional(

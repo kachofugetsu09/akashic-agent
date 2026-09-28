@@ -9,6 +9,7 @@ from agent.plugin_composition import (
 )
 
 from .capabilities import CLIENT_CAPABILITIES, INSPECTION_RPC_KEYS
+from agent.plugin_composition.models import MODEL_CALL_STATS
 from .channel import build_akashic_channel_factory
 from agent.plugin_composition.channels import CHANNEL_INPUT
 from .config import AkashicClientsConfig
@@ -45,7 +46,7 @@ async def apply(ctx: Context) -> None:
             ),
             factory=build_akashic_channel_factory(config, ctx.runtime.workspace),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
-            optional_services=frozenset(INSPECTION_RPC_KEYS),
+            optional_services=frozenset((*INSPECTION_RPC_KEYS, MODEL_CALL_STATS)),
         ),
     )
 

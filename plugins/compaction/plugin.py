@@ -211,4 +211,4 @@ async def apply(ctx: Context) -> None:
         )
         return summary
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="compaction", prepare=prepare, reduce=reduce, priority=500)
+    _ = await ctx.require(MATERIALS).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce, priority=500)

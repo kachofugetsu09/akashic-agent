@@ -186,10 +186,6 @@ class RuntimeInspectionService(Protocol):
     async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]: ...
 
 
-class ModelRpcInvoker(Protocol):
-    async def invoke_rpc(self, method: str, params: Mapping[str, object]) -> object: ...
-
-
 def default_chat_model_id(snapshot: ModelCatalogSnapshot) -> str:
     """读取已声明的 default 绑定，不为客户端编造模型。"""
     return str(snapshot.role_bindings.get("default", ""))

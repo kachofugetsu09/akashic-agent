@@ -20,7 +20,7 @@ from agent.plugin_composition.model import FiberState, PluginRuntime, ServiceKey
 from agent.plugin_composition.rpc import RpcMethod
 from plugins.akashic_clients import plugin as clients
 from plugins.akashic_clients.capabilities import (
-    CLIENT_CAPABILITIES, INSPECTION_DOCUMENTS_LIST, INSPECTION_RPC_KEYS, MODEL_RPC_KEYS,
+    CLIENT_CAPABILITIES, INSPECTION_DOCUMENTS_LIST,
 )
 from plugins.channels import plugin as channels
 from plugins.runtime_inspection import plugin as inspection
@@ -30,11 +30,8 @@ class EmptyParams(BaseModel):
     pass
 
 
-async def check(workspace: Path) -> None:
-    """只调用健康和检查接口；模型、入站与外部发送均明确拒绝。"""
-    root = CompositionRoot("optional-request-scenario")
-    (workspace / "runtime").mkdir()
-
+async def install_ports(root: CompositionRoot, workspace: Path):
+    """为真实 Channel 场景安装端口；未使用的业务调用一律拒绝。"""
     def runtime(name: str, files: tuple[str, ...] = ()) -> PluginRuntime:
         return PluginRuntime(name, name + "-generation", workspace, workspace / name,
                              workspace, {}, workspace_files=files)
@@ -47,8 +44,16 @@ async def check(workspace: Path) -> None:
     await root.context.provide(CHANNEL_ATTACHMENT_READ, ChannelAttachmentRead(unavailable, unavailable))
     await root.context.provide(CHANNEL_INPUT, unavailable)
     for key in CLIENT_CAPABILITIES:
-        if key not in (*INSPECTION_RPC_KEYS, *MODEL_RPC_KEYS):
-            await root.context.provide(key, unavailable)
+        await root.context.provide(key, unavailable)
+    return runtime
+
+
+async def check(workspace: Path) -> None:
+    """只调用健康和检查接口；模型、入站与外部发送均明确拒绝。"""
+    root = CompositionRoot("optional-request-scenario")
+    (workspace / "runtime").mkdir()
+
+    runtime = await install_ports(root, workspace)
     try:
         await root.mount(channels.apply, name="channels", inject=channels.inject, runtime=runtime("channels"))
         chat = await root.mount(clients.apply, name="clients", inject=clients.inject, runtime=runtime("clients"))
@@ -66,7 +71,7 @@ async def check(workspace: Path) -> None:
 
             # 2. 安装与卸载真实检查插件，不重建聊天 adapter 或 activation。
             provider = await root.mount(inspection.apply, name="inspection", inject=inspection.inject,
-                                        runtime=runtime("inspection", inspection.workspace_files))
+                                        runtime=runtime("inspection"))
             assert (await http.get("/api/chat/runtime/documents")).status_code == 200
             await provider.dispose()
             assert (await http.get("/api/chat/runtime/documents")).status_code == 503

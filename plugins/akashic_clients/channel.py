@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from agent.plugin_composition.models import MODEL_CALL_STATS, ModelCallStats
+from agent.plugin_composition.model_settings_http import ModelControlUnavailable
+
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import uvicorn
@@ -299,6 +303,7 @@ class _GenerationAkashicAdapter:
         self._runtime_ports: ChannelRuntimePorts | None = None
         self._servers: list[tuple[uvicorn.Server, asyncio.Task[None]]] = []
         self._started_children: list[Any] = []
+        self._socket_nodes: list[tuple[Path, int, int]] = []
         self._started = False
         self._stopped = False
         self._stopping = False
@@ -387,6 +392,14 @@ class _GenerationAkashicAdapter:
                     "items": [dict(item) for item in frame],
                 }
 
+    async def _read_model_call_stats(self, call_id: str) -> ModelCallStats:
+        """借用实际统计 owner；缺席不关闭聊天，也不获取模型修改权限。"""
+        async with self._open_request_scope() as scope:
+            with scope.borrow(MODEL_CALL_STATS) as reader:
+                if reader is None:
+                    raise ModelControlUnavailable("模型调用统计不可用")
+                return reader(call_id)
+
     async def _read_model_catalog(self) -> Any:
         open_scope = self._context.open_scope
         if open_scope is None:
@@ -467,9 +480,11 @@ class _GenerationAkashicAdapter:
         self._started_children.append(self._web)
         _ = await self._web_adapter.start()
         self._started_children.append(self._web_adapter)
-        socket_path = self._config.web.socket_path or str(
-            self._workspace / "runtime" / "web-chat.sock"
-        )
+        public_path = (self._workspace / "runtime" / "web-chat.sock").absolute()
+        socket_path = Path(self._config.web.socket_path).absolute() if self._config.web.socket_path else public_path
+        public_path.parent.mkdir(parents=True, exist_ok=True)
+        if socket_path != public_path and (public_path.exists() or public_path.is_symlink()):
+            raise FileExistsError(f"聊天公共 socket 路径已被占用: {public_path}")
         artifact_store = self._artifact_store
         if artifact_store is None:
             raise RuntimeError("akashic Web 缺少 artifact store")
@@ -478,6 +493,7 @@ class _GenerationAkashicAdapter:
             channel=self._web,
             runtime_inspection=self._runtime_inspection,
             model_catalog_reader=self._model_catalog_reader,
+            model_call_stats_reader=self._read_model_call_stats,
             model_selection_reader=self._model_selection_reader,
             message_display=self._message_display,
             plugin_ui_scope=self._plugin_ui_scope,
@@ -486,9 +502,29 @@ class _GenerationAkashicAdapter:
             artifact_store=artifact_store,
             reply_status=self._reply_status,
             message_scope=self._message_scope,
-            uds=socket_path,
+            uds=str(socket_path),
         )
         await self._start_server(server, name="akashic-web")
+        node = socket_path.lstat()
+        self._socket_nodes.append((socket_path, node.st_dev, node.st_ino))
+        if socket_path != public_path:
+            # listener 就绪后才发布；原子创建拒绝覆盖其他 owner 的节点。
+            public_path.symlink_to(socket_path)
+            node = public_path.lstat()
+            self._socket_nodes.append((public_path, node.st_dev, node.st_ino))
+
+    def _close_socket_nodes(self) -> None:
+        """listener 排空后只移除本次创建且身份未变的临时节点。"""
+        while self._socket_nodes:
+            path, device, inode = self._socket_nodes[-1]
+            try:
+                node = path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (node.st_dev, node.st_ino) == (device, inode):
+                    path.unlink()
+            self._socket_nodes.pop()
 
     async def start(self) -> ChannelReady:
         if self._started:
@@ -514,6 +550,10 @@ class _GenerationAkashicAdapter:
                 remaining_servers.append((server, task))
         self._servers = list(reversed(remaining_servers))
         if not self._servers:
+            try:
+                self._close_socket_nodes()
+            except OSError as error:
+                failures.append(error)
             remaining_children, _receipts, child_failures = await _stop_owned_children(
                 tuple(self._started_children)
             )
@@ -595,6 +635,7 @@ class _GenerationAkashicAdapter:
             self._stopping = False
             raise BaseExceptionGroup("akashic channel stop 失败", tuple(errors))
 
+        self._close_socket_nodes()
         started_children = tuple(self._started_children)
         remaining_children, receipts, child_failures = await _stop_owned_children(
             started_children

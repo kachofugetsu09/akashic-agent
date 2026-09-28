@@ -27,7 +27,7 @@ export interface ChatModelState {
 }
 
 export interface WebShellState {
-  status: "needs_setup" | "starting" | "ready";
+  status: "needs_setup" | "starting" | "unavailable" | "ready";
   configured: boolean;
   chatReady: boolean;
 }
@@ -118,7 +118,7 @@ export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistory
 export function webShellState(payload: unknown): WebShellState {
   const body = recordValue(payload);
   if (!body
-    || (body.status !== "needs_setup" && body.status !== "starting" && body.status !== "ready")
+    || (body.status !== "needs_setup" && body.status !== "starting" && body.status !== "unavailable" && body.status !== "ready")
     || typeof body.configured !== "boolean"
     || typeof body.chatReady !== "boolean") {
     throw new Error("/api/shell/state 返回了无效状态");

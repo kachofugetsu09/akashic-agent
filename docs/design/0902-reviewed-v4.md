@@ -1550,7 +1550,7 @@ Mobile 启动只接收 MessageBus 与上传存储；目录及恢复读已绑定�
 └────────────────────┘     └───────────────────────────┘
 ```
 
-`MODEL_CALL_STATS` 只返回调用 ID、模型名、状态、可空耗时与 usage，不公开完整 binding、auth identity、credential 或 continuation。Web `GET /api/chat/model-settings/calls/{call_id}` 和 Mobile `model.call.get` 使用同一个已发布 Root 的窄查询；未知调用和未安装统计服务分别明确失败。Mobile 查询是 ephemeral，不保存 command receipt。查询、刷新和重连均不写 Message、调用账或其他运行状态。
+`MODEL_CALL_STATS` 只返回调用 ID、模型名、状态、可空耗时与 usage，不公开完整 binding、auth identity、credential 或 continuation。Web `GET /api/chat/model-calls/{call_id}` 和 Mobile `model.call.get` 使用同一个已发布 Root 的窄查询；未知调用和未安装统计服务分别明确失败。Mobile 查询是 ephemeral，不保存 command receipt。查询、刷新和重连均不写 Message、调用账或其他运行状态。
 
 两端输入框优先显示当前活动调用，空闲时读取最后一条模型 Output 的调用 ID。流式生成期间每秒刷新同一记录；完整且准确的 usage 才以 `output_tokens / ((duration_ms - first_token_ms) / 1000)` 显示平均速度。缺失、部分用量、未结算或非正生成时长不估算速度；旧记录不从秒级时间戳推算耗时。切会话、断线和组件卸载取消旧查询，迟到结果不能显示到另一会话。原 ClientTurnMetricsTracker 已无活跃 UI 调用，留待统一清理。
 

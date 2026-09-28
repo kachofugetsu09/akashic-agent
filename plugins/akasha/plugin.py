@@ -47,7 +47,7 @@ from agent.plugin_composition.models import (
 from agent.plugin_composition.ui import UI
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.context import (
-    MATERIALS as MATERIALS,
+    MATERIALS_V4 as MATERIALS,
 )
 
 from ._boundaries import (
@@ -431,7 +431,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         set_graph_error(key, None)
         return result
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="akasha", prepare=prepare, priority=400)
+    _ = await ctx.require(MATERIALS).register(ctx, kind="recall", name="akasha", prepare=prepare, priority=400)
 
     # 1. Feedback 读取已发布目标；归档调用不依赖正式运行事件或内存指针。
     actions: tuple[Literal["remember", "forget"], ...] = ("remember", "forget")
