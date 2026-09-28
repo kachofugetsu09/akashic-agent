@@ -87,7 +87,9 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
     const page = pages.entries.find(entry => entry.route === current.route);
     const host = formHost.current;
     if (!page) { host.textContent = "此插件的设置页面尚未就绪，请刷新或检查插件状态。"; return; }
-    return pages.render(page.id, host, {embedded: true, changed, dirty: setDirty});
+    const dispose = pages.render(page.id, host, {embedded: true, changed, dirty: setDirty});
+    // 子插件可能拥有独立 React root；等父页面提交结束后销毁，避免提前清空子节点。
+    return () => queueMicrotask(dispose);
   }, [current?.id, current?.route, pages, finished, changed]);
   const navigate = (go: () => void) => { if (dirty) setLeave(() => go); else go(); };
   const choose = (step: Step) => navigate(() => { setSelected(step.id); setFinished(false); });
