@@ -630,3 +630,22 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 - 真实 fixed-session 重启验收发现：前端投影虽确认已有可用 session selection，Models `_select_chat_models` 却在遍历 default 时提前拒绝。按 RUN-010 的“本次 → 会话 → 默认”优先级，仅在没有已验证显式选择时要求 default；不写入/伪造默认，不传播 agent 选择/effort 到 fast/vision。已声明角色的校验和整组冻结保持；后续真请求缺席角色仍由 Models 明确拒绝。ReplyProgram 实际消费 agent；独立 default 消费者的配置要求不放宽。
 
 - 恢复链追加实测：`949ef971` 同浏览器先打开模型设置、重启隔离 runtime 后，旧页面仍用旧 catalog revision；停用请求真实返回 409，旧消息保持，错误藏在模态框外。Models 页面现在在重新可见、窗口 focus、弹窗关闭时只读核对；后台读取启动和落地都避开打开的本页弹窗，命令自身的刷新保留原行为。停用冲突/失败在弹窗内说明结果尚未确认，不自动再提交；正在执行时给反馈，不静默忽略点击。Models 仍独占 revision 与连接状态，Core 不放宽校验。新冻结源码 `19f1b53f` 已验收 29 个独立场景，含真实并发 409、关闭后只读刷新和用户明确重试；949 的成功项仅作前序证据。完整证据与未执行边界见验收记录。
+
+
+## Issue #807 · 决定、前进与可用状态（实施中）
+
+- base `055f5b0e`（#806 / Draft #819），独立 worktree，唯一 writer Codex。change_type=bugfix；runtime_patch=false。
+- 插件独占 enabled 三态与能力状态；Onboarding 只读投影。已决定只来自 owner 已确认的 boolean enabled；Models 的 enabled=true 由有效可用默认配置给出。blocked 允许前进，但不产生决定，也不写 false。
+- 步骤勾选和进度表达已保存决定；标签同时给出选择与前置不可用/尚未就绪。摘要表达配置检查结束，单独列出尚未决定项；所有项读取成功且可前进才可进入摘要。
+- 单项读取失败保留当前页面上次确知的选择并明确注明来源，不变成当前健康状态；未知保持未知，故障项不能前进或完成。缓存仅属于页面读取知识，不持久化、不替 owner 作决定；目录移除项时同步移除该缓存。
+- 受保护：动态目录和真实拓扑、nullable 开关、下游已存决定、pending/failed 保存、旧 Message/向量/图/凭证、原 Telegram receiver。隔离真实 UI 保存与只读 HTTP 故障、正式 Wake 卸载/重装用于验证，不做生产迁移。
+
+```text
+┌───────────────────────────┐
+│ owner status              │
+│ enabled / ready / blocked │
+└─────────────┬─────────────┘
+              ├── enabled boolean → 决定数 / 步骤勾
+              ├── ready / 关闭 / blocked → 允许前进（读取故障除外）
+              └── 三者并列 → 当前状态标签 / 真实摘要
+```
