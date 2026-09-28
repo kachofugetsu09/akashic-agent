@@ -191,6 +191,39 @@ Config.channels 拒绝，未声称整份 probe 或 Harbor benchmark 通过。
 恢复点 a04eac84 与 /tmp/akashic-orthology-before-model-stats-a04eac84.tar；
 后续评审修复另有 before-model-fixtures-ac985807 与 before-live-model-scope-4f47e3e7 源码归档。
 
+### Web 只保留现行发送模型
+
+Web 私有 message_types 只被无调用者的 _deliver_message 使用；当前普通发送由
+WebNativeChannelAdapter.deliver → deliver_v3 执行。删除私有旧方法与它的六个 DTO/枚举，
+保留现行 ProviderDeliveryRequest/Receipt、pending terminal、附件 lease 与连接 owner。
+仓库源码/动态字面入口及本地外部插件源码没有被删私有路径消费者；本机没有旧默认
+cache 目录，不把搜索缺席当作远端 fleet 证明。历史归档仍携带其自身旧源码。
+恢复点 ac985807 与 /tmp/akashic-orthology-before-web-legacy-ac985807.tar。
+
+### 本次 Kimi 报告的处理边界
+
+| 报告中的判断 | 源码复核后的处理 |
+|---|---|
+| Core 中有业务 ServiceKey 就必然不正交 | 不采纳目录/名字标准。纯 Protocol/key 不执行业务选择；实际 provider 由声明能力决定。迁出文件本身不能减少变化传播。 |
+| Shell/CLI 不该出现 HTTP/RPC 名称 | 它们是公开协议的适配者；保留显式路由与方法名。修复真正的 socket 地址分叉及废弃模型桥接，不增加动态万能路由。 |
+| source 字符串全应消失 | 路由/材料/重启消费者中的实现名猜测已移除；学习与默认发送配置中的来源选择保留，属于用户可配置业务政策。 |
+| Wake owner=drift 是插件 ID 耦合 | 该字段是持久工作流类型 content/drift/alert，选择不同程序与类型合同；替换 provider 不要求改变字段，不借重构改写旧事实。 |
+| 检查器知道别家文件、Prompt 猜资源存在 | 已改为真实 owner 的窄读取注册与自有材料说明。 |
+| Bus DTO 都是第二套领域模型 | 合并重复 AttachmentKind；保留实际协议投影。另删除无消费者的 Web 私有旧 DTO/发送方法。 |
+| B 层模块全部零消费者 | 不成立；清理账本逐项记录测试、动态 CLI、外部源码与恢复消费者。仅删除证实无消费者部分，不声称旧能力已获准退役。 |
+| 本地数据/脏工作应直接删除 | 仅忽略实验和敏感备份，恢复边界检查；未删除未提交工作、凭据、数据、子模块或历史恢复材料。 |
+
+验收不是“所有字符串都消失”，而是替换 provider 不迫使无关消费者跟着改，
+可选能力缺席不关闭主体能力，状态、资源和外部效果各有唯一 owner。
+本轮覆盖表中已确认问题；不宣称所有未来插件组合或远端未结算归档均已验收。
+仍保留的旧恢复/测试模块不是新增执行模型；它们的退役需单独核对真实消费者和结算状态。
+
+最终累计本地验证：47 项概念测试、Core/tests Pyright、边界、Yoyo、协议生成物、
+前端 typecheck 通过；七个 orthology 场景全部复跑通过。另用真实 Web adapter 与
+Starlette WebSocket、受控 ASGI send 验证现行发送成功、无连接拒绝、断线失败与被动
+终点暂存；网络入口另由真实 UDS/WebSocket 场景覆盖。无生产模型、Telegram 网络、
+真实设备、正式 workspace 写入、旧归档恢复或生产发布证据。
+
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
 ## 目标与取舍

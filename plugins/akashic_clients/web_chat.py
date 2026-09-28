@@ -41,7 +41,6 @@ from agent.plugin_composition.channels import (
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from .message_types import ChannelMessage, DeliveryReceipt, DeliveryStatus
 from .services import AttachmentStorePort as AttachmentStore
 from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
 from agent.plugin_composition.message_view import MessageDisplayReader, follow_messages
@@ -728,55 +727,6 @@ class WebChatChannel:
             "media": [image],
             "metadata": {"source": "message_push", "kind": "image"},
         })
-
-    async def _deliver_message(self, message: ChannelMessage) -> DeliveryReceipt:
-        """把完整渠道消息映射为一个 Web final frame。"""
-
-        session_key = self._session_key(message.chat_id)
-        media = [attachment.source for attachment in message.attachments]
-        self.remember_media(media)
-        metadata = dict(message.metadata)
-        passive = metadata.pop("_channel_commit_role", None) == "passive"
-        if not passive:
-            metadata.setdefault("source", "message_push")
-        if passive and (
-            not message.execution_attempt_id or not message.control_turn_id
-        ):
-            raise RuntimeError("Web passive final 缺少 Turn/Attempt 身份")
-        frame: dict[str, Any] = {
-            "type": "message.final",
-            "session_id": session_key,
-            "turn_id": message.execution_attempt_id or "",
-            "content": message.content,
-            "thinking": message.thinking or "",
-            "media": media,
-            "metadata": metadata,
-        }
-        if passive:
-            frame["control_turn_id"] = message.control_turn_id
-            frame["execution_attempt_id"] = message.execution_attempt_id
-        duration = metadata.get("turn_duration_ms")
-        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
-            frame["duration_ms"] = duration
-        delivered = await self._broadcast(session_key, frame)
-        if delivered > 0:
-            self._pending_terminal.pop(session_key, None)
-            return DeliveryReceipt(
-                DeliveryStatus.SUCCESS,
-                canonical_media=tuple(media),
-            )
-        if message.control_turn_id:
-            self._pending_terminal[session_key] = frame
-            return DeliveryReceipt(
-                DeliveryStatus.SUCCESS,
-                canonical_media=tuple(media),
-            )
-        if delivered == 0:
-            return DeliveryReceipt(
-                DeliveryStatus.FAILED,
-                detail="Web 会话没有可用连接",
-            )
-        raise RuntimeError("Web legacy delivery 状态无效")
 
     async def deliver_v3(
         self,
