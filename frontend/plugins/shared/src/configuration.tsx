@@ -84,7 +84,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     const current = (): boolean => alive.current && !controller.signal.aborted && (sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey)) === id;
     for (let attempt = 0; attempt < 30 && current(); attempt += 1) {
       try {
-        const receipt = await request<{state: string; error: string}>(ctx, `${path}/receipts/${id}`, {signal: controller.signal});
+        const receipt = await request<{state: string; error: string; selected?: boolean}>(ctx, `${path}/receipts/${id}`, {signal: controller.signal});
         if (!current()) return;
         if (receipt.state === "active" || receipt.state === "superseded") {
           sessionStorage.setItem(lastKey, id);
@@ -108,8 +108,15 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
         if (receipt.state === "failed") {
           sessionStorage.setItem(lastKey, id);
           settled.current = id;
-          setBusy(false); setDirty(true); setNotice(""); setError(receipt.error || "配置未能生效，请检查后重试");
-          sessionStorage.removeItem(pendingKey); return;
+          setBusy(false); setDirty(true); setNotice("");
+          setError(`${receipt.selected ? "配置已保存，但原操作报告应用失败" : "原配置操作失败"}：${receipt.error || "请检查后重试"}`);
+          sessionStorage.removeItem(pendingKey);
+          try {
+            const sequence = ++loads.current;
+            const next = await request<Status>(ctx, path, {signal: controller.signal});
+            if (current() && sequence === loads.current) setStatus(next);
+          } catch (reason) { if (current()) setNotice(`原操作失败已确认，但实际配置暂未核对：${reason instanceof Error ? reason.message : String(reason)}`); }
+          return;
         }
         setNotice("配置已受理，正在等待新配置生效…");
         if (sentEdit.current !== null && sentEdit.current === edits.current) { setDirty(false); embed.dirty?.(false); }
