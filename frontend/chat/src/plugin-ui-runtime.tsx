@@ -455,7 +455,7 @@ export function PluginUiSlot({
   // 目录加载失败时保留本页已经挂载的卡片；新页面不会执行旧模块。
   const previous = React.useRef<typeof renderers>([]);
   const hadRenderer = React.useRef(false);
-  const contextKey = JSON.stringify([sessionId, messageId, turnId, block]);
+  const contextKey = JSON.stringify([name, prefetch, sessionId, messageId, turnId, block]);
   const previousContext = React.useRef(contextKey);
   const waiting = catalog.updating || !!catalog.error || catalog.plugins.some(plugin =>
     plugin.slots.includes(name) && definitions.get(plugin.id)?.revision !== plugin.revision);
