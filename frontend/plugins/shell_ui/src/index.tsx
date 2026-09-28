@@ -58,7 +58,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
     if (!focusAfterNavigation.current) return;
     focusAfterNavigation.current = false;
     // 页面可见性已提交；弹窗不能在旧页面上猜测导航后的焦点。
-    const current = document.querySelector<HTMLButtonElement>('.primary-band button[aria-current="page"]');
+    const current = document.querySelector<HTMLButtonElement>('.primary-band-track button[aria-current="page"]');
     (current ?? settingsTrigger.current)?.focus();
   }, [activeId]);
 
@@ -83,7 +83,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       const go = () => {
         window.history.replaceState(window.history.state, "", entry.route ? `${base}#${entry.route}` : base);
         focusAfterNavigation.current = true;
-      setActiveId(entry.id);
+        setActiveId(entry.id);
         settingsDialog.current?.close();
       };
       if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable:true, detail:{go}}))) go();
