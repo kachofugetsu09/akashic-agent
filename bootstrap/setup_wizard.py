@@ -130,7 +130,6 @@ def _run_plugin_setups(workspace: Path) -> None:
             workspace,
             plugin_root,
             manifest,
-            setup_path,
         )
         environment = os.environ.copy()
         environment.update(
@@ -181,7 +180,6 @@ def _setup_runtime(
     workspace: Path,
     plugin_root: Path,
     manifest: StaticPluginManifest,
-    setup_path: Path,
 ) -> tuple[Path, Path]:
     """Open the immutable installed code and its staged setup interpreter."""
 
@@ -214,13 +212,7 @@ def _setup_runtime(
     if not isinstance(code_ref, str):
         raise RuntimeError(f"插件 {manifest.name} Python environment code ref 无效")
     code_root = environments.archive.open(code_ref)
-    archived_setup = code_root / "configure.py"
-    if (
-        not archived_setup.is_file()
-        or archived_setup.read_bytes() != setup_path.read_bytes()
-    ):
-        raise RuntimeError(f"插件 {manifest.name} setup.entrypoint 与已安装归档不一致")
-    environment_root = environments.open(environment_ref, code_root, runtime)
+    environment_root = environments.open(environment_ref)
     return staged_python_interpreter(environment_root, runtime), code_root
 
 

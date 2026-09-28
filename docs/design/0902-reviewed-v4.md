@@ -972,7 +972,7 @@ Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在
 第 06 层的实现边界：
 
 - 代码在导入前按完整文件树归档，正常 generation、候选 clone、延迟 import、静态命令和资源读取均使用归档路径。`plugin_dir` 保留安装来源和发布指针含义；`code_dir` 从实际模块入口计算，不再保存第二份路径字段。Skills 的展示软链也指向该 generation 的归档资源；原安装目录变化不能改变旧 lease 的正文。
-- 代码归档保留 manifest 和 requirements；`.venv`、`node_modules` 属于运行环境，不作为代码归档。第 06 层只分开代码/cwd 与安装环境，不打开历史外部 runtime。第 07 层已由安装 owner 在最终路径创建并固定 Python 环境；历史调用按所选目标校验环境引用，缺失或不匹配明确失败。当前 installed cache 不参与历史环境恢复，具体边界见下一节。
+- 代码归档保留 manifest 和 requirements；`.venv`、`node_modules` 属于运行环境，不作为代码归档。第 06 层只分开代码/cwd 与安装环境，不打开历史外部 runtime。第 07 层由安装 owner 在最终路径创建并固定 Python 环境；历史调用按所选目标读取环境引用，所需目录或解释器缺失明确失败。当前 installed cache 不参与历史环境恢复；运行时读取按 PLG-002 与 [0077](../decisions/0077-trust-installed-runtime-inputs.md) 执行。
 - binding 从所需 Service 的实际 provider 出发，只向上收集插件与子 Fiber 的声明依赖。Content、Tool 等注册表由自己选择目标的注册 Context，再将真实 Context 交给 binding；Core 校验其属于当前所选 Root 的存活 Fiber，随后将其 owner 纳入同一闭包。调用者不拼 plugin ID，也不恢复整个 fleet。目标选择和 definition 身份属于 registry 的不可变 metadata；第 07 层完成这些具体注册表消费者接入。
 - 配置正文与 revision 来自同一次读取。归档保存可复建投影和已捕获的静态启用选择，不重算当前环境下的 `is_active`。日期和 CredentialRef 使用明确的值编码；凭据解析仍通过其 owner 的 revision fence，不在归档中存 secret 原文。
 - 普通 binding 打开调用者已选 scope 中实际提供的服务，不执行历史模块导入；候选业务验证只导入当前 candidate snapshot 的组件并使用独立数据。旧 `root_ref`/component descriptor 仍可作为 provenance 读取，但旧组件代码、plugin-data 与 workspace 不复制或复活；旧 manifest 的 credential/exclude 声明只读合并并在 current data 首次复制前生效。未声明的能力不可用，不能用空数据或 candidate 兼容壳冒充恢复成功。
@@ -995,7 +995,7 @@ Content 的协议类型作为稳定 API，实际解码器与注册 Context 仍�
                ▼
 ┌─────────────────────────────┐
 │ 打开所选 Tool / MCP          │
-│ 校验所需代码与 Python 环境    │
+│ 读取固定代码与 Python 环境    │
 └──────┬──────────────┬───────┘
        ▼              ▼
 ┌──────────────┐ ┌────────────────────┐
@@ -1009,7 +1009,7 @@ Content 的协议类型作为稳定 API，实际解码器与注册 Context 仍�
              归还借用
 ```
 
-Python 环境在最终目录创建，之后不移动虚拟环境；console script 的绝对解释器路径因此保持有效。component descriptor 第 2 版按每个 Python runtime 保存环境引用。打开纯 Content 不检查该插件未使用的 MCP 环境；调用具体 MCP/process 时才校验它自己的代码、requirements、环境树和宿主基础 Python 身份。该协议只覆盖同一 POSIX 主机和基础解释器，不宣称冻结整个操作系统或动态库。Node 等未实现的运行环境不能套用 Python 的恢复承诺。
+Python 环境在最终目录创建，之后不移动虚拟环境；console script 的绝对解释器路径因此保持有效。component descriptor 第 2 版按每个 Python runtime 保存环境引用。打开纯 Content 不打开该插件未使用的 MCP 环境；具体 MCP/process 使用自己的固定引用。读取合同由 PLG-002 拥有，旧的源码、requirements、环境树与基础解释器复验按 [0077](../decisions/0077-trust-installed-runtime-inputs.md) 退役。该协议只覆盖同一 POSIX 主机，不宣称冻结整个操作系统或动态库。Node 等未实现的运行环境不能套用 Python 的恢复承诺。
 
 MCP 的公开 open 要求调用 Context 是该声明的实际 owner；其他插件须使用 owner 明确提供的能力。历史 MCP 使用独立连接和私有 process 端口，不执行正式启动事件。需要 Desktop 等 Workload 时，只借用当前 ready 且完整 descriptor 相等的已有资源；不替换或停止它。正式 owner 在停止前禁止新借用，等待已有借用排空。历史 MCP 断开、process 停止成功后才归还借用，清理失败保留实际 owner 和重试证据。调用 scope 的失败从资源 host 的 tombstone 查询，通过 Manager 的 `resource_failures / retry_resource_cleanup` 按精确 scope 重试；不写正式插件 reload journal，不重建 stable Root。Manager 关闭时同步停止接纳新调用，再清理已接纳的调用资源，最后停止正式 Workload。同一个调用 owner 的锁覆盖启动、停止与重试，关闭不取消整个调用者 Task；并发重试只归还一次借用。监督运行中进程继承 boot 身份，Gateway 退出后的进程组清理由既有 guardian 拥有。
 
