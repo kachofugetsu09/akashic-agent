@@ -45,35 +45,35 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const invitation = useRef<HTMLDialogElement>(null);
   const focusedStep = useRef<string | null>(null);
   const alive = useRef(true);
+  const refreshes = useRef(0);
+  const selection = useRef(selected); selection.current = selected;
   const refresh = useCallback(async () => {
+    const sequence = ++refreshes.current;
     try {
       const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog");
       const statuses = await Promise.all(catalog.steps.map(async step => {
         try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${encodeURIComponent(step.id)}`)] as const; }
         catch (reason) { return [step.id, {fault: reason instanceof Error ? reason.message : String(reason)}] as const; }
       }));
-      if (!alive.current) return;
+      if (!alive.current || sequence !== refreshes.current) return;
       const next = Object.fromEntries(statuses);
       setSteps(catalog.steps); setStates(next); setError("");
-      setSelected(current => {
-        if (catalog.steps.some(step => step.id === current)) return current;
-        if (current) setWithdrawn(true);
-        return (catalog.steps.find(step => !done(next[step.id])) ?? catalog.steps[0])?.id ?? "";
-      });
+      if (selection.current && !catalog.steps.some(step => step.id === selection.current)) setWithdrawn(true);
+      setSelected(current => catalog.steps.some(step => step.id === current) ? current : (catalog.steps.find(step => !done(next[step.id])) ?? catalog.steps[0])?.id ?? "");
       if (catalog.steps.length && statuses.every(([, status]) => "enabled" in status && status.enabled === null)
           && !window.location.hash && !sessionStorage.getItem("onboarding-invited")) {
         sessionStorage.setItem("onboarding-invited", "1"); invitation.current?.showModal();
       }
       return {steps: catalog.steps, states: next};
-    } catch (reason) { if (alive.current) setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { if (alive.current) setLoading(false); }
+    } catch (reason) { if (alive.current && sequence === refreshes.current) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (alive.current && sequence === refreshes.current) setLoading(false); }
     return undefined;
   }, [ctx]);
   useEffect(() => {
     alive.current = true; void refresh();
     const change = () => { void refresh(); };
     window.addEventListener("focus", change);
-    return () => { alive.current = false; window.removeEventListener("focus", change); };
+    return () => { alive.current = false; refreshes.current += 1; window.removeEventListener("focus", change); };
   }, [refresh]);
   const changed = useCallback(() => { void refresh(); }, [refresh]);
   const current = steps.find(step => step.id === selected);
