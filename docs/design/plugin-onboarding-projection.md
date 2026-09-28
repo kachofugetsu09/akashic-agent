@@ -628,3 +628,5 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 - 远端拒绝由对应驱动 HTTP 信任边界判断：OpenAI-compatible 确认 401/403 后才说明连接授权未通过，5xx 明确服务暂不可用；沿既有错误类型/Control 原因显示，不按字符串猜测原因、不改变自动重试预算或 Message schema。失败消息提供只读模型设置入口。目录访问 401/403 与云端凭证失败分开说明，本地 available 不声明凭据已认证。
 
 - 真实 fixed-session 重启验收发现：前端投影虽确认已有可用 session selection，Models `_select_chat_models` 却在遍历 default 时提前拒绝。按 RUN-010 的“本次 → 会话 → 默认”优先级，仅在没有已验证显式选择时要求 default；不写入/伪造默认，不传播 agent 选择/effort 到 fast/vision。已声明角色的校验和整组冻结保持；后续真请求缺席角色仍由 Models 明确拒绝。ReplyProgram 实际消费 agent；独立 default 消费者的配置要求不放宽。
+
+- 恢复链追加实测：`949ef971` 同浏览器先打开模型设置、重启隔离 runtime 后，旧页面仍用旧 catalog revision；停用请求真实返回 409，旧消息保持，错误藏在模态框外。Models 页面现在在重新可见、窗口 focus、弹窗关闭时只读核对；后台读取启动和落地都避开打开的本页弹窗，命令自身的刷新保留原行为。停用冲突/失败在弹窗内说明结果尚未确认，不自动再提交；正在执行时给反馈，不静默忽略点击。Models 仍独占 revision 与连接状态，Core 不放宽校验。该补丁需要新冻结源码重新验收，949 的成功项仅作前序证据。
