@@ -105,11 +105,10 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable:true, detail:{go}}))) go();
       else restore();
     };
+    // hash 路由只监听一次变化；同一次跳转的 popstate 会重复清除撤回提示。
     window.addEventListener("hashchange", syncLocation);
-    window.addEventListener("popstate", syncLocation);
     return () => {
       window.removeEventListener("hashchange", syncLocation);
-      window.removeEventListener("popstate", syncLocation);
     };
   }, [activeId, defaultPage, entries]);
 
