@@ -72,7 +72,7 @@ async def check(workspace: Path) -> None:
 
             # 2. 安装与卸载真实检查插件，不重建聊天 adapter 或 activation。
             provider = await root.mount(inspection.apply, name="inspection", inject=inspection.inject,
-                                        runtime=runtime("inspection", inspection.workspace_files))
+                                        runtime=runtime("inspection"))
             assert (await http.get("/api/chat/runtime/documents")).status_code == 200
             await provider.dispose()
             assert (await http.get("/api/chat/runtime/documents")).status_code == 503

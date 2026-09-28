@@ -39,6 +39,8 @@ from .llm_json import load_json_object_loose
 if TYPE_CHECKING:
     from agent.plugin_composition.messages import MessageReader
 
+from agent.plugin_contracts.inspection import DOCUMENTS, Document
+
 from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest
 
 logger = logging.getLogger("plugins.markdown_memory")
@@ -769,6 +771,7 @@ async def apply(ctx: Context) -> None:
         return store.read_writes(after, limit)
 
     _ = await ctx.provide(MEMORY_WRITES, read_writes)
+    await ctx.inject((DOCUMENTS,), publish_documents, name="documents")
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         # 完整初始态只投影 Store 的同一默认值；不创建文件或消费旧队列。
@@ -780,7 +783,11 @@ async def apply(ctx: Context) -> None:
             async with profile_lock(lock_path, create=False):
                 self_profile = ctx.workspace_file("memory/SELF.md").read_text(encoding="utf-8").strip()
                 memory = ctx.workspace_file("memory/MEMORY.md").read_text(encoding="utf-8").strip()
-        parts: list[str] = []
+        parts: list[str] = [
+            "## 档案位置\n"
+            f"- 长期记忆：{ctx.workspace_file('memory/MEMORY.md')}\n"
+            f"- 自我认知：{ctx.workspace_file('memory/SELF.md')}"
+        ]
         if self_profile:
             parts.append("## Akashic 自我认知\n\n" + self_profile)
         if memory:
@@ -859,3 +866,18 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.require(MATERIALS).register(ctx, name="markdown_memory", prepare=prepare, prompt=True, priority=200)
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
+
+
+async def publish_documents(ctx: Context) -> None:
+    """只发布档案 owner 拥有的两份只读文件。"""
+    for identity, title, relative_path, group, description, order in (
+        ("memory", "长期记忆", "memory/MEMORY.md", "memory", "沉淀后的长期事实、偏好与经验。", 100),
+        ("self", "自我认知", "memory/SELF.md", "identity", "Agent 对自身状态与能力边界的认识。", 200),
+    ):
+        path = ctx.workspace_file(relative_path)
+        def read(limit: int, path: Path = path) -> bytes:
+            with path.open("rb") as file:
+                return file.read(limit)
+        await ctx.require(DOCUMENTS).register(ctx, Document(
+            identity, title, relative_path, group, description, read, order,
+        ))

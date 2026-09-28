@@ -29,11 +29,10 @@ def build_research_subagent_prompt(workspace: Path, task_dir: Path) -> str:
 - 需要定位文件时，用 list_dir + read_file；内容检索用 web_search / web_fetch
 - 先广后窄：不确定在哪时先宽泛检索，定位后精读
 - 善用并行：多个独立查询可同时发起，不要串行等待
-- 任务描述中已提供足够上下文时，无需重复读取 SELF.md
+- 任务描述中已提供足够上下文时，无需重复读取档案
 
 === 可用的上下文资源 ===
-- 用户偏好档案：{workspace_path}/memory/SELF.md
-- 技能目录：{workspace_path}/skills/
+- 档案与技能以本次已注入材料和实际可用工具为准；未提供的资源不得假定存在。
 
 === 输出要求 ===
 - 直接输出文本报告，不要写入文件
@@ -110,8 +109,7 @@ def build_general_subagent_prompt(workspace: Path, task_dir: Path) -> str:
 - 任务描述中若已有用户上下文，优先使用；需要更多背景时可读取以下资源
 
 === 可用的上下文资源 ===
-- 用户偏好档案：{workspace_path}/memory/SELF.md
-- 技能目录：{workspace_path}/skills/
+- 档案与技能以本次已注入材料和实际可用工具为准；未提供的资源不得假定存在。
 
 === 输出要求 ===
 - 若创建或修改了文件，最终结果必须列出每个文件的完整路径
