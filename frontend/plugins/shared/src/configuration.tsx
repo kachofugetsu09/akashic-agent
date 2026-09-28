@@ -98,18 +98,19 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           setNotice(receipt.state === "active" ? "已确认配置生效，正在核对设置界面…" : "原操作已被较新的配置替代，正在核对最新界面…");
           setBusy(true);
           if (sentEdit.current !== null && sentEdit.current === edits.current) { setDirty(false); embed.dirty?.(false); }
+          let refreshed = false;
           try {
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
             if (current() && sequence === loads.current) {
-              setStatus(next);
+              setStatus(next); refreshed = true;
               if (!draftEditing.current) { setEnabled(next.enabled); setValues(next.values); }
             }
           } catch (reason) {
             if (current()) setError(`配置结果已确认，但最新表单读取失败：${reason instanceof Error ? reason.message : String(reason)}`);
           }
           if (!current()) return;
-          setBusy(needsRebind.current);
+          setBusy(needsRebind.current || !refreshed);
           setNotice(needsRebind.current ? "配置结果已确认，正在更新设置界面…" : receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
           if (settled.current !== id) { settled.current = id; embed.changed?.(); }
           return;
@@ -124,15 +125,16 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           setNotice("");
           setError(`${receipt.selected ? "配置已保存，但原操作报告应用失败" : "原配置操作失败"}：${receipt.error || "请检查后重试"}`);
           sessionStorage.removeItem(pendingKey);
+          let refreshed = false;
           try {
             const sequence = ++loads.current;
             const next = await read<Status>(path, {signal: controller.signal});
             if (current() && sequence === loads.current) {
-              setStatus(next);
+              setStatus(next); refreshed = true;
               if (!draftEditing.current) { setEnabled(next.enabled); setValues(next.values); }
             }
           } catch (reason) { if (current()) setNotice(`原操作失败已确认，但实际配置暂未核对：${reason instanceof Error ? reason.message : String(reason)}`); }
-          if (current()) setBusy(needsRebind.current && !draftEditing.current);
+          if (current()) setBusy(!refreshed || (needsRebind.current && !draftEditing.current));
           return;
         }
         setNotice("配置已受理，正在等待新配置生效…");
@@ -224,7 +226,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   };
   return <article ref={article} className={`config-form ${embed.embedded ? "is-embedded" : ""}`} aria-busy={busy}>
     {!embed.embedded && <header><span className="config-kicker">功能设置</span><h1>{definition.title}</h1><p>{definition.description}</p></header>}
-    {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy} onClick={() => { if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新读取</button></div>}
+    {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy && !sessionStorage.getItem(pendingKey) && !sessionStorage.getItem(lastKey)} onClick={() => { const id = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey); if (busy && id) { void poll(id); return; } if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新读取</button></div>}
     {!status ? !error && <p role="status">正在读取配置…</p> : <form onSubmit={event => void save(event)}>
       {status.reason && !(embed.embedded && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
       {!(embed.embedded && status.blocked) && <>
