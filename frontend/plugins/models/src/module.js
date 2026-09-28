@@ -197,6 +197,7 @@ export function activate(ctx) {
           meta.append(available, count);
           item.append(copy, meta);
           item.insertAdjacentHTML("beforeend", CHEVRON_ICON);
+          if (connection.availability === "disabled") item.disabled = true;
           if (entry) {
             item.setAttribute("aria-label", `编辑连接 ${connection.name}`);
             item.addEventListener("click", () => openProvider(entry, item, connection, editTemplate(entry)));

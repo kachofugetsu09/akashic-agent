@@ -1485,6 +1485,8 @@ class ModelsState:
         existing = snapshot.connections.get(command.connection_id)
         if existing is None:
             raise ModelUnavailableError(f"模型连接不存在: {command.connection_id}")
+        if not existing.enabled:
+            raise ModelUnavailableError("连接已停用；请新建连接，历史配置保留。")
         connection = replace(
             existing,
             name=command.name,
