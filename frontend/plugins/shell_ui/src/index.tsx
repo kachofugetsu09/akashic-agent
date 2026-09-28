@@ -36,7 +36,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const bandEntries = useMemo(() => entries.filter((entry) => entry.section !== "settings"), [entries]);
   const settingsEntries = useMemo(() => entries.filter((entry) => entry.section === "settings"), [entries]);
   const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0] ?? entries[0];
-  const requestedRoute = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+  const requestedRoute = window.location.hash.slice(1);
   const [withdrawn] = useState(() => !!requestedRoute && !entries.some(entry => entry.route === requestedRoute));
   const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());

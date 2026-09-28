@@ -602,6 +602,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
   let checking = false;
   let timer: number | undefined;
   let attempts = 0;
+  let sawChange = false;
   const notice = document.createElement("div");
   notice.className = "web-host-stale";
   notice.setAttribute("role", "status");
@@ -615,8 +616,9 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     checking = true;
     try {
       const state = await session.checkCurrent();
-      if (state === "updating") { show("配置仍在应用，原操作会继续核对。等待较久时可重新核对。"); return; }
-      if (state === "current") return;
+      if (state === "updating") { sawChange = true; show("配置仍在应用，原操作会继续核对。等待较久时可重新核对。"); return; }
+      if (state === "current") { if (sawChange) { window.clearInterval(timer); notice.remove(); } return; }
+      sawChange = true;
       const next = await open();
       if (closed) { next.close(); return; }
       let applied = false;
@@ -628,7 +630,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
         session.close(); session = next;
         session.renderRoot(host);
         host.dataset.akashicCatalog = session.bootstrap.catalogId;
-        notice.remove();
+        window.clearInterval(timer); notice.remove();
       };
       // 仅在正式目录稳定后更换宿主；保留路由与非敏感回执，不重载浏览器。
       if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go}}))) go();
@@ -637,7 +639,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     finally { checking = false; }
   };
   const submitted = (): void => {
-    window.clearInterval(timer); attempts = 0;
+    window.clearInterval(timer); attempts = 0; sawChange = false;
     timer = window.setInterval(() => {
       attempts += 1;
       void check();
