@@ -121,7 +121,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           }
           if (!current()) return;
           setBusy((verifyRequired.current === id && !refreshed) || (needsRebind.current && !draftEditing.current));
-          setNotice(needsRebind.current ? "配置结果已确认，正在更新设置界面…" : receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
+          setNotice(draftEditing.current ? "原操作结果已确认，本页修改尚未保存；请先重新读取核对最新配置。" : needsRebind.current ? "配置结果已确认，正在更新设置界面…" : receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
           if (settled.current !== id) { settled.current = id; embed.changed?.(); }
           return;
         }
@@ -211,6 +211,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     sentEdit.current = edits.current;
     const previous = sessionStorage.getItem(pendingKey);
     const id = previous && settled.current !== previous ? previous : crypto.randomUUID();
+    const reusedPendingId = id === previous;
     inFlightRequest.current = id;
     // 发送前只保存非敏感操作 ID；响应丢失或模块撤回后仍可查原回执。
     sessionStorage.setItem(pendingKey, id);
@@ -231,7 +232,10 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
       if (!alive.current || inFlightRequest.current !== id) return;
       inFlightRequest.current = null;
       if (reason instanceof RequestError && [401, 403, 404, 409, 422].includes(reason.status)) {
-        sessionStorage.removeItem(pendingKey); setNotice("");
+        if (reusedPendingId) {
+          sentEdit.current = null;
+          setNotice("本次提交未获接纳；请核对原操作回执，不会自动再次提交。");
+        } else { sessionStorage.removeItem(pendingKey); setNotice(""); }
         setError(reason.message); setBusy(false);
       } else {
         setNotice("提交响应未确认，正在查询原操作回执；不会自动重复提交。");
