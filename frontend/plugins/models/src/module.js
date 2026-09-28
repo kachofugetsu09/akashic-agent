@@ -344,6 +344,7 @@ export function activate(ctx) {
             const connectionId = isNew ? draftId : select.value.slice(6);
             const existing = catalog.models.find(item => item.connectionId === connectionId && item.kind === "embedding" && item.model === chosen.model);
             if (existing) {
+              if (isNew) throw new Error("此连接已经保存。请取消当前窗口，在已连接的卡片中核对或编辑；这里不会覆盖已保存的地址与密钥。");
               if (existing.capabilities.embeddingDimensions !== chosen.capabilities.embeddingDimensions) throw new Error("试算维度与已保存模型不同。请新建独立连接；不会改变已有记忆空间。");
               await command({type:"set_default", expected_revision:preview.revision, role:null, model_id:existing.id, verify_embedding:true});
             } else {
@@ -357,7 +358,7 @@ export function activate(ctx) {
             dirty = false; dialog.close(); showNotice("向量模型已验证、保存并设为默认；记忆开关保持你的选择。");
           } catch (reason) {
             // HTTP 回执丢失时只读取权威目录，不重发可能已经提交的新增请求。
-            let recovered = false;
+            let recovered = false, recoveryError = "";
             if (!reason?.status && !closed) {
               try {
                 await load();
@@ -365,10 +366,10 @@ export function activate(ctx) {
                 recovered = !!saved && catalog.defaultEmbeddingModelId === modelId;
                 if (recovered && !closed) { dirty = false; dialog.close(); showNotice("已核对最新设置：向量模型已保存并设为默认。"); }
               } catch (readError) {
-                if (!closed) { error.textContent = `保存结果尚未确认，读取最新设置也失败。请恢复网络后重新加载模型页面，先核对结果再操作。${readError instanceof Error ? readError.message : String(readError)}`; error.hidden = false; }
+                recoveryError = `保存结果尚未确认，读取最新设置也失败。请恢复网络后重新加载模型页面，先核对结果再操作。${readError instanceof Error ? readError.message : String(readError)}`;
               }
             }
-            if (!closed && !recovered) { error.textContent = `${reason instanceof Error ? reason.message : String(reason)} 保存结果以模型页面最新设置为准；请重新试算后再操作。`; error.hidden = false; invalidate(); }
+            if (!closed && !recovered) { error.textContent = recoveryError || `${reason instanceof Error ? reason.message : String(reason)} 保存结果以模型页面最新设置为准；请重新试算后再操作。`; error.hidden = false; invalidate(); }
           } finally {
             busy = false;
             if (!closed) { controls.forEach(item => { item.disabled = false; }); save.textContent = "保存并设为默认"; save.disabled = !preview; for (const name of ["name","endpoint","key"]) form.elements[name].disabled = !select.value.startsWith("new:"); }
