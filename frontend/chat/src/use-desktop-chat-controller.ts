@@ -197,7 +197,7 @@ export function useDesktopChatController() {
     if (isAbortError(error)) return;
     console.error("[chat] request failed", error);
     setError(errorMessage(error));
-    if (nextStatus) setStatus(nextStatus);
+    if (nextStatus) { statusLiveRef.current = nextStatus; setStatus(nextStatus); }
   }, []);
 
   // LRU 写回；capacity 足够覆盖最近几个会话，超出后淘汰最久未命中项。
@@ -403,7 +403,7 @@ export function useDesktopChatController() {
     : modelState?.runtimes.some((item) => item.id === modelId) ? ""
     : unavailableModel ? unavailableModel.availability === "disabled"
       ? `连接「${unavailableModel.sourceName}」已停用，请在模型设置中恢复连接或选择其他模型。`
-      : `连接「${unavailableModel.sourceName}」的服务暂不可用，请恢复服务或选择其他模型。`
+      : `连接「${unavailableModel.sourceName}」所需的模型驱动尚未加载或已卸载，请恢复驱动或选择其他模型。`
     : modelId ? "已选的对话模型暂不可用，请在模型设置中核对或选择其他模型。"
     : modelState?.runtimes.length ? "还没选择默认对话模型。请在下方选择模型，或在模型设置中设为默认。"
     : modelState?.unavailableRuntimes.length ? "已保存的对话连接当前不可用，请在模型设置中恢复连接。"
@@ -605,7 +605,7 @@ export function useDesktopChatController() {
     activeSessionRef.current = sessionId;
     followAfterRef.current = -1;
     followSession(socketRef.current, sessionId, -1);
-    setActiveSessionId(sessionId);
+    // 发送前只准备路由；上传失败时编辑器仍留在原草稿位置。
     return sessionId;
   }, [loadMessages]);
 
@@ -659,6 +659,8 @@ export function useDesktopChatController() {
         payload.model_reasoning_effort = selectedReasoningEffort;
       }
       await sendWhenOpen(connect(), payload, controller.signal);
+      controller.signal.throwIfAborted();
+      setActiveSessionId(sessionId);
       console.debug("[chat-ui] send frame delivered", { sessionId });
       modelDirtyRef.current = false;
       setModelSelectionDirty(false);
