@@ -16,6 +16,7 @@ from agent.plugin_composition import (
     FiberState,
 )
 from agent.plugin_composition.host import HOST_INFO
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_composition.ui import (
     DASHBOARD_ROUTES,
     UI,
@@ -35,7 +36,7 @@ api_version = 3
 name = "ui"
 version = "1.0.0"
 desc = "注册并封存插件的 Web 与 Dashboard UI"
-inject = (DASHBOARD_ROUTES, HOST_INFO)
+inject = (DASHBOARD_ROUTES, HOST_INFO, RUNTIME_CATALOG)
 
 @dataclass
 class Registration:
@@ -179,12 +180,15 @@ class Ui:
     async def bootstrap(self) -> bytes:
         async with self._ctx.runtime_scope():
             self._ctx.require_runtime_owner(WEB_UI, self)
+            if self._ctx.require(RUNTIME_CATALOG)(self._ctx)["updating"]:
+                raise RuntimeError("插件配置正在应用，Web 目录尚未稳定")
             return self.catalog().encode_bootstrap(self._ctx.generation_id)
 
-    async def state(self) -> dict[str, str]:
+    async def state(self) -> dict[str, str | bool]:
         async with self._ctx.runtime_scope():
             self._ctx.require_runtime_owner(WEB_UI, self)
-            return {"snapshotId": self._ctx.generation_id, "catalogId": self.catalog().identity}
+            return {"snapshotId": self._ctx.generation_id, "catalogId": self.catalog().identity,
+                    "updating": bool(self._ctx.require(RUNTIME_CATALOG)(self._ctx)["updating"])}
 
 
 def _contracts(value: tuple[str, ...]) -> tuple[str, ...]:

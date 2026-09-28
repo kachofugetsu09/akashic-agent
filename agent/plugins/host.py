@@ -105,6 +105,7 @@ async def provide_host_services(
     runtime_generations: Callable[
         [], tuple[Mapping[str, PluginGeneration], Mapping[str, list[PluginGeneration]]]
     ],
+    runtime_updating: Callable[[], bool],
     live_root: Callable[[], CompositionRoot | None],
     installer: PluginInstallPort,
     tasks: PluginTasks,
@@ -243,10 +244,9 @@ async def provide_host_services(
                     "当前 Fiber 未声明 runtime catalog 依赖",
                 )
             context.require_runtime_owner(RUNTIME_CATALOG, read_runtime_catalog)
-            return build_runtime_catalog(
-                root,
-                *runtime_generations(),
-            )
+            catalog = build_runtime_catalog(root, *runtime_generations())
+            catalog["updating"] = runtime_updating()
+            return catalog
 
         _ = await root.context.provide(RUNTIME_CATALOG, read_runtime_catalog)
     if RUNTIME_MCP_DETAIL in requested:
