@@ -54,7 +54,7 @@ must-fix，并提交 draft PR。
 | P02 | `plugins/wake/plugin.py` | implicit MEMORY 与 `memory.recall.v1` | 普通 Turn 仍通过 ordered prompt event 看到 Markdown section；不新增 read Service |
 | P03 | `plugins/subagent/plugin.py`、`prompts.py` | broad memory root、SELF 路径、spawn trace | 删除 memory root；只声明 `SELF.md` 与 trace 精确文件 |
 | P04 | `infra/channels/qq_channel.py` | 从 SELF 解析 actor name | 保留既有 host 只读快照路径；不作为 Markdown 插件权限或专用 API |
-| P05 | `infra/mobile_realtime/runtime_inspection.py` | 硬编码 MEMORY/SELF/PENDING | 保留已有 MEMORY/SELF 只读 inspection；删除已退役 PENDING 文档 |
+| P05 | `plugins/runtime_inspection/` | 硬编码 MEMORY/SELF/PENDING | 保留已有 MEMORY/SELF 只读 inspection；删除已退役 PENDING 文档 |
 | P06 | `bootstrap/dashboard_api.py` | 直接 MemoryStore 与 optimizer API | 删除 optimizer 操作和专用 Core 参数；Markdown 不新增 Dashboard 特权 |
 | P07 | `plugins/akasha/plugin.py` | 声明整个 memory root，但不读 Markdown | 保留可配置 sidecar 所需 root；证明它不读 Markdown，recall 行为不变 |
 | P08 | Scheduler/Wake/Subagent disabled sections | `memory`、`long_term_memory`、`self_model` 名称不一致 | 定义一个公开 section group/精确 sections；场景逐项证明可见性 |

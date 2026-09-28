@@ -183,7 +183,6 @@ tests/test_commands_provider.py
 tests/test_mcp_binding_scope.py
 tests/test_message_bus_admission.py
 tests/test_message_model_selection.py
-tests/test_mobile_ui_provider.py
 tests/test_plugin_hot_reload.py
 tests/test_plugin_latest_models.py
 tests/test_plugin_runtime_control.py
@@ -1556,7 +1555,7 @@ namespace 变化静默清理 continuation。embedding 持久绑定仍由 model/s
 |---|---|---|---|---|
 | 调用保护型 scope | `runtime_scope`/`capture_runtime_scope` 全部调用点（content:320、wake、materials、reply、computer、markdown_memory、scheduler、subagent、delivery_policy、delivery、mcp、plugin_update、senders、stable_view:129-132、bootstrap/tools.py:178-193 recover_input、akasha、tools:470/497/547 等）；tasks.py:62/152-160 Task 复制；manager.py:415/462/518/1456/2690/2750 `RuntimeScope(lease)` 直构 | 保留迁移 | facade 当前返回唯一 `RuntimeScope`；Task 直构已由 B1 改为 capture/enter，Manager 等直构归 B2 删除或迁移 | 批次 A 验收=scope 不再由 facade 引用 lease、跨 activation 旧 Context 拒绝；剩余直构迁移归 B2 |
 | 运行期 fence 与内存键 | channels/provider.py `_bindings`/`ChannelBindingLease`（:90/:161-262/:882/:942-1031/:1155）；bindings.open（bindings.py:150-165）；executor.py:116-118 `get_current_runtime_snapshot`；validation.py:97-107 候选路径 recover_input | 保留迁移 | fence 键改 binding owner 的 (fiber, activation) 身份；`executor`/`recover_input` 的 Root 解析改走当前公开入口（T05） | fence 迁移与 facade 切换同批；验收=旧 activation 的 binding/envelope 被拒；持久归档身份不变 |
-| UI 请求 fence（非展示） | ui/plugin.py:135/141 当前读取不存在的 `scope.snapshot_id`；webHost.ts:93-107/225-241；dashboard_host.py:327-342；mobile_ui.py:172/217/274（query lease/capture/`get_current_runtime_snapshot`） | 保留迁移 | Web snapshotId 采用 `root.generation_id`，catalogId 采用 ACTIVE registration 固定 JSON 元组 hash；Mobile plugin_revision 采用 `("mobile-ui", root.generation_id, plugin_id, registration_uuid)` 固定 JSON 元组 hash；同制品新 activation 必须区分，不恢复 SnapshotStore 或全局 revision | 归 T03b/T05；启用验收前完成，不以旧 lease 假闭合 |
+| UI 请求 fence（非展示） | ui/plugin.py:135/141 当前读取不存在的 `scope.snapshot_id`；webHost.ts:93-107/225-241；dashboard_host.py:327-342 | 保留迁移 | Web snapshotId 采用 `root.generation_id`，catalogId 采用 ACTIVE registration 固定 JSON 元组 hash；同制品新 activation 必须区分，不恢复 SnapshotStore 或全局 revision | 归 T03b/T05；启用验收前完成，不以旧 lease 假闭合 |
 | 持久事实不变 | bindings 归档 metadata/root_ref/service；durable handoff_id/channel/session/message 身份 | 纯持久，不改 | `ChannelBindingLease` 当前是运行期对象；表中“持久字段”不是已证实的存储 schema，不在批次 A 发明迁移 | 无已证实变化不迁，不发明"全图冻结 ID" |
 
 **实施批次与最终启用（R6）**
