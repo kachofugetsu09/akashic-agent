@@ -90,7 +90,7 @@ class BrowserCatalogSession implements WebHostSession {
     });
   }
 
-  async checkCurrent(): Promise<boolean> {
+  async checkCurrent(): Promise<"current" | "updating" | "stale"> {
     this.requireOpen();
     const response = await fetch("/api/chat/web-ui/state", {
       headers: { Accept: "application/json" },
@@ -101,11 +101,11 @@ class BrowserCatalogSession implements WebHostSession {
     if (!isRecord(state)
       || typeof state.snapshotId !== "string"
       || typeof state.catalogId !== "string" || typeof state.updating !== "boolean") throw new Error("界面状态格式无效");
-    if (state.updating) return true;
+    if (state.updating) return "updating";
     if (state.snapshotId === this.bootstrap.snapshotId
-      && state.catalogId === this.bootstrap.catalogId) return true;
+      && state.catalogId === this.bootstrap.catalogId) return "current";
     this.markStale();
-    return false;
+    return "stale";
   }
 
   private markStale(): void {
@@ -614,7 +614,9 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     if (closed || checking) return;
     checking = true;
     try {
-      if (await session.checkCurrent()) return;
+      const state = await session.checkCurrent();
+      if (state === "updating") { show("配置仍在应用，原操作会继续核对。等待较久时可重新核对。"); return; }
+      if (state === "current") return;
       const next = await open();
       if (closed) { next.close(); return; }
       let applied = false;
@@ -630,7 +632,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
       };
       // 仅在正式目录稳定后更换宿主；保留路由与非敏感回执，不重载浏览器。
       if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go}}))) go();
-      if (!applied) { available = false; next.close(); show("界面已更新。请先保存或放弃当前修改，再重新核对。"); }
+      if (!applied) { available = false; next.close(); show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
     } catch (error) { if (!closed) show(error instanceof Error ? error.message : String(error)); }
     finally { checking = false; }
   };
@@ -639,7 +641,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     timer = window.setInterval(() => {
       attempts += 1;
       void check();
-      if (attempts >= 60) window.clearInterval(timer);
+      if (attempts >= 60) { window.clearInterval(timer); show("自动核对已结束；操作不因此取消。请点击重新核对查看实际结果。"); }
     }, 500);
   };
   const focus = (): void => { void check(); };

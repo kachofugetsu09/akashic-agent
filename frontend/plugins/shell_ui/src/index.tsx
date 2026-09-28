@@ -36,6 +36,8 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const bandEntries = useMemo(() => entries.filter((entry) => entry.section !== "settings"), [entries]);
   const settingsEntries = useMemo(() => entries.filter((entry) => entry.section === "settings"), [entries]);
   const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0] ?? entries[0];
+  const requestedRoute = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+  const [withdrawn] = useState(() => !!requestedRoute && !entries.some(entry => entry.route === requestedRoute));
   const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const settingsDialog = useRef<HTMLDialogElement>(null);
@@ -53,6 +55,14 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
     };
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
   }, [activeId]);
+
+  useLayoutEffect(() => {
+    if (withdrawn) {
+      const entry = entries.find(item => item.id === activeId);
+      const base = `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState(window.history.state, "", entry?.route ? `${base}#${entry.route}` : base);
+    }
+  }, []);
 
   useLayoutEffect(() => {
     if (!focusAfterNavigation.current) return;
@@ -108,6 +118,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   };
 
   return <div className="unified-shell">
+    {withdrawn && <p role="status" className="config-hint">原页面已撤回或暂不可用，已打开当前可用页面。可以从功能设置查看已安装功能。</p>}
     <header className="primary-band" aria-label="Akashic 主导航">
       <div className="primary-band-brand" title="Akashic">
         <img src={akashicBrandIcon} alt="" />
