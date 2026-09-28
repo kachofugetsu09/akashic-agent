@@ -261,6 +261,7 @@ async def apply(ctx: Context) -> None:
         public=False,
         idempotent=True,
         risk="read-only",
+        parallel=True,
     )
     def present(awarded: ToolView) -> tuple[ToolView, ToolPresentation]:
         view = catalog.view(*awarded.refs, search_ref)

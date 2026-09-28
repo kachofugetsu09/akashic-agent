@@ -103,4 +103,7 @@ class ToolProgramFactory:
                 limit=limit,
                 fixed_bindings=fixed_bindings,
                 presentation=presentation,
+                parallel_names=frozenset(
+                    name for name in fixed_bindings if self._catalog.allows_parallel(name)
+                ),
             )

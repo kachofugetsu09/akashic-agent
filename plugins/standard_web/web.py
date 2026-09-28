@@ -65,6 +65,6 @@ async def register_web(ctx: Context) -> tuple[ToolRef, ...]:
         refs.append(cast(ToolRef, await ctx.require(TOOLS).register(
             ctx, name=backend.name, description=backend.description,
             parameters=normalize_tool_parameters(backend.parameters), open=open_tool,
-            risk="read-only",
+            risk="read-only", parallel=True,
         )))
     return tuple(refs)

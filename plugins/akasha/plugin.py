@@ -498,6 +498,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         capture=capture_recall,
         idempotent=True,
         risk="read-only",
+        parallel=True,
     )
     # 只读账本按声明的 workspace root 解析学习图；不暴露 writer 或任意路径。
 
