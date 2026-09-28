@@ -7,8 +7,8 @@ import hashlib
 import inspect
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, ContextManager, Literal, TypeVar, cast
 
@@ -1219,6 +1219,7 @@ class PluginChannels:
         context = state.plugin_context
         if context is None:
             raise RuntimeError("channel 没有插件声明 Context")
+        optional = self._declarations[state.channel_name].optional_services
         allow_start_scope = state.start_task is asyncio.current_task() and not state.started and not state.stopping
         self._begin_presentation_operation(key, allow_closed=allow_start_scope)
         owner_task = asyncio.current_task()
@@ -1228,12 +1229,23 @@ class PluginChannels:
                 allowed = frozenset(context._declared_dependencies())
                 runtime = context.runtime
 
-                def resolve(service_key: ServiceKey[Any]) -> object:
+                def check_scope() -> None:
                     if not active or asyncio.current_task() is not owner_task:
                         raise CompositionError("REQUEST_SCOPE_MISSING", "插件请求作用域已关闭")
+
+                def resolve(service_key: ServiceKey[Any]) -> object:
+                    check_scope()
                     if service_key not in allowed:
                         raise CompositionError("SERVICE_UNDECLARED", f"请求未声明能力: {service_key.name}")
                     return context.require(service_key)
+
+                @contextmanager
+                def borrow(service_key: ServiceKey[Any]) -> Iterator[object | None]:
+                    check_scope()
+                    if service_key not in optional:
+                        raise CompositionError("SERVICE_UNDECLARED", f"请求未声明可选能力: {service_key.name}")
+                    with context.borrow(service_key) as service:
+                        yield service
 
                 yield RequestContext(
                     plugin_id=runtime.plugin_id,
@@ -1243,6 +1255,7 @@ class PluginChannels:
                     _workspace_roots=tuple((name, runtime.workspace_root(name)) for name in runtime.workspace_roots),
                     _workspace_files=tuple((name, runtime.workspace_file(name)) for name in runtime.workspace_files),
                     _resolve=resolve,
+                    _borrow=borrow,
                     _context=context,
                 )
         finally:

@@ -61,9 +61,7 @@ INSPECTION_RPC_KEYS = (
 )
 MODEL_RPC_KEYS = (MODEL_CALL, MODEL_CATALOG_RPC, MODEL_DISCOVER, MODEL_COMMAND)
 
-# The required dependency set is deliberately explicit and flat.  It is used
-# by the manifest importer to activate the ordinary channel only when the
-# exact providers are present.
+# 聊天启动只等待基础能力；诊断 RPC 在请求中借用，未接线的旧模型 RPC 不阻塞启动。
 CLIENT_CAPABILITIES = (
     RUNTIME_CATALOG,
     RUNTIME_MCP_DETAIL,
@@ -74,8 +72,6 @@ CLIENT_CAPABILITIES = (
     MODEL_CATALOG,
     MODEL_SELECTION,
     REPLY_STATUS,
-    *INSPECTION_RPC_KEYS,
-    *MODEL_RPC_KEYS,
 )
 
 

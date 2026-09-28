@@ -1,5 +1,57 @@
 # Issue 766 · 能力依赖与执行归属
 
+## 2026-09-28 · 消费边界的后续正交化
+
+维护者授权在 #791 上逐层提交 stacked Draft PR。基线为 `e8f6cd5`；
+源码恢复点为 `/tmp/akashic-orthology-stack-before-e8f6cd5-20260928.tar`。
+目标是减少无关变化传播，不以公共合同所在目录、业务名数量或 import 归零作为验收。
+
+| 切片 | 目标行为 | 关键验收 |
+|---|---|---|
+| 聊天与诊断 RPC | 诊断缺席或换代不关闭聊天渠道；移除未接线的旧模型 RPC 启动依赖 | 检查请求明确 unavailable；借用保护当前 provider；越权和过期请求失败 |
+| Web 连接地址 | 监听与代理使用同一份地址合同 | 自定义地址可达；未启用聊天与启动中可区分 |
+| 渠道控制 | 输入与中断由同一个来源路由决定 | 异名来源接管 Telegram 后仍可停止；原消息与确认顺序不变 |
+| 材料选择 | 执行场景表达材料用途，不列实现名 | 异名同用途 provider 遵守相同选择；默认提示词集合保持 |
+| 文档与资源说明 | 文档 owner 发布读取与资源描述，消费者不掌握私有路径 | 检查接口保持原 DTO；缺席可见；不迁移原文件 |
+| 重启回执 | 来源提供自己的完成凭据，不由重启消费者猜 source 名 | frame 与 delivery 的确切完成门槛保留；未知效果不重放 |
+| 遗留表示 | 删除有证据的来回转换，不删除持久恢复协议 | 附件事实、旧接管解码与公开 API 保持 |
+
+各层只改变自己的能力选择和缺席行为。Message/source ID、Session 属性、
+配置值、文档位置、binding、归档和外部回执保持原 owner、格式与读写协议。
+正常新增仍由原 owner 完成；本任务不新增持久事实，不改变原位更新或逻辑失效条件，
+没有物理减少、迁移、自动 GC、正式 workspace 写入、合并或部署。
+源码可回退到相邻 PR 基线；它不代表外部效果或持久数据已回滚。
+
+### 请求的可选能力
+
+```text
+聊天渠道 ── 必需依赖 ──► 消息、回复、UI 等聊天基础能力
+    │
+    └── 当前请求 ── 声明的可选能力 ──► 诊断 RPC
+                       │
+                       └── 借用保护 provider，缺席明确 unavailable
+```
+
+`ChannelDefinition.optional_services` 声明请求可借用的能力，不构成启动依赖。
+Channel provider 在原 binding 请求 scope 中核对声明、Task 与 scope 寿命，
+再复用 `Context.borrow` 保护实际 provider。`RequestContext.require` 仍只读必需依赖。
+可选服务只在借用块内使用，不保存在客户端或跨请求复用。卸载等待正在执行的借用；
+新请求在服务缺席时返回明确错误。Core 不认识诊断或模型方法名。
+旧模型管理 HTTP adapter 没有接到真实 Channel factory；移除它的启动依赖，
+不恢复旧路由或为未使用的能力增加可选授权。现行模型管理继续由 Models 插件拥有。
+
+本层 `change_type=refactor`；`semantic_delta` 是检查 RPC 缺席不再关闭聊天，
+其他默认成功响应不变。能力 owner 为 Channel 请求边界与各 RPC provider；
+客户端单独改 UI 无法修复顶层必需依赖导致的卸载，因此需要窄的请求借用端口。
+后续切片在各自实现后记录最终合同和验证，不能把本节目标当作已完成。
+
+第一层本地证据：`docker/debug/orthology_optional_requests.py` 用真实 Channel provider、
+Web UDS listener 和 HTTP 请求覆盖检查缺席/安装/卸载、借用中排空与请求权限边界。
+同一场景在基线因客户端 PENDING 失败，候选通过，聊天 adapter 与 activation 保持同一对象。
+场景的模型与外部发送端口明确拒绝调用，不代表真实回复、生产安装或设备验收。
+47 项概念测试、Core/tests Pyright、边界、Yoyo、协议生成物与前端类型检查通过。
+额外扫描修改的插件文件仍有 Channel provider 的 6 项既有类型错误，基线逐项同样报错。
+
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
 ## 目标与取舍

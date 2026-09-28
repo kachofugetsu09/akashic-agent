@@ -437,7 +437,10 @@ def create_chat_app(
 
     @app.get("/api/chat/runtime/documents")
     async def list_runtime_documents() -> dict[str, object]:
-        return await _require_runtime_inspection(runtime_inspection).list_documents()
+        try:
+            return await _require_runtime_inspection(runtime_inspection).list_documents()
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
 
     @app.get("/api/chat/runtime/documents/{document_id}")
     async def read_runtime_document(document_id: str) -> dict[str, object]:
@@ -674,6 +677,8 @@ def _plugin_ui_http_error(error: Exception) -> HTTPException:
 
 
 def _runtime_http_error(error: RuntimeInspectionError) -> HTTPException:
+    if error.code == "inspection_unavailable":
+        return HTTPException(status_code=503, detail=str(error))
     status_code = 404 if error.code.endswith("_not_found") else 409
     return HTTPException(status_code=status_code, detail=str(error))
 
