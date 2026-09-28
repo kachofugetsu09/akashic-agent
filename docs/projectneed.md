@@ -929,7 +929,7 @@ Session 无论是否可学习，都正常持久化 Input、Control、工具调�
 
 ## 14. Companion 安全与容量边界
 
-本节固化单一服务对象模型下仍然成立的安全、容量和失败语义。Telegram、QQ、Web Chat、Android Shell、设备和 session 都是同一位用户与同一个 Agent 的渠道；它们不是租户、权限或数据隔离边界。所有已经进入渠道的消息都按服务对象本人处理。本节不引入认证、Origin、per-channel ACL 或 per-device session isolation。
+本节固化单一服务对象模型下仍然成立的安全、容量和失败语义。Telegram、Web Chat、Android Shell、设备和 session 都是同一位用户与同一个 Agent 的渠道；它们不是租户、权限或数据隔离边界。所有已经进入渠道的消息都按服务对象本人处理。本节不引入认证、Origin、per-channel ACL 或 per-device session isolation。
 
 旧 Mobile 的 QR pairing、设备授权和实时协议已按 [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) 退役。Shell 通过 Web 页面和通知接口消费同一用户的消息；这不建立渠道或租户 ACL。
 
@@ -939,7 +939,7 @@ Session 无论是否可学习，都正常持久化 Input、Control、工具调�
 
 ### SEC-002 外部请求逐跳有界且拥有临时结果
 
-`web_fetch` 在单人本地运行中允许访问 localhost、私网和内网 HTTP 服务；它仍逐跳校验 HTTP URL 结构、限制 redirect hop，并禁用环境代理。其他外部 HTTP consumer 继续执行公开地址策略。所有响应在读取前受传输和磁盘绝对上限约束；超过内联阈值的合法响应流式写入 execution-owned 私有临时文件，并返回可分页读取的引用。文件必须绑定 execution，turn 结束或显式 release 后清理；清理失败保留 owner 和诊断，不推翻已经提交的结果。上传、附件和 QQ 媒体在分配前验证单项与总量上限。
+`web_fetch` 在单人本地运行中允许访问 localhost、私网和内网 HTTP 服务；它仍逐跳校验 HTTP URL 结构、限制 redirect hop，并禁用环境代理。其他外部 HTTP consumer 继续执行公开地址策略。所有响应在读取前受传输和磁盘绝对上限约束；超过内联阈值的合法响应流式写入 execution-owned 私有临时文件，并返回可分页读取的引用。文件必须绑定 execution，turn 结束或显式 release 后清理；清理失败保留 owner 和诊断，不推翻已经提交的结果。上传和附件在分配前验证单项与总量上限。
 
 ### SEC-003 Peer 能力不再存在
 

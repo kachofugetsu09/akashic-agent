@@ -1,5 +1,7 @@
 # 插件 Onboarding 投影设计
 
+> QQ 运行支持已按 [0080](../decisions/0080-retire-qq-runtime-support.md) 退役；下文 QQ 实现、拓扑与验收描述只保留历史证据。
+
 - 状态：内置实现、运行验收与独立评审完成。维护者于 2026-09-28 授权完成内置插件、CDP 场景、独立评审与 PR；不包含生产部署。
 - 核对基线：d99dd2b4b4ae2fdb146d9265554262cb39fdcdb5。
 - 关联需求：ONB-001、PLG-003、PLG-006、PLG-010、PLG-014、PLG-016、STA-001～STA-003、ERR-001。

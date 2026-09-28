@@ -480,11 +480,8 @@ python docker/debug/context_probe.py \
   --reset-workspace \
   --start-agent \
   --stop-agent \
-  --quiet-agent \
-  --disable-qq
+  --quiet-agent
 ```
-
-`--disable-qq` 会在运行期间临时给当前 profile 的 `[channels.qq]` 加 `enabled = false`，结束后恢复原配置，适合只测 CLI 但该 profile 配了 QQ 的情况。
 
 默认报告写到：
 
@@ -567,7 +564,7 @@ python docker/debug/replay_controller.py \
   --start-at 2026-05-01T00:00:00+08:00
 ```
 
-该 profile 仍需要自己的 `config.toml`。可以运行 `setup`，或复制另一份专用调试配置。启动前应关闭 Telegram、QQ 等外部渠道，并将待测发送目标设为 `channel = "replay"`。
+该 profile 仍需要自己的 `config.toml`。可以运行 `setup`，或复制另一份专用调试配置。启动前应关闭 Telegram 等外部渠道，并将待测发送目标设为 `channel = "replay"`。
 
 ```bash
 AKASHIC_DEBUG_PROFILE=wake-replay \

@@ -27,8 +27,7 @@ python docker/debug/context_probe.py \
   --reset-workspace \
   --start-agent \
   --stop-agent \
-  --quiet-agent \
-  --disable-qq
+  --quiet-agent
 ```
 
 场景 JSON 是公开测试输入，可以提交。`docker/debug/profiles/<profile>/workspace/` 下生成的报告 JSON / Markdown 是运行产物，默认不提交。

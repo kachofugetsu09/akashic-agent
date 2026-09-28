@@ -9,7 +9,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -165,24 +164,6 @@ def _load_scenario(path: Path | None) -> Scenario:
         name=str(scenario_data.get("name") or path.stem),
         turns=normalized_turns,
     )
-
-
-def _disable_qq_config(config_path: Path) -> str | None:
-    text = config_path.read_text(encoding="utf-8")
-    marker = "[channels.qq]\n"
-    if marker not in text:
-        return None
-    head, tail = text.split(marker, 1)
-    section, sep, rest = tail.partition("\n[")
-    if "enabled = false" in section:
-        return None
-    if re.search(r"(?m)^enabled\s*=", section):
-        section = re.sub(r"(?m)^enabled\s*=.*$", "enabled = false", section, count=1)
-    else:
-        section = "enabled = false\n" + section
-    patched = head + marker + section + (sep + rest if sep else "")
-    _ = config_path.write_text(patched, encoding="utf-8")
-    return text
 
 
 async def _send_and_read(
@@ -379,10 +360,7 @@ async def _run_probe(args: argparse.Namespace) -> None:
     if not paths.config.exists():
         raise SystemExit(f"缺少 profile config: {paths.config}")
 
-    original_config: str | None = None
     proc: subprocess.Popen[bytes] | None = None
-    if args.disable_qq:
-        original_config = _disable_qq_config(paths.config)
     try:
         if args.reset_workspace:
             _run_compose(
@@ -465,8 +443,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
     finally:
         if proc is not None and args.stop_agent:
             _run_compose(paths, ["down"])
-        if original_config is not None:
-            _ = paths.config.write_text(original_config, encoding="utf-8")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -487,11 +463,6 @@ def _parse_args() -> argparse.Namespace:
     _ = parser.add_argument("--start-agent", action="store_true")
     _ = parser.add_argument("--stop-agent", action="store_true")
     _ = parser.add_argument("--quiet-agent", action="store_true")
-    _ = parser.add_argument(
-        "--disable-qq",
-        action="store_true",
-        help="运行期间临时给 [channels.qq] 加 enabled=false，结束后恢复。",
-    )
     return parser.parse_args()
 
 

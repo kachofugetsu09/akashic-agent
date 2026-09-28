@@ -4553,10 +4553,6 @@ enabled = true
 enabled = false
 token = ""
 
-[channels.qq]
-enabled = false
-bot_uin = ""
-
 """
     (sandbox / "config.toml").write_text(config, encoding="utf-8")
     from agent.plugin_composition.config_input import save_config
