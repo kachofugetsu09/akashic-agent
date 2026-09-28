@@ -20,7 +20,8 @@ function label(status?: StepStatus): string {
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("shell.pages.v1", mount => mount.register({
-    id: "onboarding", label: "初始配置", route: "onboarding", iconSvg: settingsIcon,
+    // 初始配置不是常驻目的地：收进功能设置目录，由首跑邀请和深链接进入。
+    id: "onboarding", label: "初始配置", route: "onboarding", iconSvg: settingsIcon, section: "settings", order: -10,
     render(host, _view, props) {
       const pages = (props as {pages: WebMountView}).pages;
       const root = createRoot(host); root.render(<Onboarding ctx={ctx} pages={pages} />);
@@ -75,6 +76,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const state = states[selected];
   // 状态读取失败不是"未决定"：只锁定故障项自身，后续步骤仍可查看。
   const firstUndecided = steps.findIndex(step => !done(states[step.id]) && !states[step.id]?.fault);
+  const decidedCount = steps.filter(step => done(states[step.id])).length;
   const allDone = steps.length > 0 && steps.every(step => done(states[step.id]));
   useEffect(() => {
     if (!current || !formHost.current || finished) return;
@@ -97,19 +99,60 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
     else if (fresh.steps.every(step => done(fresh.states[step.id]))) navigate(() => setFinished(true));
   };
   return <main className="onboarding-page">
-    <header className="onboarding-header"><div><span className="config-kicker">开始使用 AKASHIC</span><h1>让它按你的方式工作</h1><p>逐项决定开启或关闭。配置由各功能保存，之后也能随时修改。</p></div><button type="button" disabled={loading || dirty} onClick={() => void refresh()}>刷新状态</button></header>
+    <header className="onboarding-header">
+      <div>
+        <span className="config-kicker">开始使用 AKASHIC</span>
+        <h1>让它按你的方式工作</h1>
+        <p>逐项决定开启或关闭。配置由各功能保存，之后也能随时修改。</p>
+      </div>
+      <button type="button" disabled={loading || dirty} onClick={() => void refresh()}>刷新状态</button>
+    </header>
     {error && <div className="config-error" role="alert">{error}</div>}
     {loading ? <p role="status">正在读取已安装的功能…</p> : !steps.length && !error ? <div className="config-hint">当前没有需要配置的插件。你仍可使用功能设置。</div> : finished && allDone ?
-      <section className="onboarding-complete"><h2 tabIndex={-1}>配置已完成</h2><p>已保存你的选择。前置关闭的功能保持不可用，已有数据会保留。</p><ul>{steps.map(step => <li key={step.id}><span>{step.title}</span><strong>{label(states[step.id])}</strong></li>)}</ul><button type="button" onClick={() => setFinished(false)}>查看配置</button><a className="onboarding-chat" href="#">开始对话</a></section> :
-      <div className="onboarding-layout"><nav aria-label="配置步骤" className="onboarding-steps">{steps.map((step, i) => <button key={step.id} type="button" aria-current={step.id === selected ? "step" : undefined} disabled={firstUndecided >= 0 && i > firstUndecided} onClick={() => choose(step)}>
-        <span className="onboarding-number" aria-hidden="true">{done(states[step.id]) ? "✓" : i + 1}</span><span><strong>{step.title}</strong><small>{label(states[step.id])}</small></span>
-      </button>)}</nav><section className="onboarding-content" aria-labelledby="onboarding-step-title"><header><span className="config-kicker">{index + 1} / {steps.length} · {current?.group_title}</span><h2 id="onboarding-step-title" ref={heading} tabIndex={-1}>{current?.title}</h2></header>
-        {state?.fault && <div role="alert" className="config-error">{state.fault}<button type="button" onClick={() => void refresh()}>重试读取</button></div>}
-        {state?.blocked && <p className="config-hint">{state.reason}。此项目前不可开启，可以继续下一步；不会记录为你主动关闭。</p>}
-        <div key={current?.id} ref={formHost} />
-        <footer className="onboarding-footer"><button type="button" disabled={index <= 0} onClick={() => choose(steps[index - 1])}>上一步</button><span>{dirty ? "请先保存本页选择" : label(state)}</span><button className="config-primary" type="button" disabled={!done(state) || dirty} onClick={() => void next()}>{index === steps.length - 1 ? "查看完成情况" : "下一步"}</button></footer>
-      </section></div>}
+      <section className="onboarding-complete">
+        <div className="onboarding-complete-badge" aria-hidden="true">✓</div>
+        <h2 tabIndex={-1}>配置已完成</h2>
+        <p>已保存你的选择。前置关闭的功能保持不可用，已有数据会保留。</p>
+        <ul>{steps.map(step => <li key={step.id}><span>{step.title}</span><strong>{label(states[step.id])}</strong></li>)}</ul>
+        <div className="onboarding-complete-actions"><a className="onboarding-chat" href="#">开始对话</a><button type="button" onClick={() => setFinished(false)}>查看配置</button></div>
+      </section> :
+      <div className="onboarding-layout">
+        <nav aria-label="配置步骤" className="onboarding-steps">
+          <div className="onboarding-progress" role="status">
+            <span>已决定 {decidedCount} / {steps.length}</span>
+            <div className="onboarding-progress-track" aria-hidden="true">
+              <div className="onboarding-progress-fill" style={{inlineSize: `${steps.length ? (decidedCount / steps.length) * 100 : 0}%`}} />
+            </div>
+          </div>
+          <ol className="onboarding-step-list">{steps.map((step, i) => {
+            const ready = done(states[step.id]);
+            const locked = firstUndecided >= 0 && i > firstUndecided;
+            return <li key={step.id}><button type="button"
+              aria-current={step.id === selected ? "step" : undefined}
+              disabled={locked}
+              data-state={ready ? "done" : locked ? "locked" : step.id === selected ? "current" : "pending"}
+              onClick={() => choose(step)}>
+              <span className="onboarding-number" aria-hidden="true">{ready ? "✓" : i + 1}</span>
+              <span className="onboarding-step-text"><strong>{step.title}</strong><small>{label(states[step.id])}</small></span>
+            </button></li>;
+          })}</ol>
+        </nav>
+        <section className="onboarding-content" aria-labelledby="onboarding-step-title" key={current?.id ?? "empty"}>
+          <header>
+            <span className="config-kicker">{index + 1} / {steps.length} · {current?.group_title}</span>
+            <h2 id="onboarding-step-title" ref={heading} tabIndex={-1}>{current?.title}</h2>
+          </header>
+          {state?.fault && <div role="alert" className="config-error">{state.fault}<button type="button" onClick={() => void refresh()}>重试读取</button></div>}
+          {state?.blocked && <p className="config-hint">{state.reason}。此项目前不可开启，可以继续下一步；不会记录为你主动关闭。</p>}
+          <div ref={formHost} />
+          <footer className="onboarding-footer">
+            <button type="button" disabled={index <= 0} onClick={() => choose(steps[index - 1])}>上一步</button>
+            <span>{dirty ? "请先保存本页选择" : label(state)}</span>
+            <button className="config-primary" type="button" disabled={!done(state) || dirty} onClick={() => void next()}>{index === steps.length - 1 ? "查看完成情况" : "下一步"}</button>
+          </footer>
+        </section>
+      </div>}
     {leave && <Confirm title="离开前要放弃修改吗？" accept={() => { setDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页尚有未保存的修改。离开不会改变已保存的配置。</Confirm>}
-    {createPortal(<dialog ref={invitation} className="config-dialog" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, document.body)}
+    {createPortal(<dialog ref={invitation} className="config-dialog onboarding-invite" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, document.body)}
   </main>;
 }
