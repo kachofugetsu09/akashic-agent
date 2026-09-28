@@ -257,6 +257,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
   max-width: none;
   max-height: 100%;
   grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   overflow: hidden;
   overscroll-behavior: contain;
@@ -271,7 +272,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-dialog-heading { min-width: 0; }
 .settings-dialog-description { max-width: 58ch; text-wrap: pretty; }
 .settings-dialog-title { margin-block-start: 0.4rem; font-size: var(--md-sys-typescale-title-large-size); line-height: 1.25; letter-spacing: -0.015em; text-wrap: balance; }
-.settings-dialog-form { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
+.settings-dialog-form { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); }
 .settings-dialog-body { overflow: auto; padding: 0.25rem 1.5rem 1.5rem; overscroll-behavior: contain; }
 
 .settings-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 0.8rem; }
@@ -471,4 +472,20 @@ dialog.settings-scrim::backdrop { background: transparent; }
 @media (max-height: 30rem) {
   .settings-dialog:not(.embedding-form) { display: block; overflow: auto; }
   .settings-dialog-body { overflow: visible; }
+}
+
+@media (max-width: 760px) {
+  .settings-dialog:not(.embedding-form) { display: block; overflow: auto; }
+  .settings-dialog-body { overflow: visible; }
+  .settings-dialog,
+  .settings-dialog-form,
+  .settings-form-grid label { min-width: 0; }
+  .settings-form-grid input,
+  .settings-form-grid select { min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .settings-dialog-actions { min-width: 0; }
+  .settings-dialog-actions button { min-width: 0; height: auto; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+  .settings-card-copy strong { white-space: normal; overflow-wrap: anywhere; }
+  .settings-header p,
+  .settings-dialog-description,
+  .settings-model-discovery > p { font-size: 1rem; line-height: 1.5; }
 }

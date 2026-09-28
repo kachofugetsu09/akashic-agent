@@ -2571,3 +2571,38 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 
 }
+
+/* 模型名必须能区分版本，不能在选择列表里只留下相同的省略前缀。 */
+.model-capsule__copy strong,
+.model-capsule__copy small { white-space: normal; overflow-wrap: anywhere; }
+.model-capsule__close { min-width: 44px; min-height: 44px; display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; }
+
+/* 键盘和横屏下保持原消息滚动 owner，输入区回到文档流，不盖住导航。 */
+@media (max-width: 820px) and (max-height: 30rem) {
+  .compact-navigation-dialog { overflow-y: auto; }
+  .compact-navigation-dialog .chat-sidebar { height: auto; min-height: 100%; }
+  .compact-navigation-dialog .conversation-navigation { flex: none; overflow: visible; }
+  .compact-navigation-dialog .conversation-navigation__sessions { overflow: visible; }
+  .chat-main,
+  :root[data-embedded-shell="true"] .chat-main { overflow-y: auto; }
+  .chat-main .conversation { flex: none; block-size: max(120px, 60dvh); }
+  .chat-main .composer-wrap,
+  .chat-main .composer-wrap.home { position: relative; inset: auto; inline-size: auto; flex: none; margin: 8px 16px; }
+  .chat-main .composer-wrap::before { display: none; }
+  .chat-main .home-state { padding: 16px; }
+  .model-capsule--compact .model-capsule__panel {
+    inset: 8px !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none;
+    display: block;
+    overflow-y: auto;
+  }
+  .model-capsule__header { position: sticky; top: 0; z-index: 1; background: var(--ak-paper-sheet); }
+  .model-capsule__model-view,
+  .model-capsule__main { display: block; }
+  .model-capsule__rails { display: flex; overflow-x: auto; }
+  .model-capsule__rails button { flex: 0 0 auto; }
+  .model-capsule__list,
+  .model-capsule__effort-list { overflow: visible; }
+}

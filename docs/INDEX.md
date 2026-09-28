@@ -158,6 +158,7 @@
 | 新增或修改项目文档 | 本索引 → [`writing-rules.md`](writing-rules.md) → 目标文档的权威上游 | 所有相对链接、重复规则、过时入口和 Git diff |
 | Android Shell 页面与通知 | [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Shell 合同](design/android-shell-experiment.md) | `plugins/akashic_clients/notifications.py`、`docker/debug/notification_feed.py`、独立 Android Shell 仓库 |
 | Dashboard、Chat UI | `projectneed` WEBUI-001～WEBUI-004 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [0043](decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md) → [Android Shell 与 Web 聊天](design/android-shell-experiment.md) → [WebUI 交互性能](design/webui-interaction-optimization.md) | `frontend/**/src`、`plugins/conversation_ui/`、真实构建和渲染结果 |
+| Web 窄屏布局与电脑验收 | WEBUI-001～WEBUI-004 → [共享 Web 窄屏阅读设计](design/web-narrow-reading.md) → [纸张品牌](design/akashic-paper-brand-system.md) | `frontend/**/src`、`scripts/check_narrow_ui.mjs`、实际启用的外部插件源码 |
 | 2236 顶层页面、导航与递归插件 UI | `projectneed` WEBUI-001～WEBUI-004、PLG-001～PLG-017 → [0051](decisions/0051-web-ui-composes-ordinary-plugin-modules.md) → [0053](decisions/0053-plugins-declare-managed-workloads.md) → [2236 WebUI 插件组合设计](design/web-ui-plugin-composition.md) | `frontend/dashboard/src`、`frontend/chat/src`、`plugins/conversation_ui/` |
 
 任务同时命中两行以上、会修改持久数据或会产生外部不可逆效果时，读取 `projectneed.md` 全文。执行阶段可以收窄材料，评审阶段必须展开所有相关 diff、状态变化和证据。
@@ -318,6 +319,7 @@ docs/
 │   ├── host-bridge-protocol-v2.md
 │   ├── unified-shell-execution.md
 │   ├── veda-persona.md
+│   ├── web-narrow-reading.md
 │   ├── web-ui-plugin-composition.md
 │   ├── computer-driver-source-migration.md
 │   ├── computer-plugin-workload-task-contract.md
