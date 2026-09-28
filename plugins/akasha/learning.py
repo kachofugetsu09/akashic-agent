@@ -53,9 +53,16 @@ class Learning:
     def samples(
         self, catalog: MessageCatalog, config: LearningConfig, *, heads: Mapping[str, int],
     ) -> tuple[Sample, ...]:
+        """先排除禁止学习的会话，再读取固定前缀并筛选样本。"""
+        # 1. 学习资格在 Session 接纳时固定，不必先解码禁止学习的正文。
+        eligible_heads = {
+            session: head for session, head in heads.items()
+            if catalog.attributes(session).learning == "eligible"
+        }
+        # 2. 来源和历史 effect 仍由原学习规则筛选。
         samples = project_samples(
-            catalog, self.projection, heads=heads,
-            include=lambda session, source: catalog.attributes(session).learning == "eligible" and source in config.sources,
+            catalog, self.projection, heads=eligible_heads,
+            include=lambda session, source: source in config.sources,
         )
         return tuple(sample for sample in samples if self.accepts(sample))
 

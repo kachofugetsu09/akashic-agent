@@ -167,7 +167,9 @@ class MessageConsumer:
             skipped = {item.ending[1] for item in self.state.skipped}
             records = embeddings.bind(learning.text)
             count = 0
-            for sample in learning.samples(catalog, rule, heads=heads):
+            # 投影会读取历史正文；与图发布共用排空后才取消的后台执行方式。
+            samples = await run_memory_job(partial(learning.samples, catalog, rule, heads=heads))
+            for sample in samples:
                 if sample.ending.seq <= cutover.get(sample.ending.session_id, -1):
                     continue
                 if sample.ending.message_id in applied or sample.ending.message_id in skipped:
