@@ -564,7 +564,7 @@ Models 仍拥有凭据、模型、revision 和默认选择。驱动可贡献 `pr
 驱动返回的试算结果在 Models 扩展边界集中核对：embedding 用途、原请求型号、正整数维度与 probe 来源缺一不可；违反合同直接报程序错误，不能由前端强制改用途后保存。服务入口也拒绝已有连接与新草稿同时提供。
 
 
-### Issue #805：配置回执与目录换代连续性（实现，验收待补）
+### Issue #805：配置回执与目录换代连续性（本机验收通过）
 
 ```text
 ┌─ 同一操作 ───────────────────────────────┐
@@ -592,3 +592,24 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 当前操作已有终态但最新状态尚未成功读取时，组件以同一 request ID 保留“待核对表单”标记。pending 指针已经转入 last 后，反复重读失败仍不可恢复旧 input_ref 的提交；成功读取后才清除此组件标记。纯历史 last 的新挂载不继承该瞬态锁，初始当前状态读取仍由正常 load 完成。
 
 用户显式重提已有 pending ID 时，409/422 等拒绝仅证明本次请求未获接纳，不能证明原操作不存在。保留原 ID 以便只读核对，且拒绝的草稿不能因原操作 active 而被宣称已保存或清除。用户可以确认放弃草稿，再读取实际配置；从不自动重新 POST。新的 UUID 在确定未获接纳时仍按原合同移除 pending。
+
+#### #805 固定源码验收
+
+2026-09-29，本机 Chromium 146/CDP；实际代码 `f5222e9c9d1db01c5b27ad5b1ff5d11de0d0b174`，相邻基线 `978e9d244b96835da72d41970d04ec14e7557833`。冻结发行源 tree `9eed9c198b0f658012ede6318c0f6731fe4698f0`；v15 全新隔离环境使用 v14 同一不可变制品，Core 676 文件与正式安装的 42 个插件均逐字核对。默认 profile 为 39 项，三个 UI 经正式安装链补装；默认安装修复属于 #800，本单不反推该路线通过。
+
+```text
+原页保存 ──→ 原 request ID ──→ 正式回执 ──→ 当前表单 / 正式目录
+   │             │                │                 │
+ 响应丢失     显式重提被拒      已保存但应用失败    换代 / 真撤回
+   └─────────── 只读核对 ──────────┴─────── 有界恢复 ──┘
+```
+
+27 项场景通过：浏览器连续矩阵 16；目录超时与手动恢复 2；不同代码与普通权限拒绝 2；原组件连续 Status 503、回执 404 与原 ID 恢复 1；延迟历史终态不锁新草稿 1；真实 Wake 卸载/重装与显式关闭选择保持 2；Telegram 发送真实 getMe/启用、关闭保留凭据及接入关闭 3。没有自动 POST 重放；重提被拒的场景有用户显式发起的两次 HTTP 请求，原操作 ID 保留，第二份草稿未被误认生效。
+
+向量试算实际调用云服务，返回 1024 维，再经真实配置打开记忆。Telegram 发送注册与正式 active 回执在原浏览器恢复；它不创建接收器，也未发送消息。原 18329 测试接收器保持；本单没有启动第二个真实 poller，之前用户确认的真实收发不能冒充本 head 的接收器验收。
+
+本地证据根 `/mnt/data/akashic-onboarding-fixes-20260928/`：`issue805-v15-browser.json`、`issue805-v15.json`、`issue805-v15-read-boundary.json`、`issue805-v14-status-boundary.json`、`issue805-v15-history-edit.json`、`issue805-v15-reinstall.json`、`issue805-v15-telegram-settings.json`。各文件固定 source 与 scenario SHA-256；受控故障和真实调用分列。最终 12 个 SQLite integrity_check 全为 ok、测试 trigger 零残留；本环境 Message 为 0，无既有消息减少。日志、数据库与凭据不公开上传。
+
+`issue805-v14-checks.json` 固定上述源码：概念 pytest 47，通过；pyright、tests pyright、plugin boundary、yoyo、control/Host Bridge 生成物、typecheck、diff 和变更插件 pyright 共 10 项退出 0。独立只读 Gate `/root/review_issue801` 审查 `978e..f522`：PASS、must-fix 0；请求配置 gpt-5.6-terra/xhigh，执行工具未报告可核验的实际后端模型身份。
+
+保留所有红证据：包括真正的历史读取锁定/重复路由事件，和后来纠正的 fieldset 容器断言、跨组件 busy 断言、残留 CDP 端口导致的场景 setup 失败。#807 拥有 locked 解锁、Next/Finish 与进度统计完整验收；本单只覆盖实际可操作的模型当前步骤连续性与普通设置入口，不声明那条完整路线通过。未运行 OAuth、Android 或生产部署，没有数据库迁移和 PR 合并。
