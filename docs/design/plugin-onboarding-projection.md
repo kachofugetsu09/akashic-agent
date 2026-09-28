@@ -615,7 +615,7 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 保留所有红证据：包括真正的历史读取锁定/重复路由事件，和后来纠正的 fieldset 容器断言、跨组件 busy 断言、残留 CDP 端口导致的场景 setup 失败。#807 拥有 locked 解锁、Next/Finish 与进度统计完整验收；本单只覆盖实际可操作的模型当前步骤连续性与普通设置入口，不声明那条完整路线通过。未运行 OAuth、Android 或生产部署，没有数据库迁移和 PR 合并。
 
 
-## Issue #806 · 聊天模型前置与恢复（实施中）
+## Issue #806 · 聊天模型前置与恢复（已本机验收，待合并）
 
 - 基线：#805 `ee94c47b`，独立 worktree，唯一 writer Codex。
 - capability_owner/authoritative_state_owner：Models 插件拥有目录、连接启停和会话选择；客户端插件仅投影公开 reader，聊天组件拥有读取进度、待发送选择和未提交文本。
@@ -629,4 +629,4 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 
 - 真实 fixed-session 重启验收发现：前端投影虽确认已有可用 session selection，Models `_select_chat_models` 却在遍历 default 时提前拒绝。按 RUN-010 的“本次 → 会话 → 默认”优先级，仅在没有已验证显式选择时要求 default；不写入/伪造默认，不传播 agent 选择/effort 到 fast/vision。已声明角色的校验和整组冻结保持；后续真请求缺席角色仍由 Models 明确拒绝。ReplyProgram 实际消费 agent；独立 default 消费者的配置要求不放宽。
 
-- 恢复链追加实测：`949ef971` 同浏览器先打开模型设置、重启隔离 runtime 后，旧页面仍用旧 catalog revision；停用请求真实返回 409，旧消息保持，错误藏在模态框外。Models 页面现在在重新可见、窗口 focus、弹窗关闭时只读核对；后台读取启动和落地都避开打开的本页弹窗，命令自身的刷新保留原行为。停用冲突/失败在弹窗内说明结果尚未确认，不自动再提交；正在执行时给反馈，不静默忽略点击。Models 仍独占 revision 与连接状态，Core 不放宽校验。该补丁需要新冻结源码重新验收，949 的成功项仅作前序证据。
+- 恢复链追加实测：`949ef971` 同浏览器先打开模型设置、重启隔离 runtime 后，旧页面仍用旧 catalog revision；停用请求真实返回 409，旧消息保持，错误藏在模态框外。Models 页面现在在重新可见、窗口 focus、弹窗关闭时只读核对；后台读取启动和落地都避开打开的本页弹窗，命令自身的刷新保留原行为。停用冲突/失败在弹窗内说明结果尚未确认，不自动再提交；正在执行时给反馈，不静默忽略点击。Models 仍独占 revision 与连接状态，Core 不放宽校验。新冻结源码 `19f1b53f` 已验收 29 个独立场景，含真实并发 409、关闭后只读刷新和用户明确重试；949 的成功项仅作前序证据。完整证据与未执行边界见验收记录。
