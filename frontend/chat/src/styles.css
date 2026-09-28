@@ -2611,3 +2611,10 @@ form.composer:focus-within [data-slot="input-group"] {
     overflow-y: auto;
   }
 }
+
+/* 模型前置属于当前输入区，窄屏换行仍可键盘到达恢复入口。 */
+.chat-model-notice { color: var(--ak-color-text-primary); padding: 12px; border: 1px solid var(--md-sys-color-outline-variant); border-radius: 8px; margin-bottom: 10px; overflow-wrap: anywhere; }
+.chat-model-notice p { margin: 0 0 8px; }
+.chat-model-notice > div { display: flex; flex-wrap: wrap; gap: 12px; }
+.chat-model-notice a, .chat-model-notice button { color: inherit; text-decoration: underline; min-height: 32px; }
+.chat-model-notice a:focus-visible, .chat-model-notice button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

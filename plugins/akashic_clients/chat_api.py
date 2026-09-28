@@ -36,6 +36,7 @@ from .services import (
     PluginUiStaleRevision,
     default_chat_model_id,
     project_chat_runtimes,
+    project_unavailable_chat_runtimes,
 )
 from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
 from .web_chat import (
@@ -256,6 +257,7 @@ def create_chat_app(
                 "reasoningEffort": session_effort,
             },
             "runtimes": project_chat_runtimes(current),
+            "unavailableRuntimes": project_unavailable_chat_runtimes(current),
         }
 
     @app.get("/api/chat/plugin-ui/catalog")

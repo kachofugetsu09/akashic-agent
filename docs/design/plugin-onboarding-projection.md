@@ -613,3 +613,14 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 `issue805-v14-checks.json` 固定上述源码：概念 pytest 47，通过；pyright、tests pyright、plugin boundary、yoyo、control/Host Bridge 生成物、typecheck、diff 和变更插件 pyright 共 10 项退出 0。独立只读 Gate `/root/review_issue801` 审查 `978e..f522`：PASS、must-fix 0；请求配置 gpt-5.6-terra/xhigh，执行工具未报告可核验的实际后端模型身份。
 
 保留所有红证据：包括真正的历史读取锁定/重复路由事件，和后来纠正的 fieldset 容器断言、跨组件 busy 断言、残留 CDP 端口导致的场景 setup 失败。#807 拥有 locked 解锁、Next/Finish 与进度统计完整验收；本单只覆盖实际可操作的模型当前步骤连续性与普通设置入口，不声明那条完整路线通过。未运行 OAuth、Android 或生产部署，没有数据库迁移和 PR 合并。
+
+
+## Issue #806 · 聊天模型前置与恢复（实施中）
+
+- 基线：#805 `ee94c47b`，独立 worktree，唯一 writer Codex。
+- capability_owner/authoritative_state_owner：Models 插件拥有目录、连接启停和会话选择；客户端插件仅投影公开 reader，聊天组件拥有读取进度、待发送选择和未提交文本。
+- consumer_scope：真实聊天 iframe 与独立聊天页；runtime_patch=false，Core 与 health 不持有模型业务状态。
+- change_type=bugfix；semantic_delta：发送前说明缺少模型或读取失败，返回设置时自动只读核对，迟到响应不得覆盖本页选择或另一会话。
+- 受保护：Message/Turn/Session 持久语义、在途回复冻结、插件权限、模型配置与凭证 owner；无自动默认绑定、无自动启用、无生产写入。未提交文本只保存本标签页 sessionStorage，不上传、不成为 Message；附件仍由当前编辑器持有，不伪称刷新后恢复文件。
+- 允许副作用：隔离运行时正式安装、模型配置、受限真实短消息；凭证只从本机私有文件读取，原 Telegram receiver 不变。
+- 验收：空目录/无默认/固定会话可用/禁用连接、401/403/503 与迟到读取、返回设置、真实短消息持久及显示、320px/两主题/键盘、刷新和本机 runtime 恢复；既有概念 pytest 和必需静态检查；独立只读 Gate。备份：任务根 backups/issue806/before-implementation，失败只停止本次独立 runtime。

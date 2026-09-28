@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { memo, useCallback, useEffect, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
@@ -21,10 +21,13 @@ export type ComposerFile = { filename?: string; mediaType?: string; url?: string
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
+  chatReady, canSend, modelProblem, draftKey, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
   onModelChange, onCancelReply, onSend, onStop,
 }: {
   chatReady: boolean;
+  canSend: boolean;
+  modelProblem: string;
+  draftKey: string;
   status: ChatStatus;
   stopPending: boolean;
   modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] } | null;
@@ -36,7 +39,28 @@ export const DesktopComposer = memo(function DesktopComposer({
   onSend: (text: string, files: ComposerFile[]) => Promise<void>;
   onStop: () => void;
 }) {
-  const [input, setInput] = useState("");
+  // 标签页文本草稿是展示状态，既不上传，也不创建 Message。
+  const drafts = useRef(new Map<string, string>());
+  const [draftVersion, setDraftVersion] = useState(0);
+  const [draftStorageError, setDraftStorageError] = useState(false);
+  let input = drafts.current.get(draftKey);
+  if (input === undefined) {
+    try { input = sessionStorage.getItem(`akashic.chat.draft:${draftKey}`) ?? ""; }
+    catch (error) { if (!(error instanceof DOMException)) throw error; input = ""; }
+    drafts.current.set(draftKey, input);
+  }
+  const setDraft = useCallback((key: string, text: string) => {
+    drafts.current.set(key, text);
+    try {
+      if (text) sessionStorage.setItem(`akashic.chat.draft:${key}`, text);
+      else sessionStorage.removeItem(`akashic.chat.draft:${key}`);
+    } catch (error) {
+      if (!(error instanceof DOMException)) throw error;
+      setDraftStorageError(true);
+    }
+    setDraftVersion((version) => version + 1);
+  }, []);
+  const setInput = useCallback((text: string) => setDraft(draftKey, text), [draftKey, setDraft]);
   const [expanded, setExpanded] = useState(false);
   const [hasAttachments, setHasAttachments] = useState(false);
   const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string) => {
@@ -53,22 +77,26 @@ export const DesktopComposer = memo(function DesktopComposer({
     syncExpanded(event.target, next);
   }, [syncExpanded]);
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
+    if (!canSend) throw new Error(modelProblem || "聊天服务暂不可用，请稍后重试。");
     const wasExpanded = expanded;
     setInput("");
     setExpanded(false);
     try {
       await onSend(text, files);
     } catch (error) {
-      setInput((current) => current || text);
+      setDraft(draftKey, drafts.current.get(draftKey) || text);
       setExpanded(wasExpanded);
       throw error;
     }
-  }, [expanded, onSend]);
+  }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey]);
   const shellExpanded = expanded || hasAttachments || Boolean(replyTarget);
   return (
+    <>
+    {draftStorageError ? <p role="status">浏览器无法保存本页草稿。刷新前请复制已输入的文字。</p> : null}
     <PromptInput
       className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}`}
       multiple
+      data-draft-version={draftVersion}
       onSubmit={(message) => submit(message.text, message.files)}
     >
       {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
@@ -79,8 +107,9 @@ export const DesktopComposer = memo(function DesktopComposer({
           value={input}
           onChange={onInputChange}
           aria-label="消息"
+          aria-describedby={modelProblem ? "chat-model-reason" : undefined}
           disabled={!chatReady}
-          placeholder={chatReady ? "继续布置任务…" : "连接模型后即可开始对话"}
+          placeholder={canSend ? "继续布置任务…" : "先写下想说的话…"}
         />
       </PromptInputBody>
       <PromptInputFooter className="composer__bar">
@@ -91,7 +120,7 @@ export const DesktopComposer = memo(function DesktopComposer({
             runtimes={modelState.runtimes}
             selectedRuntimeId={selectedRuntimeId}
             selectedEffort={selectedEffort}
-            disabled={status !== "idle"}
+            disabled={isGeneratingChatStatus(status)}
             onChange={onModelChange}
           /> : null}
         </PromptInputTools>
@@ -100,10 +129,11 @@ export const DesktopComposer = memo(function DesktopComposer({
             <PromptInputActionMenuTrigger aria-label="添加文件" className="composer-tool" tooltip="添加文件"><Plus size={18} /></PromptInputActionMenuTrigger>
             <PromptInputActionMenuContent><PromptInputActionAddAttachments label="上传文件" /></PromptInputActionMenuContent>
           </PromptInputActionMenu>
-          <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={onStop} disabled={!chatReady} />
+          <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={onStop} disabled={!canSend} />
         </PromptInputTools>
       </PromptInputFooter>
     </PromptInput>
+    </>
   );
 });
 
@@ -164,6 +194,6 @@ function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { inpu
     label={stopPending ? "正在停止" : generating ? "中止回答" : "发送消息"}
     type={generating ? "button" : "submit"}
     onClick={generating ? onStop : undefined}
-    disabled={disabled || stopPending || (!generating && !input.trim() && attachments.files.length === 0)}
+    disabled={stopPending || (!generating && (disabled || (!input.trim() && attachments.files.length === 0)))}
   />;
 }

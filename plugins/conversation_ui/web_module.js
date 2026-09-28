@@ -6,6 +6,13 @@ const MIN_PANEL_WIDTH = 360;
 const MIN_CHAT_WIDTH = 420;
 
 function syncFrameTheme(frame) {
+  // iframe 隐藏后再返回时核对能力，不重建 iframe 或清空编辑器。
+  const observer = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) frame.contentWindow?.postMessage(
+      { type: "akashic.models.changed" }, window.location.origin,
+    );
+  });
+  observer.observe(frame);
   const send = () => frame.contentWindow?.postMessage(
     { type: "akashic.theme", themeId: currentTheme().id },
     window.location.origin,
@@ -13,6 +20,7 @@ function syncFrameTheme(frame) {
   frame.addEventListener("load", send);
   const unsubscribe = subscribeTheme(send);
   return () => {
+    observer.disconnect();
     unsubscribe();
     frame.removeEventListener("load", send);
   };

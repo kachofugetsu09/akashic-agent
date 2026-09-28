@@ -191,6 +191,21 @@ def default_chat_model_id(snapshot: ModelCatalogSnapshot) -> str:
     return str(snapshot.role_bindings.get("default", ""))
 
 
+def project_unavailable_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, str]]:
+    """只读展示连接停用或驱动缺席，不把本地可用误称远端认证成功。"""
+    connections = {item.connection_id: item for item in snapshot.connections}
+    return [
+        {
+            "id": model.model_id,
+            "model": model.model,
+            "sourceName": connections[model.connection_id].name,
+            "availability": model.availability.value,
+        }
+        for model in snapshot.models
+        if model.kind.value == "chat" and model.availability.value != "available"
+    ]
+
+
 def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, object]]:
     """把公共模型目录投影为既有 Web DTO。"""
     roles_by_model: dict[str, list[str]] = {}
