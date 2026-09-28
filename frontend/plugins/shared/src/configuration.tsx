@@ -149,12 +149,12 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   }, [ctx, path]);
   useEffect(() => { embed.dirty?.(dirty); return () => embed.dirty?.(false); }, [dirty, embed.dirty]);
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !busy) return;
     const unload = (event: BeforeUnloadEvent) => { event.preventDefault(); };
-    const navigate = (event: Event) => { event.preventDefault(); setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
+    const navigate = (event: Event) => { event.preventDefault(); if (busy) { setNotice("原操作正在核对，请等待结果；离开不会撤销已提交配置。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
     window.addEventListener("beforeunload", unload); window.addEventListener("akashic:before-navigate", navigate);
     return () => { window.removeEventListener("beforeunload", unload); window.removeEventListener("akashic:before-navigate", navigate); };
-  }, [dirty]);
+  }, [dirty, busy]);
   const change = (key: string, value: unknown) => { setValues(previous => ({...previous, [key]: value})); setDirty(true); setNotice(""); };
   const saving = useRef(false);
   const save = async (event: React.FormEvent): Promise<void> => {
