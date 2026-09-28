@@ -350,6 +350,10 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
 
+[capabilities."source.interrupt.v1"]
+role = "seam"
+note = "Sources 拥有输入与停止的共同路由；渠道声明停止能力依赖"
+
 [capabilities."source.session.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"

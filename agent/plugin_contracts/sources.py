@@ -104,6 +104,9 @@ class ConversationComplete(Protocol):
 
 
 SOURCES = ServiceKey[Sources]("sources.v2")
+SOURCE_INTERRUPT = ServiceKey[
+    Callable[[MessageReader, str, str], Awaitable[bool]]
+]("source.interrupt.v1")
 SOURCE_SESSION = ServiceKey[SessionFactory]("source.session.v1")
 SOURCE_CHECK = ServiceKey[Callable[[Task, MessageReader, str, int], None]](
     "source.check.v1"
