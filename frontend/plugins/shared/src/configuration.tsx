@@ -86,6 +86,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const settled = useRef<string | null>(null);
   const needsRebind = useRef(false);
   const inFlightRequest = useRef<string | null>(null);
+  const verifyRequired = useRef<string | null>(null);
   const read = <T,>(url: string, init?: RequestInit): Promise<T> => request<T>(ctx, url, init, response => {
     if (response.headers.get("X-Akashic-Web-Rebound") === "1") needsRebind.current = true;
   });
@@ -100,6 +101,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
         if (!current()) return;
         if (receipt.state === "active" || receipt.state === "superseded") {
           if (inFlightRequest.current === id) inFlightRequest.current = null;
+          if (wasPending) verifyRequired.current = id;
           sessionStorage.setItem(lastKey, id);
           if (sessionStorage.getItem(pendingKey) === id) sessionStorage.removeItem(pendingKey);
           setNotice(receipt.state === "active" ? "已确认配置生效，正在核对设置界面…" : "原操作已被较新的配置替代，正在核对最新界面…");
@@ -111,19 +113,21 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
             const next = await read<Status>(path, {signal: controller.signal});
             if (current() && sequence === loads.current) {
               refreshed = true;
+              if (verifyRequired.current === id) verifyRequired.current = null;
               if (!draftEditing.current) { setStatus(next); setEnabled(next.enabled); setValues(next.values); }
             }
           } catch (reason) {
             if (current()) setError(`配置结果已确认，但最新表单读取失败：${reason instanceof Error ? reason.message : String(reason)}`);
           }
           if (!current()) return;
-          setBusy((wasPending && !refreshed) || (needsRebind.current && !draftEditing.current));
+          setBusy((verifyRequired.current === id && !refreshed) || (needsRebind.current && !draftEditing.current));
           setNotice(needsRebind.current ? "配置结果已确认，正在更新设置界面…" : receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
           if (settled.current !== id) { settled.current = id; embed.changed?.(); }
           return;
         }
         if (receipt.state === "failed") {
           if (inFlightRequest.current === id) inFlightRequest.current = null;
+          if (wasPending) verifyRequired.current = id;
           sessionStorage.setItem(lastKey, id);
           settled.current = id;
           if (wasPending) setBusy(true);
@@ -139,10 +143,11 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
             const next = await read<Status>(path, {signal: controller.signal});
             if (current() && sequence === loads.current) {
               refreshed = true;
+              if (verifyRequired.current === id) verifyRequired.current = null;
               if (!draftEditing.current) { setStatus(next); setEnabled(next.enabled); setValues(next.values); }
             }
           } catch (reason) { if (current()) setNotice(`原操作失败已确认，但实际配置暂未核对：${reason instanceof Error ? reason.message : String(reason)}`); }
-          if (current()) setBusy((wasPending && !refreshed) || (needsRebind.current && !draftEditing.current));
+          if (current()) setBusy((verifyRequired.current === id && !refreshed) || (needsRebind.current && !draftEditing.current));
           return;
         }
         setNotice("配置已受理，正在等待新配置生效…");
