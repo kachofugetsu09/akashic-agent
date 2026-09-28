@@ -54,14 +54,15 @@ Web UDS listener 和 HTTP 请求覆盖检查缺席/安装/卸载、借用中排�
 
 ### 渠道输入与停止共用路由
 
-`Sources.accept` 与新增 `Sources.interrupt` 使用同一个专属渠道优先、默认来源兜底的选择。
+`Sources.accept` 与 `SOURCE_INTERRUPT` 指向的 `Sources.interrupt` 使用同一个专属渠道优先、默认来源兜底的选择。
 Telegram 只传入渠道、Session reader 和控制消息 ID，不再读取 `conversation` 的状态。
 Sources 在所选 provider 的作用域内检查该来源是否有消息、调用它的待回复谓词，
 再调用其 `SourceSession.pause`。没有消息时不创建空 Session/Control；已有消息时，
 原 pause 先追加控制、撤销当前工作并等待排空，Channel 才发送原 binding 的确认。
-来源缺席继续明确失败，不将不确定状态误报为空闲。外部替代 Sources provider 需实现新增方法。
+来源缺席继续明确失败，不将不确定状态误报为空闲。停止能力用独立 `source.interrupt.v1` key 声明；旧 Sources provider 缺席该能力时，
+Telegram 功能 Fiber 明确保持 PENDING，不允许已就绪后第一次停止才报缺方法。
 
-本层不新增路由表、服务 key、来源 ID 或控制状态。正常运行只由原 Message writer 追加
+本层只新增停止能力 key，不新增路由表、来源 ID 或控制状态。正常运行只由原 Message writer 追加
 Input/Control；不修改旧消息、配置、回执和恢复条件。恢复点是上一层 `44556055`
 与 `/tmp/akashic-orthology-before-source-routing-44556055.tar`。
 `docker/debug/orthology_source_control.py` 使用真实 MessageLog、Sources、SourceSession 和

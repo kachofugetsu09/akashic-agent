@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition import CompositionRoot, CredentialRef
-from agent.plugin_composition.channels import CHANNELS, ChannelInboundMessage, RawInbound
+from agent.plugin_composition.channels import CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.model import FiberState, PluginRuntime
@@ -62,6 +62,17 @@ async def check(workspace: Path) -> None:
         await root.context.provide(CHANNELS, CaptureChannel())
         await root.context.provide(CREDENTIALS, RejectCredentials())
         await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
+        runtime = PluginRuntime("telegram", "generation", workspace, workspace / "telegram", workspace,
+                                {"enabled": True, "token": CredentialRef(("scenario", "unused"))})
+        async def legacy_routes(ctx):
+            router = sources.Sources(ctx)
+            await ctx.provide(SOURCES, router)
+            await ctx.provide(CHANNEL_INPUT, router.accept)
+        legacy = await root.mount(legacy_routes, name="legacy-routes")
+        waiting = await root.mount(telegram.run, name="old-pair", inject=telegram.function_inject, runtime=runtime)
+        assert waiting.state is FiberState.PENDING and not definitions
+        await waiting.dispose()
+        await legacy.dispose()
         await root.mount(sources.apply, name="routes")
         await root.mount(registration("default_lane", None), name="default", inject=(SOURCES,))
         dedicated = await root.mount(registration("assistant_lane", ("telegram",)), name="dedicated", inject=(SOURCES,))

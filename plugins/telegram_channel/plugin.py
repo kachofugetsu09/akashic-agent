@@ -12,7 +12,7 @@ from agent.plugin_composition import (
 from agent.plugin_composition.channels import CHANNEL_INPUT, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_contracts.sources import SOURCES
+from agent.plugin_contracts.sources import SOURCE_INTERRUPT
 
 from .channel import TelegramChannelAdapter, build_telegram_channel
 from .config import TelegramChannelConfig
@@ -22,7 +22,7 @@ name = "telegram_channel"
 version = "3.0.0"
 desc = "Telegram inbound and outbound v3 channel adapter"
 author = "Akashic"
-function_inject = (CHANNELS, CHANNEL_INPUT, CREDENTIALS, MESSAGE_CATALOG, SOURCES)
+function_inject = (CHANNELS, CHANNEL_INPUT, CREDENTIALS, MESSAGE_CATALOG, SOURCE_INTERRUPT)
 Config = TelegramChannelConfig
 
 
@@ -36,7 +36,7 @@ async def run(ctx: Context) -> None:
         """先通过来源提交 pause 并等待旧工作，再由原 binding 发送 ack。"""
         session_id = f"telegram:{raw.message.chat_id}"
         reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
-        return await ctx.require(SOURCES).interrupt(reader, raw.message_id, raw.message.channel)
+        return await ctx.require(SOURCE_INTERRUPT)(reader, raw.message_id, raw.message.channel)
 
     await ctx.require(CHANNELS).register(
         ctx,

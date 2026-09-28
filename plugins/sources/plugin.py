@@ -10,6 +10,7 @@ from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.sources import (
     SOURCE_CHECK as SOURCE_CHECK,
+    SOURCE_INTERRUPT,
     SOURCE_SESSION as SOURCE_SESSION,
     SOURCES as SOURCES,
     Source as Source,
@@ -183,3 +184,4 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(SOURCE_SESSION, _SourceSession)
     _ = await ctx.provide(SOURCES, sources)
     _ = await ctx.provide(CHANNEL_INPUT, sources.accept)
+    _ = await ctx.provide(SOURCE_INTERRUPT, sources.interrupt)
