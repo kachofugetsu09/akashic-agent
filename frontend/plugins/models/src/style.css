@@ -480,10 +480,15 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-dialog,
   .settings-dialog-form,
   .settings-form-grid label { min-width: 0; }
+  .settings-form-grid,
+  .settings-form-grid label { grid-template-columns: minmax(0, 1fr); }
+  .settings-login-card { min-width: 0; flex-wrap: wrap; }
+  .settings-login-card > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .settings-form-grid input,
   .settings-form-grid select { min-width: 0; max-width: 100%; box-sizing: border-box; }
   .settings-dialog-actions { min-width: 0; }
-  .settings-dialog-actions button { min-width: 0; height: auto; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+  .settings-dialog-actions button,
+  .settings-dialog-footer button { min-width: 0; height: auto; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
   .settings-card-copy strong { white-space: normal; overflow-wrap: anywhere; }
   .settings-header p,
   .settings-dialog-description,
