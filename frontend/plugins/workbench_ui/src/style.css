@@ -1325,6 +1325,11 @@
   }
 
   @media (max-width: 1180px) {
+    .ak-plugin-grid-4,
+    .ak-plugin-grid-3 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .workspace {
       position: relative;
     }
@@ -1349,9 +1354,23 @@
     .workspace {
       padding: 0;
     }
+
+    /* 工具区在窗口收窄时先换行，避免搜索框把动作挤出视口。 */
+    .content-toolbar {
+      height: auto;
+      flex-wrap: wrap;
+      row-gap: 8px;
+      padding-block: 8px;
+    }
   }
 
 @media (max-width: 760px) {
+    .ak-plugin-grid-4,
+    .ak-plugin-grid-3,
+    .ak-plugin-grid-2 {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .detail-pane.is-open {
       inset: 0;
       width: 100%;
@@ -1426,6 +1445,22 @@
     .table-head.mode-memory,
     .table-row.mode-memory {
       grid-template-columns: 34px 72px minmax(140px, 1.25fr) 48px 52px 64px 76px 76px 70px 56px;
+    }
+
+    /* 键盘或横屏压缩高度时，目录和内容按顺序滚动，不再争抢剩余高度。 */
+    @media (max-height: 30rem) {
+      .shell {
+        overflow-y: auto;
+      }
+
+      .sessions-pane {
+        height: 20rem;
+      }
+
+      .content-shell {
+        flex: none;
+        height: max(24rem, calc(100dvh - var(--shell-band-height, 48px)));
+      }
     }
 }
 
