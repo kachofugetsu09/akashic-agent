@@ -966,7 +966,8 @@ class ModelsState:
             if explicit_model_id is not None and role == _AGENT_ROLE:
                 model_id = explicit_model_id
             if model_id is None:
-                if role == _DEFAULT_ROLE:
+                # 已验证的会话选择直接供 agent 使用，不要求另存系统默认。
+                if role == _DEFAULT_ROLE and explicit_model_id is None:
                     raise ModelUnavailableError("尚未配置 default 聊天模型")
                 default_id = snapshot.role_bindings.get(_DEFAULT_ROLE)
                 if role == _VISION_ROLE:

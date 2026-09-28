@@ -626,3 +626,5 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 - 验收：空目录/无默认/固定会话可用/禁用连接、401/403/503 与迟到读取、返回设置、真实短消息持久及显示、320px/两主题/键盘、刷新和本机 runtime 恢复；既有概念 pytest 和必需静态检查；独立只读 Gate。备份：任务根 backups/issue806/before-implementation，失败只停止本次独立 runtime。
 
 - 远端拒绝由对应驱动 HTTP 信任边界判断：OpenAI-compatible 确认 401/403 后才说明连接授权未通过，5xx 明确服务暂不可用；沿既有错误类型/Control 原因显示，不按字符串猜测原因、不改变自动重试预算或 Message schema。失败消息提供只读模型设置入口。目录访问 401/403 与云端凭证失败分开说明，本地 available 不声明凭据已认证。
+
+- 真实 fixed-session 重启验收发现：前端投影虽确认已有可用 session selection，Models `_select_chat_models` 却在遍历 default 时提前拒绝。按 RUN-010 的“本次 → 会话 → 默认”优先级，仅在没有已验证显式选择时要求 default；不写入/伪造默认，不传播 agent 选择/effort 到 fast/vision。已声明角色的校验和整组冻结保持；后续真请求缺席角色仍由 Models 明确拒绝。ReplyProgram 实际消费 agent；独立 default 消费者的配置要求不放宽。
