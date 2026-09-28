@@ -31,12 +31,12 @@ class PluginArchive:
         self.path = path.resolve()
 
     def save(self, source: Path, *, exclude: frozenset[str] = frozenset()) -> str:
-        """先固定并验证文件树，再原子发布；返回前同步磁盘。"""
+        """按复制后的内容命名并原子发布；返回前同步磁盘。"""
         # 1. 文件树是完整输入；运行环境等边界由调用者明确选定。
         if self.path.is_relative_to(source.resolve()):
             raise ValueError("插件归档不能写入自身输入目录")
-        expected = tree_entries(source, exclude=exclude)
-        identity = hashlib.sha256(encode_tree(expected)).hexdigest()
+        source_entries = tree_entries(source, exclude=exclude)
+        identity = hashlib.sha256(encode_tree(source_entries)).hexdigest()
         if (self.path / identity).exists() or (self.path / identity).is_symlink():
             _ = self.open(identity)
             sync_directory(self.path)
@@ -51,27 +51,21 @@ class PluginArchive:
                 ignore=shutil.ignore_patterns(*(_CACHE_NAMES | exclude)),
             )
             actual = tree_entries(tree)
-            if actual != expected:
-                raise RuntimeError("归档期间插件文件树发生变化")
             payload = encode_tree(actual)
             archive_id = hashlib.sha256(payload).hexdigest()
 
-            # 2. 归档文件及索引先落盘，再让内容身份可见。
+            # 2. 归档文件先落盘，再让内容身份可见。
             for relative, kind, _ in actual:
                 item = tree / relative
                 if kind == "file":
                     item.chmod(0o555 if item.stat().st_mode & 0o111 else 0o444)
                     with item.open("rb") as stream:
                         os.fsync(stream.fileno())
-            with (pending / "index.json").open("xb") as stream:
-                _ = stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
             for current, _, _ in os.walk(tree, topdown=False, followlinks=False):
                 sync_directory(Path(current))
             sync_directory(pending)
 
-            # 3. 同内容可重复发布；已有对象必须完整，不能覆盖修复损坏。
+            # 3. 同内容复用已发布对象，不覆盖已有目录。
             target = self.path / archive_id
             if target.exists() or target.is_symlink():
                 _ = self.open(archive_id)
@@ -90,18 +84,15 @@ class PluginArchive:
                 shutil.rmtree(pending)
 
     def open(self, archive_id: str) -> Path:
-        """验证完整归档后返回精确目录；不读取 installed/stable/latest。"""
+        """读取安装固定的目录，不重新计算内容摘要。"""
         if re.fullmatch(r"[0-9a-f]{64}", archive_id) is None:
             raise ValueError("插件归档身份必须是 SHA-256")
         root = self.path / archive_id
-        if root.is_symlink() or (root / "index.json").is_symlink():
-            raise ValueError("插件归档对象不能是符号链接")
-        payload = (root / "index.json").read_bytes()
-        if hashlib.sha256(payload).hexdigest() != archive_id:
-            raise RuntimeError("插件归档索引损坏")
         tree = root / "tree"
-        if encode_tree(tree_entries(tree)) != payload:
-            raise RuntimeError("插件归档文件树损坏")
+        if root.is_symlink() or tree.is_symlink():
+            raise ValueError("插件归档对象不能是符号链接")
+        if not tree.is_dir():
+            raise FileNotFoundError(f"插件归档目录缺失: {tree}")
         return tree
 
     def save_descriptor(self, value: Mapping[str, object]) -> str:
@@ -133,16 +124,13 @@ class PluginArchive:
             pending.unlink()
 
     def read_descriptor(self, identity: str) -> Mapping[str, object]:
-        """只读取由给定 hash 固定的 descriptor。"""
+        """读取已发布的 descriptor，保留结构和路径检查。"""
         if re.fullmatch(r"[0-9a-f]{64}", identity) is None:
             raise ValueError("插件归档身份必须是 SHA-256")
         target = self.path / f"{identity}.json"
         if target.is_symlink():
             raise ValueError("插件归档 descriptor 不能是符号链接")
-        payload = target.read_bytes()
-        if hashlib.sha256(payload).hexdigest() != identity:
-            raise RuntimeError("插件归档 descriptor 损坏")
-        value = json.loads(payload)
+        value = json.loads(target.read_text())
         if not isinstance(value, dict):
             raise ValueError("插件归档 descriptor 必须是对象")
         return cast(Mapping[str, object], freeze_json(cast(dict[str, object], value)))

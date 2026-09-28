@@ -77,6 +77,7 @@
 | [单图插件系统与局部换代](design/issue-750-plugin-publication-simplification.md) | 0072 的目标、取舍、T01～T07 任务拆分与验收 | 插件简化的固定入口 |
 | [插件整体换代重构](design/plugin-whole-runtime-simplification.md) | 0071 的入口、归属、整体组合与 stacked PR 实施 | 旧实现与迁移对照，不再是新目标入口 |
 | [普通资源 provider](design/plugin-resource-providers.md) | MCP、Workload、进程的实际资源归属与宿主授权 | 使用或修改外部资源 provider 时读取 |
+| [信任已安装的运行材料](decisions/0077-trust-installed-runtime-inputs.md) | 安装准备与运行时读取分开，不重复计算内容摘要 | 修改插件归档或 Python 环境读取时读取 |
 | [插件运行目录收敛](design/plugin-active-projections.md) | 当前 snapshot 查询投影与实际 Root 清理 owner | 修改 generation 查询或清理路径时读取 |
 | [latest 普通调用](design/plugin-latest-programmatic.md) | 候选调用、结果可见性、撤销与默认晋升 | 旧候选机制对照；新语义见 0072 与单图设计 |
 | [候选丢弃与安装结算](design/plugin-drop-update-settlement.md) | 同一更新的资源关闭与安装恢复责任 | 旧候选机制对照；清理责任按 PLG-006 |

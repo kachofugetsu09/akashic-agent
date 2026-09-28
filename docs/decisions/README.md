@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0077](0077-trust-installed-runtime-inputs.md) | accepted | 信任已安装的运行材料，删除运行时摘要复验 | PLG-001、PLG-002、PLG-009、ERR-001 |
 | [0073](0073-session-scope-routes-akasha-graphs.md) | accepted / implemented（首版） | Session scope 宽键路由 Akasha 物化图 | SES-010、MEM-009、MEM-013、CTRL-003 |
 | [0076](0076-android-shell-retires-legacy-mobile-stack.md) | accepted / implementing | Android Shell 取代旧 Mobile 协议与 OTA | MOB-001、WEBUI-001～WEBUI-004、AKC-001～AKC-002 |
 | [0075](0075-host-bridge-runtime-recovery.md) | accepted | Host Bridge 运行期按故障范围恢复 | RUN-013、RUN-015、SH-001～SH-003、ERR-001 |

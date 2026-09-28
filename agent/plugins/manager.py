@@ -12,7 +12,6 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextvars import Context as TaskContext
 from dataclasses import asdict
 from pathlib import Path
-from time import monotonic
 from typing import Any, Literal, TypeVar, cast
 from uuid import uuid4
 
@@ -1888,8 +1887,6 @@ class PluginManager:
         for index, (ref, record) in enumerate(zip(components, records, strict=True)):
             code_dir = self._archive.open(cast(str, record["code"]))
             revision = cast(str, record["source_revision"])
-            if _source_revision(code_dir) != revision:
-                raise RuntimeError("插件归档源码身份不一致")
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id in generations:
                 raise ValueError(f"归档重复包含插件: {plugin_id}")
@@ -2032,7 +2029,7 @@ class PluginManager:
         command: tuple[str, ...],
         cwd: str,
     ) -> tuple[str, ...]:
-        """仅在实际打开目标前校验其环境，不阻挡同组件的纯读取能力。"""
+        """把命令指向安装固定的环境，不重新验收已发布材料。"""
         manifest = generation.static_manifest
         runtimes = () if manifest is None else manifest.python
         runtime_root = command_python_runtime(generation.code_dir, command, cwd, runtimes)
@@ -2044,31 +2041,7 @@ class PluginManager:
             refs = cast(Mapping[str, str], record["python_environments"])
             if runtime_root not in refs:
                 raise RuntimeError("插件命令缺少固定 Python 环境；请通过安装流程准备")
-            runtime = next(
-                item
-                for item in runtimes
-                if item.runtime_root == runtime_root
-            )
-            environment_ref = refs[runtime.runtime_root]
-            started_at = monotonic()
-            try:
-                environment = self._python_environments.open(
-                    environment_ref, generation.code_dir, runtime
-                )
-            finally:
-                duration = monotonic() - started_at
-                if duration >= 1.0:
-                    try:
-                        log_event(
-                            logger, logging.WARNING, "plugin.python_environment.slow",
-                            plugin_id=generation.plugin_id,
-                            generation_id=generation.generation_id,
-                            source=environment_ref,
-                            duration_ms=round(duration * 1000, 3),
-                        )
-                    except Exception:
-                        # 诊断出口失败不能改变环境校验结果或掩盖原始异常。
-                        pass
+            environment = self._python_environments.open(refs[runtime_root])
         return materialize_command(
             generation.code_dir, runtimes, command, cwd, environment_root=environment
         )
