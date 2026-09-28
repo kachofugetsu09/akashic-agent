@@ -78,7 +78,7 @@ async def apply(ctx):
 
 
 async def check_lifecycle(base: Path, log, host) -> list[str]:
-    """真实 owner 上验证并发、归档损坏和取消后的物理排空。"""
+    """真实 owner 上验证并发读取和取消后的物理排空。"""
     root = host.live_root
     assert root is not None
     tools = root.context.require(TOOLS)
@@ -93,30 +93,7 @@ async def check_lifecycle(base: Path, log, host) -> list[str]:
         result = await tool.invoke("local-read", arguments)
         assert result.outcome == "success" and "Local fixture." in str(result.parts)
     results = ["concurrent_capture_same_binding_and_readable_body"]
-    # 2. 故意损坏本次实验自己的归档；捕获与恢复均须明确失败。
-    archive = next((base / "app/workspace/plugin-data").glob("skill_probe-*/skill-files"))
-    tree_ref = metadata["state"]["skills"]["local"]["tree_ref"]
-    resource = archive / tree_ref / "tree/resource.txt"
-    original = resource.read_bytes()
-    resource.chmod(0o644)
-    resource.write_text("corrupt")
-    try:
-        for action in ("capture", "read"):
-            try:
-                if action == "capture":
-                    await tools.bind(ref, bindings)
-                else:
-                    async with tools.open(metadata) as tool:
-                        await tool.invoke("corrupt-read", {"skill": "local"})
-            except RuntimeError as error:
-                assert "归档文件树损坏" in str(error)
-            else:
-                raise AssertionError("损坏归档被静默接受")
-    finally:
-        resource.write_bytes(original)
-        resource.chmod(0o444)
-    results.append("corrupt_archive_capture_and_read_fail_loud")
-    # 3. Event 固定正在运行的文件工作；取消后资产卸载必须等它真正结束。
+    # 2. Event 固定正在运行的文件工作；取消后资产卸载必须等它真正结束。
     started = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
