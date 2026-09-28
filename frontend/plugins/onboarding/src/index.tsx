@@ -45,7 +45,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const [error, setError] = useState("");
   const [withdrawn, setWithdrawn] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [leave, setLeave] = useState<(() => void) | null>(null);
+  const [leave, setLeave] = useState<{kind: "navigate"; go: () => void} | {kind: "catalog"} | null>(null);
   const [finished, setFinished] = useState(false);
   const formHost = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -57,7 +57,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const editing = useRef(false);
   const markDirty = useCallback((value: boolean) => { editing.current = value; setDirty(value); }, []);
   const selection = useRef(selected); selection.current = selected;
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (discardRemoved = false) => {
     const sequence = ++refreshes.current;
     try {
       const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog");
@@ -75,11 +75,14 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
         setSteps(catalog.steps); setStates(next); setError("");
         setSelected(current => catalog.steps.some(step => step.id === current) ? current : (catalog.steps.find(step => !canAdvance(next[step.id])) ?? catalog.steps[0])?.id ?? "");
       };
-      if (selection.current && !catalog.steps.some(step => step.id === selection.current)) {
-        setWithdrawn(true);
-        // 异步目录撤回也必须经用户明确放弃，不能绕过当前编辑器。
-        if (editing.current) { setLeave(() => apply); return undefined; }
+      const removed = !!selection.current && !catalog.steps.some(step => step.id === selection.current);
+      setWithdrawn(removed);
+      if (removed && editing.current && !discardRemoved) {
+        // 确认只记录离开意图；确认后重读目录，不执行已过期的候选。
+        setLeave({kind: "catalog"}); return undefined;
       }
+      setLeave(pending => pending?.kind === "catalog" ? null : pending);
+      if (removed && discardRemoved) markDirty(false);
       apply();
       if (catalog.steps.length && statuses.every(([, status]) => "enabled" in status && status.enabled === null)
           && !window.location.hash && !sessionStorage.getItem("onboarding-invited")) {
@@ -95,7 +98,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
     }
     finally { if (alive.current && sequence === refreshes.current) setLoading(false); }
     return undefined;
-  }, [ctx]);
+  }, [ctx, markDirty]);
   useEffect(() => {
     alive.current = true; void refresh();
     const change = () => { void refresh(); };
@@ -123,7 +126,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
     // 子插件可能拥有独立 React root；等父页面提交结束后销毁，避免提前清空子节点。
     return () => queueMicrotask(dispose);
   }, [current?.id, current?.route, pages, finished, changed, markDirty]);
-  const navigate = (go: () => void) => { if (dirty) setLeave(() => go); else go(); };
+  const navigate = (go: () => void) => { if (dirty) setLeave({kind: "navigate", go}); else go(); };
   const choose = (step: Step) => navigate(() => { setSelected(step.id); setFinished(false); });
   const next = async () => {
     const fresh = await refresh();
@@ -187,7 +190,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
           </footer>
         </section>
       </div>}
-    {leave && <Confirm title="离开前要放弃修改吗？" accept={() => { markDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页尚有未保存的修改。离开不会改变已保存的配置。</Confirm>}
+    {leave && <Confirm title="离开前要放弃修改吗？" accept={() => { const pending = leave; setLeave(null); if (pending.kind === "catalog") { void refresh(true); } else { markDirty(false); pending.go(); } }} cancel={() => setLeave(null)}>本页尚有未保存的修改。离开不会改变已保存的配置。</Confirm>}
     {createPortal(<dialog ref={invitation} className="config-dialog onboarding-invite" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, document.body)}
   </main>;
 }
