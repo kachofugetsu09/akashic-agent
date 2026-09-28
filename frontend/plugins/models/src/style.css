@@ -238,6 +238,7 @@
   padding: 1.4rem;
   box-sizing: border-box;
   background: color-mix(in srgb, var(--md-sys-color-scrim) 32%, transparent);
+  backdrop-filter: blur(3px);
 }
 dialog.settings-scrim {
   width: 100%;
@@ -432,6 +433,15 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-discovery-result select,
   .settings-discovery-manual input,
   .settings-search input { font-size: 1rem; }
+}
+
+@media (max-width: 30rem) {
+  .settings-connection-card { gap: 0.625rem; padding-inline: 0.5rem; }
+  .settings-card-meta small { display: none; }
+  .settings-scrim { padding: 0; }
+  .settings-dialog { border-inline: 0; border-block-end: 0; border-radius: var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-large) 0 0; align-self: end; }
+  .settings-toast-region { inset: auto 0.75rem 0.75rem; }
+  .settings-toast { min-width: 0; width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

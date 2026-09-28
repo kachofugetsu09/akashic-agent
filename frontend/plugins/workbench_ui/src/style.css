@@ -1325,6 +1325,11 @@
   }
 
   @media (max-width: 1180px) {
+    .ak-plugin-grid-4,
+    .ak-plugin-grid-3 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .workspace {
       position: relative;
     }
@@ -1349,9 +1354,23 @@
     .workspace {
       padding: 0;
     }
+
+    /* 工具区在窗口收窄时先换行，避免搜索框把动作挤出视口。 */
+    .content-toolbar {
+      height: auto;
+      flex-wrap: wrap;
+      row-gap: 8px;
+      padding-block: 8px;
+    }
   }
 
 @media (max-width: 760px) {
+    .ak-plugin-grid-4,
+    .ak-plugin-grid-3,
+    .ak-plugin-grid-2 {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .detail-pane.is-open {
       inset: 0;
       width: 100%;
