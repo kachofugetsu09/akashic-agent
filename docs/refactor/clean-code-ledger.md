@@ -2,6 +2,50 @@
 
 本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
 
+## 2026-09-28 · Kimi 正交化报告的无行为变化清理
+
+- 基线：`65cb97bfb714bbb00e6ccd1574050c34543d81f1`。维护者确认本批只修复误扫描、保护本地文件和删除已证明无消费者的代码；业务合同、路由、跨插件字符串及持久 schema 另行评估。
+- `change_type: refactor`，`semantic_delta: none`。Core 的旧内部 DTO/构造 helper 是本批删除对象；真实 Message、插件组合、工具执行、发送与记忆仍归现有 owner。
+- 恢复点：上述基线与 `/tmp/akashic-orthology-before-65cb97bf-20260928.tar`。只改独立 Git worktree；没有操作正式 workspace、服务、凭据内容、数据库、安装 cache 或归档。
+
+### 边界门与本地文件
+
+原 checkout 的 `.pr751-verify-tmp/` 含故意非法的 pytest 插件夹具。边界门使用 `git ls-files --cached --others --exclude-standard`，因此将未忽略的实验副本作为源码解析并失败。
+本批在 `.gitignore` 登记根目录的 `tmp/`、`tmp-*`、`.pr*-verify-tmp/`、旧 `plugin_packages/` 产物，以及配置备份、LongMemEval 本地配置和结果。只改变 Git 的未跟踪文件候选集合，不删除、搬移或改写这些文件。
+边界门继续检查真实的未提交源码、已跟踪文件及语法错误；没有加宽异常处理、关闭 R1～R6 或只扫描已提交文件。
+
+### 六个删除对象
+
+| 对象 | 消费者与历史证据 | 删除的概念 |
+|---|---|---|
+| `agent/core/types.py` | 当前 import/动态字面入口为零；旧 Core 回复链已由 Message 插件链替代，同名现行 ToolCall 来自公开组合合同 | 旧 HistoryMessage、Context/Reasoner DTO |
+| `agent/turns/outbound.py` | 原 AgentLoop/TurnOrchestrator 调用者已删除；当前发送由插件与 Channel/Delivery owner 承担 | 旧 OutboundDispatch 与 PushToolOutboundPort |
+| `agent/tool_runtime.py` | 原 passive/subagent 调用者已迁出；当前工具执行不引用该模块 | 旧工具快照与 provider 消息构造 helper |
+| `agent/plugins/specs.py` | 当前 Manager/manifest 无消费者；`content_source_interop_gate.py` 中的类名是禁止旧 API 的扫描标记 | 旧 MCP/服务/主动来源声明 DTO |
+| `bus/processing.py` | 当前无 import、动态入口或实例；旧 AgentLoop/ProactiveLoop 已不存在 | 第二份会话忙闲计数 |
+| `core/memory/engine.py` | 当前记忆插件及主 checkout 的未提交 `default_memory` 无引用；旧引擎装配已退出 | 含插件名枚举的旧 MemoryEngine 协议 |
+
+基线全量 Python AST 复核覆盖包入口、相对 import 与字面动态 import，六个模块没有来自删除集合外的入边。Git 跟踪的配置、脚本、文档及本地 `akashic-plugin` 源码、可见本地 cache 也按路径和符号复核；文档命中是旧实现证据。六个模块不在现行插件公开模块清单中。
+此证据只覆盖当前源码与本机可见材料，不声称完成远端生产 fleet 或所有历史归档的验收。
+
+### 报告中本批保留的对象
+
+- `session/manager.py` 与 `agent/prompting/`：保留的 durable delivery 概念测试仍使用它们；不能按“零 importer”删除。
+- `core/memory/events.py`、`infra/channels/message_view.py`：仍有保留测试消费者。
+- `agent/mcp/`、`agent/workloads/model.py` 和 `agent/tools/`：存在明确归档桥、类型或动态脚本消费者；`scripts/benchmark_host_bridge.py` 仍动态导入旧 unified_exec 路径。
+- `agent/migrations/proactive_island/`：`scripts/proactive_island_handoff.py` 是真实 CLI 入口；是否退役这项操作能力不属于本次行为不变清理。
+- `agent/runtime_identity.py`：有独立模块 CLI。`agent/looping/`、`session/activity.py`、`bus/events_lifecycle.py`、`core/memory/plugin.py` 与反馈事件保留待核对的外部/历史兼容面；本地外部源码确有旧路径引用，不能把本仓库无消费者等同于全局无消费者。
+- `last_proactive_at` 等 schema、业务 ServiceKey、路由、source 字符串和 `bus/events.py` 不变。删除已有列或改变合同归属需要独立决定。
+- 失效的本地 `private_runtime` checkout 不足以证明可删除 Git submodule；双包管理文件、未提交插件和文档、历史手册及实验数据均未删除。
+- 边界门 `CORE_ROOTS` 中退役包名仍承担 R2 的禁止私有 import 分类；没有因为目录不存在而移除这项约束。
+
+### 验证
+
+- 基线与候选各运行 47 项概念测试，全部通过；主工程/tests Pyright、边界门（R1/R2/R3 均 0/0）、Yoyo 检查、Control schema、Host Bridge 生成物检查、前端 typecheck 与 diff 检查通过。
+- 一次性 Git checkout 重现原非法夹具导致的失败，应用新忽略规则后完整边界门通过；真实未跟踪插件的非法 Core import 仍触发 R2，真实源码语法错误和强制跟踪的忽略目录文件仍失败。
+- 配置备份、评测数据及实验目录的代表路径通过 `git check-ignore`；没有读取或复制真实 token/会话正文。按测试基线规定，没有新增检查器单元测试。
+- 未运行生产安装、服务切换或旧归档恢复；本批不宣称完成报告 A 层架构目标。
+
 ## 2026-07-22 less-is-more 续轮：PR0 已批准合同
 
 ### 合同边界
