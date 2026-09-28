@@ -50,23 +50,6 @@
 
 截图：`/tmp/onboarding-complete.png`、`/tmp/onboarding-mobile.png`、`/tmp/onboarding-settings-mobile.png`、`/tmp/onboarding-wake-enabled.png`、`/tmp/onboarding-sender-blocked.png`、`/tmp/onboarding-fresh.png`。
 
-## 最终检查与独立评审
-
-- `pytest -q tests`：44 passed；无新增镜像实现的单元测试。
-- 主工程、tests 与新增插件路径 pyright：0 errors。
-- plugin_boundary：R1/R2/R3 均 0；yoyo migration 检查通过。
-- Control schema 与 Host Bridge 协议生成物 check 通过。共享 venv 缺 grpcio-tools 元数据，使用固定版本隔离环境运行 Host Bridge check，没有修改共享环境。
-- `npm run typecheck`、完整前端构建、完整 PR `git diff --check` 通过。
-- 固定提交 `470f4fd8` 的发行构建通过，输出 `/tmp/onboarding-distribution-470f4fd8/distribution.json`；后续修改仅修正表单草稿竞态及文档。发行构建不等于生产安装验收。
-- 独立内置 subagent：`gpt-6-sol`，`xhigh`，只读审查 `6b38687f`。两项 finding 为 sender 缺席的 blocked 判断、failed 回执后的原样重试；均已修复并用上述场景验证。后续复核发现自动刷新响应覆盖新草稿的竞态；响应应用前检查编辑状态和请求序号后，用确定性 CDP 延迟真实响应验证。最终复核 `2b357d017e1908ab8e4f28dc6bbeaf772010f45b`：PASS，剩余 must-fix 0；本记录提交仅补充验收结论。
-
-尚未验证：真实 Codex/OpenCode 登录、外部模型与 Telegram/QQ 账号、真实外部送达、Android 设备、生产发布。远端 CI 状态在 PR 中单列。
-
-## 配置回执启动恢复补充
-
-真实 Manager、固定输入、selection 与 SQLite 场景复现了提交 CAS 后、写 active 回执前退出的窗口。旧提交 `a79e9f21` 在重启后输入已选中、generation 已就绪、启动任务已完成，回执却保持 selected；同一场景在修复后返回 active。修复复用宿主任务的 done 状态，不新增恢复 owner、不重试未提交请求，也不改写业务数据。
-
-
 ## Issue #802：导航与设置目录可访问性（2026-09-29）
 
 源码 `3beb5b11`，冻结发行包经正式安装链进入独立 HOME/config/workspace。默认 profile 尚未包含三个 UI 插件，因此本轮显式安装同一发行包的三个 UI 包；默认安装验收由 #800 独立负责。
@@ -83,3 +66,19 @@ Chromium 146 / axe-core 4.13.0：纸感、墨纸 × 1440/390/320 CSS px × 普�
 真实浏览器缩放通过测试 profile 的 Chrome Tabs API `setZoom(2)`/`getZoom` 核验：1440 viewport 对应 innerWidth=720、devicePixelRatio=2、CSS zoom=1。200% 下重新检查两主题的导航、焦点与目录，无横向溢出。方法见 [Chrome Tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs#method-setZoom)。全新配置保留各插件原有关闭状态，不为验收开启业务。
 
 证据及恢复点位于 `/mnt/data/akashic-onboarding-fixes-20260928/`：`issue802-browser.json`、`issue802-browser-before.json`、前后截图、发行清单、正式安装回执、`backups/issue802/`。概念基线 47 passed，pyright、tests pyright、plugin_boundary、yoyo、两协议生成物、前端 typecheck 和 diff 检查通过。屏幕阅读器、Safari、Android 与生产环境未验收。
+
+## 最终检查与独立评审
+
+- `pytest -q tests`：44 passed；无新增镜像实现的单元测试。
+- 主工程、tests 与新增插件路径 pyright：0 errors。
+- plugin_boundary：R1/R2/R3 均 0；yoyo migration 检查通过。
+- Control schema 与 Host Bridge 协议生成物 check 通过。共享 venv 缺 grpcio-tools 元数据，使用固定版本隔离环境运行 Host Bridge check，没有修改共享环境。
+- `npm run typecheck`、完整前端构建、完整 PR `git diff --check` 通过。
+- 固定提交 `470f4fd8` 的发行构建通过，输出 `/tmp/onboarding-distribution-470f4fd8/distribution.json`；后续修改仅修正表单草稿竞态及文档。发行构建不等于生产安装验收。
+- 独立内置 subagent：`gpt-6-sol`，`xhigh`，只读审查 `6b38687f`。两项 finding 为 sender 缺席的 blocked 判断、failed 回执后的原样重试；均已修复并用上述场景验证。后续复核发现自动刷新响应覆盖新草稿的竞态；响应应用前检查编辑状态和请求序号后，用确定性 CDP 延迟真实响应验证。最终复核 `2b357d017e1908ab8e4f28dc6bbeaf772010f45b`：PASS，剩余 must-fix 0；本记录提交仅补充验收结论。
+
+尚未验证：真实 Codex/OpenCode 登录、外部模型与 Telegram/QQ 账号、真实外部送达、Android 设备、生产发布。远端 CI 状态在 PR 中单列。
+
+## 配置回执启动恢复补充
+
+真实 Manager、固定输入、selection 与 SQLite 场景复现了提交 CAS 后、写 active 回执前退出的窗口。旧提交 `a79e9f21` 在重启后输入已选中、generation 已就绪、启动任务已完成，回执却保持 selected；同一场景在修复后返回 active。修复复用宿主任务的 done 状态，不新增恢复 owner、不重试未提交请求，也不改写业务数据。
