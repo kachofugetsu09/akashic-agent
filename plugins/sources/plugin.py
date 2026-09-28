@@ -144,25 +144,37 @@ class Sources:
         finally:
             self._changes.discard(event)
 
+    def _route(self, channel: str) -> Source:
+        """输入和控制共用唯一的专属渠道优先规则。"""
+        default: Source | None = None
+        for registration in self._items.values():
+            source = registration.source
+            if source.channels is None:
+                default = source
+            elif channel in source.channels:
+                return source
+        if default is None:
+            raise ValueError("输入渠道没有来源: " + channel)
+        return default
+
     async def accept(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> Message:
-        """专属渠道先匹配；没有专属注册时交给来源声明的默认输入。"""
+        """在所选来源的作用域中接纳输入。"""
         async with self._context.runtime_scope():
-            selected: Source | None = None
-            default: Source | None = None
-            for registration in self._items.values():
-                source = registration.source
-                if source.channels is None:
-                    default = source
-                elif message.channel in source.channels:
-                    selected = source
-                    break
-            if selected is None:
-                selected = default
-            if selected is None:
-                raise ValueError("输入渠道没有来源: " + message.channel)
+            selected = self._route(message.channel)
             assert selected.accept is not None
             async with selected.context.runtime_scope():
                 return await selected.accept(session_id, message_id, message)
+
+    async def interrupt(self, reader: MessageReader, message_id: str, channel: str) -> bool:
+        """同一来源解释待回复状态并提交 pause；渠道仍拥有停止确认。"""
+        async with self._context.runtime_scope():
+            selected = self._route(channel)
+            async with selected.context.runtime_scope():
+                if reader.head(source=selected.name) < 0:
+                    return False
+                pending = selected.needs_reply(reader)
+                await selected.open(reader.session_id).pause(message_id)
+                return pending
 
 
 async def apply(ctx: Context) -> None:

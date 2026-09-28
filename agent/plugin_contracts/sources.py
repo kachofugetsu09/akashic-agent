@@ -93,6 +93,9 @@ class Sources(Protocol):
     async def accept(
         self, session_id: str, message_id: str, message: ChannelInboundMessage
     ) -> Message: ...
+    async def interrupt(
+        self, reader: MessageReader, message_id: str, channel: str
+    ) -> bool: ...
 
 
 class ConversationComplete(Protocol):
