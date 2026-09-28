@@ -37,8 +37,6 @@ WEBUI_ONLY_SETTINGS: tuple[tuple[str, str, Any], ...] = (
     ("channels.chat", "enabled", True),
     ("channels.telegram", "enabled", False),
     ("channels.telegram", "token", ""),
-    ("channels.qq", "enabled", False),
-    ("channels.qq", "bot_uin", ""),
 )
 
 

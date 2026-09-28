@@ -449,8 +449,6 @@ def _assert_webui_only(config: dict[str, object]) -> None:
         raise GateFailure(f"WebUI channel 配置漂移: {channels['chat']}")
     if channels["telegram"].get("enabled") is not False:
         raise GateFailure("Telegram 必须关闭")
-    if channels["qq"].get("enabled") is not False:
-        raise GateFailure("QQ 必须关闭")
     if "proactive" in config:
         raise GateFailure("retired proactive 配置段必须不存在")
 

@@ -82,6 +82,8 @@
 
 | [0078](0078-plugin-config-and-onboarding-ownership.md) | accepted | 配置由业务插件拥有，普通引导只组合当前状态 | ONB-001、PLG-003、PLG-014、PLG-016 |
 
+| [0080](0080-retire-qq-runtime-support.md) | accepted | 退役全部 QQ 运行支持，保留旧数据与历史证据 | ONB-001、PLG-003、STA-001～STA-003、SEC-001、SEC-002 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

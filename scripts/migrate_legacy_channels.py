@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Migrate legacy ``[channels.telegram]`` and ``[channels.qq]`` once.
+"""Migrate legacy ``[channels.telegram]`` once.
 
 The running application never reads these tables as channel owners.  This
 command copies their validated values into ordinary plugin data, writes a
@@ -11,14 +11,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import tomllib
-import math
 import os
 import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlsplit
 
 import tomlkit
 
@@ -43,33 +41,15 @@ def migrate_legacy_channels(config_path: Path, workspace: Path, *, marketplace: 
     if not isinstance(channels, Mapping):
         return ()
     telegram = channels.get("telegram")
-    qq = channels.get("qq")
-    if telegram is None and qq is None:
+    if telegram is None:
         return ()
 
-    for name, value in (("telegram", telegram), ("qq", qq)):
-        if value is not None and not isinstance(value, Mapping):
-            raise ValueError(f"channels.{name} 必须是 TOML table")
-    targets: list[tuple[str, str]] = []
-    migrated_channels: list[str] = []
-    if isinstance(telegram, Mapping):
-        migrated_channels.append("telegram_channel")
-        targets.extend(
-            (
-                ("telegram_channel", _render_telegram(telegram, workspace)),
-                ("telegram_sender", _render_telegram_sender(telegram, workspace)),
-            )
-        )
-    if isinstance(qq, Mapping):
-        migrated_channels.append("qq_channel")
-        targets.extend(
-            (
-                ("qq_channel", _render_qq(qq)),
-                ("qq_sender", _render_qq_sender(qq, workspace)),
-            )
-        )
-    if not targets:
-        raise ValueError("legacy channels.telegram/qq 必须是 TOML table")
+    if not isinstance(telegram, Mapping):
+        raise ValueError("channels.telegram 必须是 TOML table")
+    targets = (
+        ("telegram_channel", _render_telegram(telegram, workspace)),
+        ("telegram_sender", _render_telegram_sender(telegram, workspace)),
+    )
     outputs: list[tuple[Path, dict[str, Any]]] = []
     for plugin_name, content in targets:
         directory = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
@@ -101,9 +81,8 @@ def migrate_legacy_channels(config_path: Path, workspace: Path, *, marketplace: 
     if config_path.read_text(encoding="utf-8") != source:
         raise MigrationConflict("迁移期间主配置变化；已发布目标和恢复点保留")
     channels.pop("telegram", None)
-    channels.pop("qq", None)
     _atomic_write(config_path, tomlkit.dumps(document), mode=config_path.stat().st_mode & 0o777)
-    return tuple(migrated_channels)
+    return ("telegram_channel",)
 
 
 async def _matches_config(directory: Path, current: dict[str, object], revision: str,
@@ -161,101 +140,6 @@ def _render_telegram_sender(table: Mapping[str, Any], workspace: Path) -> str:
     if token:
         values["token"] = token
     return tomlkit.dumps(values)
-
-
-def _render_qq(table: Mapping[str, Any]) -> str:
-    enabled = _as_bool(table.get("enabled", True), "channels.qq.enabled")
-    bot_uin = str(table.get("bot_uin", "")).strip()
-    groups_raw = table.get("groups", [])
-    if not isinstance(groups_raw, list | tuple):
-        raise ValueError("channels.qq.groups 必须是数组")
-    groups: list[dict[str, Any]] = []
-    seen_groups: set[str] = set()
-    for index, raw in enumerate(groups_raw):
-        if not isinstance(raw, Mapping):
-            raise ValueError(f"channels.qq.groups[{index}] 必须是 table")
-        group_id = str(raw.get("group_id", raw.get("groupId", ""))).strip()
-        if not group_id:
-            raise ValueError(f"channels.qq.groups[{index}].group_id 不能为空")
-        if group_id in seen_groups:
-            raise ValueError(f"QQ 群配置重复: {group_id}")
-        seen_groups.add(group_id)
-        groups.append(
-            {
-                "group_id": group_id,
-                "allow_from": [
-                    str(item)
-                    for item in _string_list(
-                        raw.get("allow_from", raw.get("allowFrom", [])),
-                        f"channels.qq.groups[{index}].allow_from",
-                    )
-                ],
-                "require_at": _as_bool(
-                    raw.get("require_at", raw.get("requireAt", True)),
-                    f"channels.qq.groups[{index}].require_at",
-                ),
-            }
-        )
-    timeout = float(table.get("websocket_open_timeout_seconds", 5.0))
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("channels.qq.websocket_open_timeout_seconds 必须大于 0")
-    return tomlkit.dumps(
-        {
-            "enabled": enabled and bool(bot_uin),
-            "bot_uin": bot_uin,
-            "allow_from": [
-                str(item)
-                for item in _string_list(
-                    table.get("allow_from", table.get("allowFrom", [])),
-                    "channels.qq.allow_from",
-                )
-            ],
-            "groups": groups,
-            "websocket_open_timeout_seconds": timeout,
-        }
-    )
-
-
-def _render_qq_sender(table: Mapping[str, Any], workspace: Path) -> str:
-    """Create a sender only when the old config names a real OneBot endpoint."""
-
-    enabled = _as_bool(table.get("enabled", True), "channels.qq.enabled")
-    bot_uin = str(table.get("bot_uin", "")).strip()
-    active = enabled and bool(bot_uin)
-    raw_endpoint = table.get("sender_endpoint", table.get("endpoint", ""))
-    endpoint = str(raw_endpoint).strip()
-    token = _resolve(
-        str(table.get("sender_token", table.get("token", ""))), workspace
-    ).strip()
-    if active and not endpoint:
-        raise ValueError(
-            "启用 QQ channel 迁移需要 channels.qq.sender_endpoint（OneBot WS API）；"
-            "不能从 bot_uin 猜测 QQ sender 地址"
-        )
-    if endpoint:
-        _validate_qq_sender_endpoint(endpoint)
-    values: dict[str, Any] = {"enabled": active, "channel": "qq"}
-    if endpoint:
-        values["endpoint"] = endpoint
-    if token:
-        values["token"] = token
-    return tomlkit.dumps(values)
-
-
-def _validate_qq_sender_endpoint(endpoint: str) -> None:
-    parsed = urlsplit(endpoint)
-    if (
-        parsed.scheme not in {"ws", "wss"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path.rstrip("/") == "/event"
-    ):
-        raise ValueError(
-            "channels.qq.sender_endpoint 必须是无凭据、无 query/fragment 的 OneBot WS API URL"
-        )
 
 
 def _atomic_write(path: Path, text: str, *, mode: int) -> None:

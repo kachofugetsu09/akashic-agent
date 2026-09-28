@@ -276,21 +276,6 @@
       "reason": "提供独立设置与可选业务功能；未决定时不启动功能。"
     },
     {
-      "name": "qq_channel",
-      "depends_on": [
-        "channels",
-        "commands"
-      ],
-      "reason": "提供独立设置与可选业务功能；未决定时不启动功能。"
-    },
-    {
-      "name": "qq_sender",
-      "depends_on": [
-        "delivery"
-      ],
-      "reason": "提供独立设置与可选业务功能；未决定时不启动功能。"
-    },
-    {
       "name": "akasha",
       "depends_on": [
         "models",
