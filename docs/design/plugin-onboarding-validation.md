@@ -14,7 +14,7 @@
 
 ## 已验证的用户行为
 
-- 模型连接添加、探测聊天模型、默认模型选择；向量模型填写维度、真实 HTTP 校验、保存默认绑定。
+- 模型连接添加、探测聊天模型、默认模型选择；历史向量流程填写维度、真实 HTTP 校验、保存默认绑定（#804 已替换为实际试算，见下方记录）。
 - 四个渠道插件的开关、配置换代、请求回执；错误保留草稿、放弃离开确认与 Escape。
 - Telegram 无效 token 返回可理解错误，正确本地探测后保存，token 不回填；留空保留已有凭证。
 - 桌面和 390px 移动视口，设置弹窗、键盘关闭、无水平溢出、无页面 JavaScript 异常。
@@ -123,3 +123,18 @@ Chromium 146 / 真实 CDP 13/13 PASS，无页面异常：
 概念基线 47 passed；pyright、tests pyright、plugin_boundary、yoyo、控制协议、HostBridge 协议、前端 typecheck 和 diff 检查通过。独立只读概念 Gate（请求配置 gpt-5.6-terra/xhigh）在上述源码提交 PASS，must-fix=0。未执行实际 Codex/OpenCode OAuth、Android 或生产部署，也没有自动探测全部目录 ID。
 
 证据：`/mnt/data/akashic-onboarding-fixes-20260928/issue803-verified.json`、`issue803-verified-artifacts.json`、`issue803-before-update.json`、`issue803-real-probe.json`、`issue803-wire-capture.json` 与检查日志；恢复点在相邻 `backups/issue803*/`。凭证和原始数据库不上传 GitHub。
+
+
+## Issue #804：实际向量试算与自助连接（2026-09-29）
+
+冻结源码 `39e5c15f68cdd7b1b5a99000a20db9bb70c3aa21`，基于 #803；发行包正式安装到独立 HOME/config/workspace，Core SDK 与四个受影响插件逐字节匹配。模型保存不替用户决定 Akasha、Wake 或渠道开关。
+
+- Chromium 146 / 真实 CDP 12/12 PASS，无页面异常：零聊天模型入口、目录与实测 1024 维、错误响应保留草稿、编辑使旧试算失效、关闭丢弃迟到结果、默认写入失败整笔回滚、真实鉴权失败、向量独立原子保存、已有凭证复用、两种提交后丢响应只读核对且不重发、真实维度与旧记录冲突拒绝写入。
+- 受控 HTTP 9 个协议场景（重排 index 成功及 8 种畸形向量拒绝）与 7 个受控驱动结果边界场景单独记录，不代替真实云服务。实际云服务试算得到 1024 维；不发送自造 dimensions。390px 表单无水平溢出。
+- 明确开启 Akasha 后实际 Web 聊天、学习、跨 Session 召回成功。工具结果引用 `01a0e8fe-1a03-7b8c-90cf-95918ebecd2a`，原始 Message 正文与引用一致。换代期间复现 #805，核对实际 ready 后刷新继续；不把该绕行当成 #805 已修复。
+- 切换到 2 维默认时，既有 1024 维图明确提示空间不匹配。原 15 条 Message、4 条向量、2 个图节点、反馈和全部连接/型号逐项保留；仅新增测试对话与推进既有控制状态。显式恢复原默认不重建图。
+- 原生 SQLite 备份后，只停止独立 Supervisor 并从同一发行包重启；新 Session 再次实际调用召回工具并引用原消息。重启前的 21 条 Message、向量、图节点、反馈与模型行逐项保留，三库 integrity_check 均为 ok。此轮使用新页面，不证明 #808 的旧页面恢复。
+
+概念基线 47 passed，pyright、tests pyright、显式插件 pyright、plugin_boundary、yoyo、控制协议、HostBridge 协议、前端 typecheck 与 diff 检查通过。没有部署生产、启动第二个 Telegram 接收器、执行实际 OAuth 或 Android 验收。
+
+证据根 `/mnt/data/akashic-onboarding-fixes-20260928/`：`issue804-accepted-browser.json`、`issue804-protocol.json`、`issue804-driver-boundary.json`、`issue804-accepted-artifacts.json`、`issue804-accepted-checks.json`、`issue804-learning-resume.json`、`issue804-original-reference-evidence.json`、`issue804-space-preservation.json`、`issue804-restart.json` 与 `issue804-restart-preservation.json`；可恢复备份在 `backups/issue804/`。凭据与原始数据库不上传。
