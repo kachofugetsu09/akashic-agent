@@ -55,7 +55,7 @@ npm run check:narrow-ui -- --url http://localhost:2236 --widths 320 --rtl --outp
 
 候选构建先运行 `npm run build:chat` 和 `npm run build:web-plugins`，再用 `--candidate` 替换本地 Chat 和 Web 插件制品；`--plugins` 指定内置插件，`--bundles observe=/path/to/source,proactive_feedback=/path/to/source` 指定已构建的外部源码目录。它只替换本次浏览器响应，不写服务器。候选页面使用 HTTPS 或 localhost；远端 LAN 服务可以用 SSH 本地转发，例如 `ssh -N -L 18836:127.0.0.1:2236 hua-home`，验收 URL 使用 `http://127.0.0.1:18836`。浏览器拦截生成的 HTML 会触发 Chromium 的本地网络检查，脚本只向该服务 origin 授予临时本地网络访问权限。部署后必须去掉 `--candidate`，检查正式制品。
 
-脚本拒绝 HTTP 写请求，只放行已核对为只读的 `project.list` 查询；不发送消息、不保存配置、不登录、不删除记录、不向远程桌面发送输入。表单只作临时本地编辑，并通过原确认弹窗放弃。弹窗、iframe、正文与操作分别检查，失败返回非零。截图和 `report.json` 供逐页人工复核；截图可能包含个人历史，保留在私有目录，不上传 CI 或 PR。
+脚本拒绝 HTTP 写请求，仅按插件 owner 和方法放行已核对为只读的 `project.list`、`scope.policy.get`、`recall.turn`、`memory.status`、`kvcache.message_usage`；不从 POST query 入口推断读写。它不发送消息、不保存配置、不登录、不删除记录、不向远程桌面发送输入。表单只作临时本地编辑，并通过原确认弹窗放弃。弹窗、iframe、正文与操作分别检查，意外写请求和页面错误均返回非零。截图和 `report.json` 供逐页人工复核；截图可能包含个人历史，保留在私有目录，不上传 CI 或 PR。
 
 ## 验收边界和恢复
 

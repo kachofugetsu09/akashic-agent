@@ -52,6 +52,26 @@ const browser = await chromium.launch({
 });
 let screenshot = 0;
 
+/** 只放行已沿服务端 owner 核对的读取；同一 query 入口也有保存和删除。 */
+function readQuery(query) {
+  const plugin = query?.plugin_id?.split("@")[0];
+  const payload = query?.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload))
+    return false;
+  if (plugin === "projects" && query.method === "project.list")
+    return Object.keys(payload).length === 0;
+  // plugins/akasha/plugin.py 的策略读取与召回记录投影。
+  if (plugin === "akasha")
+    return (
+      query.method === "scope.policy.get" || query.method === "recall.turn"
+    );
+  // 外部插件源码的只读 Message/Compaction 与 Observe 投影。
+  return (
+    (plugin === "status_commands" && query.method === "memory.status") ||
+    (plugin === "observe" && query.method === "kvcache.message_usage")
+  );
+}
+
 /** 检查当前阅读区、可见控件和长正文，并保存私有截图。 */
 async function measure(page, label) {
   const view = page.locator(".shell-view.is-active");
@@ -591,7 +611,7 @@ try {
       await context.grantPermissions(["local-network-access"], {
         origin: new URL(values.url).origin,
       });
-    // 只放行已核对为只读的 project.list。不要从 HTTP 方法推断所有插件 query 都只读。
+    // 方法与 owner 必须同时命中；不能把所有 POST query 都当作读取。
     await context.route("**/*", async (route) => {
       const req = route.request(),
         url = new URL(req.url());
@@ -602,9 +622,7 @@ try {
       const read =
         req.method() === "POST" &&
         url.pathname === "/api/chat/plugin-ui/query" &&
-        q?.method === "project.list" &&
-        q?.payload &&
-        Object.keys(q.payload).length === 0;
+        readQuery(q);
       if (!["GET", "HEAD"].includes(req.method()) && !read) {
         report.blockedRequests.push({
           method: req.method(),
@@ -703,6 +721,7 @@ console.log(
     report: resolve(output, "report.json"),
   }),
 );
+assert.deepEqual(report.blockedRequests, [], "验收触发了未授权的 HTTP 写请求");
 assert.deepEqual(
   report.failures,
   [],
