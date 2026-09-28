@@ -10,7 +10,7 @@ sha256 = "fe1247c4a0a223e68e5122fd89551e4f96012f7f5144edf3a9f15ff1ead0b08b"
 
 [[files]]
 path = "20260928_01_retire_mobile_config.py"
-sha256 = "3ce3a5b9beaa7c039d8235c052aa82c4b2146733a890b6cfdfc2d37bcca277de"
+sha256 = "092172feb1374f5d892401857acc64ec26e50eff739507fff00dd1d24cc629de"
 
 [[files]]
 path = "__init__.py"
@@ -36,4 +36,4 @@ id = "20260928_01_retire_mobile_config"
 path = "20260928_01_retire_mobile_config.py"
 depends = ["20260913_01_akashic_clients_config"]
 transactional = false
-sha256 = "3ce3a5b9beaa7c039d8235c052aa82c4b2146733a890b6cfdfc2d37bcca277de"
+sha256 = "092172feb1374f5d892401857acc64ec26e50eff739507fff00dd1d24cc629de"

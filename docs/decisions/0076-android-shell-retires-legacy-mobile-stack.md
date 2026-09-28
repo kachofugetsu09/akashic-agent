@@ -17,6 +17,6 @@
 
 旧 Mobile 协议、独立 WebUI 和 OTA 的专属决策、设计和协议快照从当前源码树删除。本决定保留新的 Shell 分工；Session/Message 权威身份、插件查询结果校验等跨客户端不变量继续由现行通用合同和实际 Web 消费者拥有。先提交再通知的语义继续有效。仍使用旧 `register_mobile` / `core.mobile_ui.v1` 的外部插件必须迁移后再与此版本组合；不以同名别名维持退役接口。
 
-这次不删除正式 workspace 的旧设备密钥、receipt、mobile-webui generation、客户端缓存或已提交消息，也不清理旧应用的数据。插件配置迁移仅删除 `mobile_realtime` 配置键，先在同目录保存原文件的逐字节备份；Mobile-only 配置拒绝自动转换为 Web 配置。正常消息仍只追加，Shell 的通知进度只在手机本地前移。旧运行数据的物理减少必须有独立清单、恢复点、owner 和执行前后完整性检查。
+这次不删除正式 workspace 的旧设备密钥、receipt、mobile-webui generation、客户端缓存或已提交消息，也不清理旧应用的数据。插件配置迁移仅删除固定输入 `config.input.json` 中的 `mobile_realtime` 配置键，先在同目录保存原文件的逐字节备份；Mobile-only 配置拒绝自动转换为 Web 配置。正常消息仍只追加，Shell 的通知进度只在手机本地前移。旧运行数据的物理减少必须有独立清单、恢复点、owner 和执行前后完整性检查。
 
 回退代码可使用本 PR 的父提交和迁移配置备份；旧协议在新版本中不维持兼容层。验收分别核对 Web 对话/插件界面、Shell state 与通知接口、配置迁移、构建和静态边界。真实设备、正式部署和旧数据清理需另行取证。
