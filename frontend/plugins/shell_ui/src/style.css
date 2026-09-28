@@ -49,44 +49,19 @@
     letter-spacing: 0.01em;
   }
 
-  /* Wheel Picker 导航：轨道跟随拖拽与惯性，刻度居中，两侧按距离发虚。 */
   .primary-band-nav {
-    display: block;
     min-width: 0;
-    flex: 1 1 auto;
-    overflow: hidden;
-    padding-block: 4px;
-    touch-action: none;
-    cursor: grab;
-    user-select: none;
-  }
-
-  .primary-band-nav[data-grabbing="true"] {
-    cursor: grabbing;
-  }
-
-  .primary-band-nav[data-fade="end"] {
-    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 20px), transparent);
-    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 20px), transparent);
-  }
-
-  .primary-band-nav[data-fade="start"] {
-    mask-image: linear-gradient(to right, transparent, #000 20px, #000);
-    -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000);
-  }
-
-  .primary-band-nav[data-fade="both"] {
-    mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent);
-    -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent);
+    flex: 1;
+    overflow-x: auto;
+    scrollbar-width: none;
+    touch-action: pan-x;
   }
 
   .primary-band-track {
-    position: relative;
     display: flex;
     width: max-content;
-    align-items: center;
+    min-width: 100%;
     gap: var(--shell-nav-gap);
-    will-change: transform;
   }
 
   .primary-rail-button {
@@ -109,17 +84,16 @@
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
-    transform-origin: center;
-    /* transform/filter/opacity 由 JS 逐帧绘制，这里只过渡颜色类状态。 */
     transition-property: color, background-color;
     transition-duration: var(--t-fast);
     transition-timing-function: var(--ease-out);
   }
 
-  .primary-band-track .primary-rail-button[data-focus="1"] {
+  .primary-band-track .primary-rail-button[aria-current="page"] {
     z-index: 2;
     color: var(--md-sys-color-on-surface);
     font-weight: 680;
+    box-shadow: inset 0 -2px var(--ak-rule-focus);
   }
 
   .primary-rail-button svg {
@@ -328,29 +302,29 @@
 }
 
 @media (max-width: 760px) {
-    .unified-shell {
-      grid-template-rows: calc(var(--shell-band-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
-    }
-
+    .unified-shell { --shell-band-height: 96px; }
     .primary-band {
       --shell-band-inline: 12px;
-      --shell-group-gap: 8px;
+      --shell-group-gap: 0;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      grid-template-rows: 48px 48px;
+      gap: 0;
     }
-
-    .primary-band-brand strong {
-      display: none;
-    }
-
-    .primary-rail-button {
-      padding-inline: 10px;
-      font-size: 0.8125rem;
-    }
-
-    .primary-band-footer .theme-cycle-button,
+    .primary-band-brand { margin: 0; }
+    .primary-band-footer { grid-column: 2; grid-row: 1; }
+    .primary-band-nav { grid-column: 1 / -1; grid-row: 2; align-self: stretch; }
+    .primary-band-track { height: 100%; }
     .primary-rail-button {
       min-height: 44px;
+      min-width: max-content;
+      flex: 1;
+      justify-content: center;
+      padding-inline: 0.75rem;
+      border-radius: 0;
+      font-size: 1rem;
     }
-
+    .primary-band-footer .theme-cycle-button { min-width: 44px; min-height: 44px; }
     .shell-settings-dialog {
       width: 100%;
       max-width: none;
