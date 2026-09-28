@@ -371,3 +371,5 @@ docs/
 插件旧数据处理责任见 [0070](decisions/0070-plugins-own-persisted-data.md)。
 
 插件简化与整体换代见 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md)。
+
+- [0080 · 退役 QQ 运行支持](decisions/0080-retire-qq-runtime-support.md)：QQ 插件、默认安装与旧数据保留边界。

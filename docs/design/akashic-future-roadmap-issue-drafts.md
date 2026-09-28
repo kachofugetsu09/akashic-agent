@@ -1,5 +1,7 @@
 # Akashic 未来方向与 GitHub Issue 拆分草案
 
+> QQ 运行支持已按 [0080](../decisions/0080-retire-qq-runtime-support.md) 退役；下文 QQ 实现、拓扑与验收描述只保留历史证据。
+
 - 状态：proposed；第 5 节已由 [旧移动方案已退役](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 和 [Android Shell 与 Web 聊天](android-shell-experiment.md)取代，其余方向仍不是 accepted 合同或已实现事实
 - 日期：2026-08-12
 - 目标父 Issue：[GitHub Issue #367 · Akashic Roadmap](https://github.com/kachofugetsu09/akashic-agent/issues/367)

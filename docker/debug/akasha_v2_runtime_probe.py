@@ -151,10 +151,6 @@ enabled = true
 enabled = false
 token = ""
 
-[channels.qq]
-enabled = false
-bot_uin = ""
-
 """
     path = sandbox / "config.toml"
     path.write_text(config, encoding="utf-8")

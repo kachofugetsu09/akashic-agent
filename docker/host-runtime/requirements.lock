@@ -5,7 +5,6 @@ aiofiles==25.1.0 \
     --hash=sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695
     # via
     #   -r docker/host-runtime/../../requirements.txt
-    #   ncatbot
 aiohappyeyeballs==2.7.1 \
     --hash=sha256:065665c041c42a5938ed220bdcd7230f22527fbec085e1853d2402c8a3615d9d \
     --hash=sha256:9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472
@@ -1025,7 +1024,6 @@ httpx==0.28.1 \
     #   lark-oapi
     #   litellm
     #   mcp
-    #   ncatbot
     #   openai
     #   python-telegram-bot
 httpx-sse==0.4.3 \
@@ -1058,7 +1056,6 @@ importlib-metadata==8.9.0 \
     --hash=sha256:e0f761b6ea91ced3b0844c14c9d955224d538105921f8e6754c00f6ca79fba7f
     # via
     #   litellm
-    #   ncatbot
     #   yoyo-migrations
 jeepney==0.9.0 \
     --hash=sha256:97e5714520c16fc0a45695e5365a2e11b81ea79bba796e26f9f1d178cb182683 \
@@ -1623,10 +1620,6 @@ narwhals==2.24.0 \
     --hash=sha256:42fdedf44e5b2ca7505630d45b4ac3058f38d8485cba9fe1652ca23152df7489 \
     --hash=sha256:b5c0f684ccd9d7475b564111e319a4964abcf2baf79d3cf6b1003d06ac9b828d
     # via scikit-learn
-ncatbot==4.4.1.post1 \
-    --hash=sha256:344874398613c6ba25b20b1974308b4a906eb43f0f293624f085fd606c38bfbd \
-    --hash=sha256:50c7aea4125ba9e1301fb2a41bbf12375ef93dc83d006a0afe5e36175ac8bc58
-    # via -r docker/host-runtime/../../requirements.txt
 networkx==3.6.1 \
     --hash=sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509 \
     --hash=sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762
@@ -1713,7 +1706,6 @@ packaging==26.3 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
     # via
     #   huggingface-hub
-    #   ncatbot
 pillow==12.3.0 \
     --hash=sha256:00808c5e14ef63ac5161091d242999076604ff74b883423a11e5d7bbb38bf756 \
     --hash=sha256:04f01d28a6aaff387bf842a13be313df23ba0597a44f1a976c9feb3c6ff4711a \
@@ -1975,29 +1967,6 @@ protobuf==6.33.6 \
     --hash=sha256:e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593 \
     --hash=sha256:f443a394af5ed23672bc6c486be138628fbe5c651ccbc536873d7da23d1868cf
     # via -r docker/host-runtime/../../requirements.txt
-psutil==7.2.2 \
-    --hash=sha256:0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372 \
-    --hash=sha256:076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9 \
-    --hash=sha256:11fe5a4f613759764e79c65cf11ebdf26e33d6dd34336f8a337aa2996d71c841 \
-    --hash=sha256:1a571f2330c966c62aeda00dd24620425d4b0cc86881c89861fbc04549e5dc63 \
-    --hash=sha256:1a7b04c10f32cc88ab39cbf606e117fd74721c831c98a27dc04578deb0c16979 \
-    --hash=sha256:1fa4ecf83bcdf6e6c8f4449aff98eefb5d0604bf88cb883d7da3d8d2d909546a \
-    --hash=sha256:2edccc433cbfa046b980b0df0171cd25bcaeb3a68fe9022db0979e7aa74a826b \
-    --hash=sha256:7b6d09433a10592ce39b13d7be5a54fbac1d1228ed29abc880fb23df7cb694c9 \
-    --hash=sha256:8c233660f575a5a89e6d4cb65d9f938126312bca76d8fe087b947b3a1aaac9ee \
-    --hash=sha256:917e891983ca3c1887b4ef36447b1e0873e70c933afc831c6b6da078ba474312 \
-    --hash=sha256:ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b \
-    --hash=sha256:ae0aefdd8796a7737eccea863f80f81e468a1e4cf14d926bd9b6f5f2d5f90ca9 \
-    --hash=sha256:b0726cecd84f9474419d67252add4ac0cd9811b04d61123054b9fb6f57df6e9e \
-    --hash=sha256:b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc \
-    --hash=sha256:c7663d4e37f13e884d13994247449e9f8f574bc4655d509c3b95e9ec9e2b9dc1 \
-    --hash=sha256:e452c464a02e7dc7822a05d25db4cde564444a67e58539a00f929c51eddda0cf \
-    --hash=sha256:e78c8603dcd9a04c7364f1a3e670cea95d51ee865e4efb3556a3a63adef958ea \
-    --hash=sha256:eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988 \
-    --hash=sha256:ed0cace939114f62738d808fdcecd4c869222507e266e574799e9c0faa17d486 \
-    --hash=sha256:eed63d3b4d62449571547b60578c5b2c4bcccc5387148db46e0c2313dad0ee00 \
-    --hash=sha256:fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8
-    # via ncatbot
 pycparser==3.0 \
     --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \
     --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
@@ -2461,11 +2430,6 @@ pyyaml==6.0.3 \
     # via
     #   -r docker/host-runtime/../../requirements.txt
     #   huggingface-hub
-    #   ncatbot
-qrcode==8.2 \
-    --hash=sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f \
-    --hash=sha256:35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c
-    # via ncatbot
 referencing==0.37.0 \
     --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231 \
     --hash=sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8
@@ -2594,7 +2558,6 @@ requests==2.34.2 \
     # via
     #   -r docker/host-runtime/../../requirements.txt
     #   lark-oapi
-    #   ncatbot
     #   requests-toolbelt
     #   tiktoken
 requests-toolbelt==1.0.0 \
@@ -2606,7 +2569,6 @@ rich==15.0.0 \
     --hash=sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36
     # via
     #   -r docker/host-runtime/../../requirements.txt
-    #   ncatbot
 rpds-py==2026.6.3 \
     --hash=sha256:0be972be84cfcaf46c8c6edf690ca0f154ac17babf1f6a955a51579b34ad2dc5 \
     --hash=sha256:127565fead0a10943b282957bd5447804ff3160ad79f2ad2635e6d249e380680 \
@@ -2732,7 +2694,6 @@ schedule==1.2.2 \
     --hash=sha256:5bef4a2a0183abf44046ae0d164cadcac21b1db011bdd8102e4a0c1e91e06a7d
     # via
     #   -r docker/host-runtime/../../requirements.txt
-    #   ncatbot
 scikit-learn==1.9.0 \
     --hash=sha256:051075bda8b7aab87b1906ab3d4740a1e1224a19d7b3781a576736edc94e76aa \
     --hash=sha256:056c92bb67ad4c28463c2f2653d9701449201e7e7a9e94e321be0f71c4fef2b8 \
@@ -3007,7 +2968,6 @@ toml==0.10.2 \
     --hash=sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f
     # via
     #   -r docker/host-runtime/../../requirements.txt
-    #   ncatbot
 tomlkit==0.15.1 \
     --hash=sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304 \
     --hash=sha256:e25bbf38843005246210a12982776f27f99cb9be67160e14434d0c0d21ee1e97
@@ -3017,7 +2977,6 @@ tqdm==4.70.0 \
     --hash=sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953
     # via
     #   huggingface-hub
-    #   ncatbot
     #   openai
 tree-sitter==0.26.0 \
     --hash=sha256:00289bfe7978f3e0dc0ce69813a20fa9f44ea4c100b3ec62043e5eb74ccfc3a2 \
@@ -3089,7 +3048,6 @@ typing-extensions==4.16.0 \
     #   grpcio
     #   huggingface-hub
     #   mcp
-    #   ncatbot
     #   openai
     #   pydantic
     #   pydantic-core
@@ -3114,7 +3072,6 @@ urllib3==2.7.0 \
     --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
     --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
     # via
-    #   ncatbot
     #   requests
 uvicorn==0.52.1 \
     --hash=sha256:112ec661814189acbccd3f7b86460147cc065fc92c0821afa78918780e4354dd \
@@ -3199,7 +3156,6 @@ websockets==15.0.1 \
     # via
     #   -r docker/host-runtime/../../requirements.txt
     #   lark-oapi
-    #   ncatbot
 yarl==1.24.5 \
     --hash=sha256:0055afc45e864b92729ac7600e2d102c17bef060647e74bca75fa84d66b9ff36 \
     --hash=sha256:0465ec8cedc2349b97a6b595ace64084a50c6e839eca40aa0626f38b8350e331 \

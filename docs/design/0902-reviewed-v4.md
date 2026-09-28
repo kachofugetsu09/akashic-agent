@@ -1,5 +1,7 @@
 # Akashic v4：消息日志与可组合的 Agent 链路
 
+> QQ 运行支持已按 [0080](../decisions/0080-retire-qq-runtime-support.md) 退役；下文 QQ 实现、拓扑与验收描述只保留历史证据。
+
 - 状态：设计已批准（2026-09-05 用户确认）；按 stacked PR 实施。新 MessageLog 的完整启动验收已在当前 Core 候选中开始，正式 workspace、客户端配套和正式切换仍未完成。
 - 修订日期：2026-09-05。
 - 源码与原提案基线：`51f1467456881e7302abf76a931e9dfe698fef6c`。
