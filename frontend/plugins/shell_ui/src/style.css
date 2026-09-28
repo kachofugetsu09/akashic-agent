@@ -125,7 +125,7 @@
 
   .primary-rail-button:focus-visible {
     outline: 2px solid var(--md-sys-color-primary);
-    outline-offset: 2px;
+    outline-offset: -2px;
   }
 
   .primary-band-footer {
@@ -198,7 +198,7 @@
   }
 
   .theme-cycle-button:focus-visible {
-    @apply outline outline-2 outline-offset-2 outline-accent;
+    @apply outline outline-2 -outline-offset-2 outline-accent;
   }
 
   .theme-cycle-button span {
