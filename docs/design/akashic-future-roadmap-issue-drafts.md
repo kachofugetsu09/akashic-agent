@@ -1,12 +1,12 @@
 # Akashic 未来方向与 GitHub Issue 拆分草案
 
-- 状态：proposed；第 5 节已由 [0044](../decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) 和 [正式规格](akashic-channel-client-adapters.md)取代，其余方向仍不是 accepted 合同或已实现事实
+- 状态：proposed；第 5 节已由 [旧移动方案已退役](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 和 [Android Shell 与 Web 聊天](android-shell-experiment.md)取代，其余方向仍不是 accepted 合同或已实现事实
 - 日期：2026-08-12
 - 目标父 Issue：[GitHub Issue #367 · Akashic Roadmap](https://github.com/kachofugetsu09/akashic-agent/issues/367)
 - 详细 Issue：[Web/Mobile Canonical Session #368](https://github.com/kachofugetsu09/akashic-agent/issues/368)、[Project Session #369](https://github.com/kachofugetsu09/akashic-agent/issues/369)、[Project Akasha #370](https://github.com/kachofugetsu09/akashic-agent/issues/370)、[Tool Result Artifact #371](https://github.com/kachofugetsu09/akashic-agent/issues/371)
 - 占位 Issue：[Plugin permission #372](https://github.com/kachofugetsu09/akashic-agent/issues/372)、[Burst self-improvement #373](https://github.com/kachofugetsu09/akashic-agent/issues/373)、[Continuous Onboarding #374](https://github.com/kachofugetsu09/akashic-agent/issues/374)
 - 关联条款：OBJ-001～OBJ-003、STA-001～STA-003、CAP-001～CAP-002、CTX-001～CTX-007、SES-001～SES-008、MEM-001～MEM-011、RUN-003、RUN-007、OUT-001～OUT-005、MIG-001～MIG-002、WSP-001～WSP-004、CTRL-003、WEBUI-001～WEBUI-007、AKC-001～AKC-003
-- 关联决策：[0002](../decisions/0002-context-reduction-is-a-nondestructive-projection.md)、[0006](../decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md)、[0021](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)、[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)、[0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md)、[0030](../decisions/0030-session-context-compaction-ledger.md)、[0044](../decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md)
+- 关联决策：[0002](../decisions/0002-context-reduction-is-a-nondestructive-projection.md)、[0006](../decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md)、[0021](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)、[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)、[0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md)、[0030](../decisions/0030-session-context-compaction-ledger.md)、[旧移动方案已退役](../decisions/0076-android-shell-retires-legacy-mobile-stack.md)
 
 ## 1. 本文边界
 
@@ -105,8 +105,8 @@ Issue 1→2→3 是身份、项目上下文和项目记忆的明确依赖。Issu
 ## 5. Issue 1 草案：Web/Mobile 共享 Canonical Session
 
 > **已取代：** 本节保留早期推理历史，不再是实现输入。Web/Mobile 的现行确认合同见
-> [0044](../decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) 与
-> [Akashic Channel 与 Web/Mobile Adapter 规格](akashic-channel-client-adapters.md)。特别是
+> [旧移动方案已退役](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 与
+> [Android Shell 与 Web 聊天](android-shell-experiment.md)。特别是
 > 现行设计保留 `channel/chat_id`、不新增 `target_session_id`，并对旧客户端 Session 投影
 > 执行 breaking reset，而不是迁移本地 outbox/draft 映射。
 

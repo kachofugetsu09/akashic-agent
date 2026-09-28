@@ -212,7 +212,7 @@ _HELP = """\
 用法: python main.py [命令] [选项]
 
 命令:
-  setup                         运行交互式初始化向导
+  setup                         初始化 Core（业务配置在 Web 页面完成）
   init                          非交互初始化配置和工作区
   gateway                       启动未托管 Agent 服务（调试）
   supervise                     显式进入 supervisor（兼容别名）
@@ -288,6 +288,9 @@ def _prepare_startup_migrations(
         "dashboard",
     }:
         return None
+    if command in {"", "supervise"} and (not config_path.exists() or not workspace.exists()):
+        # 首次启动必须先建立空选择，迁移不能抢先把新目录变成旧 workspace。
+        init_workspace(config_path=config_path, workspace=workspace)
     if command in {"init", "setup"} and not workspace.exists():
         # 新建 workspace 由 init_workspace 独占建立基线与空选择；启动迁移
         # 先落 migrations.sqlite3 会把新目录误判成既有 workspace。
@@ -777,7 +780,7 @@ if __name__ == "__main__":
         if config_value is not None:
             config_path = config_value
         bootstrap_command = bool(args and args[0] in {"setup", "init"})
-        supervisor_command = not args or args[0] == "supervise"
+        supervisor_command = not args or args[0].startswith("--") or args[0] == "supervise"
         workspace = _workspace_from_args(
             args,
             Path(config_path),

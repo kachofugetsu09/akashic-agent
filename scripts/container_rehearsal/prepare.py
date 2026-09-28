@@ -88,8 +88,6 @@ def prepare_rehearsal(
                 "runtime_files": sorted(EXCLUDED_RUNTIME_FILES),
                 "additional": [
                     "*_rebuild directories",
-                    "mobile-webui-build-* directories",
-                    "mobile-webui/staging and mobile-webui/trash",
                     "SQLite -wal/-shm/-journal sidecars",
                     "workspace skills and drift/skills cache symlinks",
                     "non-regular filesystem entries",

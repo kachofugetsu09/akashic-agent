@@ -109,15 +109,15 @@ note = "普通 Commands provider 拥有人类命令、alias、handler 注册及�
 
 [capabilities."core.ui_slots"]
 role = "seam"
-note = "普通 UI provider 拥有 Mobile 页面、查询与导航注册及当前活动目录"
+note = "普通 UI provider 拥有插件页面、查询与导航注册及当前活动目录"
 
 [capabilities."core.message_display.v1"]
 role = "core"
 note = "按当前 live Root 组合 message.display:* 的只读页面投影"
 
-[capabilities."core.mobile_ui.v1"]
+[capabilities."core.plugin_ui.v1"]
 role = "core"
-note = "按当前 live Root 提供中立 Mobile UI registry 投影"
+note = "按当前 live Root 提供中立插件 UI registry 投影"
 
 [capabilities."core.web_ui.v1"]
 role = "seam"
@@ -377,3 +377,11 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 [capabilities."turn.projection.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."core.plugin_config.v1"]
+role = "core"
+note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
+
+[capabilities."onboarding.steps.v1"]
+role = "seam"
+note = "普通 onboarding provider 持有 Effect 步骤目录；贡献者保留配置 writer"

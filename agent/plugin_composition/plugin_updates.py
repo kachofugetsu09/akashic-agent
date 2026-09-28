@@ -23,7 +23,10 @@ class UpdateStatus:
     error: str
 
 
-class PluginInstallPort(Protocol):
+from agent.plugin_composition.plugin_config import ConfigHost
+
+
+class PluginInstallPort(ConfigHost, Protocol):
     """安装控制面；不暴露 Root、源码目录、数据库或任意 Manager 方法。"""
     async def install(self, *, source: str, marketplace: str, ref_name: str, sparse_paths: list[str], update_id: str) -> UpdateStatus: ...
     def read_update(self, update_id: str) -> UpdateStatus: ...

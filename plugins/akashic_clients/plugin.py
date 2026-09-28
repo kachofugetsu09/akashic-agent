@@ -16,7 +16,7 @@ from .config import AkashicClientsConfig
 api_version = 3
 name = "akashic_clients"
 version = "1.0.0"
-desc = "Web and Mobile Akashic client channel"
+desc = "Web Akashic client channel"
 author = "Akashic"
 # Every dependency is a separate composition capability.  In particular,
 # there is no client-wide service bus for Core to assemble.

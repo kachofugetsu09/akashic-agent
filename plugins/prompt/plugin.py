@@ -11,7 +11,7 @@ from agent.plugin_contracts.context import (
     MATERIALS as MATERIALS,
 )
 
-from .persona import read_veda_file
+from .persona import read_veda_file, initialize_veda_if_missing
 from .text import build_behavior_rules, build_identity, build_telegram_rendering_prompt
 
 api_version = 3
@@ -26,6 +26,8 @@ inject = (MATERIALS,)
 
 async def apply(ctx: Context) -> None:
     """只贡献已获授的 Prompt 和只读环境材料，不取得任何消息 writer。"""
+    initialize_veda_if_missing(ctx.runtime.workspace)
+
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
         # 1. 文件是人格唯一真源；已返回字符串在本次请求中保持不变。
         prompt = "\n\n".join((

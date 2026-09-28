@@ -10,7 +10,7 @@ class TelegramChannelConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    enabled: bool = False
+    enabled: bool | None = False
     token: CredentialRef | None = None
     allow_from: tuple[str, ...] = ()
     timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)

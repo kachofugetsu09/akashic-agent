@@ -1,5 +1,7 @@
 # 普通 UI provider 交接
 
+> 历史交接记录：下述 snapshot/seal 与旧客户端字段不再是现行 UI 合同；当前插件界面使用 `UI_SLOTS.register_plugin_ui`，见 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md)。
+
 基线：`d39569f926b73e1831b1139bf992317da125eee9`。
 工作分支：`codex/plugin-simplify-ui-provider`。
 恢复点：工作树根目录 `.ui-provider-before-d39569f9.tar`，不随提交发布。
@@ -28,7 +30,7 @@
   完全删除这组时序接口需要协调宿主生命周期，未在本层伪装完成。
 - `PluginDashboardHost` / `SnapshotDashboardMiddleware` 是域消费者；
   browser client 仍消费既有 `core.web_ui.v1`，没有协议字符串兼容转换。
-- Mobile UI Slots 不在本层范围内，snapshot 的 Mobile 字段保留。
+- 当时的旧客户端 UI Slots 不在本层范围内；其 snapshot 字段现已退役。
 - Context 及 Manager Root 构造/清理职责未改；封存后的 Root freeze 调用由另一 worker 整合。
 - Akasha/Wake 仍按基线编辑 `message_plugin.py`；父分支整合入口 rename 时应将注册改动带到新路径。
   静态 manifest 凭据链不在写集内；新 provider 的 manifest 仅声明自身普通入口。

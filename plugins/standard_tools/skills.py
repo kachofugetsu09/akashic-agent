@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.common.file_io import run_file_io
 
@@ -39,8 +38,15 @@ class SkillFile(BaseModel):
     source_id: str
     available: bool
     missing: str
-    body_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     tree_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_legacy_fields(cls, value: object) -> object:
+        """读取旧绑定时忽略已退役的正文摘要，不改写原记录。"""
+        if isinstance(value, Mapping) and "body_sha256" in value:
+            return {key: item for key, item in value.items() if key != "body_sha256"}
+        return value
 
 
 class SkillState(BaseModel):
@@ -48,19 +54,12 @@ class SkillState(BaseModel):
     skills: dict[str, SkillFile]
 
 
-def body_hash(content: str) -> str:
-    return hashlib.sha256(skill_body(content).encode("utf-8")).hexdigest()
-
-
 def save_skill(record: SkillRecord, archive: PluginArchive) -> tuple[SkillFile, Path | None]:
     """绑定形成前增加恢复文件；正文和相对资源使用同一不可变文件树。"""
     tree_ref = archive.save(record.root_dir) if record.available else None
-    expected = body_hash(record.content)
     root = archive.open(tree_ref) if tree_ref is not None else None
-    if root is not None and body_hash((root / "SKILL.md").read_text(encoding="utf-8")) != expected:
-        raise RuntimeError("技能目录与归档正文不一致")
     return SkillFile(source=record.source, source_id=record.source_id, available=record.available,
-                     missing=record.missing, body_sha256=expected, tree_ref=tree_ref), root
+                     missing=record.missing, tree_ref=tree_ref), root
 
 
 class SkillTool:
@@ -84,22 +83,20 @@ class SkillTool:
         return await run_file_io(lambda: self._read(name, record))
 
     def _read(self, name: str, record: SkillFile) -> ToolResultValue:
-        """在文件线程中校验固定归档并读取正文。"""
+        """在文件线程中读取原绑定的归档正文。"""
         # 正常恢复只能读取已存在的材料，不通过建空目录掩盖丢失。
         if not self._path.is_dir():
             raise FileNotFoundError(f"技能恢复归档缺失：{self._path}")
         if record.tree_ref is None:
             raise ValueError("可用技能缺少恢复文件树")
-        root = PluginArchive(self._path).open(record.tree_ref)
+        root = PluginArchive(self._path, create=False).open(record.tree_ref)
         content = (root / "SKILL.md").read_text(encoding="utf-8")
-        if body_hash(content) != record.body_sha256:
-            raise RuntimeError("技能正文与原绑定不一致")
         body = skill_body(content)
         if not body.strip():
             return ToolResultValue("error", (ContentPart("text", f"技能正文为空：{name}"),))
         return ToolResultValue("success", (ContentPart("text", json.dumps({
             "skill": name, "source": record.source, "source_id": record.source_id,
-            "tree_ref": record.tree_ref, "body_sha256": record.body_sha256,
+            "tree_ref": record.tree_ref,
             "base_directory": str(root), "instructions": body,
             "path_rule": "技能中的相对路径以 base_directory 为根读取；归档资源不可改写。",
         }, ensure_ascii=False)),))
@@ -160,7 +157,7 @@ async def register_skills(ctx: Context) -> ToolRef:
             return await run_file_io(lambda: build_prompt(records))
 
     def build_prompt(records: tuple[SkillRecord, ...]) -> Mapping[str, object]:
-        """在文件线程构造技能提示，同次准备复用已校验的归档目录。"""
+        """在文件线程构造技能提示，同次准备复用已发布的归档目录。"""
         catalog_lines: list[str] = []
         active: list[str] = []
         for record in records:

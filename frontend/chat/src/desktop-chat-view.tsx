@@ -1,5 +1,5 @@
 import { timelineReplyGroups, timelineToolResults } from "./message-timeline";
-import React, { lazy, Suspense, useMemo } from "react";
+import React, { useMemo } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
@@ -17,13 +17,9 @@ import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer } from "./desktop-composer";
 import { DesktopConversationMessages, DesktopTimelineMessages } from "./desktop-conversation";
 import { ReplyActivityView } from "./message-view";
-import { DesktopMobileNavigation } from "./desktop-mobile-navigation";
+import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
-
-const LazyMobilePairingDialog = lazy(() =>
-  import("./mobile-pairing-dialog").then(({ MobilePairingDialog }) => ({ default: MobilePairingDialog })),
-);
 
 interface DesktopChatViewProps {
   embeddedShell: boolean;
@@ -37,15 +33,13 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
-    selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
+    selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
-    setMobilePairingOpen,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
     startProjectChat, createProject, continueProject, stopProject,
   } = controller;
-  const openPairing = () => setMobilePairingOpen(true);
   const sidebarProjects = useMemo(() => projectsInstalled ? {
     items: projects, pending: pendingProjects, pendingError: pendingProjectsError,
     activeProjectId: activeProject?.id ?? "", memoryInstalled,
@@ -78,17 +72,17 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
-            onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
+            onCycleTheme={cycleTheme} onNewChat={startNewChat}
           />
 
         <section className="chat-main">
         <header className="conversation-heading">
-          <DesktopMobileNavigation
+          <CompactNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
-            onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
+            onCycleTheme={cycleTheme} onNewChat={startNewChat}
           />
           <h1 title={headingTitle}>{headingTitle}</h1>
         </header>
@@ -138,9 +132,6 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         </div>
       </section>
       </div>
-      {mobilePairingOpen ? <Suspense fallback={null}>
-        <LazyMobilePairingDialog open onOpenChange={setMobilePairingOpen} />
-      </Suspense> : null}
     </main>
   );
 }
@@ -184,11 +175,11 @@ function DesktopHistoryLoader({
 function DesktopEmptyState({ shellStatus, loadingSession }: { shellStatus: string | null; loadingSession: boolean }) {
   return <ConversationEmptyState className="home-state">
     {loadingSession ? <div className="home-state__ready" role="status"><strong>正在读取消息</strong></div> : shellStatus === "needs_setup" ? <div className="model-connection-state">
-      <span>首次使用</span><h1>先连接一个模型</h1>
+      <span>对话尚未就绪</span><h1>请完成所需配置</h1>
       <p>绑定 Codex、OpenCode 或自己的 API Key 后，就可以在这里直接对话。</p>
       <a href="/#models">连接模型</a>
     </div> : shellStatus === "starting" ? <div className="model-connection-state">
-      <span>正在启动</span><h1>模型已保存，Akashic 正在准备对话</h1>
+      <span>正在启动</span><h1>Akashic 正在准备对话</h1>
       <p>这个页面会自动恢复，不需要切换端口或刷新浏览器。</p>
       <a href="/#models">查看模型设置</a>
     </div> : shellStatus === null ? (

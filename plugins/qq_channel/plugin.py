@@ -18,11 +18,11 @@ name = "qq_channel"
 version = "3.0.0"
 desc = "NapCat OneBot QQ inbound and outbound v3 channel adapter"
 author = "Akashic"
-inject = (CHANNELS, CHANNEL_INPUT)
+function_inject = (CHANNELS, CHANNEL_INPUT)
 Config = QQChannelConfig
 
 
-async def apply(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     """Register the legacy QQ protocol only when its plugin config enables it."""
     config = Config.model_validate(ctx.config)
 
@@ -52,3 +52,16 @@ __all__ = [
     "name",
     "version",
 ]
+
+
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+
+inject = (PLUGIN_CONFIG, RUNTIME_CATALOG)
+
+
+async def apply(ctx: Context) -> None:
+    """设置入口常驻，业务依赖只影响功能分支。"""
+    from .settings import mount
+    function = await ctx.inject(function_inject, run, name="function")
+    await mount(ctx, Config, function)

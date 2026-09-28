@@ -28,7 +28,7 @@ from agent.plugin_composition.ui_slots import UI_SLOTS
 from agent.plugin_composition.workload_slots import WORKLOADS
 
 from .dashboard import DashboardResources, _core_routes, _require_routes_available
-from .mobile import MobileUiSlots
+from .plugin_ui import PluginUiSlots
 from .web import build_web_ui_catalog, resolve_web_module
 
 api_version = 3
@@ -212,5 +212,5 @@ async def apply(ctx: Context) -> None:
     registry = Ui(ctx)
     await ctx.provide(UI, registry, binding_contributors=registry.contributors)
     await ctx.provide(WEB_UI, registry, binding_contributors=registry.contributors)
-    mobile = MobileUiSlots(ctx)
-    await ctx.provide(UI_SLOTS, mobile, binding_contributors=mobile.contributors)
+    slots = PluginUiSlots(ctx)
+    await ctx.provide(UI_SLOTS, slots, binding_contributors=slots.contributors)

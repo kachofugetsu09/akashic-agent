@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 
 @dataclass
@@ -84,4 +84,3 @@ class ReasonerResult:
     visible_names: set[str] | None = None
     react_stats: dict[str, Any] = field(default_factory=dict)
     model_state: dict[str, Any] | None = None
-    mobile_attention: Literal["confirmation"] | None = None

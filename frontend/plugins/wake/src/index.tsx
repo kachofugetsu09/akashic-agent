@@ -1,3 +1,4 @@
+import { registerForm, Field } from "../../shared/src/configuration";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import type {
   FetchPageOptions as FetchPageOpts,
@@ -184,8 +185,15 @@ const panel = {
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   dashboardRequest = ctx.http.request;
+  const releaseSettings = registerForm(ctx, {id: "wake", title: "Wake 主动联系", description: "根据兴趣与消息主动联系你，只使用已确认的发送目标。", fields: ({values, change, status}) => <>
+      <label className="config-field"><span>发送到已有对话</span><select required value={values.delivery ? JSON.stringify(values.delivery) : ""} onChange={event => change("delivery", event.target.value ? JSON.parse(event.target.value) : null)}>
+        <option value="">请选择发送目标</option>{status.targets?.map(({label, ...target}) => <option key={JSON.stringify(target)} value={JSON.stringify(target)}>{label}</option>)}
+      </select><small>只显示已有对话和已开启的发送能力；不会自动发送测试消息。</small></label>
+      <details><summary>高级设置</summary><Field label="时区" name="timezone" value={values.timezone} change={change} /></details>
+    </>});
   const release = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(panel));
   return () => {
+    releaseSettings();
     release();
     dashboardRequest = null;
   };

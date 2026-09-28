@@ -1,7 +1,6 @@
-# Android 极薄壳通知实验
+# Android Shell 与通知合同
 
-2026-09-26：维护者确认先实验远程 Web 页面、免登录连接与消息通知；不实现账号密码。
-这是独立 `com.akashic.shell` 客户端，不替换 `com.akashic.mobile` 的配对、本地历史和 OTA。
+2026-09-28：维护者以独立的 `com.akashic.shell` 客户端取代旧 Mobile。Shell 加载远程 Web 页面，消费已提交消息的通知 SSE；旧配对、本地历史和 OTA 合同已按 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 退役。
 
 ## 结构与 owner
 
@@ -22,7 +21,7 @@
 - Web 页面拥有聊天交互。Android 只拥有服务器地址、后台连接、系统权限和通知进度。
 - 通知筛选由客户端插件负责：listed Session 中完成且含文字的 Output。其他渠道和 quiet 输出不提醒。
 - 通知读取每页独立取得和释放 catalog scope；网络等待不持有插件租约。
-- 本轮不增加 Core API、通知数据库、消息队列、FCM 或 UnifiedPush。
+- 通知路径不增加通知数据库、消息队列、FCM 或 UnifiedPush。
 
 ## 协议与恢复
 
@@ -51,12 +50,12 @@ Android 先提交系统通知，再同步保存 seq。进度保存前退出允�
 - `sessions.db/messages`：通知路径只读，正常增加仍归原消息 owner；不更新或删除正文。
 - 手机通知进度：消费成功后原位推进；首次连接保存基线，用户切换服务器时清除旧服务器进度。
   它是派生消费位置，不是聊天正文、消息投递回执或已读状态。
-- 卸载实验壳会删除该 App 的设置和通知进度；不影响正式 Mobile 或服务端消息。
+- 卸载 Shell 会删除该 App 的设置和通知进度；不影响服务端消息。
 - 服务端无 schema 迁移。回退通知接口只使实验壳显示“服务器暂不支持通知”，聊天仍可进入。
 
 ## Android 后台边界
 
-个人自托管实验采用原生前台服务和网络恢复重连，与
+个人自托管使用原生前台服务和网络恢复重连，与
 [ntfy instant delivery](https://docs.ntfy.sh/subscribe/phone/#instant-delivery) 的连接方式相同。
 需允许通知和后台运行；[Android Doze 文档](https://developer.android.com/training/monitoring-device-state/doze-standby)
 说明电池优化豁免允许网络访问，但其他限制仍存在。强行停止、关机、无网络或无法路由到服务端

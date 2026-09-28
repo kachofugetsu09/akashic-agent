@@ -21,9 +21,9 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     UI_SLOTS,
     Context,
-    MobileUiDefinition,
-    MobileUiNavigation,
-    MobileUiRpcInvalidRequest,
+    PluginUiDefinition,
+    PluginUiNavigation,
+    PluginUiRpcInvalidRequest,
     ServiceKey,
 )
 from agent.plugin_composition.bindings import BINDINGS
@@ -87,7 +87,7 @@ workspace_roots = ("memory",)
 MaterialData = Mapping[str, object]
 
 
-inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
+function_inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
           BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, COMMANDS)
 
 
@@ -95,6 +95,7 @@ class Config(BaseModel):
     """同名旧配置由 Manager 一次读取并归档，再转换为现有 Akasha 配置。"""
 
     model_config = ConfigDict(extra="forbid")
+    enabled: bool | None = True
     sources: tuple[str, ...] = Field(
         default=("conversation", "programmatic", "legacy-unattributed"), min_length=1,
     )
@@ -110,7 +111,7 @@ class Config(BaseModel):
     forgetting_enabled: bool = AkashaConfig.forgetting_enabled
 
     def settings(self) -> AkashaConfig:
-        settings = AkashaConfig(**self.model_dump(exclude={"sources"}))
+        settings = AkashaConfig(**self.model_dump(exclude={"sources", "enabled"}))
         settings.validate()
         return settings
 
@@ -144,7 +145,7 @@ async def _register_ui(ctx: Context) -> None:
     await ctx.require(UI).register(
         ctx, web="web_module.js",
         dashboard=lambda: import_module(".dashboard", __package__),
-        requires=("workbench.panels.v2",),
+        requires=("workbench.panels.v2", "shell.pages.v1"),
         provides=(),
         contract_digests={
             "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
@@ -152,9 +153,11 @@ async def _register_ui(ctx: Context) -> None:
     )
 
 
-async def apply(ctx: Context) -> None:
+async def run(ctx: Context, interest: Interest) -> None:
     """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
     config = Config.model_validate(ctx.config)
+    if config.enabled is not True:
+        return
     catalog: ToolCatalog = ctx.require(TOOLS)
     content: ContentCapability = ctx.require(CONTENT)
     _ = await catalog.declare_group(ctx, description=desc)
@@ -246,36 +249,36 @@ async def apply(ctx: Context) -> None:
     def read_recall(identity: str) -> Recall | None:
         return records().read(identity)
     _ = await ctx.provide(AKASHA_RECORDS, read_recall)
-    _ = await ctx.provide(AKASHA_RECORDS_VIEW, records_read)
+
 
     inspector: RecallInspector | None = None
 
     def get_inspector() -> RecallInspector:
         """返回正式 runtime 绑定的只读查询投影。"""
         if not running or inspector is None:
-            raise MobileUiRpcInvalidRequest("Akasha 查询读取尚未启动")
+            raise PluginUiRpcInvalidRequest("Akasha 查询读取尚未启动")
         return inspector
 
     def query_policy(method: str, payload: dict[str, object]) -> dict[str, object]:
         """宽键策略只按 (维度, 取值) 读写；Akasha 不知道维度由哪个插件拥有。"""
         dimension, value = payload.get("dimension"), payload.get("value")
         if not isinstance(dimension, str) or not isinstance(value, str) or not value:
-            raise MobileUiRpcInvalidRequest("记忆策略需要维度和取值")
+            raise PluginUiRpcInvalidRequest("记忆策略需要维度和取值")
         try:
             if method == "scope.policy.get":
                 if set(payload) != {"dimension", "value"}:
-                    raise MobileUiRpcInvalidRequest("记忆策略查询参数无效")
+                    raise PluginUiRpcInvalidRequest("记忆策略查询参数无效")
                 return {"learn": policies.read(dimension, value), "choices": list(LEARN_POLICIES)}
             learn = payload.get("learn")
             if set(payload) != {"dimension", "value", "learn"} or learn not in LEARN_POLICIES:
-                raise MobileUiRpcInvalidRequest("记忆策略只能是 global、isolated 或 off")
+                raise PluginUiRpcInvalidRequest("记忆策略只能是 global、isolated 或 off")
             return {"learn": policies.set(dimension, value, cast(LearnPolicy, learn))}
-        except MobileUiRpcInvalidRequest:
+        except PluginUiRpcInvalidRequest:
             raise
         except PolicyLocked as error:
-            raise MobileUiRpcInvalidRequest(str(error)) from error
+            raise PluginUiRpcInvalidRequest(str(error)) from error
         except ValueError as error:
-            raise MobileUiRpcInvalidRequest(f"记忆策略范围无效: {error}") from error
+            raise PluginUiRpcInvalidRequest(f"记忆策略范围无效: {error}") from error
 
     def query(method: str, payload: dict[str, object], *, session_id: str | None,
               turn_id: str | None) -> dict[str, object]:
@@ -289,33 +292,33 @@ async def apply(ctx: Context) -> None:
                 or not isinstance(offset, int) or isinstance(offset, bool) or offset < 0
                 or not isinstance(payload["message_id"], str) or not payload["message_id"]
                 or not isinstance(payload["source"], str)):
-                raise MobileUiRpcInvalidRequest("检索卡片缺少消息或会话")
+                raise PluginUiRpcInvalidRequest("检索卡片缺少消息或会话")
             return inspector.for_turn(session_id, payload["message_id"], payload["source"],
                                       ctx.require(TURN_PROJECTION), offset=offset)
         if method == "inspector.recent":
             try:
                 page = InspectorPage.model_validate(payload)
             except ValidationError as error:
-                raise MobileUiRpcInvalidRequest("检索页码或每页数量无效") from error
+                raise PluginUiRpcInvalidRequest("检索页码或每页数量无效") from error
             return inspector.recent(page=page.page, page_size=page.page_size)
         if method == "inspector.detail":
             if set(payload) != {"query_id"} or not isinstance(payload["query_id"], str):
-                raise MobileUiRpcInvalidRequest("请选择一条检索记录")
-            detail = inspector.mobile_detail(payload["query_id"])
+                raise PluginUiRpcInvalidRequest("请选择一条检索记录")
+            detail = inspector.plugin_detail(payload["query_id"])
             if detail is None:
-                raise MobileUiRpcInvalidRequest("检索记录不存在，请刷新列表")
+                raise PluginUiRpcInvalidRequest("检索记录不存在，请刷新列表")
             return detail
-        raise MobileUiRpcInvalidRequest(f"不支持的 Akasha 查询：{method}")
+        raise PluginUiRpcInvalidRequest(f"不支持的 Akasha 查询：{method}")
 
-    async def register_mobile(child: Context) -> None:
+    async def register_plugin_ui(child: Context) -> None:
         # UI provider 在事件循环持有调用作用域，线程回调不能再次进入 entrypoint。
-        _ = await child.require(UI_SLOTS).register_mobile(
-            child, MobileUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
                                     slots=("turn.before_reasoning",),
-                                    navigation=MobileUiNavigation(label="Akasha Inspector",
+                                    navigation=PluginUiNavigation(label="Akasha Inspector",
                                         description="查看实际检索及呈现的原消息")), query=query,
         )
-    _ = await ctx.inject((UI_SLOTS, AKASHA_RECORDS_VIEW), register_mobile, name="mobile-ui")
+    _ = await ctx.inject((UI_SLOTS, AKASHA_RECORDS_VIEW), register_plugin_ui, name="plugin-ui")
 
     def select_learning() -> tuple[str, LearningConfig, str]:
         try:
@@ -357,9 +360,21 @@ async def apply(ctx: Context) -> None:
             _identity, rule, model_id = select_learning()
             return rule, embedder(rule, model_id)
 
-    _ = await ctx.provide(SEMANTIC_INTEREST, SemanticInterest(
-        learning, ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS), select_interest,
-    ))
+    target = SemanticInterest(learning, ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS), select_interest)
+    def readiness() -> str | None:
+        try:
+            ctx.require(EMBEDDINGS).describe()
+        except (ModelUnavailableError, DriverUnavailableError) as error:
+            return str(error)
+        return None
+    def attach_interest():
+        interest.score_call = ctx.entrypoint(target.score)
+        interest.readiness = ctx.entrypoint(readiness)
+        def close():
+            interest.score_call = None
+            interest.readiness = None
+        return close
+    await ctx.effect(attach_interest, label="interest-worker")
 
     def unavailable(key: str) -> MaterialData:
         reason = health.reason or graph_errors.get(key)
@@ -486,7 +501,7 @@ async def apply(ctx: Context) -> None:
         parallel=True,
     )
     # 只读账本按声明的 workspace root 解析学习图；不暴露 writer 或任意路径。
-    _ = await ctx.provide(AKASHA_MEMORY_PATH, lambda: memory_path)
+
 
     async def close_memory() -> None:
         while memories:
@@ -658,5 +673,52 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
-    _ = await ctx.inject((UI, AKASHA_RECORDS_VIEW, AKASHA_MEMORY_PATH, MESSAGE_CATALOG),
-                         _register_ui, name="ui")
+
+
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+from collections.abc import Awaitable, Sequence
+
+inject = (PLUGIN_CONFIG, RUNTIME_CATALOG, OWNER_STATE, MESSAGE_CATALOG)
+
+
+class Interest:
+    """稳定能力只保存当前 worker 的受保护入口。"""
+    def __init__(self, enabled: bool | None):
+        self.enabled = enabled
+        self.score_call: Callable[..., Awaitable[tuple[float, ...]]] | None = None
+        self.readiness: Callable[[], str | None] | None = None
+
+    def decision(self) -> bool | None:
+        return self.enabled
+
+    def status(self) -> str | None:
+        if self.enabled is not True:
+            return "Akasha 已关闭" if self.enabled is False else "请先决定是否开启 Akasha"
+        if self.readiness is None:
+            return "Akasha 前置能力不可用"
+        return self.readiness()
+
+    async def score(self, texts: Sequence[str], *, cutoff: str) -> tuple[float, ...]:
+        reason = self.status()
+        if reason is not None:
+            raise RuntimeError(reason)
+        assert self.score_call is not None
+        return await self.score_call(texts, cutoff=cutoff)
+
+
+async def apply(ctx: Context) -> None:
+    """关闭运算仍保留配置、兴趣状态及只读历史入口。"""
+    from .settings import mount, SETTINGS
+    config = Config.model_validate(ctx.config)
+    interest = Interest(config.enabled)
+    await ctx.provide(SEMANTIC_INTEREST, interest)
+    state = ctx.require(OWNER_STATE).open(ctx)
+    await ctx.provide(AKASHA_RECORDS_VIEW, lambda: RecallRecordsRead(state))
+    path = resolve_memory_path(ctx.workspace_root("memory"), config.settings().db_path)
+    await ctx.provide(AKASHA_MEMORY_PATH, lambda: path)
+    async def worker(child: Context):
+        await run(child, interest)
+    function = await ctx.inject(function_inject, worker, name="function")
+    await mount(ctx, Config, function)
+    await ctx.inject((UI, AKASHA_RECORDS_VIEW, AKASHA_MEMORY_PATH, MESSAGE_CATALOG, SETTINGS), _register_ui, name="ui")

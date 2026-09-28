@@ -578,10 +578,28 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
       console.warn("[web-host] catalog state unavailable", error);
     });
   };
+  let applyingTimer: number | undefined;
+  const submitted = (): void => {
+    window.clearInterval(applyingTimer);
+    let attempts = 0;
+    applyingTimer = window.setInterval(() => {
+      attempts += 1;
+      void session.checkCurrent().then(current => {
+        if (current) { if (attempts >= 60) window.clearInterval(applyingTimer); return; }
+        window.clearInterval(applyingTimer);
+        const go = () => window.location.reload();
+        // 复用导航否决：有未保存内容的页面可以拦下刷新，陈旧提示条仍然可见。
+        if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
+      }).catch(() => { if (attempts >= 60) window.clearInterval(applyingTimer); });
+    }, 500);
+  };
+  window.addEventListener("akashic:configuration-submitted", submitted);
   window.addEventListener("focus", checkCurrent);
   document.addEventListener("visibilitychange", checkCurrent);
   const close = session.close.bind(session);
   session.close = once(() => {
+    window.clearInterval(applyingTimer);
+    window.removeEventListener("akashic:configuration-submitted", submitted);
     window.removeEventListener("focus", checkCurrent);
     document.removeEventListener("visibilitychange", checkCurrent);
     close();

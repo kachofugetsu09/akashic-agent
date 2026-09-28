@@ -53,10 +53,7 @@ Core 不读取它。无配置时输入为空对象。固定输入中的凭据仍
 按 PLG-001 由模型 owner 提供给当前调用，不受此配置存储协议解释。
 启用条件写在普通 `apply` 分支中；所有贡献走同一注册路径，没有另一个 `is_active` 协议。
 
-可选的根目录 `configure.py` 是插件自己的配置程序，不是普通辅助模块名称。
-只有显式运行 `main.py setup` 才会从已启用的已安装 stable 制品发现并执行它，使用根目录固定 Python 环境。
-正常加载和换代不运行配置程序。旧制品的 `[setup]` 等已删字段必须通过显式重装或格式转换更新，
-普通启动不改写旧制品或正式数据。
+首次业务配置使用插件自己的 Web 页面/API，并可向普通 onboarding provider 注册步骤。`main.py setup` 仅初始化 Core，不再发现或执行 `configure.py`。自身配置应用端口、首次 `initial_config.json` 与回执合同见[引导设计](plugin-onboarding-projection.md#11-实现决断与交付边界)。已有固定输入优先，新安装缺省与旧安装语义不能混用。
 
 ### Python 安装输入
 
@@ -188,7 +185,7 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 |---|---|---|
 | `COMMANDS` | `register(ctx, CommandDefinition(...))` | 显式 `commands` provider 拥有人类命令、alias、注册与执行；消费者声明硬依赖 |
 | `TOOLS` | `register(...)`、`bind(...)`、`open(...)` | `plugins.tools` 的工具描述、参数准备、exact binding 与执行入口 |
-| `UI_SLOTS` | `register_mobile(ctx, definition, query=...)` | Mobile 页面、查询和导航 |
+| `UI_SLOTS` | `register_plugin_ui(ctx, definition, query=...)` | Web 插件界面的资源、查询和导航 |
 | `CHANNELS` / `CHANNEL_INPUT` | 注册实际 factory，按绑定调用入站入口 | 显式 `channels` provider 拥有连接、接纳、原绑定发送与恢复；来源插件拥有输入消费 |
 | `DELIVERY` / `DELIVERY_READ` | 打开发送 admission 或只读历史 | Delivery 发送、恢复和查询 |
 
@@ -336,30 +333,30 @@ Web bootstrap 和 DashboardHost 从所选 Root 的 typed service 读取目录；
               实际请求租约 ────────┘
 ```
 
-### Mobile UI
+### 插件 UI
 
 同一个显式选择的 `ui` 插件提供 `UI_SLOTS`（保留字符串 `core.ui_slots`）。
-SDK 的 `UiSlots`、`MobileUiRegistry` 是窄 Protocol，具体注册表和资源校验在 provider 内。
-贡献插件仍在 `apply(ctx)` 调用 `ctx.require(UI_SLOTS).register_mobile(...)`，
-使用原 `MobileUiDefinition`、navigation、slots 和同步 query/available 合同。
+SDK 的 `UiSlots` 是窄 Protocol，具体注册表和资源校验在 provider 内。
+贡献插件在 `apply(ctx)` 调用 `ctx.require(UI_SLOTS).register_plugin_ui(...)`，
+使用 `PluginUiDefinition`、navigation、slots 和同步 query/available 合同。
 
 ```text
-贡献 Context ── register_mobile ── UI provider 的注册 Effect
+贡献 Context ── register_plugin_ui ── UI provider 的注册 Effect
                                       │ 注册与释放
                                       ▼
                              本 Root 的活动目录
                                       │
-                   Mobile HTTP/RPC 持实际 provider scope 读取
+                   Web HTTP/RPC 持实际 provider scope 读取
 ```
 
 provider 校验贡献方属于同一 Root 和服务，资源路径仍固定在该 Context 的代码制品中。
 目录与服务均带实际 Root token；域消费者拒绝借用另一 Root 的服务或目录。
-Core compiler 不再读取、冻结或复制 Mobile 目录，宿主只持请求 adapter，不拥有 Mobile UI 注册状态。
+Core compiler 不读取、冻结或复制插件 UI 目录，宿主只持请求 adapter，不拥有插件 UI 注册状态。
 注册 Effect 关闭只解除内存归属，不删除代码、plugin-data、消息或历史记录。
 
-`PluginMobileUiProvider` 继续承担已有 RPC 线程池、容量、超时和请求租约；
-MobileHTTP/RPC 的 revision、摘要、slot、授权和响应格式不变。
-宿主装配模块提供 `core.mobile_ui.v1` 请求 adapter，但不检测
+`LivePluginUiProvider` 承担 RPC 线程池、容量、超时和请求租约；
+Web HTTP/RPC 使用 revision、摘要、slot 和有界结果。
+宿主装配模块提供 `core.plugin_ui.v1` 请求 adapter，但不检测
 `inject(UI_SLOTS)` 或创建业务注册表。仓库内 Akasha 的真实安装组合已显式选择 `ui`。
 
 ## 6. Generation 与单 Root
@@ -460,13 +457,7 @@ factory 合同；Channel host 不再提取配置字段或维护第二份凭据�
 普通读取与写入只识别准确的旧入口 `config.local.toml`，存在时明确要求升级。
 缺少固定输入时返回空映射，与业务目录是否存在或含哪些数据无关；安装不写空配置占位文件。
 普通路径不递归扫描业务目录，不按备份文件名判断兼容性。只有显式升级工具收集命名备份。
-Telegram Channel 和两个 Sender 的 `configure.py --upgrade` 由插件解释旧 TOML；其他明确不含
-秘密的配置可离线运行 `python -m scripts.upgrade_plugin_config --data-dir <path> --no-secrets`。
-执行插件配置程序时沿正式安装环境提供 `AKASHIC_PLUGIN_DATA_DIR`，Channel 程序同时使用
-`AKASHIC_SETUP_CONFIG_PATH=<data-dir>/config.input.json`。日常 setup 不自动选择升级模式。
-配置向导使用安装解释器和依赖，并追加宿主 Python 导入路径、预载共享 writer，再执行制品内
-`configure.py`；不依赖工作目录或 `PYTHONPATH` 提供宿主 SDK。手工调用配置程序也须使用能
-导入宿主 SDK 及插件依赖的环境。
+四个 Telegram/QQ channel、sender 的 `upgrade_config.py --data-dir PATH` 由插件解释旧 TOML；其他明确不含秘密的配置可离线运行 `python -m scripts.upgrade_plugin_config --data-dir PATH --no-secrets`。升级使用可导入宿主 SDK 与插件依赖的安装环境，必须显式指定准确的私有数据目录；setup 和 onboarding 均不自动升级。
 
 升级先在私有 `upgrades/<id>/original/` 保存旧配置与命名备份，再发布固定输入，最后把原件
 移入同一恢复点的 `retired/`。中断后保留全部材料；若新输入与旧入口同时存在，继续拒绝启动，
