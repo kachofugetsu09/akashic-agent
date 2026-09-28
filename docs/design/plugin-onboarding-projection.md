@@ -624,3 +624,5 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 - 受保护：Message/Turn/Session 持久语义、在途回复冻结、插件权限、模型配置与凭证 owner；无自动默认绑定、无自动启用、无生产写入。未提交文本只保存本标签页 sessionStorage，不上传、不成为 Message；附件仍由当前编辑器持有，不伪称刷新后恢复文件。
 - 允许副作用：隔离运行时正式安装、模型配置、受限真实短消息；凭证只从本机私有文件读取，原 Telegram receiver 不变。
 - 验收：空目录/无默认/固定会话可用/禁用连接、401/403/503 与迟到读取、返回设置、真实短消息持久及显示、320px/两主题/键盘、刷新和本机 runtime 恢复；既有概念 pytest 和必需静态检查；独立只读 Gate。备份：任务根 backups/issue806/before-implementation，失败只停止本次独立 runtime。
+
+- 远端拒绝由对应驱动 HTTP 信任边界判断：OpenAI-compatible 确认 401/403 后才说明连接授权未通过，5xx 明确服务暂不可用；沿既有错误类型/Control 原因显示，不按字符串猜测原因、不改变自动重试预算或 Message schema。失败消息提供只读模型设置入口。目录访问 401/403 与云端凭证失败分开说明，本地 available 不声明凭据已认证。

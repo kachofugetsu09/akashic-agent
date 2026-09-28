@@ -122,7 +122,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             <p id="chat-model-reason">{modelProblem}</p>
             <div>
               <a href="/#models" target="_blank" rel="noopener">打开模型设置</a>
-              {modelsPhase === "error" ? <button type="button" onClick={retryModels}>重新核对模型</button> : null}
+              {modelsPhase !== "ready" ? <button type="button" onClick={retryModels}>重新核对模型</button> : null}
             </div>
           </div> : null}
           <DesktopComposer
