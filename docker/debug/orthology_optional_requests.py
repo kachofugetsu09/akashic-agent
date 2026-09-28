@@ -20,7 +20,7 @@ from agent.plugin_composition.model import FiberState, PluginRuntime, ServiceKey
 from agent.plugin_composition.rpc import RpcMethod
 from plugins.akashic_clients import plugin as clients
 from plugins.akashic_clients.capabilities import (
-    CLIENT_CAPABILITIES, INSPECTION_DOCUMENTS_LIST, INSPECTION_RPC_KEYS, MODEL_RPC_KEYS,
+    CLIENT_CAPABILITIES, INSPECTION_DOCUMENTS_LIST,
 )
 from plugins.channels import plugin as channels
 from plugins.runtime_inspection import plugin as inspection
@@ -44,8 +44,7 @@ async def install_ports(root: CompositionRoot, workspace: Path):
     await root.context.provide(CHANNEL_ATTACHMENT_READ, ChannelAttachmentRead(unavailable, unavailable))
     await root.context.provide(CHANNEL_INPUT, unavailable)
     for key in CLIENT_CAPABILITIES:
-        if key not in (*INSPECTION_RPC_KEYS, *MODEL_RPC_KEYS):
-            await root.context.provide(key, unavailable)
+        await root.context.provide(key, unavailable)
     return runtime
 
 

@@ -9,12 +9,12 @@
 | 切片 | 目标行为 | 关键验收 |
 |---|---|---|
 | 聊天与诊断 RPC | 诊断缺席或换代不关闭聊天渠道；移除未接线的旧模型 RPC 启动依赖 | 检查请求明确 unavailable；借用保护当前 provider；越权和过期请求失败 |
-| Web 连接地址 | 监听与代理使用同一份地址合同 | 自定义地址可达；未启用聊天与启动中可区分 |
+| Web 连接地址 | 监听与代理使用同一份地址合同 | 自定义地址可达；不可达明确 unavailable，不猜测启动状态 |
 | 渠道控制 | 输入与中断由同一个来源路由决定 | 异名来源接管 Telegram 后仍可停止；原消息与确认顺序不变 |
 | 材料选择 | 执行场景表达材料用途，不列实现名 | 异名同用途 provider 遵守相同选择；默认提示词集合保持 |
 | 文档与资源说明 | 文档 owner 发布读取与资源描述，消费者不掌握私有路径 | 检查接口保持原 DTO；缺席可见；不迁移原文件 |
 | 重启回执 | 来源提供自己的完成凭据，不由重启消费者猜 source 名 | frame 与 delivery 的确切完成门槛保留；未知效果不重放 |
-| 遗留表示 | 删除有证据的来回转换，不删除持久恢复协议 | 附件事实、旧接管解码与公开 API 保持 |
+| 遗留表示 | 删除有证据的来回转换，不删除持久恢复协议 | 附件事实与旧接管解码保持；现行统计入口修复，废弃入口明确退役 |
 
 各层只改变自己的能力选择和缺席行为。Message/source ID、Session 属性、
 配置值、文档位置、binding、归档和外部回执保持原 owner、格式与读写协议。
@@ -165,6 +165,22 @@ Bus 不再定义第二个 AttachmentKind，而是继续从原 import 路径导�
 临时实测覆盖旧 pickle/JSON、两个真实导入入口、SQLite metadata 与有界 read lease；
 只在 TemporaryDirectory 中创建文件。恢复点 6ad739de 与
 /tmp/akashic-orthology-before-attachment-kind-6ad739de.tar。
+
+### 模型统计直接读取 Models owner
+
+聊天输入栏原来仍请求 /api/settings/model/calls/{id}，但旧 Chat model_control 已不再
+接入 Channel factory，实际统计读取断链。前端现在使用 Models 已拥有的
+/api/dashboard/models/calls/{id}。删除未接线的客户端 Model RPC 桥接、重复 Protocol
+与能力列表；路由工厂要求调用者明确给出前缀，不再默认猜旧客户端地址。
+Shell 将旧 settings/model 路径统一返回已有退役响应 410，不再代理到 Chat。
+实际模型选择与它的错误处理保持；Models 仍是唯一配置、调用记录与统计 owner。
+
+临时场景 orthology_model_stats.py 用真实 ModelsStore 写入受控调用记录，再由 Node
+执行真实前端 loadWebModelCallStats，经 Shell HTTP → Models router → SQLite 读取。
+验证耗时字段、未知 ID 404、旧 GET/POST 410、无私有凭据泄漏及记录前后不变。
+场景不是模型请求或完整插件发布验收。47 项概念测试、Core/tests 与本层插件 Pyright、
+边界、Yoyo、协议、前端类型及 Vite 构建通过；构建仅写 /tmp。
+恢复点 a04eac84 与 /tmp/akashic-orthology-before-model-stats-a04eac84.tar。
 
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 

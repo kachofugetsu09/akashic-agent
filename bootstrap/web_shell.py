@@ -149,25 +149,7 @@ def create_web_shell_app(
             )
         return await _proxy_http(request, chat_socket, f"/api/chat/{proxy_path}")
 
-    @app.api_route(
-        "/api/settings/model/{proxy_path:path}",
-        methods=["GET", "POST", "OPTIONS"],
-    )
-    async def proxy_model_settings(proxy_path: str, request: Request) -> Response:
-        rejection = _reject_settings_request(request)
-        if rejection is not None:
-            return rejection
-        response = await _proxy_http(
-            request,
-            chat_socket,
-            f"/api/chat/model-settings/{proxy_path}",
-        )
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
-
+    @app.api_route("/api/settings/model/{proxy_path:path}", methods=["GET", "POST", "OPTIONS"])
     @app.api_route("/api/settings/state", methods=["GET", "HEAD", "OPTIONS"])
     @app.api_route("/api/settings/models", methods=["POST", "OPTIONS"])
     @app.api_route("/api/settings/apply", methods=["POST", "OPTIONS"])
@@ -226,23 +208,6 @@ def create_web_shell_app(
         name="web-shell-static-and-settings",
     )
     return app
-
-
-def _reject_settings_request(request: Request) -> JSONResponse | None:
-    """Keep authenticated mutations at the public 2236 boundary."""
-
-    if request.method in {"GET", "HEAD", "OPTIONS"}:
-        return None
-    expected = f"http://{request.url.netloc}"
-    if (
-        request.headers.get("origin", "") == expected
-        and request.headers.get("x-akasic-csrf") == "1"
-    ):
-        return None
-    return JSONResponse(
-        status_code=403,
-        content={"code": "csrf_rejected", "message": "请求来源无效"},
-    )
 
 
 def create_web_shell_server(
