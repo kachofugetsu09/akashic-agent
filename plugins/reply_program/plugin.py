@@ -3,7 +3,7 @@ from functools import partial
 from agent.plugin_composition import CHAT_MODELS, Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
-from agent.plugin_contracts.reply import REPLY_EXECUTE as REPLY_EXECUTE
+from agent.plugin_contracts.reply import REPLY_EXECUTE, REPLY_EXECUTE_V2
 
 from .inputs import (
     CONTENT,
@@ -34,7 +34,7 @@ inject = (SOURCE_CHECK, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, M
 
 async def apply(ctx: Context) -> None:
     """在同一代绑定程序依赖；每次调用仍自行持有实际执行租约。"""
-    _ = await ctx.provide(REPLY_EXECUTE, ctx.entrypoint(partial(
+    execute = ctx.entrypoint(partial(
         run_reply, models=ctx.require(CHAT_MODELS), content=ctx.require(CONTENT),
         context=ctx.require(CONTEXT), tools=ctx.require(TOOLS), cleanup=ctx.require(TOOL_CLEANUP),
         react=ctx.require(REACT), materials=ctx.require(MATERIALS),
@@ -44,4 +44,6 @@ async def apply(ctx: Context) -> None:
         model_content=ctx.require(MODEL_CONTENT), model_projection=ctx.require(MODEL_PROJECTION),
         writers=ctx.require(MESSAGE_WRITERS), owner_state=ctx.require(OWNER_STATE),
         artifact_reader=ctx.require(ARTIFACT_READ),
-    )))
+    ))
+    _ = await ctx.provide(REPLY_EXECUTE, execute)
+    _ = await ctx.provide(REPLY_EXECUTE_V2, ctx.entrypoint(partial(execute, exclude_material_kinds=frozenset())))

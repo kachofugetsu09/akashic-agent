@@ -14,6 +14,7 @@ from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.models import ContentRenderer
+from agent.plugin_contracts.context import MaterialKind
 from agent.plugin_contracts.tools import ToolPresentation, ToolView
 
 
@@ -36,6 +37,7 @@ class ReplyExecute(Protocol):
         tool_view: ToolView | None = None,
         tool_names: Sequence[str] | None = None,
         exclude_materials: frozenset[str] = frozenset(),
+        exclude_material_kinds: frozenset[MaterialKind] | None = None,
         prompt_hints: Sequence[str] = (),
         fixed_bindings: Mapping[str, str] | None = None,
         preview: Callable[[str], AbstractContextManager[StreamCallback]] | None = None,
@@ -46,6 +48,7 @@ class ReplyExecute(Protocol):
 
 
 REPLY_EXECUTE = ServiceKey[ReplyExecute]("reply.execute.v1")
+REPLY_EXECUTE_V2 = ServiceKey[ReplyExecute]("reply.execute.v2")
 
 
 class Completion(Protocol):

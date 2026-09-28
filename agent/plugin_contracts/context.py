@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_contracts import ContentPart, ContentReferences, Message
 from agent.plugin_contracts.models import ContextModel
 
+MaterialKind = Literal["context", "recall", "profile"]
 MaterialData = Mapping[str, object]
 SummaryData = Mapping[str, object]
 Prepare = Callable[[tuple[Message, ...], str], Awaitable[MaterialData]]
@@ -92,14 +93,18 @@ class ContextMaterials(Protocol):
         *,
         name: str,
         prepare: Prepare,
+        kind: MaterialKind | None = None,
         priority: int = 0,
         prompt: bool = False,
         reduce: SummaryReducer | None = None,
     ) -> Effect: ...
     def bind(
-        self, *, exclude: frozenset[str] = frozenset()
+        self, *, exclude: frozenset[str] = frozenset(),
+        exclude_kinds: frozenset[MaterialKind] | None = None
     ) -> AbstractAsyncContextManager[MaterialView]: ...
 
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 MATERIALS = ServiceKey[ContextMaterials]("context.materials.v3")
+
+MATERIALS_V4 = ServiceKey[ContextMaterials]("context.materials.v4")

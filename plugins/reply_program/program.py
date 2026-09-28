@@ -8,6 +8,7 @@ from agent.plugin_composition.channels import ChannelAttachmentReadPort
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
+from agent.plugin_contracts.context import MaterialKind
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .inputs import (
@@ -55,6 +56,7 @@ async def run_reply(
     tool_view: ToolView | None = None,
     tool_names: Sequence[str] | None = None,
     exclude_materials: frozenset[str] = frozenset(),
+    exclude_material_kinds: frozenset[MaterialKind] | None = None,
     prompt_hints: Sequence[str] = (),
     fixed_bindings: Mapping[str, str] | None = None,
     preview: Preview | None = None,
@@ -85,7 +87,7 @@ async def run_reply(
         cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
-        materials.bind(exclude=exclude_materials) as material_view,
+        materials.bind(exclude=exclude_materials, exclude_kinds=exclude_material_kinds) as material_view,
     ):
         model = execution.chat("agent")
         keep_input_ids = tuple(

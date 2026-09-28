@@ -12,7 +12,7 @@ from agent.plugin_contracts.models import (
     MODEL_CONTENT as MODEL_CONTENT,
     ModelContent as ModelContent,
 )
-from agent.plugin_contracts.reply import REPLY_EXECUTE as REPLY_EXECUTE
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V2 as REPLY_EXECUTE
 
 from .messages import HINTS, render
 from .request import STAGE_TOOLS, Request, WakeFailure, read_phase
@@ -58,8 +58,8 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             terminal_tools=frozenset(
                 name for name in names if name in STAGE_TOOLS[phase.stage]
             ),
-            exclude_materials=(
-                frozenset({"akasha", "markdown_memory"})
+            exclude_material_kinds=(
+                frozenset({"recall", "profile"})
                 if phase.stage in {"investigate", "alert"}
                 else frozenset()
             ),

@@ -12,7 +12,7 @@ from agent.plugin_contracts.compaction import (
 )
 from agent.plugin_contracts.context import (
     CONTEXT as CONTEXT,
-    MATERIALS as MATERIALS,
+    MATERIALS_V4 as MATERIALS,
     ContextBuilder as ContextBuilder,
 )
 from agent.plugin_contracts.models import ContextModel as ContextModel

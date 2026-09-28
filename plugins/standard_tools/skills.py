@@ -188,7 +188,7 @@ async def register_skills(ctx: Context) -> ToolRef:
             text += "\n\n## 当前常驻技能\n\n" + "\n\n".join(active)
         return {"system_prompt": text, "reminders": ()}
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="skills", prepare=prepare, prompt=True, priority=300)
+    _ = await ctx.require(MATERIALS).register(ctx, kind="context", name="skills", prepare=prepare, prompt=True, priority=300)
     return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx, name="load_skill", description="按技能名称读取完整指令和固定资源目录；先读取再执行，相对资源以返回的 base_directory 为根。未知、不可用或空技能返回错误。",
         parameters=SkillQuery.model_json_schema(), open=open_tool, capture=capture,
