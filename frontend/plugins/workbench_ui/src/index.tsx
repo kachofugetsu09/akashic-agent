@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { MaterialIconButton } from "@akashic/web-ui-v1";
 import type { WebEntryView, WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import type { WorkbenchUi } from "@akashic/workbench-ui-v2";
@@ -203,55 +203,14 @@ function Brand(): React.ReactElement {
 }
 
 function ModuleSwitcher(props: NavigationProps): React.ReactElement {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const current = props.plugins.find((plugin) => plugin.id === props.currentPluginId) ?? null;
-  const currentLabel = current?.label ?? "Sessions";
-  const currentCount = current ? props.counts[current.id] ?? 0 : props.sessionsCount;
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: PointerEvent): void => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      setOpen(false);
-      triggerRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
-
-  const select = (pluginId: string | null): void => {
-    props.onSelect(pluginId);
-    setOpen(false);
-    queueMicrotask(() => triggerRef.current?.focus());
-  };
-
-  return <div className="module-switcher" ref={rootRef}>
-    <button ref={triggerRef} className="module-switcher-trigger" type="button" aria-expanded={open}
-      aria-controls="workbench-module-options" onClick={() => setOpen((current) => !current)}>
-      <span className="module-switcher-label">{currentLabel}</span>
-      <span className="module-switcher-meta"><span className="module-switcher-count">{currentCount}</span>
-        <ChevronDown className={open ? "open" : ""} size={16} aria-hidden="true" /></span>
-    </button>
-    <div id="workbench-module-options" className="module-switcher-options" hidden={!open}>
-      <button className={`module-switcher-option ${props.currentPluginId === null ? "active" : ""}`} type="button"
-        aria-current={props.currentPluginId === null ? "page" : undefined} onClick={() => select(null)}>
-        <span>Sessions</span><span>{props.sessionsCount}</span>
-      </button>
-      {props.plugins.map((plugin) => <button key={plugin.id}
-        className={`module-switcher-option ${props.currentPluginId === plugin.id ? "active" : ""}`} type="button"
-        aria-current={props.currentPluginId === plugin.id ? "page" : undefined} onClick={() => select(plugin.id)}>
-        <span>{plugin.label}</span><span>{props.counts[plugin.id] ?? 0}</span>
-      </button>)}
-    </div>
+  return <div className="module-switcher">
+    <select aria-label="工作台模块" value={props.currentPluginId ?? ""}
+      onChange={(event) => props.onSelect(event.target.value || null)}>
+      <option value="">会话 · {props.sessionsCount}</option>
+      {props.plugins.map((plugin) => <option key={plugin.id} value={plugin.id}>
+        {plugin.label} · {props.counts[plugin.id] ?? 0}
+      </option>)}
+    </select>
   </div>;
 }
 
@@ -280,6 +239,10 @@ function Messages(props: NavigationProps & { selected: string | null; select(key
   const [page, setPage] = useState<MessagePage | null>(null);
   const [activeMessage, setActiveMessage] = useState<MessageRow | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const sessionBack = useRef<HTMLButtonElement>(null);
+  const messageTrigger = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => { if (props.selected) sessionBack.current?.focus(); }, [props.selected]);
+  useEffect(() => { if (!activeMessage) messageTrigger.current?.focus(); }, [activeMessage]);
   const sessionRequest = useRef<AbortController | null>(null);
   const messageRequest = useRef<AbortController | null>(null);
   const report = useCallback((error: unknown): void => {
@@ -344,7 +307,7 @@ function Messages(props: NavigationProps & { selected: string | null; select(key
   }, [loadMessages, report]);
 
   const messageColumns = "64px 86px minmax(220px, 1fr) 110px 92px 104px";
-  return <div className="shell">
+  return <div className={`shell sessions-shell ${props.selected !== null ? "has-selection" : ""} ${activeMessage ? "has-detail" : ""}`}>
     <aside className="sessions-pane" aria-label="会话目录">
       <Brand />
       <ModuleSwitcher {...props} sessionsCount={sessions.total} />
@@ -368,10 +331,13 @@ function Messages(props: NavigationProps & { selected: string | null; select(key
     </aside>
     <section className="content-shell">
       <header className="content-toolbar">
+        <button ref={sessionBack} className="mobile-back" type="button" onClick={() => props.select(null)}>
+          <ChevronLeft size={18} aria-hidden="true" />会话列表
+        </button>
         <div className="content-filters"><div className="filter-row">
           {props.selected ? <div className="active-session-chip"><span>Session</span><code>{props.selected}</code>
             <button aria-label="清除 Session 筛选" type="button" onClick={() => props.select(null)}>×</button></div>
-            : <span className="muted-text">从左侧选择一个 Session 查看原始消息</span>}
+            : <span className="muted-text">选择一个会话查看原始消息</span>}
         </div></div>
         <div className="content-toolbar-actions"><Btn size="sm" variant="ghost" onClick={() => void loadSessions().catch(report)}>刷新会话</Btn>
           {props.selected && <Btn size="sm" variant="secondary" onClick={() => void loadMessages().catch(report)}>读取最新消息</Btn>}</div>
@@ -379,27 +345,27 @@ function Messages(props: NavigationProps & { selected: string | null; select(key
       {error && <div role="alert" className="plugin-entry-error"><strong>请求失败</strong><span>{error}</span></div>}
       <main className="workspace">
         <section className="messages-pane">
-          <div className="table-head" style={{ gridTemplateColumns: messageColumns }}>
+          <div className="table-head" style={{ "--table-columns": messageColumns } as React.CSSProperties}>
             <div>Seq</div><div>Author</div><div>Content</div><div>Source</div><div>Kind</div><div>Timestamp</div>
           </div>
           <div className="table-body">
             {page?.has_more && <div className="pane-head"><Btn size="sm" variant="ghost" onClick={() => void loadMessages(page).catch(report)}>读取更早消息</Btn></div>}
             {page?.items.map((message) => <div className="table-row-wrap" key={message.id}>
-              <button className={`table-row table-row ${activeMessage?.id === message.id ? "active" : ""}`} style={{ gridTemplateColumns: messageColumns }}
-                type="button" aria-expanded={activeMessage?.id === message.id} onClick={() => setActiveMessage((current) => current?.id === message.id ? null : message)}>
-                <span className="cell-seq mono">#{message.seq}</span>
-                <span><span className={`role-pill ${roleClass(message.author)}`}>{message.author}</span></span>
-                <span className="content-preview">{stripMarkdown(messageText(message))}</span>
-                <span className="cell-source">{message.source}</span>
-                <span className="cell-type">{message.body.kind}</span>
-                <span className="cell-time mono">{shortTs(message.timestamp)}</span>
+              <button className={`table-row message-row ${activeMessage?.id === message.id ? "active" : ""}`} style={{ "--table-columns": messageColumns } as React.CSSProperties}
+                type="button" aria-expanded={activeMessage?.id === message.id} onClick={(event) => { messageTrigger.current = event.currentTarget; setActiveMessage((current) => current?.id === message.id ? null : message); }}>
+                <span className="cell-seq mono" data-label="序号">#{message.seq}</span>
+                <span data-label="作者"><span className={`role-pill ${roleClass(message.author)}`}>{message.author}</span></span>
+                <span className="content-preview" data-label="正文">{stripMarkdown(messageText(message))}</span>
+                <span className="cell-source" data-label="来源">{message.source}</span>
+                <span className="cell-type" data-label="类型">{message.body.kind}</span>
+                <span className="cell-time mono" data-label="时间">{shortTs(message.timestamp)}</span>
               </button>
             </div>)}
             {props.selected && page?.items.length === 0 && <div className="empty-state">此会话没有消息。</div>}
             {!props.selected && <div className="empty-state">选择 Session 后，这里会显示按原始顺序保存的 Message。</div>}
           </div>
           <footer className="table-foot"><div>{page ? `已读取 ${page.items.length} 条` : "消息只读视图"}</div>
-            <div className="muted-text">编辑、撤销和删除尚未接入；历史摘要保持保留</div></footer>
+            </footer>
         </section>
         <aside className={`detail-pane ${activeMessage ? "is-open" : ""}`} aria-label="详情">
           {activeMessage ? <MessageDetail message={activeMessage} onClose={() => setActiveMessage(null)} />
@@ -411,10 +377,12 @@ function Messages(props: NavigationProps & { selected: string | null; select(key
 }
 
 function MessageDetail({ message, onClose }: { message: MessageRow; onClose(): void }): React.ReactElement {
+  const heading = useRef<HTMLDivElement>(null);
+  useEffect(() => { heading.current?.focus(); }, []);
   return <div className="detail-wrap">
-    <div className="detail-toolbar"><div><div className="detail-title">消息详情</div>
+    <div className="detail-toolbar"><div><div ref={heading} tabIndex={-1} className="detail-title">消息详情</div>
       <div className="detail-subtext">{message.session_id} · #{message.seq}</div></div>
-      <MaterialIconButton variant="standard" label="关闭详情" onClick={onClose}><X size={18} aria-hidden="true" /></MaterialIconButton></div>
+      <Btn variant="ghost" onClick={onClose}><ChevronLeft size={18} aria-hidden="true" />消息列表</Btn></div>
     <div className="detail-grid">
       {detailRow("author", <span className={`role-pill ${roleClass(message.author)}`}>{message.author}</span>)}
       {detailRow("source", <code>{message.source}</code>)}
@@ -442,11 +410,19 @@ function Slot({ plugin, render, dispatch, slot }: { plugin: PluginConfig; render
 
 function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactElement {
   const { plugin } = props;
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [state, setState] = useState<PluginState>({ page: 1, pageSize: plugin.pageSize ?? 25,
     total: 0, items: [], activeRowKey: null, activeDetail: null, filters: {},
     sortBy: plugin.defaultSortBy ?? "", sortOrder: plugin.defaultSortOrder ?? "desc", selectedIds: new Set() });
   const [detailLoading, setDetailLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const detailBack = useRef<HTMLButtonElement>(null);
+  const rowTrigger = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (state.activeRowKey) detailBack.current?.focus();
+    else rowTrigger.current?.focus();
+  }, [state.activeRowKey]);
   const readState = useLatestReader(state);
   const request = useRef<AbortController | null>(null);
   const detailRequest = useRef<AbortController | null>(null);
@@ -455,10 +431,14 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
     detailRequest.current?.abort();
     const controller = new AbortController();
     request.current = controller;
+    setLoading(true);
     return controller;
   }, []);
   const report = useCallback((error: unknown) => {
-    if (!isAbortError(error)) setError(error instanceof Error ? error.message : String(error));
+    if (!isAbortError(error)) {
+      setLoading(false);
+      setError(error instanceof Error ? error.message : String(error));
+    }
   }, []);
   const closeDetail = useCallback(() => {
     detailRequest.current?.abort();
@@ -467,6 +447,7 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
   }, []);
   const applyPage = useCallback((update: (state: PluginState) => PluginState) => {
     setState(update);
+    setLoading(false);
     setError(null);
   }, []);
   const dispatch = useMemo(() => makeDispatch(plugin, readState, applyPage, startRead, undefined, closeDetail, report),
@@ -485,6 +466,7 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
     if (!controller.signal.aborted) {
       setState((state) => ({ ...state, ...result, page: page ?? current.page, activeRowKey: null, activeDetail: null, selectedIds: new Set() }));
       setDetailLoading(false);
+      setLoading(false);
       setError(null);
     }
   }, [plugin, readState, startRead]);
@@ -529,21 +511,26 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
   const columns = `${hasBatch ? "32px " : ""}${gridTemplate(plugin.columns)}`;
   const pageCount = Math.max(1, Math.ceil(state.total / state.pageSize));
   const workbenchLayout = plugin.layout === "workbench" && plugin.renderMain;
-  return <div className="shell">
-    <aside className="sessions-pane">
+  return <div className={`shell plugin-shell ${state.activeRowKey ? "has-detail" : ""}`}>
+    <aside className={`sessions-pane ${navigationOpen ? "nav-open" : ""}`}>
       <Brand />
       <ModuleSwitcher {...props} sessionsCount={props.sessionsCount} />
-      <div className="explorer-body">{plugin.renderNavBody
-        ? <Slot plugin={plugin} render={plugin.renderNavBody} dispatch={dispatch} slot="navigation" />
-        : <div className="detail-empty"><div className="detail-empty-title">{plugin.label}</div>
-          <div className="detail-empty-text">此面板没有额外导航。</div></div>}</div>
+      {plugin.renderNavBody && <>
+        <button className="mobile-back" type="button" aria-expanded={navigationOpen}
+          aria-controls={`workbench-navigation-${plugin.id}`} onClick={() => setNavigationOpen((open) => !open)}>
+          {navigationOpen ? "收起筛选与分类" : "筛选与分类"}
+        </button>
+        <div className="explorer-body" id={`workbench-navigation-${plugin.id}`}>
+          <Slot plugin={plugin} render={plugin.renderNavBody} dispatch={dispatch} slot="navigation" />
+        </div>
+      </>}
     </aside>
     <section className="content-shell">
       <header className="content-toolbar">
         <div className="content-filters">{plugin.renderFilters
           ? <Slot plugin={plugin} render={plugin.renderFilters} dispatch={dispatch} slot="filters" />
           : <div className="filter-row"><strong>{plugin.viewLabel ?? plugin.label}</strong></div>}</div>
-        <div className="content-toolbar-actions"><span className="muted-text">{plugin.countTitle?.(state.total) ?? `${state.total} 条`}</span>
+        <div className="content-toolbar-actions">{!workbenchLayout && <span className="muted-text">{plugin.countTitle?.(state.total) ?? `${state.total} 条`}</span>}
           <Btn size="sm" variant="ghost" onClick={() => void load().catch(report)}>刷新</Btn>
           {plugin.renderTopbarAction && <Slot plugin={plugin} render={plugin.renderTopbarAction} dispatch={dispatch} slot="topbar action" />}</div>
       </header>
@@ -555,14 +542,14 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
               {plugin.batchActions?.map((action) => <Btn key={action.label} size="sm" variant="secondary" className={action.className}
                 onClick={() => void action.run([...state.selectedIds]).then(() => load()).catch(report)}>{action.label}</Btn>)}
               <Btn size="sm" variant="ghost" onClick={() => setState((state) => ({ ...state, selectedIds: new Set() }))}>取消选择</Btn></div>}
-            <div className="table-head" style={{ gridTemplateColumns: columns }}>
+            <div className="table-head" style={{ "--table-columns": columns } as React.CSSProperties}>
               {hasBatch && <div />}
               {plugin.columns.map((column) => column.sortable
                 ? <SortHead key={column.key} label={column.label} active={state.sortBy === column.key} order={state.sortOrder}
                     onClick={() => dispatch.setSort(column.key)} />
                 : <div key={column.key}>{column.label}</div>)}
             </div>
-            <div className="table-body">{state.items.length ? state.items.map((item) => {
+            <div className="table-body" aria-busy={loading}>{loading ? <div className="empty-state" role="status">正在读取记录…</div> : state.items.length ? state.items.map((item) => {
               const key = String(item[plugin.rowKey] ?? "");
               const selected = state.selectedIds.has(key);
               return <div className="table-row-wrap" key={key}>
@@ -573,13 +560,13 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
                     return { ...state, selectedIds };
                   })} /></label>}
                 <button className={`table-row table-row ${state.activeRowKey === key ? "active" : ""} ${selected ? "selected" : ""} ${plugin.rowClass?.(item) ?? ""}`}
-                  style={{ gridTemplateColumns: columns }} type="button" aria-expanded={state.activeRowKey === key}
-                  onClick={() => void open(item).catch(report)}>
+                  style={{ "--table-columns": columns } as React.CSSProperties} type="button" aria-expanded={state.activeRowKey === key}
+                  onClick={(event) => { rowTrigger.current = event.currentTarget; void open(item).catch(report); }}>
                   {hasBatch && <span aria-hidden="true" />}
                   {plugin.columns.map((column) => column.renderCell
-                    ? <span key={column.key} className={columnCellClass(column)} title={column.rawTitle ? String(item[column.key] ?? "") : undefined}
+                    ? <span key={column.key} data-label={column.label} className={columnCellClass(column)} title={column.rawTitle ? String(item[column.key] ?? "") : undefined}
                         dangerouslySetInnerHTML={{ __html: column.renderCell(item[column.key], item) }} />
-                    : <span key={column.key} className={columnCellClass(column)} title={column.rawTitle ? String(item[column.key] ?? "") : undefined}>
+                    : <span key={column.key} data-label={column.label} className={columnCellClass(column)} title={column.rawTitle ? String(item[column.key] ?? "") : undefined}>
                         {formatPluginCell(plugin, column, item)}</span>)}
                 </button>
               </div>;
@@ -592,6 +579,9 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
                   onClick={() => void load(state.page + 1).catch(report)}><ChevronRight size={18} aria-hidden="true" /></MaterialIconButton></div></footer>
           </section>
           <aside className={`detail-pane ${state.activeRowKey ? "is-open" : ""}`} aria-label="详情">
+            {state.activeRowKey && <div className="mobile-detail-toolbar"><button ref={detailBack} className="mobile-back" type="button" onClick={closeDetail}>
+              <ChevronLeft size={18} aria-hidden="true" />返回列表
+            </button></div>}
             {state.activeRowKey && <button className="detail-close-btn" type="button" aria-label="关闭详情" onClick={closeDetail}>
               <X size={18} aria-hidden="true" />
             </button>}
