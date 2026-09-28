@@ -1887,8 +1887,6 @@ class PluginManager:
         for index, (ref, record) in enumerate(zip(components, records, strict=True)):
             code_dir = self._archive.open(cast(str, record["code"]))
             revision = cast(str, record["source_revision"])
-            if _source_revision(code_dir) != revision:
-                raise RuntimeError("插件归档源码身份不一致")
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id in generations:
                 raise ValueError(f"归档重复包含插件: {plugin_id}")

@@ -35,8 +35,8 @@ class PluginArchive:
         # 1. 文件树是完整输入；运行环境等边界由调用者明确选定。
         if self.path.is_relative_to(source.resolve()):
             raise ValueError("插件归档不能写入自身输入目录")
-        expected = tree_entries(source, exclude=exclude)
-        identity = hashlib.sha256(encode_tree(expected)).hexdigest()
+        source_entries = tree_entries(source, exclude=exclude)
+        identity = hashlib.sha256(encode_tree(source_entries)).hexdigest()
         if (self.path / identity).exists() or (self.path / identity).is_symlink():
             _ = self.open(identity)
             sync_directory(self.path)
@@ -54,17 +54,13 @@ class PluginArchive:
             payload = encode_tree(actual)
             archive_id = hashlib.sha256(payload).hexdigest()
 
-            # 2. 归档文件及索引先落盘，再让内容身份可见。
+            # 2. 归档文件先落盘，再让内容身份可见。
             for relative, kind, _ in actual:
                 item = tree / relative
                 if kind == "file":
                     item.chmod(0o555 if item.stat().st_mode & 0o111 else 0o444)
                     with item.open("rb") as stream:
                         os.fsync(stream.fileno())
-            with (pending / "index.json").open("xb") as stream:
-                _ = stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
             for current, _, _ in os.walk(tree, topdown=False, followlinks=False):
                 sync_directory(Path(current))
             sync_directory(pending)

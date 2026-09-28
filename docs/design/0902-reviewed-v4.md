@@ -1728,7 +1728,7 @@ Programmatic 最终分项对账：来源、Web/Mobile Channel、Subagent、Core/
 | 材料默认授权 | Context 内写死业务名；由组合配置声明 | Context 默认空 Prompt grant、`summary_source=[]`，正式初始化配置列出具体 owner。卸载或关闭材料有真实 TOML 表达；已授予但缺失仍报错 |
 | 人格和规则 | 继续 Core PromptBlock；普通 `prompt` 材料 | `default_prompt` 只读已授予 VEDA 文件，复用严格 UTF-8/非空边界。一般事实/完成/格式规则保留；旧记忆工具名称和相互矛盾的 Skill 路由不再冒充当前能力 |
 | 技能读取范围 | 扫 workspace/builtin 并叠加插件；只读已发布插件 catalog | 只读当前 exact snapshot 的 `plugin_skill_index`。不读取可变软链接或恢复旧手工目录，不增加转发型 Core Skill 服务 |
-| 技能恢复 | 只存正文；持久旧目录路径；固定完整资源树 | 使用既有 `PluginArchive` 保存完整 skill root；binding 记录 tree ref 与正文 hash。正文、相对 scripts/resources 在重启、升级和卸载后仍来自原树 |
+| 技能恢复 | 只存正文；持久旧目录路径；固定完整资源树 | 使用既有 `PluginArchive` 保存完整 skill root；binding 记录 tree ref。按 [0077](../decisions/0077-trust-installed-runtime-inputs.md) 直接读取已发布目录，不再保存或复验正文摘要；正文、相对 scripts/resources 在重启、升级和卸载后仍来自原树 |
 | 工具权限 | 将 Tools 倒灌材料 API；目录与工具 schema 各守边界 | 目录和 always 正文均为低信任材料，不许据此宣称工具可用。实际 schema 决定 `load_skill` 是否获授；材料不枚举工具或复制菜单 |
 | 时间 | 重放时取 now；改写 Input；投影持久接纳时间 | 取同 source 最新 Input 的 `recorded_at`，标明“接纳时间”。不假称渠道发送时间；无 origin 不猜渠道或设备 |
 
