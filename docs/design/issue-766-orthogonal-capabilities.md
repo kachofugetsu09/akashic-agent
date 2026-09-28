@@ -112,6 +112,34 @@ Prompt ──── 人格的窄读取口 ─────┼── 诊断目录 
 临时场景用真实 Prompt、Markdown、Context 和 Inspection，验证可选安装/卸载/重装、
 异名 owner、文件缺失/编码/大小与卸载后文件保留。没有模型调用或正式数据操作。
 
+### 材料按用途选择
+
+新材料声明 kind：context 为当前程序环境/指令/摘要，recall 为按历史检索的召回，
+profile 为长期用户/助手档案。Scheduler 排除 recall/profile，Subagent 排除 recall，
+Wake 调查/提醒阶段排除两者，其他阶段保留。换 provider 或材料名不改变这些选择。
+名称仍是材料身份与 Prompt 授权索引；用途不授予 Prompt 权或摘要发布权。
+新选择下 prompt_sources 仅表示授权，不要求未安装的可选材料存在；summary_source
+仍表示必需的唯一摘要 owner，不能静默丢失摘要。未声明用途的旧贡献遇到用途排除时
+明确失败，不按插件名猜测，也不把未知材料偷偷注入受限程序。
+
+context.materials.v4 / reply.execute.v2 显式标出新能力。新贡献者和新调用者声明新 key，
+旧 provider 缺能力时不能满足它。所有当前生产材料与来源已切换；旧 v3/v1 名称选择
+仍由同一实例处理，只用于旧调用合同/未结算归档恢复，不复制目录、状态或执行程序。
+两版 key 使用精确独立 Protocol，不能通过旧接口静态调用新参数；Reply 的旧入口
+在可选子 Fiber 中依赖 v3，新用途入口不依赖旧接口是否存在。
+旧路径保留原 grant readiness 与名称排除；删除它必须另行证明所有归档调用已结算。
+当前新默认路径不再采用旧名称选择。
+
+```text
+来源 ── 排除用途 ── Reply ── Materials ── 持有被选贡献者
+                              │
+                              └── owner 声明 kind；授权仍按真实 owner 核对
+```
+
+临时材料场景使用完全不同的材料名/provider，验证用途选择、授权与可用性独立、
+provider 排空、未知用途拒绝以及旧名称选择；没有模型调用或持久化更改。
+恢复点 13655abe 与 /tmp/akashic-orthology-before-material-policy-13655abe.tar。
+
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
 ## 目标与取舍

@@ -21,7 +21,7 @@ from agent.plugin_composition.messages import (
 from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import RESTART_GATE, Task
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.reply import REPLY_EXECUTE as REPLY_EXECUTE
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V2 as REPLY_EXECUTE
 from agent.plugin_contracts.sources import (
     CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
     SOURCES as SOURCES,

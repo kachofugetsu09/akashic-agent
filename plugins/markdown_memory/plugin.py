@@ -863,7 +863,7 @@ async def apply(ctx: Context) -> None:
             except asyncio.CancelledError:
                 pass
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="markdown_memory", prepare=prepare, prompt=True, priority=200)
+    _ = await ctx.require(MATERIALS).register(ctx, kind="profile", name="markdown_memory", prepare=prepare, prompt=True, priority=200)
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast
+from contextlib import AbstractAsyncContextManager
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.channels import ChannelAttachmentReadPort
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
+from agent.plugin_contracts.context import MaterialView
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .inputs import (
@@ -16,7 +18,6 @@ from .inputs import (
     Content,
     ContentRenderer,
     ContextBuilder,
-    ContextMaterials,
     ContextModel,
     Materials,
     ModelChecks,
@@ -44,7 +45,7 @@ async def run_reply(
     model_checks: ModelChecks, model_content: ModelContent, model_projection: ModelProjections,
     writers: MessageWriters, owner_state: OwnerState, artifact_reader: ChannelAttachmentReadPort,
     react: Callable[..., Awaitable[Message]],
-    materials: ContextMaterials,
+    materials: AbstractAsyncContextManager[MaterialView],
     turn_projection: TurnProjection,
     render_content: ContentRenderer | None = None,
     read_call: CallReader,
@@ -54,7 +55,6 @@ async def run_reply(
     max_parallel_calls: int = 4,
     tool_view: ToolView | None = None,
     tool_names: Sequence[str] | None = None,
-    exclude_materials: frozenset[str] = frozenset(),
     prompt_hints: Sequence[str] = (),
     fixed_bindings: Mapping[str, str] | None = None,
     preview: Preview | None = None,
@@ -85,7 +85,7 @@ async def run_reply(
         cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
-        materials.bind(exclude=exclude_materials) as material_view,
+        materials as material_view,
     ):
         model = execution.chat("agent")
         keep_input_ids = tuple(

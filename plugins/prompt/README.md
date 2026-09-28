@@ -1,6 +1,6 @@
 # Prompt
 
-本包提供人格、行为规则和输入时间材料，依赖 `context.materials.v3`。
+本包提供人格、行为规则和输入时间材料，依赖 `context.materials.v4`。
 消费者通过 Context 的授权配置选择材料 provider；Core 不预置这个选择。
 
 插件首次 apply 只在缺失时创建 `memory/VEDA.md`；已有合法文件保持原始字节。初始化随实际安装插件启动，不需要第二次 setup 或独立 configure.py。空白、损坏或非 UTF-8 内容仍明确报错，不自动恢复默认人格。

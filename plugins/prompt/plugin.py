@@ -8,7 +8,7 @@ from typing import cast
 from agent.plugin_composition import Context
 from agent.plugin_contracts import Input, Message, json_value
 from agent.plugin_contracts.context import (
-    MATERIALS as MATERIALS,
+    MATERIALS_V4 as MATERIALS,
 )
 
 from agent.plugin_contracts.inspection import DOCUMENTS, Document
@@ -66,7 +66,7 @@ async def apply(ctx: Context) -> None:
             "reminders": (environment,),
         }
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="default_prompt", prepare=prepare, prompt=True, priority=100)
+    _ = await ctx.require(MATERIALS).register(ctx, kind="context", name="default_prompt", prepare=prepare, prompt=True, priority=100)
 
 
 async def publish_documents(ctx: Context) -> None:

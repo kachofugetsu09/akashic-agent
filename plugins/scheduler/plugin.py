@@ -23,7 +23,7 @@ from agent.plugin_composition.messages import (
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.timers import TIMERS
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.reply import REPLY_EXECUTE as REPLY_EXECUTE
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V2 as REPLY_EXECUTE
 
 from .inputs import ALL_TOOLS, CONTENT, DELIVERY, DELIVERY_SENDERS, TOOLS
 from .inspection import SCHEDULER_INSPECTION, SchedulerInspectionProvider
@@ -118,7 +118,7 @@ async def apply(ctx: Context) -> None:
                          tool_view=tool_view,
                          max_output_tokens=config.max_output_tokens,
                          max_steps=config.max_steps,
-                         exclude_materials=frozenset({'akasha', 'markdown_memory'}),
+                         exclude_material_kinds=frozenset({'recall', 'profile'}),
                      )
 
     async def start(_event: object) -> None:
