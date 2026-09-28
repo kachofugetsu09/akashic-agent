@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure ordinary model plugins through the public settings HTTP API."""
+"""Configure ordinary model plugins through the public Models HTTP contract."""
 
 from __future__ import annotations
 

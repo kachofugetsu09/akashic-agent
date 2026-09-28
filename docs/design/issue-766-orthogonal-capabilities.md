@@ -173,6 +173,7 @@ Bus 不再定义第二个 AttachmentKind，而是继续从原 import 路径导�
 /api/dashboard/models/calls/{id}。删除未接线的客户端 Model RPC 桥接、重复 Protocol
 与能力列表；路由工厂要求调用者明确给出前缀，不再默认猜旧客户端地址。
 Shell 将旧 settings/model 路径统一返回已有退役响应 410，不再代理到 Chat。
+程序化/Akasha Docker 探针与 Harbor benchmark 的模型配置也迁到同一 Models 公开前缀。
 实际模型选择与它的错误处理保持；Models 仍是唯一配置、调用记录与统计 owner。
 
 临时场景 orthology_model_stats.py 用真实 ModelsStore 写入受控调用记录，再由 Node
