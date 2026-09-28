@@ -254,7 +254,8 @@ export function activate(ctx) {
           </div>
           <button type="button" class="settings-secondary-button is-wide" data-directory>读取模型目录</button>
           <label class="is-wide" data-candidates hidden><span>模型型号（用途由试算核对）</span><select name="candidate" aria-label="向量模型型号"></select></label>
-          <label class="is-wide"><span>模型名称</span><input name="model" aria-label="向量模型名称" required maxlength="256" placeholder="从目录选择；目录不可用时填写服务提供的型号"></label>
+          <button type="button" class="settings-text-button is-wide" data-manual hidden>目录没有所需型号？手动填写</button>
+          <label class="is-wide" data-manual-field><span>模型名称</span><input name="model" aria-label="向量模型名称" required maxlength="256" placeholder="从目录选择；目录不可用时填写服务提供的型号"></label>
           <button type="button" class="settings-secondary-button is-wide" data-probe>试算实际维度</button>
           <p class="is-wide" role="status" data-result>还未试算。目录中的型号不代表已经支持向量。</p>
           </div><p class="settings-inline-error" role="alert" hidden></p>
@@ -278,10 +279,11 @@ export function activate(ctx) {
           const isNew = select.value.startsWith("new:");
           form.querySelector("[data-new-connection]").hidden = !isNew;
           for (const name of ["name", "endpoint", "key"]) { form.elements[name].required = isNew; form.elements[name].disabled = !isNew; }
-          candidatePanel.hidden = true; form.elements.candidate.replaceChildren(); form.elements.model.value = "";
+          candidatePanel.hidden = true; form.querySelector("[data-manual-field]").hidden = false; form.querySelector("[data-manual]").hidden = true; form.elements.candidate.replaceChildren(); form.elements.model.value = "";
         };
         updateMode();
         if (!select.options.length) { status.textContent = "没有可用的向量连接方式，请先安装支持向量的驱动。"; directory.disabled = true; probe.disabled = true; }
+        form.querySelector("[data-manual]").addEventListener("click", () => { invalidate(); form.querySelector("[data-manual-field]").hidden = false; form.elements.model.focus(); });
         const stopGuard = guardDialog(dialog, () => ({dirty, busy}));
         const changed = event => {
           if (busy) return;
@@ -320,6 +322,7 @@ export function activate(ctx) {
               if (!candidates.length) throw new Error("目录没有向量候选，请检查服务或手动填写型号后试算。");
               form.elements.candidate.replaceChildren(...candidates.map(item => new Option(item.model, item.model)));
               candidatePanel.hidden = false; model.value = candidates[0].model;
+              form.querySelector("[data-manual-field]").hidden = true; form.querySelector("[data-manual]").hidden = false;
               status.textContent = `读取到 ${candidates.length} 个候选型号。请选择，再点击“试算实际维度”。`;
             }
           } catch (reason) {
@@ -342,7 +345,7 @@ export function activate(ctx) {
             const existing = catalog.models.find(item => item.connectionId === connectionId && item.kind === "embedding" && item.model === chosen.model);
             if (existing) {
               if (existing.capabilities.embeddingDimensions !== chosen.capabilities.embeddingDimensions) throw new Error("试算维度与已保存模型不同。请新建独立连接；不会改变已有记忆空间。");
-              await command({type:"set_default", expected_revision:preview.revision, role:null, model_id:existing.id});
+              await command({type:"set_default", expected_revision:preview.revision, role:null, model_id:existing.id, verify_embedding:true});
             } else {
               const input = {expected_revision:preview.revision, model_id:modelId, connection_id:connectionId, kind:"embedding", model:chosen.model,
                 capabilities:{embedding_dimensions:chosen.capabilities.embeddingDimensions, embedding_normalization:chosen.capabilities.embeddingNormalization},

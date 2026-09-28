@@ -70,6 +70,7 @@ class SetDefaultModel:
     expected_revision: int
     role: str | None
     model_id: str
+    verify_embedding: bool = False
 
 
 @dataclass(frozen=True, slots=True)

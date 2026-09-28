@@ -1365,6 +1365,19 @@ class ModelsState:
                 raise RevisionConflictError("配置已改变，请重新验证当前模型。")
             return SettingsReceipt(revision=command.expected_revision, status="verified")
         elif isinstance(command, SetDefaultModel):
+            if command.verify_embedding:
+                if command.role is not None:
+                    raise ValueError("向量重验只能用于默认向量模型。")
+                snapshot = self._snapshot_required()
+                model = snapshot.models.get(command.model_id)
+                if model is None or not model.enabled or model.kind is not ModelKind.EMBEDDING:
+                    raise ModelUnavailableError("请选择已启用的向量模型。")
+                await self._check_model(AddModel(
+                    expected_revision=command.expected_revision, model_id=model.model_id,
+                    connection_id=model.connection_id, kind=model.kind, model=model.model,
+                    capabilities=model.capabilities, capability_sources=model.capability_sources,
+                    driver_config=model.driver_config,
+                ))
             revision = self.store.set_default(command)
         elif isinstance(command, SyncModels):
             revision = await self._sync_models(command)
@@ -1419,6 +1432,8 @@ class ModelsState:
         async with self.context.runtime_scope():
             self._check_snapshot_service(MODEL_SETTINGS, self.settings)
             # 1. 使用当前保存的凭据或明确的新连接草稿，禁止两者混用。
+            if (connection is None) == (connection_id is None):
+                raise ValueError("请选择已有连接或新连接草稿，两者不能同时使用。")
             snapshot = self._snapshot_or_empty()
             if snapshot.revision != expected_revision:
                 raise RevisionConflictError("配置已改变，请重新试算。")
@@ -1442,6 +1457,7 @@ class ModelsState:
                 raise ModelUnavailableError("此连接不支持自动试算维度，请选择支持向量试算的服务。")
             async with registration.context.runtime_scope():
                 result = await probe(descriptor, credential, model)
+                _check_embedding_probe_result(result, model)
             if self._snapshot_or_empty().revision != expected_revision:
                 raise RevisionConflictError("配置已改变，请重新试算。")
             return result
@@ -1674,6 +1690,7 @@ class ModelsState:
             )
             if definition.probe_embedding is not None:
                 result = await definition.probe_embedding(_driver_connection_descriptor(connection), driver_credential, model.model)
+                _check_embedding_probe_result(result, model.model)
                 if result.capabilities.embedding_dimensions != descriptor.dimensions:
                     raise ModelUnavailableError(f"服务实际返回 {result.capabilities.embedding_dimensions} 维，当前选择为 {descriptor.dimensions} 维。请重新试算后保存；已有记忆保持不变。")
                 return
@@ -1959,6 +1976,15 @@ class ModelsState:
             model,
             definition,
         )
+
+
+def _check_embedding_probe_result(result: DiscoveredModel, requested_model: str) -> None:
+    """驱动事实在唯一扩展边界核对，不能把候选用途或其他型号保存成向量。"""
+    dimensions = result.capabilities.embedding_dimensions
+    if (result.kind is not ModelKind.EMBEDDING or result.model != requested_model
+            or type(dimensions) is not int or dimensions <= 0
+            or result.capability_sources.embedding_dimensions != "probe"):
+        raise RuntimeError("向量驱动违反试算合同：用途、型号或实测维度无效；配置未保存。")
 
 
 def _driver_connection_descriptor(

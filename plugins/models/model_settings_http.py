@@ -214,6 +214,13 @@ class SetDefaultPayload(_Payload):
     expected_revision: int = Field(ge=0)
     role: Literal["default", "fast", "agent", "vision"] | None
     model_id: str = Field(min_length=1, max_length=128)
+    verify_embedding: bool = False
+
+    @model_validator(mode="after")
+    def check_verification_kind(self) -> SetDefaultPayload:
+        if self.verify_embedding and self.role is not None:
+            raise ValueError("向量重验只能用于默认向量模型。")
+        return self
 
 
 class SavedDiscoveryPayload(_Payload):
@@ -344,11 +351,6 @@ async def _discover_body(
     control: ModelControl,
     payload: ConnectionInput,
 ) -> dict[str, object]:
-    if payload.driver_id != "openai-compatible":
-        raise HTTPException(
-            status_code=422,
-            detail="模型预览仅支持 openai-compatible",
-        )
     models = await control.discover(_add_connection(payload))
     return {"models": [_discovered_payload(model) for model in models]}
 
@@ -566,6 +568,7 @@ def _command(payload: CommandPayload) -> ModelChange:
             payload.expected_revision,
             payload.role,
             payload.model_id,
+            payload.verify_embedding,
         )
     if isinstance(payload, SyncModelsPayload):
         return SyncModels(payload.expected_revision, payload.connection_id)
