@@ -17,8 +17,9 @@ export class RequestError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
 
-export async function request<T>(ctx: WebHostContextV1, path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(ctx: WebHostContextV1, path: string, init?: RequestInit, observe?: (response: Response) => void): Promise<T> {
   const response = await ctx.http.request(path, init);
+  observe?.(response);
   if (!response.headers.get("content-type")?.includes("application/json")) throw new Error(`服务暂时不可用（${response.status}），请稍后重试`);
   const body = await response.json();
   if (!response.ok) {
@@ -79,13 +80,17 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const lastKey = `config-last-request:${definition.id}`;
   const polling = useRef<AbortController | null>(null);
   const settled = useRef<string | null>(null);
+  const needsRebind = useRef(false);
+  const read = <T,>(url: string, init?: RequestInit): Promise<T> => request<T>(ctx, url, init, response => {
+    if (response.headers.get("X-Akashic-Web-Rebound") === "1") needsRebind.current = true;
+  });
   const poll = async (id: string): Promise<void> => {
     polling.current?.abort();
     const controller = new AbortController(); polling.current = controller;
     const current = (): boolean => alive.current && !controller.signal.aborted && (sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey)) === id;
     for (let attempt = 0; attempt < 30 && current(); attempt += 1) {
       try {
-        const receipt = await request<{state: string; error: string; selected?: boolean}>(ctx, `${path}/receipts/${id}`, {signal: controller.signal});
+        const receipt = await read<{state: string; error: string; selected?: boolean}>(  `${path}/receipts/${id}`, {signal: controller.signal});
         if (!current()) return;
         if (receipt.state === "active" || receipt.state === "superseded") {
           sessionStorage.setItem(lastKey, id);
@@ -95,7 +100,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
           if (sentEdit.current !== null && sentEdit.current === edits.current) { setDirty(false); embed.dirty?.(false); }
           try {
             const sequence = ++loads.current;
-            const next = await request<Status>(ctx, path, {signal: controller.signal});
+            const next = await read<Status>( path, {signal: controller.signal});
             if (current() && sequence === loads.current) {
               setStatus(next);
               if (!draftEditing.current) { setEnabled(next.enabled); setValues(next.values); }
@@ -104,19 +109,20 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
             if (current()) setError(`配置结果已确认，但最新表单读取失败：${reason instanceof Error ? reason.message : String(reason)}`);
           }
           if (!current()) return;
-          setBusy(false);
+          setBusy(needsRebind.current);
+          if (needsRebind.current) setNotice("配置已生效，正在更新设置界面…");
           if (settled.current !== id) { settled.current = id; embed.changed?.(); }
           return;
         }
         if (receipt.state === "failed") {
           sessionStorage.setItem(lastKey, id);
           settled.current = id;
-          setBusy(true); setDirty(true); setNotice("");
+          setBusy(true); if (sentEdit.current !== null) setDirty(true); setNotice("");
           setError(`${receipt.selected ? "配置已保存，但原操作报告应用失败" : "原配置操作失败"}：${receipt.error || "请检查后重试"}`);
           sessionStorage.removeItem(pendingKey);
           try {
             const sequence = ++loads.current;
-            const next = await request<Status>(ctx, path, {signal: controller.signal});
+            const next = await read<Status>( path, {signal: controller.signal});
             if (current() && sequence === loads.current) setStatus(next);
           } catch (reason) { if (current()) setNotice(`原操作失败已确认，但实际配置暂未核对：${reason instanceof Error ? reason.message : String(reason)}`); }
           if (current()) setBusy(false);
@@ -146,7 +152,7 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const load = async (preserveDraft = false): Promise<void> => {
     const sequence = ++loads.current;
     try {
-      const next = await request<Status>(ctx, path);
+      const next = await read<Status>( path);
       if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
       setStatus(next); setEnabled(next.enabled); setValues(next.values); setDirty(false); setError("");
       const pending = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey);
@@ -170,7 +176,10 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   useEffect(() => {
     if (!dirty && !busy) return;
     const unload = (event: BeforeUnloadEvent) => { event.preventDefault(); };
-    const navigate = (event: Event) => { event.preventDefault(); if (busy) { setNotice("原操作正在核对，请等待结果；离开不会撤销已提交配置。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
+    const navigate = (event: Event) => {
+      const detail = (event as CustomEvent<{go: () => void; reason?: string}>).detail;
+      if (detail.reason === "catalog" && needsRebind.current && !draftEditing.current && sessionStorage.getItem(lastKey)) return;
+      event.preventDefault(); if (busy) { setNotice("原操作正在核对，请等待结果；离开不会撤销已提交配置。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
     window.addEventListener("beforeunload", unload); window.addEventListener("akashic:before-navigate", navigate);
     return () => { window.removeEventListener("beforeunload", unload); window.removeEventListener("akashic:before-navigate", navigate); };
   }, [dirty, busy]);

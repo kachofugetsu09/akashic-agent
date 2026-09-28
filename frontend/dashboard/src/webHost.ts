@@ -265,7 +265,10 @@ class BrowserCatalogSession implements WebHostSession {
     headers.set("X-Akashic-Web-Module", module.pluginId);
     headers.set("X-Akashic-Web-Generation", module.generationId);
     headers.set("X-Akasic-CSRF", "1");
-    return fetch(`${url.pathname}${url.search}`, {...init, headers});
+    const result = await fetch(`${url.pathname}${url.search}`, {...init, headers});
+    const output = new Headers(result.headers);
+    if (next.snapshotId !== this.bootstrap.snapshotId || next.catalogId !== this.bootstrap.catalogId) output.set("X-Akashic-Web-Rebound", "1");
+    return new Response(result.body, {status: result.status, statusText: result.statusText, headers: output});
   }
 
   private webSocketUrl(owner: ModuleActivation, path: string): string {
@@ -633,7 +636,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
         window.clearInterval(timer); notice.remove();
       };
       // 仅在正式目录稳定后更换宿主；保留路由与非敏感回执，不重载浏览器。
-      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go}}))) go();
+      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go, reason: "catalog"}}))) go();
       if (!applied) { available = false; next.close(); show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
     } catch (error) { if (!closed) show(error instanceof Error ? error.message : String(error)); }
     finally { checking = false; }
