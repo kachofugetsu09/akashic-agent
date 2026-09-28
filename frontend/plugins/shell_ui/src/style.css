@@ -294,41 +294,37 @@
   }
 
 @media (prefers-reduced-motion: no-preference) {
+  .shell-settings-dialog {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+    transition: opacity 180ms ease, transform 180ms ease,
+      display 180ms allow-discrete, overlay 180ms allow-discrete;
+  }
+
   .shell-settings-dialog[open] {
-    animation: shell-dialog-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    opacity: 1;
+    transform: none;
+  }
+
+  .shell-settings-dialog::backdrop {
+    opacity: 0;
+    transition: opacity 180ms ease, display 180ms allow-discrete,
+      overlay 180ms allow-discrete;
   }
 
   .shell-settings-dialog[open]::backdrop {
-    animation: shell-scrim-in 220ms ease-out both;
+    opacity: 1;
   }
 
-  .shell-settings-dialog[data-state="closed"] {
-    animation: shell-dialog-out 160ms ease-in both;
+  @starting-style {
+    .shell-settings-dialog[open] {
+      opacity: 0;
+      transform: translateY(10px) scale(0.98);
+    }
+    .shell-settings-dialog[open]::backdrop {
+      opacity: 0;
+    }
   }
-
-  .shell-settings-dialog[data-state="closed"]::backdrop {
-    animation: shell-scrim-out 160ms ease-in both;
-  }
-}
-
-@keyframes shell-dialog-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.98); }
-  to { opacity: 1; transform: none; }
-}
-
-@keyframes shell-dialog-out {
-  from { opacity: 1; transform: none; }
-  to { opacity: 0; transform: translateY(6px) scale(0.98); }
-}
-
-@keyframes shell-scrim-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes shell-scrim-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
 }
 
 @media (max-width: 760px) {
