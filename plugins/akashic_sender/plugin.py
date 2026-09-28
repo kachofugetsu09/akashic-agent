@@ -12,7 +12,7 @@ from agent.plugin_contracts.delivery import (
 api_version = 3
 name = "akashic_sender"
 version = "1.0.0"
-desc = "确认目标会话已保存的消息，Web 和 Mobile 从日志订阅"
+desc = "确认目标会话已保存的消息，Web 和 Android Shell 从日志订阅"
 
 
 @dataclass(frozen=True, slots=True)

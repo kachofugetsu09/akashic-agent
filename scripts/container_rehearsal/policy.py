@@ -39,8 +39,6 @@ WEBUI_ONLY_SETTINGS: tuple[tuple[str, str, Any], ...] = (
     ("channels.telegram", "token", ""),
     ("channels.qq", "enabled", False),
     ("channels.qq", "bot_uin", ""),
-    ("mobile_realtime", "enabled", False),
-    ("mobile_realtime", "public_url", ""),
 )
 
 
@@ -86,13 +84,6 @@ def excluded_reason(relative: Path, *, is_symlink: bool) -> str | None:
         return "excluded_state_class"
     if any(part.endswith("_rebuild") for part in parts):
         return "rebuild_artifact"
-    if any(part.startswith("mobile-webui-build-") for part in parts):
-        return "temporary_webui_build"
-    if len(parts) >= 2 and parts[-2:] in {
-        ("mobile-webui", "staging"),
-        ("mobile-webui", "trash"),
-    }:
-        return "temporary_webui_state"
     if name in EXCLUDED_RUNTIME_FILES:
         return "runtime_control_file"
     if ".corrupt." in name:

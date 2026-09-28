@@ -323,7 +323,7 @@ container
 
 ## 插件变更 Gate
 
-pure-v3 候选证据由 fleet、Mobile 和公共 WebUI 三个边界组成。所有 Gate
+pure-v3 候选证据由 fleet 和公共 WebUI 两个边界组成。所有 Gate
 使用 exact commit 锁、一次性 workspace/plugin-home/HOME 与受控端点，不读写正式
 Akashic workspace、正式凭据或 hua-home 服务。
 
@@ -334,7 +334,6 @@ CI workflow。
 精确能力 lock
       │
       ├── fleet ─────── 全插件来源、v3-only 与 retired exclusion
-      ├── Mobile ────── Python catalog / JS ABI / plugin tests
       └── WebUI ─────── Citation / Meme / public WebSocket
 ```
 
@@ -343,7 +342,6 @@ CI workflow。
 ```bash
 python docker/debug/plugin_v3_fleet_gate.py \
   --require-clean-core --require-full-core-history
-python docker/debug/plugin_v3_mobile_gate.py --require-clean-core
 python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
 ```
 

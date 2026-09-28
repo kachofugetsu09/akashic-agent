@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useStickToBottomContext } from "use-stick-to-bottom";
 
 import { MessageReplyReference, SharedMessageActions } from "./message-actions";
-import { MobilePluginSlot } from "./mobile-plugin-runtime";
+import { PluginUiSlot } from "./plugin-ui-runtime";
 import type { ChatMessage, ChatRole } from "./chat-message";
 import { ChatMessageView, TimelineMessageView } from "./message-view";
 import { StreamProjectionStore } from "./stream-projection";
@@ -298,13 +298,13 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     }}>
     <TimelineMessageView message={message} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)}
       hideProcess={groups.moved.has(message.id)} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
-      beforeReasoning={(origin) => origin.body.kind === "output" ? <MobilePluginSlot name="turn.before_reasoning"
+      beforeReasoning={(origin) => origin.body.kind === "output" ? <PluginUiSlot name="turn.before_reasoning"
         sessionId={origin.session_id} messageId={origin.id} /> : null}
-      prefetchReasoning={(origin) => origin.body.kind === "output" ? <MobilePluginSlot name="turn.before_reasoning"
+      prefetchReasoning={(origin) => origin.body.kind === "output" ? <PluginUiSlot name="turn.before_reasoning"
         sessionId={origin.session_id} messageId={origin.id} prefetch /> : null}
-      beforePart={(part, index, origin) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
+      beforePart={(part, index, origin) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
         name="turn.before_tool" sessionId={origin.session_id} messageId={origin.id} block={{ ...part, message_id: origin.id, part_index: index }} /> : null}
-      afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <MobilePluginSlot
+      afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} /> : undefined} />
     {!groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>

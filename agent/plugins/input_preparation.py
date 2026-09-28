@@ -73,7 +73,7 @@ def prepare_plugin_input(
             raise ValueError("初始配置必须是映射")
         config_revision = hashlib.sha256(config_bytes(config)).hexdigest()
 
-    # 2. Fix the code tree, check its identity, and compile every Python file.
+    # 2. Fix the code tree, read its manifest, and compile every Python file.
     code_ref = archive.save(
         plugin_dir, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
     )
@@ -82,8 +82,8 @@ def prepare_plugin_input(
         archived_identity = load_static_plugin_manifest(code_dir)
     except PluginSourceContentError as error:
         raise RuntimeError("插件归档静态身份损坏") from error
-    if _source_revision(code_dir) != revision or archived_identity != identity:
-        raise RuntimeError("插件源码或安装身份在归档前发生变化")
+    if archived_identity != identity:
+        raise RuntimeError("插件安装身份在归档前发生变化")
     for source_path in sorted(code_dir.rglob("*.py")):
         if any(part in {"__pycache__", ".venv", "node_modules"} for part in source_path.parts):
             continue

@@ -2,7 +2,7 @@
 
 - 状态：accepted / implementing
 - 日期：2026-08-30
-- amends：[0018](0018-chat-webui-has-one-source-and-two-adapters.md) 的桌面页面入口 owner
+- amends：[旧移动方案已退役](0076-android-shell-retires-legacy-mobile-stack.md) 的桌面页面入口 owner
 - 关联条款：WEBUI-001～WEBUI-007、PLG-001～PLG-004、PLG-006、PLG-008、PLG-010～PLG-016、ONB-001、MOB-001
 
 ## 背景

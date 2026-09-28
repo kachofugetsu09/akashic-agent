@@ -14,7 +14,7 @@ from typing import Any, ContextManager, Generator, Literal, Protocol, cast
 
 from agent.control.context import running_turn_id
 from core.common.diagnostic_log import log_event
-from core.error_context import current_client_message_id, current_session_key
+from core.error_context import current_session_key
 
 _NAME = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
 _UNITS = frozenset({"bytes", "count", "ratio", "seconds", "tokens"})
@@ -63,7 +63,6 @@ class _PluginDiagnosticContext:
     operation_id: str
     session_id: str
     turn_id: str
-    client_message_id: str
     _seal: object = field(repr=False, compare=False)
 
     def check_owner(
@@ -217,7 +216,6 @@ class CorePluginDiagnostics:
             operation_id=operation_id,
             session_id=current_session_key.get() or "",
             turn_id=running_turn_id.get(),
-            client_message_id=current_client_message_id.get(),
             _seal=_CONTEXT_SEAL,
         )
 
@@ -238,13 +236,9 @@ class CorePluginDiagnostics:
         operation_token = _CURRENT_OPERATION.set(context.operation_id)
         session_token = current_session_key.set(context.session_id or None)
         turn_token = running_turn_id.set(context.turn_id)
-        client_message_token = current_client_message_id.set(
-            context.client_message_id
-        )
         try:
             yield
         finally:
-            current_client_message_id.reset(client_message_token)
             running_turn_id.reset(turn_token)
             current_session_key.reset(session_token)
             _CURRENT_OPERATION.reset(operation_token)
@@ -383,7 +377,6 @@ def _safe_log_event(level: int, event: str, **fields: object) -> None:
             event,
             session_id=current_session_key.get() or "",
             turn_id=running_turn_id.get(),
-            client_message_id=current_client_message_id.get(),
             **cast(Any, fields),
         )
     except Exception:

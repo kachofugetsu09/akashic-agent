@@ -7,7 +7,7 @@
 - 对照实现：`deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`
 - 理论来源：`cordiverse/paper@948a07b369c62adb3b12e102458be5c18dfb69b9`
 - 关联条款：OBJ-003、GOV-001～GOV-005、PLG-001～PLG-013、TST-001～TST-007、STA-001～STA-003、CAP-001～CAP-002、ERR-001
-- 关联设计：[插件递归自验证运行时设计](recursive-plugin-self-validation.md)、[持久化状态地图](persistence-state-map.md)、[移动端与跨仓库语义 Gate](mobile-cross-repository-semantic-gate.md)
+- 关联设计：[插件递归自验证运行时设计](recursive-plugin-self-validation.md)、[持久化状态地图](persistence-state-map.md)、[Android Shell 决策](../decisions/0076-android-shell-retires-legacy-mobile-stack.md)
 
 ## 1. 结论与范围
 

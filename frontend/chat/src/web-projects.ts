@@ -1,4 +1,4 @@
-import { queryHostPlugin } from "./mobile-plugin-runtime";
+import { queryHostPlugin } from "./plugin-ui-runtime";
 import { createUuid } from "./browser-uuid";
 
 /** project 插件拥有项目记录；记忆插件只按 (维度, 取值) 拥有学习策略。 */

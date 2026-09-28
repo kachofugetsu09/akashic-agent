@@ -4,7 +4,7 @@ import { Duration, Effect, Fiber, Schedule } from "effect";
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { loadWebPluginCatalog, useMobilePluginCatalogVersion } from "./mobile-plugin-runtime";
+import { loadWebPluginCatalog, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import {
   MEMORY_PLUGIN,
   PROJECT_DIMENSION,
@@ -76,7 +76,7 @@ export function useDesktopChatController() {
   // Session 宽键在首条消息接纳时固定；之后每次发送重复声明只是幂等核对。
   const sessionScopesRef = useRef(new Map<string, Record<string, string>>());
   const newChatScopeRef = useRef<Record<string, string> | null>(null);
-  const pluginCatalog = useMobilePluginCatalogVersion();
+  const pluginCatalog = usePluginUiCatalogVersion();
   const projectsInstalled = pluginCatalog.installed(PROJECTS_PLUGIN);
   const memoryInstalled = pluginCatalog.installed(MEMORY_PLUGIN);
   const [activeSessionId, setActiveSessionId] = useState("");
@@ -139,7 +139,6 @@ export function useDesktopChatController() {
   const [stopPending, setStopPending] = useState(false);
   const [error, setError] = useState("");
   const [connectionError, setConnectionError] = useState("");
-  const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
   const [shellState, setShellState] = useState<WebShellState | null>(null);
   const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState("");
@@ -796,10 +795,9 @@ export function useDesktopChatController() {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
-    selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError, mobilePairingOpen,
+    selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
-    setMobilePairingOpen,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
     startProjectChat, createProject, continueProject, stopProject,
   };

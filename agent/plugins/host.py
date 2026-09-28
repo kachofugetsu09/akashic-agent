@@ -70,7 +70,7 @@ from agent.plugin_composition.runtime_catalog import (
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_composition.ui import DASHBOARD_ROUTES
-from agent.plugin_contracts.ui import MESSAGE_DISPLAY, MOBILE_UI
+from agent.plugin_contracts.ui import MESSAGE_DISPLAY, PLUGIN_UI
 from agent.plugins.archive import PluginArchive
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
@@ -212,7 +212,7 @@ async def provide_host_services(
             PROCESSES,
             TIMERS,
             MESSAGE_DISPLAY,
-            MOBILE_UI,
+            PLUGIN_UI,
         }
     )
     if artifact_import is not None:
@@ -348,7 +348,7 @@ async def provide_host_services(
         if key.name
         in {
             "core.message_display.v1",
-            "core.mobile_ui.v1",
+            "core.plugin_ui.v1",
         }
     }
     if "core.message_display.v1" in host_ui_requested:
@@ -369,17 +369,17 @@ async def provide_host_services(
             MESSAGE_DISPLAY,
             display_message_page,
         )
-    if "core.mobile_ui.v1" in host_ui_requested:
-        from agent.plugins.mobile_ui import PluginMobileUiProvider
+    if "core.plugin_ui.v1" in host_ui_requested:
+        from agent.plugins.plugin_ui import LivePluginUiProvider
 
-        mobile_ui = PluginMobileUiProvider(root)
+        plugin_ui = LivePluginUiProvider(root)
         _ = await root.context.provide(
-            MOBILE_UI,
-            mobile_ui,
+            PLUGIN_UI,
+            plugin_ui,
         )
         root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
-            "mobile_ui_provider.close",
-            mobile_ui.aclose,
+            "plugin_ui_provider.close",
+            plugin_ui.aclose,
         )
     if any(
         INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
@@ -425,7 +425,7 @@ def check_host_dependencies(
         TIMERS,
         INTERACTION_UNDO,
         MESSAGE_DISPLAY,
-        MOBILE_UI,
+        PLUGIN_UI,
     }
     for generation in generations:
         plugin = cast(ComposablePlugin, generation.instance)

@@ -113,12 +113,6 @@ def resume(args: argparse.Namespace) -> dict[str, object]:
     return {"status": status, "attempt": str(args.attempt)}
 
 
-def pair_mobile(args: argparse.Namespace) -> dict[str, object]:
-    from scripts.akashic_release.mobile_pair import pair_mobile as run_pairing
-
-    return run_pairing(args.runtime_env)
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="akashic-release")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -155,10 +149,6 @@ def _parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("--unit-root", type=Path, default=Path("/etc/systemd/system"))
     resume_parser.add_argument("--cli-path", type=Path, default=Path.home() / ".local/bin/akashic-release")
     resume_parser.set_defaults(handler=resume)
-
-    pair_parser = subparsers.add_parser("pair-mobile")
-    pair_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
-    pair_parser.set_defaults(handler=pair_mobile)
 
     migrate_parser = subparsers.add_parser("migrate")
     migrate_parser.add_argument("--snapshot-manifest", type=Path, required=True)

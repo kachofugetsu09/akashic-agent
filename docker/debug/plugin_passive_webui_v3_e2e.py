@@ -130,7 +130,6 @@ def _run_host(report_path: Path, *, require_clean: bool) -> int:
             max_iterations=2,
         )
         _restrict_builtin_plugins(sandbox / "app/plugins")
-        _write_runtime_config(sandbox / "config.toml")
         installed = _install_exact_plugins(sandbox, lock.plugins, plugin_checkouts)
         image = _write_meme_fixture(sandbox / "workspace")
         config_sha256 = _sha256(sandbox / "config.toml")
@@ -390,12 +389,6 @@ def _restrict_builtin_plugins(root: Path) -> None:
             child.unlink()
 
 
-def _write_runtime_config(path: Path) -> None:
-    content = path.read_text(encoding="utf-8")
-    content += "\n[mobile_realtime]\nenabled = false\n"
-    path.write_text(content, encoding="utf-8")
-
-
 def _install_exact_plugins(
     sandbox: Path,
     locks: tuple[composition_gate.SourceLock, ...],
@@ -458,9 +451,6 @@ def _assert_webui_only(config: dict[str, object]) -> None:
         raise GateFailure("Telegram 必须关闭")
     if channels["qq"].get("enabled") is not False:
         raise GateFailure("QQ 必须关闭")
-    mobile = cast(dict[str, object], config.get("mobile_realtime"))
-    if mobile.get("enabled") is not False:
-        raise GateFailure("Mobile 必须关闭")
     if "proactive" in config:
         raise GateFailure("retired proactive 配置段必须不存在")
 

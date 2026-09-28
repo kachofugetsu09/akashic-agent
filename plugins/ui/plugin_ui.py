@@ -1,0 +1,298 @@
+"""普通 UI provider 拥有插件界面注册、资源校验与目录封存。"""
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+from collections.abc import Callable
+from pathlib import Path
+from typing import cast
+from uuid import uuid4
+
+from agent.plugin_composition import Context, CompositionError, Effect, FiberState
+from agent.plugin_composition.ui_slots import (
+    UI_SLOTS, PLUGIN_UI_SLOTS, PluginUiAsset, PluginUiBinding, PluginUiDefinition,
+    PluginUiDescriptor, PluginUiNavigation, PluginUiQueryHandler,
+)
+
+
+class PluginUiSlots:
+    """Collect the live Plugin UI registrations for one composition Root."""
+
+    def __init__(self, ctx: Context) -> None:
+        self._ctx = ctx
+        self._registrations: dict[str, PluginUiBinding] = {}
+
+    def contributors(self) -> tuple[Context, ...]:
+        self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        for binding in self._registrations.values():
+            binding.context._require_current()  # pyright: ignore[reportPrivateUsage]
+        return tuple(binding.context for binding in self._registrations.values())
+
+    @property
+    def root_instance_token(self) -> object:
+        self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        return self._ctx.root_instance_token
+
+    def bindings(self) -> tuple[PluginUiBinding, ...]:
+        """Return the current registration projection without running callbacks."""
+
+        self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        for binding in self._registrations.values():
+            binding.context._require_current()  # pyright: ignore[reportPrivateUsage]
+        return tuple(
+            binding for _owner, binding
+            in sorted(self._registrations.items())
+        )
+
+    async def register_plugin_ui(
+        self,
+        ctx: Context,
+        definition: PluginUiDefinition,
+        *,
+        query: PluginUiQueryHandler,
+        available: Callable[[], bool] | None = None,
+    ) -> Effect:
+        """Register one plugin UI declaration as an Effect of the calling Fiber."""
+
+        ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        provider_token = self.root_instance_token
+        if ctx.root_instance_token is not provider_token:
+            raise ValueError("Plugin UI 注册不能跨实际 Root 或 provider")
+        if ctx.require(UI_SLOTS) is not self:
+            raise ValueError("Plugin UI 注册不能跨实际 Root 或 provider")
+        # 1. Validate the public ABI before any registration becomes visible.
+        if not isinstance(definition, PluginUiDefinition):
+            raise TypeError("插件 Plugin UI 声明必须是 PluginUiDefinition")
+        _validate_sync_callable(query, "query")
+        if available is not None:
+            _validate_sync_callable(available, "available")
+        navigation = definition.navigation
+        if navigation is not None and not isinstance(navigation, PluginUiNavigation):
+            raise TypeError("插件 Plugin UI navigation 必须是 PluginUiNavigation")
+        runtime = ctx.runtime
+        if ctx.fiber.state is not FiberState.LOADING and ctx.fiber.state is not FiberState.ACTIVE:
+            raise CompositionError(
+                "INACTIVE_FIBER",
+                f"{runtime.plugin_id} 当前 Fiber 不允许登记 Plugin UI",
+            )
+        asset = resolve_plugin_ui_asset(
+            runtime.plugin_dir,
+            module=definition.module,
+            stylesheet=definition.stylesheet,
+            navigation_label=None if navigation is None else navigation.label,
+            navigation_description=(
+                None if navigation is None else navigation.description
+            ),
+            slots=tuple(definition.slots),
+        )
+        binding = PluginUiBinding(
+            descriptor=PluginUiDescriptor(
+                owner=runtime.plugin_id,
+                module_sha256=asset.module_sha256,
+                module_bytes=asset.module_bytes,
+                stylesheet_sha256=asset.stylesheet_sha256,
+                stylesheet_bytes=asset.stylesheet_bytes,
+                navigation_label=asset.navigation_label,
+                navigation_description=asset.navigation_description,
+                slots=asset.slots,
+            ),
+            asset=asset,
+            query=cast(PluginUiQueryHandler, query),
+            available=_always_available if available is None else available,
+            context=ctx,
+            registration_uuid=uuid4().hex,
+        )
+        return await ctx.effect(
+            lambda: self._register(ctx, binding),
+            label=f"ui-slot:plugin:{definition.module}",
+        )
+
+    def _register(
+        self,
+        ctx: Context,
+        binding: PluginUiBinding,
+    ) -> Callable[[], None]:
+        """Add one declaration and return its exact inverse."""
+
+        ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        provider_token = self.root_instance_token
+        if ctx.root_instance_token is not provider_token:
+            raise CompositionError(
+                "STALE_ACTIVATION",
+                f"插件 Plugin UI 注册已脱离当前 Composition Root: {ctx.runtime.plugin_id}",
+            )
+        plugin_id = ctx.runtime.plugin_id
+        # 1. One plugin owns one current registration; the Effect is its owner.
+        if plugin_id in self._registrations:
+            raise CompositionError(
+                "DUPLICATE_PLUGIN_UI",
+                f"插件只能声明一个 Plugin UI: {plugin_id}",
+            )
+
+        # 2. 每个 owner 只持有一条注册，Effect 关闭后解除归属。
+        self._registrations[plugin_id] = binding
+
+        def cleanup() -> None:
+            del self._registrations[plugin_id]
+
+        return cleanup
+
+
+def resolve_plugin_ui_asset(
+    plugin_dir: Path,
+    *,
+    module: str,
+    stylesheet: str | None,
+    navigation_label: str | None,
+    navigation_description: str | None,
+    slots: tuple[str, ...],
+) -> PluginUiAsset:
+    """Validate and freeze plugin-owned plugin UI static assets."""
+
+    # 1. Validate metadata and the protocol slot namespace.
+    _validate_plugin_ui_metadata(
+        module=module,
+        stylesheet=stylesheet,
+        navigation_label=navigation_label,
+        navigation_description=navigation_description,
+        slots=slots,
+    )
+
+    # 2. Resolve symlinks before enforcing plugin-source containment.
+    plugin_root = plugin_dir.resolve(strict=True)
+    module_path = _resolve_asset_path(plugin_root, module, suffix=".js", kind="module")
+    stylesheet_path = (
+        None
+        if stylesheet is None
+        else _resolve_asset_path(
+            plugin_root,
+            stylesheet,
+            suffix=".css",
+            kind="stylesheet",
+        )
+    )
+    return _build_plugin_ui_asset(
+        module_path,
+        stylesheet_path,
+        navigation_label=navigation_label,
+        navigation_description=navigation_description,
+        slots=slots,
+    )
+
+
+def _validate_plugin_ui_metadata(
+    *,
+    module: str,
+    stylesheet: str | None,
+    navigation_label: str | None,
+    navigation_description: str | None,
+    slots: tuple[str, ...],
+) -> None:
+    if (
+        not isinstance(module, str)
+        or not module
+        or module != module.strip()
+        or Path(module).is_absolute()
+    ):
+        raise RuntimeError("插件 UI module 必须是非空相对路径")
+    if stylesheet is not None and (
+        not isinstance(stylesheet, str)
+        or not stylesheet
+        or stylesheet != stylesheet.strip()
+        or Path(stylesheet).is_absolute()
+    ):
+        raise RuntimeError("插件 UI stylesheet 必须是非空相对路径")
+    if (navigation_label is None) != (navigation_description is None):
+        raise RuntimeError("插件 UI navigation 无效")
+    if navigation_label is not None and (
+        not isinstance(navigation_label, str)
+        or not navigation_label.strip()
+        or len(navigation_label) > 64
+        or not isinstance(navigation_description, str)
+        or not navigation_description.strip()
+        or len(navigation_description) > 160
+    ):
+        raise RuntimeError("插件 UI navigation 无效")
+    if not isinstance(slots, tuple) or any(
+        not isinstance(slot, str) or slot not in PLUGIN_UI_SLOTS for slot in slots
+    ):
+        raise RuntimeError("插件 UI slots 无效")
+    if len(set(slots)) != len(slots):
+        raise RuntimeError("插件 UI slots 无效")
+
+
+def _build_plugin_ui_asset(
+    module_path: Path,
+    stylesheet_path: Path | None,
+    *,
+    navigation_label: str | None,
+    navigation_description: str | None,
+    slots: tuple[str, ...],
+) -> PluginUiAsset:
+    """Read validated assets and attach content hashes and byte sizes."""
+
+    module_content = module_path.read_text(encoding="utf-8")
+    stylesheet_content = (
+        "" if stylesheet_path is None else stylesheet_path.read_text(encoding="utf-8")
+    )
+    module_encoded = module_content.encode("utf-8")
+    stylesheet_encoded = stylesheet_content.encode("utf-8")
+    if len(module_encoded) + len(stylesheet_encoded) > 240 * 1024:
+        raise RuntimeError("插件 UI 资产超过协议安全预算")
+    return PluginUiAsset(
+        module=module_content,
+        module_sha256=hashlib.sha256(module_encoded).hexdigest(),
+        module_bytes=len(module_encoded),
+        stylesheet=stylesheet_content,
+        stylesheet_sha256=(
+            hashlib.sha256(stylesheet_encoded).hexdigest()
+            if stylesheet_content
+            else None
+        ),
+        stylesheet_bytes=len(stylesheet_encoded),
+        navigation_label=(
+            None if navigation_label is None else navigation_label.strip()
+        ),
+        navigation_description=(
+            None
+            if navigation_description is None
+            else navigation_description.strip()
+        ),
+        slots=slots,
+    )
+
+
+def _resolve_asset_path(
+    plugin_root: Path,
+    relative_path: str,
+    *,
+    suffix: str,
+    kind: str,
+) -> Path:
+    """Resolve one asset and reject missing, wrong-type, and escaped paths."""
+
+    try:
+        path = (plugin_root / relative_path).resolve(strict=True)
+    except FileNotFoundError as error:
+        raise RuntimeError(f"插件 UI {kind} 无效: {relative_path}") from error
+    if (
+        not path.is_relative_to(plugin_root)
+        or path.suffix != suffix
+        or not path.is_file()
+    ):
+        raise RuntimeError(f"插件 UI {kind} 无效: {relative_path}")
+    return path
+
+
+def _always_available() -> bool:
+    return True
+
+
+def _validate_sync_callable(value: object, field_name: str) -> None:
+    if not callable(value):
+        raise TypeError(f"插件 Plugin UI {field_name} 必须可调用")
+    if inspect.iscoroutinefunction(value) or inspect.iscoroutinefunction(
+        getattr(value, "__call__", None)
+    ):
+        raise TypeError(f"插件 Plugin UI {field_name} 必须是同步函数")

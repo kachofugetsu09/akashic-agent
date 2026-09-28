@@ -996,37 +996,37 @@ button.tool-step-summary:active {
   white-space: pre-wrap;
 }
 
-.mobile-plugin-host {
+.plugin-ui-host {
   min-width: 0;
 }
 
-.mobile-plugin-host--loading,
-.mobile-plugin-host--error {
+.plugin-ui-host--loading,
+.plugin-ui-host--error {
   padding: 8px 0;
   color: var(--ak-color-text-secondary);
   font-size: 0.8125rem;
   line-height: 1.4;
 }
 
-.mobile-plugin-host--error {
+.plugin-ui-host--error {
   color: var(--ak-color-status-error);
 }
 
-.mobile-plugin-slot[data-slot="turn.before_reasoning"],
-.mobile-plugin-slot[data-slot="turn.before_tool"] {
+.plugin-ui-slot[data-slot="turn.before_reasoning"],
+.plugin-ui-slot[data-slot="turn.before_tool"] {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.mobile-plugin-slot[data-slot="turn.after_answer"] {
+.plugin-ui-slot[data-slot="turn.after_answer"] {
   display: grid;
   min-width: 0;
   gap: 12px;
   margin-top: 12px;
 }
 
-.mobile-plugin-slot[data-slot="drawer.panel"] {
+.plugin-ui-slot[data-slot="drawer.panel"] {
   position: absolute;
   inset-inline: 0;
   inset-block-end: 0;

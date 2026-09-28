@@ -84,7 +84,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `sessions.db/message_attachments` | user/assistant message 与 ordered artifact IDs 在同一 SessionDB transaction 增加 | binding 不原位改写；`extra.attachment_ids` 必须与表完全一致 | 仅随用户明确删除对应 message/session 的既有级联减少；不得连带删除 `attachments` row 或 artifact bytes |
 | `sessions.db/session_compactions` | 每次 committed compaction INSERT 新 generation，保存 lineage、source_ref、canonical `source_plan_digest`、tail、summary、usage 和模型容量；included 必须与 receipt digest 相等，excluded 仍写 session-local digest ledger | 只允许设置 `invalidated_at/invalidated_reason` 逻辑失效字段；generation、provenance、source_plan_digest、summary 和 tail 不原位改写；缺列非空旧 schema 不回填 | session 删除 cascade；用户删除 interaction 时失效命中 generation 及 descendants，物理删除没有普通运行协议 |
 | `sessions.db/session_compaction_prepares` | Included compaction 在跨文件 receipt/Markdown effect 前 INSERT 一条 incarnation-scoped durable prepare，固定 source seq/message IDs 与 retained tail | 同一 source_ref/generation 只能幂等复用完全相同的 fence identity；prepared_at 不改变 source identity | 无 receipt 的 pre-effect orphan 只由 compaction recovery 清除；pending 时 message/interaction/session destructive mutation 必须阻断并返回带 audit identity 的 409；session 管理删除可按同一 SessionDB 事务 cascade prepare |
-| 候选新链 Skills 的 `plugin-data/skills-builtin/skill-files/<tree_ref>/` | 形成 `load_skill` binding 或投影 always 技能时，以内容地址保存完整技能目录；包括正文与相对资源，发布前 fsync 并核对树和正文 hash | 已发布目录不改写。binding 只保存来源、资格、tree ref 和正文 hash；新安装产生新 ref，旧 ref 仍能打开 | 无自动减少或 GC。随 workspace 备份保留；恢复先用 `PluginArchive.open(tree_ref)` 校验完整树，再核对正文 hash。缺失或损坏 fail-loud，不重新读取当前安装 |
+| 候选新链 Skills 的 `plugin-data/skills-builtin/skill-files/<tree_ref>/` | 形成 `load_skill` binding 或投影 always 技能时，以内容地址保存完整技能目录；正文与相对资源一起落盘并 fsync，不再复验树或正文摘要 | 已发布目录不改写。binding 保存来源、资格与 tree ref；读取旧 binding 时忽略正文摘要字段，不改写原记录。新安装产生新 ref，旧 ref 仍能打开 | 无自动减少或 GC。随 workspace 备份保留；恢复直接打开原 ref 并读取 `SKILL.md`。非法引用、目录或正文文件缺失明确失败，不重新读取当前安装 |
 | 候选新链 conversation 的 `owner_records/command:*` | 执行前只增固定 Input 与 handler binding 的 intent；结果正文由稳定 ID 的 Message 独占 | 不原位改变 intent。失败和暂停后按原 binding 查询领域 receipt；abandon 使后续调用失效，已发生效果不伪称回滚 | 无自动减少。原生 SQLite 备份同时保留 intent、binding 与结果；恢复不可重跑未知副作用 |
 | 候选新链 Delivery 的 `owner_records/delivery:*`、`confirmed-message:*` 与 `confirmed-time:*` | 首次选择固定原 Sink；实际发送或查询确认 delivered 时，与回执同事务增加首次确认时间索引 | Delivery 独占发送阶段和回执，`confirmed_at` 表示本地确认时间。跨 Sink 的同一 Message 仅登记首次确认；旧缺失时间保持 NULL，不补造。两个索引是无正文的派生引用，首次写后不改写 | 无自动减少、重建或回填。只读历史查询使用同一数据库快照，不取得发送或领域 ACK 权限；SQLite 备份同时覆盖 Message、回执与索引。索引提交失败整体回滚，按原效果查询恢复 |
 | 候选旧执行迁移 `history.record`、`history.turn_input` 与 migration manifest | 迁移 owner 只增完整 raw turns 归档、明确映射的未落 Input、pause 和同事务 receipt | 旧 messages 的身份/正文/source 不变，旧 turns 停写但整表保留；无独立渠道 receipt 的 open 记录不升级来源。已停止的 failed/interrupted/cancelled 旧工具链无领域 receipt 时按 [0061](../decisions/0061-archive-stopped-legacy-executions.md) 完整归档并记录不续跑原因；queued/in_progress 仍停止迁移 | 不减少 messages、turns、附件或向量。原生备份、原行 digest、映射与提交前后完整性检查提供恢复证据；正式 workspace 尚未执行 |
@@ -94,9 +94,9 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | FTS 与 `message_embeddings` | 由新消息触发建索引或计算向量 | FTS 可以从正文重建；embedding 迁移属于独立流程。Akasha 确定性重建必须复用 sessions 中已存向量 | 用户撤销/删除原始消息时同步减少，或由独立索引维护流程重建；上下文裁切无权删除 |
 | `uploads/` | 每个新附件写入新的 UUID 文件 | 当前没有生产代码原位改写附件；消息引用决定附件仍然有效 | 消息仍引用时必须保留；当前没有引用计数、级联删除或 GC 协议，因此不得按年龄、当前 prompt 是否使用或代码清理自动删除 |
 | `uploads/artifacts/` | Core Channel import 以固定 artifact ID 创建不可覆盖 regular file，并 fsync 文件与目录 | 已发布文件不可原位覆盖；SessionDB ready row 是可见性 owner，orphan 只由 audit 报告 | 当前没有普通自动删除协议；candidate discard、Turn 失败、Session 删除、插件卸载均无权删除；未来 GC 需单独合同、完整引用扫描与可恢复备份 |
-| `mobile.db/mobile_attachment_imports` | Mobile message 首次引用 finalized upload 时按 `(device, session, client_message_id, ordinal)` 固定 mobile attachment 与 Core artifact ID | 成功按 `prepared → artifact_committed → message_bound` 推进；明确失败收据与 `prepared/artifact_committed → rejected` 及 error 在同一 MobileDB 事务提交。rejected 不再恢复导入；未知结果仍保留非终态 owner，跨进程重放解析同一 artifact | 普通消息失败、插件重载和 artifact import 不删除；Mobile owner 的明确设备/数据删除协议或整个 workspace 恢复才可减少，且不得反向删除 Session artifact |
-| `mobile.db/mobile_command_receipts` | Mobile storage 在执行前 INSERT processing 收据，固定设备、命令 ID 与请求 hash | 结果推进 completed，成功和失败都保存原回复；失败 message.send 在同一事务设置 `handoff_pending=1` 并拒绝未绑定附件。只有 Bus 已消费对应 handoff 后，Mobile owner 才清零保留位；重启先接续该结算 | 既有 7 天 TTL 只回收 completed 且 handoff_pending=0 的收据；processing 与未结算交接不得回收。容量耗尽显式失败。迁前 SQLite backup、原回执、附件映射与 handoff 共同提供恢复证据 |
-| `sessions.db/session_admissions` 与 `inbound_handoffs` | MessageBus 在暴露输入或发布附件前，固定完整 handoff 与 Session ID 租约；新 Session 的租约不创建 Session 行 | 失败或取消只释放执行 binding，保留耐久恢复 owner。首条 Input writer 提交时才创建 Session；Mobile claim 在已提交 Message 确认后增加，重启补齐 | 正常成功提交、或明确失败回执及附件终态已保存后，Bus 才消费 handoff 并释放租约；清理失败保留回执，不能重放已拒绝输入。唯一 runtime 启动可清理旧进程租约后按 handoff 重建；不减少 Message、上传、artifact 或映射 |
+| 旧 `mobile.db/mobile_attachment_imports` | 已退役；当前代码不再新增或更新。既有行曾固定设备上传与 Core artifact ID 的映射 | 未结算行及引用仍属于历史恢复证据；本次源码清理不推断它们已完成 | 无当前自动清理 owner。物理减少须独立盘点原库、artifact 引用和完整备份；不得反向删除 Session artifact |
+| 旧 `mobile.db/mobile_command_receipts` | 已退役；当前代码不再新增或更新。既有行曾保存设备命令回执 | processing 与未结算 handoff 仍需按原证据判断，不能按过期时间推断完成 | 无当前 TTL 或自动清理 owner。物理减少须独立确认回执、附件映射和 handoff，并保留 SQLite 备份 |
+| `sessions.db/session_admissions` 与 `inbound_handoffs` | MessageBus 在暴露输入或发布附件前，固定完整 handoff 与 Session ID 租约；新 Session 的租约不创建 Session 行 | 失败或取消只释放执行 binding，保留耐久恢复 owner。首条 Input writer 提交时才创建 Session；旧客户端 claim 已停止新增 | 正常成功提交或明确失败结算后，Bus 才消费 handoff 并释放租约；旧未结算 handoff 不因入口退役而删除。不减少 Message、上传、artifact 或映射 |
 | `backups/interaction-deletions/sessions-<uuid>.db` | 每次 interaction 撤销前通过 SQLite online backup 创建完整 SessionDB 快照，并以 `integrity_check` 验证 | 已发布快照不可原位更新；路径随删除响应与审计日志返回 | 当前没有自动 retention；只有名称明确、目标精确的备份管理操作可以删除，不能由普通清理或下一次撤销覆盖 |
 
 这里所说的“`sessions.db` 默认 append-only”，精确含义是：**数据库中的完整对话正文 `messages` 在正常运行中只追加，只有用户主动撤销消息或删除会话才允许减少。** SQLite 文件整体并非字面只追加，因为 `sessions` 元数据、`turns` 状态和派生索引都有受约束的 UPDATE/重建路径。当前 dashboard 已暴露旧消息编辑接口；是否保留这项 UPDATE 例外，是需要维护者明确回答的实现与意图差异。
@@ -165,7 +165,7 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 | `migrations.sqlite3` | Yoyo 在 migration step 成功后记录唯一 migration ID | 已应用回执保持不变；新增迁移只追加新的成功回执 | runtime 没有删除或回滚回执权限；只随用户明确删除整个 workspace 而减少，恢复依赖 workspace 备份与 SQLite 完整性检查 |
 | `model-registry.sqlite3` | onboarding 或设置事务增加含 credential payload 的 connection、model 和 role binding，并增加单调 revision；`model_definitions.context_window`/`max_output_tokens` 与各自 source 保存模型 capability snapshot | connection 的 key/token、Base URL、模型字段和角色绑定可原位更新；Codex token refresh 不增加模型 revision，其余成功模型事务增加 revision，旧 execution generation 只在 lease 归零后失效。预算 owner 只读取当前 generation 的 `context_window`、`max_output_tokens` 及字段来源；遗留 `effective_context_percent`/`compaction_trigger_percent` 列仅为 v1 schema identity 保留，完全惰性，不是配置或 capability source | 只有独立模型/来源删除操作可以减少；被 role 或 session 引用时必须拒绝，普通模型切换不得 cascade；数据库、WAL/SHM 与备份均按 secret 使用 `0600` |
 | `model-registry.sqlite3/model_calls` | Models owner 在 driver I/O 前追加一次 `started`，保存 binding 与请求摘要；不保存请求正文、原始输出或 credential | `_BoundChat.complete` 在调用 ID 通知完成后开始单调计时；首个非空文本/思考片段只更新一次 `first_token_ms`，driver 返回/抛错时与真实 usage/error 状态一起更新 `duration_ms`。无流式首段、通知失败和旧行对应耗时保持 NULL；配置 revision 不变，重连只读，无自动重放或逻辑失效 | 当前不得自动减少。yoyo `20260906_06_model_call_timing` 在锁内核对已知 schema，先备份再原子加两列，并逐项核对旧字段。恢复证据为 `backups/model-call-timing/<id>/model-registry.sqlite3` 及 manifest；本轮只在一次性测试库演练，正式库未迁移 |
-| `data/mobile/master-keys.json` | 文件型密钥 provider 初始化或轮换时追加随机 master key；离线迁移可按既有 ID 导入同一密钥 | 完整集合以 `0600` 原子替换发布；同 ID 同内容导入幂等，不同内容 fail-loud；旧 key 继续支持历史 keyset 回滚 | 当前没有自动删除协议；只能由名称明确的移动身份重置或密钥退役操作在备份、引用扫描和恢复验证后减少；Mobile key store owner 与 keyset manifest 提供恢复证据 |
+| 旧 `data/mobile/master-keys.json` | 已退役；当前代码不初始化、轮换或导入。既有文件可能仍用于旧数据恢复 | 无当前 writer；不能以源码删除推断密钥已无引用 | 无自动删除协议；名称明确的旧数据清理须先备份、扫描引用并验证恢复；原 keyset manifest 是恢复证据 |
 | `sessions.metadata.model_selection` | conversation 从真实 Input 的显式 model ref/effort 增加版本化对象，与新 Message 同事务提交；原 schema1/字符串继续只读 | 用户显式切换时更新该对象，并移除旧字符串 override；无选择输入与同 ID 重放不改 metadata。MessageWriters 按实际 Context 登记独占键，MessageLog 是新链唯一 SQL writer | 用户选择“跟随默认”时只移除 model_selection 与旧 override；无变化 clear 保留 SQL NULL，其他 metadata 不变。卸载不删保存值，原 Message 不改写或减少；SQLite 事务失败整体回滚，数据库备份和跨重开读取证明恢复 |
 | 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从模块 `skill_roots` / `drift_skill_roots` 属性建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
 | 插件贡献的 MCP | static manifest 提供 import-free admission identity；V3 `apply` 用 `MCP_SERVERS.register(...)` 建立 Fiber-owned runtime，generation readiness 核对两者完全一致后发布 catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
@@ -214,37 +214,21 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 
 ### 3.5 Companion 安全边界涉及的临时与可衰减状态
 
+旧 Mobile receipt 和 durable inbound handoff 已停止新增；已有持久行及其恢复证据在专门清理前保留，不能因移除入口而自动删除。
+
 本节把 [0017](../decisions/0017-one-person-companion-security-boundary.md) 采用的 receipt、durable inbound handoff、MCP reservoir 和 control replay 规则落到状态地图。它们不是 `sessions.db/messages` 的删除授权，也不改变同一位用户跨渠道的连续性。
 
 | 对象 | 正常增加 | 允许的原位更新/逻辑终态 | 物理减少条件 | owner 与恢复证据 |
 |---|---|---|---|---|
-| Mobile completed receipt | 有副作用或持久结果的 command admission 增加 request hash、device、状态和结果引用；只读当前快照的启动查询不增加 | `processing → completed`；无法找回执行结果时保存 command_interrupted 错误回复；request hash 不可改写 | 仅 completed 且 `handoff_pending=0`、`completed_at` 超过 7 天且清理事务成功；processing 和未结算拒绝不按 TTL 删除 | Mobile receipt store；同 ID 重放结果、external effect count、reconciliation report |
-| `sessions.db/inbound_handoffs` | Mobile 消息在进入内存队列前 INSERT 完整 handoff 与 `session + client_message_id` 去重身份 | pending 期间由 MessageBus 持有 durable handoff/lane owner；canonical user 已存在时只对账、不重开 turn；永久超过单请求容量时由 Control Runtime 持久化真实 failed turn；restart 排空期间 worker 保持 accepted owner 并在同一 coroutine 等待 admission 恢复，完整进程退出则保留 durable row，由下一 boot 按有限页恢复 | completed、failed、interrupted、cancelled 都必须先把带权威 turn/client identity 的 terminal 提交到 Mobile durable inbox，再由 worker 确认 handoff DELETE；渠道、socket 前的 durable 提交或 DELETE 失败均不得减少，DELETE 的暂态 `OSError` 保留 owner 并进入 `cleanup_degraded` 重试 | MessageBus + PassiveMessageWorker + Control Runtime；handoff row、terminal turn、Mobile inbox event、三元身份 milestone、recovery report |
 | MCP reservoir event | source event、cursor、score、timestamp、payload 增加；坏 item 进入 quarantine 记录 | score/ack/cursor/consumed/decayed 按状态机更新；旧池只作为衰减 wake mass | 最小驻留期已过、分数低于 decay floor，且 ack/cursor 提交与 payload 删除处在同一可恢复事务 | Wake/MCP owner；source cursor、accepted/quarantine 快照、ack/delete 提交证据 |
 | Control replay ring | 每个 live turn 追加 replay event | 每 turn ring 最多 256 events/4 MiB；terminal 进入最多 5 分钟 grace；runtime reaper 按 wall clock 回收；live subscriber 不受 eviction 影响 | 每 turn或全局高水位回收临时 replay；terminal 超 5 分钟后回收；不得减少 SessionStore；索引不变量损坏必须 runtime fatal | Control owner；`replay_truncated`/`replay_expired`、snapshot、SessionDB unchanged |
 | Execution spill/log | 当前 execution 追加输出或 spill 文件 | active → terminal；cleanup 未确认时保持 `cleanup_degraded` 和 owner | execution 结束且删除确认；cleanup 失败保留 path/identity，不报告已回收 | Execution owner；registry、path/size/lifetime、cleanup report |
 
 上述状态的容量拒绝、quarantine 和 cleanup 失败只影响当前 operation/item/unit。权威 schema 损坏、owner 无法建立或提交结果不可判定时，按 `ERR-001` 与 `SEC-010` fail-loud；不得写入空成功或静默丢弃。
 
-### 3.6 移动 WebUI 发布与客户端缓存
+### 3.6 退役客户端数据的恢复边界
 
-[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md) 把服务端当前 `ReleaseView` 和其可达 generation 定义为 deployment 权威状态，把设备上的 verified generation 定义为按服务端隔离的派生 UI 缓存。两者都不得借用 SessionDB、Mobile Realtime DB 或 plugin-data 的删除和恢复协议。
-
-| 对象 | 正常增加 | 允许的原位更新/逻辑终态 | 物理减少条件 | owner 与恢复证据 |
-|---|---|---|---|---|
-| `<workspace>/mobile-webui/publication.sqlite3` | 显式 build/import 增加 immutable generation/file 引用；每次 publish/clear/promote/rollback/restore 追加 journal；rollback pin 显式增加 | 单 writer 事务原子替换 Stable/Preview 指针并递增审计 sequence；generation、manifest 和 journal 既有内容不改写 | 指针不以 DELETE 代替更新；journal retention 未另立合同前不得自动减少；只有显式 unpin/GC 可减少 rollback eligibility，用户删除整个 workspace 属于其既有范围 | Core WebUI publisher；SQLite integrity、当前 `ReleaseView`、selection digest、journal、pin 与 source provenance |
-| `<workspace>/mobile-webui/blobs/` | 候选校验后以 SHA-256 创建不可变文件；相同内容复用 | 只改变 generation、指针和 pin 的可达性，不原位改 blob | 显式 publication GC 在写锁内重新读取引用，只删除 Stable/Preview、每 channel 最近 4 个选择、显式 pin、候选和进行中备份 source set 均不可达的对象 | Core WebUI publisher；manifest/file digest、blob bytes、引用扫描与 GC report |
-| `<workspace>/mobile-webui/staging/` | build/import 为当前候选创建临时对象 | 成功提交后变为 immutable CAS 引用；崩溃遗留保持未提交 | 启动恢复或显式 GC 只能删除能证明未被 publication DB 引用的 staging | Core WebUI publisher；候选 marker、publication transaction 与 orphan report |
-| 用户指定的 WebUI backup artifact | `backup` 在临时目录写 SQLite online snapshot、自包含 CAS、source manifest 与 artifact digest，完整校验后原子发布；已存在目标不覆盖 | 已发布 artifact 内容不可原位更新；它独立保留快照时的 lineage、ReleaseView、journal 和全部声明资源 | publisher 不自动删除；只有名称明确、目标精确的 backup retention/delete 操作可减少，且不能把删除备份当成 live GC | Core WebUI backup/restore owner；artifact manifest/digest、SQLite `integrity_check`、server/epoch/selection/journal 与全部 reachable member hash |
-| 移动端 app-private WebUI store | `Ensure` 在单 server staging 写入 manifest/blob，完整校验后增加 verified generation | desired/serving/fallback/attempt/reject marker 按 `Resolve/Ensure/Present` owner 更新；`WaitFor(space)` 是 coordinator 持有的进程内协调事实，不写业务 Room 表 | 安全 GC 只删除未 pinned 对象，或用户明确“重置此服务端 UI 缓存”；必须先取消并等待该 server owner，物理文件删除成功后才能删 metadata/reference，且不得删除其他 server 或业务状态 | Android/future iOS native store；embedded baseline、per-server manifest/hash、verified/attempt marker、删除失败后仍在的 owner、业务 write-set 对比 |
-
-发布仓的 `release_epoch` 是 store 初始化时生成并持久化的 lineage UUID；从备份恢复到历史 `ReleaseView` 后保持备份中的 lineage 与当前选择。客户端不使用 epoch、sequence 或时间排序，因此恢复不会要求伪造更大的版本号。正式备份必须在同一 source snapshot 中列出 `publication.sqlite3`、当时所有数据库声明的 generation/blob、rollback pin 和 artifact digest；只复制数据库或只复制目录都不能证明可恢复。backup source set 在快照完成前 pin，避免与 live GC 竞态；恢复先在隔离目录验证 SQLite `integrity_check`、server identity、epoch、ReleaseView/selection、journal 连续性及每个 manifest/member digest，再原子替换 live publication root，替换前另建可恢复备份，替换后重复全部校验。
-
-### 3.7 Android 按需 Message 缓存
-
-Room `message_ranges` 只记录已持久收到的 `(afterSeq,throughSeq]` 清单范围；与消息或 `message_content_transfers` 同事务增加，重叠范围合并时只删除被完整包含的范围行，不丢失覆盖证据。只有用户明确清理该服务端投影或删除所属本地会话时才随缓存减少。事件 `sync.reset_required` 无权清空这些范围或 Message；它只重置 durable event cursor 并重读目录和当前尾页。
-
-Room 19→20 新增范围表和下载表示标记，旧表、Message、outbox、草稿、通知、附件 bytes 不减少。最大 seq 不推断完整前缀。新旧展示表示重放时，只允许把不可见归档值改成类型标记，其余 Message 事实必须相等；原始归档始终由 SessionDB 保留。正文清单不等于正文已下载，完整正文和通知仍由原下载/通知 owner 提交。恢复证据为旧 schema、源码恢复点、迁移后的 schema identity/FK、事务回归及隔离设备结果；正式设备不做无备份降级。
+旧设备密钥、receipt、handoff、OTA publication 与客户端缓存可能仍存在于正式 workspace 或旧设备。新代码不写入这些对象；本 PR 不物理删除。只有后续名称明确的清理操作，在列出准确路径、引用、备份和恢复演练，并完成前后完整性检查后，才能减少它们。`sessions.db/messages` 不因客户端退役而减少。
 
 ## 4. 再看上层所有权
 
@@ -297,16 +281,12 @@ workspace 之外还有两组明确的全局状态：
 
 ## 6. Workspace 当前文件结构
 
-下面的树只列当前生产代码会创建、读取或写入的核心对象。插件仍可在自己的 `plugin-data` 中保存额外文件，因此它不是穷尽所有第三方数据的固定 schema。
+下面的树只列当前生产代码会创建、读取或写入的核心对象。旧 Mobile publication 与数据库已移到 3.6 节的退役状态清单；插件仍可在自己的 `plugin-data` 中保存额外文件，因此它不是穷尽所有第三方数据的固定 schema。
 
 ```text
 <workspace>/
 ├── sessions.db
 ├── migrations.sqlite3                 Yoyo 迁移成功回执
-├── mobile-webui/
-│   ├── publication.sqlite3             WebUI generation、ReleaseView 与 journal
-│   ├── blobs/sha256/<prefix>/<digest>  不可变静态资源
-│   └── staging/                         未提交候选；可证明 orphan 后才清理
 ├── sessions/                         目前只创建目录，未找到生产写入者
 ├── schedules.json
 ├── PROACTIVE_CONTEXT.md              旧安装可保留；新 init 不创建
@@ -388,7 +368,7 @@ workspace 之外还有两组明确的全局状态：
 | `session_compactions` | `session.store.SessionStore`，由 Core checkpoint owner 请求 | prompt replay、Markdown reconciliation、删除恢复 | append-only generation lineage、source provenance、retained tail、summary、usage 和失效状态 |
 | `interaction_memory_reconciliations` | 已退役 | 无当前 consumer；turn-effects Yoyo 备份 SessionDB 后删除旧表 | 不保留兼容读写路径 |
 | `messages` | `SessionStore` | prompt 历史、dashboard、Akasha、检索工具 | 原始 user/assistant/tool 消息和单调 `seq` |
-| `attachments` / `attachment_imports` | 独立 `session.artifact_store.ArtifactStore` + 物理 `ChannelAttachmentArtifactStore` | v3 Channel、Mobile adapter、Message/Session read projection | ready metadata 只 INSERT；import 正常由 prepared → file_published → artifact_committed，非终态允许记录错误，最后两张表同事务提交；无逻辑失效、普通删除或自动 GC。恢复使用同 ID 与 hash 的原文件、import 记录和 SQLite 备份 |
+| `attachments` / `attachment_imports` | 独立 `session.artifact_store.ArtifactStore` + 物理 `ChannelAttachmentArtifactStore` | v3 Channel、Message/Session read projection | ready metadata 只 INSERT；import 正常由 prepared → file_published → artifact_committed，非终态允许记录错误，最后两张表同事务提交；无逻辑失效、普通删除或自动 GC。恢复使用同 ID 与 hash 的原文件、import 记录和 SQLite 备份 |
 | `message_attachments` | 新链路为 `MessageLog` 追加事务；旧链路仍由 `SessionStore` 管理 | prompt/read adapter、Channel history | 新链路由 ContentReferences 固定有序引用，不保留 direction/extra 投影；旧链路仍保持原投影合同。追加时与正文同事务；只随用户明确的数据管理操作减少，附件本体不级联删除。恢复证据为正文、绑定顺序、外键与 SQLite 备份 |
 | `turns` | control/runtime 持久化路径 | 控制面、恢复和审计 | turn 输入、items、usage、error、final response 与终态 |
 | `messages_fts` + triggers | `SessionStore` 自动维护 | 消息全文搜索 | 可由 `messages` rebuild 的 FTS5 索引 |
@@ -866,7 +846,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 | 对象 | 正常增加及 owner | 原位更新 / 逻辑失效 | 物理减少与恢复证据 |
 |---|---|---|---|
-| `runtime/plugin-archives/<hash>/` 与 `<hash>.json` | PluginArchive 在导入前固定代码树；随后增加配置/依赖闭包 descriptor。发布前校验复制内容并 fsync，内容 hash 同时是身份 | 已发布文件不原位改写；open 重算 hash，缺失或损坏明确失败。当前 generation 退役不使归档失效 | 没有自动 GC。只清理本次尚未发布的 `.pending-*`；整目录备份保留代码、manifest、requirements、配置投影及文件索引，不包含运行环境或 plugin-data |
+| `runtime/plugin-archives/<hash>/` 与 `<hash>.json` | PluginArchive 在导入前固定代码树；随后增加配置/依赖闭包 descriptor。发布时按复制内容命名并 fsync；新归档不再写无消费者的文件索引 | 已发布文件不原位改写；读取按 PLG-002 执行，缺失或结构错误明确失败。当前 generation 退役不使归档失效 | 没有自动 GC。只清理本次尚未发布的 `.pending-*`；整目录备份保留代码、manifest、requirements、配置投影及旧文件索引，不包含运行环境或 plugin-data |
 | `sessions.db/bindings` | Bindings 在真实 lease 内追加不可变 descriptor；表由第 03 层 yoyo 创建 | 同 ID 同内容幂等，不允许覆盖；它不拥有业务执行终态 | 提交 Message/receipt 失败可留下未引用 row，作为恢复材料保留。无自动减少；使用 Session DB 原生备份恢复 |
 | `sessions.db/message_bindings` | Message writer 在正文同一事务追加引用 | 引用不可原位替换；正常日志只追加 | 只能随明确的消息/会话管理减少，不级联删除归档或 binding descriptor |
 
@@ -889,11 +869,11 @@ source resolver/secondary compile 分类、同进程 source-error 清除和 repa
 
 | 对象 | 正常增加及 owner | 原位更新 / 逻辑失效 | 物理减少与恢复证据 |
 |---|---|---|---|
-| `runtime/plugin-python-environments/<uuid>/` | 安装 owner 在最终路径创建每个 runtime 的 `.venv`；有依赖时先复制固定代码到 `source/`，供本地构建或 editable 安装使用 | 发布后不改写；环境树 hash、代码、requirements 与宿主基础 Python 校验不符就拒绝打开 | 只清理本次尚未发布 descriptor 的新 UUID；发布后没有自动 GC。恢复须保留整个目录和原最终路径，不能只复制包或移动 venv |
+| `runtime/plugin-python-environments/<uuid>/` | 安装 owner 在最终路径创建每个 runtime 的 `.venv`；有依赖时先复制固定代码到 `source/`，供本地构建或 editable 安装使用 | 发布后不改写；运行时读取按 PLG-002 执行，材料缺失明确失败 | 只清理本次尚未发布 descriptor 的新 UUID；发布后没有自动 GC。恢复须保留整个目录和原最终路径，不能只复制包或移动 venv |
 | 同目录 `<input-hash>.ref` | 安装 owner 以原子 hardlink 固定首次解析的环境 descriptor 引用并 fsync | 已发布引用不覆盖；并发重复准备读取胜出的引用 | 没有自动减少；并发已发布但未获引用的环境也保留，不能由 cache 卸载清理 |
-| `runtime/plugin-archives/<hash>.json` 环境 descriptor v1 | 安装 owner 在环境准备完成后增加，记录相对 UUID、代码、requirements、基础 Python 身份和树 hash | 不可变；与代码 descriptor 分别校验版本 | 无自动减少；与环境目录、代码归档一起备份。基础解释器不匹配时明确失败，不自动下载替代品 |
+| `runtime/plugin-archives/<hash>.json` 环境 descriptor v1 | 安装 owner 在环境准备完成后增加，记录相对 UUID 与安装输入；新记录不再保存 requirements、解释器或环境树摘要 | 不可变；读取只使用版本和相对 UUID。旧记录的摘要字段作为历史材料保留，不改写 | 无自动减少；与环境目录、代码归档一起备份。不自动下载替代品，实际解释器执行错误明确失败 |
 | cache 内 `.akashic-python-environment` | 安装流程写入 runtime root 到环境引用的映射并 fsync；缺少引用的旧安装须显式重装，发布新 artifact 后切换安装指针 | 已发布 artifact 不原位补写或改写；该文件不属于插件代码 hash | 显式卸载可以删除代码 cache 中的映射，但不删除被引用环境。环境引用同时固定在 component descriptor 中，历史 binding 不依赖 cache |
-| component descriptor v2 的 `python_environments` | PluginManager 在固定组件时保存每个 runtime 的引用；空 requirements 的源码插件可由同一个环境 owner 准备 | 不可变；装配 Root 不打开环境，只有实际目标打开时才校验所需引用 | 无自动减少。第 06 层临时 v1 尚未上线，v2 直接拒绝它，无生产数据转换；正式旧安装按显式重装处理 |
+| component descriptor v2 的 `python_environments` | PluginManager 在固定组件时保存每个 runtime 的引用；空 requirements 的源码插件可由同一个环境 owner 准备 | 不可变；装配 Root 不打开环境，只有实际目标打开时才读取所需引用 | 无自动减少。第 06 层临时 v1 尚未上线，v2 直接拒绝它，无生产数据转换；正式旧安装按显式重装处理 |
 
 环境发布失败与材料丢失都必须能区分；读取路径不 mkdir、不 pip、不改写引用。环境协议依赖同一 POSIX 主机的基础 Python，不能替代操作系统、动态库与凭据的恢复合同。当前没有更换宿主后的自动迁移或 GC 协议。Workload 借用只保存内存 token；原 Workload owner 仍拥有控制面与持久状态，不复制容器数据或环境。调用 scope 清理失败只保留现有 host 的内存 owner/tombstone；公开查询与重试不另存业务或 reload 事务。监督进程的 boot 身份仍由 guardian 扫除残留子进程，历史资源不得触发正式插件指针恢复。所有验证使用一次性 workspace，正式数据未改写。
 
@@ -970,8 +950,8 @@ Embedding 的保存引用复用不可变 `bindings` 与代码归档：Models 注
 上述变化只在一次性 workspace 验收。源码恢复点为 `/tmp/message-app-composition-backup-20260907`；新增 yoyo、前端 source 与新测试可单独回退，未迁移正式 workspace。新库初始化/完整 App/模型设置与学习/真实归档召回/只读工作台和原始消息 SQL dump 保全已有集成证据，后续累计 Gate 单独报告。
 
 
-### 执行失败终态迁移（0063）
+### 执行失败终态迁移（0063，历史迁移记录）
 
-新 Yoyo `20260909_02_execution_failures` 由 workspace 独占锁保护，分别迁移 Mobile command、Models 调用账、Wake attempt v8→v9 和旧 Core Delivery v1→v2。正常新增仍由原 owner 执行；唯一额外原位变化是旧失败终态映射为 completed error/error/failed，其余行与字段完整保留，不减少 Message、附件或任何数据库行。Mobile 新 completed 适用原保留期，未完成 handoff 不裁切。恢复证据为各 `backups/*-errors/<id>/` 的原库、manifest 与迁移前后字段及 integrity 检查。
+Yoyo `20260909_02_execution_failures` 当时由 workspace 独占锁保护，迁移旧客户端命令、Models 调用账、Wake attempt v8→v9 和旧 Core Delivery v1→v2。旧失败终态映射为 completed error/error/failed，其余行与字段完整保留，不减少 Message、附件或任何数据库行。当前不新增旧客户端回执，未完成 handoff 不裁切；恢复证据为各 `backups/*-errors/<id>/` 的原库、manifest 与迁移前后字段及 integrity 检查。
 
 旧 Message ToolResult/owner 回执只在读取边界解释，原正文不改写。Wake 失败关闭原 Pointer、实际引用 Content 成员和 Drift revision；Alert 结束原领取但不声明送达。scheduler fire 与子任务通知也以原发送回执关闭等待，不再次发送失败效果。具体运行策略见 [0063](../decisions/0063-execution-failures-have-terminal-results.md)。

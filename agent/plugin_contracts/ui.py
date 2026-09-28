@@ -1,4 +1,4 @@
-"""客户端的消息展示与 Mobile UI 合同，不包含宿主实现。"""
+"""客户端的消息展示与 Plugin UI 合同，不包含宿主实现。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class MessageDisplayReader(Protocol):
     ) -> list[dict[str, object]]: ...
 
 
-class MobileUiProvider(Protocol):
+class PluginUiProvider(Protocol):
     async def catalog(self) -> dict[str, object]: ...
 
     async def asset(
@@ -40,4 +40,4 @@ class MobileUiProvider(Protocol):
 
 
 MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
-MOBILE_UI = ServiceKey[MobileUiProvider]("core.mobile_ui.v1")
+PLUGIN_UI = ServiceKey[PluginUiProvider]("core.plugin_ui.v1")

@@ -5,18 +5,18 @@
 - 状态：implementation candidate
 - 日期：2026-08-17
 - 关联条款：PLG-001～PLG-004、PLG-008～PLG-010、PLG-014、MEM-009～MEM-010
-- 上游：[Akasha 在线与重放](akasha-v2-runtime-migration.md)、[被动回复 seam](plugin-v3-passive-response-seams-task-contract.md)、[Mobile UI seam](plugin-v3-mobile-ui-query-task-contract.md)、[持久化状态地图](persistence-state-map.md)
+- 上游：[Akasha 在线与重放](akasha-v2-runtime-migration.md)、[被动回复 seam](plugin-v3-passive-response-seams-task-contract.md)、[0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md)、[持久化状态地图](persistence-state-map.md)
 
 ## 1. 目标
 
-把 `akasha` 的生命周期、Dashboard 与 Mobile UI 从 v2 `PluginContext` 迁到 exact Root：
+把 `akasha` 的生命周期、Dashboard 与插件 UI 从 v2 `PluginContext` 迁到 exact Root：
 
 ```text
 MemoryPlugin factory ── Core boot ──► AkashaMemoryEngine
                                           │
                        narrow formal port │ candidate port rejects access
                                           ▼
-AfterReasoningCtx ◄── Akasha v3 Fiber ── Mobile query
+AfterReasoningCtx ◄── Akasha v3 Fiber ── Plugin UI query
        │                                  │
        ▼                                  ▼
 pending user row                    Akasha sidecars
@@ -26,7 +26,7 @@ pending user row                    Akasha sidecars
 
 `MemoryPlugin` 是 Core memory engine bootstrap protocol，不是 v2 插件壳，继续保留。删除的是
 `agent.plugins.Plugin` 子类、legacy phase module、`PluginContext.memory_engine`、v2 Dashboard 三参数
-注册与 v2 Mobile contribution。
+注册与旧客户端 contribution。
 
 ## 2. exact Memory Turn port
 
@@ -51,18 +51,18 @@ pending user row                    Akasha sidecars
 - `sessions.db/messages` 仍是唯一权威正文。Akasha sidecar 是可确定性重建投影；Inspector 不持有
   Session repository，也不直接打开 `sessions.db`。它需要的 tool-chain 展示字段由在线提交和离线
   rebuild 以同一规则写入 sidecar。
-- candidate 的 `data_root` 与声明的 `memory` root 都是隔离副本。Dashboard/Mobile query 只读该代
+- candidate 的 `data_root` 与声明的 `memory` root 都是隔离副本。Dashboard/Plugin UI query 只读该代
   分配路径；discard、失败或取消后正式 SessionDB、Akasha sidecar 与 plugin-data 摘要不变。
 
 ## 4. UI 与生命周期
 
 - Akasha v3 admission surface 仅包含 `api_version = 3`、静态 metadata、`is_active` 与精确
-  `apply(ctx, config)`；`apply` 注册 AfterReasoning typed listener 和一个 `MobileUiDefinition`。
+  `apply(ctx)`；`apply` 注册 AfterReasoning typed listener 和一个 `PluginUiDefinition`，经 `UI_SLOTS.register_plugin_ui` 发布。
 - active synthetic assistant 只通过 exact port 读取同 session/turn 的 pending recall；persisted
   assistant、recent 与 detail 只读 sidecar。query 不返回完整 assistant text。
 - Dashboard 使用 `register(app, DashboardContext)`，只从 `data_root` 和声明的 `memory` root 建立
-  reader；inactive Akasha 不进入 Dashboard/Mobile registry。
-- listener、Mobile binding 与 Dashboard binding 都由 generation/Fiber scope 持有；reload、discard、
+  reader；inactive Akasha 不进入 Dashboard/Plugin UI registry。
+- listener、Plugin UI binding 与 Dashboard binding 都由 generation/Fiber scope 持有；reload、discard、
   terminate 后不得残留 listener、query lease、module 或 reader binding。
 
 ## 5. 验证与恢复范围
@@ -71,7 +71,7 @@ pending user row                    Akasha sidecars
 - Core 进程崩溃：重开 engine/Manager 后只从已提交 Session rows 与 sidecar 恢复；未提交 staged
   marker 不出现，已提交 Inspector/recall 等价。
 - 不扩展到任意断电时点或停机 checkpoint；SQLite/现有 sidecar 发布协议继续拥有自己的 durability。
-- 当前候选 Gate 验证 Mobile 与公共插件边界；正式发布流程在获授权的 workspace 副本上验证
+- 当前候选 Gate 验证 Web 插件 UI 与公共插件边界；正式发布流程在获授权的 workspace 副本上验证
   feedback、active/persisted recall、Dashboard、sidecar hash、SessionDB append-only 与 cleanup。
   本任务不写正式 workspace。
 

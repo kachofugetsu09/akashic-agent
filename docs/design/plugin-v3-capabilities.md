@@ -185,7 +185,7 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 |---|---|---|
 | `COMMANDS` | `register(ctx, CommandDefinition(...))` | 显式 `commands` provider 拥有人类命令、alias、注册与执行；消费者声明硬依赖 |
 | `TOOLS` | `register(...)`、`bind(...)`、`open(...)` | `plugins.tools` 的工具描述、参数准备、exact binding 与执行入口 |
-| `UI_SLOTS` | `register_mobile(ctx, definition, query=...)` | Mobile 页面、查询和导航 |
+| `UI_SLOTS` | `register_plugin_ui(ctx, definition, query=...)` | Web 插件界面的资源、查询和导航 |
 | `CHANNELS` / `CHANNEL_INPUT` | 注册实际 factory，按绑定调用入站入口 | 显式 `channels` provider 拥有连接、接纳、原绑定发送与恢复；来源插件拥有输入消费 |
 | `DELIVERY` / `DELIVERY_READ` | 打开发送 admission 或只读历史 | Delivery 发送、恢复和查询 |
 
@@ -333,30 +333,30 @@ Web bootstrap 和 DashboardHost 从所选 Root 的 typed service 读取目录；
               实际请求租约 ────────┘
 ```
 
-### Mobile UI
+### 插件 UI
 
 同一个显式选择的 `ui` 插件提供 `UI_SLOTS`（保留字符串 `core.ui_slots`）。
-SDK 的 `UiSlots`、`MobileUiRegistry` 是窄 Protocol，具体注册表和资源校验在 provider 内。
-贡献插件仍在 `apply(ctx)` 调用 `ctx.require(UI_SLOTS).register_mobile(...)`，
-使用原 `MobileUiDefinition`、navigation、slots 和同步 query/available 合同。
+SDK 的 `UiSlots` 是窄 Protocol，具体注册表和资源校验在 provider 内。
+贡献插件在 `apply(ctx)` 调用 `ctx.require(UI_SLOTS).register_plugin_ui(...)`，
+使用 `PluginUiDefinition`、navigation、slots 和同步 query/available 合同。
 
 ```text
-贡献 Context ── register_mobile ── UI provider 的注册 Effect
+贡献 Context ── register_plugin_ui ── UI provider 的注册 Effect
                                       │ 注册与释放
                                       ▼
                              本 Root 的活动目录
                                       │
-                   Mobile HTTP/RPC 持实际 provider scope 读取
+                   Web HTTP/RPC 持实际 provider scope 读取
 ```
 
 provider 校验贡献方属于同一 Root 和服务，资源路径仍固定在该 Context 的代码制品中。
 目录与服务均带实际 Root token；域消费者拒绝借用另一 Root 的服务或目录。
-Core compiler 不再读取、冻结或复制 Mobile 目录，宿主只持请求 adapter，不拥有 Mobile UI 注册状态。
+Core compiler 不读取、冻结或复制插件 UI 目录，宿主只持请求 adapter，不拥有插件 UI 注册状态。
 注册 Effect 关闭只解除内存归属，不删除代码、plugin-data、消息或历史记录。
 
-`PluginMobileUiProvider` 继续承担已有 RPC 线程池、容量、超时和请求租约；
-MobileHTTP/RPC 的 revision、摘要、slot、授权和响应格式不变。
-宿主装配模块提供 `core.mobile_ui.v1` 请求 adapter，但不检测
+`LivePluginUiProvider` 承担 RPC 线程池、容量、超时和请求租约；
+Web HTTP/RPC 使用 revision、摘要、slot 和有界结果。
+宿主装配模块提供 `core.plugin_ui.v1` 请求 adapter，但不检测
 `inject(UI_SLOTS)` 或创建业务注册表。仓库内 Akasha 的真实安装组合已显式选择 `ui`。
 
 ## 6. Generation 与单 Root

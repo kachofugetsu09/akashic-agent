@@ -1,5 +1,7 @@
 # 插件整体换代重构
 
+> 历史实施记录：本文件中的整 Root 换代与 Mobile UI 描述已被 [0072](../decisions/0072-single-graph-local-plugin-updates.md) 和 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 取代，不作为现行实现合同。
+
 - 状态：源码已分层提交，运行验收未执行
 - 基线：`origin/main@91b09ecd4f774f00d2d7a61a5d9ea3ad3878a339`
 - 目标及取舍：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md)

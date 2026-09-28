@@ -16,7 +16,7 @@ export interface ModelCallStats {
 
 export type LoadModelCallStats = (callId: string, signal: AbortSignal) => Promise<ModelCallStats>;
 
-/** 两个传输边界共用校验；缺失用量与耗时不补成零。 */
+/** 校验 Web 返回值；缺失用量与耗时不补成零。 */
 export function readModelCallStats(value: unknown, callId: string): ModelCallStats {
   const raw = record(value);
   if (!raw || raw.call_record_id !== callId || typeof raw.model !== "string" || !raw.model
@@ -75,33 +75,6 @@ export const loadWebModelCallStats: LoadModelCallStats = async (callId, signal) 
   if (!response.ok) throw new Error("统计暂不可用");
   return readModelCallStats(await response.json(), callId);
 };
-
-const pending = new Map<string, { receive: (value: unknown) => void }>();
-
-/** 原生只转交只读查询；切页、超时和卸载会移除本地请求。 */
-export const loadMobileModelCallStats: LoadModelCallStats = (callId, signal) => new Promise((resolve, reject) => {
-  if (signal.aborted) { reject(signal.reason); return; }
-  const bridge = window.AkashicNative;
-  if (!bridge) { reject(new Error("统计暂不可用")); return; }
-  const requestId = crypto.randomUUID();
-  const cleanup = () => {
-    pending.delete(requestId);
-    clearTimeout(timer);
-    signal.removeEventListener("abort", aborted);
-  };
-  const aborted = () => { cleanup(); reject(signal.reason); };
-  const timer = setTimeout(() => { cleanup(); reject(new Error("统计查询超时")); }, 15000);
-  signal.addEventListener("abort", aborted, { once: true });
-  pending.set(requestId, { receive(value) {
-    cleanup();
-    try { resolve(readModelCallStats(value, callId)); } catch (error) { reject(error); }
-  } });
-  try { bridge.readModelCallStats(requestId, callId); } catch (error) { cleanup(); reject(error); }
-});
-
-export function receiveMobileModelCallStats(requestId: string, value: unknown): void {
-  pending.get(requestId)?.receive(value);
-}
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
