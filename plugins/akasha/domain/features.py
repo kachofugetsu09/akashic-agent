@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import math
+from array import array
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -33,15 +34,13 @@ class FeaturePool:
             turns,
             "user_dense",
             dimension,
+            self._capacity,
         )
         assistant_dense, assistant_mask = _dense_matrix(
             turns,
             "assistant_dense",
             dimension,
-        )
-        turn_dense, turn_dense_mask = _turn_dense_matrix(
-            turns,
-            dimension,
+            self._capacity,
         )
         self.user_dense = _reserve_rows(user_dense, self._capacity)
         self.user_mask = _reserve_values(user_mask, self._capacity)
@@ -53,12 +52,6 @@ class FeaturePool:
             assistant_mask,
             self._capacity,
         )
-        self.turn_dense = _reserve_rows(turn_dense, self._capacity)
-        self.turn_dense_mask = _reserve_values(
-            turn_dense_mask,
-            self._capacity,
-        )
-        self.normalized_terms = [_normalized_turn_terms(turn) for turn in turns]
         lengths = np.asarray(
             [_term_total(turn) for turn in turns],
             dtype=np.float64,
@@ -124,8 +117,8 @@ class FeaturePool:
     def dense_scores(self, cue: np.ndarray | None, end: int) -> np.ndarray:
         if cue is None or end == 0:
             return np.zeros(end, dtype=np.float64)
-        user = self.user_dense[:end] @ cue
-        assistant = self.assistant_dense[:end] @ cue
+        user = _dense_product(self.user_dense[:end], cue)
+        assistant = _dense_product(self.assistant_dense[:end], cue)
         user = np.where(self.user_mask[:end], user, -1.0)
         assistant = np.where(self.assistant_mask[:end], assistant, -1.0)
         available = self.user_mask[:end] | self.assistant_mask[:end]
@@ -152,11 +145,11 @@ class FeaturePool:
             if posting is None:
                 continue
             positions, frequencies = posting
-            stop = int(np.searchsorted(positions, end, side="left"))
+            stop = bisect.bisect_left(positions, end)
             if stop == 0:
                 continue
-            selected = positions[:stop]
-            tf = frequencies[:stop]
+            selected = np.frombuffer(positions, dtype=np.int32, count=stop)
+            tf = np.frombuffer(frequencies, dtype=np.float64, count=stop)
             idf = math.log1p((end - stop + 0.5) / (stop + 0.5))
             saturation = (
                 tf
@@ -211,7 +204,7 @@ class FeaturePool:
             posting = self.postings.get(term)
             if posting is None:
                 continue
-            df = int(np.searchsorted(posting[0], end, side="left"))
+            df = bisect.bisect_left(posting[0], end)
             if df == 0:
                 continue
             tf = document_terms[term]
@@ -227,14 +220,20 @@ class FeaturePool:
         """Build a compact completed event context in stable node order."""
 
         normalized = _normalize_pairs_by_id(members)
-        dense = np.zeros(self.turn_dense.shape[1], dtype=np.float64)
+        dense = np.zeros(self.user_dense.shape[1], dtype=np.float64)
         has_dense = False
         lexical: dict[str, float] = defaultdict(float)
         for node_id, weight in normalized:
-            if self.turn_dense_mask[node_id]:
-                dense += weight * self.turn_dense[node_id]
+            turn = self.turns[node_id]
+            vectors = [vector for vector in (turn.user_dense, turn.assistant_dense)
+                       if vector is not None]
+            if vectors:
+                # 保持原 float32 合成、归一化与存入矩阵时的舍入顺序。
+                combined = sum(vectors, start=np.zeros(dense.size, dtype=np.float32))
+                row = _unit(combined).astype(np.float32, copy=False)
+                dense += weight * row
                 has_dense = True
-            for term, value in self.normalized_terms[node_id]:
+            for term, value in _normalized_turn_terms(turn):
                 lexical[term] += weight * value
         terms = tuple(sorted(lexical.items(), key=lambda item: item[0].encode("utf-8")))
         return ContextState(normalized, _unit(dense) if has_dense else None, terms)
@@ -298,7 +297,6 @@ class BurstAwareFeaturePool(FeaturePool):
         self._ensure_capacity()
         node_id = self._size
         self._write_dense_row(node_id, turn)
-        self.normalized_terms.append(_normalized_turn_terms(turn))
         length = float(_term_total(turn))
         self.lengths[node_id] = length
         self.prefix_lengths[node_id + 1] = self.prefix_lengths[node_id] + length
@@ -312,15 +310,10 @@ class BurstAwareFeaturePool(FeaturePool):
                 self.term_order[term] = len(self.term_order)
             posting = self.postings.get(term)
             if posting is None:
-                self.postings[term] = (
-                    np.asarray([node_id], dtype=np.int32),
-                    np.asarray([float(tf)], dtype=np.float64),
-                )
-            else:
-                self.postings[term] = (
-                    np.append(posting[0], np.int32(node_id)),
-                    np.append(posting[1], float(tf)),
-                )
+                posting = (array("i"), array("d"))
+                self.postings[term] = posting
+            posting[0].append(node_id)
+            posting[1].append(float(tf))
 
         # 3. Commit the same order statistic used by full construction.
         support = _term_effective_support(turn.user_terms)
@@ -341,7 +334,7 @@ class BurstAwareFeaturePool(FeaturePool):
     def _ensure_capacity(self) -> None:
         if self._size < self._capacity:
             return
-        capacity = max(1, self._capacity * 2)
+        capacity = _next_capacity(self._size)
         self.user_dense = _reserve_rows(self.user_dense, capacity)
         self.user_mask = _reserve_values(self.user_mask, capacity)
         self.assistant_dense = _reserve_rows(
@@ -350,11 +343,6 @@ class BurstAwareFeaturePool(FeaturePool):
         )
         self.assistant_mask = _reserve_values(
             self.assistant_mask,
-            capacity,
-        )
-        self.turn_dense = _reserve_rows(self.turn_dense, capacity)
-        self.turn_dense_mask = _reserve_values(
-            self.turn_dense_mask,
             capacity,
         )
         self.lengths = _reserve_values(self.lengths, capacity)
@@ -390,10 +378,6 @@ class BurstAwareFeaturePool(FeaturePool):
                 (self._capacity, dimension),
                 dtype=np.float32,
             )
-            self.turn_dense = np.zeros(
-                (self._capacity, dimension),
-                dtype=np.float32,
-            )
         for vector, matrix, mask in (
             (turn.user_dense, self.user_dense, self.user_mask),
             (
@@ -407,14 +391,6 @@ class BurstAwareFeaturePool(FeaturePool):
                     raise ValueError("dense vectors must share one dimension")
                 matrix[node_id] = vector
                 mask[node_id] = True
-        if vectors:
-            self.turn_dense[node_id] = _unit(
-                sum(
-                    vectors,
-                    start=np.zeros(dimension, dtype=np.float32),
-                )
-            )
-            self.turn_dense_mask[node_id] = True
 
     def infer_burst_seed(
         self,
@@ -605,32 +581,41 @@ def _term_effective_support(
 
 def _build_postings(
     turns: list[Turn],
-) -> tuple[dict[str, int], dict[str, tuple[np.ndarray, np.ndarray]]]:
-    positions: dict[str, list[int]] = defaultdict(list)
-    frequencies: dict[str, list[float]] = defaultdict(list)
+) -> tuple[dict[str, int], dict[str, tuple[array, array]]]:
+    """用可追加的数值缓冲区建立倒排表，不保留逐词 NumPy 对象或临时列表。"""
+    postings: dict[str, tuple[array, array]] = {}
     term_order: dict[str, int] = {}
     for node_id, turn in enumerate(turns):
-        combined = _combined_terms(turn)
-        for term, tf in combined:
-            if term not in term_order:
+        for term, tf in _combined_terms(turn):
+            posting = postings.get(term)
+            if posting is None:
                 term_order[term] = len(term_order)
-            positions[term].append(node_id)
-            frequencies[term].append(float(tf))
-    postings = {
-        term: (
-            np.asarray(positions[term], dtype=np.int32),
-            np.asarray(frequencies[term], dtype=np.float64),
-        )
-        for term in sorted(positions, key=term_order.__getitem__)
-    }
+                posting = (array("i"), array("d"))
+                postings[term] = posting
+            posting[0].append(node_id)
+            posting[1].append(float(tf))
     return term_order, postings
 
 
 def _next_capacity(size: int) -> int:
-    capacity = 1
-    while capacity <= size:
-        capacity *= 2
-    return capacity
+    return (size // 256 + 1) * 256
+
+
+def _dense_product(matrix: np.ndarray, cue: np.ndarray) -> np.ndarray:
+    """限制混合精度乘法的临时转换量，不改向量或计算精度。"""
+    if matrix.dtype == cue.dtype or len(matrix) <= 256:
+        return matrix @ cue
+    # NumPy 会为 float32 矩阵与 float64 语境分配整份 float64 副本。
+    result = np.empty(len(matrix), dtype=np.result_type(matrix, cue))
+    start = 0
+    while start < len(matrix):
+        stop = min(start + 256, len(matrix))
+        # 合并很短的尾块，避免 BLAS 对单行走不同的 dot 规约路径。
+        if len(matrix) - stop < 8:
+            stop = len(matrix)
+        result[start:stop] = matrix[start:stop] @ cue
+        start = stop
+    return result
 
 
 def _reserve_rows(matrix: np.ndarray, capacity: int) -> np.ndarray:
@@ -661,33 +646,14 @@ def _dense_matrix(
     turns: list[Turn],
     attribute: str,
     dimension: int,
+    capacity: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    matrix = np.zeros((len(turns), dimension), dtype=np.float32)
-    mask = np.zeros(len(turns), dtype=bool)
+    matrix = np.zeros((capacity, dimension), dtype=np.float32)
+    mask = np.zeros(capacity, dtype=bool)
     for node_id, turn in enumerate(turns):
         vector = getattr(turn, attribute)
         if vector is not None:
             matrix[node_id] = vector
-            mask[node_id] = True
-    return matrix, mask
-
-
-def _turn_dense_matrix(
-    turns: list[Turn],
-    dimension: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    matrix = np.zeros((len(turns), dimension), dtype=np.float32)
-    mask = np.zeros(len(turns), dtype=bool)
-    for node_id, turn in enumerate(turns):
-        vectors = [
-            vector
-            for vector in (turn.user_dense, turn.assistant_dense)
-            if vector is not None
-        ]
-        if vectors:
-            matrix[node_id] = _unit(
-                sum(vectors, start=np.zeros(dimension, dtype=np.float32))
-            )
             mask[node_id] = True
     return matrix, mask
 
