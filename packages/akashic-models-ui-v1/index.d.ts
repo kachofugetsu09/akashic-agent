@@ -76,6 +76,8 @@ export type ModelProviderEntry = Omit<WebEntry, "render"> & {
   connectionIcon?: `data:image/svg+xml,${string}`;
   editTemplateId?: string;
   templates?: readonly ModelProviderTemplate[];
+  /** Direct API-key connection with an actual embedding dimension probe. */
+  embeddingApiKey?: boolean;
   /** Build the dialog with the public settings-dialog-* form classes. */
   render(host: HTMLElement, view: WebEntryView, props: ProviderProps): WebUiDisposer;
 };

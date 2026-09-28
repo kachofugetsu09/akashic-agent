@@ -544,3 +544,19 @@ Models 独占凭证、候选校验、模型记录和默认绑定。`discoverSave
 DeepSeek 的私有 thinking 字段与 SSE 行为属于连接的 `thinking_format`，不由模型名推断。官方模板选择 deepseek，自定义模板默认 none，可在高级设置明确选择。既有连接保留配置，不静默迁移。依据 [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)，关闭思考须实际发送 `thinking.type=disabled`。
 
 所有源文件的恢复点与隔离验证证据保留在 `/mnt/data/akashic-onboarding-fixes-20260928/backups/issue803/`。不修改正式 workspace。
+
+### Issue #804：向量服务自助配置（实现，验收待补）
+
+```text
+┌─ Models：添加向量模型 ─────────────────────┐
+│ 新建 API Key 连接 / 使用已有连接             │
+│ → 读取型号（也可手填）→ 实际试算两段固定文本   │
+│ → 显示实测维度 → 再验证 → 原子保存与默认选择   │
+└───────────────────────────────────────────┘
+```
+
+Models 仍拥有凭据、模型、revision 和默认选择。驱动可贡献 `probe_embedding`，只返回实际用途与维度，不需要构造未知维度的绑定空间。Compatible 使用零重试、30 秒总时限与 4 MiB 响应上限；向量边界检查批次数量、明确的 index、非空有限数值与一致维度。目录不是用途证据；不按型号猜维度，也不显示没有服务支持证据的自定义 dimensions 选项。
+
+`embeddingApiKey` 是连接表单贡献的显式能力声明，只为支持 API Key 与实际向量探测的连接提供新建入口；Models 不按 provider ID 特判。新建、已有连接复用同一个 Models 试算端口，已有密钥通过 owner 读取，页面不获得密钥。试算不写入，编辑与关闭取消旧展示请求，迟到结果按草稿指纹和请求序号丢弃。保存时重新试算，并由 store CAS 防止旧 revision 提交。
+
+`make_default_embedding` 仅允许向量模型；与新增连接、模型在同一个 SQLite 事务内提交。默认选择失败时新增记录也不提交，不制造跨插件回滚。已保存的同型号入口复用现有记录，只显式设置默认；维度改变要求独立连接，不覆盖旧空间。记忆、Wake 与渠道开关不因此改变。既有图空间与新默认不同仍沿 Akasha 现行阻塞合同，不删除、混写或自动重建。

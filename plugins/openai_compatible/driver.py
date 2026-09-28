@@ -202,6 +202,7 @@ def definition() -> ModelDriverDefinition:
         open=_open,
         discover=_discover,
         probe=_probe,
+        probe_embedding=_probe_embedding,
     )
 
 
@@ -244,6 +245,30 @@ async def _open(
         )
 
     return DriverConnection(bind_chat=bind_chat, bind_embedding=bind_embedding, close=http.aclose)
+
+
+async def _probe_embedding(
+    descriptor: DriverConnectionDescriptor, credential: CredentialHandle, model: str,
+) -> DiscoveredModel:
+    """用两段固定文本测量实际维度，不创建虚假的绑定空间。"""
+    _check_credential_scope(descriptor, credential)
+    connection = replace(_connection_config(descriptor), max_retries=0)
+    try:
+        async with asyncio.timeout(30):
+            payload = await _request_limited_json(
+                connection, credential, "POST", "/embeddings",
+                body={"model": model, "input": ["Akashic embedding setup check", "Akashic embedding order check"]},
+                max_bytes=4 * 1024 * 1024,
+            )
+    except TimeoutError as error:
+        raise ModelTimeoutError("向量试算超时，请检查服务地址或稍后重试；配置未保存。") from error
+    result = _parse_embedding_response(payload, expected_count=2)
+    return DiscoveredModel(
+        kind=ModelKind.EMBEDDING, model=model,
+        capabilities=ModelCapabilities(embedding_dimensions=len(result.vectors[0]), embedding_normalization="none"),
+        capability_sources=CapabilitySources(embedding_dimensions="probe", embedding_normalization="driver"),
+        driver_config={"format_version": 1},
+    )
 
 
 async def _probe(
@@ -493,6 +518,7 @@ async def _request_limited_json(
     path: str,
     *,
     max_bytes: int,
+    body: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read one discovery response with a hard byte limit and no retries."""
 
@@ -503,6 +529,7 @@ async def _request_limited_json(
                 method,
                 path,
                 headers={"Accept-Encoding": "gzip, identity"},
+                json=body,
             ) as response:
                 content = await _read_limited_response(response, max_bytes=max_bytes)
         bounded = httpx.Response(
@@ -891,10 +918,10 @@ def _parse_embedding_response(
     if not isinstance(raw_data, list) or len(raw_data) != expected_count:
         raise TransportError("embedding response count does not match input")
     ordered: list[tuple[int, tuple[float, ...]]] = []
-    for position, raw in enumerate(raw_data):
+    for raw in raw_data:
         if not isinstance(raw, Mapping):
             raise TransportError("embedding item must be an object")
-        index = raw.get("index", position)
+        index = raw.get("index")
         vector = raw.get("embedding")
         if not isinstance(index, int) or isinstance(index, bool):
             raise TransportError("embedding index must be an integer")
@@ -912,6 +939,8 @@ def _parse_embedding_response(
     if sorted(index for index, _vector in ordered) != list(range(expected_count)):
         raise TransportError("embedding indexes must cover the input batch exactly")
     ordered.sort(key=lambda item: item[0])
+    if len({len(vector) for _index, vector in ordered}) != 1:
+        raise TransportError("服务返回了不一致的向量维度；请联系服务提供方，配置未保存。")
     raw_usage = payload.get("usage")
     return EmbeddingResult(
         vectors=tuple(vector for _index, vector in ordered),

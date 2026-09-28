@@ -36,6 +36,7 @@ from agent.plugin_composition import (
     ChatModelSelection,
     ConnectionDescriptor,
     Context,
+    CredentialHandle,
     DiscoveredModel,
     DriverChatModel,
     DriverConnection,
@@ -468,7 +469,8 @@ class _BoundEmbedding:
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         result = await self._driver.embed(texts)
         if any(len(vector) != self._descriptor.dimensions for vector in result.vectors):
-            raise ModelUnavailableError("embedding 返回维度与绑定空间不一致")
+            actual = sorted({len(vector) for vector in result.vectors})
+            raise ModelUnavailableError(f"服务返回向量维度 {actual}，已保存空间需要 {self._descriptor.dimensions}。请重新试算并添加正确的向量模型；已有记忆不会被修改。")
         return result
 
 
@@ -736,6 +738,9 @@ class _SettingsView:
 
     async def discover_saved(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]:
         return await self._state.discover_saved_models(connection_id, expected_revision)
+
+    async def probe_embedding(self, model: str, expected_revision: int, *, connection: AddConnection | None = None, connection_id: str | None = None) -> DiscoveredModel:
+        return await self._state.probe_embedding_model(model, expected_revision, connection=connection, connection_id=connection_id)
 
     async def apply(self, command: ModelChange) -> SettingsReceipt:
         return await self._state.apply_change(command)
@@ -1406,6 +1411,41 @@ class ModelsState:
             discovered,
         )
 
+    async def probe_embedding_model(
+        self, model: str, expected_revision: int, *,
+        connection: AddConnection | None = None, connection_id: str | None = None,
+    ) -> DiscoveredModel:
+        """在 Models 的短期作用域试算；结果不写入凭据、空间或默认设置。"""
+        async with self.context.runtime_scope():
+            self._check_snapshot_service(MODEL_SETTINGS, self.settings)
+            # 1. 使用当前保存的凭据或明确的新连接草稿，禁止两者混用。
+            snapshot = self._snapshot_or_empty()
+            if snapshot.revision != expected_revision:
+                raise RevisionConflictError("配置已改变，请重新试算。")
+            if connection is not None:
+                descriptor = DriverConnectionDescriptor(
+                    connection_id=connection.connection_id, name=connection.name,
+                    driver_id=connection.driver_id, endpoint=connection.endpoint,
+                    auth_identity=connection.auth_identity, config=connection.driver_config,
+                )
+                credential = _MemoryCredential(connection.connection_id, connection.auth_identity, connection.credential)
+            else:
+                saved = snapshot.connections.get(connection_id or "")
+                if saved is None or not saved.enabled:
+                    raise ModelUnavailableError("连接不存在或已停用。")
+                descriptor = _driver_connection_descriptor(saved)
+                credential = self.store.credential_handle(saved.connection_id, saved.auth_identity)
+            # 2. 驱动只拥有外部协议与实际维度；Models 仍拥有提交。
+            registration = self._registration_required(descriptor.driver_id)
+            probe = registration.definition.probe_embedding
+            if probe is None:
+                raise ModelUnavailableError("此连接不支持自动试算维度，请选择支持向量试算的服务。")
+            async with registration.context.runtime_scope():
+                result = await probe(descriptor, credential, model)
+            if self._snapshot_or_empty().revision != expected_revision:
+                raise RevisionConflictError("配置已改变，请重新试算。")
+            return result
+
     async def discover_saved_models(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]:
         """用 owner 保存的凭证读取候选，不发布或修改现有模型。"""
         snapshot = self._snapshot_required()
@@ -1526,7 +1566,7 @@ class ModelsState:
             try:
                 async with asyncio.timeout(_SETTINGS_MODEL_PROBE_SECONDS):
                     for model in models:
-                        await self._check_bound_model(snapshot, connection, model, definition, driver)
+                        await self._check_bound_model(snapshot, connection, model, definition, driver, credential)
             except TimeoutError as error:
                 raise ModelTimeoutError("模型验证超过一分钟；连接未更新，请稍后重试。") from error
 
@@ -1562,6 +1602,7 @@ class ModelsState:
                 StoredModel.from_command(command),
                 definition,
                 driver,
+                self.store.credential_handle(connection.connection_id, connection.auth_identity),
             )
 
     async def _check_new_connection_model(
@@ -1601,6 +1642,7 @@ class ModelsState:
                 StoredModel.from_command(command.model),
                 definition,
                 driver,
+                credential,
             )
 
     async def _check_bound_model(
@@ -1610,6 +1652,7 @@ class ModelsState:
         model: StoredModel,
         definition: ModelDriverDefinition,
         driver: DriverConnection,
+        driver_credential: CredentialHandle,
     ) -> None:
         """验证所选用途后才允许写入模型与连接。"""
 
@@ -1629,6 +1672,11 @@ class ModelsState:
             descriptor = self._temporary_embedding_descriptor(
                 snapshot, connection, model, definition
             )
+            if definition.probe_embedding is not None:
+                result = await definition.probe_embedding(_driver_connection_descriptor(connection), driver_credential, model.model)
+                if result.capabilities.embedding_dimensions != descriptor.dimensions:
+                    raise ModelUnavailableError(f"服务实际返回 {result.capabilities.embedding_dimensions} 维，当前选择为 {descriptor.dimensions} 维。请重新试算后保存；已有记忆保持不变。")
+                return
             bound = _BoundEmbedding(
                 descriptor,
                 driver.bind_embedding(descriptor, model.driver_config),
