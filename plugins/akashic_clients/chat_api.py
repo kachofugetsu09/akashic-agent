@@ -559,7 +559,7 @@ def build_chat_server(
         uds=uds,
         log_level="warning",
         access_log=False,
-        timeout_graceful_shutdown=10.0,
+        timeout_graceful_shutdown=10,
     )
     return uvicorn.Server(config)
 
