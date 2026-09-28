@@ -24,7 +24,7 @@ Core formal ingress
 ```
 
 Core 在 apply/cleanup lifecycle、typed event listener、task、Tool、Command、Background Job、MCP、
-Channel factory/lifecycle/delivery/presentation、Dashboard module hook/HTTP 和 Mobile UI 等正式接入点
+Channel factory/lifecycle/delivery/presentation、Dashboard module hook/HTTP 和插件 UI 等正式接入点
 建立 operation。插件只能通过当前 Context 取得身份已绑定、不可直接构造 concrete 的
 `PluginDiagnostics`；不能指定别的 plugin、generation 或 Fiber，也不能提交任意 label mapping。
 这个限制定义受支持 API 的 owner，不把同进程 Python 插件伪装成恶意代码安全沙箱。
@@ -56,7 +56,7 @@ completion 等数值。它已有的细粒度 milestone 暂时作为现有兼容�
 
 - 非 Akasha fixture 能产生自动 entrypoint、嵌套内部 operation 和数值 measurement，父子关系闭合。
 - 成功、异常、取消和 Observe 失败隔离保持原合同，日志 sink 故障不改变业务结果。
-- Tool、Command、Job、MCP、Channel、Dashboard/Mobile UI 使用同一 Core wrapper，不出现来源插件特判。
+- Tool、Command、Job、MCP、Channel、Dashboard/插件 UI 使用同一 Core wrapper，不出现来源插件特判。
 - Akasha 的 Prompt retrieval 和 queued post-commit 使用同一 facade，handoff 不丢父因果。
 - 一次性 workspace E2E 能用同一 Turn 的 Core plugin boundary、Akasha 内部日志和 Provider milestone
   区分记忆检索与模型等待。

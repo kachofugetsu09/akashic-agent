@@ -114,14 +114,14 @@
 |---|---|---|
 | Message 日志、无状态 Turn 投影、完整回复链插件化 | [已批准设计与分层实施合同](design/0902-reviewed-v4.md) → 本文对应持久化、插件和会话路由 | `session/`、`plugins/sources/`、`plugins/conversation/`、`plugins/reply/`、`plugins/react/`、`plugins/tools/`、`plugins/delivery/`、`plugins/turn_projection/`；第 15 节保留插件功能，第 16 节给出 PR 与 yoyo 归属 |
 | 任何会修改仓库文件的任务 | 本索引 → [`WORKFLOW.md`](WORKFLOW.md) → 下方对应领域 | 当前分支、目标分支、完整 diff、验证报告 |
-| Web/Mobile 共享 Session、Akashic Channel 或客户端 adapter | `projectneed` AKC-001～AKC-003 → [0044](decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) → [0067](decisions/0067-clients-are-ordinary-plugin.md) → [Akashic Channel 与客户端 Adapter 规格](design/akashic-channel-client-adapters.md) → [持久化状态地图](design/persistence-state-map.md) | `session/`、`agent/plugin_composition/channels.py`、`plugins/akashic_clients/`、`bootstrap/app.py`、`bootstrap/chat_api.py`、`plugins/scheduler/`、`plugins/wake/`、`plugins/akasha/`；实现仍需独立授权 |
-| V3 durable inbound 与 host boot identity | `projectneed` RUN-003 → [V3 durable inbound 与 host boot identity 合同](design/plugin-v3-durable-inbound-host-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugin_composition/channels.py`、`plugins/channels/provider.py`、`bus/queue.py`、`session/inbound_store.py`、各客户端 adapter；旧 Mobile consumer 迁移前不得恢复旧 facade |
+| Web Chat 与 Android Shell 的 Session/Channel | `projectneed` MOB-001、AKC-001～AKC-002 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Android Shell 合同](design/android-shell-experiment.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/akashic_clients/`、`frontend/chat/src/`、`session/` |
+| V3 durable inbound 与 host boot identity | `projectneed` RUN-003 → [V3 durable inbound 与 host boot identity 合同](design/plugin-v3-durable-inbound-host-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugin_composition/channels.py`、`plugins/channels/provider.py`、`bus/queue.py`、`session/inbound_store.py`、Web 客户端与通知 consumer |
 | Project、Session scope 宽键、Akasha 独立图与记忆策略 | `projectneed` SES-010、MEM-009、MEM-013 → [0073](decisions/0073-session-scope-routes-akasha-graphs.md) → [持久化状态地图](design/persistence-state-map.md) | `session/log.py`、`agent/plugin_composition/messages.py`、`plugins/projects/`、`plugins/conversation/`、`plugins/akasha/scopes.py`、`plugins/akasha/plugin.py`、`frontend/chat/src` |
 | 其他 Akashic 产品路线、Project working root / coding context 或大型 tool result | [未来方向与 Issue 拆分草案](design/akashic-future-roadmap-issue-drafts.md) → 草案中对应领域的现行条款、决策与设计 | `session/`、`plugins/eventmail/`、`plugins/wake/`、`plugins/drift/`、`plugins/scheduler/`、`plugins/subagent/`、`plugins/akasha/`、`plugins/message_push/`；草案未提升为现行合同前不得直接实现 |
 | Prompt、人格、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [Veda 人格设计](design/veda-persona.md) → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [Session compaction ledger](design/session-context-compaction-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/prompting/`、`session/`、`plugins/turn_projection/` |
 | 旧工具效果缺少恢复回执 | [0061](decisions/0061-archive-stopped-legacy-executions.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/migrations/turn_messages.py` |
 | 插件 Message metadata、Citation/Meme 附加信息 | `projectneed` SES-009 → [0060](decisions/0060-message-plugin-metadata.md) → [Message metadata 合同](design/0902-reviewed-v4.md#34-message-metadata-的实现与迁移) → [持久化状态地图](design/persistence-state-map.md) | `session/message.py`、`session/log.py`、`plugins/content/`、`plugins/react/`、`infra/channels/message_view.py` |
-| 会话、消息、turn、同 Turn 输入、打断、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [0025](decisions/0025-codex-style-same-turn-input.md) → [执行进展、中断与故障恢复设计](design/interrupt-and-fault-model.md) | `session/`、`plugins/sources/`、`plugins/conversation/`、`plugins/reply/`、`plugins/turn_projection/`、`plugins/akashic_clients/mobile_realtime/`、`bootstrap/chat_api.py` |
+| 会话、消息、turn、同 Turn 输入、打断、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [0025](decisions/0025-codex-style-same-turn-input.md) → [执行进展、中断与故障恢复设计](design/interrupt-and-fault-model.md) | `session/`、`plugins/sources/`、`plugins/conversation/`、`plugins/reply/`、`plugins/turn_projection/`、`bootstrap/chat_api.py` |
 | Markdown 记忆、退役 Memory2 归档、Akasha | `projectneed` 第 6、8、11～13 节 → [0041](decisions/0041-turn-effects-and-memory-plugins-are-orthogonal.md) → [0052](decisions/0052-compaction-and-markdown-memory-are-ordinary-plugins.md) → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/markdown_memory/`、`plugins/compaction/`、`plugins/akasha/` |
 | Compaction 与 Markdown 记忆普通插件化 | `projectneed` CTX-007、MEM-001～MEM-011 → [0052](decisions/0052-compaction-and-markdown-memory-are-ordinary-plugins.md) → [插件化任务合同](design/compaction-markdown-memory-plugin-task-contract.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/plugin_composition/`、`session/` 与任务合同 P01～P09 |
 | 主动流程、Wake、Drift、调度 | `projectneed` 第 6、9、12～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) → [Content / Wake 现有原子能力与第一阶段](design/content-wake-existing-atoms-first-stage.md) → [Content / Wake / Proactive 分层任务合同](design/content-wake-proactive-migration-task-contract.md) → [0040](decisions/0040-wake-duty-gate-lives-in-scoped-react.md) → [0048](decisions/0048-eventmail-keeps-three-mail-lifecycles.md) | `plugins/eventmail/`、`plugins/wake/`、`plugins/drift/`、`plugins/scheduler/`、`plugins/subagent/`、`agent/plugin_composition/timers.py`、`agent/plugin_composition/tasks.py` |
@@ -137,26 +137,26 @@
 | 插件 v3 Dashboard 注册与数据边界 | [插件 v3 包级 contribution 任务合同](design/plugin-v3-package-contributions-task-contract.md) → [v3 DashboardContext 任务合同](design/plugin-v3-dashboard-context-task-contract.md) | `agent/plugin_composition/dashboard.py`、`agent/plugins/dashboard_host.py` |
 | 插件 v3 静态投影与 exact Root runtime | [v3 DashboardContext 任务合同](design/plugin-v3-dashboard-context-task-contract.md) → [静态投影与 exact runtime 任务合同](design/plugin-v3-static-projection-runtime-task-contract.md) | `agent/plugin_composition/model.py`、`agent/plugins/composable.py`、`agent/plugin_composition/runtime_catalog.py`、`agent/plugins/dashboard_host.py` |
 | 插件边界、能力角色、import 约束或正交性审查 | `projectneed` 第 6、9～13 节 → [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) → [插件边界地基](design/plugin-boundary-foundation.md) → [插件 V3 能力手册](design/plugin-v3-capabilities.md) | `plugin_boundary.toml`、`plugin_boundary_baseline.toml`、`scripts/plugin_boundary.py`、`agent/plugin_contracts/`、`agent/plugin_composition/` |
-| Akasha v3、feedback、Inspector 与 Mobile recall | [持久化状态地图](design/persistence-state-map.md) → [Akasha 在线与重放](design/akasha-v2-runtime-migration.md) → [Akasha v3 迁移任务合同](design/akasha-plugin-v3-migration-task-contract.md) | `plugins/akasha/`、`core/memory/plugin.py`、`agent/plugin_composition/models.py`、`agent/plugin_composition/messages.py`、`agent/plugins/manager.py` |
+| Akasha v3、feedback、Inspector 与 Web 插件卡片 | [持久化状态地图](design/persistence-state-map.md) → [Akasha 在线与重放](design/akasha-v2-runtime-migration.md) → [Akasha v3 迁移任务合同](design/akasha-plugin-v3-migration-task-contract.md) | `plugins/akasha/`、`core/memory/plugin.py`、`agent/plugin_composition/models.py`、`agent/plugin_composition/messages.py`、`agent/plugins/manager.py` |
 | Citation/Meme v3 回复组合接入点 | [持久化状态地图](design/persistence-state-map.md) → [candidate Root 隔离任务合同](design/plugin-candidate-root-isolation-task-contract.md) → [v3 回复组合接入点任务合同](design/plugin-v3-passive-response-seams-task-contract.md) → [纯 v3 组合 Gate（历史）](design/plugin-passive-composition-v3-gate-task-contract.md) → [WebUI E2E Gate](design/plugin-passive-webui-v3-e2e-task-contract.md) | `plugins/reply/`、`plugins/react/`、`plugins/content/`、`plugins/models/`、`plugins/tools/`、`agent/plugin_composition/`、`agent/plugins/manager.py`、`bootstrap/chat_api.py` |
 | 插件 v3 context、只读 Memory runtime 与显式消息撤销 | [context-prepared 与 Memory capability 任务合同](design/plugin-context-prepared-memory-capability-task-contract.md) → [Plugin Undo v3 与 interaction 撤销协调合同](design/plugin-v3-interaction-undo-task-contract.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/plugin_composition/interaction_undo.py`、`agent/plugins/manager.py`、`session/` |
 | 插件 v3 background job、Agent Work 与 LLM capability | [插件 v3 Proactive / background job 历史合同](design/plugin-v3-proactive-jobs-task-contract.md) → [插件 v3 Agent Work 能力合同](design/plugin-v3-agent-work-capability-task-contract.md) → [插件 v3 MCP/managed process 合同](design/plugin-v3-mcp-managed-process-task-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/scheduler/`、`plugins/subagent/`、`plugins/models/`、`agent/plugin_composition/tasks.py`、`agent/plugin_composition/mcp_slots.py`、`agent/plugin_composition/process_slots.py`、`agent/plugins/manager.py` |
 | 执行失败、丢唤醒、中断、清理与恢复 | [0063](decisions/0063-execution-failures-have-terminal-results.md) → [持久化状态地图](design/persistence-state-map.md) → [执行进展、中断与故障恢复设计](design/interrupt-and-fault-model.md) | `session/log.py`、`plugins/sources/`、`plugins/reply/`、`plugins/react/`、`plugins/models/`、`plugins/tools/`、`plugins/delivery/`、`agent/plugin_composition/tasks.py` |
 | 工具引用、工具组、搜索展示与来源工具范围 | [0062](decisions/0062-tools-flow-through-provider-views.md) → [插件工具引用与模型展示设计](design/plugin-tool-view.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/tools/`、`plugins/tool_search/`、`plugins/conversation/`、`plugins/reply/`、`plugins/react/`、`plugins/wake/`、`plugins/scheduler/`、`plugins/subagent/`、`agent/plugin_composition/mcp_slots.py` |
 | 插件 v3 inbound/outbound channel capability | [插件 v3 Channel capability 合同](design/plugin-v3-channel-capability-task-contract.md) → [插件 v3 Channel 附件持久化合同](design/plugin-v3-channel-attachment-task-contract.md) → [插件 v3 committed command catalog 合同](design/plugin-v3-command-catalog-task-contract.md) | `agent/plugin_composition/channels.py`、`agent/plugins/manager.py`、`infra/channels/`、`plugins/akashic_clients/`、`plugins/sources/`、`plugins/delivery/`、`plugins/delivery_policy/`、`bootstrap/chat_api.py`、`bootstrap/app.py`、`session/` |
-| 移动端查看 Markdown、定时任务、插件、Skill、MCP | `projectneed` 第 6、10～13 节 → [移动端运行时检查](design/mobile-runtime-inspection.md) → [v3 Mobile UI/query capability](design/plugin-v3-mobile-ui-query-task-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/akashic_clients/mobile_realtime/runtime_inspection.py`、`plugins/akashic_clients/mobile_realtime/protocol.py`、`plugins/akashic_clients/mobile_realtime/channel.py`、`agent/plugins/mobile_ui.py` |
+| Android Shell 观看聊天与插件 UI | `projectneed` WEBUI-001～WEBUI-004 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Android Shell 合同](design/android-shell-experiment.md) | `frontend/chat/src/`、`plugins/akashic_clients/chat_api.py`、`plugins/akashic_clients/notifications.py` |
 | 部署、升级、可选备份、失败重试 | [0074](decisions/0074-deployment-policy-belongs-to-operator.md) → [部署操作手册](design/operator-deployment.md) → [Core/Bridge 安装设计](design/akashic-core-bridge-installer.md) | `scripts/install-akashic.sh`、`scripts/akashic_release/`、`scripts/install_plugin_distribution.py` |
 | Workspace、配置、凭据、迁移、备份 | `projectneed` 第 6、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [0066](decisions/0066-yoyo-current-baseline.md) → [Yoyo 迁移维护手册](design/git-migration-authoring.md) | `main.py`、`bootstrap/init_workspace.py`、`agent/config.py`、`agent/migrations/`、`migrations/core/`、`agent/model_runtime/auth/store.py`、`scripts/rolling_backup.py` |
 | 高风险 refactor、语义不变重构、CI oracle | `projectneed` 第 4～6、13、15 节 → [正交化测试基线](refactor/orthogonality-test-baseline.md) → [综合重构账本](refactor/clean-code-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → 相关决策 | 改动前后的完整 diff、概念基线 pytest、write set |
-| 正交化测试基线、跨仓库插件契约 | `projectneed` 第 10、13、15 节 → [正交化测试基线](refactor/orthogonality-test-baseline.md) → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [移动端与跨仓库 Gate](design/mobile-cross-repository-semantic-gate.md) → [Gate 总体设计](spark/2026-07-16-change-impact-contract-gate.md)（change-impact 已退役） → [测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)（已被基线文档取代） → [持久化状态地图](design/persistence-state-map.md) | `tests/`、`private_runtime/` |
+| 正交化测试基线、跨仓库插件契约 | `projectneed` 第 10、13、15 节 → [正交化测试基线](refactor/orthogonality-test-baseline.md) → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [持久化状态地图](design/persistence-state-map.md) | `tests/`、`private_runtime/` |
 | Companion 安全、容量和长时运行 Edge Case | `projectneed` SEC-001～SEC-010 → [0017](decisions/0017-one-person-companion-security-boundary.md) → [Companion 安全边界与 Edge Case 实施设计](design/security-scan-edge-cases.md) → [持久化状态地图](design/persistence-state-map.md) | 相关 D1～D9 owner；change-impact Gate 已退役 |
 | Harness benchmark、独立 runtime trial、证据驱动优化 | `projectneed` 第 8～13、15 节 → [V4 Flash Harness Benchmark 设计](spark/2026-07-30-v4flash-harness-benchmark-design.md) → [Benchmark 诊断循环设计](spark/2026-07-30-agent-benchmark-diagnostic-loop-design.md) → [0010](decisions/0010-provider-default-output-and-benchmark-diagnostics.md) → [0011](decisions/0011-benchmark-concurrency-six.md) → [实验 ledger](benchmark/v4flash-harness-experiment-ledger.md) → [运行审计](benchmark/terminalbench-2.1-run-audit-2026-08-05.md) → [逐题 CSV](benchmark/terminalbench-2.1-case-results-2026-08-05.csv) → [持久化状态地图](design/persistence-state-map.md) | `benchmark/harbor_v4flash/`、`agent/control/`、`bootstrap/`、`docker/debug/`、独立 artifact store 与 experiment ledger |
 | Shell、长任务、PTY、进程续接或轮询 | `projectneed` SH-001、RUN-002～RUN-003、ERR-001 → [0014](decisions/0014-shell-uses-unified-execution.md) → [Unified Shell Execution 设计](design/unified-shell-execution.md) | `plugins/standard_tools/shell.py`、`plugins/standard_tools/shell_backend.py`、`agent/tools/unified_exec.py`、`plugins/subagent/plugin.py`、`bootstrap/tools.py` |
-| 移动端、客户端协议、跨仓库 runtime patch 或 stacked PR 评审 | `projectneed` MOB-001～MOB-008、AKC-001～AKC-003、GOV-001～GOV-005、TST-001～TST-008 → [0003](decisions/0003-core-capability-ownership-is-semantic.md) → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [0035](decisions/0035-mobile-protocol-delivery-is-phased.md) → [0044](decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) → [移动端与跨仓库 Gate](design/mobile-cross-repository-semantic-gate.md) → [移动端投影审计](design/mobile-projection-audit.md) → [`templates/review-contract.md`](templates/review-contract.md) | 每层 `base..head`、最终累计 diff、所有 schema lineage、协议 source、runtime/provider/scenario identity 和设备隔离证据 |
+| Android Shell 或客户端边界评审 | `projectneed` MOB-001、WEBUI-001～WEBUI-004 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Android Shell 合同](design/android-shell-experiment.md) | Web 页面、通知 SSE、Shell 实际消费者与隔离设备证据 |
 | 新增或修改项目文档 | 本索引 → [`writing-rules.md`](writing-rules.md) → 目标文档的权威上游 | 所有相对链接、重复规则、过时入口和 Git diff |
-| Android 极薄壳实验、免登录连接与通知 | [实验合同](design/android-shell-experiment.md) → `projectneed` WEBUI-005 实验例外、0045 | `plugins/akashic_clients/notifications.py`、`docker/debug/notification_feed.py`、独立 Android 壳仓库 |
-| Dashboard、Chat UI | `projectneed` 公共合同、WEBUI-001～WEBUI-008 → [0018](decisions/0018-chat-webui-has-one-source-and-two-adapters.md) → [0022](decisions/0022-mobile-webui-uses-server-selected-generations.md) → [0029](decisions/0029-main-gateway-reconciles-mobile-webui-stable.md) → [0043](decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md) → [0053](decisions/0053-plugins-declare-managed-workloads.md) → [Computer 插件与 Workload 合同](design/computer-plugin-workload-task-contract.md) → [纸张品牌系统](design/akashic-paper-brand-system.md) → [共享对话 WebUI](design/shared-chat-webui.md) → [Mobile Browser Lab](design/mobile-browser-lab.md) → [WebUI 交互性能与组件边界优化](design/webui-interaction-optimization.md) → [服务端发布的移动 WebUI OTA](design/server-published-mobile-webui.md) → `NOW.md` 对应事项 | `frontend/**/src`、`plugins/conversation_ui/`、真实构建和渲染结果 |
-| 2236 顶层页面、导航与递归插件 UI | `projectneed` WEBUI-001～WEBUI-008、PLG-001～PLG-017 → [0051](decisions/0051-web-ui-composes-ordinary-plugin-modules.md) → [0053](decisions/0053-plugins-declare-managed-workloads.md) → [0050](decisions/0050-model-revision-lives-in-ordinary-plugin.md) → [Computer 插件与 Workload 合同](design/computer-plugin-workload-task-contract.md) → [模型普通插件与 Provider 组合规格](design/model-plugin-ordinary-capability-spec.md) → [2236 WebUI 插件组合设计](design/web-ui-plugin-composition.md) → [共享对话 WebUI](design/shared-chat-webui.md) → [服务端发布的移动 WebUI OTA](design/server-published-mobile-webui.md) | `frontend/dashboard/src`、`frontend/chat/src`、`agent/plugin_composition/`、`agent/plugins/`、`plugins/conversation_ui/`、`plugins/models/`、`plugins/openai_compatible/`、`plugins/codex/`、`plugins/opencode_go/` |
+| Android Shell 页面与通知 | [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Shell 合同](design/android-shell-experiment.md) | `plugins/akashic_clients/notifications.py`、`docker/debug/notification_feed.py`、独立 Android Shell 仓库 |
+| Dashboard、Chat UI | `projectneed` WEBUI-001～WEBUI-004 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [0043](decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md) → [Android Shell 与 Web 聊天](design/android-shell-experiment.md) → [WebUI 交互性能](design/webui-interaction-optimization.md) | `frontend/**/src`、`plugins/conversation_ui/`、真实构建和渲染结果 |
+| 2236 顶层页面、导航与递归插件 UI | `projectneed` WEBUI-001～WEBUI-004、PLG-001～PLG-017 → [0051](decisions/0051-web-ui-composes-ordinary-plugin-modules.md) → [0053](decisions/0053-plugins-declare-managed-workloads.md) → [2236 WebUI 插件组合设计](design/web-ui-plugin-composition.md) | `frontend/dashboard/src`、`frontend/chat/src`、`plugins/conversation_ui/` |
 
 任务同时命中两行以上、会修改持久数据或会产生外部不可逆效果时，读取 `projectneed.md` 全文。执行阶段可以收窄材料，评审阶段必须展开所有相关 diff、状态变化和证据。
 
@@ -230,9 +230,7 @@ docs/
 │   ├── 0004-cross-repository-evidence-is-an-immutable-combination.md
 │   ├── 0005-git-cursor-drives-one-shot-migrations.md
 │   ├── 0006-akasha-v2-is-the-canonical-explicit-memory-engine.md
-│   ├── 0007-mobile-plugin-control-and-data-planes-are-explicit.md
 │   ├── 0008-plugin-runtime-publishes-only-committed-snapshots.md
-│   ├── 0009-akasha-mobile-recall-preserves-semantic-lanes.md
 │   ├── 0010-provider-default-output-and-benchmark-diagnostics.md
 │   ├── 0011-benchmark-concurrency-six.md
 │   ├── 0012-query-local-compaction-is-a-persisted-projection.md
@@ -241,24 +239,17 @@ docs/
 │   ├── 0015-cleanup-does-not-own-turn-or-restart-finality.md
 │   ├── 0016-channel-delivery-uses-complete-logical-messages.md
 │   ├── 0017-one-person-companion-security-boundary.md
-│   ├── 0018-chat-webui-has-one-source-and-two-adapters.md
-│   ├── 0019-mobile-long-messages-use-bounded-events.md
-│   ├── 0020-mobile-history-content-uses-authenticated-http-ranges.md
 │   ├── 0021-yoyo-workspace-ledger-defines-migration-origin.md
-│   ├── 0022-mobile-webui-uses-server-selected-generations.md
 │   ├── 0023-akashic-tokens-own-material-3-semantics.md
 │   ├── 0024-plugin-self-validation-uses-stable-and-latest.md
 │   ├── 0025-codex-style-same-turn-input.md
 │   ├── 0026-plugin-rollout-is-owned-by-the-parent-turn.md
 │   ├── 0027-runtime-models-use-generation-leases.md
 │   ├── 0028-model-credentials-live-with-workspace-connections.md
-│   ├── 0029-main-gateway-reconciles-mobile-webui-stable.md
 │   ├── 0030-session-context-compaction-ledger.md
-│   ├── 0031-stable-matching-head-allows-gateway-restart.md
 │   ├── 0032-host-bridge-preserves-host-equivalent-execution.md
 │   ├── 0033-local-agent-instructions-are-not-project-documents.md
 │   ├── 0034-turn-is-the-logical-work-unit.md
-│   ├── 0035-mobile-protocol-delivery-is-phased.md
 │   ├── 0036-plugin-composition-keeps-promotion-owner.md
 │   ├── 0037-plugin-runtime-is-pure-v3.md
 │   ├── 0038-operator-trust-can-publish-offline-plugin-batches.md
@@ -267,7 +258,6 @@ docs/
 │   ├── 0041-turn-effects-and-memory-plugins-are-orthogonal.md
 │   ├── 0042-plugin-diagnostics-preserve-domain-owners.md
 │   ├── 0043-paper-brand-tokens-replace-material-visual-semantics.md
-│   ├── 0044-akashic-channel-uses-web-and-mobile-adapters.md
 │   ├── 0045-akashic-direct-messages-commit-before-notify.md
 │   ├── 0046-plugin-candidate-validation-is-incremental.md
 │   ├── 0047-provides-may-bind-one-tool.md
@@ -291,16 +281,11 @@ docs/
 │   └── 0065-plugin-boundary-checks-do-not-grant-core-ownership.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
-│   ├── akashic-channel-client-adapters.md
 │   ├── akashic-paper-brand-system.md
 │   ├── akashic-future-roadmap-issue-drafts.md
 │   ├── akashic-container-cloud-runtime-adaptation.md
 │   ├── akashic-container-host-bridge-experiment-contract.md
 │   ├── linux-supervisor-safe-self-restart.md
-│   ├── mobile-cross-repository-semantic-gate.md
-│   ├── mobile-long-message-delivery.md
-│   ├── mobile-browser-lab.md
-│   ├── mobile-projection-audit.md
 │   ├── codex-style-same-turn-input-requirements.md
 │   ├── codex-style-same-turn-input.md
 │   ├── cordis-plugin-capability-parity.md
@@ -314,8 +299,6 @@ docs/
 │   ├── project-workbook-and-semantic-safety.md
 │   ├── query-local-react-compaction.md
 │   ├── runtime-model-registry-and-onboarding.md
-│   ├── server-published-mobile-webui.md
-│   ├── shared-chat-webui.md
 │   ├── host-bridge-reliability.md
 │   ├── host-bridge-protocol-v2.md
 │   ├── unified-shell-execution.md
@@ -366,7 +349,7 @@ docs/
 
 - [0066 · Yoyo 当前基线](decisions/0066-yoyo-current-baseline.md)：保留未来迁移能力，退役历史兼容脚本。
 
-- [0067 · 客户端属于普通插件](decisions/0067-clients-are-ordinary-plugin.md)：Web/Mobile 业务与中立渠道宿主的归属边界。
+- [0067 · 客户端属于普通插件](decisions/0067-clients-are-ordinary-plugin.md)：Web Chat 与中立渠道宿主的归属边界。
 
 插件旧数据处理责任见 [0070](decisions/0070-plugins-own-persisted-data.md)。
 

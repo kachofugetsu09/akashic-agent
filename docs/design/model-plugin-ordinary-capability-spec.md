@@ -128,7 +128,7 @@ PluginManager
 - 第一阶段是否保留现有 workspace `model-registry.sqlite3` 路径，还是迁到 plugin-data。本文选择保留现有权威路径，避免把数据迁移和代码插件化绑成一次变更；未来搬迁需要独立审批和恢复合同。
 - Provider 网络访问是否立即改走通用 Core Network Service。当前插件没有完整网络沙箱；本文不为模型单独发明网络权限系统。
 - `fast`、`vision` role 是否在后续产品设计中保留。第一阶段为行为等价继续保留，不借插件化删除角色。
-- 当前 `UI_SLOTS` 只实现 Mobile UI slot，不支持 2236 顶部导航或完整模型页面。Web 插件化是独立设计；不得让模型执行切片等待它，也不得把当前 Mobile slot 描述成已经具备该能力。
+- 当前 `UI_SLOTS` 提供 Web Chat 的插件卡片与查询，不拥有 2236 顶部导航或完整模型页面。模型执行切片不等待页面组合能力。
 
 ## 4. 最少概念
 
@@ -206,7 +206,7 @@ ModelExecution
 以下 candidate/stable、`SNAPSHOT_SEALING` 和模型冻结描述属于旧发布设计，当前模型切片已标为 superseded；保留它们只为解释通用 Core 历史边界，不能作为本批模型接线的实现依据。
 
 当前模型入口不创建 Core snapshot lease：公开控制调用由 `build_control_service(core).resolve_method()` 从
-`manager.live_root` 解析实际 Models `RpcMethod`，并在其 provider `Context.runtime_scope()` 内校验参数和执行；Dashboard、Mobile 和内部消费者分别在自己的真实 Models contributor/provider scope 内读取窄服务。没有 live Root、provider 或 operation 时 fail-loud；不新增模型 lease、model acquire helper 或第二 registry。
+`manager.live_root` 解析实际 Models `RpcMethod`，并在其 provider `Context.runtime_scope()` 内校验参数和执行；Dashboard、Web Chat 和内部消费者分别在自己的真实 Models contributor/provider scope 内读取窄服务。没有 live Root、provider 或 operation 时 fail-loud；不新增模型 lease、model acquire helper 或第二 registry。
 
 Core 不再为 plugin snapshot 与 model revision 增加共同 fence 或 ordered operation。删掉它成立的前提是更简单、也更严格的 driver 演进合同：
 
@@ -230,7 +230,7 @@ status/body，并继续拥有设置规则。
 
 `BoundModelControl` 是 Models 插件自有的同一能力，同时供其 RPC handler 与 Dashboard
 contributor 使用；Core 不再绑定 `RuntimeModelControl`。Dashboard 使用 Models artifact
-自己的 resolver/facade，Mobile
+自己的 resolver/facade，Web Chat
 使用当前 Root 的窄 stats reader，控制端使用 Models-owned RPC，因此读请求、设置写事务和
 provider 业务实现没有第二个 Core owner。
 
@@ -559,8 +559,7 @@ Onboarding 注入 `MODEL_CATALOG` 判断是否具备可用默认聊天模型和�
 | Akasha online/rebuild | `EMBEDDINGS` | 每个 embedding batch/完整 rebuild scope 开始时 |
 | Scheduler / Subagent / Wake | 继续只用 `SCOPED_TURNS` | 由 Turn runtime 间接解析 |
 | setup wizard / 无模型壳 | 通用 Plugin Installer；模型配置暂沿用现有 settings surface | 不创建临时 Core provider |
-| `bootstrap/app.py` Mobile binding | 不再接收 registry；Mobile handler 每请求从 exact UI/control Service view 读取 catalog | Mobile command admission |
-| `plugins/akashic_clients/mobile_realtime/channel.py` model catalog（历史 `infra/mobile_realtime/channel.py`） | live Root 的 `MODEL_CATALOG` provider | list/refresh command 开始时 |
+| `plugins/akashic_clients/channel.py` Web Chat model catalog | live Root 的 `MODEL_CATALOG` provider | 每次 Web 请求 |
 | `agent/config.py` | 静态 Config 不读取模型库、不派生 LLM runtime；只保留非模型启动配置 | Config load |
 | `main.py` / `bootstrap/app.py` model reload | Models RPC receipt；删除 `reload_model_config()` 直达 registry | 用户设置事务 |
 
@@ -771,7 +770,7 @@ Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
 3. **公共合同与 state owner**：增加五个 ServiceKey/Protocol/DTO 和五个 facade；把 registry、selection、capability normalization、settings transaction 与 credential handle 移入普通 `models` artifact。
 4. **最小 schema**：保留现有模型库和 `model_connections.provider`，把它解释为 `driver_id`；增加 connection config、default embedding 与两张 model 表的 capability JSON envelope。不增加 driver/version/contract/digest 表或通用 Binding 表。
 5. **三个 Provider 同时迁移**：`openai-compatible`、Codex 和 OpenCode Go 分别成为外置 artifact；auth、refresh、transport、catalog 和 profile 全部随各自 driver 迁移。
-6. **全部消费者同时切换**：bootstrap 在 committed snapshot 内解析 Service；Akasha 改为 `EMBEDDINGS`；chat/settings/Mobile API、job、compaction、vision 和 memory consumer 按第 10.6 节迁移。
+6. **全部消费者同时切换**：bootstrap 在 committed snapshot 内解析 Service；Akasha 改为 `EMBEDDINGS`；chat/settings/Web API、job、compaction、vision 和 memory consumer 按第 10.6 节迁移。
 7. **一次 legacy handoff**：Yoyo 把旧 `[llm]` 与 `[memory.embedding]` 的最终事实写入 models registry，并只把 Session 中同一维度的既有向量改为最终 space identity；消息正文和 Akasha sidecar 不变。Akasha 先明确降级，再由 `/akasha_reindex confirm` 沿 artifact-owned repair 重建派生文件，不重复请求已经完整的向量。
 8. **删除旧链**：证明零消费者后删除 `agent/provider.py` 的 Provider 分支、`ModelRegistry`/`ModelGeneration`/`RoleBoundProvider`、DB-to-Config 投影和 bootstrap builders；不保留旧 bootstrap → 新 Service adapter。
 9. **联合普通插件 Gate**：四个源码目录同时移出仓库，仅通过正式 artifact install，完成 chat + embedding + auth + control API + uninstall/reinstall 数据恢复。
@@ -794,7 +793,7 @@ Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
 - Core 和 bootstrap 对 `openai`、`codex`、`opencode-go`、DeepSeek、DashScope 零名称分支。
 - bootstrap 在 PluginManager 之前不构造 ModelRegistry/LLMProvider。
 - 只有一个 committed plugin Root；不存在 models 预启动 Root 或 plugin ID bootstrap lookup。
-- Core 启动路径对 `ModelRegistryStore` 零读取；启用 Mobile 且没有安装 models 时仍能冷启动到 2236 管理壳。
+- Core 启动路径对 `ModelRegistryStore` 零读取；Web Chat 没有安装 models 时仍能冷启动到 2236 管理壳。
 - 仓库内置普通插件不 import模型实现或兄弟插件源码。
 - `models`、三个 Provider 均通过第 14 节外置安装 Gate。
 - Service topology 能显示 provider plugin → `MODEL_DRIVERS`，consumer → 对应窄 Service。
@@ -862,6 +861,6 @@ Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
 13. Session selection 是否仍由 Session owner 写入，模型插件只做纯校验。
 14. 当前全部直接模型消费者是否已有明确迁移落点。
 15. Provider 完整缺失是否能正常发布 unavailable，而同名 driver 的不兼容升级是否 fail-loud。
-16. Mobile、Config load 和 reload 路径是否已经停止在 bootstrap 捕获模型实现。
+16. Web Chat、Config load 和 reload 路径是否已经停止在 bootstrap 捕获模型实现。
 
 任何一项为否，规格不得进入实现。

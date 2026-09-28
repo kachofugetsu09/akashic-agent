@@ -13,11 +13,10 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, cast
 
-from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.message_view import MessageDisplayReader
 
-from .capabilities import MESSAGE_DISPLAY, MOBILE_UI, WEB_UI
-from .services import MobileUiProvider, WebUiProvider
+from .capabilities import MESSAGE_DISPLAY, PLUGIN_UI, WEB_UI
+from .services import PluginUiProvider, WebUiProvider
 
 
 RequestScopeOpener = Callable[
@@ -76,8 +75,8 @@ class ScopedMessageDisplay:
             return await reader(page, display_only=display_only)
 
 
-class ScopedMobileUiProvider:
-    """Mobile UI projection that never retains a generation provider."""
+class ScopedPluginUiProvider:
+    """Plugin UI projection that never retains a generation provider."""
 
     def __init__(self, opener: RequestScopeOpener) -> None:
         self._opener = opener
@@ -87,9 +86,9 @@ class ScopedMobileUiProvider:
 
         scope = active_scope()
         if scope is not None:
-            return await cast(MobileUiProvider, scope.require(MOBILE_UI)).catalog()
+            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).catalog()
         async with open_request_scope(self._opener) as scope:
-            return await cast(MobileUiProvider, scope.require(MOBILE_UI)).catalog()
+            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).catalog()
 
     async def asset(
         self,
@@ -100,11 +99,11 @@ class ScopedMobileUiProvider:
     ) -> dict[str, object]:
         scope = active_scope()
         if scope is not None:
-            return await cast(MobileUiProvider, scope.require(MOBILE_UI)).asset(
+            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).asset(
                 plugin_id, plugin_revision, kind, sha256,
             )
         async with open_request_scope(self._opener) as scope:
-            return await cast(MobileUiProvider, scope.require(MOBILE_UI)).asset(
+            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).asset(
                 plugin_id, plugin_revision, kind, sha256,
             )
 
@@ -120,7 +119,7 @@ class ScopedMobileUiProvider:
     ) -> dict[str, object]:
         scope = active_scope()
         if scope is not None:
-            provider = cast(MobileUiProvider, scope.require(MOBILE_UI))
+            provider = cast(PluginUiProvider, scope.require(PLUGIN_UI))
             return await provider.query(
                 plugin_id,
                 plugin_revision,
@@ -130,7 +129,7 @@ class ScopedMobileUiProvider:
                 turn_id=turn_id,
             )
         async with open_request_scope(self._opener) as scope:
-            provider = cast(MobileUiProvider, scope.require(MOBILE_UI))
+            provider = cast(PluginUiProvider, scope.require(PLUGIN_UI))
             return await provider.query(
                 plugin_id,
                 plugin_revision,
@@ -162,22 +161,10 @@ class ScopedWebUiProvider:
             return await cast(WebUiProvider, scope.require(WEB_UI)).state()
 
 
-class ScopedCommandCatalog:
-    """Build the command projection only while a command request is scoped."""
-
-    def __call__(self) -> tuple[tuple[str, str], ...]:
-        commands = _require_active_scope("command catalog").require(COMMANDS)
-        return tuple(
-            (descriptor.name, descriptor.description)
-            for descriptor in commands.freeze().descriptors
-        )
-
-
 __all__ = [
     "RequestScopeOpener",
-    "ScopedCommandCatalog",
     "ScopedMessageDisplay",
-    "ScopedMobileUiProvider",
+    "ScopedPluginUiProvider",
     "ScopedWebUiProvider",
     "active_scope",
     "open_request_scope",

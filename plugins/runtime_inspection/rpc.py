@@ -1,4 +1,4 @@
-"""普通检查插件的值级 RPC；外部调用与 Web/Mobile 使用同一合同。"""
+"""普通检查插件的值级 RPC；外部调用与 Web 使用同一合同。"""
 from pydantic import BaseModel, ConfigDict
 
 from agent.plugin_composition.rpc import RpcMethod

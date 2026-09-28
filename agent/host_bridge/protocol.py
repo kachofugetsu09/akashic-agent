@@ -137,11 +137,10 @@ def encode_file_result(result: str | ToolResult) -> pb.FileReply:
     # 1. 文本包括工具业务错误，保持其原有返回语义。
     if isinstance(result, str):
         return pb.FileReply(text=result)
-    if result.is_error and not result.content_blocks and result.mobile_attention is None:
+    if result.is_error and not result.content_blocks:
         return pb.FileReply(error=pb.FileError(text=result.text, is_error=True))
     if (
-        result.mobile_attention is not None
-        or result.runtime_provenance
+        result.runtime_provenance
         or len(result.content_blocks) != 1
     ):
         raise RuntimeError("Host Bridge 文件结果不是单张图片")

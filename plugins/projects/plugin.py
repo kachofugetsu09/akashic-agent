@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import re
 from typing import cast
 
-from agent.plugin_composition import UI_SLOTS, Context, MobileUiDefinition, MobileUiRpcInvalidRequest
+from agent.plugin_composition import UI_SLOTS, Context, PluginUiDefinition, PluginUiRpcInvalidRequest
 from agent.plugin_composition.messages import (
     OWNER_STATE,
     SESSION_ADMISSION,
@@ -40,7 +40,7 @@ class Projects:
     def create(self, project_id: str, project_name: str) -> dict[str, object]:
         """由请求的稳定 ID 创建一次；响应丢失后同名重放返回原记录。"""
         if _PROJECT_ID.fullmatch(project_id) is None:
-            raise MobileUiRpcInvalidRequest("项目 ID 无效")
+            raise PluginUiRpcInvalidRequest("项目 ID 无效")
         name = _check_name(project_name)
         value: dict[str, object] = {
             "name": name, "created_name": name, "archived": False,
@@ -50,28 +50,28 @@ class Projects:
             current = transaction.read(_PREFIX + project_id)
             if current is not None:
                 if current.value.get("created_name", current.value["name"]) != name:
-                    raise MobileUiRpcInvalidRequest("项目 ID 已用于其他名称")
+                    raise PluginUiRpcInvalidRequest("项目 ID 已用于其他名称")
                 return _project_row(project_id, dict(current.value))
             _ = transaction.save(_PREFIX + project_id, value, expected_version=None)
             return _project_row(project_id, value)
         try:
             return self._store.transact(save)
         except MessageConflict as error:
-            raise MobileUiRpcInvalidRequest("项目正在并发创建，请重试") from error
+            raise PluginUiRpcInvalidRequest("项目正在并发创建，请重试") from error
 
     def update(self, project_id: str, **changes: object) -> dict[str, object]:
         key = _PREFIX + project_id
         def save(transaction: OwnerTransaction) -> dict[str, object]:
             current = transaction.read(key)
             if current is None:
-                raise MobileUiRpcInvalidRequest("项目不存在")
+                raise PluginUiRpcInvalidRequest("项目不存在")
             value = {**dict(current.value), **changes}
             _ = transaction.save(key, value, expected_version=current.version)
             return _project_row(project_id, value)
         try:
             return self._store.transact(save)
         except MessageConflict as error:
-            raise MobileUiRpcInvalidRequest("项目已被并发修改，请刷新后重试") from error
+            raise PluginUiRpcInvalidRequest("项目已被并发修改，请刷新后重试") from error
 
     # Session 首次接纳时由 Core 调用；归档项目不再接纳新对话。
     def check(self, project_id: str) -> None:
@@ -84,14 +84,14 @@ class Projects:
 
 def _check_name(value: object) -> str:
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > _NAME_LIMIT:
-        raise MobileUiRpcInvalidRequest(f"项目名称必须是 1 到 {_NAME_LIMIT} 个字符")
+        raise PluginUiRpcInvalidRequest(f"项目名称必须是 1 到 {_NAME_LIMIT} 个字符")
     return value.strip()
 
 
 def _project_id(payload: dict[str, object]) -> str:
     value = payload.get("project_id")
     if not isinstance(value, str) or not value:
-        raise MobileUiRpcInvalidRequest("请选择一个项目")
+        raise PluginUiRpcInvalidRequest("请选择一个项目")
     return value
 
 
@@ -117,8 +117,8 @@ async def apply(ctx: Context) -> None:
             return projects.update(_project_id(payload), name=_check_name(payload["name"]))
         if method == "project.archive" and set(payload) == {"project_id"}:
             return projects.update(_project_id(payload), archived=True)
-        raise MobileUiRpcInvalidRequest(f"不支持的项目查询：{method}")
+        raise PluginUiRpcInvalidRequest(f"不支持的项目查询：{method}")
 
-    _ = await ctx.require(UI_SLOTS).register_mobile(
-        ctx, MobileUiDefinition(module="mobile_ui.js"), query=query,
+    _ = await ctx.require(UI_SLOTS).register_plugin_ui(
+        ctx, PluginUiDefinition(module="plugin_ui.js"), query=query,
     )

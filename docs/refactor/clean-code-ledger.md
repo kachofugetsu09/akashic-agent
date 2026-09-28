@@ -197,23 +197,6 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、消息或 Git refs。
 - 残余风险与回滚点：无 tracked lockfile 时无法把本次变化解释为精确安装字节收益；若后续新增真实 `cmdk` consumer，应恢复依赖并先走调用链证据。执行前备份为 `/tmp/less-is-more-pr7-finish-mmpaHV`；提交后可用单提交 revert `chore(chat): remove unused cmdk dependency` 回滚。
 
-## 2026-07-23 less-is-more PR8：避免 mobile delta 锁的 eager 分配
-
-### `PR8` `perf(mobile): avoid eager delta lock allocation`
-
-- base：PR7 commit `b9bf20a10c1e6b7c826348cb90af20488806794d`，分支 `refactor/less-is-more-pr8-mobile-delta-lock-allocation`。
-- allowed_paths：`infra/mobile_realtime/channel.py`、`tests/mobile_realtime/test_channel.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：core mobile realtime delta batching；没有 mobile 仓库、协议 schema 或其他权威文档改动。
-- 范围：仅将 `_delta_locks` 改为以 `asyncio.Lock` 为 factory 的 `defaultdict`，并让 `_buffer_delta`、`_flush_deltas` 直接按 key 取锁；未抽 helper，未修改 lock 生命周期、timer、batch、顺序、SQLite、event、network、cleanup 或 error semantics。existing key 只做一次映射查找，缺失 key 才由 factory 创建并写回同一 map。
-- 真实违反路径与不变量：Python 会先求值 `setdefault` 的默认参数，因此每次已有 key 的 delta 也会构造并丢弃新的 `asyncio.Lock`；当前 lock map 由 channel 拥有，batch flush 后仍按原逻辑 pop。窄回归预置 existing key、把 map factory 换成计数函数并提交 4KiB delta，证明 `_buffer_delta → _flush_deltas` 整条路径分配数为 `0`、事件仍只追加原有一次。
-- 语义与状态核对：`change_type: performance`，`semantic_delta: none`；同一 key 的互斥、delta 合并、4KiB/50ms flush、timer cancel、事件 payload/order、SQLite durable state、网络发送、失败传播和 stop cleanup 均保持不变。测试仅观察 fake runtime 的 append，不修改生产 write set。
-- baseline：source-set digest `57450e582acc0b3ac1076049a19c0c341e2b8960a2fd68c702256d4ba8c04c78`，文件数 `384`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,451`，infra SLOC `11,352`，total production SLOC `87,187`。
-- candidate：source-set digest `d1c327a2598d8b8ce5e44d43fc33290720e0ed294ae0ae50546a1de20e3bc6e8`，文件数 `384`，Python SLOC `78,737`，TypeScript/TSX SLOC `8,451`，infra SLOC `11,353`，total production SLOC `87,188`；production 净增加 `1` 行，属于该性能修复允许的最小 manifest，不倒算前序删除收益。
-- 性能回放：base 与 candidate 均使用 `/mnt/data/coding/akasic-agent/.venv/bin/python`（Python `3.13.7`）、`taskset -c 0`，分别在各自 checkout cwd 中先预热 3 次，再运行 30 次相同的 10,000 个一字符 stream delta；fake runtime 只 append 事件（每次 3 个事件），不触碰 DB、SQLite、网络或真实 gateway。base median/p95 为 `8.465644/8.954338 ms`，candidate 为 `7.3659155/7.669912 ms`，相对变化分别为 `-12.99%/-14.34%`；同 workload 的 Lock 构造数从 `10,003` 降至 `3`，事件数保持 `3`。这是锁对象分配微基准，不宣称端到端 DB/network 性能收益。
-- 测试与真实验证：窄锁分配回归与原 delta batching 回归 `2 passed`；`pytest -q tests/mobile_realtime/test_channel.py tests/mobile_realtime/test_gateway.py tests/mobile_realtime/test_storage.py` 为 `75 passed in 1.04s`；`pyright --venvpath /mnt/data/coding/akasic-agent infra/mobile_realtime/channel.py` 为 `0 errors, 0 warnings, 0 informations`；migration append-only 与 `git diff --check` 通过。
-- Gate：按 WORKFLOW 在本候选提交前以 base `refactor/less-is-more-pr7-remove-unused-cmdk` 运行 preflight；本条不回填运行产生的 `sourceDigest`/`planDigest`，提交后绑定 committed HEAD 重跑，private 状态按报告记录。
-- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、协议、网络或外部发送；测试临时对象只在一次性 pytest/benchmark 进程内存中存在。
-- 残余风险与回滚点：基准只覆盖 fake append 与 lock/batch 逻辑，真实 SQLite/network latency 未测量；若后续发现 lock map 需要跨调用持有，应停止并重新核对 owner/生命周期，不恢复 eager 分配。执行前备份为 `/tmp/less-is-more-pr8-finish-Dmxutr`；提交后可用单提交 revert `perf(mobile): avoid eager delta lock allocation` 回滚。
-
 ## 2026-07-23 less-is-more PR9：复用默认记忆摘要解析结果
 
 ### `PR9` `perf(default-memory): parse summary metadata once`
@@ -581,21 +564,6 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr31-prompt.py.bak`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 可能保留旧 helper 文本，但当前 canonical source、CodeGraph/AST、历史调用面与 enabled plugin cache 无 consumer；若未来需要独立复用记忆读取，应在 active memory owner 中重新设计明确合同，不恢复无调用 wrapper。
 
-## 2026-07-23 less-is-more PR32：删除失效的移动会话归属检查
-
-### `PR32` `refactor(mobile): remove dead session ownership checks`
-
-- base：PR31 committed HEAD `b1e99dcb6496b0d42005b6adca5dc767f86c0018`，分支 `refactor/less-is-more-pr32-remove-dead-mobile-session-ownership`。
-- allowed_paths：`infra/mobile_realtime/storage.py` 仅删除 `SessionOwnershipError`、`MobileRealtimeStorage.require_session_owner` 与 `MobileRealtimeStorage.session_owner`；本账本。`capability_owner`：移动实时会话共享访问语义；未修改 `claim_session`、`has_session_claim`、`list_device_sessions`、`mobile_device_sessions` 表、channel/gateway/auth/protocol、附件、测试或 schema 文件。
-- 历史与不可达性：最初的设备归属拒绝逻辑由 `253658a9` 引入；`35d3150f` 的共享历史迁移移除 channel 的 `SessionOwnershipError` 导入和所有权调用，`a99f4f20` 又移除 shared-session stop 的最后业务检查。当前 `claim_session` 注释明确“会话归属不再作为访问边界”。PR31 基线的 CodeGraph、AST、精确文本、`getattr`/`import_module`/动态文件加载、导出/re-export、测试、SDK、插件 manifest 和 `/home/huashen/.akashic-plugin/cache` 扫描只命中待删定义及其自调用；删除后 legacy 名称在 source、tests、plugin cache 中为零残留，没有公共或外部 owner 证据。
-- 语义与错误边界：`semantic_delta: none`。删除的检查已经没有可达调用，故不改变共享会话的认证、session claim 首次记录、历史列表、消息/turn/附件、协议帧、错误分类、持久化写集合、迁移或外部效果；现有 `UnknownDeviceError`、`AttachmentStateError` 和 `claim_session` 的输入/事务边界继续由 storage 拥有。未新增 fallback、try/except、动态兼容层或默认值。
-- 范围与计量：PR31 base source-set digest `5ffee260c8a177bb2c5dfed4e7ec90e6a91993acb1415d20f51ce0d44a09adbe`，文件数 `378`，Python SLOC `77,404`，`infra` SLOC `11,323`，total production SLOC `85,855`；candidate source-set digest `69eb782867e5bbf19fcbd2497dc273121da828985cff15da4c29edaaf3704cb0`，文件数 `378`，Python SLOC `77,384`，`infra` SLOC `11,303`，total production SLOC `85,835`；production 净减少 `20` SLOC（raw diff `25 deletions`）。
-- 性能与注释：模块导入不再创建一个不可达异常类和三个无消费者方法；移动 realtime storage 热路径不再保留死的 ownership 查询定义，但可达 SQL、锁、事务和 list/claim 查询次数不变，不宣称端到端性能收益。删除与所有权访问边界冲突的旧注释/代码，不新增冗余注释。
-- 测试与静态验证：移动 realtime storage/attachments/channel/gateway/pairing-auth/protocol 定向回归 `140 passed in 1.29s`；`infra/mobile_realtime` Pyright（`--venvpath /mnt/data/coding/akasic-agent`）`0 errors, 0 warnings`；相关包与测试 `compileall`、`git diff --check`、migration append-only、AST/文本/cache exact scan 均通过。协议 schema `scripts/generate_mobile_realtime_schema.py --check` 通过，`schema/mobile-realtime-v1.json` SHA-256 为 `d525e5155c4fe6e49b8cbf279b17fb971bada420c4656a08f3c35dae62d56d40`；临时 SQLite 的 15 条 mobile storage schema identity SHA-256 为 `b183a1aac7331a42b7385b5f714daf784aacf7997ed080ee7d4ede1364fd6f48`，与 PR31 base 完全一致。
-- Gate：按 WORKFLOW 对 PR31 base 运行 preflight，公开 Gate `passed`（selected public scenarios 包含 `mobile_realtime_contract`，private required）；本条不回填运行后的 source/plan digest，避免 ledger 自引用，最终 committed-head Gate 与 private Gate 状态由主 Agent 在提交后记录；private contract 状态为 `pending_maintainer`。
-- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr32-storage.py.before`、`/tmp/less-is-more-pr32-ledger.md.before`；回滚点为本 PR 单提交 revert。
-- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 ownership 名称，但当前 canonical source、历史迁移后的生产调用面与 enabled plugin cache 没有 owner；若未来引入真正的会话授权边界，应在认证/协议 owner 中设计新的显式合同，不恢复这三个无调用存储 API。
-
 ## 2026-07-23 less-is-more PR33：删除主动上下文的私有预取别名
 
 ### `PR33` `refactor(proactive): remove private fetch aliases`
@@ -881,24 +849,6 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - Gate：已在 committed HEAD 对 PR50 base `b2c0bf3d4f125e981c1da029ddfbf6f600be3c72` 运行公开 Gate，7 个场景全部通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
 - 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr51/engine.py.base-b2c0bf3d`（SHA-256 `6aa57f36da2a0482aaa8a2151f50b045fbe8e899a12bc641a980cba230a4df11`）与 `/tmp/akashic-less-is-more-backups/pr51/clean-code-ledger.md.base-b2c0bf3d`（SHA-256 `9f95cd330cbfbeafbf8f6fd4eb05ae31b3622505974f68f3bd749a90bd92228b`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr51/clean-code-ledger.md.pre-final-gate-287c65c4`（SHA-256 `88c09d7d43060b44f548399401cc6abfe955431af3e07d27d02642e6c1324b2a`）。提交后可用单提交 revert `refactor(akasha): inline reinforce boost alias` 回滚。
 - 残余风险：若未来 committed-turn boost 需要独立输入协议、审计或错误转换，应在真实 owner 边界重新引入有职责的函数；不能仅为保留额外 traceback frame 恢复纯转发别名。
-
-## 2026-07-24 less-is-more PR52：内联 mobile 初始帧接收私有别名
-
-### `PR52` `refactor(mobile): inline initial frame receive alias`
-
-- base：PR51 committed HEAD `77d0fc1dee76049156aa313f5cf927ef695f8335`，分支 `refactor/less-is-more-pr51-inline-reinforce-boost-alias`；本 PR 分支 `refactor/less-is-more-pr52-inline-mobile-receive-frame`，唯一 writer 为本任务 agent。
-- allowed_paths：`infra/mobile_realtime/gateway.py` 的 `_receive_frame` 唯一 caller 与私有 helper、本账本；`capability_owner`：`infra.mobile_realtime.protocol.parse_frame` 拥有 wire text 到 `MobileFrame` 的协议反序列化和校验。未修改 import、注释、测试、协议 schema、storage、migration、NOW、projectneed 或正式 runtime workspace。
-- 历史与消费者：`a8d7a6e4` 在恢复 mobile realtime server 时同时创建 `_receive_frame` 及其唯一 caller，helper 从引入起始终只有 `return parse_frame(await websocket.receive_text())`，没有独立校验、转换、恢复、日志或副作用。全仓生产源码、测试、SDK、export/re-export、动态属性/import、monkeypatch、cache 与 `/home/huashen/.akashic-plugin/cache` 扫描确认旧 symbol 无第二消费者、替换缝或已安装缓存引用。
-- 求值、协程与错误边界：`change_type: refactor`，`semantic_delta: none`。base helper 与 candidate caller RHS 都先捕获同一 module-global `parse_frame`，再调用并 await 同一 `websocket.receive_text()`；base helper coroutine 被 caller 立即 await，在执行到首个真实 suspension 前不会让出事件循环。exact-base/candidate AST 的 `dis` 指令序列对账相同，参数求值次数、收帧与 parser 调用次数、返回对象身份和异常对象、类型、cause/context 保持不变。唯一诊断差异是删除一个 coroutine frame，traceback、`sys.settrace`/`sys.setprofile` 等调试观测不再出现 `_receive_frame`；生产源码及安装缓存均无 profiler 或 `parse_frame` runtime writer。
-- 外部效果与持久化：`server.challenge` 仍在初始收帧前发送，之后仍恰好执行一次 `receive_text` 和一次 `parse_frame`。`WebSocketDisconnect`、`ProtocolDecodeError` 与 `ValidationError` 仍由同一 `handle_websocket` 边界处理并保持原关闭码、reason 和日志；认证、配对、连接状态、SQLite、文件、事件、网络发送次数与顺序均未改变。持久化 write set 为 `none`。
-- 性能、注释与 God file：仅移除初始连接路径的一次 Python 私有 coroutine 创建与转发，不宣称端到端性能收益。删除的 helper 没有 docstring、约束或 workaround 注释；`gateway.py` 继续集中拥有 challenge、认证和已认证协议循环，删除无职责别名减少同一协议状态机内跳转，不为行数目标拆文件。
-- baseline：source-set digest `a13e92ccf141b9f0ab668898913ade7b7db0b6042b04484e2fc723cceb9e3b22`，文件数 `378`，Python SLOC `77,303`，TypeScript/TSX SLOC `8,451`，`infra` SLOC `11,285`，total production SLOC `85,754`。
-- candidate：source-set digest `92fe8f346580f3416f8635a7145fb8f5d2229ebd35f2a11fbbe33becfebba019`，文件数 `378`，Python SLOC `77,301`，TypeScript/TSX SLOC `8,451`，`infra` SLOC `11,283`，total production SLOC `85,752`；production 净减少 `2` SLOC，系列相对 PR0 累计净减少 `1,788` SLOC。
-- parity：一次性脚本从 exact base AST 提取 `_receive_frame`，从 candidate AST 提取 caller RHS，覆盖正常返回、`receive_text` 抛错和 `parse_frame` 抛错；两侧调用轨迹、次数、参数、返回/异常对象身份及 cause/context 逐项相同，规范化结果 digest 为 `a4790b78f47ddc6d45d31ecb9ce6c28a3de102c7694dfbf6c31fca87412f0c4e`，过滤协程框架指令后的 bytecode opcode/arg 序列相同。脚本未提交。
-- 测试与静态验证：完整 `tests/mobile_realtime/test_gateway.py` 为 `30 passed`；与 production SLOC、migration append-only 合并回归为 `44 passed`。未修改、新增或删除测试。目标源码与直接测试 `compileall` 通过，目标 Pyright `0 errors, 0 warnings`；migration append-only 脚本、consumer/export/dynamic/cache/profiler/runtime-writer scan、production SLOC 计量和 `git diff --check` 通过。
-- Gate：已在 committed HEAD 对 PR51 base `77d0fc1dee76049156aa313f5cf927ef695f8335` 运行公开 Gate，7 个场景全部通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
-- 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr52/gateway.py.base-77d0fc1d`（SHA-256 `e4368dcf98ca1cf2e377beffb7a61894da25b188de7bec087faf46cfb4e5f2b4`）与 `/tmp/akashic-less-is-more-backups/pr52/clean-code-ledger.md.base-77d0fc1d`（SHA-256 `1be68dc5a6761f5e89fd37213fb722b02820f907d609bef8536d3327a4b820b7`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr52/clean-code-ledger.md.pre-final-gate-1727e7c5`（SHA-256 `61d7ffbafd33cbdd6a2c9cff1a301e8d45da21b3f3c2ff5574480c6fe318e337`）。提交后可用单提交 revert `refactor(mobile): inline initial frame receive alias` 回滚。
-- 残余风险：若未来初始握手需要独立收帧协议、超时、审计或错误转换，应在 mobile gateway 边界重新引入有职责的函数；不能仅为保留额外 coroutine/traceback frame 恢复纯转发别名。
 
 ## 2026-07-24 less-is-more PR53：内联 Akasha replay query preview 私有别名
 

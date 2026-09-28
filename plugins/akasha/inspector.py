@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from typing import cast
 
-from agent.plugin_composition import MobileUiRpcInvalidRequest
+from agent.plugin_composition import PluginUiRpcInvalidRequest
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Output
 from ._boundaries import Turn, TurnProjection
@@ -28,7 +28,7 @@ class RecallInspector:
                      if not session_id or (not isinstance(recall.source, ProgramSource)
                                            and recall.source.session_id == session_id))
         start = (page - 1) * page_size
-        return self._mobile_result({"items": [self._summary(identity, recall) for identity, recall in rows[start:start + page_size]],
+        return self._ui_result({"items": [self._summary(identity, recall) for identity, recall in rows[start:start + page_size]],
                                     "total": len(rows), "page": page, "page_size": page_size})
 
     def for_turn(self, session_id: str, message_id: str, source: str,
@@ -99,13 +99,13 @@ class RecallInspector:
             "input_message_id": target[0], "next_offset": len(identities)},
             ensure_ascii=False, separators=(",", ":")).encode()) + 4
         for identity in identities[offset:]:
-            detail = self.mobile_detail(identity)
+            detail = self.plugin_detail(identity)
             if detail is None:
                 raise ValueError(f"召回记录缺失: {identity}")
             encoded_size = len(json.dumps(detail, ensure_ascii=False, separators=(",", ":")).encode())
             if size + encoded_size > 192 * 1024:
                 if not items:
-                    raise MobileUiRpcInvalidRequest("本条检索出处过多，超出移动页面容量；查询记录仍完整保留")
+                    raise PluginUiRpcInvalidRequest("本条检索出处过多，超出插件界面容量；查询记录仍完整保留")
                 break
             items.append(detail)
             size += encoded_size + 1
@@ -128,7 +128,7 @@ class RecallInspector:
                 "ts": recall.timestamp.isoformat(), "source": origin, "graph_version": recall.graph_version,
                 "hit_count": len(recall.hits), "presented_count": len(recall.presented_message_ids)}
 
-    def mobile_detail(self, identity: str) -> dict[str, object] | None:
+    def plugin_detail(self, identity: str) -> dict[str, object] | None:
         """命中和实际呈现分开显示；正文只从查询记录指向的原消息读取。"""
         recall = self._read(identity)
         if recall is None:
@@ -148,13 +148,13 @@ class RecallInspector:
                                  "truncated": len(text) > 240,
                                  "presented": message_id in recall.presented_message_ids})
             hits.append({"score": hit.score, "lane": hit.lane, "sources": list(hit.sources), "messages": messages})
-        return self._mobile_result({**self._summary(identity, recall), "hits": hits, "pushes": recall.pushes,
+        return self._ui_result({**self._summary(identity, recall), "hits": hits, "pushes": recall.pushes,
                                     "residual_l1": recall.residual_l1})
 
     @staticmethod
-    def _mobile_result(payload: dict[str, object]) -> dict[str, object]:
-        """移动投影保留全部成员；完整编码超限时明确失败，不裁掉尾部。"""
+    def _ui_result(payload: dict[str, object]) -> dict[str, object]:
+        """插件界面投影保留全部成员；完整编码超限时明确失败，不裁掉尾部。"""
         result: dict[str, object] = {"schema": "akasha.queries.v1", **payload}
         if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()) > 192 * 1024:
-            raise MobileUiRpcInvalidRequest("本条检索出处过多，超出移动页面容量；查询记录仍完整保留")
+            raise PluginUiRpcInvalidRequest("本条检索出处过多，超出插件界面容量；查询记录仍完整保留")
         return result

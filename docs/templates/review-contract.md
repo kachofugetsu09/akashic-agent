@@ -28,7 +28,7 @@ worktree_writers:
 ```yaml
 goal: ""
 semantic_delta: none|compatible|breaking
-capability_owner: core|protocol|mobile|plugin|mixed|not_applicable
+capability_owner: core|protocol|client|plugin|mixed|not_applicable
 consumer_scope: []
 runtime_patch: none|required
 runtime_patch_reason: ""
@@ -95,9 +95,6 @@ device_gate:
   cleanup_exit: 0
   gate_result: passed|failed_setup|failed_test|failed_cleanup
   residual_packages: []
-  mobile_lab_provenance: verified|operator_asserted|not_applicable
-  mobile_lab_core_commit: ""
-  mobile_lab_run_id: ""
   evidence_bundle: ""
 ```
 

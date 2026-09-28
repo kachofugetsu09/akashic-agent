@@ -134,7 +134,7 @@ Gate 报告。分支名、PR 号和浮动 ref 不能代替 commit。
 | C26 | exact programmatic Turn / v3 Tool catalog | `READY` | Core `7d68020a` + `2f1f304a` 已建立 Root-local Tool catalog、exact generation handler、invocation-scoped programmatic Turn port 与主服务/stdio 启动前 owner binding；整张 candidate snapshot 均不取得 Turn port且不发布 Tool，durable Session 只可由同一 plugin/job 跨 invocation 复用，`submitting/admitted` receipt 与 typed pre-admission/uncertain failure 防止失败、取消及进程崩溃后重复 Turn；post-persist start failure 会把 durable Turn 收束为 failed、释放 active owner 并保留 manual-reconcile receipt。GitHub Watcher `aea802c` 已纯 v3，exact Core Gate 完成初始正式 job 准入 Turn、candidate 零外部效果与晋升后 exact generation job 再准入 Turn；312 个 Core 回归、45 个插件测试、Pyright/compileall/diff-check 通过，待 E3 controlled repository Gate | GitHub Watcher |
 
 实现原则：C11～C17、C21～C22 只由表中的首个真实 consumer 拉动，不提前复制
-`commands()/mcp_servers()/managed_services()/channels()/jobs()/proactive_*()/mobile_ui()` 旧方法。
+`commands()/mcp_servers()/managed_services()/channels()/jobs()/proactive_*()` 旧方法。
 
 以上表格末尾保留的“待 E1/E2/E3/E4”是候选阶段的进入条件和追溯说明；最终 `READY`
 由 6.4 的同一 clean head 报告统一闭合，不再表示未完成事项。

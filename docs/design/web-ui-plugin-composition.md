@@ -3,8 +3,8 @@
 - 状态：accepted / implementing
 - 日期：2026-08-30
 - 关联需求：WEBUI-001～WEBUI-007、PLG-001～PLG-004、PLG-006、PLG-008、PLG-010～PLG-011、PLG-014～PLG-016、ONB-001、MOB-001
-- 关联决策：[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md)、[0037](../decisions/0037-plugin-runtime-is-pure-v3.md)、[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)、[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md)、[0043](../decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md)、[0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md)；已被取代的 [0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) 只保留 committed snapshot 不变量的历史说明
-- 上游设计：[模型普通插件与 Provider 组合规格](model-plugin-ordinary-capability-spec.md)、[v3 包级 contribution](plugin-v3-package-contributions-task-contract.md)、[v3 DashboardContext](plugin-v3-dashboard-context-task-contract.md)、[v3 Mobile UI/query capability](plugin-v3-mobile-ui-query-task-contract.md)
+- 关联决策：[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md)、[0037](../decisions/0037-plugin-runtime-is-pure-v3.md)、[0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md)、[0043](../decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md)、[0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md)；已被取代的 [0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) 只保留 committed snapshot 不变量的历史说明
+- 上游设计：[模型普通插件与 Provider 组合规格](model-plugin-ordinary-capability-spec.md)、[v3 包级 contribution](plugin-v3-package-contributions-task-contract.md)、[v3 DashboardContext](plugin-v3-dashboard-context-task-contract.md)
 
 ## 1. 结论
 
@@ -94,17 +94,16 @@ Dashboard module
   → ctx.http 携带同一 snapshot/module/generation identity
   → Core HTTP route
 
-Mobile UI
-  → UI_SLOTS.register_mobile(...)
-  → UI provider 的 SNAPSHOT_SEALING hook
-  → 所选 Root 的 UI_SLOTS.catalog() 封存目录
+Web 插件 UI
+  → UI_SLOTS.register_plugin_ui(...)
+  → 所选 Root 的活动登记目录
   → catalog / content-digest asset / bounded read-only query
-  → Android WebView runtime
+  → Web Chat 页面
 ```
 
 Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exact snapshot query 不变量，
-并增加父 Mount 撤销时对子登记的递归清理。Mobile 仍由自己的 `UI_SLOTS` 和 generation owner 管理，
-没有被改名或并入 2236。
+并增加父 Mount 撤销时对子登记的递归清理。插件 UI 由 `UI_SLOTS` 与贡献 Context 的 Effect 管理；
+Web Chat 读取同一活动 Root 的目录。
 
 旧 Dashboard source-directory discovery、请求期编译、import map、`AkashicDashboard` global 和
 浏览器 panel adapter 已删除。`UI.register(..., dashboard=loader)` 只保留插件自己的数据 API owner，不再拥有浏览器 UI。
@@ -119,9 +118,9 @@ Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exac
 
 ### 4.3 已处理的现有决策冲突
 
-[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md) 已勘误 [0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)：共享对话实现仍以 `frontend/chat` 为唯一真源，桌面顶层页面注册和 adapter 改由普通 `conversation-ui` 插件拥有；Android baseline/OTA、Room 和 Bridge owner 不变。
+[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md) 将对话页面归普通 `conversation-ui` 插件组合；`frontend/chat` 仍是页面源码。Android Shell 加载这套 Web 页面，旧客户端发布和 Bridge 合同由 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 退役。
 
-[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md) 已经定义 Mobile 产品 WebUI 的不可变 generation、Stable/Preview 和客户端 CAS。本设计不得复制这些 owner。2236 的 Web module catalog 只是 exact plugin snapshot 的派生投影，没有独立 Stable 指针、journal、retired manager 或持久 generation。
+2236 的 Web module catalog 是 exact plugin snapshot 的派生投影，没有独立 Stable 指针、journal、retired manager 或持久 generation。
 
 ### 4.4 保留边界
 
@@ -130,7 +129,7 @@ Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exac
 - Workbench 面板只通过 `workbench.panels.v2` 登记。v2 固定结构化 entry，并让 Host 为计数、分页与详情读取提供 `AbortSignal`；旧 Dashboard browser ABI 已在最后一个仓库内
   consumer 迁完后删除；插件自己的 `UI.register(..., dashboard=loader)` HTTP route 保留。
 - Web module 暂不增加任意 UI DSL、跨插件 DOM 查询、全局 event bus 或第二套 generation。
-- Web module 的资源预算等有第二个真实容量问题再设计，不照抄 Mobile 240 KiB。
+- Web module 的资源预算等有第二个真实容量问题再设计。
 
 ## 5. 最少概念
 
@@ -218,7 +217,7 @@ Host 不拥有：
 - Akashic 品牌顶栏、导航、history、`conversation`、`workbench`、`models` 或任何 Provider ID；
 - 会话侧栏、工作台侧栏或全局 `left.sidebar`；
 - 模型 readiness、默认模型、embedding 或 Provider auth；
-- 页面业务 API、数据库、credential、Dashboard query 或 Mobile bridge。
+- 页面业务 API、数据库、credential 或 Dashboard query。
 
 L 形区域不是一个全局侧栏原子。顶部横条属于 `shell-ui`；下面的左侧区域属于活动 page 插件。对话页可以放会话列表，工作台可以放模块列表，模型页可以不放左栏。这样改变一个页面布局不会迫使其他页面或 Core 改接口。
 
@@ -330,7 +329,7 @@ Host client 自动携带 `snapshot_id + catalog_id + module_id + generation_id`�
 
 ## 9. Catalog、更新与并发
 
-一次浏览器启动先取得一个 `catalog_id`。它由 current exact RuntimeSnapshot 的插件身份、module descriptor 和摘要派生，不是模型 revision，也不是 Mobile WebUI generation。
+一次浏览器启动先取得一个 `catalog_id`。它由 current exact RuntimeSnapshot 的插件身份、module descriptor 和摘要派生，不是模型 revision。
 
 ```text
 candidate plugin Root
@@ -386,16 +385,16 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 | BrowserCatalogSession/MountTree | catalog activation 在内存建立 | 标记 stale；registration/disposer 改内存 ledger | 页面关闭、刷新或 session replacement 后释放 | Core Web Host；catalog、activation token、cleanup ledger |
 | 浏览器 asset cache | 按摘要下载 | immutable，不原位更新 | 浏览器 cache policy 或安全 GC | Core/browser；内容摘要 |
 | 模型 Connection/Model/Binding/Revision | 继续按模型规格 | 继续按模型规格 | 本设计不授权自动减少 | `models`；SQLite、operation backup、revision |
-| Session/Message、plugin-data、Mobile state | 各自现行 owner | 本设计不改变 | 本设计不授权删除 | 各自数据库、文件和现有恢复合同 |
+| Session/Message、plugin-data、旧客户端数据 | 各自现行 owner 或历史恢复边界 | 本设计不改变 | 本设计不授权删除 | 各自数据库、文件和现有恢复合同 |
 
-回滚 UI 组合实现只恢复旧 Shell 和旧 Provider 模板入口；不回滚、迁移或删除模型、会话、plugin-data 或 Mobile WebUI generation。
+回滚 UI 组合实现不回滚、迁移或删除模型、会话、plugin-data 或旧客户端数据。
 
 ## 12. 迁移顺序
 
 ### 阶段 0：固定决策和消费者地图
 
 - 以 0051 接受本设计并勘误 0018 的桌面页面入口 owner。
-- 扫描 `frontend/**/src`、Dashboard module、Mobile UI、Onboarding、runtime inspection、所有内置与外部插件 cache/source。
+- 扫描 `frontend/**/src`、Dashboard module、插件 UI、Onboarding、runtime inspection、所有内置与外部插件 cache/source。
 - 固定 `WebModule`、`Mount`、catalog identity、错误码和 ordinary-plugin Gate。
 
 ### 阶段 1：只实现通用 Host 和组合原子
@@ -422,7 +421,7 @@ HTTP/data ABI 继续由 `UI.register(..., dashboard=loader)` 拥有。
 ### 阶段 4：迁移对话页
 
 完成 0018 勘误和 shared source 分界后，由 `conversation-ui` 注册 page 并直接挂载共享 Chat 实现。
-SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baseline/OTA 和 bridge owner 不变；
+SessionDB 只追加、Web 页面 stream 局部更新和 Shell 平台 owner 不变；
 旧 Shell chat iframe 分支已经删除。
 
 ### 阶段 5：删除硬编码与兼容层
@@ -445,8 +444,8 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 | 改 Codex 登录 | `codex` UI/backend | OpenAI-compatible、模型 catalog schema |
 | 改默认模型 | `models` state/UI | ReAct、Host、Provider transport |
 | 改 Shell history | `shell-ui` | Core Host、page domain、Provider |
-| 插件升级 | exact plugin snapshot/catalog | Mobile Stable 指针、model revision |
-| 改 Android 原生布局/bridge | Mobile adapter/native | 2236 mount tree、模型状态 |
+| 插件升级 | exact plugin snapshot/catalog | model revision、Shell 平台状态 |
+| 改 Android Shell 平台布局 | Shell 源码仓库 | 2236 mount tree、模型状态 |
 
 任一实施 diff 违反表中“不应修改”列时，必须说明真实边界；没有不可避免边界就继续收敛。
 
@@ -471,10 +470,10 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 - 不把 Provider metadata 或能力表搬进 Core。
 - 不让 Provider import `models` 或兄弟插件实现。
 - 不把 iframe 当长期默认插件隔离；它只可作为迁移 adapter 或未来不可信 UI 的独立安全设计。
-- 不复制 Mobile WebUI generation、Stable/Preview、CAS 或 plugin snapshot manager。
+- 不增加独立 WebUI generation、Stable/Preview、CAS 或 plugin snapshot manager。
 - 不把 mount 嵌套误解为权限继承。
 - 不提前照搬参考实现的 `keyed`、`chain`、scope 和全局 slot vocabulary。
-- 不强迫 Web 和 Mobile 使用同一页面树；共享的是身份、能力、状态语义和可复用组件。
+- Android Shell 加载现有 Web 对话页；平台布局和通知仍由 Shell 自己拥有。
 
 ## 14. 验收合同
 
@@ -520,7 +519,7 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 
 ### 14.5 受保护状态
 
-- UI 组合、候选验证、安装、卸载和回滚不 UPDATE/DELETE `sessions.db/messages`，不改变 Room、outbox、附件、配对或 Mobile serving generation。
+- UI 组合、候选验证、安装、卸载和回滚不 UPDATE/DELETE `sessions.db/messages`，不改变附件或旧客户端数据。
 - Provider 卸载不删除 Connection、Model、Binding、credential 或模型 revision。
 - candidate 只写既有 validation root 和派生缓存；discard 后不留正式 plugin-data 或 credential。
 
@@ -545,4 +544,4 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 - `packages/client/ui-slots/src/index.ts` 的递归 slot、parent-owned children 和 dispose subtree；
 - `packages/client/ui-settings/src/client/contract/slots.ts` 的领域 owner 声明嵌套 UI contract。
 
-采用的是“module 发布与 UI mount 分轴”“父 owner 声明 children”“递归 dispose”。没有照搬它的全部 cardinality、scope 或 slot 名称，因为 Akashic 首批三个页面只需要 `single/list` 和一个 root scope。参考仓库证明形状可行，Akashic 的 plugin snapshot、Mobile generation、持久状态和安全 owner 仍由本仓库现行合同决定。
+采用的是“module 发布与 UI mount 分轴”“父 owner 声明 children”“递归 dispose”。没有照搬它的全部 cardinality、scope 或 slot 名称，因为 Akashic 首批三个页面只需要 `single/list` 和一个 root scope。参考仓库证明形状可行，Akashic 的 plugin snapshot、持久状态和安全 owner 仍由本仓库现行合同决定。

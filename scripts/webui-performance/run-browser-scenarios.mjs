@@ -1,7 +1,6 @@
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, extname, resolve, sep } from "node:path";
+import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -13,16 +12,6 @@ import {
   compareBrowserMetrics,
   createBrowserBudgets,
 } from "./browser-metrics.mjs";
-import {
-  desktopMessages,
-  desktopModels,
-  desktopSessions,
-  fixtureSessionId,
-  mobileSnapshot,
-  mobileStreamPatch,
-  mobileTerminalPatch,
-  MOBILE_DRAFT_ID,
-} from "./fixtures.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
@@ -37,9 +26,7 @@ let ownsBrowser = false;
 
 try {
   const desktopOutput = buildTarget("frontend/chat/vite.config.ts", resolve(buildRoot, "desktop"));
-  const mobileOutput = buildTarget("frontend/chat/vite.mobile.config.ts", resolve(buildRoot, "mobile"));
   const desktopServer = await startDesktopFixtureServer(desktopOutput);
-  const mobileServer = await startStaticFixtureServer(mobileOutput, { stripAssetsPrefix: false });
   try {
     const cdpEndpoint = process.env.AKASHIC_PLAYWRIGHT_CDP;
     browser = cdpEndpoint
@@ -61,13 +48,9 @@ try {
           desktopModelPicker: await measure("desktopModelPicker", () => measureDesktopModelPicker(browser, desktopServer.origin)),
           desktopComposer: await measure("desktopComposer", () => measureDesktopComposer(browser, desktopServer.origin)),
           desktopPendingSendStop: await measure("desktopPendingSendStop", () => measureDesktopPendingSendStop(browser, desktopServer.origin)),
-          desktopPairing: await measure("desktopPairing", () => measureDesktopPairing(browser, desktopServer.origin)),
           desktopResponsive: await measure("desktopResponsive", () => measureDesktopResponsive(browser, desktopServer.origin)),
-          desktopLazyRecovery: await measure("desktopLazyRecovery", () => measureDesktopLazyRecovery(browser, desktopServer.origin)),
           desktopAccessibility: await measure("desktopAccessibility", () => measureDesktopAccessibility(browser, desktopServer.origin)),
           desktopStream600: await measure("desktopStream600", () => measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs)),
-          mobileHistory300: await measure("mobileHistory300", () => measureMobileHistory(browser, mobileServer.origin)),
-          mobileStream600: await measure("mobileStream600", () => measureMobileStream(browser, mobileServer.origin)),
         },
       });
       console.log(`完成浏览器性能采样 ${run}/${runCount}`);
@@ -89,7 +72,6 @@ try {
     else compareBrowserBaseline(report);
   } finally {
     await desktopServer.close();
-    await mobileServer.close();
   }
 } finally {
   if (ownsBrowser) await browser?.close();
@@ -290,51 +272,6 @@ async function measureDesktopPendingSendStop(browserInstance, origin) {
   return metric;
 }
 
-async function measureDesktopPairing(browserInstance, origin) {
-  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
-  const page = await context.newPage();
-  let abortedCreates = 0;
-  page.on("requestfailed", (request) => {
-    if (new URL(request.url()).pathname === "/api/chat/mobile-pairing") abortedCreates += 1;
-  });
-  await installPerformanceProbe(page);
-  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
-  const metric = {
-    initialScripts: await page.locator('script[src]').count(),
-    initialDomElements: await page.locator("*").count(),
-    initialPairingResources: await pairingResourceCount(page),
-  };
-  const trigger = page.getByRole("button", { name: "连接手机" });
-  await Promise.all([
-    page.waitForRequest((request) => new URL(request.url()).pathname === "/api/chat/mobile-pairing"),
-    trigger.click(),
-  ]);
-  await page.getByRole("button", { name: "取消" }).click();
-  await page.waitForTimeout(400);
-  metric.cancelledCreateRequests = abortedCreates;
-  if (metric.cancelledCreateRequests !== 1) {
-    throw new Error(`closing pairing dialog did not abort its create request: ${metric.cancelledCreateRequests}`);
-  }
-  await page.evaluate(() => window.__resetAkashicPerf());
-  const startedAt = await page.evaluate(() => performance.now());
-  await trigger.click();
-  await page.getByAltText("Android 手机配对二维码").waitFor();
-  Object.assign(metric, await readPerformanceProbe(page, startedAt, ".mobile-pairing-dialog"));
-  metric.dialogScripts = await page.locator('script[src]').count();
-  metric.dialogPairingResources = await pairingResourceCount(page);
-  if (metric.initialPairingResources !== 0 || metric.dialogPairingResources < 1) {
-    throw new Error(`pairing code was not loaded on demand: ${JSON.stringify(metric)}`);
-  }
-  await page.getByText("358864", { exact: false }).waitFor({ timeout: 5_000 });
-  await page.getByRole("button", { name: "确认并连接" }).click();
-  await page.getByText("手机已连接", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "完成" }).click();
-  metric.focusRestored = await page.evaluate(() => document.activeElement?.textContent?.includes("连接手机") ? 1 : 0);
-  if (metric.focusRestored !== 1) throw new Error("pairing dialog did not restore focus to its trigger");
-  await context.close();
-  return metric;
-}
-
 // 模型设置已迁移为 models 插件 web_module（/settings 308 到 /#models），
 // fixture 无法挂载插件 UI，desktopSettings 场景待按插件挂载路径重建。
 
@@ -358,49 +295,12 @@ async function measureDesktopResponsive(browserInstance, origin) {
   await page.locator(".model-capsule__trigger").click();
   metric.modelPickerOverflowPx = await horizontalOverflow(page);
   await page.keyboard.press("Escape");
-  await navigationTrigger.click();
-  await page.getByRole("dialog", { name: "Akashic 导航" }).getByRole("button", { name: "连接手机" }).click();
-  await page.getByRole("dialog", { name: "连接 Android 手机" }).waitFor();
-  metric.pairingOverflowPx = await horizontalOverflow(page);
-  await page.keyboard.press("Escape");
 
-  // /settings 与 ?surface=runtime 均已迁移为插件 web_module；窄屏覆盖保留会话、模型选择与配对。
+  // 窄屏覆盖会话与模型选择。
   const overflowMetrics = Object.entries(metric).filter(([name]) => name.endsWith("OverflowPx"));
   if (overflowMetrics.some(([, value]) => value !== 0) || metric.navigationFocusRestored !== 1
     || metric.composerVisible !== 1) {
     throw new Error(`narrow desktop interaction contract failed: ${JSON.stringify(metric)}`);
-  }
-  await context.close();
-  return metric;
-}
-
-async function measureDesktopLazyRecovery(browserInstance, origin) {
-  const context = await browserInstance.newContext({ viewport: { width: 1280, height: 800 } });
-  const page = await context.newPage();
-  let failedChunks = 0;
-  // settings-app chunk 已随插件化下线；现验证现存懒 chunk（手机配对对话框）的恢复链路。
-  await page.route(/mobile-pairing-dialog-.*\.js/u, async (route) => {
-    if (failedChunks === 0) {
-      failedChunks += 1;
-      await route.abort("failed");
-    } else {
-      await route.continue();
-    }
-  });
-  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "连接手机" }).click();
-  const alert = page.getByRole("alert");
-  await alert.getByRole("heading", { name: "界面加载失败" }).waitFor();
-  const metric = {
-    failedChunks,
-    reloadActionVisible: await alert.getByRole("button", { name: "重新加载" }).isVisible() ? 1 : 0,
-  };
-  await alert.getByRole("button", { name: "重新加载" }).click();
-  await page.getByRole("button", { name: "连接手机" }).click();
-  await page.getByRole("dialog", { name: "连接 Android 手机" }).waitFor();
-  metric.recovered = 1;
-  if (Object.values(metric).some((value) => value !== 1)) {
-    throw new Error(`lazy surface recovery contract failed: ${JSON.stringify(metric)}`);
   }
   await context.close();
   return metric;
@@ -431,10 +331,6 @@ async function measureDesktopAccessibility(browserInstance, origin) {
   await page.locator(".model-capsule__trigger").click();
   await scan("model-picker");
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "连接手机" }).click();
-  await page.getByRole("dialog", { name: "连接 Android 手机" }).waitFor();
-  await page.waitForTimeout(250);
-  await scan("pairing");
 
   // settings/runtime surface 均已迁移为插件 web_module，axe 覆盖需改走插件挂载点，本轮先跳过。
   // 以下为套件恢复运行时确认的存量设计债，逐项签名登记：命中仍报告但不判失败，
@@ -442,7 +338,6 @@ async function measureDesktopAccessibility(browserInstance, origin) {
   const knownDebt = [
     "a[data-band-id=\"workbench\"] > span", // 主导航禁用态 3.43:1，--chat-muted + is-disabled 透明度
     "a[data-band-id=\"models\"] > span", // 主导航预览态 2.26:1
-    "正在创建一次性连接", // 配对等待文案 2.23:1，次级文本 token 过浅
     "markstream-react", // markstream vitesse-light 语法 token 对比度，库内主题
   ];
   const isDebt = (violation) => violation.id === "color-contrast" && violation.nodes.every(
@@ -453,16 +348,11 @@ async function measureDesktopAccessibility(browserInstance, origin) {
   if (debt.length > 0) console.log(`已知可访问性债务 ${debt.length} 项（对比度，待专项清理）`);
   if (fresh.length > 0) throw new Error(`desktop accessibility violations: ${JSON.stringify(fresh)}`);
   await context.close();
-  return { scannedSurfaces: 3, violations: fresh.length, knownDebt: debt.length };
+  return { scannedSurfaces: 2, violations: fresh.length, knownDebt: debt.length };
 }
 
 async function horizontalOverflow(page) {
   return page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth));
-}
-
-async function pairingResourceCount(page) {
-  return page.evaluate(() => performance.getEntriesByType("resource")
-    .filter((entry) => /mobile-pairing-dialog/u.test(entry.name)).length);
 }
 
 async function measureDesktopStream(browserInstance, origin, intervalMs) {
@@ -532,65 +422,6 @@ async function measureDesktopStream(browserInstance, origin, intervalMs) {
   }
   await context.close();
   return metric;
-}
-
-async function measureMobileHistory(browserInstance, origin) {
-  const context = await mobileContext(browserInstance);
-  const page = await context.newPage();
-  await installPerformanceProbe(page);
-  await page.goto(`${origin}/mobile.html`, { waitUntil: "networkidle" });
-  await page.waitForFunction(() => Boolean(window.AkashicMobile));
-  const snapshot = mobileSnapshot(300);
-  await page.evaluate(() => window.__resetAkashicPerf());
-  const startedAt = await page.evaluate(() => performance.now());
-  await page.evaluate((value) => window.AkashicMobile.receiveSnapshot(value), snapshot);
-  await page.locator('[data-message-id="mobile-299"]').waitFor();
-  const metric = await readPerformanceProbe(page, startedAt, ".mobile-message-anchor");
-  metric.virtualRows = await page.locator(".mobile-virtual-row").count();
-  await context.close();
-  return metric;
-}
-
-async function measureMobileStream(browserInstance, origin) {
-  const context = await mobileContext(browserInstance);
-  const page = await context.newPage();
-  await installPerformanceProbe(page);
-  await page.goto(`${origin}/mobile.html`, { waitUntil: "networkidle" });
-  await page.waitForFunction(() => Boolean(window.AkashicMobile));
-  const snapshot = mobileSnapshot(300, { streaming: true });
-  await page.evaluate((value) => window.AkashicMobile.receiveSnapshot(value), snapshot);
-  await page.locator('[data-message-id="mobile-299"]').waitFor();
-  await page.evaluate(() => window.__resetAkashicPerf());
-  const startedAt = await page.evaluate(() => performance.now());
-  const patches = Array.from({ length: 600 }, (_, index) => mobileStreamPatch(snapshot, index, "片"));
-  const terminal = mobileTerminalPatch(snapshot, "片".repeat(600));
-  // v2 协议下草稿走 reply.status 消息事件，终态由 messages.appended 提交。
-  await page.evaluate(({ deltas, finalPatches }) => {
-    for (const patch of deltas) window.AkashicMobile.receiveMessageEvent(patch);
-    for (const patch of finalPatches) window.AkashicMobile.receiveMessageEvent(patch);
-  }, { deltas: patches, finalPatches: terminal });
-  await page.waitForFunction((draftId) => {
-    const row = document.querySelector(`[data-message-id="${draftId}"]`);
-    return row !== null && row.textContent?.includes("片".repeat(600));
-  }, MOBILE_DRAFT_ID);
-  const metric = await readPerformanceProbe(page, startedAt, ".mobile-message-anchor");
-  metric.virtualRows = await page.locator(".mobile-virtual-row").count();
-  await context.close();
-  return metric;
-}
-
-async function mobileContext(browserInstance) {
-  const context = await browserInstance.newContext({
-    viewport: { width: 412, height: 915 },
-    deviceScaleFactor: 2.625,
-    isMobile: true,
-    hasTouch: true,
-  });
-  await context.addInitScript(() => {
-    window.AkashicNativeTransport = { postMessage() {} };
-    window.AkashicNative = new Proxy({}, { get: () => () => {} });
-  });
-  return context;
 }
 
 async function installPerformanceProbe(page) {
@@ -669,60 +500,6 @@ function buildTarget(config, outputDirectory) {
   });
   if (result.status !== 0) throw new Error(`${config} 构建失败\n${result.stdout}\n${result.stderr}`);
   return outputDirectory;
-}
-
-async function startStaticFixtureServer(root, { stripAssetsPrefix }) {
-  const server = createServer((request, response) => {
-    const url = new URL(request.url, "http://127.0.0.1");
-    const api = fixtureApiResponse(url.pathname);
-    if (api !== undefined) return sendJson(response, api);
-    let requested = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//u, "");
-    if (stripAssetsPrefix) requested = requested.replace(/^assets\//u, "");
-    const file = resolve(root, requested);
-    if (!file.startsWith(`${root}${sep}`) || !existsSync(file) || !statSync(file).isFile()) {
-      response.writeHead(404).end("not found");
-      return;
-    }
-    response.writeHead(200, { "content-type": contentType(file), "cache-control": "no-store" });
-    createReadStream(file).pipe(response);
-  });
-  await new Promise((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const address = server.address();
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose())),
-  };
-}
-
-function fixtureApiResponse(pathname) {
-  if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true };
-  if (pathname === "/api/chat/sessions") return desktopSessions();
-  if (pathname === `/api/chat/sessions/${fixtureSessionId}/messages`) {
-    const history = desktopMessages();
-    return { version: 2, items: history.items, through_seq: history.items.at(-1).seq, has_more: false, before_seq: null };
-  }
-  if (pathname === "/api/chat/models") return desktopModels();
-  if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };
-  return undefined;
-}
-
-function sendJson(response, payload) {
-  response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-  response.end(JSON.stringify(payload));
-}
-
-function contentType(file) {
-  return ({
-    ".css": "text/css",
-    ".html": "text/html",
-    ".js": "text/javascript",
-    ".json": "application/json",
-    ".svg": "image/svg+xml",
-    ".woff2": "font/woff2",
-  })[extname(file)] ?? "application/octet-stream";
 }
 
 function chromiumExecutable() {

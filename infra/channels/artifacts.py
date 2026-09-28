@@ -415,7 +415,7 @@ class ChannelAttachmentArtifactStore:
         filename: str | None,
         media_type: str | None,
     ) -> AttachmentRef:
-        """核对 Mobile-owned 文件并构造发布时应保持不变的 ref。"""
+        """核对来源文件并构造发布时应保持不变的 ref。"""
 
         _source_path, fingerprint = self._inspect_source(source, allowed_root)
         return self._ref_from_fingerprint(

@@ -71,7 +71,7 @@ docker compose --project-name akashic-core --env-file "$runtime_env" \
 | --- | --- |
 | 正式发行、升级和恢复 | [部署操作手册](./docs/design/operator-deployment.md) |
 | 插件开发与安装 | [插件教程](./_handbook/plugins-tutorial.md) |
-| 手机接入 | [移动端接入手册](./_handbook/mobile-access.md) |
+| 手机接入 | [Android Shell](https://github.com/kachofugetsu09/akashic-android-shell)、[服务端通知合同](./docs/design/android-shell-experiment.md) |
 | 主动推送 | [Proactive 指南](./_handbook/proactive-guide.md) |
 | 记忆与 Drift | [记忆手册](./_handbook/memory-markdown.md)、[Drift 指南](./_handbook/drift-guide.md) |
 | Python 客户端与协议 | [Python SDK](./sdk/python/README.md)、[协议 schema](./schema/app-server-v2.json) |

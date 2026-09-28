@@ -2,7 +2,7 @@
 
 - 状态：accepted；实施与最终验收未完成
 - 日期：2026-09-13
-- 修订：[0044](0044-akashic-channel-uses-web-and-mobile-adapters.md) 的 Core 内建归属
+- 修订：[旧移动方案已退役](0076-android-shell-retires-legacy-mobile-stack.md) 的 Core 内建归属
 - 关联：AKC-001、AKC-002、PLG-001、STA-001、WSP-003
 
 ## 决定

@@ -3,7 +3,7 @@
 - 状态：accepted
 - 日期：2026-08-27
 - 关联条款：AKC-001～AKC-003、MOB-002、MOB-005、MOB-008、OUT-001、OUT-003～OUT-004
-- supersedes：[0016](0016-channel-delivery-uses-complete-logical-messages.md) 与 [0044](0044-akashic-channel-uses-web-and-mobile-adapters.md) 中 Akashic 主动消息“adapter 送达后再投影 Session”的部分
+- supersedes：[0016](0016-channel-delivery-uses-complete-logical-messages.md) 与 [旧移动方案已退役](0076-android-shell-retires-legacy-mobile-stack.md) 中 Akashic 主动消息“adapter 送达后再投影 Session”的部分
 
 ## 背景
 

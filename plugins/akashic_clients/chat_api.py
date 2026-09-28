@@ -24,14 +24,13 @@ from .services import (
     ChatModelSelection,
     ModelControlUnavailable,
     ModelCatalogUnavailable,
-    MobilePairingAdminPort,
-    MobileUiPluginUnavailable,
-    MobileUiProvider,
-    MobileUiQueryOverloaded,
-    MobileUiQueryTimeout,
-    MobileUiRpcExecutionError,
-    MobileUiRpcInvalidRequest,
-    MobileUiStaleRevision,
+    PluginUiPluginUnavailable,
+    PluginUiProvider,
+    PluginUiQueryOverloaded,
+    PluginUiQueryTimeout,
+    PluginUiRpcExecutionError,
+    PluginUiRpcInvalidRequest,
+    PluginUiStaleRevision,
     default_chat_model_id,
     project_chat_runtimes,
 )
@@ -41,17 +40,10 @@ from .web_chat import (
     UploadTooLargeError,
     WebChatChannel,
 )
-from .mobile_realtime.pairing import PairingError
 from .runtime_inspection import (
     RuntimeInspectionError,
     RuntimeInspectionService,
 )
-from .mobile_realtime.storage import PairingStateError
-
-class PairingApprovalPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    confirmation_code: str = Field(pattern=r"^[0-9]{6}$")
 
 
 class WebPluginUiQueryPayload(BaseModel):
@@ -181,11 +173,10 @@ def create_chat_app(
     *,
     workspace: Path,
     channel: WebChatChannel,
-    mobile_pairing_admin: MobilePairingAdminPort | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
-    plugin_ui_provider: MobileUiProvider | None = None,
-    mobile_ui_scope: Callable[[], Any] | None = None,
+    plugin_ui_provider: PluginUiProvider | None = None,
+    plugin_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     model_selection_reader: Callable[
@@ -200,8 +191,8 @@ def create_chat_app(
 ) -> FastAPI:
     if messages is not None and message_scope is not None:
         raise ValueError("chat API 不能同时绑定直接消息 provider 与 request scope")
-    if plugin_ui_provider is not None and mobile_ui_scope is not None:
-        raise ValueError("chat API 不能同时绑定直接 Mobile UI provider 与 request scope")
+    if plugin_ui_provider is not None and plugin_ui_scope is not None:
+        raise ValueError("chat API 不能同时绑定直接 Plugin UI provider 与 request scope")
     if messages is not None:
         channel.bind_message_readers(messages, reply_status)
     if message_display is not None:
@@ -364,8 +355,8 @@ def create_chat_app(
 
     @app.get("/api/chat/plugin-ui/catalog")
     async def plugin_ui_catalog() -> dict[str, object]:
-        if mobile_ui_scope is not None:
-            async with mobile_ui_scope() as provider:
+        if plugin_ui_scope is not None:
+            async with plugin_ui_scope() as provider:
                 return await provider.catalog()
         return await _require_plugin_ui_provider(plugin_ui_provider).catalog()
 
@@ -377,8 +368,8 @@ def create_chat_app(
         sha256: str = Query(..., pattern=r"^[0-9a-f]{64}$"),
     ) -> Response:
         try:
-            if mobile_ui_scope is not None:
-                async with mobile_ui_scope() as provider:
+            if plugin_ui_scope is not None:
+                async with plugin_ui_scope() as provider:
                     asset = await provider.asset(
                         plugin_id,
                         plugin_revision,
@@ -392,7 +383,7 @@ def create_chat_app(
                     kind,
                     sha256,
                 )
-        except (MobileUiPluginUnavailable, MobileUiStaleRevision) as error:
+        except (PluginUiPluginUnavailable, PluginUiStaleRevision) as error:
             raise _plugin_ui_http_error(error) from error
         return Response(
             content=str(asset["content"]),
@@ -416,8 +407,8 @@ def create_chat_app(
         if len(encoded) > 64 * 1024:
             raise HTTPException(status_code=413, detail="插件参数超过 64 KiB")
         try:
-            if mobile_ui_scope is not None:
-                async with mobile_ui_scope() as provider:
+            if plugin_ui_scope is not None:
+                async with plugin_ui_scope() as provider:
                     return await provider.query(
                         request.plugin_id,
                         request.plugin_revision,
@@ -435,12 +426,12 @@ def create_chat_app(
                 turn_id=request.turn_id,
             )
         except (
-            MobileUiPluginUnavailable,
-            MobileUiStaleRevision,
-            MobileUiQueryOverloaded,
-            MobileUiQueryTimeout,
-            MobileUiRpcInvalidRequest,
-            MobileUiRpcExecutionError,
+            PluginUiPluginUnavailable,
+            PluginUiStaleRevision,
+            PluginUiQueryOverloaded,
+            PluginUiQueryTimeout,
+            PluginUiRpcInvalidRequest,
+            PluginUiRpcExecutionError,
         ) as error:
             raise _plugin_ui_http_error(error) from error
 
@@ -574,32 +565,6 @@ def create_chat_app(
             raise HTTPException(status_code=404, detail="文件不存在")
         return FileResponse(requested)
 
-    if mobile_pairing_admin is not None:
-
-        @app.post("/api/chat/mobile-pairing")
-        def create_mobile_pairing() -> dict[str, object]:
-            return mobile_pairing_admin.create_offer()
-
-        @app.get("/api/chat/mobile-pairing/{pairing_id}")
-        def read_mobile_pairing(pairing_id: str) -> dict[str, object]:
-            claim = mobile_pairing_admin.pending_claim(pairing_id)
-            if claim is None:
-                return {"pairing_id": pairing_id, "status": "waiting_for_phone"}
-            return {**claim, "status": "waiting_for_desktop_confirmation"}
-
-        @app.post("/api/chat/mobile-pairing/{pairing_id}/approve")
-        def approve_mobile_pairing(
-            pairing_id: str,
-            payload: PairingApprovalPayload,
-        ) -> dict[str, object]:
-            try:
-                return mobile_pairing_admin.approve(
-                    pairing_id,
-                    payload.confirmation_code,
-                )
-            except (PairingError, PairingStateError) as error:
-                raise HTTPException(status_code=409, detail=str(error)) from error
-
     return app
 
 
@@ -636,11 +601,10 @@ def build_chat_server(
     *,
     workspace: Path,
     channel: WebChatChannel,
-    mobile_pairing_admin: MobilePairingAdminPort | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
-    plugin_ui_provider: MobileUiProvider | None = None,
-    mobile_ui_scope: Callable[[], Any] | None = None,
+    plugin_ui_provider: PluginUiProvider | None = None,
+    plugin_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     model_selection_reader: Callable[
@@ -658,11 +622,10 @@ def build_chat_server(
         create_chat_app(
             workspace=workspace,
             channel=channel,
-            mobile_pairing_admin=mobile_pairing_admin,
             runtime_inspection=runtime_inspection,
             message_display=message_display,
             plugin_ui_provider=plugin_ui_provider,
-            mobile_ui_scope=mobile_ui_scope,
+            plugin_ui_scope=plugin_ui_scope,
             web_ui_provider=web_ui_provider,
             model_catalog_reader=model_catalog_reader,
             model_selection_reader=model_selection_reader,
@@ -689,23 +652,23 @@ def _require_runtime_inspection(
 
 
 def _require_plugin_ui_provider(
-    provider: MobileUiProvider | None,
-) -> MobileUiProvider:
+    provider: PluginUiProvider | None,
+) -> PluginUiProvider:
     if provider is None:
         raise HTTPException(status_code=503, detail="插件界面服务不可用")
     return provider
 
 
 def _plugin_ui_http_error(error: Exception) -> HTTPException:
-    if isinstance(error, MobileUiPluginUnavailable):
+    if isinstance(error, PluginUiPluginUnavailable):
         return HTTPException(status_code=404, detail=str(error))
-    if isinstance(error, MobileUiStaleRevision):
+    if isinstance(error, PluginUiStaleRevision):
         return HTTPException(status_code=409, detail=str(error))
-    if isinstance(error, MobileUiQueryOverloaded):
+    if isinstance(error, PluginUiQueryOverloaded):
         return HTTPException(status_code=429, detail=str(error))
-    if isinstance(error, MobileUiQueryTimeout):
+    if isinstance(error, PluginUiQueryTimeout):
         return HTTPException(status_code=504, detail=str(error))
-    if isinstance(error, MobileUiRpcInvalidRequest):
+    if isinstance(error, PluginUiRpcInvalidRequest):
         return HTTPException(status_code=400, detail=str(error))
     return HTTPException(status_code=502, detail=str(error))
 

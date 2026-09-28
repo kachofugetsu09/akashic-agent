@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 
 @dataclass
@@ -14,7 +14,6 @@ class ToolResult:
 
     text: str = ""
     content_blocks: list[dict[str, Any]] = field(default_factory=list)
-    mobile_attention: Literal["confirmation"] | None = None
     runtime_provenance: dict[str, str] = field(default_factory=dict)
     is_error: bool = False
 
