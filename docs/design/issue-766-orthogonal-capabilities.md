@@ -154,6 +154,18 @@ commit 回调，验证异名来源、送达前不提交、失败恢复准入和 
 supervisor 重启验收，不执行进程切换。恢复点 61ea27d8 与
 /tmp/akashic-orthology-before-restart-receipts-61ea27d8.tar；无持久语义或 schema 变化。
 
+### 附件类型只有一份定义
+
+Bus 不再定义第二个 AttachmentKind，而是继续从原 import 路径导出 Session/Channel
+共用的同一个枚举。字符串 file/image、JSON、已有 bus.events.AttachmentKind pickle
+仍可读取；导入器删除 value→旧枚举→新枚举的往返。ChannelMessage/InboundMessage
+仍是有真实调用者的协议投影，不能因为字段相似就删除。没有改动附件 schema、权限、
+文件收养、不可变 artifact 或 read lease 协议。
+
+临时实测覆盖旧 pickle/JSON、两个真实导入入口、SQLite metadata 与有界 read lease；
+只在 TemporaryDirectory 中创建文件。恢复点 6ad739de 与
+/tmp/akashic-orthology-before-attachment-kind-6ad739de.tar。
+
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
 ## 目标与取舍
