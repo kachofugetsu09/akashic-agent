@@ -69,6 +69,27 @@ Input/Control；不修改旧消息、配置、回执和恢复条件。恢复点�
 Telegram 控制回调，验证异名专属来源、撤下后默认来源、空会话及先排空后确认。
 它在旧实现上无法取消异名来源工作，在候选通过；不连接 Telegram、不读取真实凭据。
 
+### Web listener 发布公共入口
+
+Shell 始终连接 workspace/runtime/web-chat.sock；自定义 web.socket_path 的 listener
+在监听就绪后原子创建该公共入口的 symlink，不让 Shell 解析插件配置或持有第二份地址。
+默认路径直接绑定。listener 关闭后按保存的节点身份清理自己创建的 socket 与链接；
+冲突节点使启动明确失败，不覆盖，不删除后继 owner 的节点。失败清理保留可重试 owner。
+该入口是已有 IPC 合同的临时投影，不是持久配置或恢复事实。
+
+Shell 只知道健康探测结果。配置存在但聊天不可达时报告 unavailable，不猜测是在启动、
+已停用还是启动失败；前端保留轮询并解释这一限制。旧 starting 值仍可读取。
+
+```text
+Shell ── 固定公共 socket ──┬── 默认 listener
+                         └── owner 发布的链接 ── 自定义 listener
+```
+
+临时场景 orthology_web_endpoint.py 使用真实双层 UDS listener，验证 HTTP 代理和
+WebSocket ping/pong、默认/自定义切换、缺席状态、冲突拒绝与节点身份清理。
+不调用模型、不访问正式 workspace。恢复点 c2fad5e8 与
+/tmp/akashic-orthology-before-web-endpoint-c2fad5e8.tar；无 schema 或数据迁移。
+
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
 ## 目标与取舍
