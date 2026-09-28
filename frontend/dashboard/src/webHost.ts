@@ -585,8 +585,11 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     applyingTimer = window.setInterval(() => {
       attempts += 1;
       void session.checkCurrent().then(current => {
-        if (!current) { window.clearInterval(applyingTimer); window.location.reload(); }
-        else if (attempts >= 60) window.clearInterval(applyingTimer);
+        if (current) { if (attempts >= 60) window.clearInterval(applyingTimer); return; }
+        window.clearInterval(applyingTimer);
+        const go = () => window.location.reload();
+        // 复用导航否决：有未保存内容的页面可以拦下刷新，陈旧提示条仍然可见。
+        if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
       }).catch(() => { if (attempts >= 60) window.clearInterval(applyingTimer); });
     }, 500);
   };

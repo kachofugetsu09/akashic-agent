@@ -59,8 +59,13 @@
     scrollbar-width: none;
     scroll-snap-type: x mandatory;
     padding-inline: max(0px, calc(50% - 40px));
-    scroll-behavior: smooth;
     mask-image: linear-gradient(to right, transparent, black 18px, black calc(100% - 18px), transparent);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .primary-band-nav {
+      scroll-behavior: smooth;
+    }
   }
 
   .primary-band-nav::-webkit-scrollbar {

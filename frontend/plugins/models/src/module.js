@@ -189,7 +189,9 @@ export function activate(ctx) {
           meta.className = "settings-card-meta";
           const available = document.createElement("i");
           available.innerHTML = "<span></span>";
-          available.append(connection.availability === "available" ? "已连接" : connection.availability);
+          const AVAILABILITY_LABELS = { available: "已连接", disabled: "已停用", driver_unavailable: "驱动不可用" };
+          if (connection.availability !== "available") available.classList.add("is-unavailable");
+          available.append(AVAILABILITY_LABELS[connection.availability] ?? connection.availability);
           const count = document.createElement("small");
           count.textContent = capabilitySummary(models);
           meta.append(available, count);
@@ -465,9 +467,7 @@ export function activate(ctx) {
         }
         const close = () => disposeDialog();
         scrim.addEventListener("close", close, {once: true});
-        scrim.addEventListener("click", (event) => {
-          if (event.target === scrim) scrim.close();
-        });
+        // 不用点击空白关闭：provider 表单没有脏状态契约，误触会丢弃已填内容。
         disposeDialog = () => {
           report(auth.close());
           scrim.removeEventListener("close", close);

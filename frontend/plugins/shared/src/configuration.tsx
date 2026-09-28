@@ -29,14 +29,15 @@ export function Confirm({ title, children, accept, cancel }: {title: string; chi
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
   return <dialog ref={ref} className="config-dialog" aria-labelledby="config-confirm-title" onCancel={event => { event.preventDefault(); cancel(); }}>
     <h2 id="config-confirm-title">{title}</h2><p>{children}</p>
-    <footer><button type="button" autoFocus onClick={cancel}>继续填写</button><button className="config-primary" type="button" onClick={accept}>放弃修改并离开</button></footer>
+    <footer><button type="button" autoFocus className="config-primary" onClick={cancel}>继续填写</button><button type="button" onClick={accept}>放弃修改并离开</button></footer>
   </dialog>;
 }
 
-export function Field({label, name, value, change, type = "text", hint, required = false}: {
+export function Field({label, name, value, change, type = "text", hint, required = false, inputMode}: {
   label: string; name: string; value: unknown; change: FormProps["change"]; type?: string; hint?: string; required?: boolean;
+  inputMode?: "text" | "numeric" | "decimal" | "tel" | "url" | "email";
 }) {
-  return <label className="config-field"><span>{label}</span><input name={name} type={type} autoComplete={type === "password" ? "new-password" : "off"} required={required}
+  return <label className="config-field"><span>{label}</span><input name={name} type={type} inputMode={inputMode} autoComplete={type === "password" ? "new-password" : "off"} required={required}
     value={typeof value === "string" || typeof value === "number" ? value : ""}
     onChange={event => change(name, type === "number" ? event.target.valueAsNumber : event.target.value)} />{hint && <small>{hint}</small>}</label>;
 }

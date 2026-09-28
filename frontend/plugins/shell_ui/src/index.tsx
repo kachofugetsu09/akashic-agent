@@ -18,6 +18,10 @@ type ShellPage = WebEntry & {
   section?: string;
 };
 
+function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
 /** Register the ordinary Shell plugin as the only owner of the outer frame. */
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("web.root.v1", (mount) => mount.register({
@@ -43,7 +47,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   useEffect(() => {
     const nav = navRef.current;
     const current = nav?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (nav && current) nav.scrollTo({ left: current.offsetLeft - nav.offsetLeft - (nav.clientWidth - current.clientWidth) / 2, behavior: "smooth" });
+    if (nav && current) nav.scrollTo({ left: current.offsetLeft - nav.offsetLeft - (nav.clientWidth - current.clientWidth) / 2, behavior: scrollBehavior() });
     setFocusId(activeId);
   }, [activeId]);
 
@@ -95,7 +99,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
           if (nearest?.dataset.pageId) setFocusId(nearest.dataset.pageId);
         }} onWheel={(event) => {
           if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
-          event.currentTarget.scrollBy({ left: event.deltaY, behavior: "smooth" });
+          event.currentTarget.scrollBy({ left: event.deltaY, behavior: scrollBehavior() });
         }}>
         {entries.filter(entry => entry.section !== "settings").map((entry) => <button
           key={entry.id}

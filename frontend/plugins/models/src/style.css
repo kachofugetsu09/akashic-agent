@@ -193,12 +193,10 @@
 .settings-card-meta small { margin-block-start: 0.15rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
 .settings-card-meta { justify-items: end; gap: 0.75rem; grid-auto-flow: column; align-items: center; }
 .settings-card-meta i { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--ak-sys-color-success); font-size: var(--md-sys-typescale-label-medium-size); font-style: normal; font-weight: 650; }
+.settings-card-meta i.is-unavailable { color: var(--md-sys-color-on-surface-variant); font-weight: 500; }
 .settings-card-meta i > span { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
 .settings-template-action { color: var(--md-sys-color-on-surface-variant); }
 .settings-section--templates .settings-connection-card { min-height: 4rem; }
-.settings-section--templates.is-first-run { margin-block-start: 2.5rem; }
-.settings-section--templates.is-first-run .settings-connection-card:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
-.settings-shell--first-run { width: min(56rem, calc(100% - 2.5rem)); }
 
 .settings-roles {
   border-radius: var(--md-sys-shape-corner-large);
@@ -223,7 +221,7 @@
 .settings-form-grid select {
   width: 100%;
   min-height: 2.75rem;
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: 1px solid var(--md-sys-color-outline);
   border-radius: var(--md-sys-shape-corner-extra-small);
   padding-inline: 0.75rem;
   color: var(--md-sys-color-on-surface);
@@ -368,7 +366,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-discovery-manual input {
   width: 100%;
   min-height: 2.75rem;
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: 1px solid var(--md-sys-color-outline);
   border-radius: var(--md-sys-shape-corner-extra-small);
   padding-inline: 0.75rem;
   color: var(--md-sys-color-on-surface);
@@ -455,5 +453,5 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .embedding-form { display: grid; gap: 18px; padding: 28px; max-width: 520px; }
 .embedding-form h2,.embedding-form p { margin: 0; }
 .embedding-form label { display: grid; gap: 8px; }
-.embedding-form input,.embedding-form select,.embedding-form button,.settings-add-embedding { font: inherit; min-height: 44px; padding: 10px 12px; border: 1px solid var(--md-sys-color-outline-variant); border-radius: 8px; background: var(--md-sys-color-surface); color: inherit; }
+.embedding-form input,.embedding-form select,.embedding-form button,.settings-add-embedding { font: inherit; min-height: 44px; padding: 10px 12px; border: 1px solid var(--md-sys-color-outline); border-radius: 8px; background: var(--md-sys-color-surface); color: inherit; }
 .embedding-form footer { display: flex; gap: 12px; justify-content: flex-end; }
