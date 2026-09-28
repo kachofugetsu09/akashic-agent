@@ -1446,6 +1446,22 @@
     .table-row.mode-memory {
       grid-template-columns: 34px 72px minmax(140px, 1.25fr) 48px 52px 64px 76px 76px 70px 56px;
     }
+
+    /* 键盘或横屏压缩高度时，目录和内容按顺序滚动，不再争抢剩余高度。 */
+    @media (max-height: 30rem) {
+      .shell {
+        overflow-y: auto;
+      }
+
+      .sessions-pane {
+        height: 20rem;
+      }
+
+      .content-shell {
+        flex: none;
+        height: max(24rem, calc(100dvh - var(--shell-band-height, 48px)));
+      }
+    }
 }
 
 }

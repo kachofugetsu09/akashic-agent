@@ -460,8 +460,15 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-page--embedded .settings-header { display: none; }
 .settings-page--embedded .settings-section { margin-top: 0; }
 
-.embedding-form { display: grid; gap: 18px; padding: 28px; max-width: 520px; }
+.embedding-form { display: grid; grid-template-rows: none; gap: 18px; padding: 28px; max-width: 520px; overflow: auto; }
 .embedding-form h2,.embedding-form p { margin: 0; }
-.embedding-form label { display: grid; gap: 8px; }
+.embedding-form label { display: grid; min-width: 0; gap: 8px; }
+.embedding-form input,.embedding-form select { min-width: 0; width: 100%; }
 .embedding-form input,.embedding-form select,.embedding-form button,.settings-add-embedding { font: inherit; min-height: 44px; padding: 10px 12px; border: 1px solid var(--md-sys-color-outline); border-radius: 8px; background: var(--md-sys-color-surface); color: inherit; }
-.embedding-form footer { display: flex; gap: 12px; justify-content: flex-end; }
+.embedding-form footer { display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
+
+/* 短屏和大字下让标题随表单一起滚动，避免把正文压到可视区之外。 */
+@media (max-height: 30rem) {
+  .settings-dialog:not(.embedding-form) { display: block; overflow: auto; }
+  .settings-dialog-body { overflow: visible; }
+}

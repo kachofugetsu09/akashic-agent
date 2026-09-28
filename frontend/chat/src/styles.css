@@ -2400,7 +2400,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
 /* 手机宽度上的输入卡。几何来自 DeepSeek 输入卡（22px 圆角、文字在上、工具行在下、
    左右 16px、底 8px）和 Beautiful UI 宽输入条（加号在左、模型与发送在右）。
-   触控目标放到 44px，对应 Pixel 9 Pro XL 竖屏 448 CSS px。 */
+   触控目标放到 44px；布局跟随 CSS 视口宽度，不依赖设备型号或像素密度。 */
 @media (max-width: 36rem) {
   .chat-main {
     --chat-dock-inset: 16px;
@@ -2475,8 +2475,8 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-expanded .composer__bar {
     display: grid !important;
     width: 100%;
-    min-height: 28px;
-    grid-template-columns: 28px minmax(0, 1fr) 28px;
+    min-height: 44px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
     align-items: center;
     column-gap: 8px;
     padding: 2px 8px 0;
@@ -2523,13 +2523,13 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-compact .composer-action-button,
   .chat-main .composer.is-expanded .composer-tool,
   .chat-main .composer.is-expanded .composer-action-button {
-    width: 28px;
-    min-width: 28px;
-    max-width: 28px;
-    height: 28px;
-    min-height: 28px;
-    max-height: 28px;
-    flex-basis: 28px;
+    width: 44px;
+    min-width: 44px;
+    max-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    flex-basis: 44px;
   }
 
   .chat-main .composer.is-compact .composer-tool > svg,
