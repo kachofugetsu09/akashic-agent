@@ -75,7 +75,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     const next = event.target.value;
     setInput(next);
     syncExpanded(event.target, next);
-  }, [syncExpanded]);
+  }, [setInput, syncExpanded]);
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
     if (!canSend) throw new Error(modelProblem || "聊天服务暂不可用，请稍后重试。");
     const wasExpanded = expanded;
