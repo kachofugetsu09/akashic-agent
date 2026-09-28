@@ -229,13 +229,16 @@ function useBandScale(count: number, onSettle: (index: number) => void) {
       fling(velocity);
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (event.pointerType === "touch" || prefersReducedMotion()) return;
+      if (event.pointerType === "touch" || event.button !== 0) return;
       begin(event.clientX);
-      scroller.setPointerCapture(event.pointerId);
     };
     const onPointerMove = (event: PointerEvent) => {
       if (event.pointerType === "touch") return;
       move(event.clientX);
+      // 普通点击仍交给按钮，真正拖动后才捕获指针。
+      if (drag.active && movedRef.current && !scroller.hasPointerCapture(event.pointerId)) {
+        scroller.setPointerCapture(event.pointerId);
+      }
     };
     const onPointerUp = (event: PointerEvent) => {
       if (event.pointerType === "touch") return;
@@ -243,7 +246,6 @@ function useBandScale(count: number, onSettle: (index: number) => void) {
       end();
     };
     const onWheel = (event: WheelEvent) => {
-      if (prefersReducedMotion()) return;
       event.preventDefault();
       stop();
       const raw = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
@@ -335,13 +337,13 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       setActiveId(entry.id);
       const base = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(null, "", entry.route ? `${base}#${entry.route}` : base);
-      closeSettings(settingsDialog.current);
+      settingsDialog.current?.close();
     };
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
   }, []);
 
-  const pick = (entry: ShellPage, index: number): void => {
-    if (rail.dragged()) return;
+  const pick = (entry: ShellPage, index: number, pointerClick: boolean): void => {
+    if (pointerClick && rail.dragged()) return;
     rail.glideTo(index, () => openPage(entry));
   };
 
@@ -404,7 +406,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
             title={entry.label}
             tabIndex={focusId === entry.id ? 0 : -1}
             aria-current={activeId === entry.id ? "page" : undefined}
-            onClick={() => pick(entry, index)}
+            onClick={(event) => pick(entry, index, event.detail > 0)}
           >
             <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
             <span>{entry.label}</span>
@@ -414,7 +416,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       <div className="primary-band-footer">
         <button type="button" className="theme-cycle-button" onClick={() => settingsDialog.current?.showModal()}>功能设置</button>
         <dialog ref={settingsDialog} className="shell-settings-dialog" aria-label="功能设置">
-          <header><h2>功能设置</h2><button type="button" onClick={() => closeSettings(settingsDialog.current)} aria-label="关闭设置目录">关闭</button></header>
+          <header><h2>功能设置</h2><button type="button" onClick={() => settingsDialog.current?.close()} aria-label="关闭设置目录">关闭</button></header>
           <nav>{settingsEntries.map((entry) => <button key={entry.id} type="button" onClick={() => openPage(entry)}>
             <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
             <span>{entry.label}</span>
@@ -435,20 +437,6 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       />)}
     </div>
   </div>;
-}
-
-/** 关闭动画结束后再真正收起对话框；reduced motion 下立即关闭。 */
-function closeSettings(dialog: HTMLDialogElement | null): void {
-  if (!dialog?.open) return;
-  if (prefersReducedMotion()) {
-    dialog.close();
-    return;
-  }
-  dialog.dataset.state = "closed";
-  window.setTimeout(() => {
-    dialog.close();
-    delete dialog.dataset.state;
-  }, 180);
 }
 
 function checkPages(entries: readonly WebEntry[]): ShellPage[] {
