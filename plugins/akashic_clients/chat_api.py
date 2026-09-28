@@ -141,8 +141,12 @@ def create_chat_app(
         return {"status": "ok", "channel": channel.name}
 
     @app.get("/api/chat/health")
-    def chat_health() -> dict[str, str]:
-        return {"status": "ready"}
+    async def chat_health() -> dict[str, str]:
+        try:
+            async with open_message_catalog():
+                return {"status": "ready"}
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail="聊天请求接纳不可用") from error
 
     @app.get("/api/chat/web-ui/bootstrap")
     async def web_ui_bootstrap(request: Request) -> Response:
@@ -555,6 +559,7 @@ def build_chat_server(
         uds=uds,
         log_level="warning",
         access_log=False,
+        timeout_graceful_shutdown=10.0,
     )
     return uvicorn.Server(config)
 

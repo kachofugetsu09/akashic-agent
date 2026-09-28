@@ -56,10 +56,6 @@ from .scoped_capabilities import (
 )
 
 
-_SERVER_START_TIMEOUT_SECONDS = 10.0
-_SERVER_STOP_TIMEOUT_SECONDS = 10.0
-
-
 class _ChannelArtifactReadLease:
     """Adapt a host bounded read lease to the client artifact protocol."""
 
@@ -159,27 +155,6 @@ def _close_children(
         raise primary
 
 
-async def _finish_cancelled_server(task: asyncio.Task[Any]) -> None:
-    """Wait for a cancelled listener without hiding cleanup or a live task."""
-
-    _ = task.cancel()
-    try:
-        await asyncio.wait_for(
-            asyncio.shield(task),
-            timeout=_SERVER_STOP_TIMEOUT_SECONDS,
-        )
-    except asyncio.CancelledError:
-        # A task cancelled by this stop path has completed its cleanup.  A
-        # cancellation of the caller is still raised by _stop_server itself.
-        if task.cancelled():
-            return
-        raise
-    except asyncio.TimeoutError as error:
-        raise TimeoutError(
-            "akashic listener task did not settle after cancellation"
-        ) from error
-
-
 async def _stop_owned_children(
     children: Sequence[Any],
 ) -> tuple[list[Any], list[StopReceipt], list[BaseException]]:
@@ -213,32 +188,11 @@ async def _stop_owned_children(
 
 
 async def _stop_server(server: uvicorn.Server, task: asyncio.Task[Any]) -> None:
-    """Ask Uvicorn to close its listener before cancelling its task."""
+    """等待 Uvicorn 完成启动和关闭，不能把取消 Task 当成资源关闭。"""
 
     server.should_exit = True
-    if task.done():
-        if task.cancelled():
-            return
-        task.result()
-        return
-    try:
-        await asyncio.wait_for(
-            asyncio.shield(task),
-            timeout=_SERVER_STOP_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        await _finish_cancelled_server(task)
-    except asyncio.CancelledError as cancellation:
-        try:
-            await _finish_cancelled_server(task)
-        except BaseException as cleanup_error:
-            if isinstance(cleanup_error, asyncio.CancelledError):
-                raise
-            raise BaseExceptionGroup(
-                "akashic listener stop cancelled and cleanup failed",
-                (cancellation, cleanup_error),
-            ) from cancellation
-        raise
+    # serve 在 startup 中取消会跳过 shutdown；调用方取消只中断等待，owner 留待重试。
+    await asyncio.shield(task)
 
 
 @dataclass(slots=True)
@@ -344,6 +298,8 @@ class _GenerationAkashicAdapter:
     async def _open_request_scope(self) -> AsyncIterator[Any]:
         """Open one exact binding scope for a short client operation."""
 
+        if self._stopping or self._stopped:
+            raise RuntimeError("akashic channel 已关闭请求接纳")
         opener = self._context.open_scope
         if opener is None:
             raise RuntimeError("akashic channel 缺少 host request scope")
@@ -430,50 +386,20 @@ class _GenerationAkashicAdapter:
         self._web.attach_presentation(ports)
 
     async def _start_server(self, server: uvicorn.Server, *, name: str) -> None:
-        """等待监听就绪；失败时保留启动耗时与调度间隔。"""
+        """先登记监听 owner，再等待真实就绪或启动失败。"""
         spawn_owned = self._context.spawn_owned
         if spawn_owned is None:
             raise RuntimeError(f"akashic {name} 缺少 host-owned task scope")
-        loop = asyncio.get_running_loop()
-        started_at = loop.time()
-        max_poll_gap = 0.0
         task = await spawn_owned(server.serve(), name=name)
-        try:
-            async with asyncio.timeout(_SERVER_START_TIMEOUT_SECONDS):
-                while True:
-                    if server.started:
-                        break
-                    if task.done():
-                        task.result()
-                        raise RuntimeError(f"akashic {name} 在监听就绪前退出")
-                    polled_at = loop.time()
-                    try:
-                        await asyncio.sleep(0)
-                    finally:
-                        # 取消也记录最后一段间隔，才能看见超时前的事件循环阻塞。
-                        max_poll_gap = max(max_poll_gap, loop.time() - polled_at)
-        except BaseException as error:
-            error.add_note(
-                f"listener={name} elapsed_seconds={loop.time() - started_at:.3f} "
-                f"timeout_seconds={_SERVER_START_TIMEOUT_SECONDS:.3f} "
-                f"max_poll_gap_seconds={max_poll_gap:.3f} "
-                f"server_started={server.started} task_done={task.done()} "
-                f"task_cancelled={task.cancelled()}"
-            )
-            server.should_exit = True
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except BaseException as cleanup_error:
-                    raise BaseExceptionGroup(
-                        f"akashic {name} 启动失败且清理失败",
-                        (error, cleanup_error),
-                    ) from error
-            raise
         self._servers.append((server, task))
+        # 本地空 lifespan 与 socket bind 不需要时钟期限；其他插件占用事件循环不是启动失败。
+        while True:
+            if task.done():
+                task.result()
+                raise RuntimeError(f"akashic {name} 在监听就绪前退出")
+            if server.started:
+                return
+            await asyncio.sleep(0)
 
     async def _start_web(self) -> None:
         await self._web.start()
