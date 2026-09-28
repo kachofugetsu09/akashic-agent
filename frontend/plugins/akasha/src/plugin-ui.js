@@ -124,6 +124,10 @@ export function mountRecall(host, context) {
   let loading = false;
   let timer;
   let loadingTimer;
+  // 只交接展开状态，不缓存消息、召回结果或插件版本。
+  const viewKey = `akasha.recall.open:${JSON.stringify([context.sessionId, context.messageId, context.turnId, context.block?.source])}`;
+  const remembered = new Set((sessionStorage.getItem(viewKey) ?? "").split(","));
+  let firstResult = true;
   const content = document.createElement("div");
   const status = document.createElement("p");
   status.className = "akasha-plugin-ui-query-status";
@@ -144,7 +148,11 @@ export function mountRecall(host, context) {
     try {
       const result = await readRecall(context);
       if (!active) return;
-      const opened = new Set(Array.from(content.querySelectorAll("details[open]"), (item) => item.dataset.lane));
+      const opened = new Set([
+        ...(firstResult ? remembered : []),
+        ...Array.from(content.querySelectorAll("details[open]"), (item) => item.dataset.lane),
+      ]);
+      firstResult = false;
       content.innerHTML = result.items.length ? `<div class="akasha-plugin-ui-recall-group">${[
         ["dense", "左脑 · 精确回忆", "precise"], ["completion", "右脑 · 模式补全", "completion"],
       ].map(([lane, title, style]) => {
@@ -165,9 +173,10 @@ export function mountRecall(host, context) {
       if (active) {
         const retry = document.createElement("button");
         retry.type = "button";
-        retry.textContent = "重试";
-        retry.addEventListener("click", () => { void load(); });
-        status.replaceChildren(document.createTextNode(`${error.message} `), retry);
+        const stale = error.code === "plugin_ui_stale_revision";
+        retry.textContent = stale ? "刷新页面" : "重试";
+        retry.addEventListener("click", () => { if (stale) window.location.reload(); else void load(); });
+        status.replaceChildren(document.createTextNode(`情景记忆展示暂不可用：${error.message} `), retry);
         status.hidden = false;
       }
     } finally {
@@ -177,6 +186,9 @@ export function mountRecall(host, context) {
   };
   void load();
   return () => {
+    if (content.hasChildNodes()) {
+      sessionStorage.setItem(viewKey, Array.from(content.querySelectorAll("details[open]"), item => item.dataset.lane).join(","));
+    }
     active = false;
     clearTimeout(timer);
     clearTimeout(loadingTimer);

@@ -655,3 +655,25 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 - 目录撤回确认保存的是离开意图，不保存旧响应 apply 闭包。接受后重新读取当前目录；仅新读取成功且该项仍撤回时清父编辑状态并切换。读取失败仍保留草稿和 fault；该项重新出现则取消失效的撤回确认、不伪造放弃，现有 sequence/alive 继续拒绝旧响应。
 
 - 确认后的目录核对期间保留原生 modal blocker，两按钮与 Escape 均不能重复操作，旧编辑器不可交互，避免核对尚未返回时的新输入被旧确认覆盖。同步 ref 防双击并暂停其他本页刷新；该只读核对与 status 共享 30 秒截止。失败/重现恢复原编辑器，成功仍撤回才应用；不是提交/持久状态的新 owner。
+
+## Issue #808 · 记忆展示版本恢复（实施中）
+
+- base #807 `1b33d47f`；唯一 writer Codex。change_type=bugfix；capability_owner=Plugin UI provider 的严格 revision/权限与 Web runtime 的已加载模块；consumer_scope=Web；runtime_patch=false。HTTP adapter 只把既有 stale/unavailable 异常转成结构化 code 与可读 message，不放宽 Core 校验。
+- 仅 HTTP 409 且 `detail.code=plugin_ui_stale_revision` 启动只读正式目录核对。并发请求共享一次在途读取；GET 10 秒、模块导入既有 5 秒截止；一个恢复周期只有一次自动尝试，收到当前 revision 的合法成功响应后才重新允许下一次恢复。旧 POST 查询不重放；真实新模块激活后由新 renderer/context 发自己的合法查询。普通 409、403、429、网络错误不触发该核对。
+- 继续复用现有 catalog、definitions、activation、revision 缓存和 query owner。目录更新/模块失败期间只保留这个 slot 和同一 Message/Turn/context 已经挂载的卡片；新 slot 或上下文变化不能挂载旧模块。query 边界先拒绝过期/故障上下文，旧模块不能借新 revision 查询或使用新缓存。插件真正缺席时原 renderer 正常清理，显示本页展示已卸载，不称为 0 项记忆。
+- Akasha 只保存本标签页的两个 lane 展开标志，按 Session/Message/Turn/source 分开；不缓存正文、查询结果、目录或版本，不写服务端。普通失败保留原卡片；更新失败文字区分情景记忆展示，并有“刷新页面”实际操作。旧 owner 的迟到响应继续被既有队列和 alive 清理拒绝。
+- 持久化：Message 只追加；图、向量、反馈与配置仍由原 owner 增加/更新。本修复没有 SQL 写入、迁移、数据减少或第二个 Telegram poller。正式卸载/重装和隔离重启前做原生备份并逐项比对旧行；源码恢复点为任务目录 backups/issue808/baseline。
+
+```text
+┌────────────────────────┐
+│ 旧 revision：真实 409    │
+└──────────┬─────────────┘
+           ▼ exact code / 有界只读
+┌────────────────────────┐
+│ 正式 catalog → 当前模块 │
+└──────────┬─────────────┘
+           ▼ 新 renderer 自己读取
+┌────────────────────────┐
+│ 真实卡片 / 原展开状态    │
+└────────────────────────┘
+```

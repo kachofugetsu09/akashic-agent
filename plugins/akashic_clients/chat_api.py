@@ -584,9 +584,13 @@ def _require_plugin_ui_provider(
 
 def _plugin_ui_http_error(error: Exception) -> HTTPException:
     if isinstance(error, PluginUiPluginUnavailable):
-        return HTTPException(status_code=404, detail=str(error))
+        return HTTPException(status_code=404, detail={
+            "code": "plugin_ui_unavailable", "message": "此插件界面已卸载或暂不可用。",
+        })
     if isinstance(error, PluginUiStaleRevision):
-        return HTTPException(status_code=409, detail=str(error))
+        return HTTPException(status_code=409, detail={
+            "code": "plugin_ui_stale_revision", "message": "插件界面版本已变更。",
+        })
     if isinstance(error, PluginUiQueryOverloaded):
         return HTTPException(status_code=429, detail=str(error))
     if isinstance(error, PluginUiQueryTimeout):
