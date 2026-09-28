@@ -59,6 +59,12 @@ class AddModel:
 
 
 @dataclass(frozen=True, slots=True)
+class VerifyModel:
+    expected_revision: int
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class SetDefaultModel:
     expected_revision: int
     role: str | None
@@ -102,6 +108,7 @@ ModelChange: TypeAlias = (
     | UpdateConnection
     | DisableConnection
     | AddModel
+    | VerifyModel
     | SetDefaultModel
     | SyncModels
     | StartConnectionAuth
@@ -128,6 +135,8 @@ class SettingsReceipt:
 
 
 class ModelSettings(Protocol):
+    async def discover_saved(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]: ...
+
     async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]: ...
 
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
@@ -139,6 +148,7 @@ MODEL_SETTINGS = ServiceKey[ModelSettings]("models.settings.v1")
 __all__ = [
     "AddConnection",
     "AddModel",
+    "VerifyModel",
     "CancelConnectionAuth",
     "CreateConnectionWithModel",
     "DisableConnection",

@@ -13,7 +13,7 @@ from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import cast, Any, Literal, cast
 from urllib.parse import quote
 
 from agent.plugin_composition import (
@@ -757,8 +757,8 @@ class ModelsStore:
             raise ValueError("driver returned an empty model catalog")
         keys: set[tuple[ModelKind, str]] = set()
         for item in items:
-            if not isinstance(item.kind, ModelKind):
-                raise ValueError(f"driver returned unsupported model kind: {item.kind}")
+            if item.kind not in {ModelKind.CHAT, ModelKind.EMBEDDING}:
+                raise ValueError("服务目录没有用途验证；请逐个选择模型并验证后保存，现有模型保持不变。")
             if not isinstance(item.capabilities, ModelCapabilities):
                 raise TypeError("driver returned invalid model capabilities")
             if not isinstance(item.capability_sources, CapabilitySources):
@@ -822,12 +822,12 @@ class ModelsStore:
                 model_id = (
                     stored[0]
                     if stored is not None
-                    else _discovered_model_id(target_connection, item.kind, item.model)
+                    else _discovered_model_id(target_connection, cast(ModelKind, item.kind), item.model)
                 )
                 owner = used.get(model_id)
                 if owner is not None and owner != (
                     target_connection,
-                    item.kind,
+                    cast(ModelKind, item.kind),
                     item.model,
                 ):
                     raise ValueError(
@@ -837,7 +837,7 @@ class ModelsStore:
                     expected_revision=expected_revision,
                     model_id=model_id,
                     connection_id=target_connection,
-                    kind=item.kind,
+                    kind=cast(ModelKind, item.kind),
                     model=item.model,
                     capabilities=item.capabilities,
                     capability_sources=item.capability_sources,
@@ -1141,10 +1141,10 @@ def _sync_would_change(
             model_id=(
                 stored.model_id
                 if stored is not None
-                else _discovered_model_id(connection_id, item.kind, item.model)
+                else _discovered_model_id(connection_id, cast(ModelKind, item.kind), item.model)
             ),
             connection_id=connection_id,
-            kind=item.kind,
+            kind=cast(ModelKind, item.kind),
             model=item.model,
             default_reasoning_effort=(
                 item.default_reasoning_effort.strip()

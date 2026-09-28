@@ -21,7 +21,7 @@ async def _register_ui(ctx: Context) -> None:
         requires=("models.connection-types.v1",),
         provides=(),
         contract_digests={
-            "models.connection-types.v1": "7f3ff5c1afa8b201a2d374037320bb2df1f7a9fc9a1c255a4dadbd8086bc4058",
+            "models.connection-types.v1": "eeb3ae65b11aa4096aff929a47540b0a34e6d28d10745211a0d96e9ad31aec0f",
         },
     )
 

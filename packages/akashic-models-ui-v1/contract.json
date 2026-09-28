@@ -11,7 +11,7 @@
   "props": {
     "required": ["state", "actions", "dirty", "close", "changed"],
     "state": ["connection", "models", "template"],
-    "actions": ["createManual", "update", "startAuth", "finishAuth", "cancelAuth", "sync"]
+    "actions": ["discover", "discoverSaved", "addModel", "verifyModel", "createManual", "update", "startAuth", "finishAuth", "cancelAuth", "sync"]
   },
   "template": {
     "required": ["id", "label", "detail"],

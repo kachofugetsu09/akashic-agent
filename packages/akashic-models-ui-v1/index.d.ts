@@ -47,6 +47,10 @@ export interface ConnectionUpdateInput {
 }
 
 export interface ProviderActions {
+  discover(input: Omit<ManualConnectionInput, "model">, signal?: AbortSignal): Promise<readonly Record<string, unknown>[]>;
+  discoverSaved(signal?: AbortSignal): Promise<readonly Record<string, unknown>[]>;
+  addModel(input: Record<string, unknown>): Promise<void>;
+  verifyModel(modelId: string): Promise<void>;
   createManual(input: ManualConnectionInput): Promise<void>;
   update(input: ConnectionUpdateInput): Promise<void>;
   startAuth(input: Record<string, string>): Promise<Record<string, unknown>>;

@@ -396,6 +396,27 @@ export function activate(ctx) {
             });
             return result.models;
           },
+          async discoverSaved(signal) {
+            if (!connection) throw new Error("请先保存连接");
+            const result = await request("/api/dashboard/models/discover_saved", {
+              method: "POST", signal, headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({connection_id: connectionId, expected_revision: catalog.revision}),
+            });
+            return result.models;
+          },
+          async verifyModel(modelId) {
+            if (!connection || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
+            await request("/api/dashboard/models/command", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({type:"verify_model", expected_revision:catalog.revision, model_id:modelId})});
+          },
+          async addModel(input) {
+            if (!connection) throw new Error("请先保存连接");
+            const existing = catalog.models.find((model) => model.connectionId === connectionId && model.kind === input.kind && model.model === input.model);
+            const modelId = existing?.id ?? `${connectionId}__${randomToken()}`;
+            const receipt = existing
+              ? await request("/api/dashboard/models/command", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({type:"verify_model", expected_revision:catalog.revision, model_id:modelId})})
+              : await command({...input, type: "add_model", expected_revision: catalog.revision, model_id: modelId, connection_id: connectionId});
+            await setDefaultIfMissing(receipt.revision, modelId);
+          },
           async createManual(input) {
             if (connection) throw new Error("已有连接不能重复创建");
             const modelId = `${connectionId}__${randomToken()}`;
