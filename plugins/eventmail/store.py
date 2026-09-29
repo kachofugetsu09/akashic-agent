@@ -2500,15 +2500,27 @@ class EventMailStore:
     def _transaction(self, *, write: bool) -> Generator[sqlite3.Connection]:
         """Open one SQLite transaction and close it at the boundary."""
 
-        _ = write
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
+        if write:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.path)
+        else:
+            # 只读入口不负责建库或迁移，也不申请 SQLite 写锁。
+            connection = sqlite3.connect(
+                self.path.resolve().as_uri() + "?mode=ro", uri=True
+            )
         connection.row_factory = sqlite3.Row
         try:
-            _ = connection.execute("PRAGMA journal_mode = WAL")
-            _ = connection.execute("PRAGMA foreign_keys = ON")
-            _ = connection.execute("BEGIN IMMEDIATE")
-            self._ensure_schema(connection)
+            if write:
+                connection.execute("PRAGMA journal_mode = WAL")
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("BEGIN IMMEDIATE")
+                self._ensure_schema(connection)
+            else:
+                connection.execute("PRAGMA query_only = ON")
+                connection.execute("BEGIN")
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                if version != _SCHEMA_VERSION:
+                    raise RuntimeError(f"EventMail store 需要先初始化: schema version {version}")
             yield connection
             connection.commit()
         except BaseException:

@@ -54,3 +54,21 @@ Core 不增加子任务状态或来源专属查询。
 守护 O/C3/C4：历史读取期间对等来源和 pause 都能提交，旧快照不吸收后来消息。
 已有存储层回归不能证明实际子任务消费者使用异步入口，所以增加该消费者回归。
 其他来源的同步历史入口仍需独立定位与验证；本变更不宣称全系统 I/O 已异步化。
+
+## EventMail / Drift 的读写事务（#879）
+
+插件 apply 在发布能力前，通过 `run_file_io` 完成建库、原有迁移和完整性检查。
+取消会排空已开始的初始化，之后才释放 generation。运行期只读入口要求已初始化，
+使用独立 `mode=ro` 连接、`query_only` 和普通读事务，不再申请 `BEGIN IMMEDIATE`。
+写事务和原有 state_version 条件提交保持不变；只读快照不能升级为写事务。
+
+这保留了 SQLite 的单写者约束，释放了读者不必要占用的写锁，符合
+[SQLite WAL](https://www.sqlite.org/wal.html) 的读写并行模型。
+快照仍是同步 API；较大的读取及运行期写入隔离是后续工作，不宣称全部 I/O 已异步化。
+建库与 schema 迁移只能由已有写路径执行；只读入口不再隐式创建或升级数据库。
+现有 EventMail v0/v1/v2/current 与 Drift v0/v1/current 迁移和 schema identity 校验不变。
+消息正文、mail envelopes、提案和回执的增加、更新及删除权限均不变。
+
+`PYTHONPATH=. .venv/bin/python docker/debug/store_read_isolation.py` 使用临时数据库，
+持有未提交写事务时验证已提交快照可读，提交后新快照可见，并检查数据库完整性。
+旧代码在读取时报告 database is locked；无需靠 sleep 调度。
