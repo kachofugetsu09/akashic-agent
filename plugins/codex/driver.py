@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +33,7 @@ class _ConnectionConfig:
     endpoint: str
     connect_timeout: float
     read_timeout: float
+    progress_timeout: float
 
 
 def definition() -> ModelDriverDefinition:
@@ -75,6 +78,7 @@ async def _open(
             credential=credential,
             descriptor=model,
             config=_model_config(raw_config),
+            progress_timeout=config.progress_timeout,
         )
 
     def bind_embedding(
@@ -110,6 +114,7 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         "format_version",
         "connect_timeout",
         "read_timeout",
+        "progress_timeout",
         "catalog_timeout",
         "catalog_provider_id",
     }
@@ -125,6 +130,9 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         endpoint=descriptor.endpoint.rstrip("/"),
         connect_timeout=_positive_float(
             descriptor.config.get("connect_timeout", 30.0), "connect_timeout"
+        ),
+        progress_timeout=_positive_float(
+            descriptor.config.get("progress_timeout", 300.0), "progress_timeout"
         ),
         read_timeout=_positive_float(
             descriptor.config.get("read_timeout", 120.0), "read_timeout"
@@ -159,6 +167,6 @@ def _model_config(raw: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _positive_float(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be positive")
     return float(value)

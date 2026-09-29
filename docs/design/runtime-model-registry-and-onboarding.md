@@ -11,6 +11,28 @@
 
 实施前 `bootstrap/providers.py` 在启动时一次性构造 provider，`bootstrap/tools.py` 随后把实例注入所有消费者。`bootstrap/settings_api.py` 写配置后调用 Supervisor restart bridge；Supervisor 向 Gateway 发送 `SIGUSR2`，`main.py` 排空全局 Turn 后退出。因此原实现没有运行时模型 owner。
 
+## 流式请求的进展期限
+
+OpenAI-compatible、OpenCode Go 和 Codex 的连接 `driver_config` 支持
+`progress_timeout`（正数秒，默认 300）。它独立于网络 `read_timeout`：协议收到
+非空正文、思考、工具调用内容或完成内容时才续期，heartbeat、空 delta 和 usage
+事件不续期。计时只累计等待上游数据的时间，不计下游预览回调的处理时间；这不是
+整个请求的总时限。使用长时间不公开任何进展的模型时，可显式提高该连接的期限。
+
+```text
+SSE 数据 ──▶ Provider parser ──▶ 内容/工具进展：续期
+                    │
+                    ├── heartbeat/空事件：继续消耗等待预算
+                    └── 期限耗尽：Models error ──▶ 来源失败结算
+```
+
+期限耗尽返回可辨认的模型超时错误，保留已观察到部分响应的事实；它不证明请求未送达，
+不得自动重发。取消仍传播给原 owner，HTTP stream 由原请求作用域关闭。
+进展判断由 Provider 拥有，网络公共代码不识别 Provider、模型或 Session。
+
+隔离验证入口：`python scripts/check_stream_progress.py`。该脚本使用真实 parser 与
+合成 SSE，覆盖三种协议的停滞、持续进展、慢回调和取消；不代表真实 provider 或生产验收。
+
 ## 2. 已实现的旧结构
 
 ```text

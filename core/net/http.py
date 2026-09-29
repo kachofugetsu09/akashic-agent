@@ -36,6 +36,32 @@ class HttpClient:
             await self._client.aclose()
 
 
+class StreamProgress:
+    """只累计等待上游的时间，由协议消费者确认有效进展。"""
+
+    def __init__(self, timeout: float) -> None:
+        self._timeout = timeout
+        self._remaining = timeout
+
+    def advance(self) -> None:
+        self._remaining = self._timeout
+
+    async def read(self, lines: AsyncIterator[str]) -> AsyncIterator[str]:
+        """心跳不续期，解析和下游回调不消耗上游等待预算。"""
+        loop = asyncio.get_running_loop()
+        while True:
+            if self._remaining <= 0:
+                raise TimeoutError("stream progress timeout")
+            started = loop.time()
+            try:
+                async with asyncio.timeout(self._remaining):
+                    line = await anext(lines)
+            except StopAsyncIteration:
+                return
+            self._remaining -= loop.time() - started
+            yield line
+
+
 async def finish_response(lines: AsyncIterator[str]) -> None:
     """协议已确认成功后收尾 HTTP 正文；异常尾流最多占用 10 ms。"""
     try:
