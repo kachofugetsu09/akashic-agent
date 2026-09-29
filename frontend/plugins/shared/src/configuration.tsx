@@ -13,13 +13,18 @@ export interface FormDefinition { id: string; title: string; description: string
 export interface EmbedProps { embedded?: boolean; changed?: () => void; dirty?: (value: boolean) => void; }
 export const settingsIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 5h14v14H5zM8 9h8M8 13h5"/></svg>';
 
-export async function request<T>(ctx: WebHostContextV1, path: string, init?: RequestInit): Promise<T> {
+export class RequestError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
+export async function request<T>(ctx: WebHostContextV1, path: string, init?: RequestInit, observe?: (response: Response) => void): Promise<T> {
   const response = await ctx.http.request(path, init);
+  observe?.(response);
   if (!response.headers.get("content-type")?.includes("application/json")) throw new Error(`服务暂时不可用（${response.status}），请稍后重试`);
   const body = await response.json();
   if (!response.ok) {
     const detail = body.detail ?? body.message;
-    throw new Error(Array.isArray(detail) ? detail.map((item: {msg: string}) => item.msg).join("；") : typeof detail === "string" ? detail : `请求失败（${response.status}）`);
+    throw new RequestError(Array.isArray(detail) ? detail.map((item: {msg: string}) => item.msg).join("；") : typeof detail === "string" ? detail : `请求失败（${response.status}）`, response.status);
   }
   return body as T;
 }
@@ -65,23 +70,116 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
   const path = `/api/dashboard/${definition.id}/config`;
   const alive = useRef(true);
   const article = useRef<HTMLElement>(null);
+  const draftEditing = useRef(dirty); draftEditing.current = dirty;
   const editing = useRef(false);
+  const edits = useRef(0);
+  const sentEdit = useRef<number | null>(null);
   editing.current = dirty || busy;
+  const markDirty = (next: boolean): void => {
+    // 事件内即刻保护草稿，异步响应不能抢在 React 提交前覆盖它。
+    draftEditing.current = next; editing.current = next || busy; setDirty(next);
+  };
   const loads = useRef(0);
-  const load = async (preserveDraft = false) => {
-    const sequence = ++loads.current;
-    try { const next = await request<Status>(ctx, path);
-      if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
-      setStatus(next); setEnabled(next.enabled); setValues(next.values); setDirty(false); setError("");
-      const pending = sessionStorage.getItem(`config-request:${definition.id}`);
-      if (pending) {
-        const receipt = await request<{state: string; error: string}>(ctx, `${path}/receipts/${pending}`);
-        if (receipt.state === "active") { setNotice("配置已生效"); embed.changed?.(); }
-        else if (receipt.state === "failed") { setError(receipt.error || "配置未能生效，请检查后重试"); sessionStorage.removeItem(`config-request:${definition.id}`); }
-        else if (receipt.state === "superseded") { setNotice("已读取较新的配置"); sessionStorage.removeItem(`config-request:${definition.id}`); }
-        else setNotice("配置仍在应用中，请稍后刷新状态");
+  const pendingKey = `config-request:${definition.id}`;
+  const lastKey = `config-last-request:${definition.id}`;
+  const polling = useRef<AbortController | null>(null);
+  const settled = useRef<string | null>(null);
+  const needsRebind = useRef(false);
+  const inFlightRequest = useRef<string | null>(null);
+  const verifyRequired = useRef<string | null>(null);
+  const read = <T,>(url: string, init?: RequestInit): Promise<T> => request<T>(ctx, url, init, response => {
+    if (response.headers.get("X-Akashic-Web-Rebound") === "1") needsRebind.current = true;
+  });
+  const poll = async (id: string): Promise<void> => {
+    const wasPending = sessionStorage.getItem(pendingKey) === id;
+    polling.current?.abort();
+    const controller = new AbortController(); polling.current = controller;
+    const current = (): boolean => alive.current && !controller.signal.aborted && (sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey)) === id;
+    for (let attempt = 0; attempt < 30 && current(); attempt += 1) {
+      try {
+        const receipt = await read<{state: string; error: string; selected?: boolean}>(`${path}/receipts/${id}`, {signal: controller.signal});
+        if (!current()) return;
+        if (receipt.state === "active" || receipt.state === "superseded") {
+          if (inFlightRequest.current === id) inFlightRequest.current = null;
+          if (wasPending) verifyRequired.current = id;
+          sessionStorage.setItem(lastKey, id);
+          if (sessionStorage.getItem(pendingKey) === id) sessionStorage.removeItem(pendingKey);
+          setNotice(receipt.state === "active" ? "已确认配置生效，正在核对设置界面…" : "原操作已被较新的配置替代，正在核对最新界面…");
+          if (wasPending) setBusy(true);
+          if (sentEdit.current !== null && sentEdit.current === edits.current) { markDirty(false); embed.dirty?.(false); }
+          let refreshed = false;
+          try {
+            const sequence = ++loads.current;
+            const next = await read<Status>(path, {signal: controller.signal});
+            if (current() && sequence === loads.current) {
+              refreshed = true;
+              if (verifyRequired.current === id) verifyRequired.current = null;
+              if (!draftEditing.current) { setStatus(next); setEnabled(next.enabled); setValues(next.values); }
+            }
+          } catch (reason) {
+            if (current()) setError(`配置结果已确认，但最新表单读取失败：${reason instanceof Error ? reason.message : String(reason)}`);
+          }
+          if (!current()) return;
+          setBusy((verifyRequired.current === id && !refreshed) || (needsRebind.current && !draftEditing.current));
+          setNotice(draftEditing.current ? "原操作结果已确认，本页修改尚未保存；请先重新读取核对最新配置。" : needsRebind.current ? "配置结果已确认，正在更新设置界面…" : receipt.state === "active" ? "配置已生效" : "原操作已被较新的配置替代，当前显示最新状态");
+          if (settled.current !== id) { settled.current = id; embed.changed?.(); }
+          return;
+        }
+        if (receipt.state === "failed") {
+          if (inFlightRequest.current === id) inFlightRequest.current = null;
+          if (wasPending) verifyRequired.current = id;
+          sessionStorage.setItem(lastKey, id);
+          settled.current = id;
+          if (wasPending) setBusy(true);
+          if (sentEdit.current !== null && sentEdit.current === edits.current) {
+            markDirty(!receipt.selected); embed.dirty?.(!receipt.selected);
+          }
+          setNotice("");
+          setError(`${receipt.selected ? "配置已保存，但原操作报告应用失败" : "原配置操作失败"}：${receipt.error || "请检查后重试"}`);
+          sessionStorage.removeItem(pendingKey);
+          let refreshed = false;
+          try {
+            const sequence = ++loads.current;
+            const next = await read<Status>(path, {signal: controller.signal});
+            if (current() && sequence === loads.current) {
+              refreshed = true;
+              if (verifyRequired.current === id) verifyRequired.current = null;
+              if (!draftEditing.current) { setStatus(next); setEnabled(next.enabled); setValues(next.values); }
+            }
+          } catch (reason) { if (current()) setNotice(`原操作失败已确认，但实际配置暂未核对：${reason instanceof Error ? reason.message : String(reason)}`); }
+          if (current()) setBusy((verifyRequired.current === id && !refreshed) || (needsRebind.current && !draftEditing.current));
+          return;
+        }
+        setNotice("配置已受理，正在等待新配置生效…");
+        if (sentEdit.current !== null && sentEdit.current === edits.current) { markDirty(false); embed.dirty?.(false); }
+      } catch (reason) {
+        if (!current()) return;
+        if (reason instanceof RequestError && [401, 403].includes(reason.status)) {
+          setBusy(inFlightRequest.current !== null || verifyRequired.current === id); setError(`原操作回执无法读取：${reason.message}`); return;
+        }
+        if (reason instanceof RequestError && reason.status === 404) {
+          setNotice("尚未找到原操作回执，结果未确认。请重新核对后再决定是否提交。");
+          setBusy(inFlightRequest.current !== null || verifyRequired.current === id); return;
+        }
+        setNotice("原操作结果仍在核对，设置服务可能正在更新…");
       }
-    } catch (reason) { if (alive.current) setError(reason instanceof Error ? reason.message : String(reason)); }
+      await new Promise<void>(resolve => {
+        const finish = (): void => { window.clearTimeout(timer); controller.signal.removeEventListener("abort", finish); resolve(); };
+        const timer = window.setTimeout(finish, 500);
+        controller.signal.addEventListener("abort", finish, {once: true});
+      });
+    }
+    if (current()) { setBusy(inFlightRequest.current !== null || verifyRequired.current === id); setNotice("原操作尚未确认；请重新读取以核对回执，不会自动重复提交。"); }
+  };
+  const load = async (preserveDraft = false): Promise<void> => {
+    const sequence = ++loads.current;
+    try {
+      const next = await read<Status>(path);
+      if (!alive.current || sequence !== loads.current || (preserveDraft && editing.current)) return;
+      setStatus(next); setEnabled(next.enabled); setValues(next.values); markDirty(false); setError("");
+      const pending = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey);
+      if (pending) void poll(pending);
+    } catch (reason) { if (alive.current && sequence === loads.current) setError(reason instanceof Error ? reason.message : String(reason)); }
   };
   useEffect(() => {
     alive.current = true;
@@ -94,58 +192,72 @@ function Configuration({ctx, definition, embed}: {ctx: WebHostContextV1; definit
     });
     observer.observe(article.current!);
     window.addEventListener("focus", refresh);
-    return () => { alive.current = false; observer.disconnect(); window.removeEventListener("focus", refresh); };
+    return () => { alive.current = false; polling.current?.abort(); loads.current += 1; observer.disconnect(); window.removeEventListener("focus", refresh); };
   }, [ctx, path]);
   useEffect(() => { embed.dirty?.(dirty); return () => embed.dirty?.(false); }, [dirty, embed.dirty]);
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !busy) return;
     const unload = (event: BeforeUnloadEvent) => { event.preventDefault(); };
-    const navigate = (event: Event) => { event.preventDefault(); setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
+    const navigate = (event: Event) => {
+      const detail = (event as CustomEvent<{go: () => void; reason?: string}>).detail;
+      if (detail.reason === "catalog" && needsRebind.current && !draftEditing.current && sessionStorage.getItem(lastKey)) return;
+      event.preventDefault(); if (detail.reason === "catalog") return; if (busy) { setNotice("原操作正在核对，请等待结果；离开不会撤销已提交配置。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
     window.addEventListener("beforeunload", unload); window.addEventListener("akashic:before-navigate", navigate);
     return () => { window.removeEventListener("beforeunload", unload); window.removeEventListener("akashic:before-navigate", navigate); };
-  }, [dirty]);
-  const change = (key: string, value: unknown) => { setValues(previous => ({...previous, [key]: value})); setDirty(true); setNotice(""); };
-  const save = async (event: React.FormEvent) => {
-    event.preventDefault(); if (!status || enabled === null || busy) return;
+  }, [dirty, busy]);
+  const change = (key: string, value: unknown) => { edits.current += 1; setValues(previous => ({...previous, [key]: value})); markDirty(true); setNotice(""); };
+  const save = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault(); if (!status || enabled === null || inFlightRequest.current !== null || busy) return;
+    sentEdit.current = edits.current;
+    const previous = sessionStorage.getItem(pendingKey);
+    const id = previous && settled.current !== previous ? previous : crypto.randomUUID();
+    const reusedPendingId = id === previous;
+    inFlightRequest.current = id;
+    // 发送前只保存非敏感操作 ID；响应丢失或模块撤回后仍可查原回执。
+    sessionStorage.setItem(pendingKey, id);
     setBusy(true); setError(""); setNotice("正在校验并应用配置…");
+    window.dispatchEvent(new CustomEvent("akashic:configuration-submitted"));
     try {
       const receipt = await request<{request_id: string; state: string; error: string}>(ctx, path, {
         method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({request_id: crypto.randomUUID(), expected_input: status.input_ref, values: {...values, enabled}}),
+        body: JSON.stringify({request_id: id, expected_input: status.input_ref, values: {...values, enabled}}),
       });
-      if (!alive.current) return;
-      if (receipt.state === "failed") throw new Error(receipt.error);
-      setDirty(false); embed.dirty?.(false);
-      // 配置换代会撤回旧模块；新模块从正式输入恢复，不在旧页面伪报成功。
+      if (!alive.current || inFlightRequest.current !== id) return;
+      if (receipt.request_id !== id) throw new Error("配置回执身份不一致");
+      inFlightRequest.current = null;
+      markDirty(false); embed.dirty?.(false);
       setNotice("配置已受理，正在等待新配置生效…");
-      sessionStorage.setItem(`config-request:${definition.id}`, receipt.request_id);
-      window.dispatchEvent(new CustomEvent("akashic:configuration-submitted"));
-      for (let attempt = 0; attempt < 30 && alive.current; attempt += 1) {
-        await new Promise(resolve => window.setTimeout(resolve, 500));
-        if (!alive.current) return;
-        const result = await request<{state: string; error: string}>(ctx, `${path}/receipts/${receipt.request_id}`);
-        if (result.state === "failed") { setDirty(true); embed.dirty?.(true); throw new Error(result.error); }
-        if (result.state === "active") { await load(); setNotice("配置已生效"); embed.changed?.(); return; }
+      await poll(id);
+    } catch (reason) {
+      if (!alive.current || inFlightRequest.current !== id) return;
+      inFlightRequest.current = null;
+      if (reason instanceof RequestError && [401, 403, 404, 409, 422].includes(reason.status)) {
+        if (reusedPendingId) {
+          sentEdit.current = null;
+          setNotice("本次提交未获接纳；请核对原操作回执，不会自动再次提交。");
+        } else { sessionStorage.removeItem(pendingKey); setNotice(""); }
+        setError(reason.message); setBusy(false);
+      } else {
+        setNotice("提交响应未确认，正在查询原操作回执；不会自动重复提交。");
+        await poll(id);
       }
-      if (alive.current) setNotice("配置仍在应用，可刷新查看实际状态。");
-    } catch (reason) { if (alive.current) { setNotice(""); setError(reason instanceof Error ? reason.message : String(reason)); } }
-    finally { if (alive.current) setBusy(false); }
+    } finally { if (inFlightRequest.current === id) inFlightRequest.current = null; }
   };
   return <article ref={article} className={`config-form ${embed.embedded ? "is-embedded" : ""}`} aria-busy={busy}>
     {!embed.embedded && <header><span className="config-kicker">功能设置</span><h1>{definition.title}</h1><p>{definition.description}</p></header>}
-    {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy} onClick={() => { if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新读取</button></div>}
+    {error && <div className="config-error" role="alert"><p>{error}</p><button type="button" disabled={busy && !sessionStorage.getItem(pendingKey) && !sessionStorage.getItem(lastKey)} onClick={() => { const id = sessionStorage.getItem(pendingKey) ?? sessionStorage.getItem(lastKey); if (busy && id) { void poll(id); return; } if (dirty) setLeave(() => () => { void load(); }); else void load(); }}>重新读取</button></div>}
     {!status ? !error && <p role="status">正在读取配置…</p> : <form onSubmit={event => void save(event)}>
       {status.reason && !(embed.embedded && status.blocked) && <p className="config-hint" role="status">{status.reason}</p>}
       {!(embed.embedded && status.blocked) && <>
         <fieldset className="config-choices" disabled={busy}><legend>是否开启{definition.title}？</legend>
-          <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { setEnabled(true); setDirty(true); }} /><strong>开启</strong><span>配置并使用此功能</span></label>
-          <label className={enabled === false ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === false} onChange={() => { setEnabled(false); setDirty(true); }} /><strong>关闭</strong><span>保留已有配置和数据</span></label>
+          <label className={enabled === true ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === true} disabled={status.can_enable === false} onChange={() => { edits.current += 1; setEnabled(true); markDirty(true); }} /><strong>开启</strong><span>配置并使用此功能</span></label>
+          <label className={enabled === false ? "is-selected" : ""}><input type="radio" name="enabled" checked={enabled === false} onChange={() => { edits.current += 1; setEnabled(false); markDirty(true); }} /><strong>关闭</strong><span>保留已有配置和数据</span></label>
         </fieldset>
         {enabled === true && definition.fields && <fieldset disabled={busy} className="config-fields"><legend className="sr-only">连接配置</legend>{definition.fields({values, change, status})}</fieldset>}
         <footer className="config-actions"><span>{!dirty && (status.enabled === false ? "已关闭" : status.ready ? "已开启" : "尚未完成配置")}</span><button className="config-primary" type="submit" disabled={busy || enabled === null || !dirty}>{busy ? "正在应用…" : "保存配置"}</button></footer>
       </>}
-      {notice && <p role="status" className="config-hint">{notice}</p>}
+      {notice && <div role="status" className="config-hint">{notice}{sessionStorage.getItem(pendingKey) && <button type="button" onClick={() => { const id = sessionStorage.getItem(pendingKey); if (id) void poll(id); }}>核对原操作</button>}</div>}
     </form>}
-    {leave && <Confirm title="放弃尚未保存的修改？" accept={() => { setDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页修改还没有保存，已有配置保持不变。</Confirm>}
+    {leave && <Confirm title="放弃尚未保存的修改？" accept={() => { markDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页修改还没有保存，已有配置保持不变。</Confirm>}
   </article>;
 }

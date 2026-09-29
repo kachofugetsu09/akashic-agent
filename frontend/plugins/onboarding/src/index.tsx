@@ -36,6 +36,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const [selected, setSelected] = useState(() => sessionStorage.getItem("onboarding-page") ?? "");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [withdrawn, setWithdrawn] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [leave, setLeave] = useState<(() => void) | null>(null);
   const [finished, setFinished] = useState(false);
@@ -44,31 +45,35 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const invitation = useRef<HTMLDialogElement>(null);
   const focusedStep = useRef<string | null>(null);
   const alive = useRef(true);
+  const refreshes = useRef(0);
+  const selection = useRef(selected); selection.current = selected;
   const refresh = useCallback(async () => {
+    const sequence = ++refreshes.current;
     try {
       const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog");
       const statuses = await Promise.all(catalog.steps.map(async step => {
         try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${encodeURIComponent(step.id)}`)] as const; }
         catch (reason) { return [step.id, {fault: reason instanceof Error ? reason.message : String(reason)}] as const; }
       }));
-      if (!alive.current) return;
+      if (!alive.current || sequence !== refreshes.current) return;
       const next = Object.fromEntries(statuses);
       setSteps(catalog.steps); setStates(next); setError("");
+      if (selection.current && !catalog.steps.some(step => step.id === selection.current)) setWithdrawn(true);
       setSelected(current => catalog.steps.some(step => step.id === current) ? current : (catalog.steps.find(step => !done(next[step.id])) ?? catalog.steps[0])?.id ?? "");
       if (catalog.steps.length && statuses.every(([, status]) => "enabled" in status && status.enabled === null)
           && !window.location.hash && !sessionStorage.getItem("onboarding-invited")) {
         sessionStorage.setItem("onboarding-invited", "1"); invitation.current?.showModal();
       }
       return {steps: catalog.steps, states: next};
-    } catch (reason) { if (alive.current) setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { if (alive.current) setLoading(false); }
+    } catch (reason) { if (alive.current && sequence === refreshes.current) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (alive.current && sequence === refreshes.current) setLoading(false); }
     return undefined;
   }, [ctx]);
   useEffect(() => {
     alive.current = true; void refresh();
     const change = () => { void refresh(); };
     window.addEventListener("focus", change);
-    return () => { alive.current = false; window.removeEventListener("focus", change); };
+    return () => { alive.current = false; refreshes.current += 1; window.removeEventListener("focus", change); };
   }, [refresh]);
   const changed = useCallback(() => { void refresh(); }, [refresh]);
   const current = steps.find(step => step.id === selected);
@@ -110,6 +115,7 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
       <button type="button" disabled={loading || dirty} onClick={() => void refresh()}>刷新状态</button>
     </header>
     {error && <div className="config-error" role="alert">{error}</div>}
+    {withdrawn && <p role="status" className="config-hint">刚才的配置项已不在当前安装组合中，已转到可用步骤；已有配置和数据会保留。</p>}
     {loading ? <p role="status">正在读取已安装的功能…</p> : !steps.length && !error ? <div className="config-hint">当前没有需要配置的插件。你仍可使用功能设置。</div> : finished && allDone ?
       <section className="onboarding-complete">
         <div className="onboarding-complete-badge" aria-hidden="true">✓</div>

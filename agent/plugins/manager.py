@@ -2088,6 +2088,7 @@ class PluginManager:
             message_log=self._message_log, archive=self._archive,
             generation_for_context=self._generation_for_context,
             runtime_generations=lambda: (self._active_generations, self._draining_generations),
+            runtime_updating=lambda: self._operation is not None and not self._operation.task.done(),
             live_root=lambda: self._live_root, installer=self,
             tasks=self._plugin_tasks, processes=self._plugin_processes,
             restart_gate=self._restart_gate, control_frames=self._control_frames,

@@ -153,7 +153,7 @@ class ScopedWebUiProvider:
         async with open_request_scope(self._opener) as scope:
             return await cast(WebUiProvider, scope.require(WEB_UI)).bootstrap()
 
-    async def state(self) -> dict[str, str]:
+    async def state(self) -> dict[str, str | bool]:
         scope = active_scope()
         if scope is not None:
             return await cast(WebUiProvider, scope.require(WEB_UI)).state()

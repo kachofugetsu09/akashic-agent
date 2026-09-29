@@ -90,21 +90,22 @@ class BrowserCatalogSession implements WebHostSession {
     });
   }
 
-  async checkCurrent(): Promise<boolean> {
+  async checkCurrent(): Promise<"current" | "updating" | "stale"> {
     this.requireOpen();
     const response = await fetch("/api/chat/web-ui/state", {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
-    if (!response.ok) return false;
+    if (!response.ok) throw new Error(`界面状态暂时不可用（${response.status}）`);
     const state = await response.json() as unknown;
     if (!isRecord(state)
       || typeof state.snapshotId !== "string"
-      || typeof state.catalogId !== "string") return false;
+      || typeof state.catalogId !== "string" || typeof state.updating !== "boolean") throw new Error("界面状态格式无效");
+    if (state.updating) return "updating";
     if (state.snapshotId === this.bootstrap.snapshotId
-      && state.catalogId === this.bootstrap.catalogId) return true;
+      && state.catalogId === this.bootstrap.catalogId) return "current";
     this.markStale();
-    return false;
+    return "stale";
   }
 
   private markStale(): void {
@@ -113,7 +114,7 @@ class BrowserCatalogSession implements WebHostSession {
       const notice = document.createElement("div");
       notice.className = "web-host-stale";
       notice.setAttribute("role", "status");
-      notice.textContent = "界面已更新，请刷新页面。";
+      notice.textContent = "设置界面正在更新，已提交的操作会继续核对。";
       document.body.prepend(notice);
       this.staleNotice = notice;
     }
@@ -225,11 +226,9 @@ class BrowserCatalogSession implements WebHostSession {
     };
   }
 
-  private request(
-    owner: ModuleActivation,
-    path: string,
-    init: RequestInit = {},
-  ): Promise<Response> {
+  private async request(owner: ModuleActivation, path: string, init: RequestInit = {}): Promise<Response> {
+    const readOnly = (init.method ?? "GET").toUpperCase() === "GET";
+    if (this.staleCatalog && readOnly) return this.readCurrent(owner, path, init);
     const url = this.dashboardUrl(owner, path);
     const headers = new Headers(init.headers);
     headers.set("X-Akashic-Web-Snapshot", this.bootstrap.snapshotId);
@@ -237,10 +236,39 @@ class BrowserCatalogSession implements WebHostSession {
     headers.set("X-Akashic-Web-Module", owner.module.pluginId);
     headers.set("X-Akashic-Web-Generation", owner.module.generationId);
     headers.set("X-Akasic-CSRF", "1");
-    return fetch(`${url.pathname}${url.search}`, { ...init, headers }).then((response) => {
-      if (!this.closed && response.headers.get("X-Akashic-Web-Stale") === "1") this.markStale();
-      return response;
-    });
+    const response = await fetch(`${url.pathname}${url.search}`, {...init, headers});
+    if (!this.closed && response.headers.get("X-Akashic-Web-Stale") === "1") {
+      this.markStale();
+      if (readOnly) return this.readCurrent(owner, path, init);
+    }
+    return response;
+  }
+
+  private async readCurrent(owner: ModuleActivation, path: string, init: RequestInit): Promise<Response> {
+    // 只读恢复必须仍由同一份已授权代码发起，不能替已卸载或已变更的模块执行。
+    this.requireOpen();
+    if (owner.disposed) throw new Error("设置界面已关闭");
+    const response = await fetch("/api/chat/web-ui/bootstrap", {signal: init.signal, cache: "no-cache"});
+    if (!response.ok) throw new Error(`设置界面正在更新或暂不可用（${response.status}）`);
+    const next = parseBootstrap(await response.json());
+    const module = next.modules.find(item => item.pluginId === owner.module.pluginId);
+    if (!module || module.moduleSha256 !== owner.module.moduleSha256 || module.contractSha256 !== owner.module.contractSha256) {
+      throw new Error("此设置界面已撤回或更换，请重新打开当前设置");
+    }
+    this.requireOpen();
+    if (owner.disposed) throw new Error("设置界面已关闭");
+    const url = new URL(path, window.location.origin);
+    if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/dashboard/")) throw new Error("设置请求不属于 Dashboard");
+    const headers = new Headers(init.headers);
+    headers.set("X-Akashic-Web-Snapshot", next.snapshotId);
+    headers.set("X-Akashic-Web-Catalog", next.catalogId);
+    headers.set("X-Akashic-Web-Module", module.pluginId);
+    headers.set("X-Akashic-Web-Generation", module.generationId);
+    headers.set("X-Akasic-CSRF", "1");
+    const result = await fetch(`${url.pathname}${url.search}`, {...init, headers});
+    const output = new Headers(result.headers);
+    if (next.snapshotId !== this.bootstrap.snapshotId || next.catalogId !== this.bootstrap.catalogId) output.set("X-Akashic-Web-Rebound", "1");
+    return new Response(result.body, {status: result.status, statusText: result.statusText, headers: output});
   }
 
   private webSocketUrl(owner: ModuleActivation, path: string): string {
@@ -561,50 +589,78 @@ function activationOrder(modules: WebModulePayload[]): WebModulePayload[] {
 }
 
 export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
-  // 配置请求与 React DOM 下载并行；插件仍在运行库发布后按依赖顺序激活。
-  const [response, runtime] = await Promise.all([fetch("/api/chat/web-ui/bootstrap", {
-    headers: { Accept: "application/json" },
-    cache: "no-cache",
-  }), import("./design/runtime")]);
-  if (!response.ok) throw new Error(`Web UI bootstrap failed: ${response.status}`);
-  const bootstrap = parseBootstrap(await response.json());
+  const runtime = await import("./design/runtime");
   runtime.exposeRuntime();
-  host.dataset.akashicCatalog = bootstrap.catalogId;
-  const session = new BrowserCatalogSession(bootstrap);
-  await session.activateModules();
-  session.renderRoot(host);
-  const checkCurrent = (): void => {
-    void session.checkCurrent().catch((error) => {
-      console.warn("[web-host] catalog state unavailable", error);
-    });
+  const open = async (): Promise<BrowserCatalogSession> => {
+    const response = await fetch("/api/chat/web-ui/bootstrap", {headers: {Accept: "application/json"}, cache: "no-cache"});
+    if (!response.ok) throw new Error(`界面目录暂时不可用（${response.status}）`);
+    const next = new BrowserCatalogSession(parseBootstrap(await response.json()));
+    try { await next.activateModules(); return next; }
+    catch (error) { next.close(); throw error; }
   };
-  let applyingTimer: number | undefined;
+  let session = await open();
+  session.renderRoot(host);
+  host.dataset.akashicCatalog = session.bootstrap.catalogId;
+  let closed = false;
+  let checking = false;
+  let timer: number | undefined;
+  let attempts = 0;
+  let sawChange = false;
+  const notice = document.createElement("div");
+  notice.className = "web-host-stale";
+  notice.setAttribute("role", "status");
+  const message = document.createElement("span");
+  const retry = document.createElement("button");
+  retry.type = "button"; retry.textContent = "重新核对";
+  notice.append(message, retry);
+  const show = (text: string): void => { message.textContent = text; if (!notice.isConnected) document.body.prepend(notice); };
+  const check = async (): Promise<void> => {
+    if (closed || checking) return;
+    checking = true;
+    try {
+      const state = await session.checkCurrent();
+      if (state === "updating") { sawChange = true; show(attempts >= 60 ? "自动核对已结束；操作不因此取消。请点击重新核对查看实际结果。" : "配置仍在应用，原操作会继续核对。等待较久时可重新核对。"); return; }
+      if (state === "current") { if (sawChange) { window.clearInterval(timer); notice.remove(); } return; }
+      sawChange = true;
+      const next = await open();
+      if (closed) { next.close(); return; }
+      let applied = false;
+      let available = true;
+      const go = (): void => {
+        if (closed || applied) return;
+        if (!available) { window.setTimeout(() => void check(), 0); return; }
+        applied = true;
+        session.close(); session = next;
+        session.renderRoot(host);
+        host.dataset.akashicCatalog = session.bootstrap.catalogId;
+        window.clearInterval(timer); notice.remove();
+      };
+      // 仅在正式目录稳定后更换宿主；保留路由与非敏感回执，不重载浏览器。
+      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go, reason: "catalog"}}))) go();
+      if (!applied) { available = false; next.close(); show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
+    } catch (error) { if (!closed) show(error instanceof Error ? error.message : String(error)); }
+    finally { checking = false; }
+  };
   const submitted = (): void => {
-    window.clearInterval(applyingTimer);
-    let attempts = 0;
-    applyingTimer = window.setInterval(() => {
+    window.clearInterval(timer); attempts = 0; sawChange = false;
+    timer = window.setInterval(() => {
       attempts += 1;
-      void session.checkCurrent().then(current => {
-        if (current) { if (attempts >= 60) window.clearInterval(applyingTimer); return; }
-        window.clearInterval(applyingTimer);
-        const go = () => window.location.reload();
-        // 复用导航否决：有未保存内容的页面可以拦下刷新，陈旧提示条仍然可见。
-        if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
-      }).catch(() => { if (attempts >= 60) window.clearInterval(applyingTimer); });
+      void check();
+      if (attempts >= 60) { window.clearInterval(timer); show("自动核对已结束；操作不因此取消。请点击重新核对查看实际结果。"); }
     }, 500);
   };
+  const focus = (): void => { void check(); };
+  retry.onclick = () => { submitted(); sawChange = true; };
   window.addEventListener("akashic:configuration-submitted", submitted);
-  window.addEventListener("focus", checkCurrent);
-  document.addEventListener("visibilitychange", checkCurrent);
-  const close = session.close.bind(session);
-  session.close = once(() => {
-    window.clearInterval(applyingTimer);
+  window.addEventListener("focus", focus);
+  document.addEventListener("visibilitychange", focus);
+  return {close: once(() => {
+    closed = true; window.clearInterval(timer); notice.remove();
     window.removeEventListener("akashic:configuration-submitted", submitted);
-    window.removeEventListener("focus", checkCurrent);
-    document.removeEventListener("visibilitychange", checkCurrent);
-    close();
-  });
-  return session;
+    window.removeEventListener("focus", focus);
+    document.removeEventListener("visibilitychange", focus);
+    session.close();
+  })};
 }
 
 function parseBootstrap(value: unknown): WebUiBootstrap {
