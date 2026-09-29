@@ -131,7 +131,7 @@ class AkashicJsonFormatter(JsonFormatter):
         document["level"] = str(document["level"]).lower()
         document["message"] = _redact(document["message"])
         if "exception" in document:
-            document["exception"] = _redact(document["exception"])
+            document["exception"] = _redact(document["exception"], keep_tail=True)
         if "stack_info" in document:
             document["stack_info"] = _redact(document["stack_info"])
 
@@ -286,12 +286,18 @@ def _clean(value: object) -> str:
     return text.replace('"', "'")
 
 
-def _redact(value: object) -> str:
+def _redact(value: object, *, keep_tail: bool = False) -> str:
+    """Remove secrets before bounding text; exception tails retain the final cause."""
     text = str(value).replace("\x00", "�")
     text = _SECRET_PATTERN.sub(
         lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text
     )
     if len(text) > _MAX_LOG_TEXT:
+        if keep_tail:
+            marker = "\n…[truncated]…\n"
+            remaining = _MAX_LOG_TEXT - len(marker)
+            head = remaining // 2
+            return text[:head] + marker + text[-(remaining - head):]
         return f"{text[:_MAX_LOG_TEXT]}…[truncated]"
     return text
 
