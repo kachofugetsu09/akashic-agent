@@ -29,7 +29,14 @@ async function poll(){
   const response=await fetch('/api/startup',{cache:'no-store'});
   if(response.status===404){
    const runtime=await fetch('/api/shell/state',{cache:'no-store'});
-   if(runtime.ok){location.replace('/');return;}
+   if(runtime.ok){
+    byId('stage').textContent='正在加载已安装的功能';
+    const state=await runtime.json();
+    if(state.chatReady){
+     const bootstrap=await fetch('/api/chat/web-ui/bootstrap',{cache:'no-store'});
+     if(bootstrap.ok){location.replace('/');return;}
+    }
+   }
   }
   if(response.ok){
    const state=await response.json();token=state.token;
