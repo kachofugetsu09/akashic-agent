@@ -28,7 +28,7 @@ from .model import (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Basin:
     """Hold one historical engram and its cue-conditioned evidence."""
 
@@ -38,7 +38,7 @@ class Basin:
     weights: tuple[float, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _BasinStructure:
     """Cache cue-independent members and normalized weights for one read."""
 
@@ -50,7 +50,7 @@ class _BasinStructure:
     conductance: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RecallItem:
     """Expose one completed historical turn with auditable sources."""
 
@@ -60,7 +60,7 @@ class RecallItem:
     basin_ids: tuple[str, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PatternCompletion:
     """Return the set-valued V8 readout and its convergence diagnostics."""
 
@@ -74,7 +74,7 @@ class PatternCompletion:
     residual_l1: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RecallCapture:
     """Bind one committed query turn to its explicit completion result."""
 
@@ -858,23 +858,28 @@ def _score_active_basins(
 ) -> tuple[Basin, ...]:
     """Score one immutable basin snapshot with route-specific evidence."""
 
-    basins: list[Basin] = []
-    for structure in structures:
-        values = scores[structure.member_array]
-        peak = float(np.max(values))
-        pooled = peak + math.log(
-            float(np.sum(structure.normalized * np.exp(values - peak)))
-        )
-        pooled *= structure.conductance
-        basins.append(
-            Basin(
-                structure.hub_id,
-                pooled,
-                structure.members,
-                structure.weights,
-            )
-        )
-    return tuple(basins)
+    # 1. 同长度的 basin 成批做相同的逐行规约，保留每行的求和顺序。
+    groups: dict[int, list[int]] = {}
+    for index, structure in enumerate(structures):
+        groups.setdefault(len(structure.members), []).append(index)
+    pooled_scores = np.empty(len(structures), dtype=np.float64)
+    for indices in groups.values():
+        members = np.asarray([structures[index].members for index in indices], dtype=np.int32)
+        weights = np.asarray([structures[index].normalized for index in indices])
+        values = scores[members]
+        peaks = np.max(values, axis=1)
+        mass = np.sum(weights * np.exp(values - peaks[:, None]), axis=1)
+        for row, index in enumerate(indices):
+            # math.log 与原标量实现相同，避免更换库函数造成浮点分歧。
+            pooled_scores[index] = (
+                float(peaks[row]) + math.log(float(mass[row]))
+            ) * structures[index].conductance
+
+    # 2. 按原始事件顺序返回，不让分组改变 tie-break 或联想顺序。
+    return tuple(
+        Basin(structure.hub_id, float(pooled_scores[index]), structure.members, structure.weights)
+        for index, structure in enumerate(structures)
+    )
 
 
 

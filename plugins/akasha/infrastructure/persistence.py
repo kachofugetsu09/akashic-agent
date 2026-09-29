@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from functools import cache
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -54,8 +55,14 @@ def write_memory_database(
     metadata: dict[str, str],
     recalls: list[RecallCapture] | tuple[RecallCapture, ...] = (),
     consumption: Consumption | None = None,
+    previous_consumption: Consumption | None = None,
 ) -> str:
-    """Write a fresh deterministic database and return its SHA-256."""
+    """原子发布快照；连续消费可复用未改变的历史行，返回文件 SHA-256。
+
+    previous_consumption 仅供持有 writer lease 的连续消费者使用；它承诺
+    旧 Turn、事件证据与召回不变，旧事件只有 hub 的运行时编号平移。
+    完整重建和任意状态导出必须省略它。
+    """
 
     if "consumer_state_json" in metadata:
         raise ValueError("消费状态必须通过 consumption 提交")
@@ -76,19 +83,28 @@ def write_memory_database(
     temporary = Path(name)
     connection = sqlite3.connect(temporary)
     try:
-        _initialize(connection)
+        start = 0
+        if previous_consumption is None:
+            _initialize(connection)
+        else:
+            if consumption is None:
+                raise ValueError("连续发布必须提供新消费状态")
+            start = _copy_previous_database(
+                connection, output_path, previous_consumption, consumption, graph, config,
+            )
         _write_metadata(connection, metadata, turns, graph, config)
-        _write_turns(connection, turns)
-        _write_feedback_events(connection, turns)
+        _write_turns(connection, turns[start:])
+        _write_feedback_events(connection, turns[start:])
         _write_graph(connection, graph)
-        _write_events(connection, events, evidence)
+        _write_events(connection, events[start:], evidence[start:], start=start)
         _write_captures(connection, turns, graph, captures, config.restart)
-        _write_recalls(connection, recalls)
+        _write_recalls(connection, [item for item in recalls if item.query_node_id >= start])
         _write_context(connection, context)
         _write_burst_members(connection, burst_members)
         connection.commit()
         _verify(connection)
-        connection.execute("VACUUM")
+        if previous_consumption is None:
+            connection.execute("VACUUM")
     finally:
         connection.close()
     # 2. 先使完整 SQLite 文件耐久，再发布名字并同步目录。
@@ -101,6 +117,54 @@ def write_memory_database(
     finally:
         os.close(directory)
     return sha256_file(output_path)
+
+
+def _copy_previous_database(
+    connection: sqlite3.Connection,
+    path: Path,
+    previous: Consumption,
+    current: Consumption,
+    graph: DynamicMemoryGraph,
+    config: MemoryConfig,
+) -> int:
+    """在私有候选文件中保留历史，只替换本次会变化的派生状态。"""
+
+    # 1. 同一只读事务核对出处并复制，不能从两个版本拼出一份快照。
+    source = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        source.execute("BEGIN")
+        metadata = dict(source.execute("SELECT key, value FROM metadata"))
+        if Consumption.model_validate_json(metadata["consumer_state_json"]) != previous:
+            raise ValueError("连续发布的已发布消费状态发生变化")
+        start = len(previous.applied)
+        if (current.cutover_heads != previous.cutover_heads
+            or current.applied[:start] != previous.applied
+            or current.skipped[:len(previous.skipped)] != previous.skipped):
+            raise ValueError("连续发布不能替换已消费历史")
+        if metadata["config_json"] != canonical_json(asdict(config)):
+            raise ValueError("连续发布不能更换学习配置")
+        offset = graph.turn_count - int(metadata["graph_turn_capacity"])
+        if offset < 0:
+            raise ValueError("连续发布不能减少图容量")
+        source.backup(connection)
+    finally:
+        source.close()
+
+    # 2. 所有改写只发生在候选文件；完整外键校验通过后才会发布名字。
+    connection.execute("PRAGMA journal_mode = OFF")
+    connection.execute("PRAGMA synchronous = OFF")
+    # 逐行删除 hub 会反复扫描仍保留的历史引用；私有文件统一在末尾校验。
+    # 此处不能用于已发布连接。CHECK/UNIQUE 约束仍由 SQLite 执行。
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("BEGIN")
+    connection.execute("UPDATE memory_events SET hub_node_id = hub_node_id + ?", (offset,))
+    for table in (
+        "metadata", "activation_items", "activation_runs", "hub_memberships",
+        "temporal_edges", "hub_nodes", "plasticity_clock", "external_seed_state",
+        "context_state", "burst_context_members",
+    ):
+        connection.execute(f"DELETE FROM {table}")
+    return start
 
 
 def load_memory_state(
@@ -336,6 +400,8 @@ def _write_events(
     connection: sqlite3.Connection,
     events: list[PlasticityResult],
     evidence: list[SeedEvidence],
+    *,
+    start: int = 0,
 ) -> None:
     connection.executemany(
         """
@@ -361,13 +427,13 @@ def _write_events(
                 item.inhibited_mass,
                 canonical_json(item.integrated),
             )
-            for event_id, (item, seed) in enumerate(zip(events, evidence))
+            for event_id, (item, seed) in enumerate(zip(events, evidence), start=start)
         ],
     )
     rows: list[tuple[int, int, float, str]] = []
     support_rows: list[tuple[int, str, int]] = []
     channel_rows: list[tuple[int, str]] = []
-    for event_id, seed in enumerate(evidence):
+    for event_id, seed in enumerate(evidence, start=start):
         for node_id, value in seed.seed:
             channels = sorted(
                 name for name, members in seed.channels.items() if node_id in members
@@ -1000,6 +1066,11 @@ def _load_events(
 def _load_recalls(
     connection: sqlite3.Connection,
 ) -> list[RecallCapture]:
+    @cache
+    def labels(value: str) -> tuple[str, ...]:
+        """同次恢复的相同标签共享不可变元组，函数结束后释放缓存。"""
+        return tuple(json.loads(value))
+
     items: dict[int, list[RecallItem]] = {}
     for row in connection.execute(
         "SELECT * FROM recall_items "
@@ -1009,8 +1080,8 @@ def _load_recalls(
             RecallItem(
                 node_id=row["candidate_turn_node_id"],
                 score=row["score"],
-                sources=tuple(json.loads(row["sources_json"])),
-                basin_ids=tuple(json.loads(row["basin_ids_json"])),
+                sources=labels(row["sources_json"]),
+                basin_ids=labels(row["basin_ids_json"]),
             )
         )
     return [

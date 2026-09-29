@@ -61,7 +61,7 @@ class MessageConsumer:
                     evidence=evidence, context=context, recalls=recalls, burst_members=burst,
                 )
                 if turns:
-                    self._cycle.feature_pool = BurstAwareFeaturePool(turns, appendable=True)
+                    self._cycle.feature_pool = BurstAwareFeaturePool(self._cycle.turns, appendable=True)
             else:
                 if turns or state.applied:
                     raise ValueError("已有消费进度缺少学习图，不能自动重放")
@@ -221,6 +221,7 @@ class MessageConsumer:
             evidence=cycle.evidence, captures=[], context=cycle.context,
             burst_members=cycle.burst_members, config=self.config, metadata={},
             recalls=cycle.recalls, consumption=state,
+            previous_consumption=None if self._deferred_publish else self.state,
         )
 
     def skip(self, sample: Sample, *, reason: str) -> bool:
