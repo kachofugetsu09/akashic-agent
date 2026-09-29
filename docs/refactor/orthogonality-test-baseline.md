@@ -199,3 +199,5 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 - O: `test_shell_cleanup_only_blocks_its_own_owner` holds physical cleanup, proves another owner can run a real subprocess, and proves the same owner remains waiting until cleanup ends.
 
 - O: `test_workload_plugin_cleanup_does_not_block_neighbor_receipt` gates one plugin's Docker observation and verifies another plugin's durable stop receipt, while the same plugin remains serialized.
+
+- O: `test_due_alert_bypasses_running_content_score` runs real EventMail/Wake state under a Root, holds Content scoring, and verifies the due Alert is admitted with its original durable mail identity before scoring finishes.
