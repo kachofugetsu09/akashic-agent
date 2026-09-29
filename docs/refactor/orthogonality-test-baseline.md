@@ -191,3 +191,5 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 - `test_material_execution.py`: O, actual Root material owners can prepare independently while result order stays deterministic; the prior serial loop fails the gate.
 
 - `test_storage_read_execution.py`: O/C4, pinned read snapshots do not own unrelated writes; async warmup fixes a prefix and preserves external-change invalidation. Uses the actual MessageLog and SQLite transactions.
+
+- O / MEM-013: `test_slow_graph_does_not_block_another_graph_publication` holds one real installed graph at the embedding boundary, proves another graph's durable publication, then checks both pending steps of the slow graph publish in order.
