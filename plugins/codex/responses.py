@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import httpx
 
-from core.net.http import HttpClient, finish_response
+from core.net.http import HttpClient, StreamProgress, finish_response
 
 from agent.plugin_composition import (
     AuthenticationError,
@@ -46,7 +46,9 @@ class CodexResponses:
         credential: CredentialHandle,
         descriptor: BoundModelDescriptor,
         config: Mapping[str, Any],
+        progress_timeout: float = 300.0,
     ) -> None:
+        self._progress_timeout = progress_timeout
         self._http = http
         self._credential = credential
         self._descriptor = descriptor
@@ -104,11 +106,15 @@ class CodexResponses:
                 _raise_status(response, token)
                 return await _consume_stream(
                     response, request, self._descriptor.binding_id, previous_items,
+                    progress_timeout=self._progress_timeout,
                 )
         except asyncio.CancelledError:
             raise
         except _CallbackError as exc:
             raise exc.error from exc
+        except ModelTimeoutError:
+            # parser 已携带进展期限和部分响应事实，不再包装丢失信息。
+            raise
         except (httpx.TimeoutException, TimeoutError) as exc:
             error = ModelTimeoutError("Codex Responses 请求超时")
             if isinstance(exc, httpx.ConnectTimeout):
@@ -217,6 +223,8 @@ async def _consume_stream(
     request: ModelRequest,
     binding_id: str,
     previous_items: tuple[dict[str, Any], ...],
+    *,
+    progress_timeout: float = 300.0,
 ) -> LLMResponse:
     content: list[str] = []
     thinking: list[str] = []
@@ -225,9 +233,10 @@ async def _consume_stream(
     usage: ModelUsage | None = None
     completed = False
     delta_seen = False
+    progress = StreamProgress(progress_timeout)
     try:
         lines = response.aiter_lines()
-        async for line in lines:
+        async for line in progress.read(lines):
             if not line.startswith("data:"):
                 continue
             raw = line[5:].strip()
@@ -242,39 +251,39 @@ async def _consume_stream(
             event_type = str(event.get("type") or "")
             delta = event.get("delta")
             if event_type == "response.output_text.delta" and isinstance(delta, str):
+                if delta:
+                    progress.advance()
                 content.append(delta)
                 delta_seen = True
                 await _emit(request.on_delta, {"content_delta": delta})
             elif event_type == "response.output_text.done":
-                delta_seen = (
-                    await _append_done(
-                        content,
-                        event.get("text"),
-                        request.on_delta,
-                        "content_delta",
-                    )
-                    or delta_seen
+                advanced = await _append_done(
+                    content, event.get("text"), request.on_delta, "content_delta",
                 )
+                if advanced:
+                    progress.advance()
+                delta_seen = advanced or delta_seen
             elif event_type in {
                 "response.reasoning_summary_text.delta",
                 "response.reasoning_text.delta",
             } and isinstance(delta, str):
+                if delta:
+                    progress.advance()
                 thinking.append(delta)
                 delta_seen = True
                 await _emit(request.on_delta, {"thinking_delta": delta})
             elif event_type == "response.reasoning_summary_text.done":
-                delta_seen = (
-                    await _append_done(
-                        thinking,
-                        event.get("text"),
-                        request.on_delta,
-                        "thinking_delta",
-                    )
-                    or delta_seen
+                advanced = await _append_done(
+                    thinking, event.get("text"), request.on_delta, "thinking_delta",
                 )
+                if advanced:
+                    progress.advance()
+                delta_seen = advanced or delta_seen
             elif event_type == "response.function_call_arguments.delta":
                 key = str(event.get("item_id") or event.get("output_index") or "")
                 slot = tool_args.setdefault(key, {"arguments": ""})
+                if delta:
+                    progress.advance()
                 slot["arguments"] += str(delta or "")
                 delta_seen = True
             elif event_type == "response.output_item.done":
@@ -282,14 +291,23 @@ async def _consume_stream(
                 if not isinstance(item, Mapping):
                     raise TransportError("Codex output item 必须是对象")
                 if item.get("type") == "reasoning":
-                    new_items.append(_sanitize_replay_item(item))
+                    replay = _sanitize_replay_item(item)
+                    if replay not in new_items and any(
+                        value for key, value in replay.items() if key != "type"
+                    ):
+                        progress.advance()
+                        delta_seen = True
+                    new_items.append(replay)
                 elif item.get("type") == "function_call":
                     key = str(item.get("id") or item.get("call_id") or "")
-                    tool_args[key] = {
+                    completed_call = {
                         "id": str(item.get("call_id") or key),
                         "name": str(item.get("name") or ""),
                         "arguments": str(item.get("arguments") or "{}"),
                     }
+                    if completed_call != tool_args.get(key):
+                        progress.advance()
+                    tool_args[key] = completed_call
                     delta_seen = True
             elif event_type == "response.completed":
                 response_payload = event.get("response")
@@ -314,6 +332,11 @@ async def _consume_stream(
         raise
     except _CallbackError:
         raise
+    except TimeoutError as exc:
+        error = ModelTimeoutError(f"Codex 模型流超过 {progress_timeout:g} 秒没有有效进展")
+        if delta_seen:
+            setattr(error, "response_delta_seen", True)
+        raise error from exc
     except Exception as exc:
         if delta_seen:
             setattr(exc, "response_delta_seen", True)
