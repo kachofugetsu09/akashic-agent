@@ -489,20 +489,21 @@ class ModelsStore:
             + ([send_evidence] if has_evidence else [])
         )
         values = (state, encoded, failure, duration_ms, *extras, call_id)
+        commit_error: Exception | None = None
         try:
             with self._connect() as connection, connection:
                 cursor = connection.execute(update, values)
                 if cursor.rowcount == 1:
                     return
-        except Exception:
-            pass
+        except Exception as error:
+            commit_error = error
         # 提交确认可能丢失；先回读已结算事实，相异回执视为契约违反。
         try:
             record = self.read_call(call_id)
         except KeyError:
             raise RuntimeError("Model 调用不存在")
         if record["state"] == "started":
-            raise RuntimeError("Model 调用结算未提交")
+            raise RuntimeError("Model 调用结算未提交") from commit_error
         same = (
             record["state"] == state
             and record["failure"] == failure

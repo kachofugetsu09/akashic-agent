@@ -366,6 +366,70 @@ async def cross_store_checks(directory, server, descriptor, physical):
     return observations
 
 
+async def queued_settlement_check(directory, server, descriptor, physical, *, reject=False):
+    """已提交开始记录后的取消结算，即使排队并再次取消也不能被遗弃。"""
+    name = 'queued-settlement-rejected' if reject else 'queued-settlement'
+    store = BarrierStore(directory / (name + '.db'), directory / 'backups', 'begin-after')
+    store.initialize()
+    if reject:
+        with sqlite3.connect(store.path) as connection:
+            connection.execute("CREATE TRIGGER reject_finish BEFORE UPDATE ON model_calls BEGIN SELECT RAISE(ABORT, 'fixture finish rejected'); END")
+    loop = asyncio.get_running_loop()
+    occupied, release, lock = asyncio.Event(), threading.Event(), threading.Lock()
+    count = 0
+
+    def occupy():
+        nonlocal count
+        with lock:
+            count += 1
+            if count == 4:
+                loop.call_soon_threadsafe(occupied.set)
+        assert release.wait(5)
+
+    before = server.posts
+    caller = asyncio.create_task(_BoundChat(descriptor, physical, store).complete(
+        ModelRequest([], request_key=name)))
+    workers = []
+    try:
+        await store.entered.wait()
+        workers = [asyncio.create_task(run_file_io(occupy)) for _ in range(4)]
+        caller.cancel()
+        await checkpoint()
+        store.release.set()
+        await occupied.wait()
+        await checkpoint()
+        caller.cancel()
+        await checkpoint()
+        await checkpoint()
+        assert not caller.done(), '原 call 已提交时，排队的取消结算不能被再次取消遗弃'
+        assert store.calls_for_key(name)[0]['state'] == 'started'
+        release.set()
+        await asyncio.gather(*workers)
+        try:
+            await caller
+        except asyncio.CancelledError:
+            assert not reject
+        except BaseExceptionGroup as failures:
+            assert reject
+            assert {type(error).__name__ for error in failures.exceptions} == {'CancelledError', 'RuntimeError'}
+            error = next(error for error in failures.exceptions if isinstance(error, RuntimeError))
+            assert isinstance(error.__cause__, sqlite3.IntegrityError)
+        else:
+            raise AssertionError('caller cancellation was lost')
+        record = store.calls_for_key(name)[0]
+        assert record['state'] == ('started' if reject else 'error')
+        assert record['send_evidence'] == (None if reject else 'unsent')
+        assert server.posts == before
+        return {'case': name, 'occupied_slots': count, 'posts': 0,
+                'state': record['state'], 'send_evidence': record['send_evidence'],
+                'settlement_failure_reported': reject}
+    finally:
+        store.release.set()
+        release.set()
+        await asyncio.gather(caller, *workers, return_exceptions=True)
+        store.close()
+
+
 async def failure_checks(directory, server, descriptor, physical):
     """实际数据库拒写及提交后丢回执，不能被包装成持久成功或再次发送。"""
     observations = []
@@ -541,6 +605,8 @@ async def check(directory, server, endpoint):
         observations += await cancellation_checks(directory, server, descriptor, physical)
         observations += await shared_checks(directory, server, descriptor, physical)
         observations += await cross_store_checks(directory, server, descriptor, physical)
+        observations.append(await queued_settlement_check(directory, server, descriptor, physical))
+        observations.append(await queued_settlement_check(directory, server, descriptor, physical, reject=True))
         observations.append(await queue_check(directory, server, descriptor, physical))
         observations += await failure_checks(directory, server, descriptor, physical)
         observations += await scope_checks(directory, server, endpoint)

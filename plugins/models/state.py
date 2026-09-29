@@ -319,6 +319,28 @@ class _BoundChat:
             return self._store.holds_host_lock
         return False
 
+    async def _finish_unsent_call(
+        self, call_id: str, cancelled: asyncio.CancelledError,
+    ) -> None:
+        """已提交的调用必须结算，重复取消不能放弃仍在排队的未发送回执。"""
+        # 1. 结算独立等待磁盘名额；当前 caller 的 scope 保留到它实际结束。
+        settlement = asyncio.create_task(run_file_io(partial(
+            self._store.finish_call, call_id, usage=None,
+            failure="CancelledError", send_evidence="unsent",
+        )))
+        while not settlement.done():
+            try:
+                await asyncio.shield(settlement)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        # 2. 取消和真实写入失败均向上报告，不能把未结算事实当作成功。
+        try:
+            settlement.result()
+        except Exception as error:
+            raise BaseExceptionGroup("模型调用取消且未发送回执结算失败", [cancelled, error]) from None
+
     async def _attempts(
         self, request: ModelRequest, request_key: str, digest: str, *,
         budget: int | None = None,
@@ -369,11 +391,10 @@ class _BoundChat:
 
             try:
                 await run_file_io(start_call)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancelled:
                 # 线程已排空；已提交的 ID 必须结算，provider 此时尚未调用。
                 if call_id is not None:
-                    await run_file_io(partial(store.finish_call, call_id, usage=None,
-                                             failure="CancelledError", send_evidence="unsent"))
+                    await self._finish_unsent_call(call_id, cancelled)
                 raise
             except ModelUnavailableError:
                 # 写事务发现读取后已完成的调用时，只回放原成功，不新开 attempt。
