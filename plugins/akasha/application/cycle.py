@@ -73,6 +73,7 @@ class MemoryCycle:
             raise ValueError("feature pool must span the complete turn capacity")
         self.config = config
         self.turns: list[Turn] = []
+        self._term_pairs: dict[tuple[str, int], tuple[str, int]] = {}
         self.graph = DynamicMemoryGraph(turn_capacity, config)
         self.feature_pool = feature_pool
         self.context: ContextState | None = None
@@ -108,7 +109,7 @@ class MemoryCycle:
 
         # 2. Adopt already validated domain state.
         cycle = cls(config, turn_capacity=graph.turn_count)
-        cycle.turns = list(turns)
+        cycle.turns = [cycle._share_terms(turn) for turn in turns]
         cycle.graph = graph
         cycle.context = context
         cycle.events = list(events)
@@ -154,48 +155,46 @@ class MemoryCycle:
         # 3. Advance topology and causal clocks inside a reversible read frame.
         previous_turn_capacity = self.graph.turn_count
         published_state = self.graph.capture_retrieval_state()
-        try:
-            if event >= self.graph.turn_count:
-                self.graph.grow_turn_capacity(event + 1)
-            self.graph.prepare_retrieval(
-                event,
-                turn.inter_gap_seconds,
-                evidence,
-            )
-            prepared_turn_capacity = self.graph.turn_count
-            prepared_state = self.graph.capture_retrieval_state()
-            diffusion = residual_push(
-                self.graph,
-                evidence.seed,
-                event,
-                restart=self.config.restart,
-                tolerance=self.config.tolerance,
-                capture_paths=capture_paths,
-            )
-            completion = (
-                _empty_completion(diffusion)
-                if event == 0 or not include_completion
-                else read_pattern_completion(
-                    graph=self.graph,
-                    pool=pool,
-                    query=turn,
-                    context=decision.context,
-                    precomputed_fields=decision.fields,
-                    evidence=evidence,
-                    diffusion=diffusion,
-                    historical_surprise=_historical_surprise(
-                        self.evidence
-                    ),
-                    config=self.config,
-                    context_dependence=decision.context_dependence,
-                    visible_nodes=decision.visible_nodes,
-                    burst_continued=decision.continued,
-                    inhibited_nodes=inhibited,
+        with self.graph.temporary_turn_capacity(max(event + 1, previous_turn_capacity)):
+            try:
+                self.graph.prepare_retrieval(
+                    event,
+                    turn.inter_gap_seconds,
+                    evidence,
                 )
-            )
-        finally:
-            self.graph.apply_retrieval_state(published_state)
-            self.graph.restore_turn_capacity(previous_turn_capacity)
+                prepared_turn_capacity = self.graph.turn_count
+                prepared_state = self.graph.capture_retrieval_state()
+                diffusion = residual_push(
+                    self.graph,
+                    evidence.seed,
+                    event,
+                    restart=self.config.restart,
+                    tolerance=self.config.tolerance,
+                    capture_paths=capture_paths,
+                )
+                completion = (
+                    _empty_completion(diffusion)
+                    if event == 0 or not include_completion
+                    else read_pattern_completion(
+                        graph=self.graph,
+                        pool=pool,
+                        query=turn,
+                        context=decision.context,
+                        precomputed_fields=decision.fields,
+                        evidence=evidence,
+                        diffusion=diffusion,
+                        historical_surprise=_historical_surprise(
+                            self.evidence
+                        ),
+                        config=self.config,
+                        context_dependence=decision.context_dependence,
+                        visible_nodes=decision.visible_nodes,
+                        burst_continued=decision.continued,
+                        inhibited_nodes=inhibited,
+                    )
+                )
+            finally:
+                self.graph.apply_retrieval_state(published_state)
         return RetrievalTicket(
             state_version=event,
             previous_turn_capacity=previous_turn_capacity,
@@ -254,13 +253,21 @@ class MemoryCycle:
             raise RuntimeError("committed memory cycle cannot shrink capacity")
         if offset:
             self.events = [
-                replace(
-                    event,
+                PlasticityResult(
                     hub_node_id=(
                         None
                         if event.hub_node_id is None
                         else event.hub_node_id + offset
                     ),
+                    threshold=event.threshold,
+                    integrated=event.integrated,
+                    inhibited_mass=event.inhibited_mass,
+                    potentiated_mass=event.potentiated_mass,
+                    observed_mass=event.observed_mass,
+                    recurrent_mass=event.recurrent_mass,
+                    reactivated_mass=event.reactivated_mass,
+                    pushes=event.pushes,
+                    residual_l1=event.residual_l1,
                 )
                 for event in self.events
             ]
@@ -289,6 +296,7 @@ class MemoryCycle:
             feedback.remember_nodes,
             feedback.remember_boost,
         )
+        causal_turn = self._share_terms(causal_turn)
         pool = self.feature_pool
         if pool is not None:
             if len(pool.turns) == self.state_version:
@@ -344,6 +352,14 @@ class MemoryCycle:
             evidence=learning_evidence,
             diffusion=learning_diffusion,
             retrieval_recomputed=recomputed,
+        )
+
+    def _share_terms(self, turn: Turn) -> Turn:
+        """图内相同词项与计数共享不可变值，不改词项、次序或输入对象。"""
+        return replace(
+            turn,
+            user_terms=tuple(self._term_pairs.setdefault(pair, pair) for pair in turn.user_terms),
+            assistant_terms=tuple(self._term_pairs.setdefault(pair, pair) for pair in turn.assistant_terms),
         )
 
     def _retrieval_pool(

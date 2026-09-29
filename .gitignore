@@ -1,8 +1,12 @@
 # 敏感配置（本地填写，不提交）
 /config.json
 /config.toml
+/config.toml.pre-*
+/config.toml.before-*
+/config.toml.*.bak
+/config.json.*.bak
 
-# NcatBot 自动生成的配置文件
+# 保留退役渠道的本地配置与登录数据忽略规则
 config.yaml
 /docker/.env
 /docker/napcat/runtime/
@@ -72,6 +76,8 @@ plugins/**/.data/
 benchmark/result*.json
 benchmark/data/
 /eval/local_testsets/
+/eval/longmemeval/config.toml
+/eval/longmemeval/results/
 qa_error_log_*.txt
 lme_error_log_*.txt
 /config.json.bak
@@ -97,3 +103,12 @@ lme_error_log_*.txt
 
 # 本地性能实验报告，不进版本库
 /artifacts/
+
+# 本地演练副本与旧插件构建产物；保留文件，但不加入源码扫描或提交
+/tmp/
+/tmp-*
+/.pr*-verify-tmp/
+/plugin_packages/
+
+# Product launcher build cache (runtime data lives outside the checkout).
+/.akashic-start/

@@ -25,7 +25,7 @@
 - 重建、Docker 和报告都使用独立 workspace，不读写正式派生库。
 
 这次不部署正式 workspace，不迁移旧 Akasha Graph，也不保留旧 fast/slow、reinforce
-或可写检查器兼容层。桌面端和移动端重新提供面向 V2 schema 的只读 Inspector；旧配置
+或可写检查器兼容层。Web Chat 的插件 UI 提供面向 V2 schema 的只读 Inspector；旧配置
 和旧 sidecar 的正式切换必须作为独立数据迁移执行。
 
 ## 2. 状态所有权
@@ -57,7 +57,7 @@
 │                                                    ▼         │
 │                       plugins/akasha/MemoryPlugin adapter     │
 │                                                             │
-│  Dashboard / Mobile ── read-only ──► Akasha Inspector       │
+│  Dashboard / Plugin UI ── read-only ──► Akasha Inspector    │
 └────────────────────────────────┬────────────────────────────┘
                                  │ byte-identical mirror
                                  ▼
@@ -363,7 +363,9 @@ fresh workspace 没有历史 `Consumption` 时可以没有 sidecar，不能因�
 本分支只交付代码、隔离证据和迁移设计，不修改正式 workspace，也不把 PR 合入运行中
 分支。
 
-## 12. 验收命令
+## 12. 当时的验收命令（历史）
+
+下列命令记录原迁移时的证据输入，其中部分脚本已退役，不能作为当前 PR 的可执行 Gate；当前插件 UI 以 Web 构建、活动资源解析和浏览器场景验证。
 
 ```bash
 # upstream
@@ -378,7 +380,6 @@ python scripts/check_akasic_behavior.py
 npm run typecheck
 npm run lint
 npm run build:dashboard
-node --test tests/test_akasha_mobile_ui.mjs
 
 # strict isolated replay
 PYTHONHASHSEED=1 .venv/bin/python scripts/build_akasha_db.py \

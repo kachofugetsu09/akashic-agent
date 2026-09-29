@@ -854,7 +854,7 @@ def _configure_model_gate(*, context_window: int = 64_000) -> None:
     """Configure the scripted model through the ordinary public plugin API."""
 
     add_openai_models(
-        "http://akashic-control-gate:2236/api/settings/model",
+        "/sandbox/akashic.sock",
         connection_id="model-gate",
         endpoint="http://model-gate:8090/v1",
         api_key="model-gate-local",
@@ -4552,10 +4552,6 @@ enabled = true
 [channels.telegram]
 enabled = false
 token = ""
-
-[channels.qq]
-enabled = false
-bot_uin = ""
 
 """
     (sandbox / "config.toml").write_text(config, encoding="utf-8")

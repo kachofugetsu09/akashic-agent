@@ -35,7 +35,6 @@ _REJECTED_IMPORT_PREFIXES = (
     "plugins",
     "agent.model_runtime",
     "agent.plugins",
-    "infra.mobile_realtime",
     "bootstrap",
 )
 _ALLOWED_CORE_MIGRATION_MODULES = frozenset({

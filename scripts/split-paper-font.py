@@ -19,7 +19,6 @@ SOURCE_FONT = REPOSITORY_ROOT / "frontend/theme/assets/fonts/LXGWWenKaiGBScreen.
 OUTPUT_DIRECTORY = REPOSITORY_ROOT / "frontend/theme/src/fonts"
 SOURCE_SHA256 = "a792b1dcab65066de0a7996d738ae5d0bcca0371fa72dafb34efc33e1123c2c0"
 FONTTOOLS_VERSION = "4.63.0"
-MAX_MOBILE_WEBUI_FILE_BYTES = 8 * 1024 * 1024
 SHARDS = (
     ("lxgw-wenkai-gb-screen-0.woff2", "U+0000-4DFF"),
     ("lxgw-wenkai-gb-screen-1.woff2", "U+4E00-7FFF"),
@@ -96,8 +95,6 @@ def main() -> int:
         shard_codepoints: set[int] = set()
         for filename, _ in SHARDS:
             shard = staging / filename
-            if shard.stat().st_size > MAX_MOBILE_WEBUI_FILE_BYTES:
-                raise RuntimeError(f"Mobile WebUI font shard is too large: {filename}")
             shard_codepoints.update(_font_codepoints(shard))
         source_codepoints = _font_codepoints(SOURCE_FONT)
         if shard_codepoints != source_codepoints:

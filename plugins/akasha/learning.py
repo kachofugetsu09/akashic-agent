@@ -53,9 +53,16 @@ class Learning:
     def samples(
         self, catalog: MessageCatalog, config: LearningConfig, *, heads: Mapping[str, int],
     ) -> tuple[Sample, ...]:
+        """先排除禁止学习的会话，再读取固定前缀并筛选样本。"""
+        # 1. 学习资格在 Session 接纳时固定，不必先解码禁止学习的正文。
+        eligible_heads = {
+            session: head for session, head in heads.items()
+            if catalog.attributes(session).learning == "eligible"
+        }
+        # 2. 来源和历史 effect 仍由原学习规则筛选。
         samples = project_samples(
-            catalog, self.projection, heads=heads,
-            include=lambda session, source: catalog.attributes(session).learning == "eligible" and source in config.sources,
+            catalog, self.projection, heads=eligible_heads,
+            include=lambda session, source: source in config.sources,
         )
         return tuple(sample for sample in samples if self.accepts(sample))
 
@@ -69,10 +76,14 @@ class Learning:
         self, sample: Sample, previous: Sequence[Turn], state: Consumption, bindings: Bindings,
     ) -> TurnFeedback:
         """从本样本实际成功的 Akasha 调用读取反馈，按完整成员映射学习节点。"""
-        # 1. 旧前缀沿原索引身份；新节点包含所有输入，不只首个输入。
+        # 1. 无回执没有目标可映射，恢复不扫描无关的已学习前缀。
+        feedback = self.read_feedback(sample, bindings)
+        if not feedback:
+            return TurnFeedback()
+        # 2. 旧前缀沿原索引身份；新节点包含所有输入，不只首个输入。
         targets = message_nodes(state.applied[:len(previous)])
         current = {message.message_id for message in sample.messages if isinstance(message.body, Input)}
-        return resolve_feedback(self.read_feedback(sample, bindings), targets, current, len(previous))
+        return resolve_feedback(feedback, targets, current, len(previous))
 
     def read_feedback(self, sample: Sample, bindings: Bindings) -> tuple[Feedback, ...]:
         """只有实际 Akasha 调用的成功结果可贡献反馈。"""

@@ -159,7 +159,7 @@ async def apply(ctx):
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
             'if len(calls) == 1:',
-            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("search-call", "tool_search", {"query": "write_evidence"})])\n            if len(calls) == 2:').replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")').replace(
+            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("load-call", "load_tools", {"plugin": "test_provider"})])\n            if len(calls) == 2:').replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")').replace(
             'ToolCall("provider-call", "write_evidence", {})',
             'ToolCall("provider-call", "tool_call", {"name": "write_evidence", "arguments": {}})'))
     if compaction:
@@ -248,3 +248,129 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
                 assert all("[Source messages]" in str(call.messages) for call in calls)
             assert log.reader("test:room").snapshot() == (accepted,)
             assert not (tmp_path / "effect.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_default_reply_loads_one_complete_granted_plugin_group(tmp_path):
+    """PLG-018: 一个准确插件 ID 只加载该次获授 view 中的一整组 schema。"""
+    import json
+    from agent.plugin_composition import ServiceKey
+
+    async with application(tmp_path, replying=True, discovery=True) as (log, host):
+        async with live_root(host) as root:
+            accepted = await root.context.require(CHANNEL_INPUT)(
+                "test:room", "u1", ChannelInboundMessage(
+                    "test", "user", "room", "do the work", datetime(2026, 9, 5, tzinfo=UTC), {},
+                ),
+            )
+        assert isinstance(accepted.body, Input)
+
+        async def completed():
+            async for _ in log.catalog().follow():
+                rows = log.reader("test:room").snapshot()
+                if any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows):
+                    return rows
+
+        rows = await asyncio.wait_for(completed(), 5)
+        assert rows is not None
+        assert [type(row.body) for row in rows] == [
+            Input, Output, ToolResult, Output, ToolResult, Output,
+        ]
+        value = rows[2].body.parts[0].value
+        assert isinstance(value, str)
+        loaded = json.loads(value)
+        assert loaded["plugin"] == "test_provider"
+        assert [tool["function"]["name"] for tool in loaded["tools"]] == ["write_evidence"]
+        assert (tmp_path / "effect.txt").read_text() == "once\n"
+
+        async with live_root(host) as root:
+            requests = root.context.require(ServiceKey("fixture.calls"))
+        prompt = next(
+            row["content"] for row in requests[0].messages if row["role"] == "system"
+        )
+        assert "test_provider · Write local evidence · 1 个工具" in prompt
+        assert "write_evidence" not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("vision", [False, True])
+@pytest.mark.parametrize("attach_image", [False, True])
+async def test_reply_uses_image_placeholders(tmp_path, vision, attach_image):
+    """Current and historical images remain text labels for every model capability."""
+    import io
+    from PIL import Image
+    from agent.plugin_composition import ServiceKey
+    from agent.plugin_contracts import ContentPart, Control
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+    from plugins.content.plugin import check_artifact
+    from session.artifact_store import ArtifactStore
+    from session.artifacts import AttachmentKind
+
+    def vision_provider(sources):
+        module = sources / "test_provider/plugin.py"
+        module.write_text(module.read_text().replace(
+            "ModelCapabilities(context_window=10000)",
+            f'ModelCapabilities(context_window=10000, input_modalities={(("text", "image") if vision else ("text",))!r})',
+        ))
+
+    async with application(tmp_path, replying=True, extra_sources=vision_provider) as (log, host):
+        # 1. Publish five real image artifacts on separate settled history messages.
+        metadata = ArtifactStore(tmp_path / "sessions.db")
+        store = ChannelAttachmentArtifactStore(
+            workspace=tmp_path / "workspace", metadata_store=metadata,
+        )
+        try:
+            writer = log.writer(
+                "test:room", author="scheduler", source="scheduler", body_types=(Output,),
+                content={"artifact_ref": check_artifact},
+            )
+            refs = []
+            for index in range(5):
+                data = io.BytesIO()
+                Image.new("RGB", (2, 2), (index * 40, 0, 0)).save(data, format="PNG")
+                ref = await store.import_bytes(
+                    data.getvalue(), kind=AttachmentKind.IMAGE,
+                    filename=f"history-{index}.png", media_type="image/png",
+                )
+                refs.append(ref)
+                writer.append(f"history-{index}", Output((ContentPart("artifact_ref", ref.artifact_id),), "complete"))
+            writer.expire()
+        finally:
+            metadata.close()
+
+        # 2. Observe the durable terminal result, including the old failure path.
+        async with live_root(host) as root:
+            accepted = await root.context.require(CHANNEL_INPUT)(
+                "test:room", "u1", ChannelInboundMessage(
+                    "test", "user", "room", "Will it rain tomorrow morning?",
+                    datetime(2026, 9, 29, tzinfo=UTC), {},
+                    attachments=(refs[-1],) if attach_image else (),
+                ),
+            )
+            requests = root.context.require(ServiceKey("fixture.calls"))
+        assert log.reader("test:room").attachments(accepted.message_id) == ((refs[-1],) if attach_image else ())
+
+        async def completed():
+            async for _ in log.catalog().follow():
+                for row in log.reader("test:room").snapshot():
+                    if row.seq > accepted.seq and (
+                        isinstance(row.body, Control)
+                        or isinstance(row.body, Output) and row.body.finish == "complete"
+                    ):
+                        return row
+
+        terminal = await asyncio.wait_for(completed(), 5)
+        assert terminal is not None
+        assert isinstance(terminal.body, Output), terminal.body
+        assert terminal.body.finish == "complete"
+        assert len(requests) == 2
+        for request in requests:
+            images = [part for row in request.messages if isinstance(row["content"], (list, tuple))
+                      for part in row["content"] if part["type"] == "image_url"]
+            assert images == []
+            text = str(request.messages)
+            assert "data:image" not in text
+            assert "图片占位符" in text
+            for ref in refs:
+                assert ref.artifact_id in text
+                assert ref.filename in text

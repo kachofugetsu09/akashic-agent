@@ -178,8 +178,7 @@ class ToolCatalog(Protocol):
         capture: Callable[[Mapping[str, object]], Mapping[str, object] | Awaitable[Mapping[str, object]]] | None = None,
         public: bool = True,
         idempotent: bool = False,
-        risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
-        search_hint: str | None = None,
+        parallel: bool = False,
     ) -> ToolRef: ...
     async def register_prepare(
         self,
@@ -198,6 +197,9 @@ class ToolCatalog(Protocol):
         authorize: Callable[[Mapping[str, object]], Awaitable[str | None]],
     ) -> Effect: ...
     def view(self, *refs: ToolRef) -> ToolView: ...
+    def allows_parallel(self, name: str) -> bool:
+        """调度只读注册事实；未知工具一律不能重叠。"""
+        ...
     def group_description(self, ref: ToolRef) -> str: ...
     def group_always_on(self, ref: ToolRef) -> bool: ...
     async def bind(
@@ -233,9 +235,9 @@ class ToolCatalog(Protocol):
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
 TOOL_DISPLAY_NAME = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
-TOOL_SEARCH_PRESENTATION = ServiceKey[
+TOOL_LOADING_PRESENTATION = ServiceKey[
     Callable[[ToolView], tuple[ToolView, ToolPresentation]]
-]("tool-search.presentation.v2")
+]("tools.loading.presentation.v1")
 
 
 class DecodedCall(Protocol):
@@ -247,6 +249,12 @@ class DecodedCall(Protocol):
     def rejection(self) -> Mapping[str, object] | None: ...
 
 
+class CommitAfter(Protocol):
+    """前驱提交完成后放行；中止时 wait 拒绝后继抢先落盘。"""
+
+    async def wait(self) -> None: ...
+
+
 class ToolMenu(Protocol):
     @property
     def schemas(self) -> tuple[Mapping[str, Any], ...]: ...
@@ -255,9 +263,10 @@ class ToolMenu(Protocol):
     @property
     def system_prompt(self) -> str: ...
     def name(self, binding_id: str) -> str: ...
+    def parallel(self, binding_id: str) -> bool: ...
     def decode(self, call: ModelToolCall) -> DecodedCall: ...
     def check_call(self, call: ToolCall) -> None: ...
-    async def execute(self, call: CallRef) -> Result: ...
+    async def execute(self, call: CallRef, *, commit_after: CommitAfter | None = None) -> Result: ...
     async def settle_abandoned(self, call: CallRef) -> Result: ...
 
 

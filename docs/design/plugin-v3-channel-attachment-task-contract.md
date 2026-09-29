@@ -2,6 +2,8 @@
 
 > 2026-09-09：本文历史执行状态 unknown/UNKNOWN/uncertain 已被 [0063](../decisions/0063-execution-failures-have-terminal-results.md) 的明确失败终态和收尾规则取代；其他合同不变。
 
+> 2026-09-28：旧 Mobile 附件协议、`mobile.db` writer 与跨库导入路径已按 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 退役。下文只描述当前 Core artifact 与 Web/其他渠道边界；既有旧库属于[状态地图](persistence-state-map.md)的恢复清单，不是新写入目标。
+
 
 本文定义 C23：为 v3 Channel、Core built-in channel 与 Session message 提供唯一附件事实。
 它是 [Channel capability 合同](plugin-v3-channel-capability-task-contract.md) 从 text-only 进入能力等价的前置，
@@ -16,11 +18,10 @@
 3. Session message 与 artifact binding 在同一个 SessionDB transaction 提交；
 4. provider 发送期间由 exact read lease 保持 artifact 可读；
 5. 已发布 artifact 与已提交 message binding 不自动删除；
-6. Telegram、QQ、Web、Mobile 现有附件协议经 adapter 接入，不以重写旧数据开始迁移。
+6. Telegram、QQ、Web 现有附件协议经 adapter 接入，不以重写旧数据开始迁移。
 
 本批次不实现按年龄、容量或“当前 prompt 是否使用”做 GC；不改写既有 `messages.extra.media`；
-不把 Mobile 的 chunk、device inbox、cursor 和 resumable upload 状态搬进 SessionDB；不允许 candidate
-读取正式附件或 provider credential。
+不允许 candidate 读取正式附件或 provider credential。
 
 ## 2. 当前代码事实
 
@@ -28,15 +29,14 @@
   Session binding、read lease 或恢复记录。
 - Telegram、QQ、Web 的入站媒体最终保存到 `<workspace>/uploads/`；Session message 的 `extra.media`
   保存字符串路径。已有消息仍引用文件时必须保持可读。
-- Mobile 的上传、outbound snapshot、device inbox 与 message binding 由 `mobile.db` 自己持有；它是受保护的
-  协议，不是可以被通用 Channel refactor 替换的缓存。
+- 旧 `mobile.db` 可能仍在正式 workspace，当前没有附件 writer；源码清理不授权删除旧文件或其引用。
 - 当前 v3 `ChannelInboundMessage`、`OutboundEnvelope` 与 `ProviderDeliveryRequest` 是 text-only；
   `MessagePush` 对 v3 附件在读取源路径前返回 `REJECTED`。C23 完成前保持该行为。
 
 ## 3. 目标所有权
 
 ```text
-provider / Web / Mobile finalized upload
+provider / Web upload
                   │ bytes / verified local file
                   ▼
 ┌──────────────────────────────────────────┐
@@ -54,8 +54,6 @@ provider / Web / Mobile finalized upload
                    ▼
              provider / model read
 
-Mobile 原协议 ── finalized file ── copy/adopt ──► Core AttachmentStore
-             └─ mobile.db/inbox/cursor 保持原 owner，不被本批重写
 ```
 
 唯一事实 owner 如下：
@@ -68,7 +66,6 @@ Mobile 原协议 ── finalized file ── copy/adopt ──► Core Attachme
 | staging write | Core `AttachmentWriter`，未 publish 前唯一 cleanup owner |
 | import crash boundary | SessionStore `attachment_imports` |
 | provider 发送中的可读性 | `AttachmentReadLease` |
-| Mobile chunk/inbox/device delivery | 现有 `mobile.db` owner |
 
 ## 4. 类型与窄接口
 
@@ -184,8 +181,8 @@ CREATE TABLE message_attachments (
 - provider 已可能产生外部效果后失败仍返回 `UNKNOWN` 且不重试；附件 read/import 错误发生在 provider 调用前可返回
   `REJECTED`。
 - Session append、Turn fail/cancel、candidate discard、插件卸载与 generation drain 均无权删除已发布 artifact。
-- `adopt_file()` 的允许根必须由调用方类型固定：legacy Channel 只可从 `<workspace>/uploads/`，Mobile 只可从其 finalized
-  attachment owner，MessagePush 本地文件仍按现有用户授权 path 单次打开；全部使用 nofollow fd，copy 前后核对 inode/
+- `adopt_file()` 的允许根必须由调用方类型固定：legacy Channel 只可从 `<workspace>/uploads/`，
+  MessagePush 本地文件仍按现有用户授权 path 单次打开；全部使用 nofollow fd，copy 前后核对 inode/
   size/mtime/hash，变化时 fail-loud。插件公开 port 不接受 path。
 
 ## 7. Channel 迁移规则
@@ -194,14 +191,9 @@ CREATE TABLE message_attachments (
    `REJECTED`，Feishu 通过 read lease 上传。
 2. Telegram/QQ/Web Core adapter 保留现有 provider 限制、文件名、诊断和回复媒体行为，但先导入 artifact，再产生
    exact inbound envelope。
-3. Mobile `attachment.finish` 与原 `mobile.db` transaction 保持不变；新增 durable
-   `mobile_attachment_imports(device_id, session_id, client_message_id, ordinal, mobile_attachment_id, artifact_id, phase)`
-   作为跨库恢复/idempotency owner。同一个 finalized Mobile attachment + message ordinal 重试只解析到同一 Core
-   artifact；`media_refs` 在进入 Bus 前完成 copy/adopt 与 mapping commit。Mobile 原文件、row、inbox 不因 Core artifact
-   成功或失败而删除。
-4. Web 任意客户端路径不直接成为 ref；已有 upload id 经 Core store resolve。远程 URL 只有先由 Core bounded fetch/import
+3. Web 任意客户端路径不直接成为 ref；已有 upload id 经 Core store resolve。远程 URL 只有先由 Core bounded fetch/import
    成功后才能成为 artifact。
-5. `MessagePush` 本地 file/image 在排队前 adopt；URL 由 Core bounded fetch/import。snapshot 失败时不读源；
+4. `MessagePush` 本地 file/image 在排队前 adopt；URL 由 Core bounded fetch/import。snapshot 失败时不读源；
    import 成功后即使 provider 失败也保留 artifact。
 
 ## 8. 验证与集中 E2E
@@ -216,7 +208,6 @@ CREATE TABLE message_attachments (
 - post-commit cancel：DB/cache/ref 完全一致后才恢复取消；
 - provider read 中 hot reload/Bus close：exact read lease 收束、receipt `UNKNOWN`、artifact 仍可读；
 - source 文件删除后，adopted artifact 仍可读且 hash 不变；
-- Mobile 多设备 transaction 失败仍按旧协议整体回滚，Core 不删 Mobile owner；
 - legacy message 只有 `extra.media` 时仍可读，不创建伪 artifact、不改写 DB；
 - message 删除只删 binding，artifact 保留；启动、plugin unload、candidate discard 均零 artifact delete；
 - `PRAGMA foreign_key_check`、attachment projection-vs-binding integrity、orphan intent audit 全部通过；
@@ -227,7 +218,7 @@ CREATE TABLE message_attachments (
 不为每个 channel 单独启动 Docker E2E，不读取 hua-home 正式 credential，不向真实 provider 发送。
 
 E4 前必须先扩展正式 backup owner，而不是只复制一份代码 worktree：source manifest 至少同时声明 `sessions.db`、
-`mobile.db`、`uploads/artifacts/`、legacy `uploads/` 与 Mobile finalized files；目录 snapshot 先生成 immutable file manifest
+`uploads/artifacts/` 与 legacy `uploads/`；旧客户端数据如仍在 workspace，另按状态地图盘点与备份。目录 snapshot 先生成 immutable file manifest
 （relative path、mode、size、SHA-256），SQLite 使用 online backup。由于多 DB + files 没有全局事务，备份记录每个 source
 的开始/结束时间和应用 commit，并在隔离恢复后以 durable binding 为起点逐项 readback。代码分支
 `backup/plugin-v3-pre-attachment-contract-20260817` 只负责源码回滚，不是运行数据备份证据。
@@ -238,9 +229,9 @@ C23、Feishu/QQ v3 与 Core transition adapters 全部通过前：
 
 - v3 attachment 保持确定性 `REJECTED`；
 - 旧 Core channel attachment path 继续服务生产兼容；
-- 不删除 `AttachmentStore`、`messages.extra.media`、Mobile attachment tables 或旧文件。
+- 不删除 `AttachmentStore`、`messages.extra.media` 或旧文件；退役客户端的表和文件遵守状态地图的独立清理边界。
 
-zero-consumer Gate 必须覆盖 Telegram photo/document/reply media、QQ image、Web upload/media route、Mobile media_refs 与
+zero-consumer Gate 必须覆盖 Telegram photo/document/reply media、QQ image、Web upload/media route 与
 MessagePush file/image。删除兼容投影前还要证明所有新 message 已有 binding、所有历史 message 仍可读。
 
 Core 源码回滚点为 `backup/plugin-v3-pre-attachment-contract-20260817`（`fc1a2a76`）；当前开发机没有向正式

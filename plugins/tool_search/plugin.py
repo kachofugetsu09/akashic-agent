@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -12,7 +11,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugin_contracts import ContentPart, json_value
 from agent.plugin_contracts.tools import (
-    TOOL_SEARCH_PRESENTATION as TOOL_SEARCH_PRESENTATION,
+    TOOL_LOADING_PRESENTATION as TOOL_LOADING_PRESENTATION,
 )
 
 from ._tool_boundary import (
@@ -28,13 +27,13 @@ from ._tool_boundary import (
 
 api_version = 3
 name = "tool_search"
-version = "2.0.0"
-desc = "在获授工具 view 内搜索完整 schema，并解码间接调用"
+version = "3.0.0"
+desc = "按插件 ID 展示获授工具的完整 schema，并解码间接调用"
 inject = (TOOLS,)
 
 
 def _tool_schema(description: Mapping[str, object]) -> Mapping[str, Any]:
-    """把 owner 提供的描述转换成模型展示 schema。"""
+    """Convert an owner description into the model-facing function schema."""
     return {
         "type": "function",
         "function": {
@@ -45,13 +44,9 @@ def _tool_schema(description: Mapping[str, object]) -> Mapping[str, Any]:
     }
 
 
-class Query(BaseModel):
+class LoadToolsInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    query: str = Field(min_length=1)
-    top_k: int = Field(default=5, ge=1, le=10)
-    allowed_risk: list[
-        Literal["read-only", "read-write", "external-side-effect"]
-    ] | None = Field(default=None, description="按工具整体能力过滤，通常省略；此字段不是本次操作的授权。")
+    plugin: str = Field(min_length=1)
 
 
 class IndirectCall(BaseModel):
@@ -61,135 +56,107 @@ class IndirectCall(BaseModel):
 
 
 def _groups(catalog: ToolCatalog, view: ToolView) -> tuple[dict[str, object], ...]:
-    """按实际插件分组，只包含获授工具并固定目录顺序。"""
-    rows: dict[str, dict[str, object]] = {}
+    """Build the frozen non-direct plugin directory from one granted view."""
+    rows: dict[str, list[Mapping[str, Any]]] = {}
+    purposes: dict[str, str] = {}
     for ref in sorted(view.refs, key=lambda item: item.name):
-        owner = cast(str, ref.description["owner"])
-        if owner not in rows:
-            rows[owner] = {"owner": owner, "description": catalog.group_description(ref), "tools": []}
-        cast(list[Mapping[str, Any]], rows[owner]["tools"]).append({
-            "schema": _tool_schema(ref.description),
-            "risk": ref.description["risk"],
-            "search_hint": ref.description["search_hint"],
-        })
-    return tuple(rows[owner] for owner in sorted(rows))
+        if catalog.group_always_on(ref):
+            continue
+        plugin = cast(str, ref.description["owner"])
+        rows.setdefault(plugin, []).append(_tool_schema(ref.description))
+        purposes.setdefault(plugin, catalog.group_description(ref))
+    return tuple(
+        {"plugin": plugin, "purpose": purposes[plugin], "tools": tuple(rows[plugin])}
+        for plugin in sorted(rows)
+    )
 
 
-def _search(groups: tuple[dict[str, object], ...], query: Query) -> tuple[dict[str, object], ...]:
-    """按 owner、工具名、描述和提示匹配，并返回完整插件组。"""
-    text = query.query.strip().lower()
-    tokens: set[str] = {
-        text,
-        *text.split(),
-        *(part.strip() for part in re.split(r"([\u4e00-\u9fff]+)", text)),
-    }
-    cjk = [char for char in text if "\u4e00" <= char <= "\u9fff"]
-    tokens.update(cjk)
-    tokens.update(left + right for left, right in zip(cjk, cjk[1:]))
-    tokens.discard("")
-    ranked: list[tuple[int, int, str, dict[str, object]]] = []
-    for group in groups:
-        owner = cast(str, group["owner"])
-        score = 0
-        exact = False
-        allowed = False
-        for entry in cast(list[Mapping[str, Any]], group["tools"]):
-            schema = cast(Mapping[str, Any], entry["schema"])
-            tool = cast(Mapping[str, Any], schema["function"])
-            risk = entry["risk"]
-            if query.allowed_risk is not None and risk not in query.allowed_risk:
-                continue
-            allowed = True
-            name = cast(str, tool["name"]).lower()
-            description = cast(str, tool["description"]).lower()
-            hint = cast(str | None, entry["search_hint"]) or ""
-            exact |= owner.lower() in tokens or name in tokens
-            tool_score = 0
-            for token in tokens:
-                if token == owner.lower() or token == name:
-                    tool_score += 10
-                elif token in owner.lower() or token in name:
-                    tool_score += 5
-                if token in description:
-                    tool_score += 2
-                if token in hint.lower():
-                    tool_score += 4
-            score = max(score, tool_score)
-        if allowed and score:
-            ranked.append((-int(exact), -score, owner, group))
-    return tuple(row for _, _, _, row in sorted(ranked)[: query.top_k])
+def _validate_groups(value: object) -> tuple[dict[str, object], ...]:
+    """Validate the frozen binding directory before it reaches the loader."""
+    if not isinstance(value, tuple):
+        raise ValueError("工具加载固定目录损坏")
+    groups: list[dict[str, object]] = []
+    plugins: set[str] = set()
+    for group in value:
+        if not isinstance(group, Mapping) or set(group) != {"plugin", "purpose", "tools"}:
+            raise ValueError("工具加载固定目录分组损坏")
+        plugin = group["plugin"]
+        purpose = group["purpose"]
+        tools = group["tools"]
+        if (
+            not isinstance(plugin, str) or not plugin
+            or not isinstance(purpose, str) or not purpose
+            or not isinstance(tools, tuple) or not tools
+            or plugin in plugins
+        ):
+            raise ValueError("工具加载固定目录分组无效")
+        schemas: list[Mapping[str, Any]] = []
+        for schema in tools:
+            if not isinstance(schema, Mapping) or schema.get("type") != "function":
+                raise ValueError("工具加载固定 schema 损坏")
+            function = schema.get("function")
+            if (
+                not isinstance(function, Mapping)
+                or not isinstance(function.get("name"), str)
+                or not isinstance(function.get("description"), str)
+                or not isinstance(function.get("parameters"), Mapping)
+            ):
+                raise ValueError("工具加载固定 schema 损坏")
+            schemas.append(cast(Mapping[str, Any], schema))
+        plugins.add(plugin)
+        groups.append({"plugin": plugin, "purpose": purpose, "tools": tuple(schemas)})
+    return tuple(groups)
 
 
-class SearchTool:
+class LoadTools:
     idempotent = True
 
     def __init__(self, groups: tuple[dict[str, object], ...]):
-        self._groups = groups
+        self._groups = {cast(str, group["plugin"]): group for group in groups}
 
     async def prepare(
         self, arguments: Mapping[str, object], source: CallSource | None = None
     ) -> Mapping[str, object] | str:
         try:
-            return Query.model_validate(json_value(arguments)).model_dump(mode="json")
+            return LoadToolsInput.model_validate(json_value(arguments)).model_dump(mode="json")
         except ValidationError as error:
             return str(error)
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
-        query = Query.model_validate(json_value(arguments))
-        matched = _search(self._groups, query)
-        excluded = () if query.allowed_risk is None else tuple(
-            {"owner": group["owner"], "name": entry["schema"]["function"]["name"], "risk": entry["risk"]}
-            for group in _search(self._groups, query.model_copy(update={"allowed_risk": None}))
-            for entry in cast(tuple[Mapping[str, Any], ...], group["tools"])
-            if entry["risk"] not in query.allowed_risk
-        )
-        visible = tuple({
-            "owner": group["owner"],
-            "tools": tuple(
-                cast(Mapping[str, Any], entry)["schema"]
-                for entry in cast(tuple[Mapping[str, Any], ...], group["tools"])
-            ),
-        } for group in matched)
+        plugin = LoadToolsInput.model_validate(json_value(arguments)).plugin
+        group = self._groups.get(plugin)
+        if group is None:
+            return ToolResultValue(
+                "error",
+                (ContentPart("text", json.dumps({
+                    "plugin": plugin,
+                    "error": "插件不属于当前获授工具目录。请使用 system 中的准确插件 ID。",
+                }, ensure_ascii=False)),),
+            )
         return ToolResultValue(
             "success",
-            (
-                ContentPart(
-                    "text",
-                    json.dumps(
-                        {
-                            "matched_groups": json_value(visible),
-                            "excluded_by_risk": json_value(excluded),
-                            "risk_tip": "部分匹配工具被风险过滤排除；需要时省略过滤重搜。返回组内保留完整 schema，执行仍须通过当前授权。" if excluded else "",
-                            "tip": (
-                                "使用 tool_call，并传入 name 与 arguments。"
-                                if matched
-                                else "没有匹配工具，请调整关键词。"
-                            ),
-                        },
-                        ensure_ascii=False,
-                    ),
-                ),
-            ),
+            (ContentPart("text", json.dumps({
+                "plugin": plugin,
+                "tools": json_value(group["tools"]),
+                "tip": "使用 tool_call，并传入 name 与 arguments。",
+            }, ensure_ascii=False)),),
         )
 
     async def query(self, key: str) -> ToolResultValue | None:
         return None
 
 
-class SearchPresentation:
-    """固定搜索顶层 schema，并只解码获授 view 中的间接调用。"""
+class ToolLoadingPresentation:
+    """Expose fixed direct schemas and load complete granted plugin groups."""
 
-    def __init__(self, catalog: ToolCatalog, view: ToolView, search_ref: ToolRef):
+    def __init__(self, catalog: ToolCatalog, view: ToolView, load_ref: ToolRef):
         self._view = view
-        self._search_ref = search_ref
+        self._load_ref = load_ref
         if any(ref.name == "tool_call" for ref in view.refs):
             raise ValueError("获授 view 的原生工具名与间接调用协议冲突: tool_call")
-        direct = tuple(
-            ref
-            for ref in view.refs
-            if catalog.group_always_on(ref)
-        )
-        self._direct = catalog.view(*direct)
+        self._direct = catalog.view(*(
+            ref for ref in view.refs if catalog.group_always_on(ref)
+        ))
         self._groups = _groups(catalog, view)
 
     @property
@@ -200,7 +167,7 @@ class SearchPresentation:
                 "type": "function",
                 "function": {
                     "name": "tool_call",
-                    "description": "调用已获授 view 中已知名称和参数 schema 的工具。",
+                    "description": "调用获授 view 中已经取得 schema 的工具。",
                     "parameters": IndirectCall.model_json_schema(),
                 },
             },
@@ -208,31 +175,31 @@ class SearchPresentation:
 
     @property
     def system_prompt(self) -> str:
-        lines = ["## 可搜索工具目录", "用 tool_search 获取插件组的完整 schema，再用 tool_call 传入 name 与 arguments。"]
-        for group in self._groups:
-            lines.append(f"{group['owner']}：{group['description']}")
-            for entry in cast(list[Mapping[str, Any]], group["tools"]):
-                tool = cast(Mapping[str, Any], entry["schema"])["function"]
-                description = " ".join(tool["description"].split())
-                short = description[:80] + ("…" if len(description) > 80 else "")
-                lines.append(f"   {tool['name']}：{short}")
+        lines = [
+            "## 插件工具目录",
+            "固定工具已经提供 schema。用 load_tools 传入目录中的准确 plugin ID，取得该插件完整 schema 后，再用 tool_call 传入 name 与 arguments。",
+        ]
+        lines.extend(
+            f"{group['plugin']} · {group['purpose']} · {len(cast(tuple[object, ...], group['tools']))} 个工具"
+            for group in self._groups
+        )
         return "\n".join(lines)
 
     def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]] | str:
         if call.name != "tool_call":
             if call.name not in {ref.name for ref in self._direct.refs}:
-                return f"工具不属于当前直接调用目录: {call.name}；请用 tool_search 查询，再用 tool_call 调用。"
+                return f"工具不属于当前直接调用目录: {call.name}；请用 load_tools 查看插件目录。"
             return call.name, cast(Mapping[str, object], call.arguments)
         try:
             decoded = IndirectCall.model_validate(json_value(call.arguments))
         except ValidationError as error:
             return f"tool_call 需要 name 和对象类型的 arguments：{error}"
         if decoded.name not in {ref.name for ref in self._view.refs}:
-            return f"工具不属于获授 view: {decoded.name}；请用 tool_search 查询当前目录。"
+            return f"工具不属于获授 view: {decoded.name}；请用 load_tools 查看插件目录。"
         return decoded.name, decoded.arguments
 
     def configuration(self, name: str) -> Mapping[str, object] | None:
-        return {"groups": self._groups} if name == self._search_ref.name else None
+        return {"groups": self._groups} if name == self._load_ref.name else None
 
 
 async def apply(ctx: Context) -> None:
@@ -240,30 +207,29 @@ async def apply(ctx: Context) -> None:
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
-        if set(configuration) != {"groups"} or not isinstance(configuration["groups"], tuple):
-            raise ValueError("工具搜索 binding 缺少固定组目录")
-        return configuration
+        if set(configuration) != {"groups"}:
+            raise ValueError("工具加载 binding 缺少固定目录")
+        return {"groups": _validate_groups(configuration["groups"])}
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncIterator[BoundTool]:
         groups = state.get("groups")
-        if not isinstance(groups, tuple):
-            raise ValueError("工具搜索固定组目录损坏")
-        yield SearchTool(cast(tuple[dict[str, object], ...], groups))
+        yield LoadTools(_validate_groups(groups))
 
-    search_ref = await catalog.register(
+    load_ref = await catalog.register(
         ctx,
-        name="tool_search",
-        description="搜索获授工具目录；命中后用 tool_call 调用返回的完整 schema。",
-        parameters=Query.model_json_schema(),
+        name="load_tools",
+        description="按准确插件 ID 加载当前获授工具组的完整 schema。",
+        parameters=LoadToolsInput.model_json_schema(),
         open=open_tool,
         capture=capture,
         public=False,
         idempotent=True,
-        risk="read-only",
+        parallel=True,
     )
-    def present(awarded: ToolView) -> tuple[ToolView, ToolPresentation]:
-        view = catalog.view(*awarded.refs, search_ref)
-        return view, SearchPresentation(catalog, view, search_ref)
 
-    _ = await ctx.provide(TOOL_SEARCH_PRESENTATION, present)
+    def present(awarded: ToolView) -> tuple[ToolView, ToolPresentation]:
+        view = catalog.view(*awarded.refs, load_ref)
+        return view, ToolLoadingPresentation(catalog, view, load_ref)
+
+    _ = await ctx.provide(TOOL_LOADING_PRESENTATION, present)

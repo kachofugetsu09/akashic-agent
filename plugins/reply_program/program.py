@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast
+from contextlib import AbstractAsyncContextManager
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.channels import ChannelAttachmentReadPort
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
+from agent.plugin_contracts.context import MaterialView
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .inputs import (
@@ -16,7 +17,6 @@ from .inputs import (
     Content,
     ContentRenderer,
     ContextBuilder,
-    ContextMaterials,
     ContextModel,
     Materials,
     ModelChecks,
@@ -42,18 +42,18 @@ async def run_reply(
     check_source: Callable[[Task, MessageReader, str, int], None],
     selection: ModelSelection, tool_program: ToolProgram,
     model_checks: ModelChecks, model_content: ModelContent, model_projection: ModelProjections,
-    writers: MessageWriters, owner_state: OwnerState, artifact_reader: ChannelAttachmentReadPort,
+    writers: MessageWriters, owner_state: OwnerState,
     react: Callable[..., Awaitable[Message]],
-    materials: ContextMaterials,
+    materials: AbstractAsyncContextManager[MaterialView],
     turn_projection: TurnProjection,
     render_content: ContentRenderer | None = None,
     read_call: CallReader,
     authorize: Authorize,
     max_output_tokens: int,
     max_steps: int,
+    max_parallel_calls: int = 4,
     tool_view: ToolView | None = None,
     tool_names: Sequence[str] | None = None,
-    exclude_materials: frozenset[str] = frozenset(),
     prompt_hints: Sequence[str] = (),
     fixed_bindings: Mapping[str, str] | None = None,
     preview: Preview | None = None,
@@ -73,18 +73,20 @@ async def run_reply(
     prompt_hints = tuple(prompt_hints)
     reader = reader.incremental()
     source_head = reader.head(source=source)
-    snapshot = reader.snapshot()
+    through_seq = reader.head()
+    saved_selection = reader.metadata()
+    snapshot = await reader.snapshot_async(through_seq=through_seq)
     turns = turn_projection.project(snapshot, source)
     open_ids: set[str] = set(turns[-1].message_ids) if turns and turns[-1].status == "open" else set()
     chosen = selection.read(tuple(message for message in snapshot if message.message_id in open_ids))
     if chosen is None:
-        chosen = selection.read_saved(reader.metadata() or {})
+        chosen = selection.read_saved(saved_selection or {})
     from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
     async with (
         cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
-        materials.bind(exclude=exclude_materials) as material_view,
+        materials as material_view,
     ):
         model = execution.chat("agent")
         keep_input_ids = tuple(
@@ -128,10 +130,7 @@ async def run_reply(
                     if index >= start or message.message_id in keep_input_ids
                 ))
                 if refs:
-                    artifacts = await model_content.load_artifacts(
-                        artifact_reader, refs,
-                        accepts_images="image" in model.descriptor.capabilities.input_modalities,
-                    )
+                    artifacts = model_content.describe_artifacts(refs)
             check_source(task, reader, source, source_head)
             return {**result, "system_prompt": "\n\n".join(
                 part for part in (cast(str, result["system_prompt"]), *view.prompts, *prompt_hints, menu.system_prompt) if part
@@ -152,6 +151,7 @@ async def run_reply(
                 materials=build_materials, content=view, tools=menu,
                 max_output_tokens=max_output_tokens, max_steps=max_steps,
                 reduce=reduce, preview=preview, terminal_tools=terminal_tools,
+                max_parallel_calls=max_parallel_calls,
                 state=owner_state.open_scoped(ctx, "generation"),
             )
         finally:

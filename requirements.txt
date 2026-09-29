@@ -22,7 +22,6 @@ litellm==1.95.0
 lxml>=6.0.0
 markdown-it-py>=4.0.0
 mdit-py-plugins>=0.5.0
-ncatbot>=4.4.0
 networkx>=3.4.0
 numpy>=2.4.0
 sqlite-vec>=0.1.6
@@ -34,7 +33,6 @@ tree-sitter>=0.25.2,<0.27
 tree-sitter-javascript>=0.25.0,<0.26
 python-json-logger>=4.1.0,<5
 python-telegram-bot>=22.7
-qrcode>=8.2
 PyYAML>=6.0.0
 requests>=2.32.0
 rich>=14.0.0

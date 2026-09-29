@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -7,9 +9,11 @@ from dataclasses import dataclass
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
+from agent.plugin_composition.tasks import child_task_context
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.context import (
     MATERIALS as MATERIALS,
+    MaterialKind,
 )
 
 from .api import (
@@ -32,6 +36,7 @@ Prepare = Callable[[tuple[Message, ...], str], Awaitable[MaterialData]]
 class _Source:
     prepare: Prepare
     priority: int
+    kind: MaterialKind | None
     prompt: bool
     summary: bool
     context: Context
@@ -79,9 +84,23 @@ class MaterialView:
             collect(caller.runtime.plugin_id, decode_material({"reminders": reminders}).reminders)
         summary: Summary | None = None
         references: dict[str, Mapping[str, object]] = {}
-        for name, owner in self._sources:
-            async with owner.context.runtime_scope():
-                material = decode_material(await owner.prepare(snapshot, source))
+        async def prepare_owner(owner: _Source) -> Materials | Exception:
+            """Keep each independent contribution inside its actual owner scope."""
+            try:
+                async with owner.context.runtime_scope():
+                    return decode_material(await owner.prepare(snapshot, source))
+            except Exception as error:
+                # Drain every started owner, then report errors in frozen order.
+                return error
+
+        # Preparation may overlap; merging still follows the frozen source order.
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(prepare_owner(owner), context=child_task_context())
+                     for _, owner in self._sources]
+        for (name, owner), task in zip(self._sources, tasks, strict=True):
+            material = task.result()
+            if isinstance(material, Exception):
+                raise material
             self._check_active()
             if material.system_prompt:
                 if not owner.prompt:
@@ -156,10 +175,15 @@ class ContextMaterials:
 
     async def register(
         self, ctx: Context, *, name: str, prepare: Prepare,
-        priority: int = 0, prompt: bool = False,
+        priority: int = 0, prompt: bool = False, kind: MaterialKind | None = None,
         reduce: SummaryReducer | None = None,
     ) -> Effect:
-        """同一名称只有一个真实注册 owner；priority 只排序，不表示依赖或权限。"""
+        """Register an independent owner; priority orders output, not execution.
+
+        Preparation overlaps across owners. Each owner protects its own state and
+        drains its work before leaving its scope. Failures are reported in frozen
+        source order after all started owners finish; cancellation drains them too.
+        """
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("材料注册不能跨 composition Root")
         if not isinstance(name, str) or not name or not callable(prepare):
@@ -168,6 +192,8 @@ class ContextMaterials:
             raise TypeError("材料 priority 必须是整数")
         if type(prompt) is not bool:
             raise TypeError("Prompt 声明必须是 bool")
+        if kind not in {None, "context", "recall", "profile"}:
+            raise ValueError("材料 kind 无效")
         plugin_id = ctx.runtime.plugin_id
         expected = self._prompt_sources.get(name)
         if expected is not None and plugin_id != expected:
@@ -186,7 +212,7 @@ class ContextMaterials:
         def setup():
             if name in self._sources:
                 raise ValueError(f"材料 owner 重复: {name}")
-            self._sources[name] = _Source(prepare, priority, prompt, summary, ctx, reduce)
+            self._sources[name] = _Source(prepare, priority, kind, prompt, summary, ctx, reduce)
             return lambda: self._sources.pop(name)
 
         return await ctx.effect(setup, label=f"materials:{name}")
@@ -196,17 +222,25 @@ class ContextMaterials:
         return tuple(source.context for source in self._sources.values())
 
     @asynccontextmanager
-    async def bind(self, *, exclude: frozenset[str] = frozenset()) -> AsyncIterator[MaterialView]:
+    async def bind(self, *, exclude: frozenset[str] = frozenset(),
+                   exclude_kinds: frozenset[MaterialKind] | None = None) -> AsyncIterator[MaterialView]:
         """固定 ACTIVE 材料并持有 provider 与贡献者的局部 scope。"""
+        if exclude_kinds is not None:
+            if exclude or not exclude_kinds <= {"context", "recall", "profile"}:
+                raise ValueError("材料用途选择不能混用旧名称排除，也不能包含未知用途")
         async with self._ctx.runtime_scope():
+            active = {name: source for name, source in self._sources.items()
+                      if source.context.fiber.state is FiberState.ACTIVE}
+            if exclude_kinds and any(source.kind is None for source in active.values()):
+                raise ValueError("材料 owner 尚未声明 kind，不能按用途选择")
             sources = {
                 name: source
-                for name, source in self._sources.items()
-                if name not in exclude
-                and source.context.fiber.state is FiberState.ACTIVE
+                for name, source in active.items()
+                if name not in exclude and (exclude_kinds is None or source.kind not in exclude_kinds)
             }
             for name, plugin_id in self._prompt_sources.items():
-                if name in exclude:
+                # 新选择中 grant 只授予 Prompt 权，不强迫未安装的材料出现。
+                if exclude_kinds is not None or name in exclude:
                     continue
                 source = sources.get(name)
                 if source is None or not source.prompt or source.plugin_id != plugin_id:

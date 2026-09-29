@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, cast
 
-from agent.plugins import update_rollback
+from agent.plugins import update_rollback, config_updates
 from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers
 
 ReloadPhase = Literal[
@@ -332,6 +332,31 @@ class ReloadJournal:
             if current.phase != "armed" or current.reload_tx_id is not None or current.input_ref is not None:
                 raise RuntimeError("指定记录不是孤立 armed 安装")
             update_rollback.rollback(conn, current, plugins_home, now=_now(), error=error)
+
+    def create_config_update(self, request_id: str, plugin_id: str, previous_input: str, input_ref: str) -> None:
+        """记录配置请求；新输入已归档但尚未被 selection 采用。"""
+        with self._connect() as conn:
+            conn.execute("INSERT INTO config_updates(request_id,plugin_id,previous_input,input_ref,state) VALUES (?,?,?,?,'accepted')",
+                         (request_id, plugin_id, previous_input, input_ref))
+
+    def config_update(self, request_id: str) -> dict[str, object]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM config_updates WHERE request_id=?", (request_id,)).fetchone()
+            if row is None:
+                raise KeyError(request_id)
+            return dict(row)
+
+    def finish_config_update(self, request_id: str, state: str, error: str = "") -> None:
+        with self._connect() as conn:
+            result = conn.execute("UPDATE config_updates SET state=?,error=? WHERE request_id=?", (state, error, request_id))
+            if result.rowcount != 1:
+                raise KeyError(request_id)
+
+    def pending_config_updates(self) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute("SELECT * FROM config_updates WHERE state != 'active' ORDER BY rowid")]
 
     def begin(
         self,
@@ -975,6 +1000,7 @@ class ReloadJournal:
                 ON reload_events(tx_id, sequence);
                 """)
 
+            conn.execute(config_updates.SCHEMA)
             for statement in update_rollback.SCHEMA.values():
                 _ = conn.execute(statement)
 
@@ -1004,6 +1030,7 @@ class ReloadJournal:
                 "runtime/plugin-reloads.sqlite3 缺少 plugin_updates；"
                 "不会由普通启动补造历史表"
             )
+        config_updates.check_schema(conn)
         required = {
             "reload_transactions": {
                 "tx_id", "plugin_id", "base_snapshot_id", "candidate_snapshot_id",

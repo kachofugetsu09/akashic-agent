@@ -11,7 +11,7 @@ from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.delivery import (
-    DELIVERY_SENDERS as DELIVERY_SENDERS,
+    DELIVERY_SENDERS as DELIVERY_SENDERS, sender_key,
 )
 
 from .api import Receipt, Sender, SenderResult, Text
@@ -77,6 +77,7 @@ class Senders:
     def __init__(self, ctx: Context):
         self._ctx = ctx
         self._registrations: dict[str, _Registration] = {}
+        self._candidates: dict[str, tuple[Context, str, str, Callable[[], Mapping[str, object]]]] = {}
 
     async def register(self, ctx: Context, *, name: str, idempotent: bool, open: Open) -> Effect:
         """open 只取得发送资源，不得发送正文或启动收件；配置随真实 owner 归档。"""
@@ -95,7 +96,40 @@ class Senders:
                 del self._registrations[name]
             return cleanup
 
-        return await ctx.effect(setup, label="sender:" + name)
+        async def start():
+            cleanup = setup()
+            try:
+                presence = await ctx.provide(sender_key(name), descriptor)
+            except BaseException:
+                cleanup()
+                raise
+            async def close():
+                await presence.aclose()
+                cleanup()
+            return close
+        return await ctx.effect(start, label="sender:" + name)
+
+    async def candidate(self, ctx: Context, *, name: str, title: str, route: str,
+                        status: Callable[[], Mapping[str, object]]) -> Effect:
+        """只登记可配置候选，不创建传输或发送权限。"""
+        sender_key(name)
+        if ctx.root_instance_token is not self._ctx.root_instance_token:
+            raise ValueError("发送候选不能跨运行图")
+        def start():
+            if name in self._candidates:
+                raise ValueError(f"发送候选重复: {name}")
+            self._candidates[name] = (ctx, title, route, ctx.entrypoint(status))
+            return lambda: self._candidates.pop(name)
+        return await ctx.effect(start, label=f"sender-candidate:{name}")
+
+    def candidates(self) -> tuple[Mapping[str, object], ...]:
+        rows = {name: {"name": name, "owner": item.descriptor.owner, "title": name,
+                       "route": None, "enabled": True, "available": True}
+                for name, item in self._registrations.items()}
+        for name, (ctx, title, route, status) in self._candidates.items():
+            rows[name] = {"name": name, "owner": ctx.runtime.plugin_id, "title": title,
+                          "route": route, **status(), "available": name in self._registrations}
+        return tuple(rows[name] for name in sorted(rows))
 
     def registered_names(self) -> tuple[str, ...]:
         """只读当前可用名称，不创建绑定或打开任何 provider 资源。"""

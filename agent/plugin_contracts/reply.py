@@ -14,6 +14,7 @@ from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.models import ContentRenderer
+from agent.plugin_contracts.context import MaterialKind
 from agent.plugin_contracts.tools import ToolPresentation, ToolView
 
 
@@ -45,7 +46,36 @@ class ReplyExecute(Protocol):
     ) -> Message: ...
 
 
+class ReplyExecuteV2(Protocol):
+    """在来源已接纳的 Task 与 Input 上运行；调用者只交入授权与本次选择。"""
+
+    async def __call__(
+        self,
+        ctx: Context,
+        task: Task,
+        reader: MessageReader,
+        source: str,
+        *,
+        authorize: Callable[
+            [str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]
+        ],
+        max_output_tokens: int,
+        max_steps: int,
+        render_content: ContentRenderer | None = None,
+        tool_view: ToolView | None = None,
+        tool_names: Sequence[str] | None = None,
+        exclude_material_kinds: frozenset[MaterialKind] = frozenset(),
+        prompt_hints: Sequence[str] = (),
+        fixed_bindings: Mapping[str, str] | None = None,
+        preview: Callable[[str], AbstractContextManager[StreamCallback]] | None = None,
+        reminders: Sequence[Mapping[str, object]] = (),
+        terminal_tools: frozenset[str] = frozenset(),
+        presentation: ToolPresentation | None = None,
+    ) -> Message: ...
+
+
 REPLY_EXECUTE = ServiceKey[ReplyExecute]("reply.execute.v1")
+REPLY_EXECUTE_V2 = ServiceKey[ReplyExecuteV2]("reply.execute.v2")
 
 
 class Completion(Protocol):

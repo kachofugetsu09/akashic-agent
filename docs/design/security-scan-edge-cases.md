@@ -70,25 +70,25 @@ workspace 全局最多 10 个 active job。add 构造 candidate 并原子保存�
 
 Mutants：无限 add、达到上限时删除旧任务、按 channel 分开计数、把频率限制混入容量合同。
 
-## 8. Receipt 与 Plugin query lease（G6 / D6）
+## 8. 历史 Receipt 与当前 Plugin query lease（G6 / D6）
 
-有副作用或持久结果的命令保存 receipt；只读取当前快照的 `command.list`、`runtime.document.list`、`runtime.capability.list`、`scheduler.job.list` 和 `model.catalog.get` 不保存 receipt，重试时读取新快照。completed receipt 从 `completed_at` 起保留 7 天，每设备高水位为 10,000 条或 64 MiB。需要 receipt 的新命令先清理过期 completed；仍满则当前命令返回 `mobile_command_receipt_capacity_reached`，有效 receipt 不得删除，runtime 继续。相同 request 重放返回原结果；同 ID 不同 request 继续 conflict。
+旧客户端每设备 receipt 容量和 `mobile_command_receipt_capacity_reached` 已随入口退役，不再是当前新命令的 Gate。已有 completed/processing 行仍须按原回执和外部效果取证；源码清理不授权按年龄或容量删除。
 
-processing receipt 不按 TTL 盲删。重启或 reconciliation 必须判断真实外部效果：已完成则补交 completed，明确未执行且无副作用才允许重试，无法判断则持久化 `outcome_unknown` 并阻止自动重放。receipt 状态提交失败不得报告 accepted/terminal success。
+既有 processing receipt 不按 TTL 盲删。恢复时必须判断真实外部效果；无法判断则保留未知结果，不能自动重放或报告成功。
 
-Mobile `message.send` 在返回 accepted 前，先把完整 inbound handoff 持久化到 `sessions.db/inbound_handoffs`，再进入 MessageBus。worker 消费不释放 durable handoff owner；只有 turn 收束且 handoff 删除确认后才释放。进程崩溃时按有限页恢复；canonical user 已存在时删除 handoff并补 receipt 对账，不再创建重复 turn。handoff 删除失败保留 row、强引用 owner 和 `cleanup_degraded` 诊断，由 bus-owned cleanup retry 收束。
+当前通用 durable inbound 仍由 MessageBus 在输入可见前保存 handoff；已提交的 Message 是重放判断依据。旧客户端 handoff 只在读取边界投影到中立字段，不能重新建立旧 `message.send` writer。删除 handoff 失败须保留 row 与恢复 owner，不能重复提交输入。
 
 Plugin query timeout 只结束当前 query 观察；真实 worker 结束前继续占用 quota 和 generation lease，超时后的 handler 结果进入明确终态，lease drain 完成后才释放。
 
-Mutants：有效 receipt 被高水位删除、processing 被盲删重放、handoff 删除失败后丢失 owner、timeout 提前释放 quota/lease。
+Mutants：旧 processing 被盲删重放、handoff 删除失败后丢失 owner、timeout 提前释放 quota/lease。
 
 ## 9. Shell、Subagent 与 MessageBus（G7 / D7、G8 / D8）
 
 Shell retained log 由进程 owner 管理；Subagent 的同步与后台形式共用 Subagent 准入 owner，不能通过同步形式绕过容量限制。达到 cap 只拒绝当前 execution。terminal cleanup 失败保留 execution/log owner 和诊断，并隔离同 owner 新 spawn；已经提交的 turn 不改回失败。
 
-MessageBus 不拥有 Shell/Subagent 的准入，也不设置独立全局 backpressure 或容量拒绝，只负责 channel lane 顺序；Mobile accepted 由 durable handoff 保证崩溃恢复，直到 handoff 删除确认。控制 admission 只统计 queued/running Task 的数量、字节和 live runtime objects，不统计历史 Message 或 programmatic source。
+MessageBus 不拥有 Shell/Subagent 的准入，也不设置独立全局 backpressure 或容量拒绝，只负责 channel lane 顺序；现存 durable handoff 必须有明确的恢复或结算证据。控制 admission 只统计 queued/running Task 的数量、字节和 live runtime objects，不统计历史 Message 或 programmatic source。
 
-Mutants：cleanup 丢失 owner、sync spawn 绕过 admission、已接纳 Mobile handoff 静默丢失、历史 thread 阻止新 turn。
+Mutants：cleanup 丢失 owner、sync spawn 绕过 admission、已接纳 durable handoff 静默丢失、历史 thread 阻止新 turn。
 
 ## 10. Control follow（G8 / D8）
 

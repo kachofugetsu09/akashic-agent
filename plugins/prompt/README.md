@@ -1,18 +1,9 @@
 # Prompt
 
-本包提供人格、行为规则和输入时间材料，依赖 `context.materials.v3`。
+本包提供人格、行为规则和输入时间材料，依赖 `context.materials.v4`。
 消费者通过 Context 的授权配置选择材料 provider；Core 不预置这个选择。
 
-正式安装后，首次配置必须先运行通用 setup 向导。它发现并执行已安装 stable 制品根目录的
-`configure.py`，只在 workspace 缺失时创建 `memory/VEDA.md`；已有合法内容保持原始字节：
-
-```sh
-python main.py setup --config /path/to/config.toml --workspace /path/to/workspace
-```
-
-容器发行入口也使用同一命令：先让 distribution entrypoint 完成 profile 安装，再以 `setup` 作为
-容器命令运行一次向导，然后启动 `supervise`。纯安装不会猜测或写入 VEDA，未完成 setup 时首个
-Prompt 读取会明确报告缺失。
+插件首次 apply 只在缺失时创建 `memory/VEDA.md`；已有合法文件保持原始字节。初始化随实际安装插件启动，不需要第二次 setup 或独立 configure.py。空白、损坏或非 UTF-8 内容仍明确报错，不自动恢复默认人格。
 
 显式恢复使用安装产物中的命令：
 

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+from array import array
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -58,21 +61,21 @@ class DynamicMemoryGraph:
         self.max_nodes = turn_count * 2
         self.config = config
         self.adjacency: list[list[int]] = [[] for _ in range(self.max_nodes)]
-        self.source: list[int] = []
-        self.target: list[int] = []
-        self.kind: list[int] = []
+        self.source = array("q")
+        self.target = array("q")
+        self.kind = array("b")
         self.bidirectional: list[bool] = []
-        self.weight: list[float] = []
-        self.last_updated: list[int] = []
-        self.created_event: list[int] = []
-        self.observed_credit: list[float] = []
-        self.recurrent_credit: list[float] = []
-        self.resource: list[float] = []
-        self.plasticity_threshold: list[float] = []
-        self.last_stimulated_seconds: list[float] = []
-        self.last_support_seconds: list[float] = []
-        self.support_credit: list[float] = []
-        self.independent_credit: list[float] = []
+        self.weight = array("d")
+        self.last_updated = array("q")
+        self.created_event = array("q")
+        self.observed_credit = array("d")
+        self.recurrent_credit = array("d")
+        self.resource = array("d")
+        self.plasticity_threshold = array("d")
+        self.last_stimulated_seconds = array("d")
+        self.last_support_seconds = array("d")
+        self.support_credit = array("d")
+        self.independent_credit = array("d")
         self.hubs: list[HubRecord] = []
         self.hub_members: dict[int, list[int]] = {}
         self.temporal_lookup: dict[tuple[int, int, int], int] = {}
@@ -129,8 +132,8 @@ class DynamicMemoryGraph:
         def remap(node_id: int) -> int:
             return node_id + offset if node_id >= old_turn_count else node_id
 
-        self.source = [remap(node_id) for node_id in self.source]
-        self.target = [remap(node_id) for node_id in self.target]
+        self.source = array("q", (remap(node_id) for node_id in self.source))
+        self.target = array("q", (remap(node_id) for node_id in self.target))
         self.hubs = [
             HubRecord(
                 node_id=remap(hub.node_id),
@@ -147,16 +150,34 @@ class DynamicMemoryGraph:
             for node_id, edge_ids in self.hub_members.items()
         }
 
-        # 3. Rebuild adjacency deterministically with the remapped node IDs.
+        # 3. 边编号与节点内顺序不变，只移动 turn/hub 的分界。
+        turns = self.adjacency[:min(old_turn_count, turn_count)]
+        if offset > 0:
+            turns.extend([] for _ in range(offset))
+        # hub 按创建事件占槽；未形成 hub 的事件也保留空槽。
+        hubs = self.adjacency[old_turn_count:old_turn_count + min(old_turn_count, turn_count)]
+        if offset > 0:
+            hubs.extend([] for _ in range(offset))
+        self.adjacency = turns + hubs
         self.turn_count = turn_count
         self.max_nodes = turn_count * 2
-        self.adjacency = [[] for _ in range(self.max_nodes)]
-        for edge_id, (source, target, bidirectional) in enumerate(
-            zip(self.source, self.target, self.bidirectional, strict=True)
-        ):
-            self.adjacency[source].append(edge_id)
-            if bidirectional:
-                self.adjacency[target].append(edge_id)
+
+    @contextmanager
+    def temporary_turn_capacity(self, turn_count: int) -> Iterator[None]:
+        """查询只移动拓扑表示，退出时复用原对象恢复，不重建第二次邻接。"""
+        previous = (
+            self.turn_count, self.max_nodes, self.source, self.target,
+            self.hubs, self.hub_members, self.adjacency,
+        )
+        try:
+            self.grow_turn_capacity(turn_count)
+            yield
+        finally:
+            (
+                self.turn_count, self.max_nodes, self.source, self.target,
+                self.hubs, self.hub_members, self.adjacency,
+            ) = previous
+            self._transition_cache.clear()
 
     def capture_retrieval_state(self) -> RetrievalState:
         """Snapshot causal clocks without copying graph topology or weights."""

@@ -21,12 +21,12 @@ from agent.plugin_composition.messages import (
 from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import RESTART_GATE, Task
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.reply import REPLY_EXECUTE as REPLY_EXECUTE
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V2 as REPLY_EXECUTE
 from agent.plugin_contracts.sources import (
     CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
     SOURCES as SOURCES,
 )
-from agent.plugin_contracts.tools import ALL_TOOLS, TOOL_SEARCH_PRESENTATION
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOL_LOADING_PRESENTATION
 
 from .api import REPLY_PROGRAM
 from .completion import REPLY_COMPLETION
@@ -122,7 +122,7 @@ async def apply(ctx: Context) -> None:
         async def authorize(binding_id: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
             return {"source": source, "session_id": reader.session_id}
 
-        with ctx.borrow(TOOL_SEARCH_PRESENTATION) as present:
+        with ctx.borrow(TOOL_LOADING_PRESENTATION) as present:
             presentation = None
             if present is not None:
                 view, presentation = present(view)

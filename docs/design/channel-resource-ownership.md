@@ -1,5 +1,9 @@
 # Channel 资源归属迁移
 
+> QQ 运行支持已按 [0080](../decisions/0080-retire-qq-runtime-support.md) 退役；下文 QQ 实现、拓扑与验收描述只保留历史证据。
+
+> 历史实施记录：本文件中的整 Root/ValidationHost 与 Mobile UI 接线已被当前单图局部换代和 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md) 取代，不作为现行实现合同。
+
 - 状态：已授权实施的 Draft；只做静态阅读与 `git diff --check`，测试未运行。
 - 基线：`df9179cf9e145d2cfd661e1b90780e26a2d6b006`。
 - 上游：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md)、[持久化状态地图](persistence-state-map.md)。

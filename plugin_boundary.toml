@@ -109,15 +109,15 @@ note = "普通 Commands provider 拥有人类命令、alias、handler 注册及�
 
 [capabilities."core.ui_slots"]
 role = "seam"
-note = "普通 UI provider 拥有 Mobile 页面、查询与导航注册及当前活动目录"
+note = "普通 UI provider 拥有插件页面、查询与导航注册及当前活动目录"
 
 [capabilities."core.message_display.v1"]
 role = "core"
 note = "按当前 live Root 组合 message.display:* 的只读页面投影"
 
-[capabilities."core.mobile_ui.v1"]
+[capabilities."core.plugin_ui.v1"]
 role = "core"
-note = "按当前 live Root 提供中立 Mobile UI registry 投影"
+note = "按当前 live Root 提供中立插件 UI registry 投影"
 
 [capabilities."core.web_ui.v1"]
 role = "seam"
@@ -230,15 +230,15 @@ note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 �
 role = "seam"
 note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
 
-[capabilities."tool-search.presentation.v2"]
+[capabilities."tools.loading.presentation.v1"]
 role = "seam"
-note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+note = "独立公共合同；按插件加载的展示由普通插件提供，来源见 Issue 766 设计"
 
 [capabilities."models.selection.v1"]
 role = "seam"
 note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
 
-[capabilities."models.content.v1"]
+[capabilities."models.content.v2"]
 role = "seam"
 note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
 
@@ -350,6 +350,10 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
 
+[capabilities."source.interrupt.v1"]
+role = "seam"
+note = "Sources 拥有输入与停止的共同路由；渠道声明停止能力依赖"
+
 [capabilities."source.session.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
@@ -377,3 +381,23 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 [capabilities."turn.projection.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."core.plugin_config.v1"]
+role = "core"
+note = "按实际 Context 应用自身固定输入；沿 selection CAS 与局部换代，不解释业务字段"
+
+[capabilities."onboarding.steps.v1"]
+role = "seam"
+note = "普通 onboarding provider 持有 Effect 步骤目录；贡献者保留配置 writer"
+
+[capabilities."inspection.documents.v1"]
+role = "seam"
+note = "文档 owner 发布有界只读入口；检查插件仅拥有贡献目录"
+
+[capabilities."context.materials.v4"]
+role = "seam"
+note = "材料声明用途；选择不依赖 provider 名称"
+
+[capabilities."reply.execute.v2"]
+role = "seam"
+note = "来源传入材料用途选择；旧入口保留归档调用恢复"

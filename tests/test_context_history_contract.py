@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from agent.plugin_composition.models import LLMResponse
+from agent.plugin_composition.models import LLMResponse, ModelContinuation, ToolCall as ModelToolCall
 from plugins.content.plugin import check_text
+from plugins.context.api import Materials, Reminder, material_data
 from plugins.models.projection import check_facts
 from session.embedding_store import MessageEmbeddingStore
 from session.log import MessageLog
 from session.message import ContentPart, Input, Output
 from tests.support.message_react import runtime
+from plugins.tools.execution import Result
 
 
 def assert_rows_unchanged(
@@ -171,3 +174,140 @@ async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(t
         assert reopened.reader("s").head() == appended.seq
     finally:
         reopened.close()
+
+
+def _request_text(request: object) -> str:
+    """Read synthetic markers from the model request without relying on row positions."""
+    messages = getattr(request, "messages")
+    return "\n".join(
+        content
+        for row in messages
+        if isinstance((content := row.get("content")), str)
+    )
+
+
+@pytest.mark.asyncio
+async def test_reminder_replay_is_once_per_input_and_material_identity(tmp_path: Path) -> None:
+    """A fresh projection keeps one fact per material identity and restores opaque state."""
+    requests: list[object] = []
+    material_values = iter(("first-a", "first-b", "first-b", "second-c"))
+
+    async def complete(request):
+        requests.append(request)
+        step = len(requests)
+        if step < 3:
+            return LLMResponse(
+                None,
+                [ModelToolCall(f"tool-{step}", "example", {})],
+                continuation=ModelContinuation("model", {"step": step}),
+            )
+        return LLMResponse(
+            f"done-{step}",
+            continuation=ModelContinuation("model", {"step": step}),
+        )
+
+    async def invoke(_key, _arguments):
+        return Result("success", (ContentPart("text", "synthetic tool result"),))
+
+    async def material_source(_snapshot):
+        return material_data(Materials("", (Reminder("memory", next(material_values), 1),)))
+
+    async with runtime(
+        tmp_path, complete, invoke, max_steps=4, material_source=material_source,
+    ) as (conversation, log, _models, run):
+        await conversation.accept("first-input", Input((ContentPart("text", "first"),)))
+        first = await conversation.start(run)
+        assert first is not None
+        await first.join()
+
+        await conversation.accept("second-input", Input((ContentPart("text", "second"),)))
+        second = await conversation.start(run)
+        assert second is not None
+        await second.join()
+
+        assert len(requests) == 4
+        counts = [
+            tuple(_request_text(request).count(marker) for marker in ("first-a", "first-b", "second-c"))
+            for request in requests
+        ]
+        assert counts == [(1, 0, 0), (1, 1, 0), (1, 1, 0), (1, 1, 1)]
+        assert requests[3].continuation == ModelContinuation("model", {"step": 3})
+
+        facts = [
+            part.value
+            for message in log.reader("s").snapshot()
+            if isinstance(message.body, Output)
+            for part in message.body.parts
+            if isinstance(part, ContentPart) and part.kind == "model.facts"
+        ]
+        assert len(facts) == 4
+        input_ids: list[object] = []
+        for value in facts:
+            assert isinstance(value, Mapping)
+            input_ids.append(value["reminder_input_id"])
+        assert input_ids == ["first-input"] * 3 + ["second-input"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_reminder_facts_remain_verbatim_history(tmp_path: Path) -> None:
+    """Untyped pre-upgrade facts retain their recorded replay instead of guessed deduplication."""
+    requests: list[object] = []
+    material_values = iter(("legacy-material", "current-material"))
+
+    async def complete(request):
+        requests.append(request)
+        return LLMResponse("done")
+
+    async def invoke(_key, _arguments):
+        pytest.fail("the legacy replay fixture has no tool effects")
+
+    async def material_source(_snapshot):
+        return material_data(Materials("", (Reminder("memory", next(material_values), 1),)))
+
+    async with runtime(
+        tmp_path, complete, invoke, max_steps=2, material_source=material_source,
+    ) as (conversation, log, _models, run):
+        await conversation.accept("first-input", Input((ContentPart("text", "first"),)))
+        first = await conversation.start(run)
+        assert first is not None
+        await first.join()
+
+        first_facts = next(
+            part.value
+            for message in log.reader("s").snapshot()
+            if isinstance(message.body, Output)
+            for part in message.body.parts
+            if isinstance(part, ContentPart) and part.kind == "model.facts"
+        )
+        assert isinstance(first_facts, Mapping)
+        legacy_facts = {
+            key: value
+            for key, value in first_facts.items()
+            if key not in {"reminder_input_id", "reminder_sha256"}
+        }
+        log.writer(
+            "s",
+            author="assistant",
+            source="conversation",
+            body_types=(Output,),
+            content={"text": check_text, "model.facts": check_facts},
+        ).append(
+            "legacy-output",
+            Output(
+                (
+                    ContentPart("text", "legacy durable output"),
+                    ContentPart("model.facts", legacy_facts),
+                ),
+                "complete",
+            ),
+        )
+
+        await conversation.accept("second-input", Input((ContentPart("text", "second"),)))
+        second = await conversation.start(run)
+        assert second is not None
+        await second.join()
+
+        assert len(requests) == 2
+        second_request = _request_text(requests[1])
+        assert second_request.count("legacy-material") == 2
+        assert second_request.count("current-material") == 1

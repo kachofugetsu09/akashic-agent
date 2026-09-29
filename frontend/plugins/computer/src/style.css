@@ -1,0 +1,8 @@
+/* 剪贴板属于 Computer；短屏只滚动面板，不裁掉操作或改变远程输入。 */
+.computer-clipboard {
+  box-sizing: border-box;
+  max-block-size: calc(100% - 46px);
+  overflow: auto;
+}
+
+.computer-clipboard > p { font-size: 1rem; line-height: 1.5; }

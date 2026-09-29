@@ -80,9 +80,8 @@ FORBIDDEN_V2_FIXED_METHODS = frozenset(
         "proactive_module_factories",
         "proactive_runtime_factories",
         "telegram_bot_commands",
-        "mobile_bot_commands",
-        "mobile_ui_available",
-        "mobile_ui_query",
+        "plugin_ui_available",
+        "plugin_ui_query",
     }
 )
 GIT_COMMAND_TIMEOUT_SECONDS = 30

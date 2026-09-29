@@ -1026,6 +1026,7 @@ class ChannelDefinition:
     inbound_identity: InboundIdentity | None
     config: Mapping[str, object] = field(default_factory=dict)
     interrupt: Callable[[RawInbound], Awaitable[bool]] | None = None
+    optional_services: frozenset[ServiceKey[Any]] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or _NAME.fullmatch(self.name) is None:
@@ -1036,6 +1037,10 @@ class ChannelDefinition:
             raise ValueError("channel capabilities 必须只包含 ChannelCapability")
         if not callable(self.factory):
             raise TypeError("channel factory 必须可调用")
+        if not isinstance(self.optional_services, frozenset) or any(
+            not isinstance(key, ServiceKey) for key in self.optional_services
+        ):
+            raise TypeError("optional_services 必须是 ServiceKey frozenset")
         object.__setattr__(self, "config", _freeze_channel_config(self.config))
         if ChannelCapability.CONTROL in self.capabilities and not callable(self.interrupt):
             raise TypeError("CONTROL channel 必须提供自己的 interrupt 回调")

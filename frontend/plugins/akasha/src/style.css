@@ -676,3 +676,8 @@
   font-variant-numeric: tabular-nums;
   text-align: end;
 }
+
+/* 检索证据和回答是阅读正文，不随工作台元数据一起缩小。 */
+.akasha-evidence-main p,
+.akasha-evidence-main .akasha-assistant,
+.akasha-answer-body { font-size: max(16px, 1rem); line-height: 1.55; }

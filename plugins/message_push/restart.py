@@ -323,12 +323,10 @@ class RestartWatcher:
                         continue
                     if turn.status != "complete" or turn.ending_message_id is None:
                         raise RestartRejectedError("restart ToolCall 所属 Turn 未正常完成")
-                    if request.source == "programmatic":
-                        if claim is None:
-                            raise RestartRejectedError(
-                                "programmatic agent_restart 缺少精确 frame claim",
-                            )
+                    if claim is not None:
                         await claim.wait_output()
+                        if claim.ending_message_id != turn.ending_message_id:
+                            raise RestartRejectedError("frame claim 不属于当前 Turn 的最终 Output")
                     else:
                         await delivery.wait(reader, turn)
                     await gate.commit(request.request_id)
@@ -390,8 +388,6 @@ async def register_restart(ctx: Context) -> ToolRef | None:
             "additionalProperties": False,
         },
         open=open_tool,
-        risk="external-side-effect",
-        search_hint="重启 reload restart 核心代码",
     )
     _ = await ctx.on(RUNTIME_STARTING, watcher.prepare)
     _ = await ctx.on(RUNTIME_STARTED, watcher.start)

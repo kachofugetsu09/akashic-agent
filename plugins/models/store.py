@@ -575,6 +575,7 @@ class ModelsStore:
         def write(connection: sqlite3.Connection) -> None:
             _insert_connection(connection, command.connection)
             _insert_model(connection, command.model)
+            _set_added_embedding_default(connection, command.model)
 
         return self._domain_write(
             command.connection.expected_revision,
@@ -672,6 +673,7 @@ class ModelsStore:
 
         def write(connection: sqlite3.Connection) -> None:
             _insert_model(connection, command)
+            _set_added_embedding_default(connection, command)
 
         return self._domain_write(command.expected_revision, "add-model", write)
 
@@ -757,8 +759,8 @@ class ModelsStore:
             raise ValueError("driver returned an empty model catalog")
         keys: set[tuple[ModelKind, str]] = set()
         for item in items:
-            if not isinstance(item.kind, ModelKind):
-                raise ValueError(f"driver returned unsupported model kind: {item.kind}")
+            if item.kind not in {ModelKind.CHAT, ModelKind.EMBEDDING}:
+                raise ValueError("服务目录没有用途验证；请逐个选择模型并验证后保存，现有模型保持不变。")
             if not isinstance(item.capabilities, ModelCapabilities):
                 raise TypeError("driver returned invalid model capabilities")
             if not isinstance(item.capability_sources, CapabilitySources):
@@ -766,7 +768,7 @@ class ModelsStore:
             model = _required(item.model, "discovered model")
             if model != item.model:
                 raise ValueError("discovered model must not contain outer whitespace")
-            key = (item.kind, model)
+            key = (cast(ModelKind, item.kind), model)
             if key in keys:
                 raise ValueError(
                     f"driver returned duplicate model: {item.kind.value}/{model}"
@@ -815,19 +817,19 @@ class ModelsStore:
                         (model_id,),
                     )
             for item in items:
-                key = (item.kind, item.model)
+                key = (cast(ModelKind, item.kind), item.model)
                 stored = existing.get(key)
                 if stored is not None and not stored[1] and not stored[2]:
                     continue
                 model_id = (
                     stored[0]
                     if stored is not None
-                    else _discovered_model_id(target_connection, item.kind, item.model)
+                    else _discovered_model_id(target_connection, cast(ModelKind, item.kind), item.model)
                 )
                 owner = used.get(model_id)
                 if owner is not None and owner != (
                     target_connection,
-                    item.kind,
+                    cast(ModelKind, item.kind),
                     item.model,
                 ):
                     raise ValueError(
@@ -837,7 +839,7 @@ class ModelsStore:
                     expected_revision=expected_revision,
                     model_id=model_id,
                     connection_id=target_connection,
-                    kind=item.kind,
+                    kind=cast(ModelKind, item.kind),
                     model=item.model,
                     capabilities=item.capabilities,
                     capability_sources=item.capability_sources,
@@ -866,7 +868,7 @@ class ModelsStore:
                             _model_payload(command, source="discovery"),
                         ),
                     )
-                used[model_id] = (target_connection, item.kind, item.model)
+                used[model_id] = (target_connection, cast(ModelKind, item.kind), item.model)
             return True
 
         return self._domain_write(expected_revision, "sync-models", write)
@@ -1130,7 +1132,7 @@ def _sync_would_change(
     ):
         return True
     for item in items:
-        stored = current.get((item.kind, item.model))
+        stored = current.get((cast(ModelKind, item.kind), item.model))
         if (
             stored is not None
             and not stored.discovery_owned
@@ -1141,10 +1143,10 @@ def _sync_would_change(
             model_id=(
                 stored.model_id
                 if stored is not None
-                else _discovered_model_id(connection_id, item.kind, item.model)
+                else _discovered_model_id(connection_id, cast(ModelKind, item.kind), item.model)
             ),
             connection_id=connection_id,
-            kind=item.kind,
+            kind=cast(ModelKind, item.kind),
             model=item.model,
             default_reasoning_effort=(
                 item.default_reasoning_effort.strip()
@@ -1357,6 +1359,17 @@ def _insert_connection(
             config,
         ),
     )
+
+
+def _set_added_embedding_default(connection: sqlite3.Connection, command: AddModel) -> None:
+    """新增与默认选择在同一个 Models 事务中提交。"""
+    if command.make_default_embedding:
+        if command.kind is not ModelKind.EMBEDDING:
+            raise ValueError("只有向量模型可以设为默认向量模型")
+        connection.execute(
+            "UPDATE model_registry_meta SET default_embedding_model_id = ? WHERE singleton = 1",
+            (command.model_id,),
+        )
 
 
 def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:

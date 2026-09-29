@@ -8,6 +8,7 @@ from typing import Any, cast
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugin_contracts import CallRef, ToolCall
+from agent.plugin_contracts.tools import CommitAfter as CommitAfter
 from agent.plugin_contracts.tools import ToolPresentation as ToolPresentation
 
 from .execution import MessageReply, Result, ToolExecution
@@ -85,9 +86,11 @@ class ToolMenu:
         limit: int | None = None,
         fixed_bindings: Mapping[str, str],
         presentation: ToolPresentation | None = None,
+        parallel_names: frozenset[str] = frozenset(),
     ):
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError("工具菜单容量必须为正整数或 None")
+        self._parallel_names = frozenset(parallel_names)
         self._bindings = bindings
         self._execution = execution
         self._reply = reply
@@ -152,15 +155,22 @@ class ToolMenu:
         )
         return cast(str, description["name"])
 
+    def parallel(self, binding_id: str) -> bool:
+        """只有注册时显式允许的只读工具可以重叠；失效 binding 一律串行。"""
+        try:
+            return self.name(binding_id) in self._parallel_names
+        except Exception:
+            return False
+
     def check_call(self, call: ToolCall) -> None:
         if call.binding_id not in self._bound.values():
             raise PermissionError("工具请求不属于本次获授 view")
 
-    async def execute(self, call: CallRef) -> Result:
+    async def execute(self, call: CallRef, *, commit_after: CommitAfter | None = None) -> Result:
         opened = self._reply(call)
         reply = await opened if inspect.isawaitable(opened) else opened
         try:
-            return await self._execution.execute_call(reply)
+            return await self._execution.execute_call(reply, commit_after=commit_after)
         finally:
             reply.writer.expire()
 

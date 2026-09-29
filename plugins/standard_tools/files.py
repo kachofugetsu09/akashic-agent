@@ -83,7 +83,7 @@ class FileTool:
         )
         if isinstance(value, str):
             return ToolResultValue("success", (ContentPart("text", value),))
-        if value.mobile_attention is not None or value.runtime_provenance:
+        if value.runtime_provenance:
             raise ValueError("文件后端返回了未声明的交互或来源字段")
         parts = [ContentPart("text", value.text)] if value.text else []
         # 2. 保存后端实际返回的 model-safe 图片；临时文件不是权威 Artifact。
@@ -145,7 +145,5 @@ async def register_file(
         parameters=normalize_tool_parameters(prototype.parameters),
         open=open_tool,
         capture=capture,
-        risk=(
-            "read-only" if backend_type in (ReadFileTool, ListDirTool) else "read-write"
-        ),
+        parallel=backend_type in (ReadFileTool, ListDirTool),
     ))

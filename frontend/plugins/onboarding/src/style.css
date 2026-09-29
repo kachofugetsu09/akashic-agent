@@ -1,0 +1,328 @@
+/* Onboarding 页面：步骤导航、进度与完成页。表单基础样式来自共享 configuration.css。 */
+
+.onboarding-page {
+  max-width: 1100px;
+}
+
+.onboarding-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 28px;
+}
+
+.onboarding-header p {
+  margin: 8px 0 0;
+  color: var(--md-sys-color-on-surface-variant, #666);
+}
+
+.onboarding-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 44px;
+  align-items: start;
+}
+
+/* 进度：已决定 / 总数，填充条随决定数增长。 */
+.onboarding-progress {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 14px;
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant, #595c52);
+}
+
+.onboarding-progress-track {
+  block-size: 4px;
+  border-radius: 999px;
+  background: var(--md-sys-color-surface-container-low, #eff0e9);
+  overflow: hidden;
+}
+
+.onboarding-progress-fill {
+  block-size: 100%;
+  border-radius: inherit;
+  background: var(--md-sys-color-on-surface, #30372d);
+  transition: inline-size 320ms var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+}
+
+.onboarding-steps {
+  position: sticky;
+  top: 0;
+}
+
+.onboarding-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-step-list button {
+  display: flex;
+  width: 100%;
+  gap: 12px;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 13px 10px;
+  border-radius: 10px;
+  transition: background-color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+.onboarding-step-list button:not(:disabled):hover {
+  background: var(--md-sys-color-surface-container-low, #f0f1ea);
+}
+
+.onboarding-step-list button[aria-current] {
+  background: var(--md-sys-color-surface-container-low, #f0f1ea);
+  border-color: var(--md-sys-color-outline, #8a8d82);
+}
+
+.onboarding-step-list button[data-state="locked"] {
+  opacity: 0.45;
+}
+
+.onboarding-step-text {
+  min-width: 0;
+}
+
+.onboarding-steps strong,
+.onboarding-steps small {
+  display: block;
+}
+
+.onboarding-steps strong {
+  font-weight: 550;
+}
+
+.onboarding-steps small {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant, #666);
+  margin-top: 3px;
+}
+
+.onboarding-number {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  border: 1px solid var(--md-sys-color-outline-variant, #d6d8d0);
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
+}
+
+.onboarding-step-list button[data-state="done"] .onboarding-number {
+  background: var(--md-sys-color-on-surface, #30372d);
+  border-color: transparent;
+  color: var(--md-sys-color-surface, #fff);
+}
+
+.onboarding-step-list button[data-state="current"] .onboarding-number {
+  border-color: var(--md-sys-color-on-surface, #30372d);
+}
+
+.onboarding-content {
+  min-width: 0;
+  border: 1px solid var(--md-sys-color-outline-variant, #ddd);
+  border-radius: 16px;
+  padding: 28px;
+  background: var(--md-sys-color-surface, #fff);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .onboarding-content {
+    transition: opacity 240ms ease, transform 240ms ease;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @starting-style {
+    .onboarding-content,
+    .onboarding-complete,
+    .onboarding-invite[open] {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+}
+
+.onboarding-content h2 {
+  font-size: 25px;
+  letter-spacing: -0.02em;
+  margin: 5px 0 24px;
+}
+
+.onboarding-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 1px solid var(--md-sys-color-outline-variant, #ddd);
+}
+
+.onboarding-footer > span {
+  flex: 1;
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant, #666);
+}
+
+/* 完成页：居中卡片，先给结论，再给入口。 */
+.onboarding-complete {
+  max-width: 620px;
+  margin: 20px auto;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .onboarding-complete {
+    transition: opacity 280ms ease, transform 280ms ease;
+  }
+}
+
+.onboarding-complete-badge {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--md-sys-color-on-surface, #30372d);
+  color: var(--md-sys-color-surface, #fff);
+  font-size: 20px;
+}
+
+.onboarding-complete h2 {
+  margin: 0 0 8px;
+}
+
+.onboarding-complete > p {
+  color: var(--md-sys-color-on-surface-variant, #666);
+}
+
+.onboarding-complete ul {
+  padding: 0;
+  margin: 24px 0;
+  list-style: none;
+  text-align: left;
+}
+
+.onboarding-complete li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant, #ddd);
+  padding: 13px 0;
+}
+
+.onboarding-complete strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.onboarding-complete-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+.onboarding-chat {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 20px;
+  background: var(--md-sys-color-on-surface, #30372d);
+  color: var(--md-sys-color-surface, #fff);
+  border-radius: 9px;
+  text-decoration: none;
+}
+
+/* 首跑邀请：在共享对话框基础上加模糊遮罩和上浮进入。 */
+.onboarding-invite::backdrop {
+  background: color-mix(in oklch, var(--ak-ink-primary, #222) 22%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .onboarding-invite[open] {
+    transition: opacity 240ms ease, transform 240ms ease;
+  }
+}
+
+@media (max-width: 760px) {
+  .onboarding-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .onboarding-header {
+    flex-direction: column;
+    margin-bottom: 20px;
+  }
+
+  /* 窄屏步骤变成横向刻度条：吸附滚动，当前步骤可见。 */
+  .onboarding-steps {
+    position: static;
+  }
+
+  .onboarding-progress {
+    padding-inline: 0;
+  }
+
+  .onboarding-step-list {
+    flex-direction: row;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    padding-bottom: 6px;
+    scrollbar-width: none;
+  }
+
+  .onboarding-step-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .onboarding-step-list li {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+  }
+
+  .onboarding-step-list button {
+    width: auto;
+    padding: 9px 12px 9px 9px;
+  }
+
+  .onboarding-steps small {
+    display: none;
+  }
+
+  .onboarding-steps strong {
+    font-size: 13px;
+  }
+
+  .onboarding-content {
+    padding: 20px;
+  }
+
+  .onboarding-footer {
+    flex-wrap: wrap;
+  }
+
+  .onboarding-footer > span {
+    display: none;
+  }
+
+  .onboarding-footer > button {
+    flex: 1;
+  }
+
+  .onboarding-complete-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

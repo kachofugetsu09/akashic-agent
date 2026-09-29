@@ -92,7 +92,7 @@ for (const plugin of modules) {
 
 // 新 Message Inspector 的源文件与其他前端一样保存在 frontend 下。
 await bundle({
-  entryPoints: [resolve(repoRoot, "frontend/plugins/akasha/src/mobile.js")],
+  entryPoints: [resolve(repoRoot, "frontend/plugins/akasha/src/plugin-ui.js")],
   bundle: true,
   format: "esm",
   target: "es2022",

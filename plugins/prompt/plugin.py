@@ -8,10 +8,12 @@ from typing import cast
 from agent.plugin_composition import Context
 from agent.plugin_contracts import Input, Message, json_value
 from agent.plugin_contracts.context import (
-    MATERIALS as MATERIALS,
+    MATERIALS_V4 as MATERIALS,
 )
 
-from .persona import read_veda_file
+from agent.plugin_contracts.inspection import DOCUMENTS, Document
+
+from .persona import read_veda_file, initialize_veda_if_missing
 from .text import build_behavior_rules, build_identity, build_telegram_rendering_prompt
 
 api_version = 3
@@ -26,6 +28,9 @@ inject = (MATERIALS,)
 
 async def apply(ctx: Context) -> None:
     """只贡献已获授的 Prompt 和只读环境材料，不取得任何消息 writer。"""
+    initialize_veda_if_missing(ctx.runtime.workspace)
+    await ctx.inject((DOCUMENTS,), publish_documents, name="documents")
+
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
         # 1. 文件是人格唯一真源；已返回字符串在本次请求中保持不变。
         prompt = "\n\n".join((
@@ -61,4 +66,15 @@ async def apply(ctx: Context) -> None:
             "reminders": (environment,),
         }
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="default_prompt", prepare=prepare, prompt=True, priority=100)
+    _ = await ctx.require(MATERIALS).register(ctx, kind="context", name="default_prompt", prepare=prepare, prompt=True, priority=100)
+
+
+async def publish_documents(ctx: Context) -> None:
+    """只发布本插件拥有的人格文件；检查能力缺席不影响 Prompt。"""
+    def read(limit: int) -> bytes:
+        with ctx.workspace_file("memory/VEDA.md").open("rb") as file:
+            return file.read(limit)
+
+    await ctx.require(DOCUMENTS).register(ctx, Document(
+        "veda", "VEDA 人格", "memory/VEDA.md", "identity", "Agent 的人格真源。", read, 300,
+    ))

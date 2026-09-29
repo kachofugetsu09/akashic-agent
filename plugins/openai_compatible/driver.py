@@ -79,6 +79,7 @@ class _ConnectionConfig:
     read_timeout: float
     max_retries: int
     allow_unverified_manual: bool
+    thinking_format: str = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +120,7 @@ class _BoundChat:
         # 连接配置只留给 embeddings/discovery 等非生成路径。
         connection = replace(self._connection, max_retries=0)
         body = _chat_body(self._descriptor, connection, self._config, request)
-        if request.on_delta is None and not _is_deepseek_v4(self._descriptor.model):
+        if request.on_delta is None and connection.thinking_format != "deepseek":
             payload = await _request_json(
                 connection,
                 self._credential,
@@ -201,6 +202,7 @@ def definition() -> ModelDriverDefinition:
         open=_open,
         discover=_discover,
         probe=_probe,
+        probe_embedding=_probe_embedding,
     )
 
 
@@ -243,6 +245,30 @@ async def _open(
         )
 
     return DriverConnection(bind_chat=bind_chat, bind_embedding=bind_embedding, close=http.aclose)
+
+
+async def _probe_embedding(
+    descriptor: DriverConnectionDescriptor, credential: CredentialHandle, model: str,
+) -> DiscoveredModel:
+    """用两段固定文本测量实际维度，不创建虚假的绑定空间。"""
+    _check_credential_scope(descriptor, credential)
+    connection = replace(_connection_config(descriptor), max_retries=0)
+    try:
+        async with asyncio.timeout(30):
+            payload = await _request_limited_json(
+                connection, credential, "POST", "/embeddings",
+                body={"model": model, "input": ["Akashic embedding setup check", "Akashic embedding order check"]},
+                max_bytes=4 * 1024 * 1024,
+            )
+    except TimeoutError as error:
+        raise ModelTimeoutError("向量试算超时，请检查服务地址或稍后重试；配置未保存。") from error
+    result = _parse_embedding_response(payload, expected_count=2)
+    return DiscoveredModel(
+        kind=ModelKind.EMBEDDING, model=model,
+        capabilities=ModelCapabilities(embedding_dimensions=len(result.vectors[0]), embedding_normalization="none"),
+        capability_sources=CapabilitySources(embedding_dimensions="probe", embedding_normalization="driver"),
+        driver_config={"format_version": 1},
+    )
 
 
 async def _probe(
@@ -318,7 +344,7 @@ async def _discover(
         seen_models.add(model)
         result.append(
             DiscoveredModel(
-                kind=ModelKind.CHAT,
+                kind=None,
                 model=model,
                 default_reasoning_effort=None,
                 capabilities=ModelCapabilities(),
@@ -340,6 +366,7 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         "max_attempts",
         "allow_unverified_manual",
         "catalog_provider_id",
+        "thinking_format",
     }
     unknown = sorted(set(config) - allowed)
     if unknown:
@@ -370,7 +397,11 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
     allow_unverified_manual = config.get("allow_unverified_manual", False)
     if not isinstance(allow_unverified_manual, bool):
         raise ValueError("allow_unverified_manual must be boolean")
+    thinking_format = config.get("thinking_format", "none")
+    if not isinstance(thinking_format, str) or thinking_format not in {"none", "deepseek"}:
+        raise ValueError("thinking_format must be none or deepseek")
     return _ConnectionConfig(
+        thinking_format=thinking_format,
         base_url=_normalize_base_url(descriptor.endpoint),
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
@@ -417,10 +448,6 @@ def _model_config(config: Mapping[str, Any]) -> _ModelConfig:
     )
 
 
-def _is_deepseek_v4(model: str) -> bool:
-    return model.rsplit("/", 1)[-1].lower().startswith("deepseek-v4-")
-
-
 def _chat_body(
     descriptor: BoundModelDescriptor,
     connection: _ConnectionConfig,
@@ -445,7 +472,7 @@ def _chat_body(
     if request.disable_reasoning:
         for key in ("enable_thinking", "thinking", "reasoning_effort"):
             body.pop(key, None)
-        if _is_deepseek_v4(descriptor.model):
+        if connection.thinking_format == "deepseek":
             body["thinking"] = {"type": "disabled"}
     return body
 
@@ -491,6 +518,7 @@ async def _request_limited_json(
     path: str,
     *,
     max_bytes: int,
+    body: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read one discovery response with a hard byte limit and no retries."""
 
@@ -501,6 +529,7 @@ async def _request_limited_json(
                 method,
                 path,
                 headers={"Accept-Encoding": "gzip, identity"},
+                json=body,
             ) as response:
                 content = await _read_limited_response(response, max_bytes=max_bytes)
         bounded = httpx.Response(
@@ -889,10 +918,10 @@ def _parse_embedding_response(
     if not isinstance(raw_data, list) or len(raw_data) != expected_count:
         raise TransportError("embedding response count does not match input")
     ordered: list[tuple[int, tuple[float, ...]]] = []
-    for position, raw in enumerate(raw_data):
+    for raw in raw_data:
         if not isinstance(raw, Mapping):
             raise TransportError("embedding item must be an object")
-        index = raw.get("index", position)
+        index = raw.get("index")
         vector = raw.get("embedding")
         if not isinstance(index, int) or isinstance(index, bool):
             raise TransportError("embedding index must be an integer")
@@ -910,6 +939,8 @@ def _parse_embedding_response(
     if sorted(index for index, _vector in ordered) != list(range(expected_count)):
         raise TransportError("embedding indexes must cover the input batch exactly")
     ordered.sort(key=lambda item: item[0])
+    if len({len(vector) for _index, vector in ordered}) != 1:
+        raise TransportError("服务返回了不一致的向量维度；请联系服务提供方，配置未保存。")
     raw_usage = payload.get("usage")
     return EmbeddingResult(
         vectors=tuple(vector for _index, vector in ordered),
@@ -1072,11 +1103,14 @@ def _status_error(response: httpx.Response, *, secret: str) -> ModelError | None
     message = _redact_secret(_response_error_message(response), secret)
     lowered = message.lower()
     if response.status_code in {401, 403}:
-        return AuthenticationError(message)
+        return AuthenticationError(
+            f"模型连接授权未通过（HTTP {response.status_code}）。"
+            f"请在模型设置中核对 API Key 或账号权限后重试。服务返回：{message}"
+        )
     if response.status_code >= 500:
         # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
         # （context_length 等）不得把错误提升为可证明的容量拒绝。
-        return TransportError(f"provider returned HTTP {response.status_code}: {message}")
+        return TransportError(f"模型服务暂不可用（HTTP {response.status_code}），请稍后重试。服务返回：{message}")
     if any(code in lowered for code in _CONTEXT_CODES):
         return ContextLengthError(message)
     if any(code in lowered for code in _SAFETY_CODES):

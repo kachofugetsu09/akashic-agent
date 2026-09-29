@@ -303,8 +303,8 @@ repository、确认凭证边界、公开性与真实 installed artifact，再加
    注册 channel adapter，不把 channel 业务字段加入通用 `PluginContext`。
 5. **Timer/proactive capability**：Core 提供 timer/clock/turn enqueue seam，插件自己实现
    调度逻辑；不把 `jobs()`、`proactive_*()` 原样翻译成 v3 namespace 方法。
-6. **Mobile UI/query capability**：把移动投影建成窄 typed capability，与 Dashboard 类似；
-   不保留 `mobile_ui()/mobile_query()` 的 Manager 特判。
+6. **Plugin UI/query capability**：插件注册中性界面与 typed query，由 Web host 消费；
+   Core 不按客户端名称建立 Manager 特判。
 7. **Generation job/LLM capability**：Core 拥有 committed trigger/interval catalog、执行期模型
    generation lease 和取消/drain；插件只实现 job handler，不取得整个 legacy `PluginContext`。
 8. **v3 generation metadata**：把 `ComposablePlugin` 暂借的 `PluginContext` 数据迁入

@@ -1,5 +1,7 @@
 # Akashic v4：消息日志与可组合的 Agent 链路
 
+> QQ 运行支持已按 [0080](../decisions/0080-retire-qq-runtime-support.md) 退役；下文 QQ 实现、拓扑与验收描述只保留历史证据。
+
 - 状态：设计已批准（2026-09-05 用户确认）；按 stacked PR 实施。新 MessageLog 的完整启动验收已在当前 Core 候选中开始，正式 workspace、客户端配套和正式切换仍未完成。
 - 修订日期：2026-09-05。
 - 源码与原提案基线：`51f1467456881e7302abf76a931e9dfe698fef6c`。
@@ -972,7 +974,7 @@ Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在
 第 06 层的实现边界：
 
 - 代码在导入前按完整文件树归档，正常 generation、候选 clone、延迟 import、静态命令和资源读取均使用归档路径。`plugin_dir` 保留安装来源和发布指针含义；`code_dir` 从实际模块入口计算，不再保存第二份路径字段。Skills 的展示软链也指向该 generation 的归档资源；原安装目录变化不能改变旧 lease 的正文。
-- 代码归档保留 manifest 和 requirements；`.venv`、`node_modules` 属于运行环境，不作为代码归档。第 06 层只分开代码/cwd 与安装环境，不打开历史外部 runtime。第 07 层已由安装 owner 在最终路径创建并固定 Python 环境；历史调用按所选目标校验环境引用，缺失或不匹配明确失败。当前 installed cache 不参与历史环境恢复，具体边界见下一节。
+- 代码归档保留 manifest 和 requirements；`.venv`、`node_modules` 属于运行环境，不作为代码归档。第 06 层只分开代码/cwd 与安装环境，不打开历史外部 runtime。第 07 层由安装 owner 在最终路径创建并固定 Python 环境；历史调用按所选目标读取环境引用，所需目录或解释器缺失明确失败。当前 installed cache 不参与历史环境恢复；运行时读取按 PLG-002 与 [0077](../decisions/0077-trust-installed-runtime-inputs.md) 执行。
 - binding 从所需 Service 的实际 provider 出发，只向上收集插件与子 Fiber 的声明依赖。Content、Tool 等注册表由自己选择目标的注册 Context，再将真实 Context 交给 binding；Core 校验其属于当前所选 Root 的存活 Fiber，随后将其 owner 纳入同一闭包。调用者不拼 plugin ID，也不恢复整个 fleet。目标选择和 definition 身份属于 registry 的不可变 metadata；第 07 层完成这些具体注册表消费者接入。
 - 配置正文与 revision 来自同一次读取。归档保存可复建投影和已捕获的静态启用选择，不重算当前环境下的 `is_active`。日期和 CredentialRef 使用明确的值编码；凭据解析仍通过其 owner 的 revision fence，不在归档中存 secret 原文。
 - 普通 binding 打开调用者已选 scope 中实际提供的服务，不执行历史模块导入；候选业务验证只导入当前 candidate snapshot 的组件并使用独立数据。旧 `root_ref`/component descriptor 仍可作为 provenance 读取，但旧组件代码、plugin-data 与 workspace 不复制或复活；旧 manifest 的 credential/exclude 声明只读合并并在 current data 首次复制前生效。未声明的能力不可用，不能用空数据或 candidate 兼容壳冒充恢复成功。
@@ -995,7 +997,7 @@ Content 的协议类型作为稳定 API，实际解码器与注册 Context 仍�
                ▼
 ┌─────────────────────────────┐
 │ 打开所选 Tool / MCP          │
-│ 校验所需代码与 Python 环境    │
+│ 读取固定代码与 Python 环境    │
 └──────┬──────────────┬───────┘
        ▼              ▼
 ┌──────────────┐ ┌────────────────────┐
@@ -1009,7 +1011,7 @@ Content 的协议类型作为稳定 API，实际解码器与注册 Context 仍�
              归还借用
 ```
 
-Python 环境在最终目录创建，之后不移动虚拟环境；console script 的绝对解释器路径因此保持有效。component descriptor 第 2 版按每个 Python runtime 保存环境引用。打开纯 Content 不检查该插件未使用的 MCP 环境；调用具体 MCP/process 时才校验它自己的代码、requirements、环境树和宿主基础 Python 身份。该协议只覆盖同一 POSIX 主机和基础解释器，不宣称冻结整个操作系统或动态库。Node 等未实现的运行环境不能套用 Python 的恢复承诺。
+Python 环境在最终目录创建，之后不移动虚拟环境；console script 的绝对解释器路径因此保持有效。component descriptor 第 2 版按每个 Python runtime 保存环境引用。打开纯 Content 不打开该插件未使用的 MCP 环境；具体 MCP/process 使用自己的固定引用。读取合同由 PLG-002 拥有，旧的源码、requirements、环境树与基础解释器复验按 [0077](../decisions/0077-trust-installed-runtime-inputs.md) 退役。该协议只覆盖同一 POSIX 主机，不宣称冻结整个操作系统或动态库。Node 等未实现的运行环境不能套用 Python 的恢复承诺。
 
 MCP 的公开 open 要求调用 Context 是该声明的实际 owner；其他插件须使用 owner 明确提供的能力。历史 MCP 使用独立连接和私有 process 端口，不执行正式启动事件。需要 Desktop 等 Workload 时，只借用当前 ready 且完整 descriptor 相等的已有资源；不替换或停止它。正式 owner 在停止前禁止新借用，等待已有借用排空。历史 MCP 断开、process 停止成功后才归还借用，清理失败保留实际 owner 和重试证据。调用 scope 的失败从资源 host 的 tombstone 查询，通过 Manager 的 `resource_failures / retry_resource_cleanup` 按精确 scope 重试；不写正式插件 reload journal，不重建 stable Root。Manager 关闭时同步停止接纳新调用，再清理已接纳的调用资源，最后停止正式 Workload。同一个调用 owner 的锁覆盖启动、停止与重试，关闭不取消整个调用者 Task；并发重试只归还一次借用。监督运行中进程继承 boot 身份，Gateway 退出后的进程组清理由既有 guardian 拥有。
 
@@ -1548,7 +1550,7 @@ Mobile 启动只接收 MessageBus 与上传存储；目录及恢复读已绑定�
 └────────────────────┘     └───────────────────────────┘
 ```
 
-`MODEL_CALL_STATS` 只返回调用 ID、模型名、状态、可空耗时与 usage，不公开完整 binding、auth identity、credential 或 continuation。Web `GET /api/chat/model-settings/calls/{call_id}` 和 Mobile `model.call.get` 使用同一个已发布 Root 的窄查询；未知调用和未安装统计服务分别明确失败。Mobile 查询是 ephemeral，不保存 command receipt。查询、刷新和重连均不写 Message、调用账或其他运行状态。
+`MODEL_CALL_STATS` 只返回调用 ID、模型名、状态、可空耗时与 usage，不公开完整 binding、auth identity、credential 或 continuation。Web `GET /api/chat/model-calls/{call_id}` 和 Mobile `model.call.get` 使用同一个已发布 Root 的窄查询；未知调用和未安装统计服务分别明确失败。Mobile 查询是 ephemeral，不保存 command receipt。查询、刷新和重连均不写 Message、调用账或其他运行状态。
 
 两端输入框优先显示当前活动调用，空闲时读取最后一条模型 Output 的调用 ID。流式生成期间每秒刷新同一记录；完整且准确的 usage 才以 `output_tokens / ((duration_ms - first_token_ms) / 1000)` 显示平均速度。缺失、部分用量、未结算或非正生成时长不估算速度；旧记录不从秒级时间戳推算耗时。切会话、断线和组件卸载取消旧查询，迟到结果不能显示到另一会话。原 ClientTurnMetricsTracker 已无活跃 UI 调用，留待统一清理。
 
@@ -1728,7 +1730,7 @@ Programmatic 最终分项对账：来源、Web/Mobile Channel、Subagent、Core/
 | 材料默认授权 | Context 内写死业务名；由组合配置声明 | Context 默认空 Prompt grant、`summary_source=[]`，正式初始化配置列出具体 owner。卸载或关闭材料有真实 TOML 表达；已授予但缺失仍报错 |
 | 人格和规则 | 继续 Core PromptBlock；普通 `prompt` 材料 | `default_prompt` 只读已授予 VEDA 文件，复用严格 UTF-8/非空边界。一般事实/完成/格式规则保留；旧记忆工具名称和相互矛盾的 Skill 路由不再冒充当前能力 |
 | 技能读取范围 | 扫 workspace/builtin 并叠加插件；只读已发布插件 catalog | 只读当前 exact snapshot 的 `plugin_skill_index`。不读取可变软链接或恢复旧手工目录，不增加转发型 Core Skill 服务 |
-| 技能恢复 | 只存正文；持久旧目录路径；固定完整资源树 | 使用既有 `PluginArchive` 保存完整 skill root；binding 记录 tree ref 与正文 hash。正文、相对 scripts/resources 在重启、升级和卸载后仍来自原树 |
+| 技能恢复 | 只存正文；持久旧目录路径；固定完整资源树 | 使用既有 `PluginArchive` 保存完整 skill root；binding 记录 tree ref。按 [0077](../decisions/0077-trust-installed-runtime-inputs.md) 直接读取已发布目录，不再保存或复验正文摘要；正文、相对 scripts/resources 在重启、升级和卸载后仍来自原树 |
 | 工具权限 | 将 Tools 倒灌材料 API；目录与工具 schema 各守边界 | 目录和 always 正文均为低信任材料，不许据此宣称工具可用。实际 schema 决定 `load_skill` 是否获授；材料不枚举工具或复制菜单 |
 | 时间 | 重放时取 now；改写 Input；投影持久接纳时间 | 取同 source 最新 Input 的 `recorded_at`，标明“接纳时间”。不假称渠道发送时间；无 origin 不猜渠道或设备 |
 

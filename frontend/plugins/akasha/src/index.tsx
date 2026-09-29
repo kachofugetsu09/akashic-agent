@@ -1,3 +1,4 @@
+import { registerForm } from "../../shared/src/configuration";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import type {
   FetchPageOptions as FetchPageOpts,
@@ -347,7 +348,8 @@ const ledgerPanel = {
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   dashboardRequest = ctx.http.request;
+  const releaseSettings = registerForm(ctx, {id: "akasha", title: "Akasha 情景记忆", description: "从对话中学习情景记忆；关闭后已有记忆仍保留。"});
   const releaseRecall = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(panel));
   const releaseLedger = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(ledgerPanel));
-  return () => { releaseRecall(); releaseLedger(); dashboardRequest = null; };
+  return () => { releaseSettings(); releaseRecall(); releaseLedger(); dashboardRequest = null; };
 }

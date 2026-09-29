@@ -8,10 +8,7 @@ from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
 )
-from bus.events import (
-    AttachmentKind as LegacyAttachmentKind,
-    ChannelAttachment,
-)
+from bus.events import ChannelAttachment
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.base import AttachmentStore
 from infra.channels.remote_media import snapshot_remote_media
@@ -29,7 +26,7 @@ class ChannelOutboundAttachmentImporter:
     async def import_source(self, source: str, kind: AttachmentKind) -> AttachmentRef:
         """将已授权路径或公网 URL 固定为一个已发布附件引用。"""
         refs = await import_channel_attachments(self._store, (
-            ChannelAttachment(kind=LegacyAttachmentKind(kind.value), source=source),
+            ChannelAttachment(kind=kind, source=source),
         ))
         return refs[0]
 
@@ -41,7 +38,7 @@ class ChannelOutboundAttachmentImporter:
             self._store,
             tuple(
                 ChannelAttachment(
-                    kind=LegacyAttachmentKind.IMAGE,
+                    kind=AttachmentKind.IMAGE,
                     source=source,
                 )
                 for source in media
@@ -58,7 +55,7 @@ async def import_channel_attachments(
     # 1. 每个来源先成为 Core-owned immutable artifact。
     refs: list[AttachmentRef] = []
     for attachment in attachments:
-        kind = AttachmentKind(attachment.kind.value)
+        kind = attachment.kind
         if attachment.source.startswith(("http://", "https://")):
             refs.append(await _import_remote(store, attachment, kind))
             continue

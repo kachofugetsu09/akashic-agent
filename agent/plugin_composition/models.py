@@ -363,9 +363,9 @@ class ModelDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredModel:
-    """Provider evidence that the models plugin may persist under its own ID."""
+    """服务返回的模型候选；None 表示尚无用途证据，不能直接持久化。"""
 
-    kind: ModelKind
+    kind: ModelKind | None
     model: str
     capabilities: ModelCapabilities
     capability_sources: CapabilitySources
@@ -507,6 +507,7 @@ class ModelDriverDefinition:
     open: DriverOpen
     discover: DriverDiscover | None = None
     probe: DriverProbe | None = None
+    probe_embedding: Callable[[DriverConnectionDescriptor, CredentialHandle, str], Awaitable[DiscoveredModel]] | None = None
     start_auth: DriverAuthHandler | None = None
     finish_auth: DriverAuthHandler | None = None
     cancel_auth: DriverAuthHandler | None = None

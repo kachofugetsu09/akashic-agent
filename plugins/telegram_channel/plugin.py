@@ -12,9 +12,7 @@ from agent.plugin_composition import (
 from agent.plugin_composition.channels import CHANNEL_INPUT, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_contracts.sources import (
-    SOURCE_SESSION as SOURCE_STATE,
-)
+from agent.plugin_contracts.sources import SOURCE_INTERRUPT
 
 from .channel import TelegramChannelAdapter, build_telegram_channel
 from .config import TelegramChannelConfig
@@ -24,11 +22,11 @@ name = "telegram_channel"
 version = "3.0.0"
 desc = "Telegram inbound and outbound v3 channel adapter"
 author = "Akashic"
-inject = (CHANNELS, CHANNEL_INPUT, CREDENTIALS, MESSAGE_CATALOG, SOURCE_STATE)
+function_inject = (CHANNELS, CHANNEL_INPUT, CREDENTIALS, MESSAGE_CATALOG, SOURCE_INTERRUPT)
 Config = TelegramChannelConfig
 
 
-async def apply(ctx: Context) -> None:
+async def run(ctx: Context) -> None:
     """Register Telegram only when its ordinary plugin config enables it."""
     config = Config.model_validate(ctx.config)
 
@@ -38,11 +36,7 @@ async def apply(ctx: Context) -> None:
         """先通过来源提交 pause 并等待旧工作，再由原 binding 发送 ack。"""
         session_id = f"telegram:{raw.message.chat_id}"
         reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
-        if reader.head(source="conversation") < 0:
-            return False
-        pending = ctx.require(SOURCE_STATE).needs_reply(reader, "conversation")
-        await ctx.require(CHANNEL_INPUT)(session_id, raw.message_id, raw.message)
-        return pending
+        return await ctx.require(SOURCE_INTERRUPT)(reader, raw.message_id, raw.message.channel)
 
     await ctx.require(CHANNELS).register(
         ctx,
@@ -71,3 +65,17 @@ __all__ = [
     "name",
     "version",
 ]
+
+
+from agent.plugin_composition import CREDENTIALS
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+
+inject = (PLUGIN_CONFIG, RUNTIME_CATALOG, CREDENTIALS)
+
+
+async def apply(ctx: Context) -> None:
+    """设置入口常驻，业务依赖只影响功能分支。"""
+    from .settings import mount
+    function = await ctx.inject(function_inject, run, name="function")
+    await mount(ctx, Config, function)

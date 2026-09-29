@@ -39,8 +39,7 @@ current committed Root 的接纳，再允许安装 owner 删除 cache；失败�
 唯一读取是该等待方法。删除字段、三处镜像循环和等待方法；保留 snapshot 的
 实际租约计数、fork、归还通知、引用检查、排空与失败重试。
 
-`tests/test_mobile_ui_scope.py` 两个 SimpleNamespace generation fixture 也删除
-无用字段，原跨快照读取断言保留。`tests_scenarios/contracts/oracles.py` 的
+`tests_scenarios/contracts/oracles.py` 的
 `old_generation_lease_count` 是独立 oracle 参数，未读取 PluginGeneration 字段；
 语义测试仍有输入消费者，保留。其他 lease_count 读者均属于 RuntimeSnapshot。
 

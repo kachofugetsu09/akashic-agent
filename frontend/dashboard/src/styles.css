@@ -96,6 +96,13 @@ body {
   background: var(--ak-paper-raised);
 }
 
+@media (max-width: 760px) {
+  .web-host-stale {
+    inset: calc(8px + env(safe-area-inset-top, 0px)) 12px auto;
+    text-align: center;
+  }
+}
+
 @media (prefers-contrast: more) {
   .web-host-stale { border-color: var(--ak-rule-strong); }
 }

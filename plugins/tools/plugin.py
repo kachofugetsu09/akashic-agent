@@ -6,7 +6,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from typing import Protocol, cast
 
 from agent.plugin_composition import (
     RUNTIME_STARTED,
@@ -66,6 +66,21 @@ desc = "声明工具并固定实际实现；一次调用的回执独立于会话
 ContentCheck = Callable[[ContentPart], ContentReferences]
 
 
+def _matches_saved_description(current: Mapping[str, object], saved: Mapping[str, object]) -> bool:
+    """Accept only the two retired display fields from an archived v2 binding."""
+    if current == saved:
+        return True
+    legacy = dict(saved)
+    risk = legacy.pop("risk", None)
+    hint = legacy.pop("search_hint", None)
+    if (
+        "risk" in saved and risk not in {"read-only", "read-write", "external-side-effect"}
+        or "search_hint" in saved and hint is not None and not isinstance(hint, str)
+    ):
+        return False
+    return ("risk" in saved or "search_hint" in saved) and legacy == current
+
+
 class ContentViewCapability(Protocol):
     @property
     def checks(self) -> Mapping[str, ContentCheck]: ...
@@ -89,6 +104,7 @@ class _Registration:
     capture: Capture | None
     preparation: _Preparation | None = None
     authorization: _Authorization | None = None
+    parallel: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,8 +205,7 @@ class ToolCatalog:
         capture: Capture | None = None,
         public: bool = True,
         idempotent: bool = False,
-        risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
-        search_hint: str | None = None,
+        parallel: bool = False,
     ) -> ToolRef:
         """目标自行校验参数 schema；注册表固定发现描述与真实资源入口。"""
         self._check_context(ctx)
@@ -201,12 +216,8 @@ class ToolCatalog:
             raise ValueError("工具名或描述无效")
         if parameters.get("type") != "object":
             raise ValueError("工具参数必须声明 object schema")
-        if risk not in {"read-only", "read-write", "external-side-effect"}:
-            raise ValueError("工具风险声明无效")
-        if search_hint is not None and not isinstance(search_hint, str):
-            raise TypeError("工具搜索提示必须是字符串或 None")
-        if any(type(value) is not bool for value in (idempotent, public)):
-            raise TypeError("工具执行和发现选项必须是 bool")
+        if any(type(value) is not bool for value in (idempotent, public, parallel)):
+            raise TypeError("工具执行选项必须是 bool")
         if capture is not None and not callable(capture):
             raise TypeError("工具 capture 必须是可调用对象")
         descriptor = cast(
@@ -219,14 +230,12 @@ class ToolCatalog:
                     "description": description,
                     "parameters": parameters,
                     "idempotent": idempotent,
-                    "risk": risk,
-                    "search_hint": search_hint,
                 }
             ),
         )
 
         reference = ToolRef(name, descriptor)
-        registration = _Registration(reference, ctx, open, capture)
+        registration = _Registration(reference, ctx, open, capture, parallel=parallel)
 
         def setup() -> Callable[[], None]:
             if name in self._tools:
@@ -297,6 +306,11 @@ class ToolCatalog:
             return cleanup
 
         return await ctx.effect(setup, label=f"tool-authorize:{name}")
+
+    def allows_parallel(self, name: str) -> bool:
+        """调度只读取 owner 声明；未知工具一律不能重叠。"""
+        registration = self._tools.get(name)
+        return registration is not None and registration.parallel
 
     def _check_context(self, ctx: Context) -> None:
         if ctx.root_instance_token is not self._ctx.root_instance_token:
@@ -423,7 +437,9 @@ class ToolCatalog:
             raise ValueError("工具 binding 描述无效")
         name = description.get("name")
         registration = self._tools.get(name) if isinstance(name, str) else None
-        if registration is None or registration.ref.description != description:
+        if registration is None or not _matches_saved_description(
+            registration.ref.description, description
+        ):
             raise ValueError("工具 binding 与归档注册不一致")
         preparation = registration.preparation
         authorization = registration.authorization
@@ -463,7 +479,7 @@ class ToolCatalog:
             raise ValueError("工具 binding 缺少工具名")
         registration = self._tools[name]
         preparation = registration.preparation
-        if registration.ref.description != description or metadata["prepare"] != (
+        if not _matches_saved_description(registration.ref.description, description) or metadata["prepare"] != (
             None if preparation is None else preparation.name
         ):
             raise ValueError("归档工具描述或参数准备与 binding 不一致")
@@ -511,8 +527,9 @@ class ToolCatalog:
         registration = self._tools.get(cast(str, description["name"]))
         authorization = (
             None
-            if registration is None or registration.ref.description != description
-            else registration.authorization
+            if registration is None or not _matches_saved_description(
+                registration.ref.description, description
+            ) else registration.authorization
         )
         if authorization is None or metadata["authorize"] != authorization.name:
             raise ValueError("归档工具限制与 binding 不一致")

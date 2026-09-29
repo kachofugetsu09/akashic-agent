@@ -86,6 +86,20 @@
 | 40 | `tests/test_durable_deliveries.py::test_provider_started_sigkill_recovers_uncertain_without_resend` | C5结果未知时保持 `uncertain` | 发送中途被 SIGKILL 后恢复为 `uncertain`，不自动重发。外部效果不能被"恢复内存指针"伪装成已回滚。 |
 | 42 | `tests/test_message_log.py::test_session_scope_is_fixed_at_admission_and_absent_for_old_sessions` | C4 Session 固定事实不可改写；O：新增维度不改旧行（SES-010） | 真实 `MessageLog` 上断言 scope 首次接纳后同值幂等、异值失败，已有消息的 Session 不能补写 scope，旧 Session 属性字节不变。Akasha 分图和项目归属都以此为唯一依据。 |
 | 43 | `tests/test_akasha_graphs.py::test_unavailable_graph_does_not_stop_other_graphs` | O：故障局部化；MEM-013 独立图消费进度 | 真实安装 Akasha 与 MessageLog，default 或独立图缺少消费出处时，另一图仍完成学习与召回，原图错误保持可见。既有插件生命周期测试没有覆盖同一记忆插件内的独立图。 |
+| 44 | `tests/test_parallel_tool_calls.py`（2 个节点） | C4/SES-002：重叠执行不得改变同一来源事实的提交顺序 | 0079 引入受控重叠后，"ToolResult 按模型顺序落盘"成为新的失败面，同一不变量只留两条最直接路径：`test_parallel_calls_overlap_but_results_commit_in_model_order`（正常提交按模型顺序落盘）与 `test_parallel_failure_does_not_commit_later_results_first`（前驱失败时后继不得抢先落盘）；旧串行实现没有 `parallel` 注册与提交门，这些用例在其上直接失败。分组、容量与取消竞态属于 §1 不保留的实现细节。 |
+| 45 | `tests/test_tool_bindings.py::test_parallel_flag_stays_out_of_binding_description` | PLG-018 工具按引用而非名字；0079 | `parallel` 是目录注册事实，不进入 binding 描述与归档比较；Catalog 不从效果标签判断其资格。 |
+| 46 | `tests/test_tool_bindings.py::test_prepare_and_authorize_follow_exact_registration_identity` | PLG-018 归档工具描述仍固定选择 | 仅 v2 已退役的 `risk`/`search_hint` 可在恢复比较中移除；其他描述变化、同名新注册和失效引用都不能借恢复改选工具。 |
+| 47 | `tests/test_tool_bindings.py::test_load_tools_returns_only_the_requested_frozen_group` | PLG-018 按准确插件 ID 的完整组加载 | loader 只返回该次获授 view 中准确 ID 的全部 schema；近似或未获授 ID 明确失败且不泄漏另一组。 |
+| 48 | `tests/test_default_reply.py::test_default_reply_loads_one_complete_granted_plugin_group` | PLG-018 已安装回复的目录、加载与执行边界 | 真实 PluginManager 只在 system 显示插件 ID/用途/数量，`load_tools` 返回完整组后经固定 `tool_call` 调用真实 binding；无 loaded 状态。 |
+
+Akasha 后台执行回归补充：`tests/test_akasha_execution.py` 的 10 个受控场景守护
+O（耗时工作不冻结宿主）、PLG-003/006（在途工作排空后才能关闭绑定与 writer）以及
+MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 t+1 对 t 的依赖。
+既有独立图测试未卡住真实恢复或发布边界，不能发现恢复仍在主循环执行、取消期间
+构造完成却泄漏 writer，或后继学习越过前驱发布的问题。场景使用真实 MessageLog、
+固定向量、MemoryCycle、Bindings 和磁盘发布，只在边界用 Event 控制调度。
+旧实现上的恢复、学习准备和重建回执场景失败，修复后通过；已有的取消发布场景
+保留为执行边界改动的保护。新建 writer 的取消场景覆盖本次新增的异步资源取得边界。
 
 ### 2.4 静态边界（不是 pytest 节点，但属于保留项）
 
@@ -102,11 +116,11 @@
 - `tests/test_plugin_fresh_root.py` 保留 `module`（被第 22、23 条 import）
 - `tests/test_default_reply.py` 保留 `application`、`live_root`（被第 31 条 import）
 - `tests/support/delivery_sources.py`：从已删除的 `test_delivery_bindings.py` 抽出 `sources`（第 31、33 条与 `application` 使用）
-- `tests/support/message_react.py`：从已删除的 `test_message_react.py` 抽出 `runtime`（第 35 条使用）
+- `tests/support/message_react.py`：从已删除的 `test_message_react.py` 抽出 `runtime`（第 35、44 条使用；第 44 条加入 `parallel_ids` 与 `max_parallel_calls` 参数）
 - 第 35 条用到的 `assert_rows_unchanged`、`assert_no_forbidden_writes` 已内联进 `tests/test_context_history_contract.py`；`tests_scenarios/contracts/` 已删除
 - `docker/debug/plugin_external_acceptance.py`（第 17、18 条要用）
 
-`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 42 个节点（`test_default_reply` 与第 43 条各带 2 组参数，合计 44 个用例；第 42、43 条随 0073 加入）。
+`test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 42 个节点（`test_default_reply` 与第 43 条各带 2 组参数，合计 44 个用例；第 42、43 条随 0073 加入）。第 44、45 条随 0079 加入；第 44 条随后按 §1"同一不变量只留一到两个最直接的测试"收敛为 2 个节点，收集数变为 45 个节点、47 个用例。
 
 ## 3. 需要补充的测试（10 个，全部来自 #766 验收）
 
@@ -172,3 +186,23 @@
    - §3 清单里的补充项。
 3. 新增测试的 PR 必须写明守护的是 §1 里的哪一条概念，并说明为什么现有 41 项守不住。说不清就不收。
 4. 重构改变了某个保留测试的**实现假设**（例如第 11、12 条），按新语义重写，不删除它守护的概念。
+
+## Event-loop isolation regressions
+
+- `test_interest_execution.py`: O, one optional interest calculation must not block unrelated host work. Uses the real MessageLog, Learning and CompositionRoot. The regression fails on `0126f900` because history preparation runs on the loop thread.
+
+- `test_material_execution.py`: O, actual Root material owners can prepare independently while result order stays deterministic; the prior serial loop fails the gate.
+
+- `test_storage_read_execution.py`: O/C4, pinned read snapshots do not own unrelated writes; async warmup fixes a prefix and preserves external-change invalidation. Uses the actual MessageLog and SQLite transactions.
+
+- O / MEM-013: `test_slow_graph_does_not_block_another_graph_publication` holds one real installed graph at the embedding boundary, proves another graph's durable publication, then checks both pending steps of the slow graph publish in order.
+
+- O: `test_slow_destination_does_not_delay_next_fast_receipt` gates a real Delivery sender and checks the second fast destination's durable receipt while the first slow destination remains started.
+
+- O: `test_shell_cleanup_only_blocks_its_own_owner` holds physical cleanup, proves another owner can run a real subprocess, and proves the same owner remains waiting until cleanup ends.
+
+- O: `test_workload_plugin_cleanup_does_not_block_neighbor_receipt` gates one plugin's Docker observation and verifies another plugin's durable stop receipt, while the same plugin remains serialized.
+
+- O: `test_due_alert_bypasses_running_content_score` runs real EventMail/Wake state under a Root, holds Content scoring, and verifies the due Alert is admitted with its original durable mail identity before scoring finishes.
+
+- O / C1: `test_slow_ui_owner_leaves_capacity_and_queued_timeout_never_runs` uses real Root/UI registrations and physical worker threads. It proves another owner can query, a queued timeout never invokes its handler, and shutdown waits for running work even after caller cancellation.

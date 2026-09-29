@@ -75,6 +75,19 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
     _ = await ctx.provide(MODEL_CONTENT, ContentOwner())
     _ = await ctx.provide(MODEL_SELECTION, SelectionOwner())
+    from agent.plugin_contracts.onboarding import ONBOARDING, Step
+    async def status():
+        async with ctx.runtime_scope():
+            catalog = state.catalog.snapshot()
+            from agent.plugin_composition.models import ModelAvailability
+            model_id = catalog.role_bindings.get("default")
+            ready = model_id is not None and catalog.model(model_id).availability == ModelAvailability.AVAILABLE
+            return {"ready": ready, "enabled": True if ready else None, "blocked": False,
+                    "reason": "" if ready else "请选择连接方式并设置默认模型"}
+    async def contribute(child: Context):
+        await child.require(ONBOARDING).group(child, "models", "模型连接")
+        await child.require(ONBOARDING).register(child, Step("connect", "模型连接", "models", "models", status))
+    await ctx.inject((ONBOARDING,), contribute, name="onboarding")
     for method, operation in rpc_methods(BoundModelControl(ctx)).items():
         _ = await ctx.provide(rpc_method_key(method), operation)
     _ = await ctx.inject((UI, MODEL_CATALOG, MODEL_CALL_STATS, MODEL_SETTINGS, MODEL_SELECTION),
@@ -89,6 +102,6 @@ async def _register_ui(ctx: Context) -> None:
         requires=("shell.pages.v1",),
         provides=("models.connection-types.v1",),
         contract_digests={
-            "models.connection-types.v1": "005155186b59c61f0d67311ce2e0f06dba016d516ba32f3142f0eef754208a4f",
+            "models.connection-types.v1": "466720cb4385f6251872b888117b9a8c8bc7bb2a24ef3ccbc62d043e46307f01",
         },
     )

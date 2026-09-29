@@ -16,6 +16,7 @@ from agent.plugin_composition import (
     FiberState,
 )
 from agent.plugin_composition.host import HOST_INFO
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from agent.plugin_composition.ui import (
     DASHBOARD_ROUTES,
     UI,
@@ -28,14 +29,14 @@ from agent.plugin_composition.ui_slots import UI_SLOTS
 from agent.plugin_composition.workload_slots import WORKLOADS
 
 from .dashboard import DashboardResources, _core_routes, _require_routes_available
-from .mobile import MobileUiSlots
+from .plugin_ui import PluginUiSlots
 from .web import build_web_ui_catalog, resolve_web_module
 
 api_version = 3
 name = "ui"
 version = "1.0.0"
 desc = "注册并封存插件的 Web 与 Dashboard UI"
-inject = (DASHBOARD_ROUTES, HOST_INFO)
+inject = (DASHBOARD_ROUTES, HOST_INFO, RUNTIME_CATALOG)
 
 @dataclass
 class Registration:
@@ -179,12 +180,15 @@ class Ui:
     async def bootstrap(self) -> bytes:
         async with self._ctx.runtime_scope():
             self._ctx.require_runtime_owner(WEB_UI, self)
+            if self._ctx.require(RUNTIME_CATALOG)(self._ctx)["updating"]:
+                raise RuntimeError("插件配置正在应用，Web 目录尚未稳定")
             return self.catalog().encode_bootstrap(self._ctx.generation_id)
 
-    async def state(self) -> dict[str, str]:
+    async def state(self) -> dict[str, str | bool]:
         async with self._ctx.runtime_scope():
             self._ctx.require_runtime_owner(WEB_UI, self)
-            return {"snapshotId": self._ctx.generation_id, "catalogId": self.catalog().identity}
+            return {"snapshotId": self._ctx.generation_id, "catalogId": self.catalog().identity,
+                    "updating": bool(self._ctx.require(RUNTIME_CATALOG)(self._ctx)["updating"])}
 
 
 def _contracts(value: tuple[str, ...]) -> tuple[str, ...]:
@@ -212,5 +216,5 @@ async def apply(ctx: Context) -> None:
     registry = Ui(ctx)
     await ctx.provide(UI, registry, binding_contributors=registry.contributors)
     await ctx.provide(WEB_UI, registry, binding_contributors=registry.contributors)
-    mobile = MobileUiSlots(ctx)
-    await ctx.provide(UI_SLOTS, mobile, binding_contributors=mobile.contributors)
+    slots = PluginUiSlots(ctx)
+    await ctx.provide(UI_SLOTS, slots, binding_contributors=slots.contributors)

@@ -154,7 +154,6 @@ allowed_paths:
   - bus/**
   - session/**
   - infra/channels/**
-  - infra/mobile_realtime/**
   - frontend/**/src/**
   - plugins/akasha/**
   - tests/**

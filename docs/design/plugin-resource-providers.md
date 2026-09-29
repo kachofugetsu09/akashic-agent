@@ -51,6 +51,8 @@ Snapshot 不再存储三份 registry 或 identity；编译器不校验资源定�
 
 `host.execution.v1` 绑定实际 Context 的固定代码 owner 与 Root 权限。
 命令解析继续使用归档中的 Python 环境，cwd 必须位于所属固定代码制品。
+安装准备与运行时读取按 PLG-002 分开；[0077](../decisions/0077-trust-installed-runtime-inputs.md)
+记录删除摘要复验的理由和恢复边界。
 插件 API 不接受 formal/candidate 参数、正式 workspace 路径或自报的代码 owner。
 
 环境只继承明确列出的 PATH、语言/时区项与 Supervisor 身份。候选只采用显式

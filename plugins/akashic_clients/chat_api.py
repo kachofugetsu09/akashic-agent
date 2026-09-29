@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+from agent.plugin_composition.models import ModelCallStats
+
 import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
@@ -11,7 +14,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition.message_view import read_message_rows, session_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
@@ -24,16 +27,16 @@ from .services import (
     ChatModelSelection,
     ModelControlUnavailable,
     ModelCatalogUnavailable,
-    MobilePairingAdminPort,
-    MobileUiPluginUnavailable,
-    MobileUiProvider,
-    MobileUiQueryOverloaded,
-    MobileUiQueryTimeout,
-    MobileUiRpcExecutionError,
-    MobileUiRpcInvalidRequest,
-    MobileUiStaleRevision,
+    PluginUiPluginUnavailable,
+    PluginUiProvider,
+    PluginUiQueryOverloaded,
+    PluginUiQueryTimeout,
+    PluginUiRpcExecutionError,
+    PluginUiRpcInvalidRequest,
+    PluginUiStaleRevision,
     default_chat_model_id,
     project_chat_runtimes,
+    project_unavailable_chat_runtimes,
 )
 from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
 from .web_chat import (
@@ -41,17 +44,10 @@ from .web_chat import (
     UploadTooLargeError,
     WebChatChannel,
 )
-from .mobile_realtime.pairing import PairingError
 from .runtime_inspection import (
     RuntimeInspectionError,
     RuntimeInspectionService,
 )
-from .mobile_realtime.storage import PairingStateError
-
-class PairingApprovalPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    confirmation_code: str = Field(pattern=r"^[0-9]{6}$")
 
 
 class WebPluginUiQueryPayload(BaseModel):
@@ -74,124 +70,23 @@ class WebPluginUiQueryPayload(BaseModel):
 class WebUiProvider(Protocol):
     async def bootstrap(self) -> bytes: ...
 
-    async def state(self) -> dict[str, str]: ...
-
-
-class ModelRpcInvoker(Protocol):
-    async def invoke_rpc(
-        self,
-        method: str,
-        params: Mapping[str, object],
-    ) -> object: ...
-
-
-def _model_rpc_validation_detail(error: ValueError | ValidationError) -> object:
-    if isinstance(error, ValidationError):
-        return error.errors(include_input=False, include_context=False)
-    return [{"type": "json_invalid", "msg": "JSON 无效"}]
-
-
-async def _model_rpc_response(
-    control: ModelRpcInvoker,
-    method: str,
-    params: Mapping[str, object],
-) -> Response:
-    """Dispatch a plugin-owned model method without importing its schema."""
-    try:
-        result = await control.invoke_rpc(method, params)
-    except ModelControlUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except ValidationError as error:
-        raise HTTPException(
-            status_code=422,
-            detail=_model_rpc_validation_detail(error),
-        ) from error
-    if not isinstance(result, Mapping):
-        raise RuntimeError(f"{method} RPC response 必须是对象")
-    response = cast(Mapping[str, object], result)
-    status = response.get("status")
-    body = response.get("body")
-    if type(status) is not int or status < 100 or status > 599:
-        raise RuntimeError(f"{method} RPC response status 无效")
-    if not isinstance(body, Mapping):
-        raise RuntimeError(f"{method} RPC response body 必须是对象")
-    return JSONResponse(
-        content=dict(cast(Mapping[str, object], body)),
-        status_code=status,
-    )
-
-
-def _include_model_settings_routes(app: FastAPI, control: ModelRpcInvoker) -> None:
-    """Keep the existing Web paths as thin adapters to model-plugin RPC."""
-
-    @app.get("/api/chat/model-settings/calls/{call_id}")
-    async def model_call_stats(call_id: str) -> Response:
-        return await _model_rpc_response(
-            control,
-            "models/call_stats",
-            {"call_id": call_id},
-        )
-
-    @app.get("/api/chat/model-settings/catalog")
-    async def model_catalog() -> Response:
-        return await _model_rpc_response(control, "models/catalog", {})
-
-    @app.post("/api/chat/model-settings/discover")
-    async def model_discover(request: Request) -> Response:
-        try:
-            payload = await request.json()
-        except ValueError as error:
-            raise HTTPException(
-                status_code=422,
-                detail=_model_rpc_validation_detail(error),
-            ) from error
-        if not isinstance(payload, Mapping):
-            raise HTTPException(
-                status_code=422,
-                detail="请求体必须是对象",
-            )
-        return await _model_rpc_response(
-            control,
-            "models/discover",
-            cast(Mapping[str, object], payload),
-        )
-
-    @app.post("/api/chat/model-settings/command")
-    async def model_command(request: Request) -> Response:
-        try:
-            payload = await request.json()
-        except ValueError as error:
-            raise HTTPException(
-                status_code=422,
-                detail=_model_rpc_validation_detail(error),
-            ) from error
-        if not isinstance(payload, Mapping):
-            raise HTTPException(
-                status_code=422,
-                detail="请求体必须是对象",
-            )
-        return await _model_rpc_response(
-            control,
-            "models/command",
-            cast(Mapping[str, object], payload),
-        )
+    async def state(self) -> dict[str, str | bool]: ...
 
 
 def create_chat_app(
     *,
     workspace: Path,
     channel: WebChatChannel,
-    mobile_pairing_admin: MobilePairingAdminPort | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
-    plugin_ui_provider: MobileUiProvider | None = None,
-    mobile_ui_scope: Callable[[], Any] | None = None,
+    plugin_ui_provider: PluginUiProvider | None = None,
+    plugin_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
+    model_call_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None,
     model_selection_reader: Callable[
         [Mapping[str, object]], Awaitable[ChatModelSelection]
     ] | None = None,
-    model_control: ModelRpcInvoker | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     message_scope: Callable[[], Any] | None = None,
@@ -200,8 +95,8 @@ def create_chat_app(
 ) -> FastAPI:
     if messages is not None and message_scope is not None:
         raise ValueError("chat API 不能同时绑定直接消息 provider 与 request scope")
-    if plugin_ui_provider is not None and mobile_ui_scope is not None:
-        raise ValueError("chat API 不能同时绑定直接 Mobile UI provider 与 request scope")
+    if plugin_ui_provider is not None and plugin_ui_scope is not None:
+        raise ValueError("chat API 不能同时绑定直接 Plugin UI provider 与 request scope")
     if messages is not None:
         channel.bind_message_readers(messages, reply_status)
     if message_display is not None:
@@ -216,8 +111,6 @@ def create_chat_app(
         yield
 
     app = FastAPI(title="Akashic Chat API", lifespan=lifespan)
-    if model_control is not None:
-        _include_model_settings_routes(app, model_control)
     app.state.workspace = workspace
     app.state.channel = channel
 
@@ -249,8 +142,12 @@ def create_chat_app(
         return {"status": "ok", "channel": channel.name}
 
     @app.get("/api/chat/health")
-    def chat_health() -> dict[str, str]:
-        return {"status": "ready"}
+    async def chat_health() -> dict[str, str]:
+        try:
+            async with open_message_catalog():
+                return {"status": "ready"}
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail="聊天请求接纳不可用") from error
 
     @app.get("/api/chat/web-ui/bootstrap")
     async def web_ui_bootstrap(request: Request) -> Response:
@@ -360,12 +257,13 @@ def create_chat_app(
                 "reasoningEffort": session_effort,
             },
             "runtimes": project_chat_runtimes(current),
+            "unavailableRuntimes": project_unavailable_chat_runtimes(current),
         }
 
     @app.get("/api/chat/plugin-ui/catalog")
     async def plugin_ui_catalog() -> dict[str, object]:
-        if mobile_ui_scope is not None:
-            async with mobile_ui_scope() as provider:
+        if plugin_ui_scope is not None:
+            async with plugin_ui_scope() as provider:
                 return await provider.catalog()
         return await _require_plugin_ui_provider(plugin_ui_provider).catalog()
 
@@ -377,8 +275,8 @@ def create_chat_app(
         sha256: str = Query(..., pattern=r"^[0-9a-f]{64}$"),
     ) -> Response:
         try:
-            if mobile_ui_scope is not None:
-                async with mobile_ui_scope() as provider:
+            if plugin_ui_scope is not None:
+                async with plugin_ui_scope() as provider:
                     asset = await provider.asset(
                         plugin_id,
                         plugin_revision,
@@ -392,7 +290,7 @@ def create_chat_app(
                     kind,
                     sha256,
                 )
-        except (MobileUiPluginUnavailable, MobileUiStaleRevision) as error:
+        except (PluginUiPluginUnavailable, PluginUiStaleRevision) as error:
             raise _plugin_ui_http_error(error) from error
         return Response(
             content=str(asset["content"]),
@@ -416,8 +314,8 @@ def create_chat_app(
         if len(encoded) > 64 * 1024:
             raise HTTPException(status_code=413, detail="插件参数超过 64 KiB")
         try:
-            if mobile_ui_scope is not None:
-                async with mobile_ui_scope() as provider:
+            if plugin_ui_scope is not None:
+                async with plugin_ui_scope() as provider:
                     return await provider.query(
                         request.plugin_id,
                         request.plugin_revision,
@@ -435,18 +333,33 @@ def create_chat_app(
                 turn_id=request.turn_id,
             )
         except (
-            MobileUiPluginUnavailable,
-            MobileUiStaleRevision,
-            MobileUiQueryOverloaded,
-            MobileUiQueryTimeout,
-            MobileUiRpcInvalidRequest,
-            MobileUiRpcExecutionError,
+            PluginUiPluginUnavailable,
+            PluginUiStaleRevision,
+            PluginUiQueryOverloaded,
+            PluginUiQueryTimeout,
+            PluginUiRpcInvalidRequest,
+            PluginUiRpcExecutionError,
         ) as error:
             raise _plugin_ui_http_error(error) from error
 
+    @app.get("/api/chat/model-calls/{call_id}")
+    async def model_call_stats(call_id: str) -> dict[str, object]:
+        """只返回模型 owner 的公开统计，不转发模型管理命令。"""
+        if model_call_stats_reader is None:
+            raise HTTPException(status_code=503, detail="模型调用统计不可用")
+        try:
+            return asdict(await model_call_stats_reader(call_id))
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="模型调用记录不存在") from error
+        except ModelControlUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
     @app.get("/api/chat/runtime/documents")
     async def list_runtime_documents() -> dict[str, object]:
-        return await _require_runtime_inspection(runtime_inspection).list_documents()
+        try:
+            return await _require_runtime_inspection(runtime_inspection).list_documents()
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
 
     @app.get("/api/chat/runtime/documents/{document_id}")
     async def read_runtime_document(document_id: str) -> dict[str, object]:
@@ -574,32 +487,6 @@ def create_chat_app(
             raise HTTPException(status_code=404, detail="文件不存在")
         return FileResponse(requested)
 
-    if mobile_pairing_admin is not None:
-
-        @app.post("/api/chat/mobile-pairing")
-        def create_mobile_pairing() -> dict[str, object]:
-            return mobile_pairing_admin.create_offer()
-
-        @app.get("/api/chat/mobile-pairing/{pairing_id}")
-        def read_mobile_pairing(pairing_id: str) -> dict[str, object]:
-            claim = mobile_pairing_admin.pending_claim(pairing_id)
-            if claim is None:
-                return {"pairing_id": pairing_id, "status": "waiting_for_phone"}
-            return {**claim, "status": "waiting_for_desktop_confirmation"}
-
-        @app.post("/api/chat/mobile-pairing/{pairing_id}/approve")
-        def approve_mobile_pairing(
-            pairing_id: str,
-            payload: PairingApprovalPayload,
-        ) -> dict[str, object]:
-            try:
-                return mobile_pairing_admin.approve(
-                    pairing_id,
-                    payload.confirmation_code,
-                )
-            except (PairingError, PairingStateError) as error:
-                raise HTTPException(status_code=409, detail=str(error)) from error
-
     return app
 
 
@@ -636,17 +523,16 @@ def build_chat_server(
     *,
     workspace: Path,
     channel: WebChatChannel,
-    mobile_pairing_admin: MobilePairingAdminPort | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
-    plugin_ui_provider: MobileUiProvider | None = None,
-    mobile_ui_scope: Callable[[], Any] | None = None,
+    plugin_ui_provider: PluginUiProvider | None = None,
+    plugin_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
+    model_call_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None,
     model_selection_reader: Callable[
         [Mapping[str, object]], Awaitable[ChatModelSelection]
     ] | None = None,
-    model_control: ModelRpcInvoker | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     message_scope: Callable[[], Any] | None = None,
@@ -658,15 +544,14 @@ def build_chat_server(
         create_chat_app(
             workspace=workspace,
             channel=channel,
-            mobile_pairing_admin=mobile_pairing_admin,
             runtime_inspection=runtime_inspection,
             message_display=message_display,
             plugin_ui_provider=plugin_ui_provider,
-            mobile_ui_scope=mobile_ui_scope,
+            plugin_ui_scope=plugin_ui_scope,
             web_ui_provider=web_ui_provider,
             model_catalog_reader=model_catalog_reader,
+            model_call_stats_reader=model_call_stats_reader,
             model_selection_reader=model_selection_reader,
-            model_control=model_control,
             messages=messages,
             reply_status=reply_status,
             message_scope=message_scope,
@@ -676,6 +561,7 @@ def build_chat_server(
         uds=uds,
         log_level="warning",
         access_log=False,
+        timeout_graceful_shutdown=10,
     )
     return uvicorn.Server(config)
 
@@ -689,28 +575,34 @@ def _require_runtime_inspection(
 
 
 def _require_plugin_ui_provider(
-    provider: MobileUiProvider | None,
-) -> MobileUiProvider:
+    provider: PluginUiProvider | None,
+) -> PluginUiProvider:
     if provider is None:
         raise HTTPException(status_code=503, detail="插件界面服务不可用")
     return provider
 
 
 def _plugin_ui_http_error(error: Exception) -> HTTPException:
-    if isinstance(error, MobileUiPluginUnavailable):
-        return HTTPException(status_code=404, detail=str(error))
-    if isinstance(error, MobileUiStaleRevision):
-        return HTTPException(status_code=409, detail=str(error))
-    if isinstance(error, MobileUiQueryOverloaded):
+    if isinstance(error, PluginUiPluginUnavailable):
+        return HTTPException(status_code=404, detail={
+            "code": "plugin_ui_unavailable", "message": "此插件界面已卸载或暂不可用。",
+        })
+    if isinstance(error, PluginUiStaleRevision):
+        return HTTPException(status_code=409, detail={
+            "code": "plugin_ui_stale_revision", "message": "插件界面版本已变更。",
+        })
+    if isinstance(error, PluginUiQueryOverloaded):
         return HTTPException(status_code=429, detail=str(error))
-    if isinstance(error, MobileUiQueryTimeout):
+    if isinstance(error, PluginUiQueryTimeout):
         return HTTPException(status_code=504, detail=str(error))
-    if isinstance(error, MobileUiRpcInvalidRequest):
+    if isinstance(error, PluginUiRpcInvalidRequest):
         return HTTPException(status_code=400, detail=str(error))
     return HTTPException(status_code=502, detail=str(error))
 
 
 def _runtime_http_error(error: RuntimeInspectionError) -> HTTPException:
+    if error.code == "inspection_unavailable":
+        return HTTPException(status_code=503, detail=str(error))
     status_code = 404 if error.code.endswith("_not_found") else 409
     return HTTPException(status_code=status_code, detail=str(error))
 

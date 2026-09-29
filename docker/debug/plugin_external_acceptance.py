@@ -498,7 +498,6 @@ def _write_bootstrap_config(
     })
     save_config(workspace / "plugin-data" / f"akashic_clients-{marketplace}", {
         "enabled": True, "web": {"enabled": True, "socket_path": ""},
-        "mobile_realtime": {"enabled": False},
     })
     path.write_text(
         _BOOTSTRAP_CONFIG.format(workspace=repr(str(workspace))),

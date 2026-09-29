@@ -323,7 +323,7 @@ container
 
 ## 插件变更 Gate
 
-pure-v3 候选证据由 fleet、Mobile 和公共 WebUI 三个边界组成。所有 Gate
+pure-v3 候选证据由 fleet 和公共 WebUI 两个边界组成。所有 Gate
 使用 exact commit 锁、一次性 workspace/plugin-home/HOME 与受控端点，不读写正式
 Akashic workspace、正式凭据或 hua-home 服务。
 
@@ -334,7 +334,6 @@ CI workflow。
 精确能力 lock
       │
       ├── fleet ─────── 全插件来源、v3-only 与 retired exclusion
-      ├── Mobile ────── Python catalog / JS ABI / plugin tests
       └── WebUI ─────── Citation / Meme / public WebSocket
 ```
 
@@ -343,7 +342,6 @@ CI workflow。
 ```bash
 python docker/debug/plugin_v3_fleet_gate.py \
   --require-clean-core --require-full-core-history
-python docker/debug/plugin_v3_mobile_gate.py --require-clean-core
 python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
 ```
 
@@ -482,11 +480,8 @@ python docker/debug/context_probe.py \
   --reset-workspace \
   --start-agent \
   --stop-agent \
-  --quiet-agent \
-  --disable-qq
+  --quiet-agent
 ```
-
-`--disable-qq` 会在运行期间临时给当前 profile 的 `[channels.qq]` 加 `enabled = false`，结束后恢复原配置，适合只测 CLI 但该 profile 配了 QQ 的情况。
 
 默认报告写到：
 
@@ -569,7 +564,7 @@ python docker/debug/replay_controller.py \
   --start-at 2026-05-01T00:00:00+08:00
 ```
 
-该 profile 仍需要自己的 `config.toml`。可以运行 `setup`，或复制另一份专用调试配置。启动前应关闭 Telegram、QQ 等外部渠道，并将待测发送目标设为 `channel = "replay"`。
+该 profile 仍需要自己的 `config.toml`。可以运行 `setup`，或复制另一份专用调试配置。启动前应关闭 Telegram 等外部渠道，并将待测发送目标设为 `channel = "replay"`。
 
 ```bash
 AKASHIC_DEBUG_PROFILE=wake-replay \

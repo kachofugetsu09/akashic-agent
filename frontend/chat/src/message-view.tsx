@@ -1,4 +1,4 @@
-import { MobilePluginSlot } from "./mobile-plugin-runtime";
+import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import {
   Attachment,
@@ -102,7 +102,7 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
   if (preview && !draft && !processMessages.length) return null;
   const flow = timelineFlow(processMessages, undefined, toolResults);
   const text = draft?.text ?? "";
-  const beforeReasoning = (message: TimelineMessage, prefetch = false) => <MobilePluginSlot name="turn.before_reasoning"
+  const beforeReasoning = (message: TimelineMessage, prefetch = false) => <PluginUiSlot name="turn.before_reasoning"
     sessionId={message.session_id} messageId={message.id} prefetch={prefetch} />;
   return <div className="message-row agent-row reply-activity" data-reply-handle={activity.handle}
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
@@ -110,9 +110,9 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
       <TimelineProcess flow={flow} draftThinking={draft?.thinking} streaming={activity.active}
         beforeReasoning={beforeReasoning}
         prefetchReasoning={(message) => beforeReasoning(message, true)}
-        draftSlot={draft ? <MobilePluginSlot name="turn.before_reasoning" sessionId={activity.session_id}
+        draftSlot={draft ? <PluginUiSlot name="turn.before_reasoning" sessionId={activity.session_id}
           messageId={draft.message_id} block={{ source: activity.source }} /> : undefined}
-        beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
+        beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
       {activity.active && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}

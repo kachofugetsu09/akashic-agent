@@ -1,5 +1,229 @@
 # Issue 766 · 能力依赖与执行归属
 
+## 2026-09-28 · 消费边界的后续正交化
+
+维护者授权在 #791 上逐层提交 stacked Draft PR。基线为 `e8f6cd5`；
+源码恢复点为 `/tmp/akashic-orthology-stack-before-e8f6cd5-20260928.tar`。
+目标是减少无关变化传播，不以公共合同所在目录、业务名数量或 import 归零作为验收。
+
+| 切片 | 目标行为 | 关键验收 |
+|---|---|---|
+| 聊天与诊断 RPC | 诊断缺席或换代不关闭聊天渠道；移除未接线的旧模型 RPC 启动依赖 | 检查请求明确 unavailable；借用保护当前 provider；越权和过期请求失败 |
+| Web 连接地址 | 监听与代理使用同一份地址合同 | 自定义地址可达；不可达明确 unavailable，不猜测启动状态 |
+| 渠道控制 | 输入与中断由同一个来源路由决定 | 异名来源接管 Telegram 后仍可停止；原消息与确认顺序不变 |
+| 材料选择 | 执行场景表达材料用途，不列实现名 | 异名同用途 provider 遵守相同选择；默认提示词集合保持 |
+| 文档与资源说明 | 文档 owner 发布读取与资源描述，消费者不掌握私有路径 | 检查接口保持原 DTO；缺席可见；不迁移原文件 |
+| 重启回执 | 来源提供自己的完成凭据，不由重启消费者猜 source 名 | frame 与 delivery 的确切完成门槛保留；未知效果不重放 |
+| 遗留表示 | 删除有证据的来回转换，不删除持久恢复协议 | 附件事实与旧接管解码保持；现行统计入口修复，废弃入口明确退役 |
+
+各层只改变自己的能力选择和缺席行为。Message/source ID、Session 属性、
+配置值、文档位置、binding、归档和外部回执保持原 owner、格式与读写协议。
+正常新增仍由原 owner 完成；本任务不新增持久事实，不改变原位更新或逻辑失效条件，
+没有物理减少、迁移、自动 GC、正式 workspace 写入、合并或部署。
+源码可回退到相邻 PR 基线；它不代表外部效果或持久数据已回滚。
+
+### 请求的可选能力
+
+```text
+聊天渠道 ── 必需依赖 ──► 消息、回复、UI 等聊天基础能力
+    │
+    └── 当前请求 ── 声明的可选能力 ──► 诊断 RPC
+                       │
+                       └── 借用保护 provider，缺席明确 unavailable
+```
+
+`ChannelDefinition.optional_services` 声明请求可借用的能力，不构成启动依赖。
+Channel provider 在原 binding 请求 scope 中核对声明、Task 与 scope 寿命，
+再复用 `Context.borrow` 保护实际 provider。`RequestContext.require` 仍只读必需依赖。
+可选服务只在借用块内使用，不保存在客户端或跨请求复用。卸载等待正在执行的借用；
+新请求在服务缺席时返回明确错误。Core 不认识诊断或模型方法名。
+旧模型管理 HTTP adapter 没有接到真实 Channel factory；移除它的启动依赖，
+不恢复旧路由或为未使用的能力增加可选授权。现行模型管理继续由 Models 插件拥有。
+
+本层 `change_type=refactor`；`semantic_delta` 是检查 RPC 缺席不再关闭聊天，
+其他默认成功响应不变。能力 owner 为 Channel 请求边界与各 RPC provider；
+客户端单独改 UI 无法修复顶层必需依赖导致的卸载，因此需要窄的请求借用端口。
+后续切片在各自实现后记录最终合同和验证，不能把本节目标当作已完成。
+
+第一层本地证据：`docker/debug/orthology_optional_requests.py` 用真实 Channel provider、
+Web UDS listener 和 HTTP 请求覆盖检查缺席/安装/卸载、借用中排空与请求权限边界。
+同一场景在基线因客户端 PENDING 失败，候选通过，聊天 adapter 与 activation 保持同一对象。
+场景的模型与外部发送端口明确拒绝调用，不代表真实回复、生产安装或设备验收。
+47 项概念测试、Core/tests Pyright、边界、Yoyo、协议生成物与前端类型检查通过。
+额外扫描修改的插件文件仍有 Channel provider 的 6 项既有类型错误，基线逐项同样报错。
+
+### 渠道输入与停止共用路由
+
+`Sources.accept` 与 `SOURCE_INTERRUPT` 指向的 `Sources.interrupt` 使用同一个专属渠道优先、默认来源兜底的选择。
+Telegram 只传入渠道、Session reader 和控制消息 ID，不再读取 `conversation` 的状态。
+Sources 在所选 provider 的作用域内检查该来源是否有消息、调用它的待回复谓词，
+再调用其 `SourceSession.pause`。没有消息时不创建空 Session/Control；已有消息时，
+原 pause 先追加控制、撤销当前工作并等待排空，Channel 才发送原 binding 的确认。
+来源缺席继续明确失败，不将不确定状态误报为空闲。停止能力用独立 `source.interrupt.v1` key 声明；旧 Sources provider 缺席该能力时，
+Telegram 功能 Fiber 明确保持 PENDING，不允许已就绪后第一次停止才报缺方法。
+
+本层只新增停止能力 key，不新增路由表、来源 ID 或控制状态。正常运行只由原 Message writer 追加
+Input/Control；不修改旧消息、配置、回执和恢复条件。恢复点是上一层 `44556055`
+与 `/tmp/akashic-orthology-before-source-routing-44556055.tar`。
+`docker/debug/orthology_source_control.py` 使用真实 MessageLog、Sources、SourceSession 和
+Telegram 控制回调，验证异名专属来源、撤下后默认来源、空会话及先排空后确认。
+它在旧实现上无法取消异名来源工作，在候选通过；不连接 Telegram、不读取真实凭据。
+
+### Web listener 发布公共入口
+
+Shell 始终连接 workspace/runtime/web-chat.sock；自定义 web.socket_path 的 listener
+在监听就绪后原子创建该公共入口的 symlink，不让 Shell 解析插件配置或持有第二份地址。
+默认路径直接绑定。listener 关闭后按保存的节点身份清理自己创建的 socket 与链接；
+冲突节点使启动明确失败，不覆盖，不删除后继 owner 的节点。失败清理保留可重试 owner。
+该入口是已有 IPC 合同的临时投影，不是持久配置或恢复事实。
+
+Shell 只知道健康探测结果。配置存在但聊天不可达时报告 unavailable，不猜测是在启动、
+已停用还是启动失败；前端保留轮询并解释这一限制。旧 starting 值仍可读取。
+
+```text
+Shell ── 固定公共 socket ──┬── 默认 listener
+                         └── owner 发布的链接 ── 自定义 listener
+```
+
+临时场景 orthology_web_endpoint.py 使用真实双层 UDS listener，验证 HTTP 代理和
+WebSocket ping/pong、默认/自定义切换、缺席状态、冲突拒绝与节点身份清理。
+不调用模型、不访问正式 workspace。恢复点 c2fad5e8 与
+/tmp/akashic-orthology-before-web-endpoint-c2fad5e8.tar；无 schema 或数据迁移。
+
+### 文档与 Prompt 资源归真实 owner
+
+`inspection.documents.v1` 只注册展示元数据和有界读取 callable；诊断插件不再获授
+MEMORY/SELF/VEDA 文件路径，也不内置这些 ID。Markdown owner 发布两份档案，Prompt
+owner 发布人格；各自用可选子 Fiber 连接诊断目录，缺诊断不影响原功能，卸载 owner
+移除其目录项但不删除文件。同步读取入口由贡献者 Context 保护；重复 ID 明确失败。
+默认安装的 ID、标题、分组、相对路径、排序与正文格式不变。未安装的 owner 不再
+显示为可读文件；缺文件、超过 192 KiB、非法 UTF-8 保持原错误码，实际读取有界。
+
+```text
+Markdown ── 两份档案的窄读取口 ──┐
+Prompt ──── 人格的窄读取口 ─────┼── 诊断目录 ── 原 RPC / HTTP
+其他 owner ─ 自己的文档 ────────┘
+```
+
+档案位置提示移入 Markdown 自己的材料；Prompt 不再声称别的插件文件或未声明 kb
+目录一定存在，子任务根据本次材料/工具判断资源，不猜 SELF.md 或 skills 物理目录。
+人格保护规则仍归 Prompt。本层允许提示文本变化，不改变文档内容或持久化 writer。
+恢复点 6dd58b0a 与 /tmp/akashic-orthology-before-documents-6dd58b0a.tar。
+临时场景用真实 Prompt、Markdown、Context 和 Inspection，验证可选安装/卸载/重装、
+异名 owner、文件缺失/编码/大小与卸载后文件保留。没有模型调用或正式数据操作。
+
+### 材料按用途选择
+
+新材料声明 kind：context 为当前程序环境/指令/摘要，recall 为按历史检索的召回，
+profile 为长期用户/助手档案。Scheduler 排除 recall/profile，Subagent 排除 recall，
+Wake 调查/提醒阶段排除两者，其他阶段保留。换 provider 或材料名不改变这些选择。
+名称仍是材料身份与 Prompt 授权索引；用途不授予 Prompt 权或摘要发布权。
+新选择下 prompt_sources 仅表示授权，不要求未安装的可选材料存在；summary_source
+仍表示必需的唯一摘要 owner，不能静默丢失摘要。未声明用途的旧贡献遇到用途排除时
+明确失败，不按插件名猜测，也不把未知材料偷偷注入受限程序。
+
+context.materials.v4 / reply.execute.v2 显式标出新能力。新贡献者和新调用者声明新 key，
+旧 provider 缺能力时不能满足它。所有当前生产材料与来源已切换；旧 v3/v1 名称选择
+仍由同一实例处理，只用于旧调用合同/未结算归档恢复，不复制目录、状态或执行程序。
+两版 key 使用精确独立 Protocol，不能通过旧接口静态调用新参数；Reply 的旧入口
+在可选子 Fiber 中依赖 v3，新用途入口不依赖旧接口是否存在。
+旧路径保留原 grant readiness 与名称排除；删除它必须另行证明所有归档调用已结算。
+当前新默认路径不再采用旧名称选择。
+
+```text
+来源 ── 排除用途 ── Reply ── Materials ── 持有被选贡献者
+                              │
+                              └── owner 声明 kind；授权仍按真实 owner 核对
+```
+
+临时材料场景使用完全不同的材料名/provider，验证用途选择、授权与可用性独立、
+provider 排空、未知用途拒绝以及旧名称选择；没有模型调用或持久化更改。
+恢复点 13655abe 与 /tmp/akashic-orthology-before-material-policy-13655abe.tar。
+
+### 重启等待精确完成回执
+
+RestartWatcher 不再判断 source == programmatic。已准备的 frame claim 拥有精确连接
+排空，先等它并核对 ending_message_id；没有 claim 则由已有 FINAL_OUTPUT_DELIVERY
+目录选择来源自己的完成协议。任一路径失败都 abort，不从失败 frame 切换到另一条
+回执路径。来源名本身不能证明送达；缺 provider、缺 route、断线、错误终点和取消
+均不得提交重启。gate 仍等既有外部 Root permit 排空，再提交原 opaque request ID。
+
+这一层不新增目录或重启状态，也不移动 Programmatic 的实际 frame writer。临时场景
+使用真实 MessageLog/TurnProjection/FrameBook/RestartGate，控制 writer future 与外部
+commit 回调，验证异名来源、送达前不提交、失败恢复准入和 claim 释放。它不是生产
+supervisor 重启验收，不执行进程切换。恢复点 61ea27d8 与
+/tmp/akashic-orthology-before-restart-receipts-61ea27d8.tar；无持久语义或 schema 变化。
+
+### 附件类型只有一份定义
+
+Bus 不再定义第二个 AttachmentKind，而是继续从原 import 路径导出 Session/Channel
+共用的同一个枚举。字符串 file/image、JSON、已有 bus.events.AttachmentKind pickle
+仍可读取；导入器删除 value→旧枚举→新枚举的往返。ChannelMessage/InboundMessage
+仍是有真实调用者的协议投影，不能因为字段相似就删除。没有改动附件 schema、权限、
+文件收养、不可变 artifact 或 read lease 协议。
+
+临时实测覆盖旧 pickle/JSON、两个真实导入入口、SQLite metadata 与有界 read lease；
+只在 TemporaryDirectory 中创建文件。恢复点 6ad739de 与
+/tmp/akashic-orthology-before-attachment-kind-6ad739de.tar。
+
+### 模型统计与管理各走自己的窄入口
+
+聊天输入栏原来仍请求已断开接线的 /api/settings/model/calls/{id}。现在改为
+/api/chat/model-calls/{id}；Channel 声明 MODEL_CALL_STATS 可选能力，在当前请求 scope
+借用实际 owner，只序列化已有 ModelCallStats。缺 owner 返回 503，未知调用返回 404；
+不增加聊天启动依赖，也不获得模型配置写入权限。Models 仍独占模型配置与调用记录。
+删除未接线的客户端管理 RPC 桥接、重复 Protocol 与能力列表；旧 settings/model
+路径统一返回已有退役响应 410。现行模型选择保持原接口与错误处理。
+
+Dashboard 的 Models HTTP 需要当前模块身份，不能被 Chat 或无 UI 客户端裸调用。
+程序化/Akasha 探针与 Harbor 配置改用现有 SDK 控制连接的 models/catalog、
+models/command，通过显式 --control-endpoint 选择 UDS；无需聊天或 Dashboard bootstrap。
+管理写入失败不自动重试，保持 revision、Models 错误与 generation 作用域。
+
+临时场景 orthology_model_stats.py 使用真实 Channel provider/客户端 listener 与
+ModelsStore，由 Node 执行真实前端 loader，经 Shell → Chat 可选读取口 → SQLite，
+验证耗时、404、owner 卸载后 503 且聊天仍健康、旧入口 410、无私有字段及记录不变。
+Docker 独占 sandbox 的真实 Gateway/Models generation 中，fixture 经正式 Control RPC
+完成 add_connection/add_model/三项 set_default，catalog revision=5 且角色绑定一致。
+不请求外部模型，不改变 Dashboard 身份校验。旧完整 probe 仍有早于本栈的
+Config.channels 拒绝，未声称整份 probe 或 Harbor benchmark 通过。
+47 项概念测试与必需静态检查、前端类型和构建证据分别记录在 PR。
+恢复点 a04eac84 与 /tmp/akashic-orthology-before-model-stats-a04eac84.tar；
+后续评审修复另有 before-model-fixtures-ac985807 与 before-live-model-scope-4f47e3e7 源码归档。
+
+### Web 只保留现行发送模型
+
+Web 私有 message_types 只被无调用者的 _deliver_message 使用；当前普通发送由
+WebNativeChannelAdapter.deliver → deliver_v3 执行。删除私有旧方法与它的六个 DTO/枚举，
+保留现行 ProviderDeliveryRequest/Receipt、pending terminal、附件 lease 与连接 owner。
+仓库源码/动态字面入口及本地外部插件源码没有被删私有路径消费者；本机没有旧默认
+cache 目录，不把搜索缺席当作远端 fleet 证明。历史归档仍携带其自身旧源码。
+恢复点 ac985807 与 /tmp/akashic-orthology-before-web-legacy-ac985807.tar。
+
+### 本次 Kimi 报告的处理边界
+
+| 报告中的判断 | 源码复核后的处理 |
+|---|---|
+| Core 中有业务 ServiceKey 就必然不正交 | 不采纳目录/名字标准。纯 Protocol/key 不执行业务选择；实际 provider 由声明能力决定。迁出文件本身不能减少变化传播。 |
+| Shell/CLI 不该出现 HTTP/RPC 名称 | 它们是公开协议的适配者；保留显式路由与方法名。修复真正的 socket 地址分叉及废弃模型桥接，不增加动态万能路由。 |
+| source 字符串全应消失 | 路由/材料/重启消费者中的实现名猜测已移除；学习与默认发送配置中的来源选择保留，属于用户可配置业务政策。 |
+| Wake owner=drift 是插件 ID 耦合 | 该字段是持久工作流类型 content/drift/alert，选择不同程序与类型合同；替换 provider 不要求改变字段，不借重构改写旧事实。 |
+| 检查器知道别家文件、Prompt 猜资源存在 | 已改为真实 owner 的窄读取注册与自有材料说明。 |
+| Bus DTO 都是第二套领域模型 | 合并重复 AttachmentKind；保留实际协议投影。另删除无消费者的 Web 私有旧 DTO/发送方法。 |
+| B 层模块全部零消费者 | 不成立；清理账本逐项记录测试、动态 CLI、外部源码与恢复消费者。仅删除证实无消费者部分，不声称旧能力已获准退役。 |
+| 本地数据/脏工作应直接删除 | 仅忽略实验和敏感备份，恢复边界检查；未删除未提交工作、凭据、数据、子模块或历史恢复材料。 |
+
+验收不是“所有字符串都消失”，而是替换 provider 不迫使无关消费者跟着改，
+可选能力缺席不关闭主体能力，状态、资源和外部效果各有唯一 owner。
+本轮覆盖表中已确认问题；不宣称所有未来插件组合或远端未结算归档均已验收。
+仍保留的旧恢复/测试模块不是新增执行模型；它们的退役需单独核对真实消费者和结算状态。
+
+最终累计本地验证：47 项概念测试、Core/tests Pyright、边界、Yoyo、协议生成物、
+前端 typecheck 通过；七个 orthology 场景全部复跑通过。另用真实 Web adapter 与
+Starlette WebSocket、受控 ASGI send 验证现行发送成功、无连接拒绝、断线失败与被动
+终点暂存；网络入口另由真实 UDS/WebSocket 场景覆盖。无生产模型、Telegram 网络、
+真实设备、正式 workspace 写入、旧归档恢复或生产发布证据。
+
 状态：Issue 766 实现完成，最终验证与独立概念 Gate 见本文末尾。
 
 ## 目标与取舍

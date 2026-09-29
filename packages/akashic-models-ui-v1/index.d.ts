@@ -47,6 +47,11 @@ export interface ConnectionUpdateInput {
 }
 
 export interface ProviderActions {
+  discover(input: Omit<ManualConnectionInput, "model">, signal?: AbortSignal): Promise<readonly Record<string, unknown>[]>;
+  discoverSaved(signal?: AbortSignal): Promise<readonly Record<string, unknown>[]>;
+  addModel(input: Record<string, unknown>): Promise<void>;
+  verifyModel(modelId: string): Promise<void>;
+  disableConnection(): Promise<void>;
   createManual(input: ManualConnectionInput): Promise<void>;
   update(input: ConnectionUpdateInput): Promise<void>;
   startAuth(input: Record<string, string>): Promise<Record<string, unknown>>;
@@ -58,6 +63,8 @@ export interface ProviderActions {
 export interface ProviderProps {
   readonly state: ProviderState;
   readonly actions: ProviderActions;
+  /** Report unsaved changes; the host owns close and navigation checks. */
+  dirty(value: boolean): void;
   close(): void;
   changed(message: string): void;
 }
@@ -69,6 +76,8 @@ export type ModelProviderEntry = Omit<WebEntry, "render"> & {
   connectionIcon?: `data:image/svg+xml,${string}`;
   editTemplateId?: string;
   templates?: readonly ModelProviderTemplate[];
+  /** Direct API-key connection with an actual embedding dimension probe. */
+  embeddingApiKey?: boolean;
   /** Build the dialog with the public settings-dialog-* form classes. */
   render(host: HTMLElement, view: WebEntryView, props: ProviderProps): WebUiDisposer;
 };

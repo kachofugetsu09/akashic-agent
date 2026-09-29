@@ -20,9 +20,10 @@ LRU 混在日志投影中。于是工具名字可以绕过 provider 依赖，搜
 `ToolView`；工具池只绑定当前有效引用。需要完整池的管理插件显式 inject `ALL_TOOLS`。当前引用
 与已经持久化的归档 binding 保持两个清楚的生命周期。
 
-搜索只在获授 view 内读取完整元数据。它返回整组 schema，并用固定的间接调用展示把 wire call
-解码成唯一真实 ToolCall；不创建发现授权、loaded 状态或 compaction 撤权。模型展示使用一个小
-接口，通用 ReAct 不识别具体搜索工具或来源。
+工具加载只在获授 view 内读取冻结目录。system 只列出插件 ID、声明用途和工具数量；
+`load_tools(plugin)` 按准确 ID 返回该组完整 schema，再由固定的间接调用展示把 wire call
+解码成唯一真实 ToolCall。它不创建发现授权、loaded 状态或 compaction 撤权。模型展示使用一个小
+接口，通用 ReAct 不识别具体加载工具或来源。
 
 ## 理由
 
@@ -42,6 +43,7 @@ LRU 混在日志投影中。于是工具名字可以绕过 provider 依赖，搜
 
 ## 2026-09-09 澄清
 
-固定工具目录进入 system，并展示 provider 声明用途。完整 schema 随普通搜索结果保留，
-直到对应原文被摘要覆盖。模型协议拒绝保存为普通内容与可重放反馈，不产生假的工具效果；
-有效调用继续使用唯一 ToolCall/ToolResult 链。详见关联设计的失败与恢复合同。
+固定工具 schema 直接进入模型菜单；system 目录只展示 provider 的准确 ID、声明用途和工具数量。
+`load_tools` 的完整组 schema 随普通工具结果保留，直到对应原文被摘要覆盖。模型协议拒绝
+保存为普通内容与可重放反馈，不产生假的工具效果；有效调用继续使用唯一 ToolCall/ToolResult 链。
+详见关联设计的失败与恢复合同。
