@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
+from agent.plugin_composition.tasks import child_task_context
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.context import (
     MATERIALS as MATERIALS,
@@ -94,7 +95,8 @@ class MaterialView:
 
         # Preparation may overlap; merging still follows the frozen source order.
         async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(prepare_owner(owner)) for _, owner in self._sources]
+            tasks = [group.create_task(prepare_owner(owner), context=child_task_context())
+                     for _, owner in self._sources]
         for (name, owner), task in zip(self._sources, tasks, strict=True):
             material = task.result()
             if isinstance(material, Exception):

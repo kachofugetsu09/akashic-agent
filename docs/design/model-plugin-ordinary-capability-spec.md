@@ -329,6 +329,8 @@ class BoundEmbeddingModel(Protocol):
 
 `EmbeddingSpaceDescriptor` 至少包含 driver identity、model ID、dimensions、normalization 和 schema version；这些字段共同决定 embedding space identity，不另造一个 owner 类型。默认 embedding 改变时产生新 space；不得把新旧向量静默写入同一索引空间。
 
+同一回复内受父任务 cancel-and-drain 的并行材料，通过 generic child context 边界显式复制 frozen revision 和模型选择，不复制 `ModelExecution`、driver connection 或 runtime permit。子任务用自己的 Models/driver scope 重新绑定，chat 和 embedding 均保持父选择；设置并发更新不改变该回复。未经此边界创建的 raw child 仍不能借用父 execution。独立 `Task` 和 `independent_execution()` 清除这份请求选择，按自己的 admission 读取当前配置。
+
 首版继续把 dimensions 写入现有列，同时把完整 capability/source snapshot 写入 additive JSON；normalization 因此可以原样持久化。space identity 还包含 connection fingerprint 与 capability digest，因此 endpoint、driver config、normalization 或维度证据变化不会复用旧索引。
 
 ### 7.3 `MODEL_CATALOG`
