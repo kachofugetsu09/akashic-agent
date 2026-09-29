@@ -119,11 +119,22 @@ JobStore 的写入方法改为异步等待文件锁：线程以 `LOCK_NB` 尝试
 不会进入事务，取消已开始的写入可能留下成功 receipt，工具 query 可读取原结果。
 
 Scheduler 的运行与工具读取也交给 worker；Task 接纳、消息追加和 Delivery 留在原
-Task。诊断提供者暂保留原同步接口，其 RPC 调用仍在 loop，需独立改造公开合同。
-无消费者的 `save(jobs)`
-全量覆盖入口已移除，修改只通过具名领域操作。文件 schema、操作和触发回执不变，
+Task。诊断公开读取的异步合同见下节。无消费者的 `save(jobs)` 全量覆盖入口已移除，修改只通过具名领域操作。文件 schema、操作和触发回执不变，
 任务只沿显式取消减少，过期和完成仍按原规则逻辑失效。
 
 `docker/debug/scheduler_io_isolation.py` 使用两个 JobStore 与真实 ScheduleTool，
 控制第一代原子保存、取消调用方后让第二代提交，验证任务和操作回执均未丢失。
 本层保留 runtime 的同步 stat 检测，未增加版本表或文件 CAS 协议。
+
+## Scheduler 诊断请求（#879）
+
+Web jobs 请求直接经 ScopedRpcRuntimeInspection → RpcMethod → runtime_inspection →
+SchedulerReader，原链路没有 UI executor。v3 将两项公开读取显式改成 async，在实际
+Scheduler provider 中 offload load，RPC 逐层 await。请求通过 borrow 保护当前 owner
+直到读取排空；不再保存另一份 scheduler 指针或用可选子 Fiber 维护这份指针。
+
+公开合同只保留 `SCHEDULER_INSPECTION_V3` 和异步 SchedulerReader，相关插件统一
+使用 v3；旧同步插件输入需要重新准备，不提供兼容层。HTTP/RPC 的值格式与既有
+缺能力错误保持，存储内容与恢复回执不变。
+`docker/debug/scheduler_inspection_isolation.py` 经过真实 Root、客户端 adapter 和
+RPC，验证缺能力、正常列表/详情、慢读不冻结 loop、取消排空前 owner 不卸载。
