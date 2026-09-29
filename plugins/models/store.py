@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import sqlite3
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager
@@ -21,6 +22,7 @@ from agent.plugin_composition import (
     DiscoveredModel,
     ModelCapabilities,
     ModelKind,
+    ModelUnavailableError,
     RevisionConflictError,
 )
 
@@ -354,7 +356,7 @@ class ModelsStore:
     ) -> str:
         """先耐久记录一次真实请求；不把诊断输入或凭据复制进会话历史。"""
         return self.resume_call(
-            descriptor, request, request_key=None, owner_id=None
+            descriptor, request, request_key=None, owner_id=None, max_attempts=1
         )
 
     def calls_for_key(self, request_key: str) -> tuple[Mapping[str, Any], ...]:
@@ -386,14 +388,17 @@ class ModelsStore:
         *,
         request_key: str | None,
         owner_id: str | None,
+        max_attempts: int,
     ) -> str:
-        """先耐久记录一次真实 attempt；同一请求 key 只允许同一请求内容。"""
+        """在同一事务内核对 keyed 准入并记账，过时的读取不能再次发送。"""
         if not self.writable:
             raise RuntimeError("只读 Model store 不能开始外部调用")
         digest = _request_digest(request)
         binding = _strict_json(asdict(descriptor), "model binding")
         call_id = uuid.uuid4().hex
         with self._connect() as connection, connection:
+            # 1. 读取与追加共用写事务；线程等待期间其他 Root 可能已结算。
+            connection.execute("BEGIN IMMEDIATE")
             require_model_calls_schema(connection)
             if request_key is None:
                 _ = connection.execute(
@@ -403,12 +408,26 @@ class ModelsStore:
                 return call_id
             require_attempt_schema(connection)
             rows = connection.execute(
-                "SELECT request_digest, attempt FROM model_calls WHERE request_key=? "
+                "SELECT request_digest, attempt, binding_json, state, next_attempt_at "
+                "FROM model_calls WHERE request_key=? "
                 "ORDER BY attempt, id",
                 (request_key,),
             ).fetchall()
             if rows and any(row["request_digest"] != digest for row in rows):
                 raise ValueError("同一模型请求 key 的请求内容不一致")
+            if any(json.loads(row["binding_json"])["binding_id"] != descriptor.binding_id for row in rows):
+                raise ValueError("同一模型请求 key 的 binding 不一致")
+            if any(row["state"] != "error" for row in rows):
+                raise ModelUnavailableError("同一请求已有成功或正在结算的调用")
+            if len(rows) >= max_attempts:
+                raise ModelUnavailableError("模型调用重试预算耗尽")
+            if rows:
+                next_at = rows[-1]["next_attempt_at"]
+                if next_at is None:
+                    raise ModelUnavailableError("该请求 key 已终结失败，同 key 不得重新付费")
+                if next_at > time.time():
+                    raise ModelUnavailableError("同一请求仍在耐久退避，请稍后显式重试")
+            # 2. 只有此次提交仍获准，才创建一次真实外部调用的记录。
             attempt = max((row["attempt"] for row in rows), default=-1) + 1
             _ = connection.execute(
                 "INSERT INTO model_calls "
