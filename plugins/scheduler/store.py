@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import hashlib
 import json
@@ -13,6 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.plugin_contracts.json_store import atomic_save_json
+from core.common.file_io import run_file_io
 from agent.plugin_contracts.timekit import parse_iso as _parse_iso
 from .schedule import ScheduledJob, SCHEDULE_MAX_ACTIVE_JOBS, is_cron_expr, next_cron_fire
 
@@ -175,11 +177,6 @@ class JobStore:
             jobs.append(job)
         return jobs
 
-    def save(self, jobs: dict[str, ScheduledJob]) -> None:
-        def update(state: ScheduleState) -> None:
-            state.jobs = dict(jobs)
-        self._change(update)
-
     def encode(self, state: ScheduleState) -> dict[str, object]:
         """校验整个候选后发布，保留已经失效任务的操作与触发恢复证据。"""
         data: list[dict[str, Any]] = []
@@ -200,18 +197,29 @@ class JobStore:
         _ = self.decode(value)
         return value
 
-    def _change(self, change: Callable[[ScheduleState], _T]) -> _T:
-        """不同 generation 重读同一文件再提交，不从各自缓存覆盖新事实。"""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.with_name(self.path.name + ".lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            state = self.read()
-            before = self.encode(state)
-            result = change(state)
-            after = self.encode(state)
-            if before != after or not self.path.exists():
-                atomic_save_json(self.path, after, domain="job_store")
-            return result
+    async def _change(self, change: Callable[[ScheduleState], _T]) -> _T:
+        """异步等待跨 generation 文件锁，物理提交结束后才归还锁。"""
+        def commit() -> tuple[bool, _T | None]:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.with_name(self.path.name + ".lock").open("a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False, None
+                state = self.read()
+                before = self.encode(state)
+                result = change(state)
+                after = self.encode(state)
+                if before != after or not self.path.exists():
+                    atomic_save_json(self.path, after, domain="job_store")
+                return True, result
+
+        # 抢不到锁就归还磁盘槽位；锁只活在线程内，释放不依赖 loop 再次调度。
+        while True:
+            acquired, result = await run_file_io(commit)
+            if acquired:
+                return cast(_T, result)
+            await asyncio.sleep(0.05)
 
     def _previous(self, state: ScheduleState, key: str, kind: str, digest: str) -> Operation | None:
         previous = state.operations.get(key)
@@ -219,7 +227,7 @@ class JobStore:
             raise ValueError("调度操作 key 已用于不同请求")
         return previous
 
-    def add(self, key: str, job: ScheduledJob, response: str) -> Operation:
+    async def add(self, key: str, job: ScheduledJob, response: str) -> Operation:
         """新任务与操作结果同一次原子写；失败后的查询不会重新计算时间或 ID。"""
         digest = _digest(self.encode_job(job))
         def update(state: ScheduleState) -> Operation:
@@ -239,9 +247,9 @@ class JobStore:
                                       outcome="success", response=response)
             state.operations[key] = operation
             return operation
-        return self._change(update)
+        return await self._change(update)
 
-    def cancel(self, key: str, job_ids: tuple[str, ...]) -> Operation:
+    async def cancel(self, key: str, job_ids: tuple[str, ...]) -> Operation:
         """只取消 prepare 已固定的 ID；回放不会匹配后来出现的同名任务。"""
         digest = _digest(job_ids)
         def update(state: ScheduleState) -> Operation:
@@ -258,9 +266,9 @@ class JobStore:
                                   response=f"已取消 {len(removed)} 个任务" if removed else "未找到匹配的任务")
             state.operations[key] = operation
             return operation
-        return self._change(update)
+        return await self._change(update)
 
-    def start_fire(self, job: ScheduledJob) -> Fire | None:
+    async def start_fire(self, job: ScheduledJob) -> Fire | None:
         """计时到达后固定本次任务快照；模型和消息写入在提交成功后开始。"""
         def update(state: ScheduleState) -> Fire | None:
             current = state.jobs.get(job.id)
@@ -272,9 +280,9 @@ class JobStore:
             fire = Fire(current)
             state.fires[fire.key] = fire
             return fire
-        return self._change(update)
+        return await self._change(update)
 
-    def settle(self, key: str, status: Literal["delivered", "failed"], *, now: datetime,
+    async def settle(self, key: str, status: Literal["delivered", "failed"], *, now: datetime,
                error: str | None = None) -> None:
         """送达只增加一次计数；周期与 one-shot 终态在同一候选提交。"""
         def update(state: ScheduleState) -> None:
@@ -290,9 +298,9 @@ class JobStore:
                 replace(current, fire_at=advance(current, max(aware(now), aware(current.fire_at))), run_count=count)
                 if current.trigger == "every" else replace(current, enabled=False, run_count=count)
             )
-        self._change(update)
+        await self._change(update)
 
-    def recover(self, now: datetime) -> ScheduleState:
+    async def recover(self, now: datetime) -> ScheduleState:
         """已有触发先恢复；尚未触发的旧周期跳到未来，过期 one-shot 逻辑失效。"""
         now = aware(now)
         def update(state: ScheduleState) -> ScheduleState:
@@ -304,7 +312,7 @@ class JobStore:
                 elif (now - aware(job.fire_at)).total_seconds() > 300:
                     state.jobs[identity] = replace(job, enabled=False)
             return state
-        return self._change(update)
+        return await self._change(update)
 
     # ── 私有方法 ──
 

@@ -109,3 +109,21 @@ before-image、草稿、两份文件及其独立 receipt 的顺序不变；已�
 URL/DNS 校验、长度上限、hash、最终路径与成功返回时机不变。只删除本次失败下载
 尚未交付的随机路径，不触碰已有附件。`docker/debug/remote_media_io_isolation.py`
 验证真实字节/hash，并在 fsync 屏障内取消，确认文件只在物理工作结束后清理。
+
+## Scheduler 文件事务（#879）
+
+JobStore 的写入方法改为异步等待文件锁：线程以 `LOCK_NB` 尝试，冲突就立即归还槽位，
+回 loop 等待后重试。抢锁、重读、校验、修改、序列化、原子保存和释放是一个物理工作。
+锁只活在物理事务内；提交结束即释放，不依赖 loop 再次调度。
+不同 generation 仍共享原 `.lock` 文件；取消排队写入
+不会进入事务，取消已开始的写入可能留下成功 receipt，工具 query 可读取原结果。
+
+Scheduler 的运行与工具读取也交给 worker；Task 接纳、消息追加和 Delivery 留在原
+Task。诊断提供者暂保留原同步接口，其 RPC 调用仍在 loop，需独立改造公开合同。
+无消费者的 `save(jobs)`
+全量覆盖入口已移除，修改只通过具名领域操作。文件 schema、操作和触发回执不变，
+任务只沿显式取消减少，过期和完成仍按原规则逻辑失效。
+
+`docker/debug/scheduler_io_isolation.py` 使用两个 JobStore 与真实 ScheduleTool，
+控制第一代原子保存、取消调用方后让第二代提交，验证任务和操作回执均未丢失。
+本层保留 runtime 的同步 stat 检测，未增加版本表或文件 CAS 协议。

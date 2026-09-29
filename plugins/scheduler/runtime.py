@@ -18,6 +18,7 @@ from agent.plugin_contracts import ContentPart, Input, Message, Output
 from .schedule import LatencyTracker, compute_actual_trigger
 from .store import Fire, JobStore, aware, fire_key
 from .tools import drain
+from core.common.file_io import run_file_io
 
 logger = logging.getLogger(__name__)
 Program = Callable[[Task, MessageReader], Awaitable[Message]]
@@ -40,7 +41,7 @@ class SchedulerRuntime:
         """单次 Timer 等待不保留 generation scope；文件变化也唤醒旧归档提交的新任务。"""
         ctx = self._ctx
         async with ctx.runtime_scope():
-            state = self.store.recover(self._now())
+            state = await self.store.recover(self._now())
         stamp: tuple[int, int, int] | None | object = object()
         cancelled: tuple[Fire, ...] = ()
         try:
@@ -53,7 +54,7 @@ class SchedulerRuntime:
                     except FileNotFoundError:
                         current = None
                     if current != stamp:
-                        state = self.store.read()
+                        state = await run_file_io(self.store.read)
                         stamp = current
                         # 1. 文件变化才重读历史回执；恢复与正常触发共用 fire key。
                         for fire in state.fires.values():
@@ -70,7 +71,7 @@ class SchedulerRuntime:
                     for job in state.jobs.values():
                         deadline = compute_actual_trigger(job.fire_at, job.tier, self.tracker)
                         if job.enabled and aware(deadline) <= now and (fire_key(job), "pending") not in self._attempted:
-                            fire = self.store.start_fire(job)
+                            fire = await self.store.start_fire(job)
                             if fire is not None and (fire.key, fire.status) not in self._attempted:
                                 _ = await self.start(fire)
                     # 2. 归档工具可在另一代修改同一文件，短等待让这些变化及时可见。
@@ -115,7 +116,7 @@ class SchedulerRuntime:
     async def _fire(self, task: Task, key: str) -> None:
         """只有 pending 可以推进；prepared 撤回与未知发送沿 Delivery 原回执处理。"""
         ctx = self._ctx
-        fire = self.store.read().fires[key]
+        fire = (await run_file_io(self.store.read)).fires[key]
         delivery = ctx.require(DELIVERY).open(ctx)
         selected = delivery.selection(fire.notification_id)
         if fire.status == "cancelled":
@@ -136,7 +137,7 @@ class SchedulerRuntime:
             if not task.active:
                 raise asyncio.CancelledError
             if not parts:
-                self.store.settle(key, "failed", now=self._now(), error="调度任务没有可发送的最终内容")
+                await self.store.settle(key, "failed", now=self._now(), error="调度任务没有可发送的最终内容")
                 return
             writer = ctx.require(MESSAGE_WRITERS).bind(
                 ctx, author="scheduler", source="scheduler", body_types=(Output,),
@@ -156,7 +157,7 @@ class SchedulerRuntime:
             receipts = [await delivery.send(notification.message_id, sink) for sink in selected.sinks]
         except asyncio.CancelledError:
             # 领域取消已先落盘；单纯 shutdown 只保留 prepared/started，不冒充撤回。
-            cancelled = self.store.read().fires[key]
+            cancelled = (await run_file_io(self.store.read)).fires[key]
             if cancelled.status == "cancelled":
                 for sink in selected.sinks:
                     _ = await delivery.cancel_prepared(notification.message_id, sink, cancelled.error or "任务已取消")
@@ -166,14 +167,14 @@ class SchedulerRuntime:
             saved = [delivery.receipt(notification.message_id, sink) for sink in selected.sinks]
             failures = [receipt for receipt in saved if receipt is not None and receipt.status == "failed"]
             if failures:
-                self.store.settle(key, "failed", now=self._now(),
+                await self.store.settle(key, "failed", now=self._now(),
                                   error="; ".join(receipt.error or receipt.status for receipt in failures))
             raise
         if all(receipt.status == "delivered" for receipt in receipts):
-            self.store.settle(key, "delivered", now=self._now())
+            await self.store.settle(key, "delivered", now=self._now())
         else:
             errors = "; ".join(receipt.error or receipt.status for receipt in receipts if receipt.status != "delivered")
-            self.store.settle(key, "failed", now=self._now(), error=errors)
+            await self.store.settle(key, "failed", now=self._now(), error=errors)
 
     async def _content(self, task: Task, fire: Fire) -> tuple[ContentPart, ...]:
         """每次触发有独立内部 Session；已保存的完整输出足以恢复最终通知。"""
