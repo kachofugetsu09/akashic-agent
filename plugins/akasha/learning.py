@@ -76,10 +76,14 @@ class Learning:
         self, sample: Sample, previous: Sequence[Turn], state: Consumption, bindings: Bindings,
     ) -> TurnFeedback:
         """从本样本实际成功的 Akasha 调用读取反馈，按完整成员映射学习节点。"""
-        # 1. 旧前缀沿原索引身份；新节点包含所有输入，不只首个输入。
+        # 1. 无回执没有目标可映射，恢复不扫描无关的已学习前缀。
+        feedback = self.read_feedback(sample, bindings)
+        if not feedback:
+            return TurnFeedback()
+        # 2. 旧前缀沿原索引身份；新节点包含所有输入，不只首个输入。
         targets = message_nodes(state.applied[:len(previous)])
         current = {message.message_id for message in sample.messages if isinstance(message.body, Input)}
-        return resolve_feedback(self.read_feedback(sample, bindings), targets, current, len(previous))
+        return resolve_feedback(feedback, targets, current, len(previous))
 
     def read_feedback(self, sample: Sample, bindings: Bindings) -> tuple[Feedback, ...]:
         """只有实际 Akasha 调用的成功结果可贡献反馈。"""
