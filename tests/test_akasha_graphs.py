@@ -59,6 +59,91 @@ async def apply(ctx):
 ''')
 
 
+def add_gated_memory(sources: Path) -> None:
+    """Gate the real model boundary for one graph, without changing graph code."""
+    add_memory(sources)
+    with (sources / "test_provider/plugin.py").open("a") as stream:
+        stream.write('''
+
+memory_apply = apply
+async def apply(ctx):
+    import asyncio
+    from agent.plugin_composition import EMBEDDINGS
+    await memory_apply(ctx)
+    entered, release = asyncio.Event(), asyncio.Event()
+    fast, slow_second = asyncio.Event(), asyncio.Event()
+    slow_calls = 0
+    embeddings = ctx.require(EMBEDDINGS)
+    original_bind = embeddings.bind
+    @asynccontextmanager
+    async def bind(*, model_id=None):
+        async with original_bind(model_id=model_id) as model:
+            original_embed = model.embed
+            async def embed(texts):
+                nonlocal slow_calls
+                if any("slow graph" in text for text in texts):
+                    entered.set()
+                    await release.wait()
+                    slow_calls += 1
+                    if slow_calls >= 2:
+                        slow_second.set()
+                if any("fast graph" in text for text in texts):
+                    fast.set()
+                return await original_embed(texts)
+            model.embed = embed
+            yield model
+    embeddings.bind = bind
+    await ctx.provide(ServiceKey("fixture.slow-entered"), entered)
+    await ctx.provide(ServiceKey("fixture.slow-release"), release)
+    await ctx.provide(ServiceKey("fixture.fast"), fast)
+    await ctx.provide(ServiceKey("fixture.slow-second"), slow_second)
+''')
+
+
+@pytest.mark.asyncio
+async def test_slow_graph_does_not_block_another_graph_publication(tmp_path):
+    """O / MEM-013: graph-local time advances in order while a neighbor waits."""
+    memory = tmp_path / "workspace/memory/akasha.db"
+    async with application(tmp_path, replying=False, start=False, extra_sources=add_gated_memory) as (log, host):
+        policies = ScopePolicies(log.owner("plugin:akasha:scope-policy"), log.catalog())
+        for name in ("slow", "fast"):
+            policies.set("project", name, "isolated")
+            log.ensure_session(name, SessionAttributes.scoped({"project": name}))
+
+        def append_pair(name, suffix):
+            log.writer(name, author="user", source="conversation", body_types=(Input,),
+                       content={"text": check_text}).append(
+                name + "-input" + suffix, Input((ContentPart("text", name + " graph fact"),)))
+            log.writer(name, author="assistant", source="conversation", body_types=(Output,),
+                       content={"text": check_text}).append(
+                name + "-output" + suffix, Output((ContentPart("text", "remembered"),), "complete"))
+
+        append_pair("slow", "1")
+        await host.start_runtime()
+        root = host.live_root
+        assert root is not None
+        entered = root.context.require(ServiceKey("fixture.slow-entered"))
+        release = root.context.require(ServiceKey("fixture.slow-release"))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            append_pair("slow", "2")
+            append_pair("fast", "1")
+            await asyncio.wait_for(root.context.require(ServiceKey("fixture.fast")).wait(), 2)
+            async with root.context.require(MATERIALS).bind() as materials:
+                await asyncio.wait_for(materials.prepare(log.reader("fast").snapshot(), "conversation"), 2)
+            state = load_consumption(graph_path(memory, graph_key((("project", "fast"),))))
+            assert state is not None
+            assert [entry.ending[1] for entry in state.applied] == ["fast-output1"]
+        finally:
+            release.set()
+        await asyncio.wait_for(root.context.require(ServiceKey("fixture.slow-second")).wait(), 2)
+        async with root.context.require(MATERIALS).bind() as materials:
+            await materials.prepare(log.reader("slow").snapshot(), "conversation")
+        state = load_consumption(graph_path(memory, graph_key((("project", "slow"),))))
+        assert state is not None
+        assert [entry.ending[1] for entry in state.applied] == ["slow-output1", "slow-output2"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("broken_scope", [None, "broken"])
 async def test_unavailable_graph_does_not_stop_other_graphs(tmp_path: Path, broken_scope: str | None) -> None:

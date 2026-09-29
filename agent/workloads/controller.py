@@ -16,6 +16,7 @@ import struct
 import sys
 import tempfile
 from dataclasses import asdict
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import cache
 from pathlib import Path, PurePosixPath
 from collections.abc import Coroutine, Mapping
@@ -165,11 +166,42 @@ class WorkloadControllerServer:
             str(self._workspace).encode("utf-8")
         ).hexdigest()[:16]
         self._lock = asyncio.Lock()
+        self._plugin_locks: dict[str, asyncio.Lock] = {}
+        self._workloads_ready = asyncio.Event()
+        self._workloads_ready.set()
         self._closing = False
         self._requests: set[asyncio.Task[None]] = set()
         self._leases = self._load_leases()
         self._stopped_path = self._state_path.with_suffix(".stopped.json")
         self._stopped = self._load_state(self._stopped_path)
+
+    @asynccontextmanager
+    async def _plugin_access(self, plugin_id: str):
+        """Order effects that can share one plugin's writable mounts."""
+        while True:
+            await self._workloads_ready.wait()
+            lock = self._plugin_locks.setdefault(plugin_id, asyncio.Lock())
+            await lock.acquire()
+            if self._workloads_ready.is_set():
+                break
+            lock.release()
+        try:
+            yield
+        finally:
+            lock.release()
+
+    @asynccontextmanager
+    async def _maintenance(self):
+        """Drain plugin effects before workspace-wide cleanup or owner recovery."""
+        async with self._lock:
+            self._workloads_ready.clear()
+            try:
+                async with AsyncExitStack() as plugins:
+                    for lock in tuple(self._plugin_locks.values()):
+                        await plugins.enter_async_context(lock)
+                    yield
+            finally:
+                self._workloads_ready.set()
 
     async def serve(self) -> None:
         """Bind the private socket and serve one bounded request per connection."""
@@ -322,7 +354,7 @@ class WorkloadControllerServer:
         ):
             return
 
-        async with self._lock:
+        async with self._maintenance():
             # Core may have restarted while this watcher waited for a request.
             # Recheck under the same lock that guards start/adopt before cleanup.
             detail = await self._inspect(owner, allow_missing=True)
@@ -381,22 +413,23 @@ class WorkloadControllerServer:
             await writer.wait_closed()
 
     async def _dispatch(self, action: object, body: dict[str, object]) -> dict[str, object]:
-        """Keep an accepted effect under the Controller lock through shutdown."""
-
-        async with self._lock:
-            if action == "start":
-                return await self._start(_start_request(body))
-            if action == "stop":
-                if set(body) != {"lease"}:
-                    raise ValueError("Controller stop schema 不匹配")
-                return await self._stop(_lease(body.get("lease")))
-            if action == "cleanup_candidates":
-                if set(body) != {"workspace_id"}:
-                    raise ValueError("Controller cleanup schema 不匹配")
-                return await self._cleanup_candidates(
-                    _required_text(body, "workspace_id")
-                )
-            raise ValueError(f"Controller action 无效: {action}")
+        """Keep accepted effects ordered by plugin, with exclusive maintenance."""
+        if action == "start":
+            request = _start_request(body)
+            async with self._plugin_access(request.plugin_id):
+                return await self._start(request)
+        if action == "stop":
+            if set(body) != {"lease"}:
+                raise ValueError("Controller stop schema 不匹配")
+            lease = _lease(body.get("lease"))
+            async with self._plugin_access(lease.plugin_id):
+                return await self._stop(lease)
+        if action == "cleanup_candidates":
+            if set(body) != {"workspace_id"}:
+                raise ValueError("Controller cleanup schema 不匹配")
+            async with self._maintenance():
+                return await self._cleanup_candidates(_required_text(body, "workspace_id"))
+        raise ValueError(f"Controller action 无效: {action}")
 
     def _check_peer(self, writer: asyncio.StreamWriter) -> None:
         sock = writer.get_extra_info("socket")

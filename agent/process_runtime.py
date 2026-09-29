@@ -11,6 +11,7 @@ import tempfile
 import time
 import threading
 from collections import deque
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol
@@ -263,7 +264,26 @@ class ShellProcessManager:
         self._quarantined_owners: dict[str, ExecutionCleanupReport] = {}
         self._lock = asyncio.Lock()
         self._spawn_lock = asyncio.Lock()
+        self._owner_locks: dict[str, asyncio.Lock] = {}
+        self._shutdown_lock = asyncio.Lock()
+        self._owners_ready = asyncio.Event()
+        self._owners_ready.set()
         self._rng = random.SystemRandom()
+
+    @asynccontextmanager
+    async def _owner_access(self, owner: str):
+        """Order one owner's spawn and cleanup without holding other owners."""
+        while True:
+            await self._owners_ready.wait()
+            lock = self._owner_locks.setdefault(owner, asyncio.Lock())
+            await lock.acquire()
+            if self._owners_ready.is_set():
+                break
+            lock.release()
+        try:
+            yield
+        finally:
+            lock.release()
 
     async def exec_command(
         self,
@@ -281,7 +301,7 @@ class ShellProcessManager:
         """注册一次执行，等待首个窗口，并返回完成态或续接句柄。"""
 
         # 1. 串行容量回收和 spawn，保证新进程在开始等待前已注册。
-        async with self._spawn_lock:
+        async with self._owner_access(owner_session_key), self._spawn_lock:
             await self._ensure_owner_admitted(owner_session_key)
             await self._prune_if_needed()
             execution_id = await self._allocate_execution_id()
@@ -402,7 +422,7 @@ class ShellProcessManager:
         """回收 owner 执行，并隔离 cleanup 未确认的 owner。"""
 
         # 1. 与 spawn 串行，避免 cleanup 与同 owner 新进程交错。
-        async with self._spawn_lock:
+        async with self._owner_access(owner_session_key):
             async with self._lock:
                 executions = [
                     execution
@@ -422,10 +442,17 @@ class ShellProcessManager:
     async def shutdown(self) -> ExecutionCleanupReport:
         """尽力终止全部执行，并返回未清理明细。"""
 
-        async with self._spawn_lock:
-            async with self._lock:
-                executions = list(self._executions.values())
-            return await self._terminate_many(executions)
+        async with self._shutdown_lock:
+            self._owners_ready.clear()
+            try:
+                async with AsyncExitStack() as owners:
+                    for lock in tuple(self._owner_locks.values()):
+                        await owners.enter_async_context(lock)
+                    async with self._spawn_lock, self._lock:
+                        executions = list(self._executions.values())
+                    return await self._terminate_many(executions)
+            finally:
+                self._owners_ready.set()
 
     async def active_execution_ids(self) -> list[int]:
         async with self._lock:
