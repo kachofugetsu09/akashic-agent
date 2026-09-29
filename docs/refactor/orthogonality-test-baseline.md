@@ -183,3 +183,7 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
    - §3 清单里的补充项。
 3. 新增测试的 PR 必须写明守护的是 §1 里的哪一条概念，并说明为什么现有 41 项守不住。说不清就不收。
 4. 重构改变了某个保留测试的**实现假设**（例如第 11、12 条），按新语义重写，不删除它守护的概念。
+
+## Event-loop isolation regressions
+
+- `test_interest_execution.py`: O, one optional interest calculation must not block unrelated host work. Uses the real MessageLog, Learning and CompositionRoot. The regression fails on `0126f900` because history preparation runs on the loop thread.
