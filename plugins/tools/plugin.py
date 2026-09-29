@@ -6,7 +6,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import cast
 
 from agent.plugin_composition import (
     RUNTIME_STARTED,
@@ -63,9 +63,6 @@ version = "1.0.0"
 desc = "声明工具并固定实际实现；一次调用的回执独立于会话"
 
 
-ContentCheck = Callable[[ContentPart], ContentReferences]
-
-
 def _matches_saved_description(current: Mapping[str, object], saved: Mapping[str, object]) -> bool:
     """Accept only the two retired display fields from an archived v2 binding."""
     if current == saved:
@@ -79,11 +76,6 @@ def _matches_saved_description(current: Mapping[str, object], saved: Mapping[str
     ):
         return False
     return ("risk" in saved or "search_hint" in saved) and legacy == current
-
-
-class ContentViewCapability(Protocol):
-    @property
-    def checks(self) -> Mapping[str, ContentCheck]: ...
 
 
 # 与 content owner 共享名字，不共享其实现模块或 Python 类型身份。
