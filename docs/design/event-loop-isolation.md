@@ -84,3 +84,15 @@ PluginManager 保留唯一操作 owner。变化检测的源码哈希，以及完
 真实 Manager 热更新在归档屏障处仍能处理取消，排空前拒绝重用，旧 generation 和
 selection 不变，排空后可正常重试。旧的编译失败与局部更新测试不能覆盖后台线程
 尚未退出时的 owner 生命周期；该回归在同步实现上因 loop 无法接收释放信号而失败。
+
+## Markdown 档案 I/O（#879）
+
+更新锁继续串行化“读档案 → 模型 → 提交”，两文件短锁保护“恢复/读取”或“安装/receipt”。
+完整存储操作交给 `run_file_io`，并在物理结束后才释放锁；模型、binding、summary lookup
+和 Scope 留在原 Task。两处历史解码也通过取消排空，避免 provider 先于读线程关闭。
+文件锁的非阻塞轮询不变，未把等待文件锁的线程塞进共享池。
+
+before-image、草稿、两份文件及其独立 receipt 的顺序不变；已有退休 PENDING 的协议
+也不变，只在原双锁内一次完成恢复和迁移。没有新增数据减少入口或乐观重试模型。
+`docker/debug/markdown_io_isolation.py` 在第一份文件写完后持有屏障，验证取消后读者
+仍等双文件完成，并检查两份 applied receipt 和原文备份。旧代码阻塞 loop 而失败。
