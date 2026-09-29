@@ -221,31 +221,45 @@ async def run(directory: Path):
             await fixture.close()
 
     # 3. 子 owner 停机不伪造用户请求；新 Root 复用原 Input 和效果 key。
-    path = directory / 'shutdown'
-    path.mkdir()
-    fixture = await Fixture(path, 'wait').open()
-    waiter = asyncio.create_task(fixture.invoke())
-    await fixture.entered.wait()
-    await fixture.tasks.close()
-    parent = await waiter
-    settled, outcome, prefix = await fixture.facts()
-    if args.baseline:
-        assert parent == {'service_closed': True} and outcome[0] == 'cancelled'
-    else:
-        assert parent == {'cancelled': True, 'caller_cancelling': 0}
-        assert not settled and outcome is None and len(prefix) == 1
-    await fixture.close()
-    if not args.baseline:
-        fixture = await Fixture(path, 'success').open()
-        try:
-            assert await fixture.invoke() == {'result': 'success'}
-            settled, outcome, messages = await fixture.facts()
-            assert settled and outcome[0] == 'completed' and messages[:1] == prefix
-            assert len(messages) == 2 and fixture.calls == 1
-            assert await fixture.invoke() == {'result': 'success'} and fixture.calls == 1
-        finally:
-            await fixture.close()
-    checks.append({'case': 'shutdown/reopen', 'parent': parent, 'original_input_preserved': True})
+    for handled_cancel in [False, True]:
+        path = directory / ('shutdown-handled-cancel' if handled_cancel else 'shutdown')
+        path.mkdir()
+        fixture = await Fixture(path, 'wait').open()
+
+        async def wait_after_cancel():
+            if handled_cancel:
+                # asyncio 保留已处理的取消计数；它不是这一次用户请求的证据。
+                caller = asyncio.current_task()
+                assert caller is not None
+                caller.cancel()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    pass
+            return await fixture.invoke()
+
+        waiter = asyncio.create_task(wait_after_cancel())
+        await fixture.entered.wait()
+        await fixture.tasks.close()
+        parent = await waiter
+        settled, outcome, prefix = await fixture.facts()
+        if args.baseline:
+            assert parent == {'service_closed': True} and outcome[0] == 'cancelled'
+        else:
+            assert parent == {'cancelled': True, 'caller_cancelling': int(handled_cancel)}
+            assert not settled and outcome is None and len(prefix) == 1
+        await fixture.close()
+        if not args.baseline:
+            fixture = await Fixture(path, 'success').open()
+            try:
+                assert await fixture.invoke() == {'result': 'success'}
+                settled, outcome, messages = await fixture.facts()
+                assert settled and outcome[0] == 'completed' and messages[:1] == prefix
+                assert len(messages) == 2 and fixture.calls == 1
+                assert await fixture.invoke() == {'result': 'success'} and fixture.calls == 1
+            finally:
+                await fixture.close()
+        checks.append({'case': path.name + '/reopen', 'parent': parent, 'original_input_preserved': True})
 
     # 4. 最终 Output 已提交时，后来的取消不得生成第二个结果。
     path = directory / 'output-race'

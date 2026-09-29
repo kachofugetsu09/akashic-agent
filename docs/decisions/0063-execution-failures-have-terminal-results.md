@@ -67,7 +67,8 @@ Delivery 却继续把它当待恢复状态；Wake 不关闭领域领取，schedu
 - subagent：结果通知返回终态后关闭该次回传；失败留下发送回执与诊断，不再次生成或发送原结果。
   程序自行抛出取消异常而 Task 尚未撤权时，原来源追加 failure Control，父等待得到失败结果；
   不据此生成“用户取消”。Task 已撤权且尚无终态时保留原输入供 owner 恢复。
-  同步 Spawn 只在调用者自身被取消时记录取消意图；join 传播子 Task 的停机取消不等于用户请求。
+  同步 Spawn 只在调用者自身被取消、子 Task 尚未撤权时记录取消意图；
+  join 传播子 Task 的停机取消不等于用户请求，调用者残留的旧取消计数也不构成新意图。
 - Mobile：只在原 command 的恢复路径确认没有活跃 owner 后生成 `command_interrupted` 错误。
   只有 Message 和 durable handoff 都不存在且没有已执行证据时，才提示可以安全重试。
 

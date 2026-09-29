@@ -110,8 +110,8 @@ class Spawn:
                 except asyncio.CancelledError:
                     caller = asyncio.current_task()
                     assert caller is not None
-                    # join 也会传播子 Task 的停机取消；只有调用者取消才代表取消意图。
-                    if caller.cancelling():
+                    # 子 Task 已撤权时不能再把 join 的取消记成用户 pause。
+                    if caller.cancelling() and task.active:
                         _ = await self.jobs.cancel(prepared.request.job_id)
                     raise
         result = await self.query(key)
