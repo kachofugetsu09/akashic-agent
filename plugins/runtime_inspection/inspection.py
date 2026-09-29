@@ -9,9 +9,8 @@ from agent.plugin_composition import Context, Effect
 
 from agent.plugin_contracts.inspection import (
     Document,
-    SCHEDULER_INSPECTION as SCHEDULER_INSPECTION,
+    SCHEDULER_INSPECTION_V3 as SCHEDULER_INSPECTION,
     SKILL_INSPECTION as SKILL_INSPECTION,
-    SchedulerReader as SchedulerReader,
     SkillReader as SkillReader,
 )
 
@@ -24,7 +23,6 @@ class RuntimeInspectionProvider:
     def __init__(self, ctx: Context) -> None:
         self._ctx = ctx
         self._documents: dict[str, Document] = {}
-        self._scheduler: SchedulerReader | None = None
         self._skills: SkillReader | None = None
 
     async def register(self, ctx: Context, document: Document) -> Effect:
@@ -42,13 +40,6 @@ class RuntimeInspectionProvider:
             return lambda: self._documents.pop(document.id)
 
         return await ctx.effect(setup, label=f"document:{document.id}")
-
-    def bind_scheduler(self, service: SchedulerReader) -> None:
-        self._scheduler = service
-
-    def unbind_scheduler(self, service: SchedulerReader) -> None:
-        if self._scheduler is service:
-            self._scheduler = None
 
     def bind_skills(self, service: SkillReader) -> None:
         self._skills = service
@@ -103,24 +94,22 @@ class RuntimeInspectionProvider:
         service = self._skills
         return None if service is None else await service.list_skills()
 
-    def list_jobs(self) -> tuple[Mapping[str, object], ...] | None:
-        """读取当前 generation 的 scheduler provider。"""
+    async def list_jobs(self) -> tuple[Mapping[str, object], ...] | None:
+        """借用本次实际 provider，读取排空后才允许其卸载。"""
+        with self._ctx.borrow(SCHEDULER_INSPECTION) as service:
+            return None if service is None else await service.list_jobs()
 
-        service = self._scheduler
-        return None if service is None else service.list_jobs()
-
-    def get_job(self, job_id: str) -> Mapping[str, object] | None:
+    async def get_job(self, job_id: str) -> Mapping[str, object] | None:
         """读取一个任务；缺 scheduler 用状态对象区别于未知任务。"""
-
-        service = self._scheduler
-        if service is None:
-            return {
-                "unavailable": {
-                    "code": "scheduler_unavailable",
-                    "message": "调度检查服务尚未绑定",
+        with self._ctx.borrow(SCHEDULER_INSPECTION) as service:
+            if service is None:
+                return {
+                    "unavailable": {
+                        "code": "scheduler_unavailable",
+                        "message": "调度检查服务尚未绑定",
+                    }
                 }
-            }
-        return service.get_job(job_id)
+            return await service.get_job(job_id)
 
     @staticmethod
     def _summary(document: Document, available: bool) -> dict[str, object]:
