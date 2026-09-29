@@ -300,19 +300,37 @@ def read_persisted_messages(path: str | Path, session_id: str) -> tuple[Message,
         return tuple(_message(row) for row in rows)
 
 
+@dataclass
+class _ReadConnection:
+    connection: sqlite3.Connection
+    lock: threading.RLock
+    decoded: WeakValueDictionary[tuple[object, ...], Message]
+
+
+class _ReadLocal(threading.local):
+    def __init__(self) -> None:
+        self.current: _ReadConnection | None = None
+
+
 class MessageLog:
     """SQLite 消息权威存储；只向消费者分配窄 reader/writer。"""
 
     def __init__(self, path: str | Path):
-        self._lock = threading.RLock()
-        self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
+        self._writer_lock = threading.RLock()
+        self._writer_decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
+        self._reads = _ReadLocal()
+        self._path = Path(path).resolve()
         self._closed = False
         self._listeners: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
-        self._connection = sqlite3.connect(str(path), check_same_thread=False)
+        self._writer_connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         _ = self._connection.execute("PRAGMA foreign_keys=ON")
         try:
             _check_schema(self._connection)
+            # WAL lets a pinned history read coexist with short committed writes.
+            mode = self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            if mode != "wal":
+                raise RuntimeError("MessageLog requires a file-backed WAL database")
             fresh = (
                 self._connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE name='messages'"
@@ -332,6 +350,21 @@ class MessageLog:
         except BaseException:
             self._connection.close()
             raise
+
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        read = self._reads.current
+        return self._writer_connection if read is None else read.connection
+
+    @property
+    def _lock(self):
+        read = self._reads.current
+        return self._writer_lock if read is None else read.lock
+
+    @property
+    def _decoded(self) -> WeakValueDictionary[tuple[object, ...], Message]:
+        read = self._reads.current
+        return self._writer_decoded if read is None else read.decoded
 
     def _decode(self, row: sqlite3.Row) -> Message:
         """查询仍读真实行；只复用完整行相同且仍被调用者持有的不可变消息。"""
@@ -452,14 +485,33 @@ class MessageLog:
 
     @contextmanager
     def _read(self) -> Generator[sqlite3.Connection]:
-        """多条只读查询共用快照；事务内的读取沿用调用方已有事务。"""
-        with self._lock:
-            if self._connection.in_transaction:
-                yield self._connection
-            else:
-                with self._connection:
-                    _ = self._connection.execute("BEGIN")
-                    yield self._connection
+        """Pin a private read connection; nested writer reads keep their transaction."""
+        if self._reads.current is not None:
+            yield self._reads.current.connection
+            return
+        with self._writer_lock:
+            if self._closed:
+                raise RuntimeError("MessageLog is closed")
+            if self._writer_connection.in_transaction:
+                yield self._writer_connection
+                return
+            # Admit the read before close can shut the writer down. Long reads
+            # keep their own connection and release this short writer gate.
+            connection = sqlite3.connect(self._path.as_uri() + "?mode=ro", uri=True)
+            try:
+                connection.row_factory = sqlite3.Row
+                _ = connection.execute("PRAGMA query_only=ON")
+                _ = connection.execute("BEGIN")
+            except BaseException:
+                connection.close()
+                raise
+        # Callbacks may use other readers of this same log; all see this snapshot.
+        with closing(connection):
+            self._reads.current = _ReadConnection(connection, threading.RLock(), WeakValueDictionary())
+            try:
+                yield connection
+            finally:
+                self._reads.current = None
 
     def catalog(self) -> MessageCatalog:
         return MessageCatalog(self)
@@ -538,11 +590,11 @@ class MessageLog:
 
     def close(self) -> None:
         """释放数据库并唤醒所有追赶者，让它们正常退出。"""
-        with self._lock:
+        with self._writer_lock:
             if self._closed:
                 return
             self._closed = True
-            self._connection.close()
+            self._writer_connection.close()
             for event, loop in tuple(self._listeners.items()):
                 try:
                     _ = loop.call_soon_threadsafe(event.set)
@@ -679,6 +731,25 @@ class MessageReader:
         """创建本次程序的只读视图，旧前缀复用解码结果，后续读取追赶新增消息。"""
         return _IncrementalMessageReader(self._log, self._session_id)
 
+    async def snapshot_async(self, *, through_seq: int) -> tuple[Message, ...]:
+        """Read a fixed prefix off-loop and drain its connection before cancellation."""
+        with self._log._lock:
+            if self._log._connection.in_transaction:
+                raise RuntimeError("Async snapshot cannot leave an active storage transaction")
+        job = asyncio.create_task(asyncio.to_thread(
+            lambda: MessageReader(self._log, self._session_id).snapshot(through_seq=through_seq)
+        ))
+        cancelled = False
+        while not job.done():
+            try:
+                await asyncio.shield(job)
+            except asyncio.CancelledError:
+                cancelled = True
+        result = job.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
     @property
     def session_id(self) -> str:
         return self._session_id
@@ -746,16 +817,17 @@ class MessageReader:
 
     def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
         """固定上界后分页读取消息区间，默认保留完整前缀。"""
-        head = self.head() if through_seq is None else through_seq
-        messages: list[Message] = []
-        cursor = after_seq
-        while cursor < head:
-            page = self.read(after_seq=cursor, through_seq=head)
-            if not page:
-                break
-            messages.extend(page)
-            cursor = page[-1].seq
-        return tuple(messages)
+        with self._log._read():
+            head = self.head() if through_seq is None else through_seq
+            messages: list[Message] = []
+            cursor = after_seq
+            while cursor < head:
+                page = self.read(after_seq=cursor, through_seq=head)
+                if not page:
+                    break
+                messages.extend(page)
+                cursor = page[-1].seq
+            return tuple(messages)
 
     def read_page(
         self, *, after_seq: int = -1, through_seq: int | None = None, limit: int = 50,
@@ -892,13 +964,26 @@ class _IncrementalMessageReader(MessageReader):
     def incremental(self) -> MessageReader:
         return self
 
+    async def snapshot_async(self, *, through_seq: int) -> tuple[Message, ...]:
+        """Warm the existing prefix cache without comparing different connections' versions."""
+        while True:
+            with self._log._lock:
+                before = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
+            messages = await super().snapshot_async(through_seq=through_seq)
+            with self._log._lock:
+                after = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
+                if before == after:
+                    self._messages, self._data_version = messages, after
+                    return messages
+
     def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
         """同一读事务内核对外部变化并补读尾部；不把未提交行留到下次读取。"""
         with self._log._lock:
             # 1. 调用方事务可能回滚，直接读取它的视图，不复用或推进解码前缀。
             if self._log._connection.in_transaction:
                 return super().snapshot(after_seq=after_seq, through_seq=through_seq)
-            with self._log._read() as connection:
+            with self._log._connection as connection:
+                _ = connection.execute("BEGIN")
                 head = self.head()
                 version = connection.execute("PRAGMA data_version").fetchone()[0]
                 # MessageLog 正常只追加；其他连接的编辑、删除或恢复使旧前缀失效。

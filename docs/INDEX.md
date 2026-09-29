@@ -73,6 +73,7 @@
 
 | 文件或目录 | 回答的问题 | 读取策略 |
 |---|---|---|
+| [Event-loop execution boundaries](design/event-loop-isolation.md) | 历史读取、计算隔离与因果顺序 | 排查跨 owner 阻塞和执行资源时读取 |
 | [能力依赖与执行归属](design/issue-766-orthogonal-capabilities.md) | Issue 766 的职责、取舍与实施边界 | 插件正交化实施入口 |
 | [插件 Onboarding 投影设计](design/plugin-onboarding-projection.md) | 模型、渠道、Akasha、Wake 的配置归属、拓扑排序与旧入口退役（内置实现与验收） | 修改 setup、首次配置或插件配置声明时读取 |
 | [内置引导验收](design/plugin-onboarding-validation.md) | 正式安装、CDP 用户场景与独立评审证据 | 核对本次引导交付边界时读取 |
