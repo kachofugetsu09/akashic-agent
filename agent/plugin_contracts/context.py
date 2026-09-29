@@ -49,6 +49,7 @@ class ContextBuilder(Protocol):
         tools: Sequence[Mapping[str, Any]] = (),
         max_output_tokens: int,
         window_start: str | None = None,
+        current_reminder_input_id: str | None = None,
     ) -> ModelRequest: ...
     def build_attempt(
         self,
@@ -59,6 +60,7 @@ class ContextBuilder(Protocol):
         tools: Sequence[Mapping[str, Any]] = (),
         max_output_tokens: int,
         window_start: str | None = None,
+        current_reminder_input_id: str | None = None,
     ) -> tuple[ModelRequest, str | None]: ...
 
 

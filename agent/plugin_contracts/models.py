@@ -34,12 +34,16 @@ class ContextModel(Protocol):
         after_seq: int,
         summary_reference: str | None = None,
         fresh: bool = False,
+        current_reminder: str | None = None,
+        current_reminder_input_id: str | None = None,
     ) -> ModelRequest:
         """接收完整事实；after_seq 是摘要覆盖末尾，-1 表示没有覆盖。
 
         fresh 明确从选定近期窗口开始新请求，不接续旧 opaque 状态。
         summary_reference 明确要求从这份摘要开始新请求；只有同一摘要下的
         后续成功响应才接续 opaque state。只给 after_seq 不授权丢弃 replay。
+        current_reminder 与 current_reminder_input_id 成对声明本次尾部材料；投影
+        只折叠同一 Input、同一材料身份的已保存 reminder，其他历史事实照常重放。
         """
         ...
 
@@ -51,6 +55,7 @@ class MessageProjection(ContextModel, Protocol):
         call_indices: Sequence[int],
         *,
         reminder: str | None = None,
+        reminder_input_id: str | None = None,
         actual_calls: Sequence[ToolCall | ContentPart] | None = None,
     ) -> ContentPart: ...
 

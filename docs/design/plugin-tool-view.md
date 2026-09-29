@@ -61,9 +61,10 @@ prepare、authorize、invoke 和 receipt 都只执行一次。
 使用组内最佳工具得分，组大小本身不增加排名。风险过滤只筛选匹配候选，命中后仍返回获授组内
 全部 schema，并提示被过滤的匹配工具；它不是调用授权。
 
-`model.facts` 兼容旧字段；新成功 Output 额外保存本次实际请求末尾的 reminder replay 和原
-wire tool calls。下一次同一摘要下重放这些请求事实，避免把后来生成的末尾 reminder 插入旧
-provider 前缀。失败或取消不保存成功 replay。新 Summary 正常开启新上下文，旧搜索结果只是
+`model.facts` 兼容旧字段；新成功 Output 额外保存本次实际请求末尾的 reminder replay、它所属
+Input 与内容 SHA-256 摘要，以及原 wire tool calls。同一 Input 的同一材料只重放一次，当前请求仍在末尾
+加入它；不同材料、不同 Input 和旧的无身份事实不会因文本相同被折叠。失败或取消不保存成功
+replay。新 Summary 正常开启新上下文，旧搜索结果只是
 普通 ToolResult；保留原文中的 schema 继续可见，只有摘要覆盖它后才不再提供原 schema。
 不专门删除 raw tail，也不改变调用权限。工具目录不写入新的 reminder replay。
 

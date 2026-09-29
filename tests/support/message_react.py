@@ -126,15 +126,29 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         checks = {}
         async def decode(self, text, references=()):
             return await _decode_text(text, (), references)
-    projection = MessageProjection(model, check_summary=_model_summary_check, source="conversation",
-                                   render_content=lambda p: render_content(p, artifacts={}),
-                                   tool_name=lambda binding: "example", read_call=store.read_call)
     async def materials(snapshot):
         return material_data(Materials("system")) if material_source is None else await material_source(snapshot)
     async def run(task, reader, source):
         output = writer(Output)
         assert output.source == source
         task.on_close(output.expire)
+        current_input = next(
+            (
+                message.message_id
+                for message in reversed(reader.snapshot())
+                if message.source == source and isinstance(message.body, Input)
+            ),
+            None,
+        )
+        projection = MessageProjection(
+            model,
+            check_summary=_model_summary_check,
+            source=source,
+            render_content=lambda p: render_content(p, artifacts={}),
+            tool_name=lambda binding: "example",
+            read_call=store.read_call,
+            keep_input_ids=() if current_input is None else (current_input,),
+        )
         with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
             return await react(reader, output, model=model, context=ContextBuilder(),
                                projection=projection, materials=materials, content=Content(), tools=Menu(task),
