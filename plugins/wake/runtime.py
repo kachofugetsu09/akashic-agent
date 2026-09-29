@@ -232,10 +232,11 @@ class Runtime:
                 _ = group.create_task(self._due(), name="wake:due")
             _ = group.create_task(self._maintenance(), name="wake:maintenance")
 
-    def _blocked(self) -> str | None:
-        reason = self.ctx.require(SEMANTIC_INTEREST).status()
-        if reason is not None:
-            return reason
+    def _blocked(self, *, require_interest: bool = True) -> str | None:
+        if require_interest:
+            reason = self.ctx.require(SEMANTIC_INTEREST).status()
+            if reason is not None:
+                return reason
         catalog = self.ctx.require(MODEL_CATALOG).snapshot()
         model_id = catalog.role_bindings.get("default")
         if model_id is None or catalog.model(model_id).availability != ModelAvailability.AVAILABLE:
@@ -246,9 +247,14 @@ class Runtime:
         while True:
             self.changed.clear()
             async with self.ctx.runtime_scope():
-                blocked = self._blocked()
+                now = self.now()
+                alert = self.ctx.require(EVENTMAIL_WAKE).alert_deadline(now)
+                blocked = self._blocked(require_interest=alert is None or alert > now)
             if blocked is not None:
-                await self._wait(self.now() + timedelta(seconds=30), changed=True)
+                retry = now + timedelta(seconds=30)
+                if alert is not None and alert > now:
+                    retry = min(retry, alert)
+                await self._wait(retry, changed=True)
                 continue
             async with self.ctx.runtime_scope():
                 deadline = self.duties.deadline(self.now())
