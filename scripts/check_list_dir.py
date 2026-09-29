@@ -80,6 +80,11 @@ async def run(args: argparse.Namespace) -> dict:
         (small / "b.txt").touch()
         (small / "a-dir").mkdir()
         assert await operation.execute(str(small)) == "📁 a-dir\n📄 b.txt"
+        links = root / "links"
+        links.mkdir()
+        (links / "directory-link").symlink_to(small, target_is_directory=True)
+        (links / "missing-link").symlink_to(root / "absent")
+        assert await operation.execute(str(links)) == "📁 directory-link\n📄 missing-link"
         quoted = 'c-"\\-中文'
         (small / quoted).touch()
         output = await operation.execute(str(small), limit=2)
@@ -180,6 +185,18 @@ async def run(args: argparse.Namespace) -> dict:
                     arguments={"path": str(large), "limit": limit},
                 )
                 assert isinstance(error, ToolResult) and error.is_error
+            for limit in (True, False):
+                local = await operation.execute(str(large), limit=limit)
+                assert isinstance(local, ToolResult) and local.is_error
+                try:
+                    await client.execute_file_tool(
+                        "list_dir", allowed_dir=large,
+                        arguments={"path": str(large), "limit": limit},
+                    )
+                except ValueError as error:
+                    assert "limit" in str(error)
+                else:
+                    raise AssertionError("Python bool 被 protobuf 静默转换成了整数")
             report["checks"].append("real_uds_pages_and_invalid_limits")
         finally:
             try:

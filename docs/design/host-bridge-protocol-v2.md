@@ -69,6 +69,8 @@ Bridge service 拥有 boot admission 和 manager lease；ShellProcessManager 拥
 下一页只取名字严格大于 after 的条目。每页重新遍历当前目录，不承诺跨页快照：
 游标之前的新条目可能不出现，删除或重命名也可能改变后续页面。遍历耗时随目录规模
 增长，但工作集只保留 limit+1 个名字，文件类型只查询实际展示的一页。
+Python client 在 protobuf 构造前拒绝布尔 limit（ValueError），避免 bool 被转成整数；
+数值范围与目录业务错误仍由 ListDirOperation 返回，wire 不复制这些规则。
 
 此边界限制新产生的目录结果，不改写历史工具事实，不代替 #371 的通用结果归档与回读。
 新增字段仍按 RUN-015 成对发布同 commit 的 Core/Bridge，混合版本不在支持合同内。
