@@ -293,8 +293,10 @@ async def test_default_reply_loads_one_complete_granted_plugin_group(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_text_reply_keeps_five_historical_images(tmp_path):
-    """A text-only input must not count separate historical images as one upload."""
+@pytest.mark.parametrize("vision", [False, True])
+@pytest.mark.parametrize("attach_image", [False, True])
+async def test_reply_uses_image_placeholders(tmp_path, vision, attach_image):
+    """Current and historical images remain text labels for every model capability."""
     import io
     from PIL import Image
     from agent.plugin_composition import ServiceKey
@@ -308,7 +310,7 @@ async def test_text_reply_keeps_five_historical_images(tmp_path):
         module = sources / "test_provider/plugin.py"
         module.write_text(module.read_text().replace(
             "ModelCapabilities(context_window=10000)",
-            'ModelCapabilities(context_window=10000, input_modalities=("text", "image"))',
+            f'ModelCapabilities(context_window=10000, input_modalities={(("text", "image") if vision else ("text",))!r})',
         ))
 
     async with application(tmp_path, replying=True, extra_sources=vision_provider) as (log, host):
@@ -322,6 +324,7 @@ async def test_text_reply_keeps_five_historical_images(tmp_path):
                 "test:room", author="scheduler", source="scheduler", body_types=(Output,),
                 content={"artifact_ref": check_artifact},
             )
+            refs = []
             for index in range(5):
                 data = io.BytesIO()
                 Image.new("RGB", (2, 2), (index * 40, 0, 0)).save(data, format="PNG")
@@ -329,6 +332,7 @@ async def test_text_reply_keeps_five_historical_images(tmp_path):
                     data.getvalue(), kind=AttachmentKind.IMAGE,
                     filename=f"history-{index}.png", media_type="image/png",
                 )
+                refs.append(ref)
                 writer.append(f"history-{index}", Output((ContentPart("artifact_ref", ref.artifact_id),), "complete"))
             writer.expire()
         finally:
@@ -340,10 +344,11 @@ async def test_text_reply_keeps_five_historical_images(tmp_path):
                 "test:room", "u1", ChannelInboundMessage(
                     "test", "user", "room", "Will it rain tomorrow morning?",
                     datetime(2026, 9, 29, tzinfo=UTC), {},
+                    attachments=(refs[-1],) if attach_image else (),
                 ),
             )
             requests = root.context.require(ServiceKey("fixture.calls"))
-        assert log.reader("test:room").attachments(accepted.message_id) == ()
+        assert log.reader("test:room").attachments(accepted.message_id) == ((refs[-1],) if attach_image else ())
 
         async def completed():
             async for _ in log.catalog().follow():
@@ -362,4 +367,10 @@ async def test_text_reply_keeps_five_historical_images(tmp_path):
         for request in requests:
             images = [part for row in request.messages if isinstance(row["content"], (list, tuple))
                       for part in row["content"] if part["type"] == "image_url"]
-            assert len(images) == 5
+            assert images == []
+            text = str(request.messages)
+            assert "data:image" not in text
+            assert "图片占位符" in text
+            for ref in refs:
+                assert ref.artifact_id in text
+                assert ref.filename in text
