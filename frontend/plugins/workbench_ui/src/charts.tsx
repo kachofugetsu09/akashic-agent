@@ -26,7 +26,7 @@ const TONE_RGB: Record<ChartTone, string> = {
 
 const toneColor = (tone: ChartTone): string => `rgb(${TONE_RGB[tone]})`;
 
-const AXIS_TICK = { fontSize: 10, fill: "rgb(var(--ak-color-text-muted-rgb) / 0.72)", fontFamily: "var(--sans)" };
+const AXIS_TICK = { fontSize: 11, fill: "rgb(var(--ak-color-text-muted-rgb) / 0.72)", fontFamily: 'var(--mono, var(--ak-type-technical, "JetBrains Mono", monospace))' };
 const GRID_STROKE = "rgb(var(--ak-color-border-default-rgb) / 0.72)";
 
 // MetricTile — a KPI card: a big tabular-nums value, an optional delta badge and
@@ -120,7 +120,7 @@ const TOOLTIP_CONTENT_STYLE = {
   border: "1px solid var(--ak-color-border-strong)",
   borderRadius: 8,
   fontSize: 11,
-  fontFamily: "var(--sans)",
+  fontFamily: 'var(--mono, var(--ak-type-technical, "JetBrains Mono", monospace))',
   padding: "6px 10px",
   boxShadow: "0 2px 8px var(--ak-color-shadow)",
 };

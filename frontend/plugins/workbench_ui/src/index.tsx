@@ -385,7 +385,7 @@ function Messages(props: NavigationProps & { selected: string | null; select(key
           <div className="table-body">
             {page?.has_more && <div className="pane-head"><Btn size="sm" variant="ghost" onClick={() => void loadMessages(page).catch(report)}>读取更早消息</Btn></div>}
             {page?.items.map((message) => <div className="table-row-wrap" key={message.id}>
-              <button className={`table-row table-row ${activeMessage?.id === message.id ? "active" : ""}`} style={{ gridTemplateColumns: messageColumns }}
+              <button className={`wb-table-row ${activeMessage?.id === message.id ? "active" : ""}`} style={{ gridTemplateColumns: messageColumns }}
                 type="button" aria-expanded={activeMessage?.id === message.id} onClick={() => setActiveMessage((current) => current?.id === message.id ? null : message)}>
                 <span className="cell-seq mono">#{message.seq}</span>
                 <span><span className={`role-pill ${roleClass(message.author)}`}>{message.author}</span></span>
@@ -572,7 +572,7 @@ function Panel(props: { plugin: PluginConfig } & NavigationProps): React.ReactEl
                     if (event.target.checked) selectedIds.add(key); else selectedIds.delete(key);
                     return { ...state, selectedIds };
                   })} /></label>}
-                <button className={`table-row table-row ${state.activeRowKey === key ? "active" : ""} ${selected ? "selected" : ""} ${plugin.rowClass?.(item) ?? ""}`}
+                <button className={`wb-table-row ${state.activeRowKey === key ? "active" : ""} ${selected ? "selected" : ""} ${plugin.rowClass?.(item) ?? ""}`}
                   style={{ gridTemplateColumns: columns }} type="button" aria-expanded={state.activeRowKey === key}
                   onClick={() => void open(item).catch(report)}>
                   {hasBatch && <span aria-hidden="true" />}

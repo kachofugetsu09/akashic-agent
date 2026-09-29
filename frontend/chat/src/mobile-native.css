@@ -94,9 +94,9 @@ button {
   gap: 8px;
   margin-top: 22px;
   border: 0;
-  border-radius: 22px;
+  border-radius: 12px;
   padding: 0 20px;
-  color: white;
+  color: var(--ak-color-on-action-primary);
   background: var(--ak-color-action-primary);
 }
 
@@ -107,7 +107,6 @@ button {
   height: 100%;
   flex-direction: column;
   overflow: hidden;
-  background: var(--ak-color-bg-canvas);
 }
 
 .mobile-topbar {
@@ -206,11 +205,11 @@ button {
   padding: 8px 8px 8px 16px;
   color: var(--ak-color-bg-canvas);
   background: var(--ak-color-text-primary);
-  box-shadow: 0 2px 6px rgb(var(--md-sys-color-shadow-rgb) / 0.18);
+  box-shadow: 0 2px 6px rgb(var(--ak-color-shadow-rgb) / 0.18);
 }
 
 .mobile-snackbar__mark {
-  color: color-mix(in oklch, var(--ak-color-status-error) 48%, white);
+  color: color-mix(in oklch, var(--ak-color-status-error) 48%, var(--ak-paper-canvas));
 }
 
 .mobile-snackbar > span {
@@ -240,7 +239,7 @@ button {
   border: 0;
   border-radius: var(--m-shape-full);
   padding: 0 12px;
-  color: color-mix(in oklch, var(--ak-color-action-primary) 54%, white);
+  color: color-mix(in oklch, var(--ak-color-action-primary) 54%, var(--ak-paper-canvas));
   background: transparent;
   font-size: 0.8125rem;
   font-weight: 500;
@@ -327,7 +326,7 @@ button {
   height: 40px;
   place-items: center;
   border-radius: var(--m-shape-medium);
-  color: white;
+  color: var(--ak-color-on-action-primary);
   background: var(--ak-color-action-primary);
   font-size: 0.6875rem;
   font-weight: 700;
@@ -539,7 +538,7 @@ button {
 
 .runtime-item code {
   overflow: hidden;
-  font-family: "Roboto Mono", ui-monospace, monospace;
+  font-family: var(--ak-type-technical, "JetBrains Mono", ui-monospace, monospace);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -576,7 +575,7 @@ button {
 
 .runtime-markdown {
   border: 1px solid var(--ak-color-border-default);
-  border-radius: 24px;
+  border-radius: 12px;
   padding: 20px 18px 28px;
   background: color-mix(in oklch, var(--ak-color-bg-canvas) 72%, var(--ak-color-bg-surface-high));
   box-shadow: none;
@@ -622,7 +621,6 @@ button {
   flex: 0 0 auto;
   place-items: center;
   border: 0;
-  border-radius: 50%;
   color: var(--ak-color-text-primary);
   background: transparent;
   transition-property: scale, background-color, color, opacity;
@@ -650,11 +648,7 @@ button {
 .mobile-search-field > button:focus-visible,
 .mobile-search-navigator button:focus-visible,
 .mobile-scroll-button:focus-visible,
-.tool-step-summary:focus-visible {
-  outline: 2px solid var(--ak-color-action-primary);
-  outline-offset: 2px;
-}
-
+.tool-step-summary:focus-visible,
 .mobile-plugin-directory__list > button:focus-visible,
 .runtime-item:focus-visible {
   outline: 2px solid var(--ak-color-action-primary);
@@ -1214,7 +1208,7 @@ button {
   align-items: center;
   justify-self: center;
   margin: 8px 0 12px;
-  border-radius: 24px;
+  border-radius: 12px;
   background: var(--ak-color-bg-surface-high);
   font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
@@ -1235,7 +1229,7 @@ button {
   padding: 0;
   color: var(--ak-color-text-primary);
   background: var(--ak-color-bg-surface-high);
-  box-shadow: 0 2px 8px rgb(var(--md-sys-color-shadow-rgb) / 0.18);
+  box-shadow: 0 2px 8px rgb(var(--ak-color-shadow-rgb) / 0.18);
   opacity: 1;
   translate: 0 0;
   transition: scale 150ms cubic-bezier(0.2, 0, 0, 1), translate 180ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1), visibility 0s;
@@ -1274,7 +1268,7 @@ button {
   border: 2px solid var(--ak-color-bg-canvas);
   border-radius: 11px;
   padding-inline: 5px;
-  color: white;
+  color: var(--ak-color-on-action-primary);
   background: var(--ak-color-action-primary);
   font-size: 0.6875rem;
   font-weight: 700;
@@ -1364,7 +1358,7 @@ button {
   margin: 0;
   padding-inline-start: 4px;
   color: var(--ak-ink-secondary);
-  font-family: var(--ak-type-ui, var(--ak-font-ui, inherit));
+  font-family: var(--ak-type-technical, inherit);
   font-size: 0.75rem;
   font-weight: 450;
   line-height: 1.2;
@@ -1418,7 +1412,7 @@ button {
 .mobile-unavailable-session button {
   min-height: 48px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 12px;
   padding-inline: 16px;
   color: var(--ak-color-status-warning);
   background: transparent;
@@ -1441,22 +1435,25 @@ button {
   background: color-mix(in oklch, var(--ak-color-action-primary) 12%, transparent);
 }
 
+.mobile-unavailable-session button:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
 .mobile-session-remove-overlay {
-  background: rgb(0 0 0 / 0.32);
+  background: rgb(var(--ak-color-shadow-rgb) / 0.32);
 }
 
 .mobile-session-remove-dialog {
   width: calc(100% - 48px);
   max-width: 360px;
   gap: 14px;
-  border: 0;
-  border-radius: 28px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 12px;
   padding: 24px;
   color: var(--ak-color-text-primary);
   background: var(--ak-color-bg-surface-high);
-  box-shadow:
-    0 2px 6px rgb(var(--md-sys-color-shadow-rgb) / 0.12),
-    0 8px 24px rgb(var(--md-sys-color-shadow-rgb) / 0.16);
+  box-shadow: 0 8px 24px rgb(var(--ak-color-shadow-rgb) / 0.14);
 }
 
 .mobile-session-remove-dialog > h2 {
@@ -1486,7 +1483,7 @@ button {
 .mobile-session-remove-dialog__actions button {
   min-height: 48px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 12px;
   padding-inline: 18px;
   color: var(--ak-color-action-primary);
   background: transparent;
@@ -1500,6 +1497,11 @@ button {
 
 .mobile-session-remove-dialog__actions button:active {
   background: color-mix(in oklch, currentColor 12%, transparent);
+}
+
+.mobile-session-remove-dialog__actions button:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
 }
 
 .mobile-composer-frame {
@@ -1611,6 +1613,11 @@ button {
   max-height: 44px;
   flex-basis: 44px;
   border-radius: 5px;
+}
+
+.mobile-composer .composer-action-button:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
 }
 
 .mobile-composer .composer-action-button[data-mode="stop"] {
@@ -2018,7 +2025,7 @@ button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px 12px;
   margin: 0 2px 8px;
-  border-radius: 18px;
+  border-radius: 12px;
   padding: 12px 14px;
   color: var(--ak-color-on-action-container);
   background: var(--ak-color-action-container);
@@ -2094,7 +2101,7 @@ button {
   min-height: 60px;
   align-items: center;
   gap: 10px;
-  border-radius: 18px;
+  border-radius: 12px;
   padding: 9px 10px 9px 14px;
   color: var(--ak-color-text-primary);
   background: var(--ak-color-bg-surface-low);
@@ -2182,7 +2189,7 @@ button {
   grid-template-columns: minmax(0, 1fr) 44px;
   align-items: center;
   overflow: hidden;
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--ak-color-bg-surface-low);
   box-shadow: inset 0 0 0 1px var(--ak-color-border-default);
 }
@@ -2261,7 +2268,7 @@ button {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 22px;
+  border-radius: 12px;
   margin-right: 4px;
   color: var(--ak-color-action-primary);
   background: transparent;
@@ -2296,10 +2303,11 @@ button {
   max-height: min(calc(var(--mobile-viewport-height) * 0.44), 420px);
   flex-direction: column;
   overflow: hidden;
-  border-radius: 28px 28px 0 0;
+  border-top: 1px solid var(--ak-rule-default);
+  border-radius: 16px 16px 0 0;
   color: var(--ak-color-text-primary);
   background: var(--ak-color-bg-surface-low);
-  box-shadow: 0 -4px 16px rgb(var(--md-sys-color-shadow-rgb) / 0.16);
+  box-shadow: 0 -4px 16px rgb(var(--ak-color-shadow-rgb) / 0.14);
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
@@ -2387,7 +2395,7 @@ button {
   max-width: 46%;
   overflow: hidden;
   color: var(--ak-color-action-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--ak-type-technical, "JetBrains Mono", ui-monospace, monospace);
   font-size: 0.8125rem;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -2436,8 +2444,9 @@ button {
   padding: 0;
   color: var(--ak-color-text-primary);
   background: var(--ak-color-bg-canvas);
+  border-inline-end: 1px solid var(--ak-rule-default);
   transform: translateX(-100%);
-  box-shadow: 4px 0 12px rgb(var(--md-sys-color-shadow-rgb) / 0.16);
+  box-shadow: 4px 0 12px rgb(var(--ak-color-shadow-rgb) / 0.14);
   transition-property: transform;
   transition-duration: 220ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
@@ -2530,7 +2539,7 @@ button {
   place-items: center;
   border-radius: 11px;
   padding-inline: 5px;
-  color: white;
+  color: var(--ak-color-on-action-primary);
   background: var(--ak-color-action-primary);
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
@@ -2643,8 +2652,13 @@ button {
   padding: 8px 12px;
   border: 0;
   border-radius: 12px;
-  background: var(--md-sys-color-surface-container);
-  color: var(--md-sys-color-on-surface);
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
   font: inherit;
   pointer-events: auto;
+}
+
+.mobile-history-controls button:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
 }

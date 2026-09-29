@@ -34,7 +34,7 @@
   overflow: hidden;
   border: 0;
   border-radius: var(--radius-lg);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--ak-paper-quiet);
 }
 
 .ak-chip {
@@ -44,10 +44,10 @@
 
 .ak-chip--neutral { color: var(--md-sys-color-on-surface); background: var(--md-sys-color-surface-container-high); }
 .ak-chip--muted { color: var(--md-sys-color-on-surface-variant); background: var(--md-sys-color-surface-container); }
-.ak-chip--accent { color: var(--md-sys-color-on-primary-container); background: var(--md-sys-color-primary-container); }
+.ak-chip--accent { color: var(--ak-color-on-action-container); background: var(--ak-color-action-container); }
 .ak-chip--success { color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); }
 .ak-chip--warning { color: var(--ak-sys-color-on-warning-container); background: var(--ak-sys-color-warning-container); }
-.ak-chip--danger { color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); }
+.ak-chip--danger { color: var(--ak-color-status-error); background: var(--ak-color-status-error-container); }
 
 .ak-control-button {
   justify-content: center;
@@ -253,7 +253,7 @@
     pointer-events: none;
     container-name: detail-pane;
     container-type: inline-size;
-    transition: width 280ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease;
+    transition: width 180ms ease, opacity 180ms ease;
   }
 
   .detail-pane.is-open {
@@ -419,7 +419,7 @@
   }
 
   .nav-section-divider span {
-    @apply whitespace-nowrap font-sans text-[10px] font-medium uppercase tracking-wide;
+    @apply whitespace-nowrap font-sans text-[11px] font-medium text-muted;
   }
 
   .nav-group {
@@ -638,33 +638,27 @@
 
   /* ── Table ── */
 
+  /* `wb-` 前缀避开 Tailwind 内置 display:table-row 工具类的同名冲突，
+     行规则不再需要双重类提权。 */
   .table-head,
-  .table-row {
+  .wb-table-row {
     @apply grid items-center;
     column-gap: 10px;
   }
 
-  .table-row:focus-visible {
+  .wb-table-row:focus-visible {
     z-index: 2;
     outline: 2px solid var(--ak-color-action-primary);
     outline-offset: -2px;
   }
 
-  /* `table-row` collides with Tailwind's built-in display:table-row utility
-     (same specificity, utilities layer wins). The doubled-class selector raises
-     specificity to 0,2,0 so our grid display wins for every row — host modes and
-     plugin rows alike — without a blocklist (which would strip our row rule). */
-  .table-row.table-row {
-    display: grid;
-  }
-
   .table-head.mode-messages,
-  .table-row.mode-messages {
+  .wb-table-row.mode-messages {
     grid-template-columns: 30px 132px 52px 1fr 104px 76px 16px;
   }
 
   .table-head.mode-memory,
-  .table-row.mode-memory {
+  .wb-table-row.mode-memory {
     grid-template-columns: 34px 88px minmax(180px, 1.5fr) 56px 64px 88px 90px 90px 72px 60px;
   }
 
@@ -696,7 +690,7 @@
     @apply relative;
   }
 
-  .table-row-wrap > .table-row {
+  .table-row-wrap > .wb-table-row {
     @apply w-full border-x-0 border-t-0 text-left font-[inherit] text-[inherit];
     color: inherit;
   }
@@ -706,7 +700,7 @@
     top: -1px;
   }
 
-  .table-row {
+  .wb-table-row {
     @apply relative min-h-[44px] cursor-pointer;
     transition: background-color 150ms ease, border-color 150ms ease;
     margin: 0;
@@ -715,25 +709,25 @@
     border-bottom: 1px solid var(--ak-color-border-default);
   }
 
-  .table-row::before {
+  .wb-table-row::before {
     content: "";
     @apply absolute bottom-0 left-0 top-0 w-[3px] origin-center scale-y-0 bg-accent transition-transform;
   }
 
-  .table-row:hover {
+  .wb-table-row:hover {
     background: var(--ak-color-bg-surface-high);
   }
 
-  .table-row.active {
+  .wb-table-row.active {
     background: var(--ak-color-action-soft);
   }
 
   /* selected (batch pick) -> warning wash so it reads apart from active */
-  .table-row.selected {
+  .wb-table-row.selected {
     background: rgb(var(--ak-color-status-warning-rgb) / 0.12);
   }
 
-  .table-row.active:hover {
+  .wb-table-row.active:hover {
     background: rgb(var(--ak-color-action-primary-rgb) / 0.1);
   }
 
@@ -923,12 +917,13 @@
   }
 
   .detail-callout {
-    @apply my-3 mb-4 border border-border bg-surface-2 px-3 py-2.5 text-[12.5px] text-fg;
+    @apply mb-4 border border-border bg-surface-2 px-3 py-2.5 text-[12.5px] text-fg;
   }
 
   .detail-callout.success {
     @apply text-success;
     background: var(--ak-color-bg-surface-low);
+    border-inline-start: 2px solid var(--ak-color-status-success);
   }
 
   .detail-block {
@@ -1191,7 +1186,7 @@
 
   .workbench-modal-backdrop {
     @apply fixed inset-0 z-[400];
-    background: rgb(0 0 0 / 0.48);
+    background: rgb(var(--ak-color-shadow-rgb) / 0.4);
   }
 
   .workbench-modal {
@@ -1337,7 +1332,7 @@
       width: min(460px, calc(100% - 24px));
       border: 1px solid var(--ak-color-border-default);
       border-radius: var(--md-sys-shape-corner-large, 16px);
-      box-shadow: 0 2px 8px rgb(0 0 0 / 0.14);
+      box-shadow: 0 2px 8px rgb(var(--ak-color-shadow-rgb) / 0.12);
     }
   }
 
@@ -1419,12 +1414,12 @@
     }
 
     .table-head.mode-messages,
-    .table-row.mode-messages {
+    .wb-table-row.mode-messages {
       grid-template-columns: 34px 70px 50px 1fr 84px 70px 56px;
     }
 
     .table-head.mode-memory,
-    .table-row.mode-memory {
+    .wb-table-row.mode-memory {
       grid-template-columns: 34px 72px minmax(140px, 1.25fr) 48px 52px 64px 76px 76px 70px 56px;
     }
 }

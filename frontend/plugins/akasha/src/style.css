@@ -434,7 +434,7 @@
   min-height: 22px;
   padding: 0 7px;
   border: 1px solid var(--akasha-rule);
-  border-radius: 3px;
+  border-radius: 8px;
   color: var(--akasha-muted);
   background: transparent;
   font-size: 12px;
