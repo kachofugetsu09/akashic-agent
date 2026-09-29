@@ -983,3 +983,7 @@ Fitbit 等外部 provider 的 `efficiency` 只以有限数值进入展示；非�
 6. 实现完成后从 `NOW.md` 删除对应事项。
 
 证据不足的步骤沿用现有条款，不能用实现代码反向推导“需求原本就是这样”。
+
+### ONB-002 Product startup preparation
+
+The product entry prepares dependencies, Web assets and the default plugin distribution before starting Core. The same command handles first and later starts. Default profile installation is first-install-only; restart preserves existing plugin choices and business state. Product preparation reports progress in the terminal, starts Supervisor, and opens the browser only after the Web shell and plugin gateway are ready. Failures exit with a log path; rerunning the same command retries preparation. Supervisor is the only HTTP owner. The standalone Compose starts without model credentials and runs tools inside the container; Host Bridge remains an explicit deployment choice. Startup does not authorize a software upgrade or a data migration of an existing installation.

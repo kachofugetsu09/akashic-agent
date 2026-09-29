@@ -109,3 +109,6 @@ lme_error_log_*.txt
 /tmp-*
 /.pr*-verify-tmp/
 /plugin_packages/
+
+# Product launcher build cache (runtime data lives outside the checkout).
+/.akashic-start/
