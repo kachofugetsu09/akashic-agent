@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import replace
 from typing import Any, cast
 from uuid import uuid4
 
+from core.common.file_io import run_file_io
 from agent.plugin_composition import Context, RuntimeScope
 from agent.plugin_composition.messages import (
     MessageConflict,
@@ -79,12 +80,12 @@ class _Superseded(Exception):
     """提交前提检查发现同来源新事实；被替代的旧草稿不写 failure。"""
 
 
-def _open_calls(messages: Sequence[Message], source: str) -> tuple[tuple[CallRef, ...], tuple[CallRef, ...]]:
+def _open_calls(messages: Iterable[Message], source: str) -> tuple[tuple[CallRef, ...], tuple[CallRef, ...]]:
     """按持久边界拆分未回执调用：未闭段继续排空，abandon 区幂等结算。"""
     boundary = -1
     abandoned_upto = -1
     calls: dict[CallRef, int] = {}
-    results: dict[CallRef, ToolResult] = {}
+    results: set[CallRef] = set()
     for message in messages:
         if message.source != source:
             continue
@@ -100,7 +101,7 @@ def _open_calls(messages: Sequence[Message], source: str) -> tuple[tuple[CallRef
             boundary = max(boundary, body.through_seq)
             abandoned_upto = max(abandoned_upto, body.through_seq)
         elif isinstance(body, ToolResult):
-            results[body.call_ref] = body
+            results.add(body.call_ref)
     pending: list[CallRef] = []
     abandoned: list[CallRef] = []
     for ref, seq in calls.items():
@@ -113,7 +114,7 @@ def _open_calls(messages: Sequence[Message], source: str) -> tuple[tuple[CallRef
     return tuple(pending), tuple(abandoned)
 
 
-def _pending_calls(messages: Sequence[Message], source: str) -> tuple[CallRef, ...]:
+def _pending_calls(messages: Iterable[Message], source: str) -> tuple[CallRef, ...]:
     """只恢复本来源尚未关闭的请求；abandon 的晚到结果不唤醒新决策。"""
     return _open_calls(messages, source)[0]
 
@@ -328,10 +329,10 @@ def _parallel(reader: MessageReader, tools: ToolMenu, call: CallRef) -> bool:
 
 def _committed(reader: MessageReader, call: CallRef) -> bool:
     """本调用的 ToolResult 已经在日志里；错误回执也算提交完成。"""
-    return any(
+    return reader.scan(lambda rows: any(
         isinstance(message.body, ToolResult) and message.body.call_ref == call
-        for message in reader.snapshot()
-    )
+        for message in rows
+    ))
 
 
 async def _run_ordered(
@@ -398,7 +399,7 @@ async def _settle_pending(
     capture_scope: Callable[[], RuntimeScope] | None,
 ) -> None:
     """结算未闭段调用：exclusive 调用是屏障，连续 parallel 调用走有界池。"""
-    calls = _pending_calls(reader.snapshot(), source)
+    calls = await run_file_io(lambda: reader.scan(lambda rows: _pending_calls(rows, source), source=source))
     index = 0
     while index < len(calls):
         if not _parallel(reader, tools, calls[index]):
@@ -537,14 +538,16 @@ async def react(
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     while True:
         # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
-        _, abandoned = _open_calls(reader.snapshot(), writer.source)
+        _, abandoned = await run_file_io(lambda: reader.scan(
+            lambda rows: _open_calls(rows, writer.source), source=writer.source,
+        ))
         for call in abandoned:
             # 已放弃调用的结算故障必须先阻断本来源：缺回执的调用不能带着未知效果进入新请求。
             await tools.settle_abandoned(call)
         await _settle_pending(
             reader, tools, writer.source, max_parallel_calls, capture_scope,
         )
-        snapshot = reader.snapshot()
+        snapshot = await reader.snapshot_async(through_seq=reader.head())
         head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
         # 本代准备的固定身份：最近一条同来源 Input 或 abandon Control。
         # pause/failure/resume 是对同一业务项的操作，不是新边界：resume 必须
@@ -700,7 +703,7 @@ async def react(
                 prep = dict(existing.value)
                 if prep.get("binding_id") != model.descriptor.binding_id:
                     raise ModelUnavailableError("生成准备记录的 binding 已失效")
-                frozen = reader.snapshot(through_seq=cast(int, prep["base_seq"]))
+                frozen = await reader.snapshot_async(through_seq=cast(int, prep["base_seq"]))
                 attempts = prep_attempts(prep)
                 resumed = {
                     index: (
@@ -835,6 +838,8 @@ async def react(
                 raise asyncio.CancelledError from None
             if not indices:
                 return message
+        # 下一轮工具可能长时间等待；上一轮历史和准备材料不再有消费者。
+        del snapshot, frozen, commit, prepared, resumed, freeze, claim
 
 
 async def apply(ctx: Context) -> None:

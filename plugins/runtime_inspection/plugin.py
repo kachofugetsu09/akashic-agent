@@ -10,7 +10,6 @@ from agent.plugin_contracts.inspection import DOCUMENTS
 from .rpc import rpc_methods
 
 from .inspection import (
-    SCHEDULER_INSPECTION,
     SKILL_INSPECTION,
     RuntimeInspectionProvider,
 )
@@ -57,14 +56,6 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(DOCUMENTS, provider)
     for name, operation in rpc_methods(provider).items():
         _ = await ctx.provide(rpc_method_key(name), operation)
-    await _bind_optional(
-        ctx,
-        provider,
-        SCHEDULER_INSPECTION,
-        "scheduler",
-        provider.bind_scheduler,
-        provider.unbind_scheduler,
-    )
     await _bind_optional(
         ctx,
         provider,

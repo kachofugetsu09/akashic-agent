@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Literal
 
 from agent.plugin_composition import Context
@@ -17,13 +18,23 @@ desc = "从消息读取逻辑 Turn，不保存内容或消费进度"
 inject = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _Member:
+    """投影只保留顺序和引用，正文随读页释放。"""
+
+    seq: int
+    message_id: str
+    call_ref: CallRef | None = None
+    calls: tuple[CallRef, ...] = ()
+
+
 def _build_turn(
     source: str,
     after_seq: int,
     through_seq: int,
     ending_message_id: str | None,
     status: Literal["open", "complete", "quiet", "abandoned"],
-    messages: Sequence[Message],
+    messages: Sequence[_Member],
 ) -> Turn:
     """分别返回对话主体与工具观察的引用，不复制消息正文。"""
     return Turn(
@@ -35,90 +46,83 @@ def _build_turn(
         tuple(
             item.message_id
             for item in messages
-            if isinstance(item.body, (Input, Output))
+            if item.call_ref is None
         ),
         tuple(
-            (item.body.call_ref, item.message_id)
+            (item.call_ref, item.message_id)
             for item in messages
-            if isinstance(item.body, ToolResult)
+            if item.call_ref is not None
         ),
     )
 
 
 class TurnProjection:
-    """对完整 Session 前缀分段；调用之间不保留任何状态。"""
+    """对有序消息流分段；消费进度属于调用方，正文不留在投影中。"""
 
-    def project(self, messages: Sequence[Message], source: str) -> tuple[Turn, ...]:
-        """按来源的最终回答或放弃边界分组，排除跨段晚到的工具结果。"""
-        # 1. 调用者必须提供同一 Session 的有序前缀，不能把任意分页当新起点。
-        if not messages:
-            return ()
-        session_id = messages[0].session_id
-        previous_seq = -1
-        seen: set[str] = set()
+    def project(
+        self, messages: Iterable[Message], source: str, *,
+        after_seq: int = -1, include_closed: bool = True,
+    ) -> tuple[Turn, ...]:
+        """从起点或已提交的闭合 Turn 边界投影，排除跨段晚到结果。"""
+        # 1. 增量起点必须是已闭合边界；它的 abandon 控制可位于边界之后。
+        consumed_through = after_seq
+        session_id: str | None = None
+        previous_seq = after_seq
+        turns: list[Turn] = []
+        pending: list[_Member] = []
+        calls: set[CallRef] = set()
+        source_head = after_seq
         for message in messages:
+            if session_id is None:
+                session_id = message.session_id
             if message.session_id != session_id or message.seq <= previous_seq:
                 raise ValueError("Turn 投影要求同一 Session 按 seq 严格递增")
-            if message.message_id in seen:
-                raise ValueError("Turn 投影不能包含重复 message_id")
             previous_seq = message.seq
-            seen.add(message.message_id)
-
-        # 2. 正文与已归属的工具观察暂存于本次调用，闭段后只返回引用。
-        turns: list[Turn] = []
-        pending: list[Message] = []
-        calls: set[CallRef] = set()
-        after_seq = -1
-        source_head = -1
-        for message in messages:
             if message.source != source:
                 continue
             source_head = message.seq
             body = message.body
             if isinstance(body, (Input, Output)):
-                pending.append(message)
+                refs = tuple(
+                    CallRef(message.message_id, index)
+                    for index, part in enumerate(body.parts)
+                    if isinstance(part, ToolCall)
+                ) if isinstance(body, Output) else ()
+                pending.append(_Member(message.seq, message.message_id, calls=refs))
                 if isinstance(body, Output):
-                    calls.update(
-                        CallRef(message.message_id, index)
-                        for index, part in enumerate(body.parts)
-                        if isinstance(part, ToolCall)
-                    )
+                    calls.update(refs)
                     if body.finish != "continue":
-                        turns.append(
-                            _build_turn(
+                        if include_closed:
+                            turns.append(_build_turn(
                                 source,
                                 after_seq,
                                 message.seq,
                                 message.message_id,
                                 body.finish,
                                 pending,
-                            )
-                        )
+                            ))
                         pending = []
                         calls = set()
                         after_seq = message.seq
             elif isinstance(body, ToolResult):
                 if body.call_ref in calls:
-                    pending.append(message)
+                    pending.append(_Member(message.seq, message.message_id, body.call_ref))
             elif body.action == "abandon":
+                if body.through_seq <= consumed_through:
+                    continue
                 if body.through_seq <= after_seq:
                     raise ValueError("abandon 不能重新关闭已经结束的前缀")
                 closed = [item for item in pending if item.seq <= body.through_seq]
                 pending = [item for item in pending if item.seq > body.through_seq]
                 calls = {
-                    CallRef(item.message_id, index)
-                    for item in pending
-                    if isinstance(item.body, Output)
-                    for index, part in enumerate(item.body.parts)
-                    if isinstance(part, ToolCall)
+                    ref for item in pending for ref in item.calls
                 }
                 pending = [
                     item
                     for item in pending
-                    if not isinstance(item.body, ToolResult)
-                    or item.body.call_ref in calls
+                    if item.call_ref is None or item.call_ref in calls
                 ]
-                if closed:
+                if closed and include_closed:
                     turns.append(
                         _build_turn(
                             source,

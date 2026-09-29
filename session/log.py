@@ -11,7 +11,7 @@ import re
 import sqlite3
 import threading
 from bisect import bisect_right
-from collections.abc import AsyncGenerator, Callable, Generator, Mapping
+from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from dataclasses import dataclass
@@ -20,6 +20,7 @@ from pathlib import Path
 from types import MappingProxyType
 from weakref import WeakValueDictionary
 
+from core.common.file_io import run_file_io
 from session.artifacts import AttachmentKind, AttachmentRef
 from session.artifact_store import ARTIFACT_SCHEMA
 from session.message import (
@@ -736,19 +737,9 @@ class MessageReader:
         with self._log._lock:
             if self._log._connection.in_transaction:
                 raise RuntimeError("Async snapshot cannot leave an active storage transaction")
-        job = asyncio.create_task(asyncio.to_thread(
+        return await run_file_io(
             lambda: MessageReader(self._log, self._session_id).snapshot(through_seq=through_seq)
-        ))
-        cancelled = False
-        while not job.done():
-            try:
-                await asyncio.shield(job)
-            except asyncio.CancelledError:
-                cancelled = True
-        result = job.result()
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
+        )
 
     @property
     def session_id(self) -> str:
@@ -815,19 +806,34 @@ class MessageReader:
             ).fetchone()
         return None if row is None else self._log._decode(row)
 
-    def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
-        """固定上界后分页读取消息区间，默认保留完整前缀。"""
+    def scan(
+        self, consume: Callable[[Iterable[Message]], _T], *, after_seq: int = -1,
+        through_seq: int | None = None, source: str | None = None,
+    ) -> _T:
+        """在同一读快照内分页消费；回调必须同步完成，不能保留迭代器。"""
         with self._log._read():
             head = self.head() if through_seq is None else through_seq
-            messages: list[Message] = []
-            cursor = after_seq
-            while cursor < head:
-                page = self.read(after_seq=cursor, through_seq=head)
-                if not page:
-                    break
-                messages.extend(page)
-                cursor = page[-1].seq
-            return tuple(messages)
+
+            def messages() -> Generator[Message, None, None]:
+                cursor = after_seq
+                while cursor < head:
+                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=64)
+                    if not page:
+                        break
+                    yield from page
+                    cursor = page[-1].seq
+
+            with closing(messages()) as rows:
+                result = consume(rows)
+                if inspect.isawaitable(result):
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise TypeError("消息扫描回调必须同步，不能跨 await")
+                return result
+
+    def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
+        """固定上界后读取完整区间；无需完整正文的消费者应使用 scan。"""
+        return self.scan(tuple, after_seq=after_seq, through_seq=through_seq)
 
     def read_page(
         self, *, after_seq: int = -1, through_seq: int | None = None, limit: int = 50,
@@ -954,12 +960,29 @@ class MessageReader:
 
 
 class _IncrementalMessageReader(MessageReader):
-    """只拥有短命的解码前缀；消息与修改事实仍由数据库拥有。"""
+    """仅缓存小前缀；大历史只由当前请求持有，消息事实仍归数据库。"""
+
+    _CACHE_ROWS = 256
+    _CACHE_BYTES = 4 * 1024 * 1024
 
     def __init__(self, log: MessageLog, session_id: str):
         super().__init__(log, session_id)
         self._messages: tuple[Message, ...] = ()
         self._data_version: int | None = None
+
+    def _cache(self, messages: tuple[Message, ...], version: int) -> None:
+        """按行数和持久表示字节限制复用，不声称这是 Python 堆的精确大小。"""
+        if len(messages) > self._CACHE_ROWS:
+            self._messages = ()
+        else:
+            through = messages[-1].seq if messages else -1
+            metadata_size = " + length(CAST(metadata AS BLOB))" if self._log._has_metadata else ""
+            size = self._log._connection.execute(
+                "SELECT COALESCE(SUM(length(CAST(body AS BLOB))" + metadata_size + "), 0) FROM messages "
+                "WHERE session_key=? AND seq<=?", (self._session_id, through),
+            ).fetchone()[0]
+            self._messages = messages if size <= self._CACHE_BYTES else ()
+        self._data_version = version
 
     def incremental(self) -> MessageReader:
         return self
@@ -972,7 +995,7 @@ class _IncrementalMessageReader(MessageReader):
         with self._log._lock:
             after = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
             if before == after:
-                self._messages, self._data_version = messages, after
+                self._cache(messages, after)
         # A concurrent edit invalidates reuse, not the completed SQLite snapshot.
         return messages
 
@@ -990,12 +1013,13 @@ class _IncrementalMessageReader(MessageReader):
                 messages = self._messages if version == self._data_version else ()
                 previous = messages[-1].seq if messages else -1
                 through = head if through_seq is None else min(head, through_seq)
+                if after_seq > previous:
+                    return super().snapshot(after_seq=after_seq, through_seq=through)
                 if through > previous:
                     added = super().snapshot(after_seq=previous, through_seq=through)
                     messages += added
             # 2. 只在读取事务成功结束后发布进度，稀疏 seq 和旧前缀请求均按原序号切片。
-            self._messages = messages
-            self._data_version = version
+            self._cache(messages, version)
             start = bisect_right(messages, after_seq, key=lambda message: message.seq)
             stop = bisect_right(messages, through, key=lambda message: message.seq)
             return messages[start:stop]

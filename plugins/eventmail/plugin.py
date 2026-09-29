@@ -11,6 +11,8 @@ from agent.plugin_contracts.proactive import (
     ContentWakeServices as ContentWakeServices,
 )
 
+from core.common.file_io import run_file_io
+
 from .store import EventMailStore
 
 api_version = 3
@@ -403,7 +405,7 @@ async def apply(ctx: Context) -> None:
     """Publish typed source and consumer views over one EventMail store."""
 
     store = EventMailStore(ctx.data_root / "eventmail.sqlite3")
-    store.initialize()
+    await run_file_io(store.initialize)
     _ = await ctx.provide(
         EVENTMAIL_CONTENT_SOURCE,
         _SourceServices(store, lambda: ctx.emit(EVENTMAIL_CHANGED, None)),

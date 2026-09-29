@@ -34,13 +34,13 @@ def rpc_methods(provider: RuntimeInspectionProvider) -> dict[str, RpcMethod]:
                 _unavailable("document_not_found", f"未知运行时文档: {params.document_id}"))
 
     async def jobs(params: BaseModel) -> object:
-        rows = provider.list_jobs()
+        rows = await provider.list_jobs()
         return ({"items": [dict(row) for row in rows]} if rows is not None else
                 _unavailable("scheduler_unavailable", "调度检查服务尚未绑定"))
 
     async def job(params: BaseModel) -> object:
         assert isinstance(params, JobParams)
-        item = provider.get_job(params.job_id)
+        item = await provider.get_job(params.job_id)
         return (dict(item) if item is not None else
                 _unavailable("job_not_found", f"定时任务不存在: {params.job_id}"))
 

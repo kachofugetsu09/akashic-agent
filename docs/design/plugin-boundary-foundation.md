@@ -256,12 +256,16 @@ provider IDs 的持久语义不变，未知效果不变成可重试的成功。�
 
 ### 9.7 调度检查由 scheduler 拥有
 
-调度列表、排序、启用过滤和详情文档由 `scheduler.inspection.v1` 的普通插件 provider
+调度列表、排序、启用过滤和详情文档由 `scheduler.inspection.v3` 的普通插件 provider
 生成。Core 不打开 schedules.json，不 import JobStore 或 ScheduledJob。真实 store
 与调度执行共用原 owner 的实例，不增加并行存储。每次 Web/Mobile 查询在一个 snapshot
 lease 内完成；缺 provider 明确返回 scheduler_unavailable，空列表只表示查询成功且无任务。
 本层只读取调度事实，不创建、改写、失效或减少计划。
 
+v3 的两个方法均为 async，实际文件读取由 Scheduler 排空；runtime_inspection 在
+请求 Task 中 borrow 当前 provider，等物理读取结束才释放其寿命。公开合同只有
+`SCHEDULER_INSPECTION_V3`，Scheduler 与 runtime_inspection 配套更新。旧同步归档
+需要重新准备插件输入，不提供兼容适配；持久任务与回执无需迁移。
 
 ### 9.8 Core 消息原子输入
 

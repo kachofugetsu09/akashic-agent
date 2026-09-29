@@ -8,11 +8,11 @@ from agent.plugin_composition import Context, Effect, ServiceKey
 
 
 class SchedulerReader(Protocol):
-    """scheduler 只读投影的窄输入。"""
+    """异步读取调度快照；取消退出前完成实际读取。"""
 
-    def list_jobs(self) -> tuple[Mapping[str, object], ...]: ...
+    async def list_jobs(self) -> tuple[Mapping[str, object], ...]: ...
 
-    def get_job(self, job_id: str) -> Mapping[str, object] | None: ...
+    async def get_job(self, job_id: str) -> Mapping[str, object] | None: ...
 
 
 class SkillReader(Protocol):
@@ -21,7 +21,7 @@ class SkillReader(Protocol):
     async def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
 
 
-SCHEDULER_INSPECTION = ServiceKey[SchedulerReader]("scheduler.inspection.v1")
+SCHEDULER_INSPECTION_V3 = ServiceKey[SchedulerReader]("scheduler.inspection.v3")
 SKILL_INSPECTION = ServiceKey[SkillReader]("standard_tools.skill_inspection.v1")
 
 

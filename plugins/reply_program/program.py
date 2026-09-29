@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 from contextlib import AbstractAsyncContextManager
 
+from core.common.file_io import run_file_io
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
@@ -77,13 +78,26 @@ async def run_reply(
     source_head = reader.head(source=source)
     through_seq = reader.head()
     saved_selection = reader.metadata()
-    snapshot = await reader.snapshot_async(through_seq=through_seq)
-    turns = turn_projection.project(snapshot, source)
-    open_ids: set[str] = set(turns[-1].message_ids) if turns and turns[-1].status == "open" else set()
-    chosen = selection.read(tuple(message for message in snapshot if message.message_id in open_ids))
+    def read_open(messages: Iterable[Message]) -> tuple[Message, ...]:
+        """同一短快照内只取未闭合 Turn 正文，历史分段只保留引用。"""
+        turns = turn_projection.project(messages, source, include_closed=False)
+        if not turns or turns[-1].status != "open":
+            return ()
+        members: list[Message] = []
+        for identity in turns[-1].message_ids:
+            message = reader.get(identity)
+            if message is None:
+                raise RuntimeError("同一快照中的 Turn 消息缺失")
+            members.append(message)
+        return tuple(members)
+
+    opened = await run_file_io(lambda: reader.scan(read_open, through_seq=through_seq, source=source))
+    chosen = selection.read(opened)
     if chosen is None:
         chosen = selection.read_saved(saved_selection or {})
-    from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
+    from_seq = min((message.seq for message in opened), default=source_head + 1)
+    keep_input_ids = tuple(item.message_id for item in opened if isinstance(item.body, Input))
+    del opened
     async with (
         cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
@@ -91,10 +105,6 @@ async def run_reply(
         materials as material_view,
     ):
         model = execution.chat("agent")
-        keep_input_ids = tuple(
-            item.message_id for item in snapshot
-            if item.message_id in open_ids and isinstance(item.body, Input)
-        )
         menu = await tool_program.create_menu(
             reader, source, content=view.checks,
             check_start=lambda: check_source(task, reader, source, source_head),
