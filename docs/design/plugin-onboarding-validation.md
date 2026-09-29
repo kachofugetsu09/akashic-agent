@@ -50,6 +50,23 @@
 
 截图：`/tmp/onboarding-complete.png`、`/tmp/onboarding-mobile.png`、`/tmp/onboarding-settings-mobile.png`、`/tmp/onboarding-wake-enabled.png`、`/tmp/onboarding-sender-blocked.png`、`/tmp/onboarding-fresh.png`。
 
+## Issue #802：导航与设置目录可访问性（2026-09-29）
+
+源码 `3beb5b11`，冻结发行包经正式安装链进入独立 HOME/config/workspace。默认 profile 尚未包含三个 UI 插件，因此本轮显式安装同一发行包的三个 UI 包；默认安装验收由 #800 独立负责。
+
+实测定位到外置 outline 被导航滚动容器和窗口顶部裁切。仅把导航及主题按钮的两像素焦点边框移入按钮内部，不修改主题颜色、布局或业务状态。旧包有 84 次裁切记录；修复后没有裁切。
+
+Chromium 146 / axe-core 4.13.0：纸感、墨纸 × 1440/390/320 CSS px × 普通/减少动画，覆盖当前与非当前导航、两个页脚按钮、hover 过渡、按下、方向键、Tab/Shift+Tab 与设置目录。实际合成颜色用于计算，不能只拿主题 token 当背景。
+
+| 主题 | 最低文字对比度 | 最低焦点边框对比度 |
+| --- | --- | --- |
+| 纸感 | 7.54:1 | 10.99:1 |
+| 墨纸 | 8.30:1 | 9.61:1 |
+
+真实浏览器缩放通过测试 profile 的 Chrome Tabs API `setZoom(2)`/`getZoom` 核验：1440 viewport 对应 innerWidth=720、devicePixelRatio=2、CSS zoom=1。200% 下重新检查两主题的导航、焦点与目录，无横向溢出。方法见 [Chrome Tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs#method-setZoom)。全新配置保留各插件原有关闭状态，不为验收开启业务。
+
+证据及恢复点位于 `/mnt/data/akashic-onboarding-fixes-20260928/`：`issue802-browser.json`、`issue802-browser-before.json`、前后截图、发行清单、正式安装回执、`backups/issue802/`。概念基线 47 passed，pyright、tests pyright、plugin_boundary、yoyo、两协议生成物、前端 typecheck 和 diff 检查通过。屏幕阅读器、Safari、Android 与生产环境未验收。
+
 ## 最终检查与独立评审
 
 - `pytest -q tests`：44 passed；无新增镜像实现的单元测试。
