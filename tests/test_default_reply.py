@@ -159,7 +159,7 @@ async def apply(ctx):
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
             'if len(calls) == 1:',
-            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("search-call", "tool_search", {"query": "write_evidence"})])\n            if len(calls) == 2:').replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")').replace(
+            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("load-call", "load_tools", {"plugin": "test_provider"})])\n            if len(calls) == 2:').replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")').replace(
             'ToolCall("provider-call", "write_evidence", {})',
             'ToolCall("provider-call", "tool_call", {"name": "write_evidence", "arguments": {}})'))
     if compaction:
@@ -248,3 +248,45 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
                 assert all("[Source messages]" in str(call.messages) for call in calls)
             assert log.reader("test:room").snapshot() == (accepted,)
             assert not (tmp_path / "effect.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_default_reply_loads_one_complete_granted_plugin_group(tmp_path):
+    """PLG-018: 一个准确插件 ID 只加载该次获授 view 中的一整组 schema。"""
+    import json
+    from agent.plugin_composition import ServiceKey
+
+    async with application(tmp_path, replying=True, discovery=True) as (log, host):
+        async with live_root(host) as root:
+            accepted = await root.context.require(CHANNEL_INPUT)(
+                "test:room", "u1", ChannelInboundMessage(
+                    "test", "user", "room", "do the work", datetime(2026, 9, 5, tzinfo=UTC), {},
+                ),
+            )
+        assert isinstance(accepted.body, Input)
+
+        async def completed():
+            async for _ in log.catalog().follow():
+                rows = log.reader("test:room").snapshot()
+                if any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows):
+                    return rows
+
+        rows = await asyncio.wait_for(completed(), 5)
+        assert rows is not None
+        assert [type(row.body) for row in rows] == [
+            Input, Output, ToolResult, Output, ToolResult, Output,
+        ]
+        value = rows[2].body.parts[0].value
+        assert isinstance(value, str)
+        loaded = json.loads(value)
+        assert loaded["plugin"] == "test_provider"
+        assert [tool["function"]["name"] for tool in loaded["tools"]] == ["write_evidence"]
+        assert (tmp_path / "effect.txt").read_text() == "once\n"
+
+        async with live_root(host) as root:
+            requests = root.context.require(ServiceKey("fixture.calls"))
+        prompt = next(
+            row["content"] for row in requests[0].messages if row["role"] == "system"
+        )
+        assert "test_provider · Write local evidence · 1 个工具" in prompt
+        assert "write_evidence" not in prompt

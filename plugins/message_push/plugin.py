@@ -72,7 +72,6 @@ async def apply(ctx: Context) -> None:
         open=open_tool,
         idempotent=True,
         capture=capture,
-        risk="external-side-effect",
     )
 
     async def restart(child: Context) -> None:

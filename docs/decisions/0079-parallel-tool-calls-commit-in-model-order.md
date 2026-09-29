@@ -6,11 +6,11 @@
 
 ## 背景与决定
 
-模型可以在一次响应里返回多个工具调用。ReAct 原先逐个结算，只读调用的等待时间相加。
+模型可以在一次响应里返回多个工具调用。ReAct 原先逐个结算，可安全重叠调用的等待时间相加。
 执行可以重叠，持久语义保持串行提交：
 
-- `parallel` 是 `ToolCatalog.register` 的注册事实，默认 `False`。只有 `risk="read-only"`
-  可以设为 `True`。它不进入工具描述、binding 归档、provider schema 或消息日志。
+- `parallel` 是 `ToolCatalog.register` 的注册事实，默认 `False`。工具 owner 只在实际调用可安全重叠时
+  设为 `True`；Catalog 不从风险或效果标签推断。它不进入工具描述、binding 归档、provider schema 或消息日志。
   旧 binding 的描述比较保持不变。
 - 调度只读 `ToolMenu.parallel`。读不到注册或字段不是 `True` 时一律串行。
   连续的 parallel 调用组成一组，走有界池；exclusive 调用是屏障。
@@ -28,8 +28,8 @@
 无法恢复进行中的调用，所以它留在目录里。
 
 直接调用 `react` 时上限默认是 1。`run_reply` 默认上限是 4。
-已声明重叠的只读工具：`read_file`、`list_dir`、`web_fetch`、`web_search`、
-`tool_search`、`load_skill`、`list_schedules`、`recall_memory`。
+已声明重叠的工具：`read_file`、`list_dir`、`web_fetch`、`web_search`、
+`load_tools`、`load_skill`、`list_schedules`、`recall_memory`。
 
 ## 持久化与恢复
 
@@ -45,4 +45,4 @@
 - 前驱在 `ToolResult` 落盘前失败时，日志里还没有后继的 `ToolResult`。
 - 前驱的错误回执已经落盘时，后继按模型顺序提交，然后原异常仍失败本回合。
 - 取消排空之后，已提交的 `ToolResult` 仍按模型顺序排列。
-- `parallel=True` 不改变 binding 描述；非 read-only 工具不能声明重叠。
+- `parallel=True` 不改变 binding 描述；Catalog 不用效果标签阻止 owner 声明重叠。
