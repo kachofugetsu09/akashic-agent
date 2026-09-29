@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from typing import Any, Protocol
 
-from agent.plugin_composition.channels import AttachmentRef, ChannelAttachmentReadPort
+from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.models import (
     BoundChatModel,
@@ -78,12 +78,9 @@ class ModelContent(Protocol):
         read_message: Callable[[str], Message | None] | None = None,
     ) -> tuple[Mapping[str, Any], ...]: ...
 
-    async def load_artifacts(
+    def describe_artifacts(
         self,
-        reader: ChannelAttachmentReadPort,
         refs: Sequence[AttachmentRef],
-        *,
-        accepts_images: bool,
     ) -> Mapping[str, tuple[Mapping[str, Any], ...]]: ...
 
 
@@ -107,7 +104,7 @@ class ModelProjections(Protocol):
 
 
 MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
-MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v1")
+MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v2")
 MODEL_CHECKS = ServiceKey[ModelChecks]("models.message-checks.v1")
 MODEL_PROJECTION = ServiceKey[ModelProjections]("models.projection.v1")
 MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")

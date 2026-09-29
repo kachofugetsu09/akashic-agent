@@ -5,7 +5,6 @@ from typing import Any, cast
 from contextlib import AbstractAsyncContextManager
 
 from agent.plugin_composition import Context
-from agent.plugin_composition.channels import ChannelAttachmentReadPort
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
@@ -43,7 +42,7 @@ async def run_reply(
     check_source: Callable[[Task, MessageReader, str, int], None],
     selection: ModelSelection, tool_program: ToolProgram,
     model_checks: ModelChecks, model_content: ModelContent, model_projection: ModelProjections,
-    writers: MessageWriters, owner_state: OwnerState, artifact_reader: ChannelAttachmentReadPort,
+    writers: MessageWriters, owner_state: OwnerState,
     react: Callable[..., Awaitable[Message]],
     materials: AbstractAsyncContextManager[MaterialView],
     turn_projection: TurnProjection,
@@ -131,10 +130,7 @@ async def run_reply(
                     if index >= start or message.message_id in keep_input_ids
                 ))
                 if refs:
-                    artifacts = await model_content.load_artifacts(
-                        artifact_reader, refs,
-                        accepts_images="image" in model.descriptor.capabilities.input_modalities,
-                    )
+                    artifacts = model_content.describe_artifacts(refs)
             check_source(task, reader, source, source_head)
             return {**result, "system_prompt": "\n\n".join(
                 part for part in (cast(str, result["system_prompt"]), *view.prompts, *prompt_hints, menu.system_prompt) if part
