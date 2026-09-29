@@ -965,16 +965,16 @@ class _IncrementalMessageReader(MessageReader):
         return self
 
     async def snapshot_async(self, *, through_seq: int) -> tuple[Message, ...]:
-        """Warm the existing prefix cache without comparing different connections' versions."""
-        while True:
-            with self._log._lock:
-                before = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
-            messages = await super().snapshot_async(through_seq=through_seq)
-            with self._log._lock:
-                after = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
-                if before == after:
-                    self._messages, self._data_version = messages, after
-                    return messages
+        """Return one pinned snapshot; cache it only if external writes did not overlap."""
+        with self._log._lock:
+            before = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
+        messages = await super().snapshot_async(through_seq=through_seq)
+        with self._log._lock:
+            after = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
+            if before == after:
+                self._messages, self._data_version = messages, after
+        # A concurrent edit invalidates reuse, not the completed SQLite snapshot.
+        return messages
 
     def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
         """同一读事务内核对外部变化并补读尾部；不把未提交行留到下次读取。"""
