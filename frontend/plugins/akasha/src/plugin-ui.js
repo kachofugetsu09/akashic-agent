@@ -118,12 +118,45 @@ async function prefetchRecall(context) {
   await readRecall(context);
 }
 
+const OPEN_VIEW_PREFIX = "akasha.recall.open:";
+
+/** 展开标志是可选的本页状态；浏览器拒绝存储时保留查询和清理行为。 */
+function readOpenedView(key) {
+  try {
+    const value = sessionStorage.getItem(key) ?? "";
+    sessionStorage.removeItem(key);
+    return new Set(value.split(",").filter(lane => lane === "dense" || lane === "completion"));
+  } catch (error) {
+    if (!(error instanceof DOMException) || !["SecurityError", "QuotaExceededError"].includes(error.name)) throw error;
+    console.warn("[akasha-ui] 浏览器未允许恢复展开状态", error.name);
+    return new Set();
+  }
+}
+
+/** 仅保留至多64个非空展开标志，不存放召回正文或结果。 */
+function saveOpenedView(key, lanes) {
+  try {
+    if (!lanes.length) { sessionStorage.removeItem(key); return; }
+    const keys = Array.from({length: sessionStorage.length}, (_, index) => sessionStorage.key(index))
+      .filter(item => item?.startsWith(OPEN_VIEW_PREFIX) && item !== key);
+    while (keys.length >= 64) sessionStorage.removeItem(keys.shift());
+    sessionStorage.setItem(key, lanes.join(","));
+  } catch (error) {
+    if (!(error instanceof DOMException) || !["SecurityError", "QuotaExceededError"].includes(error.name)) throw error;
+    console.warn("[akasha-ui] 浏览器未允许保存展开状态", error.name);
+  }
+}
+
 /** 在原思考面板展示真实查询，刷新失败时保留已读内容。 */
 export function mountRecall(host, context) {
   let active = true;
   let loading = false;
   let timer;
   let loadingTimer;
+  // 只交接展开状态，不缓存消息、召回结果或插件版本。
+  const viewKey = `${OPEN_VIEW_PREFIX}${JSON.stringify([context.sessionId, context.messageId, context.turnId, context.block?.source])}`;
+  const remembered = readOpenedView(viewKey);
+  let firstResult = true;
   const content = document.createElement("div");
   const status = document.createElement("p");
   status.className = "akasha-plugin-ui-query-status";
@@ -144,7 +177,11 @@ export function mountRecall(host, context) {
     try {
       const result = await readRecall(context);
       if (!active) return;
-      const opened = new Set(Array.from(content.querySelectorAll("details[open]"), (item) => item.dataset.lane));
+      const opened = new Set([
+        ...(firstResult ? remembered : []),
+        ...Array.from(content.querySelectorAll("details[open]"), (item) => item.dataset.lane),
+      ]);
+      firstResult = false;
       content.innerHTML = result.items.length ? `<div class="akasha-plugin-ui-recall-group">${[
         ["dense", "左脑 · 精确回忆", "precise"], ["completion", "右脑 · 模式补全", "completion"],
       ].map(([lane, title, style]) => {
@@ -165,9 +202,10 @@ export function mountRecall(host, context) {
       if (active) {
         const retry = document.createElement("button");
         retry.type = "button";
-        retry.textContent = "重试";
-        retry.addEventListener("click", () => { void load(); });
-        status.replaceChildren(document.createTextNode(`${error.message} `), retry);
+        const stale = error.code === "plugin_ui_stale_revision" || error.code === "plugin_ui_unavailable";
+        retry.textContent = stale ? "刷新页面" : "重试";
+        retry.addEventListener("click", () => { if (stale) window.location.reload(); else void load(); });
+        status.replaceChildren(document.createTextNode(`情景记忆展示暂不可用：${error.message} `), retry);
         status.hidden = false;
       }
     } finally {
@@ -180,6 +218,8 @@ export function mountRecall(host, context) {
     active = false;
     clearTimeout(timer);
     clearTimeout(loadingTimer);
+    if (content.hasChildNodes()) saveOpenedView(viewKey,
+      Array.from(content.querySelectorAll("details[open]"), item => item.dataset.lane));
   };
 }
 

@@ -112,6 +112,8 @@ let catalog: PluginUiCatalog = {
 let registryVersion = 0;
 let activeRevision = "";
 let activation: Promise<void> = Promise.resolve();
+let staleCatalogRead: Promise<void> | null = null;
+let staleRecoveryAttempted = false;
 const quarantinedRevisions = new Map<string, Error>();
 const MODULE_LOAD_TIMEOUT_MS = 5_000;
 const SLOT_NAMES = new Set<Exclude<PluginUiSlotName, "dashboard.main">>([
@@ -156,7 +158,7 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
 /** 通过桌面适配器加载同一份内容寻址插件界面。 */
 export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> {
   const response = await fetch("/api/chat/plugin-ui/catalog", { signal });
-  if (!response.ok) throw new Error(await webPluginError(response));
+  if (!response.ok) throw await webPluginError(response);
   await receivePluginUiCatalog(parseWebPluginCatalog(await response.json()));
 }
 
@@ -450,9 +452,24 @@ export function PluginUiSlot({
       : undefined;
     return renderer && (!prefetch || renderer.prefetch) ? [{ plugin, renderer }] : [];
   });
-  return renderers.length ? (
+  // 目录加载失败时保留本页已经挂载的卡片；新页面不会执行旧模块。
+  const previous = React.useRef<typeof renderers>([]);
+  const hadRenderer = React.useRef(false);
+  const contextKey = JSON.stringify([name, prefetch, sessionId, messageId, turnId, block]);
+  const previousContext = React.useRef(contextKey);
+  const waiting = catalog.updating || !!catalog.error || catalog.plugins.some(plugin =>
+    plugin.slots.includes(name) && definitions.get(plugin.id)?.revision !== plugin.revision);
+  const keepPrevious = waiting && previousContext.current === contextKey && previous.current.length > 0
+    && previous.current.every(({plugin}) => catalog.plugins.some(item => item.id === plugin.id));
+  const shown = keepPrevious ? previous.current : renderers;
+  if (!keepPrevious) { previous.current = renderers; previousContext.current = contextKey; }
+  if (shown.length) hadRenderer.current = true;
+  const notice = waiting ? catalog.error ? `插件界面暂不可用：${catalog.error}` : "插件界面正在更新…"
+    : !shown.length && hadRenderer.current ? "本页插件界面已卸载或不再提供此展示。" : "";
+  return shown.length || notice ? (
     <div className={prefetch ? "plugin-ui-prefetch" : "plugin-ui-slot"} data-slot={name} data-version={version}>
-      {renderers.map(({ plugin, renderer }) => (
+      {notice && !prefetch && <p role="status">{notice} <button type="button" onClick={() => window.location.reload()}>刷新页面</button></p>}
+      {shown.map(({ plugin, renderer }) => (
         <ViewportMountedPlugin
           key={`${plugin.id}:${plugin.revision}:${name}`}
           pluginId={plugin.id}
@@ -546,7 +563,12 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, turnI
   sessionId?: string; turnId?: string; method: string; payload: Record<string, unknown>;
   options: PluginUiQueryOptions; prefetch: boolean;
 }): Promise<Record<string, unknown>> {
-  // 1. 参数只在插件调用边界校验；缓存沿用原有插件、消息与版本身份。
+  // 1. 已读卡片可暂留；旧上下文不能发送请求或读取新版本缓存。
+  const current = catalog.plugins.find(plugin => plugin.id === pluginId);
+  if (catalog.updating || catalog.error || current?.revision !== pluginRevision) {
+    return Promise.reject(new WebPluginError(409, "插件界面正在更新或暂不可用，请刷新页面。", "plugin_ui_stale_revision"));
+  }
+  // 参数只在插件调用边界校验；缓存沿用原有插件、消息与版本身份。
   if (method.length < 1 || method.length > 256) return Promise.reject(new Error("插件方法名无效"));
   let encoded: string;
   try {
@@ -589,8 +611,13 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, turnI
         void queryWebPluginUi({ pluginId, pluginRevision, method, payload, slot, sessionId, turnId,
           signal: abort.signal }).then(
           (result) => receivePluginUiResult({ requestId, resultJson: JSON.stringify(result) }),
-          (error: unknown) => receivePluginUiResult({ requestId,
-            error: error instanceof Error ? error.message : "插件查询失败" }),
+          (error: unknown) => {
+            const pending = pendingQueries.get(requestId);
+            if (!pending) return;
+            tracePluginQuery(requestId, pending, "failed");
+            completePending(requestId, pending);
+            pending.reject(error instanceof Error ? error : new Error("插件查询失败"));
+          },
         );
       },
     };
@@ -655,16 +682,51 @@ async function queryWebPluginUi({
     }),
     signal,
   });
-  if (!response.ok) throw new Error(await webPluginError(response));
+  if (!response.ok) {
+    const error = await webPluginError(response);
+    if (response.status === 409 && error.code === "plugin_ui_stale_revision") {
+      await refreshStaleCatalog();
+    }
+    throw error;
+  }
+  if (!staleCatalogRead && !catalog.updating && !catalog.error
+      && catalog.plugins.some(item => item.id === pluginId && item.revision === pluginRevision)) {
+    staleRecoveryAttempted = false;
+  }
   return requireRecord(await response.json(), "插件响应");
 }
 
-async function webPluginError(response: Response): Promise<string> {
+class WebPluginError extends Error {
+  constructor(readonly status: number, message: string, readonly code?: string) { super(message); }
+}
+
+/** 同一恢复周期只读取一次正式目录，不重放旧模块查询。 */
+async function refreshStaleCatalog(): Promise<void> {
+  if (staleCatalogRead) return staleCatalogRead;
+  if (staleRecoveryAttempted) {
+    throw new WebPluginError(409, "插件界面仍未恢复，请刷新页面。", "plugin_ui_stale_revision");
+  }
+  staleRecoveryAttempted = true;
+  const read = loadWebPluginCatalog(AbortSignal.timeout(10_000));
+  staleCatalogRead = read;
+  try { await read; }
+  catch (error) {
+    throw new WebPluginError(409, `插件界面更新失败：${error instanceof Error ? error.message : String(error)}。请刷新页面。`, "plugin_ui_stale_revision");
+  }
+  finally { if (staleCatalogRead === read) staleCatalogRead = null; }
+}
+
+async function webPluginError(response: Response): Promise<WebPluginError> {
   const value = await response.json().catch(() => null);
   const detail = value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>).detail
-    : undefined;
-  return typeof detail === "string" ? detail : `插件请求失败 (${response.status})`;
+    ? (value as Record<string, unknown>).detail : undefined;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const body = detail as Record<string, unknown>;
+    if (typeof body.code === "string" && typeof body.message === "string") {
+      return new WebPluginError(response.status, body.message, body.code);
+    }
+  }
+  return new WebPluginError(response.status, typeof detail === "string" ? detail : `插件请求失败 (${response.status})`);
 }
 
 function pluginQueryCacheKey(
