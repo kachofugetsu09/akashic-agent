@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -81,9 +83,22 @@ class MaterialView:
             collect(caller.runtime.plugin_id, decode_material({"reminders": reminders}).reminders)
         summary: Summary | None = None
         references: dict[str, Mapping[str, object]] = {}
-        for name, owner in self._sources:
-            async with owner.context.runtime_scope():
-                material = decode_material(await owner.prepare(snapshot, source))
+        async def prepare_owner(owner: _Source) -> Materials | Exception:
+            """Keep each independent contribution inside its actual owner scope."""
+            try:
+                async with owner.context.runtime_scope():
+                    return decode_material(await owner.prepare(snapshot, source))
+            except Exception as error:
+                # Drain every started owner, then report errors in frozen order.
+                return error
+
+        # Preparation may overlap; merging still follows the frozen source order.
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(prepare_owner(owner)) for _, owner in self._sources]
+        for (name, owner), task in zip(self._sources, tasks, strict=True):
+            material = task.result()
+            if isinstance(material, Exception):
+                raise material
             self._check_active()
             if material.system_prompt:
                 if not owner.prompt:
@@ -161,7 +176,12 @@ class ContextMaterials:
         priority: int = 0, prompt: bool = False, kind: MaterialKind | None = None,
         reduce: SummaryReducer | None = None,
     ) -> Effect:
-        """同一名称只有一个真实注册 owner；priority 只排序，不表示依赖或权限。"""
+        """Register an independent owner; priority orders output, not execution.
+
+        Preparation overlaps across owners. Each owner protects its own state and
+        drains its work before leaving its scope. Failures are reported in frozen
+        source order after all started owners finish; cancellation drains them too.
+        """
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("材料注册不能跨 composition Root")
         if not isinstance(name, str) or not name or not callable(prepare):

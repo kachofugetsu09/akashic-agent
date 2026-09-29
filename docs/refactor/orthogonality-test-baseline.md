@@ -187,3 +187,5 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 ## Event-loop isolation regressions
 
 - `test_interest_execution.py`: O, one optional interest calculation must not block unrelated host work. Uses the real MessageLog, Learning and CompositionRoot. The regression fails on `0126f900` because history preparation runs on the loop thread.
+
+- `test_material_execution.py`: O, actual Root material owners can prepare independently while result order stays deterministic; the prior serial loop fails the gate.
