@@ -507,6 +507,7 @@ class ModelDriverDefinition:
     open: DriverOpen
     discover: DriverDiscover | None = None
     probe: DriverProbe | None = None
+    probe_embedding: Callable[[DriverConnectionDescriptor, CredentialHandle, str], Awaitable[DiscoveredModel]] | None = None
     start_auth: DriverAuthHandler | None = None
     finish_auth: DriverAuthHandler | None = None
     cancel_auth: DriverAuthHandler | None = None

@@ -2,7 +2,7 @@
   "contract": "models.connection-types.v1",
   "entry": {
     "required": ["id", "label", "detail", "render"],
-    "optional": ["icon", "connectionIcon", "editTemplateId", "templates"],
+    "optional": ["icon", "connectionIcon", "editTemplateId", "templates", "embeddingApiKey"],
     "render": {
       "arguments": ["host", "view", "props"],
       "returns": "dispose"

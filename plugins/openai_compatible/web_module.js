@@ -11,6 +11,7 @@ export function activate(ctx) {
     label: "OpenAI Compatible",
     detail: "API Key 与任意 OpenAI 格式服务",
     order: 30,
+    embeddingApiKey: true,
     editTemplateId: "custom-api",
     templates: [
       {

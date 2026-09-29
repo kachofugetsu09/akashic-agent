@@ -12,6 +12,7 @@ from pydantic import (
     JsonValue,
     RootModel,
     ValidationError,
+    model_validator,
 )
 
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
@@ -58,6 +59,8 @@ from .selection import MODEL_SELECTION
 
 
 class ModelControl(Protocol):
+    async def probe_embedding(self, model: str, expected_revision: int, *, connection: AddConnection | None = None, connection_id: str | None = None) -> DiscoveredModel: ...
+
     async def call_stats(self, call_id: str) -> ModelCallStats: ...
 
     async def catalog(self) -> ModelCatalogSnapshot: ...
@@ -100,6 +103,9 @@ class BoundModelControl:
     async def discover_saved(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]:
         return await self._resolver.require(MODEL_SETTINGS).discover_saved(connection_id, expected_revision)
 
+    async def probe_embedding(self, model: str, expected_revision: int, *, connection: AddConnection | None = None, connection_id: str | None = None) -> DiscoveredModel:
+        return await self._resolver.require(MODEL_SETTINGS).probe_embedding(model, expected_revision, connection=connection, connection_id=connection_id)
+
     async def apply(self, command: ModelChange) -> SettingsReceipt:
         return await self._resolver.require(MODEL_SETTINGS).apply(command)
 
@@ -120,6 +126,21 @@ class ConnectionInput(_Payload):
     auth_identity: str = Field(min_length=1, max_length=128)
     credential: dict[str, str]
     driver_config: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class EmbeddingProbePayload(_Payload):
+    expected_revision: int = Field(ge=0)
+    model: str = Field(min_length=1, max_length=256)
+    connection: ConnectionInput | None = None
+    connection_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def check_connection(self) -> EmbeddingProbePayload:
+        if (self.connection is None) == (self.connection_id is None):
+            raise ValueError("请选择已有连接或填写新连接，两者不能同时使用。")
+        if self.connection is not None and self.connection.expected_revision != self.expected_revision:
+            raise ValueError("连接与试算的配置版本不同。")
+        return self
 
 
 class AddConnectionPayload(ConnectionInput):
@@ -175,6 +196,13 @@ class ModelInput(_Payload):
     capability_sources: CapabilitySourcesPayload
     default_reasoning_effort: str | None = Field(default=None, max_length=32)
     driver_config: dict[str, JsonValue] = Field(default_factory=dict)
+    make_default_embedding: bool = False
+
+    @model_validator(mode="after")
+    def check_default_kind(self) -> ModelInput:
+        if self.make_default_embedding and self.kind != "embedding":
+            raise ValueError("只有向量模型可以设为默认向量模型。")
+        return self
 
 
 class AddModelPayload(ModelInput):
@@ -186,6 +214,13 @@ class SetDefaultPayload(_Payload):
     expected_revision: int = Field(ge=0)
     role: Literal["default", "fast", "agent", "vision"] | None
     model_id: str = Field(min_length=1, max_length=128)
+    verify_embedding: bool = False
+
+    @model_validator(mode="after")
+    def check_verification_kind(self) -> SetDefaultPayload:
+        if self.verify_embedding and self.role is not None:
+            raise ValueError("向量重验只能用于默认向量模型。")
+        return self
 
 
 class SavedDiscoveryPayload(_Payload):
@@ -316,11 +351,6 @@ async def _discover_body(
     control: ModelControl,
     payload: ConnectionInput,
 ) -> dict[str, object]:
-    if payload.driver_id != "openai-compatible":
-        raise HTTPException(
-            status_code=422,
-            detail="模型预览仅支持 openai-compatible",
-        )
     models = await control.discover(_add_connection(payload))
     return {"models": [_discovered_payload(model) for model in models]}
 
@@ -391,6 +421,17 @@ def create_model_settings_router(
         except (RevisionConflictError, AuthenticationError, RateLimitError, QuotaError,
                 ModelControlUnavailable, DriverUnavailableError, ModelUnavailableError,
                 ModelTimeoutError, TransportError, ModelError, ValueError) as error:
+            raise _http_error(error, operation="discover") from error
+
+    @router.post("/probe_embedding")
+    async def probe_embedding(request: Request) -> dict[str, object]:
+        try:
+            payload = EmbeddingProbePayload.model_validate(await request.json())
+        except (ValueError, ValidationError) as error:
+            raise HTTPException(status_code=422, detail=_validation_detail(error)) from error
+        try:
+            return await _embedding_probe_body(control, payload)
+        except (RevisionConflictError, ModelControlUnavailable, ModelError, ValueError) as error:
             raise _http_error(error, operation="discover") from error
 
     @router.post("/command")
@@ -466,6 +507,13 @@ def rpc_methods(control: ModelControl) -> dict[str, RpcMethod]:
                 ModelTimeoutError, TransportError, ModelError, ValueError) as error:
             return _rpc_error(_http_error(error, operation="discover"))
 
+    async def probe_embedding(params: BaseModel) -> object:
+        assert isinstance(params, EmbeddingProbePayload)
+        try:
+            return _rpc_ok(await _embedding_probe_body(control, params))
+        except (RevisionConflictError, ModelControlUnavailable, ModelError, ValueError) as error:
+            return _rpc_error(_http_error(error, operation="discover"))
+
     async def command(params: BaseModel) -> object:
         assert isinstance(params, CommandParams)
         try:
@@ -491,6 +539,7 @@ def rpc_methods(control: ModelControl) -> dict[str, RpcMethod]:
         "models/catalog": RpcMethod(EmptyParams, catalog),
         "models/discover": RpcMethod(ConnectionInput, discover),
         "models/discover_saved": RpcMethod(SavedDiscoveryPayload, discover_saved),
+        "models/probe_embedding": RpcMethod(EmbeddingProbePayload, probe_embedding),
         "models/command": RpcMethod(CommandParams, command),
     }
 
@@ -519,6 +568,7 @@ def _command(payload: CommandPayload) -> ModelChange:
             payload.expected_revision,
             payload.role,
             payload.model_id,
+            payload.verify_embedding,
         )
     if isinstance(payload, SyncModelsPayload):
         return SyncModels(payload.expected_revision, payload.connection_id)
@@ -553,6 +603,15 @@ def _add_connection(payload: ConnectionInput) -> AddConnection:
     )
 
 
+async def _embedding_probe_body(control: ModelControl, payload: EmbeddingProbePayload) -> dict[str, object]:
+    result = await control.probe_embedding(
+        payload.model, payload.expected_revision,
+        connection=None if payload.connection is None else _add_connection(payload.connection),
+        connection_id=payload.connection_id,
+    )
+    return {"model": _discovered_payload(result), "revision": payload.expected_revision}
+
+
 def _add_model(payload: ModelInput) -> AddModel:
     return AddModel(
         expected_revision=payload.expected_revision,
@@ -570,6 +629,7 @@ def _add_model(payload: ModelInput) -> AddModel:
             }
         ),
         capability_sources=CapabilitySources(**payload.capability_sources.model_dump()),
+        make_default_embedding=payload.make_default_embedding,
         default_reasoning_effort=payload.default_reasoning_effort,
         driver_config=payload.driver_config,
     )

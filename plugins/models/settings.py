@@ -56,6 +56,7 @@ class AddModel:
     capability_sources: CapabilitySources
     default_reasoning_effort: str | None = None
     driver_config: Mapping[str, Any] = field(default_factory=dict)
+    make_default_embedding: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +70,7 @@ class SetDefaultModel:
     expected_revision: int
     role: str | None
     model_id: str
+    verify_embedding: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +137,8 @@ class SettingsReceipt:
 
 
 class ModelSettings(Protocol):
+    async def probe_embedding(self, model: str, expected_revision: int, *, connection: AddConnection | None = None, connection_id: str | None = None) -> DiscoveredModel: ...
+
     async def discover_saved(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]: ...
 
     async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]: ...

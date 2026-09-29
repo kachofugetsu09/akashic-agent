@@ -61,7 +61,7 @@ export function activate(ctx) {
           <div class="settings-gallery" data-providers></div>
         </section>
         <section class="settings-section settings-roles" data-roles>
-          <header><div><h2>系统模型</h2><p>修改后不重启进程；正在运行的完整 turn 保持旧快照，下一个执行读取最新绑定。</p></div></header>
+          <header><div><h2>系统模型</h2><p>修改后无需重启；当前回复继续使用原模型，之后使用新选择。固定模型的会话保持原选择。</p></div></header>
           <div class="settings-role-grid" data-bindings></div>
         </section>
       </div>
@@ -148,7 +148,7 @@ export function activate(ctx) {
           : "选择登录方式或 API 服务。连接后会自动同步模型并识别图片能力。";
         search.hidden = !hasConnections;
         connectedSection.hidden = !hasConnections;
-        roles.hidden = !hasConnections;
+        roles.hidden = false;
 
         templatesTitle.textContent = hasConnections ? "添加其他连接" : "选择连接方式";
         templatesDetail.textContent = hasConnections
@@ -243,47 +243,142 @@ export function activate(ctx) {
         const dialog = document.createElement("dialog");
         dialog.className = "settings-scrim";
         dialog.setAttribute("aria-label", "添加向量模型");
-        dialog.innerHTML = `<form class="settings-dialog embedding-form">
-          <h2>添加向量模型</h2><p>用于情景记忆。保存前会发送一段固定测试文本，核对服务返回的向量维度。</p>
-          <label>使用连接<select name="connection" required></select></label>
-          <label>模型名称<input name="model" required placeholder="例如：text-embedding-3-small" maxlength="256"></label>
-          <label>输出维度<input name="dimensions" type="number" min="1" step="1" required placeholder="按服务文档填写，例如 1536"></label>
-          <p class="settings-inline-error" role="alert" hidden></p>
-          <footer><button type="button" data-cancel>取消</button><button type="submit">验证并保存</button></footer>
+        dialog.innerHTML = `<form class="settings-dialog settings-dialog-form embedding-form">
+          <header class="settings-dialog-header"><div><h2>添加向量模型</h2><p>用于情景记忆。读取型号，再用两段固定测试文本测量实际维度；不需要先配置聊天模型。</p></div></header>
+          <div class="settings-dialog-body"><div class="settings-form-grid">
+          <label class="is-wide"><span>使用连接</span><select name="connection" aria-label="使用连接" required></select></label>
+          <div class="is-wide settings-form-grid" data-new-connection>
+            <label class="is-wide"><span>连接名称</span><input name="name" aria-label="向量连接名称" value="向量服务" maxlength="128"></label>
+            <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="向量 Base URL" type="url" placeholder="https://api.example.com/v1"></label>
+            <label class="is-wide"><span>API Key</span><input name="key" aria-label="向量 API Key" type="password" autocomplete="off"></label>
+          </div>
+          <button type="button" class="settings-secondary-button is-wide" data-directory>读取模型目录</button>
+          <label class="is-wide" data-candidates hidden><span>模型型号（用途由试算核对）</span><select name="candidate" aria-label="向量模型型号"></select></label>
+          <button type="button" class="settings-text-button is-wide" data-manual hidden>目录没有所需型号？手动填写</button>
+          <label class="is-wide" data-manual-field><span>模型名称</span><input name="model" aria-label="向量模型名称" required maxlength="256" placeholder="从目录选择；目录不可用时填写服务提供的型号"></label>
+          <button type="button" class="settings-secondary-button is-wide" data-probe>试算实际维度</button>
+          <p class="is-wide" role="status" data-result>还未试算。目录中的型号不代表已经支持向量。</p>
+          </div><p class="settings-inline-error" role="alert" hidden></p>
+          <p>保存并设为默认只更改模型设置；记忆仍由你决定开启或关闭。已有记忆空间不匹配时会明确阻塞，不删除或自动重建。</p></div>
+          <footer class="settings-dialog-footer"><button type="button" class="settings-secondary-button" data-cancel>取消</button><button type="submit" class="settings-primary-button" disabled>保存并设为默认</button></footer>
         </form>`;
-        const form = dialog.querySelector("form");
-        const select = form.elements.connection;
-        for (const connection of catalog.connections.filter(item => item.availability === "available")) select.append(new Option(connection.name, connection.id));
-        const error = form.querySelector('[role="alert"]');
-        let dirty = false, busy = false, closed = false;
+        const form = dialog.querySelector("form"), select = form.elements.connection;
+        for (const entry of providerEntries.filter(item => item.embeddingApiKey === true)) select.append(new Option(`新建 ${entry.label} 向量连接`, `new:${entry.id}`));
+        for (const connection of catalog.connections.filter(item => item.availability === "available")) select.append(new Option(connection.name, `saved:${connection.id}`));
+        const error = form.querySelector('[role="alert"]'), status = form.querySelector("[data-result]");
+        const save = form.querySelector('button[type="submit"]'), directory = form.querySelector("[data-directory]"), probe = form.querySelector("[data-probe]");
+        const candidatePanel = form.querySelector("[data-candidates]");
+        const draftId = `embedding-${randomToken()}`, modelId = `${draftId}__model`;
+        let dirty = false, busy = false, closed = false, preview = null, controller = null, sequence = 0;
+        const fingerprint = () => JSON.stringify([select.value, ...["name", "endpoint", "key", "model"].map(name => form.elements[name].value)]);
+        const newConnection = () => ({expected_revision:catalog.revision, connection_id:draftId, name:form.elements.name.value.trim(),
+          driver_id:select.value.slice(4), endpoint:form.elements.endpoint.value.trim(), auth_identity:`api:${draftId}`,
+          credential:{driver:"api_key", access_token:form.elements.key.value}, driver_config:{format_version:1, allow_unverified_manual:true}});
+        const invalidate = () => { sequence += 1; controller?.abort(); controller = null; preview = null; save.disabled = true; status.textContent = "信息已更改，请重新试算实际维度。"; directory.disabled = false; probe.disabled = false; };
+        const updateMode = () => {
+          const isNew = select.value.startsWith("new:");
+          form.querySelector("[data-new-connection]").hidden = !isNew;
+          for (const name of ["name", "endpoint", "key"]) { form.elements[name].required = isNew; form.elements[name].disabled = !isNew; }
+          candidatePanel.hidden = true; form.querySelector("[data-manual-field]").hidden = false; form.querySelector("[data-manual]").hidden = true; form.elements.candidate.replaceChildren(); form.elements.model.value = "";
+        };
+        updateMode();
+        if (!select.options.length) { status.textContent = "没有可用的向量连接方式，请先安装支持向量的驱动。"; directory.disabled = true; probe.disabled = true; }
+        form.querySelector("[data-manual]").addEventListener("click", () => { invalidate(); form.querySelector("[data-manual-field]").hidden = false; form.elements.model.focus(); });
         const stopGuard = guardDialog(dialog, () => ({dirty, busy}));
-        form.addEventListener("input", () => { dirty = true; props.dirty?.(true); });
-        const cancel = () => dialog.dispatchEvent(new Event("cancel", {cancelable:true}));
-        form.querySelector("[data-cancel]").addEventListener("click", cancel);
-
+        const changed = event => {
+          if (busy) return;
+          dirty = true; props.dirty?.(true); invalidate();
+          if (event.target === select) updateMode();
+          if ([form.elements.endpoint, form.elements.key, select].includes(event.target)) candidatePanel.hidden = true;
+        };
+        form.addEventListener("input", changed); select.addEventListener("change", changed);
+        form.elements.candidate.addEventListener("change", () => { form.elements.model.value = form.elements.candidate.value; changed({target:form.elements.model}); });
+        form.querySelector("[data-cancel]").addEventListener("click", () => dialog.dispatchEvent(new Event("cancel", {cancelable:true})));
+        const runPreview = async (operation) => {
+          if (busy || controller) return;
+          const isNew = select.value.startsWith("new:");
+          const model = form.elements.model;
+          model.required = operation === "probe";
+          const valid = form.reportValidity(); model.required = true;
+          if (!valid) return;
+          const at = fingerprint(), revision = catalog.revision, attempt = ++sequence;
+          controller = new AbortController(); const signal = controller.signal;
+          directory.disabled = true; probe.disabled = true; save.disabled = true; error.hidden = true;
+          status.textContent = operation === "probe" ? "正在向服务试算两段固定文本…" : "正在读取型号；不会保存连接…";
+          try {
+            const connection = isNew ? newConnection() : null, connectionId = select.value.slice(6);
+            const body = operation === "probe"
+              ? {expected_revision:revision, model:model.value.trim(), ...(connection ? {connection} : {connection_id:connectionId})}
+              : connection ?? {expected_revision:revision, connection_id:connectionId};
+            const path = operation === "probe" ? "probe_embedding" : connection ? "discover" : "discover_saved";
+            const result = await request(`/api/dashboard/models/${path}`, {method:"POST", signal, headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+            if (closed || attempt !== sequence || fingerprint() !== at) return;
+            if (operation === "probe") {
+              preview = {at, revision, model:result.model};
+              status.textContent = `试算成功：${result.model.model} 实际返回 ${result.model.capabilities.embeddingDimensions} 维。尚未保存；保存前会再核对一次。`;
+              save.disabled = false;
+            } else {
+              const candidates = result.models.filter(item => item.kind === null || item.kind === "embedding");
+              if (!candidates.length) throw new Error("目录没有向量候选，请检查服务或手动填写型号后试算。");
+              form.elements.candidate.replaceChildren(...candidates.map(item => new Option(item.model, item.model)));
+              candidatePanel.hidden = false; model.value = candidates[0].model;
+              form.querySelector("[data-manual-field]").hidden = true; form.querySelector("[data-manual]").hidden = false;
+              status.textContent = `读取到 ${candidates.length} 个候选型号。请选择，再点击“试算实际维度”。`;
+            }
+          } catch (reason) {
+            if (closed || attempt !== sequence || signal.aborted) return;
+            error.textContent = `${reason instanceof Error ? reason.message : String(reason)} ${operation === "probe" ? "请检查服务是否支持向量、型号或密钥，再重新试算。" : "目录不可用时可手动填写型号，再试算。"} 配置尚未保存。`; error.hidden = false;
+          } finally {
+            if (!closed && attempt === sequence) { controller = null; directory.disabled = false; probe.disabled = false; }
+          }
+        };
+        directory.addEventListener("click", () => runPreview("directory"));
+        probe.addEventListener("click", () => runPreview("probe"));
         form.addEventListener("submit", async event => {
-          event.preventDefault(); if (busy) return;
-          const connectionId = select.value, model = form.elements.model.value.trim(), dimensions = Number(form.elements.dimensions.value);
-          if (!connectionId || !model || !Number.isSafeInteger(dimensions) || dimensions < 1) return;
+          event.preventDefault(); if (busy || !preview || preview.at !== fingerprint()) return;
           busy = true; error.hidden = true;
           const controls = [...form.querySelectorAll("input,select,button")]; controls.forEach(item => { item.disabled = true; });
-          form.querySelector('button[type="submit"]').textContent = "正在验证…";
+          save.textContent = "正在验证并保存…";
+          const chosen = preview.model, isNew = select.value.startsWith("new:");
+          const connectionId = isNew ? draftId : select.value.slice(6);
+          const existing = catalog.models.find(item => item.connectionId === connectionId && item.kind === "embedding" && item.model === chosen.model);
+          const targetModelId = existing?.id ?? modelId;
           try {
-            const modelId = `embedding-${randomToken()}`;
-            const receipt = await command({type:"add_model", expected_revision:catalog.revision, model_id:modelId, connection_id:connectionId,
-              kind:"embedding", model, capabilities:{embedding_dimensions:dimensions, embedding_normalization:"none"},
-              capability_sources:{embedding_dimensions:"manual", embedding_normalization:"manual"}, driver_config:{format_version:1}});
+            if (existing) {
+              if (isNew) throw new Error("此连接已经保存。请取消当前窗口，在已连接的卡片中核对或编辑；这里不会覆盖已保存的地址与密钥。");
+              if (existing.capabilities.embeddingDimensions !== chosen.capabilities.embeddingDimensions) throw new Error("试算维度与已保存模型不同。请新建独立连接；不会改变已有记忆空间。");
+              await command({type:"set_default", expected_revision:preview.revision, role:null, model_id:existing.id, verify_embedding:true});
+            } else {
+              const input = {expected_revision:preview.revision, model_id:modelId, connection_id:connectionId, kind:"embedding", model:chosen.model,
+                capabilities:{embedding_dimensions:chosen.capabilities.embeddingDimensions, embedding_normalization:chosen.capabilities.embeddingNormalization},
+                capability_sources:{embedding_dimensions:"probe", embedding_normalization:"driver"}, driver_config:chosen.driverConfig, make_default_embedding:true};
+              if (isNew) await command({type:"create_connection_with_model", connection:{...newConnection(), expected_revision:preview.revision}, model:input});
+              else await command({...input, type:"add_model"});
+            }
             if (closed) return;
-            await command({type:"set_default", expected_revision:receipt.revision, role:null, model_id:modelId});
-            if (closed) return;
-            dirty = false; dialog.close(); showNotice("向量模型已验证并设为默认");
-          } catch (reason) { if (!closed) { error.textContent = reason instanceof Error ? reason.message : String(reason); error.hidden = false; } }
-          finally { busy = false; if (!closed) { controls.forEach(item => { item.disabled = false; }); form.querySelector('button[type="submit"]').textContent = "验证并保存"; } }
+            dirty = false; dialog.close(); showNotice("向量模型已验证、保存并设为默认；记忆开关保持你的选择。");
+          } catch (reason) {
+            // HTTP 回执丢失时只读取权威目录，不重发可能已经提交的新增请求。
+            let recovered = false, recoveryError = "";
+            if (!reason?.status && !closed) {
+              try {
+                await load();
+                const saved = catalog.models.find(item => item.id === targetModelId && item.connectionId === connectionId && item.kind === "embedding" && item.model === chosen.model && item.capabilities.embeddingDimensions === chosen.capabilities.embeddingDimensions);
+                recovered = !!saved && catalog.defaultEmbeddingModelId === targetModelId;
+                if (recovered && !closed) { dirty = false; dialog.close(); showNotice("已核对最新设置：向量模型已保存并设为默认。"); }
+              } catch (readError) {
+                recoveryError = `保存结果尚未确认，读取最新设置也失败。请恢复网络后重新加载模型页面，先核对结果再操作。${readError instanceof Error ? readError.message : String(readError)}`;
+              }
+            }
+            if (!closed && !recovered) { error.textContent = recoveryError || `${reason instanceof Error ? reason.message : String(reason)} 保存结果以模型页面最新设置为准；请重新试算后再操作。`; error.hidden = false; invalidate(); }
+          } finally {
+            busy = false;
+            if (!closed) { controls.forEach(item => { item.disabled = false; }); save.textContent = "保存并设为默认"; save.disabled = !preview; for (const name of ["name","endpoint","key"]) form.elements[name].disabled = !select.value.startsWith("new:"); }
+          }
         });
-        const close = () => disposeDialog();
-        dialog.addEventListener("close", close, {once:true});
-        page.appendChild(dialog); dialog.showModal(); form.elements.model.focus();
-        disposeDialog = () => { closed = true; stopGuard(); props.dirty?.(false); dialog.removeEventListener("close", close); dialog.close(); dialog.remove(); restoreFocus(trigger); disposeDialog = () => {}; };
+        const close = () => disposeDialog(); dialog.addEventListener("close", close, {once:true});
+        page.appendChild(dialog); dialog.showModal(); select.focus();
+        disposeDialog = () => { closed = true; controller?.abort(); sequence += 1; stopGuard(); props.dirty?.(false); dialog.removeEventListener("close", close); dialog.close(); dialog.remove(); restoreFocus(trigger); disposeDialog = () => {}; };
       }
 
       function bindingRow({label, detail, models, value, change}) {
