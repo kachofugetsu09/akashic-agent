@@ -44,6 +44,8 @@ CORE_PATHS = (
     "sdk/python",
     "scripts/install_plugin_distribution.py",
     "scripts/distribution_runtime.py",
+    "scripts/start.py",
+    "scripts/start.html",
     "docker/host-runtime",
 )
 

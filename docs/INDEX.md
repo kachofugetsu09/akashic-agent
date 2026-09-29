@@ -374,3 +374,5 @@ docs/
 插件简化与整体换代见 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md)。
 
 - [0080 · 退役 QQ 运行支持](decisions/0080-retire-qq-runtime-support.md)：QQ 插件、默认安装与旧数据保留边界。
+
+- [Product startup](design/product-startup.md): ordinary launcher, standalone Compose, first-install state and local acceptance.

@@ -1,0 +1,24 @@
+name: akashic
+services:
+  akashic:
+    # The first run builds a fixed Git revision. Later starts reuse this image.
+    build:
+      context: .
+      dockerfile: docker/standalone/Dockerfile
+      args:
+        AKASHIC_REVISION: ${AKASHIC_REVISION:-main}
+    ports:
+      - "127.0.0.1:${AKASHIC_PORT:-2236}:2236"
+    volumes:
+      - data:/data
+    init: true
+    stop_grace_period: 60s
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; s=json.load(urllib.request.urlopen('http://127.0.0.1:2236/api/shell/state', timeout=3)); assert s['chatReady']"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 180s
+volumes:
+  data:
