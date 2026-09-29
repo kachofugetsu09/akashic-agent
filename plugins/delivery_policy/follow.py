@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
@@ -20,6 +20,14 @@ class _Wake:
     changed: bool = True
 
 
+@dataclass(slots=True)
+class _Destination:
+    owner: str
+    position: int
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
+    recovery: list[tuple[int, str]] = field(default_factory=list)
+
+
 async def follow(
     ctx: Context, catalog: MessageCatalog,
     execution: Callable[[], DeliveryExecution], select: Select,
@@ -27,7 +35,7 @@ async def follow(
 ) -> None:
     """按 seq 固定选路；重启追赶 prepared，各目的地与各 Session 独立结算。"""
     active: dict[str, _Wake] = {}
-    recovery: dict[str, dict[str, list[str]]] = {}
+    destinations: dict[tuple[str, str], _Destination] = {}
 
     async def send(message_id: str, sink: str) -> None:
         try:
@@ -43,30 +51,44 @@ async def follow(
             if settled is not None:
                 settled(message_id, sink)
 
-    async def send_all(message_id: str, sinks: tuple[str, ...], attempted: set[tuple[str, str]]) -> None:
-        async with asyncio.TaskGroup() as group:
-            for sink in sinks:
-                key = (message_id, sink)
-                if key not in attempted:
-                    attempted.add(key)
-                    _ = group.create_task(send(message_id, sink))
+    async def send_destination(session_id: str, sink: str, destination: _Destination) -> None:
+        """Read this destination's ordered backlog from durable selections."""
+        reader = catalog.reader(session_id)
+        for _, message_id in sorted(destination.recovery):
+            await send(message_id, sink)
+        destination.recovery.clear()
+        while True:
+            await destination.changed.wait()
+            destination.changed.clear()
+            while True:
+                async with ctx.runtime_scope():
+                    delivery = execution()
+                    through = delivery.cursor(session_id)
+                    messages = tuple(message for message in reader.read(after_seq=destination.position, limit=100)
+                                     if message.seq <= through)
+                if not messages:
+                    break
+                for message in messages:
+                    async with ctx.runtime_scope():
+                        selected = execution().selection(message.message_id)
+                    if selected is not None and selected.recovery_owner == destination.owner and sink in selected.sinks:
+                        await send(message.message_id, sink)
+                    destination.position = message.seq
+                await asyncio.sleep(0)
+
+    def wake_destination(session_id: str, sink: str, owner: str, position: int) -> _Destination:
+        key = (session_id, sink)
+        destination = destinations.get(key)
+        if destination is None:
+            destination = destinations[key] = _Destination(owner, position)
+            group.create_task(send_destination(session_id, sink, destination))
+        destination.changed.set()
+        return destination
 
     async def drive(session_id: str, wake: _Wake) -> None:
         """单个 Session 保持消息顺序；实际发送失败不阻止后续消息固定选路。"""
         try:
-            attempted: set[tuple[str, str]] = set()
             reader = catalog.reader(session_id)
-            # 1. 恢复效果从原消息 seq 排序，不使用随机 message_id 的字典顺序。
-            pending = recovery.pop(session_id, {})
-            ordered: list[tuple[int, str]] = []
-            for message_id in pending:
-                message = reader.get(message_id)
-                if message is None:
-                    raise ValueError("待恢复发送的原消息缺失")
-                ordered.append((message.seq, message_id))
-            for _, message_id in sorted(ordered):
-                await send_all(message_id, tuple(pending[message_id]), attempted)
-
             # 2. 新选择与全部 prepared、cursor 同事务，I/O 才可以开始。
             while wake.changed:
                 wake.changed = False
@@ -83,7 +105,9 @@ async def follow(
                             sinks = select(reader, message) if existing is None else ()
                             selected = delivery.consume(reader, message, sinks, passive=True)
                         if selected is not None:
-                            await send_all(message.message_id, selected.sinks, attempted)
+                            for sink in selected.sinks:
+                                wake_destination(session_id, sink, selected.recovery_owner, message.seq - 1)
+                    await asyncio.sleep(0)
         except Exception:
             # 选路失败不推进该 Session cursor；其他 Session 仍可独立接纳和发送。
             logger.exception("发送消费停止，保留原消息等待修复 session=%s", session_id)
@@ -102,10 +126,15 @@ async def follow(
                         selection = delivery.selection(message_id)
                         if selection is None:
                             raise ValueError("待恢复发送缺少首次选择")
-                        session = recovery.setdefault(selection.session_id, {})
-                        session.setdefault(message_id, []).append(sink)
+                        reader = catalog.reader(selection.session_id)
+                        message = reader.get(message_id)
+                        if message is None:
+                            raise ValueError("待恢复发送的原消息缺失")
+                        destination = wake_destination(selection.session_id, sink, selection.recovery_owner,
+                                                       delivery.cursor(selection.session_id))
+                        destination.recovery.append((message.seq, message_id))
                 first = False
-            changed = {key for key, head in heads.items() if previous.get(key) != head} | set(recovery)
+            changed = {key for key, head in heads.items() if previous.get(key) != head}
             previous = dict(heads)
             for session_id in sorted(changed):
                 wake = active.get(session_id)
