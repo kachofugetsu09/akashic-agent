@@ -9,6 +9,7 @@ from agent.plugin_composition.messages import MessageReader, MessageWriters, Own
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts.context import MaterialView
+from agent.plugin_contracts.models import PrepareContent
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .inputs import (
@@ -47,6 +48,7 @@ async def run_reply(
     materials: AbstractAsyncContextManager[MaterialView],
     turn_projection: TurnProjection,
     render_content: ContentRenderer | None = None,
+    prepare_content: PrepareContent | None = None,
     read_call: CallReader,
     authorize: Authorize,
     max_output_tokens: int,
@@ -114,6 +116,7 @@ async def run_reply(
         projection = model_projection.create(
             model, source=source, render_content=render if render_content is None else render_content,
             tool_name=menu.name, read_call=read_call, check_summary=context.check_summary, keep_input_ids=keep_input_ids,
+            **({"prepare_content": prepare_content, "tool_names": menu.names} if prepare_content is not None else {}),
         )
 
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。

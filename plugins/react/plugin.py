@@ -156,6 +156,8 @@ def _encode_request(request: ModelRequest) -> Mapping[str, object]:
         "tool_choice": _plain_json(request.tool_choice),
         "prompt_cache_key": request.prompt_cache_key,
         "disable_reasoning": request.disable_reasoning,
+        "content_refs": _plain_json(request.content_refs),
+        "content_transformed": request.content_transformed,
         "continuation": (
             None
             if continuation is None
@@ -180,6 +182,8 @@ def _decode_request(value: object) -> ModelRequest:
         tool_choice=cast(Any, value.get("tool_choice", "auto")),
         prompt_cache_key=cast(str | None, value.get("prompt_cache_key")),
         disable_reasoning=bool(value.get("disable_reasoning")),
+        content_refs=cast(tuple[tuple[str, int], ...], value.get("content_refs", ())),
+        content_transformed=cast(bool, value.get("content_transformed", False)),
         continuation=(
             None
             if continuation is None
@@ -421,7 +425,7 @@ async def _complete(
     resumed: Mapping[int, tuple[ModelRequest, Materials]] | None = None,
     start_at: int = 0,
     resume_rejected: bool = False,
-) -> AsyncGenerator[tuple[LLMResponse, Materials, str]]:
+) -> AsyncGenerator[tuple[LLMResponse, Materials, str, ModelRequest]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。
 
     每个 attempt 的请求与材料都经 freeze 耐久保存；恢复时按原字节精确重放，
@@ -502,7 +506,7 @@ async def _complete(
             message_id, request_key, callback = begin(attempt)
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
-        yield response, prepared, message_id
+        yield response, prepared, message_id, request
 
 
 async def react(
@@ -789,7 +793,7 @@ async def react(
                 f"reply:{reader.session_id}:{writer.source}"
                 f":{boundary_id}:{_steps(snapshot, writer.source)}"
             ),
-        ) as (response, prepared, message_id):
+        ) as (response, prepared, message_id, request):
             decoded, metadata = await content.decode(response.content or "", cast(tuple[Mapping[str, object], ...], prepared.get("references", ())))
             parts: list[Part] = list(decoded)
             indices: list[int] = []
@@ -813,6 +817,9 @@ async def react(
                 reminder=reminder,
                 reminder_input_id=reminder_input_id if reminder is not None else None,
                 actual_calls=actual_calls,
+                **({"content_refs": request.content_refs,
+                    "content_transformed": request.content_transformed}
+                   if request.content_refs or request.content_transformed else {}),
             ))
             summary = cast(Mapping[str, object] | None, prepared.get("summary"))
             if summary is not None:
