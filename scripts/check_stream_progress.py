@@ -6,15 +6,23 @@ import asyncio
 import inspect
 import json
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import httpx
 
 sys.path.insert(0, str(Path.cwd()))
 
-from agent.plugin_composition import ModelRequest, ModelTimeoutError
+from agent.plugin_composition import (
+    BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelRequest,
+    ModelTimeoutError, ModelUnavailableError,
+)
+from core.net.http import HttpClient
 from plugins.codex import responses as codex
+from plugins.models.state import _BoundChat
+from plugins.models.store import ModelsStore
 from plugins.openai_compatible import driver as compatible
 from plugins.opencode_go import driver as opencode
 
@@ -66,6 +74,78 @@ async def consume(driver: str, stream: Stream, *, slow_callback: bool = False):
         return await module._consume_stream(response, receive, **kwargs)
     finally:
         await response.aclose()
+
+
+class LocalCredential:
+    """仅供内存 transport 使用的凭据，禁止触发外部刷新。"""
+
+    connection_id = "scenario"
+    auth_identity = "scenario"
+
+    async def read(self) -> Mapping[str, str]:
+        return {"driver": "codex", "access_token": "scenario", "account_id": "scenario",
+                "expires_at": "2099-01-01T00:00:00+00:00"}
+
+    async def refresh(self, payload: Mapping[str, str]) -> None:
+        raise AssertionError("scenario must not refresh credentials")
+
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        yield
+
+
+async def check_codex_receipt() -> None:
+    """穿过完整 driver 和 Models 结算，在临时账本核对部分响应及不重发。"""
+    descriptor = BoundModelDescriptor(
+        binding_id="scenario", plugin_snapshot_id="scenario", model_revision=0,
+        model_id="scenario", connection_id="scenario", driver_id="codex",
+        driver_contract_version="scenario", auth_identity="scenario", model="scenario",
+        role="default", reasoning_effort=None, capabilities=ModelCapabilities(),
+        capability_sources=CapabilitySources(), capability_digest="scenario",
+    )
+    stream = Stream([(0, delta("codex", "content", "partial"))]
+                    + [(0.01, ": heartbeat")] * 30)
+    sent = 0
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        nonlocal sent
+        sent += 1
+        return httpx.Response(200, stream=stream)
+
+    http = HttpClient(lambda: httpx.AsyncClient(
+        base_url="https://scenario.invalid", transport=httpx.MockTransport(respond),
+    ))
+    driver = codex.CodexResponses(http=http, credential=LocalCredential(),
+                                 descriptor=descriptor, config={}, progress_timeout=0.1)
+    with TemporaryDirectory(prefix="stream-progress-") as directory:
+        root = Path(directory)
+        store = ModelsStore(root / "models.db", root / "backups")
+        store.initialize()
+        try:
+            bound = _BoundChat(descriptor, driver, store, max_attempts=3)
+            request = ModelRequest([], request_key="stream-progress")
+            try:
+                await bound.complete(request)
+            except ModelTimeoutError as error:
+                assert getattr(error, "response_delta_seen", False)
+                assert "没有有效进展" in str(error)
+            else:
+                raise AssertionError("partial stream did not time out")
+            records = store.calls_for_key("stream-progress")
+            assert len(records) == 1
+            assert records[0]["partial_response"]
+            assert records[0]["send_evidence"] is None
+            assert records[0]["next_attempt_at"] is None
+            try:
+                await bound.complete(request)
+            except ModelUnavailableError:
+                pass
+            else:
+                raise AssertionError("uncertain request was sent again")
+            assert sent == 1 and stream.closed
+        finally:
+            await http.aclose()
+            store.close()
 
 
 async def main() -> None:
@@ -129,6 +209,25 @@ async def main() -> None:
             raise AssertionError("caller cancellation was swallowed")
         assert stream.closed
         checked += 1
+    # 4. 完成型内容也续期；相同完成项的重复投递不能伪装成进展。
+    terminal = data({"type": "response.completed", "response": {}})
+    for item in (
+        {"type": "function_call", "id": "tool", "call_id": "call", "name": "run", "arguments": "{}"},
+        {"type": "reasoning", "encrypted_content": "opaque-reasoning"},
+    ):
+        done = data({"type": "response.output_item.done", "item": item})
+        prefix = [(0, delta("codex", "arguments", ""))] if item["type"] == "function_call" else []
+        await consume("codex", Stream(prefix + [(0.06, done), (0.06, terminal)]))
+        checked += 1
+        try:
+            await consume("codex", Stream([(0.04, done)] * 6 + [(0, terminal)]))
+        except ModelTimeoutError:
+            pass
+        else:
+            raise AssertionError("duplicate completed items extended progress deadline")
+        checked += 1
+    await check_codex_receipt()
+    checked += 1
     print(f"passed: {checked} driver scenarios; no live provider or workspace access")
 
 

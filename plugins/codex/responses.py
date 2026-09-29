@@ -112,6 +112,9 @@ class CodexResponses:
             raise
         except _CallbackError as exc:
             raise exc.error from exc
+        except ModelTimeoutError:
+            # parser 已携带进展期限和部分响应事实，不再包装丢失信息。
+            raise
         except (httpx.TimeoutException, TimeoutError) as exc:
             error = ModelTimeoutError("Codex Responses 请求超时")
             if isinstance(exc, httpx.ConnectTimeout):
@@ -288,16 +291,23 @@ async def _consume_stream(
                 if not isinstance(item, Mapping):
                     raise TransportError("Codex output item 必须是对象")
                 if item.get("type") == "reasoning":
-                    new_items.append(_sanitize_replay_item(item))
+                    replay = _sanitize_replay_item(item)
+                    if replay not in new_items and any(
+                        value for key, value in replay.items() if key != "type"
+                    ):
+                        progress.advance()
+                        delta_seen = True
+                    new_items.append(replay)
                 elif item.get("type") == "function_call":
                     key = str(item.get("id") or item.get("call_id") or "")
-                    if key not in tool_args:
-                        progress.advance()
-                    tool_args[key] = {
+                    completed_call = {
                         "id": str(item.get("call_id") or key),
                         "name": str(item.get("name") or ""),
                         "arguments": str(item.get("arguments") or "{}"),
                     }
+                    if completed_call != tool_args.get(key):
+                        progress.advance()
+                    tool_args[key] = completed_call
                     delta_seen = True
             elif event_type == "response.completed":
                 response_payload = event.get("response")
