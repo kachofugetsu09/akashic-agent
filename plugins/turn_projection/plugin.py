@@ -61,14 +61,13 @@ class TurnProjection:
 
     def project(
         self, messages: Iterable[Message], source: str, *,
-        after_seq: int = -1,
+        after_seq: int = -1, include_closed: bool = True,
     ) -> tuple[Turn, ...]:
         """从起点或已提交的闭合 Turn 边界投影，排除跨段晚到结果。"""
         # 1. 增量起点必须是已闭合边界；它的 abandon 控制可位于边界之后。
         consumed_through = after_seq
         session_id: str | None = None
         previous_seq = after_seq
-        seen: set[str] = set()
         turns: list[Turn] = []
         pending: list[_Member] = []
         calls: set[CallRef] = set()
@@ -78,10 +77,7 @@ class TurnProjection:
                 session_id = message.session_id
             if message.session_id != session_id or message.seq <= previous_seq:
                 raise ValueError("Turn 投影要求同一 Session 按 seq 严格递增")
-            if message.message_id in seen:
-                raise ValueError("Turn 投影不能包含重复 message_id")
             previous_seq = message.seq
-            seen.add(message.message_id)
             if message.source != source:
                 continue
             source_head = message.seq
@@ -96,16 +92,15 @@ class TurnProjection:
                 if isinstance(body, Output):
                     calls.update(refs)
                     if body.finish != "continue":
-                        turns.append(
-                            _build_turn(
+                        if include_closed:
+                            turns.append(_build_turn(
                                 source,
                                 after_seq,
                                 message.seq,
                                 message.message_id,
                                 body.finish,
                                 pending,
-                            )
-                        )
+                            ))
                         pending = []
                         calls = set()
                         after_seq = message.seq
@@ -127,7 +122,7 @@ class TurnProjection:
                     for item in pending
                     if item.call_ref is None or item.call_ref in calls
                 ]
-                if closed:
+                if closed and include_closed:
                     turns.append(
                         _build_turn(
                             source,

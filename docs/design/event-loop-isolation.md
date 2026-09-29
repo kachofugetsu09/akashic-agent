@@ -144,6 +144,7 @@ RPC，验证缺能力、正常列表/详情、慢读不冻结 loop、取消排�
 MessageReader.scan 在一个短读快照内逐页交给同步消费者，页大小 64；迭代器离开
 回调即关闭，不能跨 await 或把连接交给插件。完整 snapshot 仍明确返回全部正文。
 TurnProjection 接收有序流，待闭合状态只保存 seq、消息 ID 和调用引用，不保留正文。
+Message ID 唯一性由消息库主键拥有，投影不再另建全历史 seen 集合。
 显式 after_seq 只能来自已提交闭合 Turn；重读尾部时忽略已消费边界内的 abandon。
 这是投影消费起点，不是新的执行事实；原始 Message、schema 和删除权限保持不变。
 
@@ -153,3 +154,19 @@ TurnProjection 接收有序流，待闭合状态只保存 seq、消息 ID 和调
 验证见 docker/debug/turn_streaming.py：真实 SQLite 分页、abandon 后仍开放的输入、
 迟到工具结果、从闭合边界重读等价，以及大开放 Turn 的正文对象可回收。
 恢复点为 pre-memory-stack.bundle；不迁移、删除或重写正式消息和插件数据。
+
+## Reply 的阶段内存（#879）
+
+启动选模用 scan 分段，并用 include_closed=False 不保留已闭合 Turn 的引用，
+只在同一快照内读取开放 Turn 的 Input/Output，选模与工具
+起点计算后释放这些正文。React 工具结算从流式扫描取得调用引用，不持有完整前缀；
+完成一轮输出后释放该轮快照和材料，再进入可能很慢的工具执行。
+增量 reader 只保留最多 256 行且序列化正文/metadata 不超过 4 MiB 的小前缀，大会话
+按需读取；显式 after_seq 尾部请求不为缓存补读前面的历史。字节门槛不是 Python RSS
+上限。消息 schema、请求冻结、CAS 与失败恢复不变；全部数据仍留在原数据库。
+
+这是减少重复表示与引用寿命，不是改变模型上下文合同：构建请求和容量拒绝缩减期间
+仍使用同一完整快照，模型可见窗口、摘要与工具回放不被截短。大历史再次解码存在
+CPU/I/O 代价；完整请求快照与恢复快照通过有界 I/O worker 解码，取消后排空。
+后续若改为数据库支持的上下文窗口，应另验摘要和任意材料插件合同。
+docker/debug/reply_memory.py 验证小前缀复用、大正文同步/异步释放和固定范围读取。
