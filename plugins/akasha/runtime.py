@@ -100,7 +100,9 @@ class MessageMemory:
             self._check_open()
             async with self._bindings.open(self._learning_binding, AKASHA_LEARNING) as (learning, metadata):
                 rule = LearningConfig.model_validate(dict(metadata))
-                self._consumer.check_embedding_space(rule.embedding_model, rule.dimension, self._bindings)
+                await run_memory_job(lambda: self._consumer.check_embedding_space(
+                    rule.embedding_model, rule.dimension, self._bindings,
+                ))
                 return await prepare_materials(
                     snapshot, source, cycle=self._consumer.cycle, state=self._consumer.state,
                     catalog=self._catalog, embeddings=self._embeddings, bindings=self._bindings,
@@ -121,9 +123,10 @@ async def prepare_materials(
         return {}
     # 1. 使用调用者已经固定的真实前缀，后来输入不会进入本次 cue。
     session_id = snapshot[0].session_id
-    if catalog.reader(session_id).snapshot(through_seq=snapshot[-1].seq) != snapshot:
+    actual = await run_memory_job(lambda: catalog.reader(session_id).snapshot(through_seq=snapshot[-1].seq))
+    if actual != snapshot:
         raise ValueError("召回材料需要完整且真实的 Message 前缀")
-    projected = learning.projection.project(snapshot, source)
+    projected = await run_memory_job(lambda: learning.projection.project(snapshot, source))
     if not projected or projected[-1].status != "open":
         return {}
     members = set(projected[-1].message_ids)
@@ -136,10 +139,11 @@ async def prepare_materials(
         identity = "context:" + hashlib.sha256(json.dumps(
             [session_id, source, inputs[-1].message_id], ensure_ascii=False,
         ).encode()).hexdigest()
-        recall = records.read(identity)
+        recall = await run_memory_job(lambda: records.read(identity))
         if recall is None:
             # 升级前的随机身份仍是实际查询证据；复用同一用户输入后的首次记录。
-            previous = next(((key, item) for key, item in reversed(records.list())
+            saved = await run_memory_job(records.list)
+            previous = next(((key, item) for key, item in reversed(saved)
                 if isinstance(item.source, ContextSource)
                 and item.source.session_id == session_id and item.source.source == source
                 and inputs[-1].seq <= item.source.through_seq <= snapshot[-1].seq), None)
@@ -148,7 +152,9 @@ async def prepare_materials(
         if recall is not None:
             # 已保存查询用它当时的固定 binding 重渲染；正文仍只从原 Message 读取。
             async with bindings.open(recall.learning_binding, AKASHA_LEARNING) as (original, _):
-                material = render_materials(identity, recall, original, catalog, max_chars=recall.max_chars)
+                material = await run_memory_job(lambda: render_materials(
+                    identity, recall, original, catalog, max_chars=recall.max_chars,
+                ))
         else:
             material = await query_inputs(
                 inputs, snapshot, source, identity=identity, cycle=cycle, state=state,
@@ -158,8 +164,8 @@ async def prepare_materials(
             )
     references = {cast(str, ref["ref"]): ref for ref in _reference_rows(material)}
     # 同一消息有多次真实查询时，当前工具结果的精确出处供后续 Citation 使用。
-    references.update((cast(str, ref["ref"]), ref)
-                      for ref in tool_references(snapshot, source, learning, bindings, records))
+    tool_refs = await run_memory_job(lambda: tool_references(snapshot, source, learning, bindings, records))
+    references.update((cast(str, ref["ref"]), ref) for ref in tool_refs)
     result = dict(material)
     result["references"] = tuple(references.values())
     return result
@@ -176,16 +182,22 @@ async def query_inputs(
     session_id = snapshot[0].session_id
     # 1. 空间身份必须在嵌入和写向量之前核对；历史向量只读取。
     vectors = embeddings.bind(learning.text)
-    missing = [message for message in inputs if learning.text(message).strip()
-               and vectors.read(message, model=rule.embedding_model, dimension=rule.dimension) is None]
+    missing = await run_memory_job(lambda: [
+        message for message in inputs if learning.text(message).strip()
+        and vectors.read(message, model=rule.embedding_model, dimension=rule.dimension) is None
+    ])
     if missing:
         values = await embed_batch([learning.text(message) for message in missing])
         if len(values) != len(missing) or any(len(value) != rule.dimension for value in values):
             raise ValueError("召回 embedding 数量或维度不匹配")
-        for message, value in zip(missing, values):
-            vectors.save(message, model=rule.embedding_model, embedding=value)
-    text, dense = input_features(inputs, text=learning.text, embeddings=vectors,
-                                 embedding_model=rule.embedding_model, dimension=rule.dimension)
+        def save_vectors() -> None:
+            for message, value in zip(missing, values):
+                vectors.save(message, model=rule.embedding_model, embedding=value)
+        await run_memory_job(save_vectors)
+    text, dense = await run_memory_job(lambda: input_features(
+        inputs, text=learning.text, embeddings=vectors,
+        embedding_model=rule.embedding_model, dimension=rule.dimension,
+    ))
     # 2. 图读取移出事件循环；取消仍先排空，再释放 binding 与串行锁。
     stamp = datetime.now(UTC)
     origin = ContextSource(session_id=session_id, source=source, through_seq=snapshot[-1].seq)
@@ -193,7 +205,9 @@ async def query_inputs(
         cycle, state, learning_binding=learning_binding,
         text=text, dense=dense, stamp=stamp, source=origin, limit=limit,
     ))
-    material = render_materials(identity, recall, learning, catalog, max_chars=max_chars)
+    material = await run_memory_job(lambda: render_materials(
+        identity, recall, learning, catalog, max_chars=max_chars,
+    ))
     recall = recall.model_copy(update={
         "max_chars": max_chars,
         "presented_message_ids": tuple(
@@ -202,5 +216,5 @@ async def query_inputs(
             )
         ),
     })
-    _ = records.save(identity, recall)
+    _ = await run_memory_job(lambda: records.save(identity, recall))
     return material

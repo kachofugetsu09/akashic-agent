@@ -89,6 +89,15 @@
 | 44 | `tests/test_parallel_tool_calls.py`（2 个节点） | C4/SES-002：重叠执行不得改变同一来源事实的提交顺序 | 0079 引入受控重叠后，"ToolResult 按模型顺序落盘"成为新的失败面，同一不变量只留两条最直接路径：`test_parallel_calls_overlap_but_results_commit_in_model_order`（正常提交按模型顺序落盘）与 `test_parallel_failure_does_not_commit_later_results_first`（前驱失败时后继不得抢先落盘）；旧串行实现没有 `parallel` 注册与提交门，这些用例在其上直接失败。分组、容量与取消竞态属于 §1 不保留的实现细节。 |
 | 45 | `tests/test_tool_bindings.py::test_parallel_flag_stays_out_of_binding_description` | PLG-018 工具按引用而非名字；0079 | `parallel` 是目录注册事实，不进入 binding 描述与归档比较；写入工具声明重叠必须被拒绝。 |
 
+Akasha 后台执行回归补充：`tests/test_akasha_execution.py` 的 10 个受控场景守护
+O（耗时工作不冻结宿主）、PLG-003/006（在途工作排空后才能关闭绑定与 writer）以及
+MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 t+1 对 t 的依赖。
+既有独立图测试未卡住真实恢复或发布边界，不能发现恢复仍在主循环执行、取消期间
+构造完成却泄漏 writer，或后继学习越过前驱发布的问题。场景使用真实 MessageLog、
+固定向量、MemoryCycle、Bindings 和磁盘发布，只在边界用 Event 控制调度。
+旧实现上的恢复、学习准备和重建回执场景失败，修复后通过；已有的取消发布场景
+保留为执行边界改动的保护。新建 writer 的取消场景覆盖本次新增的异步资源取得边界。
+
 ### 2.4 静态边界（不是 pytest 节点，但属于保留项）
 
 | # | 项 | 守护的概念 | 保留原因 |

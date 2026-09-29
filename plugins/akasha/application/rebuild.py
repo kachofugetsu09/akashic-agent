@@ -25,7 +25,7 @@ from ..infrastructure.persistence import (
     memory_turn_count,
     sha256_file,
 )
-from .consumer import MessageConsumer
+from .consumer import MessageConsumer, run_memory_job
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +64,7 @@ async def rebuild_from_catalog(
     backup_dir = backup_root / (
         datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
     )
-    backup_path = _backup_existing(memory_path, backup_dir)
+    backup_path = await run_memory_job(lambda: _backup_existing(memory_path, backup_dir))
     memory_path.parent.mkdir(parents=True, exist_ok=True)
     candidate = memory_path.with_name(f".{memory_path.name}.rebuild-{uuid4().hex}.candidate")
     embedded = 0
@@ -79,7 +79,7 @@ async def rebuild_from_catalog(
         # 2. 空进度且没有切换上界，等价于把全部历史按因果顺序重放一遍。
         # 候选文件在原子替换前不被任何读者使用，所以每次学习都重写整库没有
         # 恢复价值；重建只在重放结束后发布一次完整快照。
-        consumer = MessageConsumer(
+        consumer = await MessageConsumer.create(
             candidate, turns=[], state=Consumption(cutover_heads=()), config=config,
             deferred_publish=True,
         )
@@ -92,43 +92,40 @@ async def rebuild_from_catalog(
             turns = tuple(consumer.cycle.turns)
             skipped = len(consumer.state.skipped)
             if turns:
-                _ = consumer.publish_snapshot()
+                _ = await run_memory_job(consumer.publish_snapshot)
         finally:
             consumer.close()
         count = len(turns)
         sessions = len({turn.session_key for turn in turns})
-        _verify_candidate(candidate, count)
+        # 3. 发布和回执一起排空，取消不能留下已发布却未写回执的成功结果。
+        def publish() -> RebuildReport:
+            """校验候选，完成替换，再保存本次重建回执。"""
+            _verify_candidate(candidate, count)
+            if count == 0:
+                candidate.unlink(missing_ok=True)
+                memory_path.unlink(missing_ok=True)
+                database_sha256 = state_sha256 = ""
+            else:
+                os.replace(candidate, memory_path)
+                _fsync_directory(memory_path.parent)
+                database_sha256 = sha256_file(memory_path)
+                state_sha256 = logical_state_sha256(memory_path)
+            report = RebuildReport(
+                turns=count, sessions=sessions, skipped_turns=skipped,
+                embedded_messages=embedded,
+                elapsed_seconds=round(time.perf_counter() - started, 3),
+                database_sha256=database_sha256, logical_state_sha256=state_sha256,
+                memory_path=str(memory_path),
+                backup_path=str(backup_path) if backup_path is not None else "",
+                completed_at=datetime.now(UTC).isoformat(),
+            )
+            _write_manifest(backup_dir, report, config)
+            return report
 
-        # 3. 先发布索引身份，再原子替换学习图；崩溃窗口只会留下可重建的候选文件。
-        if count == 0:
-            candidate.unlink(missing_ok=True)
-            memory_path.unlink(missing_ok=True)
-            database_sha256 = ""
-            state_sha256 = ""
-        else:
-            os.replace(candidate, memory_path)
-            _fsync_directory(memory_path.parent)
-            database_sha256 = sha256_file(memory_path)
-            state_sha256 = logical_state_sha256(memory_path)
+        return await run_memory_job(publish)
     except BaseException:
         candidate.unlink(missing_ok=True)
         raise
-
-    completed_at = datetime.now(UTC).isoformat()
-    report = RebuildReport(
-        turns=count,
-        sessions=sessions,
-        skipped_turns=skipped,
-        embedded_messages=embedded,
-        elapsed_seconds=round(time.perf_counter() - started, 3),
-        database_sha256=database_sha256,
-        logical_state_sha256=state_sha256,
-        memory_path=str(memory_path),
-        backup_path=str(backup_path) if backup_path is not None else "",
-        completed_at=completed_at,
-    )
-    _write_manifest(backup_dir, report, config)
-    return report
 
 
 def _backup_existing(memory_path: Path, backup_dir: Path) -> Path | None:

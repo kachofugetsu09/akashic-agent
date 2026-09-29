@@ -45,7 +45,7 @@ async def read_memory(
         )
         try:
             if embedding_space is not None:
-                restored.check_embedding_space(*embedding_space, bindings)
+                await run_memory_job(lambda: restored.check_embedding_space(*embedding_space, bindings))
             yield restored.cycle, restored.state
         finally:
             restored.close()
