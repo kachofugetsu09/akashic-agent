@@ -83,3 +83,35 @@ def test_close_inside_read_scope_closes_the_actual_writer(tmp_path):
     with pytest.raises(RuntimeError, match="closed"):
         owner.snapshot(lambda: None)
     log.close()
+
+
+@pytest.mark.asyncio
+async def test_external_edit_during_async_read_does_not_restart_snapshot(tmp_path, monkeypatch):
+    """O/C4: one pinned read finishes; an external edit only invalidates its cache."""
+    import session.log as storage
+
+    log = MessageLog(tmp_path / "sessions.db")
+    writer(log).append("first", Input(()))
+    writer(log).append("second", Input(()))
+    reader = log.reader("s").incremental()
+    gate = WorkerGate()
+    original = storage._message
+
+    def decode(row):
+        gate.stop()
+        return original(row)
+
+    monkeypatch.setattr(storage, "_message", decode)
+    job = asyncio.create_task(reader.snapshot_async(through_seq=1))
+    try:
+        await gate.wait(job)
+        with closing(sqlite3.connect(tmp_path / "sessions.db")) as external, external:
+            external.execute("DELETE FROM messages WHERE id='first'")
+        gate.release.set()
+        assert [m.message_id for m in await job] == ["first", "second"]
+        monkeypatch.setattr(storage, "_message", original)
+        assert [m.message_id for m in reader.snapshot()] == ["second"]
+    finally:
+        gate.release.set()
+        await asyncio.gather(job, return_exceptions=True)
+        log.close()
