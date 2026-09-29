@@ -20,6 +20,7 @@ from pathlib import Path
 from types import MappingProxyType
 from weakref import WeakValueDictionary
 
+from core.common.file_io import run_file_io
 from session.artifacts import AttachmentKind, AttachmentRef
 from session.artifact_store import ARTIFACT_SCHEMA
 from session.message import (
@@ -736,19 +737,9 @@ class MessageReader:
         with self._log._lock:
             if self._log._connection.in_transaction:
                 raise RuntimeError("Async snapshot cannot leave an active storage transaction")
-        job = asyncio.create_task(asyncio.to_thread(
+        return await run_file_io(
             lambda: MessageReader(self._log, self._session_id).snapshot(through_seq=through_seq)
-        ))
-        cancelled = False
-        while not job.done():
-            try:
-                await asyncio.shield(job)
-            except asyncio.CancelledError:
-                cancelled = True
-        result = job.result()
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
+        )
 
     @property
     def session_id(self) -> str:

@@ -543,7 +543,7 @@ async def react(
         await _settle_pending(
             reader, tools, writer.source, max_parallel_calls, capture_scope,
         )
-        snapshot = reader.snapshot()
+        snapshot = await reader.snapshot_async(through_seq=reader.head())
         head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
         # 本代准备的固定身份：最近一条同来源 Input 或 abandon Control。
         # pause/failure/resume 是对同一业务项的操作，不是新边界：resume 必须
@@ -699,7 +699,7 @@ async def react(
                 prep = dict(existing.value)
                 if prep.get("binding_id") != model.descriptor.binding_id:
                     raise ModelUnavailableError("生成准备记录的 binding 已失效")
-                frozen = reader.snapshot(through_seq=cast(int, prep["base_seq"]))
+                frozen = await reader.snapshot_async(through_seq=cast(int, prep["base_seq"]))
                 attempts = prep_attempts(prep)
                 resumed = {
                     index: (
