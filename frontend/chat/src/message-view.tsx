@@ -343,6 +343,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
       {body.kind === "control" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
+        {body.action === "failure" ? <a href="/#models" target="_blank" rel="noopener">查看模型设置</a> : null}
       </div> : hasFlow ? null : <>
         {body.kind === "tool_result" ? <div className="timeline-result-heading">
           <strong>工具结果 · {outcomeLabels[body.outcome]}</strong>

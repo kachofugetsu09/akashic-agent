@@ -34,6 +34,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
+    canSend, modelProblem, modelsPhase, retryModels, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
@@ -88,7 +89,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
-            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} /> : (
+            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} modelProblem={modelProblem} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
                   firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
@@ -117,8 +118,15 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         </Conversation>
 
         <div className={`composer-wrap ${!hasMessages ? "home" : ""}`}>
+          {chatReady && modelProblem ? <div className="chat-model-notice" role={modelsPhase === "error" ? "alert" : "status"}>
+            <p id="chat-model-reason">{modelProblem}</p>
+            <div>
+              <a href="/#models" target="_blank" rel="noopener">打开模型设置</a>
+              {modelsPhase !== "ready" ? <button type="button" onClick={retryModels}>重新核对模型</button> : null}
+            </div>
+          </div> : null}
           <DesktopComposer
-            chatReady={chatReady} status={status} stopPending={stopPending} modelState={modelState}
+            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} status={status} stopPending={stopPending} modelState={modelState}
             selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}
@@ -128,6 +136,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           <HostBridgeNotice />
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton>
+            <a href="/#models" target="_blank" rel="noopener">查看模型设置</a>
           </div> : null}
         </div>
       </section>
@@ -172,7 +181,7 @@ function DesktopHistoryLoader({
   >{loading ? "正在加载更早消息…" : "加载更早消息"}</button>;
 }
 
-function DesktopEmptyState({ shellStatus, loadingSession }: { shellStatus: string | null; loadingSession: boolean }) {
+function DesktopEmptyState({ shellStatus, loadingSession, modelProblem }: { shellStatus: string | null; loadingSession: boolean; modelProblem: string }) {
   return <ConversationEmptyState className="home-state">
     {loadingSession ? <div className="home-state__ready" role="status"><strong>正在读取消息</strong></div> : shellStatus === "needs_setup" ? <div className="model-connection-state">
       <span>对话尚未就绪</span><h1>请完成所需配置</h1>
@@ -191,6 +200,8 @@ function DesktopEmptyState({ shellStatus, loadingSession }: { shellStatus: strin
         <strong>正在连接</strong>
         <span>稍等，工作区马上就绪</span>
       </div>
+    ) : modelProblem ? (
+      <div className="home-state__ready"><strong>准备对话</strong><span>下方会说明模型状态；你可以先写下想说的话</span></div>
     ) : (
       <div className="home-state__ready">
         <strong>布置下一件事</strong>

@@ -138,3 +138,22 @@ Chromium 146 / 真实 CDP 13/13 PASS，无页面异常：
 概念基线 47 passed，pyright、tests pyright、显式插件 pyright、plugin_boundary、yoyo、控制协议、HostBridge 协议、前端 typecheck 与 diff 检查通过。没有部署生产、启动第二个 Telegram 接收器、执行实际 OAuth 或 Android 验收。
 
 证据根 `/mnt/data/akashic-onboarding-fixes-20260928/`：`issue804-accepted-browser.json`、`issue804-protocol.json`、`issue804-driver-boundary.json`、`issue804-accepted-artifacts.json`、`issue804-accepted-checks.json`、`issue804-learning-resume.json`、`issue804-original-reference-evidence.json`、`issue804-space-preservation.json`、`issue804-restart.json` 与 `issue804-restart-preservation.json`；可恢复备份在 `backups/issue804/`。凭据与原始数据库不上传。
+
+## Issue #806：可用对话模型与输入恢复（2026-09-29）
+
+冻结源码 `19f1b53f63a3e854ddae8137ffea39d726fb029d`，基于 #805。相同发行包正式安装到两个独立 HOME/config/workspace；默认 UI 组合仍由 #800 独立交付，本轮显式补装同包 UI。安装制品与源码匹配。
+
+真实 Chromium 146 / CDP 共 29 项通过，明细见本机 `issue806-accepted.json`：
+
+- 传输 ready 与模型目录 loading 分开；未配置、未选默认、连接停用、驱动缺失、读取 401/403/503 分别提示。发送守卫早于 Session 创建、上传、乐观消息与 WebSocket 发送；输入继续可编辑。
+- 正常配置与实际短云回复持久化；上传失败保留文字和附件，未创建虚假 Session。刷新、Session 切换、新对话隔离各自未发送文字；迟到目录不覆盖用户选择，生成中选择冻结但停止入口可用。
+- 同一浏览器中停止并重启独立 runtime，删除隔离库的默认绑定后，既有有效 Session 固定模型仍实际回复；新对话保持阻塞，用户明确选择后实际回复，未写默认。
+- 真实无效 Key 返回 401，保留原 Message 并提供设置入口；正常 UI 保存正确 Key 后实际回复。受控模型服务返回真实 HTTP 503，按服务故障提示；恢复原地址和凭据后原 Session 实际继续回复。
+- 另一正常设置页并发更名，旧 revision 停用收到 409，错误在窗口内可见，不自动重发；迟到只读结果不改弹窗依据。用户关窗读取最新目录，再明确停用成功；旧 Message 不变，停用后输入保留且不能发送。
+- 正式 CLI 卸载/重装驱动，同一浏览器区分缺失与恢复，原选择、草稿和 Message 保留。320px 原生键盘切换明暗主题，宿主与真实 iframe 同步，设置入口可见且可聚焦。
+
+主流程 14 项、边界前六项、恢复三项、并发冲突两项、原生主题两项、驱动两项分别在相同源码验收。中断运行只计算已逐项通过的场景，不称整次运行全通过。旧脚本错误地自动接受“放弃修改”原生确认，另有旧调试端口与夹具名称错误；保留红记录，修正受控调度后重跑相关步骤，不列为产品缺陷。没有自动接受未知原生确认，也没有放宽 revision/CAS。
+
+概念基线 47 passed，10 项对应检查通过。两个独立 workspace 的 SQLite 原生完整性检查均为 ok。未执行真实 OAuth、Android 或生产部署；没有启动第二个 Telegram 接收器。SessionStorage 只保存未发送文字及导航 ID，不保存 Key。恢复凭据和原始数据库是 0700/0600 本机私有恢复点，不引用或上传 GitHub。
+
+证据根 `/mnt/data/akashic-onboarding-fixes-20260928/`：`issue806-accepted.json`、`issue806-v11-browser.json`、`issue806-v11-boundaries.json`、`issue806-v11-remaining-boundaries.json`、`issue806-v11-cas-r2-boundaries.json`、`issue806-v11-ui-themes.json`、`issue806-v12-driver-boundaries.json`、`issue806-v11-checks.json`、`issue806-v11-artifacts.json`、`issue806-integrity.json`；备份在 `backups/issue806*/`。

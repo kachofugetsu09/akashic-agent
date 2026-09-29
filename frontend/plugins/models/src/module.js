@@ -102,6 +102,17 @@ export function activate(ctx) {
         },
       );
       const load = () => reads.run();
+      // 返回设置只读核对目录；弹窗开启后，迟到的后台结果不能替换其依据。
+      const canRefresh = () => !page.querySelector("dialog[open]");
+      const refreshVisible = () => {
+        if (page.getClientRects().length && canRefresh()) report(reads.run(canRefresh));
+      };
+      const visibility = new IntersectionObserver(entries => {
+        if (entries.some(entry => entry.isIntersecting)) refreshVisible();
+      });
+      visibility.observe(page);
+      window.addEventListener("focus", refreshVisible);
+      page.addEventListener("close", refreshVisible, true);
       const command = async (payload) => {
         const receipt = await request("/api/dashboard/models/command", {
           method: "POST",
@@ -637,14 +648,28 @@ export function activate(ctx) {
           const disable = document.createElement("button");
           disable.type = "button"; disable.className = "settings-text-button";
           disable.textContent = "停用此连接（保留数据）";
+          const disableStatus = document.createElement("p");
+          disableStatus.className = "settings-inline-error";
+          disableStatus.setAttribute("role", "alert");
+          disableStatus.hidden = true;
           disable.addEventListener("click", () => {
-            if (busy || !window.confirm(`停用 ${connection.name} 的全部模型？未保存的修改会放弃，历史对话和记忆保留。`)) return;
+            if (busy) {
+              disableStatus.textContent = "请求仍在执行，请等待结果后再操作。";
+              disableStatus.hidden = false;
+              return;
+            }
+            if (!window.confirm(`停用 ${connection.name} 的全部模型？未保存的修改会放弃，历史对话和记忆保留。`)) return;
+            disable.disabled = true;
             void actions.disableConnection().then(() => {
               if (auth.closed) return;
               dirty = false; props.dirty?.(false); showNotice("连接已停用，历史数据保留。请添加正确用途的新连接。"); scrim.close();
-            }).catch(showError);
+            }).catch(reason => {
+              if (auth.closed) return;
+              disableStatus.textContent = `尚未确认停用结果。请关闭窗口后核对最新设置，再决定是否重试。${reason instanceof Error ? reason.message : String(reason)}`;
+              disableStatus.hidden = false;
+            }).finally(() => { disable.disabled = false; });
           });
-          list.append(summary, items, disable);
+          list.append(summary, items, disable, disableStatus);
           dialogHost.querySelector(".settings-dialog-body").append(list);
         }
         const leaveDocument = event => { if (!event.persisted) report(auth.close()); };
@@ -695,6 +720,9 @@ export function activate(ctx) {
       report(load());
 
       return () => {
+        visibility.disconnect();
+        window.removeEventListener("focus", refreshVisible);
+        page.removeEventListener("close", refreshVisible, true);
         reads.close();
         disposeDialog();
         host.replaceChildren();
@@ -751,14 +779,14 @@ export function createLatestCatalogRead(read, apply) {
   let active = null;
   let closed = false;
   return {
-    async run() {
+    async run(canApply = () => true) {
       if (closed) return;
       active?.abort();
       const controller = new AbortController();
       active = controller;
       try {
         const value = await read(controller.signal);
-        if (!closed && active === controller) apply(value);
+        if (!closed && active === controller && canApply()) apply(value);
       } catch (error) {
         if (!controller.signal.aborted) throw error;
       } finally {

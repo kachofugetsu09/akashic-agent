@@ -613,3 +613,20 @@ Shell 的位置由 hash 路由拥有，只监听 hashchange。一次 fragment �
 `issue805-v14-checks.json` 固定上述源码：概念 pytest 47，通过；pyright、tests pyright、plugin boundary、yoyo、control/Host Bridge 生成物、typecheck、diff 和变更插件 pyright 共 10 项退出 0。独立只读 Gate `/root/review_issue801` 审查 `978e..f522`：PASS、must-fix 0；请求配置 gpt-5.6-terra/xhigh，执行工具未报告可核验的实际后端模型身份。
 
 保留所有红证据：包括真正的历史读取锁定/重复路由事件，和后来纠正的 fieldset 容器断言、跨组件 busy 断言、残留 CDP 端口导致的场景 setup 失败。#807 拥有 locked 解锁、Next/Finish 与进度统计完整验收；本单只覆盖实际可操作的模型当前步骤连续性与普通设置入口，不声明那条完整路线通过。未运行 OAuth、Android 或生产部署，没有数据库迁移和 PR 合并。
+
+
+## Issue #806 · 聊天模型前置与恢复（已本机验收，待合并）
+
+- 基线：#805 `ee94c47b`，独立 worktree，唯一 writer Codex。
+- capability_owner/authoritative_state_owner：Models 插件拥有目录、连接启停和会话选择；客户端插件仅投影公开 reader，聊天组件拥有读取进度、待发送选择和未提交文本。
+- consumer_scope：真实聊天 iframe 与独立聊天页；runtime_patch=false，Core 与 health 不持有模型业务状态。
+- change_type=bugfix；semantic_delta：发送前说明缺少模型或读取失败，返回设置时自动只读核对，迟到响应不得覆盖本页选择或另一会话。
+- 受保护：Message/Turn/Session 持久语义、在途回复冻结、插件权限、模型配置与凭证 owner；无自动默认绑定、无自动启用、无生产写入。未提交文本只保存本标签页 sessionStorage，不上传、不成为 Message；附件仍由当前编辑器持有，不伪称刷新后恢复文件。
+- 允许副作用：隔离运行时正式安装、模型配置、受限真实短消息；凭证只从本机私有文件读取，原 Telegram receiver 不变。
+- 验收：空目录/无默认/固定会话可用/禁用连接、401/403/503 与迟到读取、返回设置、真实短消息持久及显示、320px/两主题/键盘、刷新和本机 runtime 恢复；既有概念 pytest 和必需静态检查；独立只读 Gate。备份：任务根 backups/issue806/before-implementation，失败只停止本次独立 runtime。
+
+- 远端拒绝由对应驱动 HTTP 信任边界判断：OpenAI-compatible 确认 401/403 后才说明连接授权未通过，5xx 明确服务暂不可用；沿既有错误类型/Control 原因显示，不按字符串猜测原因、不改变自动重试预算或 Message schema。失败消息提供只读模型设置入口。目录访问 401/403 与云端凭证失败分开说明，本地 available 不声明凭据已认证。
+
+- 真实 fixed-session 重启验收发现：前端投影虽确认已有可用 session selection，Models `_select_chat_models` 却在遍历 default 时提前拒绝。按 RUN-010 的“本次 → 会话 → 默认”优先级，仅在没有已验证显式选择时要求 default；不写入/伪造默认，不传播 agent 选择/effort 到 fast/vision。已声明角色的校验和整组冻结保持；后续真请求缺席角色仍由 Models 明确拒绝。ReplyProgram 实际消费 agent；独立 default 消费者的配置要求不放宽。
+
+- 恢复链追加实测：`949ef971` 同浏览器先打开模型设置、重启隔离 runtime 后，旧页面仍用旧 catalog revision；停用请求真实返回 409，旧消息保持，错误藏在模态框外。Models 页面现在在重新可见、窗口 focus、弹窗关闭时只读核对；后台读取启动和落地都避开打开的本页弹窗，命令自身的刷新保留原行为。停用冲突/失败在弹窗内说明结果尚未确认，不自动再提交；正在执行时给反馈，不静默忽略点击。Models 仍独占 revision 与连接状态，Core 不放宽校验。新冻结源码 `19f1b53f` 已验收 29 个独立场景，含真实并发 409、关闭后只读刷新和用户明确重试；949 的成功项仅作前序证据。完整证据与未执行边界见验收记录。

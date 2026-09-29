@@ -1103,11 +1103,14 @@ def _status_error(response: httpx.Response, *, secret: str) -> ModelError | None
     message = _redact_secret(_response_error_message(response), secret)
     lowered = message.lower()
     if response.status_code in {401, 403}:
-        return AuthenticationError(message)
+        return AuthenticationError(
+            f"模型连接授权未通过（HTTP {response.status_code}）。"
+            f"请在模型设置中核对 API Key 或账号权限后重试。服务返回：{message}"
+        )
     if response.status_code >= 500:
         # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
         # （context_length 等）不得把错误提升为可证明的容量拒绝。
-        return TransportError(f"provider returned HTTP {response.status_code}: {message}")
+        return TransportError(f"模型服务暂不可用（HTTP {response.status_code}），请稍后重试。服务返回：{message}")
     if any(code in lowered for code in _CONTEXT_CODES):
         return ContextLengthError(message)
     if any(code in lowered for code in _SAFETY_CODES):

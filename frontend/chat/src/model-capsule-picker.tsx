@@ -72,9 +72,12 @@ export function ModelCapsulePicker({
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const effortRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const effortTriggerRef = useRef<HTMLButtonElement>(null);
-  const defaultModel = runtimes.find((runtime) => runtime.id === defaultRuntime) || runtimes[0];
+  const actualDefault = runtimes.find((runtime) => runtime.id === defaultRuntime);
+  const defaultModel = actualDefault || runtimes[0];
   const explicitModel = runtimes.find((runtime) => runtime.id === selectedRuntimeId);
   const visibleModel = explicitModel || defaultModel;
+  const hasSelection = Boolean(selectedRuntimeId ? explicitModel : actualDefault);
+  const selectionLabel = hasSelection ? visibleModel.model : selectedRuntimeId || defaultRuntime ? "所选模型不可用" : "选择对话模型";
   const supportedEfforts = visibleModel?.supportedReasoningEfforts;
   const groups = useMemo(() => groupModelRuntimes(runtimes), [runtimes]);
   const visibleEffort = compatibleEffort(visibleModel || defaultModel, selectedEffort);
@@ -240,7 +243,7 @@ export function ModelCapsulePicker({
               <div className={`model-capsule__option-wrap ${!selectedRuntimeId ? "is-selected" : ""}`}>
                 <button ref={defaultOptionRef} type="button" aria-pressed={!selectedRuntimeId} className="model-capsule__option" onClick={() => { onChange("", ""); closePicker(true); }}>
                   <ModelMark runtime={defaultModel} />
-                  <span className="model-capsule__copy"><strong>跟随默认模型</strong><small>{defaultModel.model} · {defaultModel.sourceName}</small></span>
+                  <span className="model-capsule__copy"><strong>跟随默认模型</strong><small>{actualDefault ? `${actualDefault.model} · ${actualDefault.sourceName}` : "系统默认尚未配置或不可用"}</small></span>
                   {!selectedRuntimeId && <Check size={16} aria-hidden="true" />}
                 </button>
               </div>
@@ -270,7 +273,7 @@ export function ModelCapsulePicker({
             ))}
             {!filteredGroups.length ? <p className="model-capsule__empty">无匹配模型</p> : null}
           </div>
-          {visibleModel.supportedReasoningEfforts.length > 0 && (
+          {hasSelection && visibleModel.supportedReasoningEfforts.length > 0 && (
             <button ref={effortTriggerRef} type="button" className="model-capsule__effort-entry" onClick={showEfforts}>
               <Sparkles size={17} aria-hidden="true" />
               <span><small>{explicitModel ? "思考强度" : "固定当前模型并设置强度"}</small><strong>{EFFORT_LABELS[visibleEffort] || visibleEffort}</strong></span>
@@ -309,7 +312,7 @@ export function ModelCapsulePicker({
       className="model-capsule__trigger"
       aria-controls="model-capsule-panel"
       aria-expanded={open}
-      aria-label={compact ? `选择模型，当前 ${visibleModel.model}` : undefined}
+      aria-label={compact ? hasSelection ? `选择模型，当前 ${visibleModel.model}` : selectionLabel : undefined}
       disabled={disabled}
       onClick={() => {
         if (open) closePicker(false);
@@ -318,10 +321,10 @@ export function ModelCapsulePicker({
     >
       {compact ? null : <ModelMark runtime={visibleModel} />}
       {compact ? (
-        <span className="model-capsule__name">{visibleModel.model}</span>
+        <span className="model-capsule__name">{selectionLabel}</span>
       ) : (
         <span className="model-capsule__trigger-copy">
-          <strong>{visibleModel.model}：{visibleModel.sourceName}</strong>
+          <strong>{hasSelection ? `${visibleModel.model}：${visibleModel.sourceName}` : selectionLabel}</strong>
           <small>{explicitModel ? (visibleEffort ? `思考 ${EFFORT_LABELS[visibleEffort] || visibleEffort}` : "固定到此会话") : "跟随默认模型"}</small>
         </span>
       )}

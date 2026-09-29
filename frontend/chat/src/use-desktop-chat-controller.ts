@@ -24,6 +24,7 @@ import { replyChatStatus, type ChatStatus } from "./web-chat-status";
 import {
   chatHistoryPage,
   chatModelState,
+  ChatRequestError,
   errorMessage,
   fetchChatJson,
   isAbortError,
@@ -83,7 +84,12 @@ export function useDesktopChatController() {
   const [pendingSessionId, setPendingSessionId] = useState("");
   // 通知入口统一使用网页导航，会话参数在 chatReady 后消费一次。
   const [requestedSessionId, setRequestedSessionId] = useState(
-    () => new URLSearchParams(window.location.search).get("session") ?? "",
+    () => {
+      const requested = new URLSearchParams(window.location.search).get("session");
+      if (requested !== null) return requested;
+      try { return sessionStorage.getItem("akashic.chat.active-session") ?? ""; }
+      catch (error) { if (!(error instanceof DOMException)) throw error; return ""; }
+    },
   );
   const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
   const [timelineMessages, setTimelineState] = useState<TimelineMessage[]>([]);
@@ -143,6 +149,10 @@ export function useDesktopChatController() {
   const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [modelState, setModelState] = useState<ChatModelState | null>(null);
+  const [modelsPhase, setModelsPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [modelsError, setModelsError] = useState("");
+  const modelEditRef = useRef(0);
+  const modelDirtyRef = useRef(false);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState("");
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
   const [modelSelectionDirty, setModelSelectionDirty] = useState(false);
@@ -170,7 +180,14 @@ export function useDesktopChatController() {
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
-  }, [activeSessionId]);
+    // 在恢复已有会话前，不用初始化空值擦掉标签页导航位置。
+    if (requestedSessionId) return;
+    try {
+      if (activeSessionId) sessionStorage.setItem("akashic.chat.active-session", activeSessionId);
+      else sessionStorage.removeItem("akashic.chat.active-session");
+    } catch (error) { if (!(error instanceof DOMException)) throw error; }
+
+  }, [activeSessionId, requestedSessionId]);
 
   useEffect(() => {
     statusRef.current = status;
@@ -180,7 +197,7 @@ export function useDesktopChatController() {
     if (isAbortError(error)) return;
     console.error("[chat] request failed", error);
     setError(errorMessage(error));
-    if (nextStatus) setStatus(nextStatus);
+    if (nextStatus) { statusLiveRef.current = nextStatus; setStatus(nextStatus); }
   }, []);
 
   // LRU 写回；capacity 足够覆盖最近几个会话，超出后淘汰最久未命中项。
@@ -322,38 +339,77 @@ export function useDesktopChatController() {
   const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
   const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
 
+  /** 只发布当前会话的最后一次读取；编辑与在途选择由本页保留。 */
   const loadModels = useCallback(async (sessionId: string) => {
     modelsRequestRef.current?.abort();
     const controller = new AbortController();
+    const edit = modelEditRef.current;
     modelsRequestRef.current = controller;
+    setModelsPhase("loading");
+    setModelsError("");
+    const current = () => modelsRequestRef.current === controller
+      && !controller.signal.aborted && activeSessionRef.current === sessionId;
     const query = sessionId ? `?session_key=${encodeURIComponent(sessionId)}` : "";
     try {
       const next = chatModelState(await fetchChatJson<unknown>(`/api/chat/models${query}`, { signal: controller.signal }));
+      if (!current()) return;
       setModelState(next);
-      setSelectedRuntimeId(next.sessionOverride);
-      setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
-      setModelSelectionDirty(false);
+      setModelsPhase("ready");
+      if (!modelDirtyRef.current && modelEditRef.current === edit
+        && statusLiveRef.current !== "submitted" && statusLiveRef.current !== "streaming") {
+        setSelectedRuntimeId(next.sessionOverride);
+        setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
+        setModelSelectionDirty(false);
+      }
+    } catch (error) {
+      if (!current() || isAbortError(error)) return;
+      setModelsPhase("error");
+      setModelsError(error instanceof ChatRequestError && error.status === 401
+        ? "登录状态需要恢复，暂时无法核对模型。请重新登录后重试。"
+        : error instanceof ChatRequestError && error.status === 403
+          ? "当前身份没有读取模型设置的权限。请恢复访问权限后重试。"
+          : error instanceof ChatRequestError && error.status === 503
+            ? "模型服务暂不可用。请稍后重新核对；已知模型和输入会保留。"
+            : `暂时无法核对模型。${errorMessage(error)}`);
     } finally {
       if (modelsRequestRef.current === controller) modelsRequestRef.current = null;
     }
   }, []);
 
   useEffect(() => {
+    const refresh = () => { void loadModels(activeSessionRef.current); };
+    const visible = () => { if (document.visibilityState === "visible") refresh(); };
     const handleModelsChanged = (event: MessageEvent<unknown>): void => {
       const payload = event.data;
-      if (
-        event.origin !== window.location.origin
-        || event.source !== window.parent
-        || typeof payload !== "object"
-        || payload === null
-        || !("type" in payload)
-        || payload.type !== "akashic.models.changed"
-      ) return;
-      void loadModels(activeSessionRef.current).catch((error: unknown) => reportError(error));
+      if (event.origin !== window.location.origin || event.source !== window.parent
+        || typeof payload !== "object" || payload === null
+        || !("type" in payload) || payload.type !== "akashic.models.changed") return;
+      refresh();
     };
     window.addEventListener("message", handleModelsChanged);
-    return () => window.removeEventListener("message", handleModelsChanged);
-  }, [loadModels, reportError]);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      window.removeEventListener("message", handleModelsChanged);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [loadModels]);
+
+  const modelId = selectedRuntimeId || modelState?.defaultRuntime || "";
+  const unavailableModel = modelState?.unavailableRuntimes.find((item) => item.id === modelId);
+  const modelProblem = modelsPhase === "loading" ? "正在核对对话模型，请稍等。"
+    : modelsPhase === "error" ? modelsError
+    : modelState?.runtimes.some((item) => item.id === modelId) ? ""
+    : unavailableModel ? unavailableModel.availability === "disabled"
+      ? `连接「${unavailableModel.sourceName}」已停用，请在模型设置中恢复连接或选择其他模型。`
+      : `连接「${unavailableModel.sourceName}」所需的模型驱动尚未加载或已卸载，请恢复驱动或选择其他模型。`
+    : modelId ? "已选的对话模型暂不可用，请在模型设置中核对或选择其他模型。"
+    : modelState?.runtimes.length ? "还没选择默认对话模型。请在下方选择模型，或在模型设置中设为默认。"
+    : modelState?.unavailableRuntimes.length ? "已保存的对话连接当前不可用，请在模型设置中恢复连接。"
+    : "先连接一个对话模型，之后就可以发送消息。你可以先写下想说的话。";
+  const canSend = chatReady && !modelProblem;
+  const retryModels = useCallback(() => { void loadModels(activeSessionRef.current); }, [loadModels]);
 
   const closeConnection = useCallback(() => {
     // React 可立即重新挂载；先撤销旧连接，不能等异步 finalizer 才清引用。
@@ -484,7 +540,7 @@ export function useDesktopChatController() {
       }
     };
     void run("sessions", loadSessions);
-    void run("models", () => loadModels(activeSessionRef.current));
+    void loadModels(activeSessionRef.current);
     return () => { cancelled = true; };
   }, [chatReady, loadModels, loadSessions, reportError]);
 
@@ -549,15 +605,16 @@ export function useDesktopChatController() {
     activeSessionRef.current = sessionId;
     followAfterRef.current = -1;
     followSession(socketRef.current, sessionId, -1);
-    setActiveSessionId(sessionId);
+    // 发送前只准备路由；上传失败时编辑器仍留在原草稿位置。
     return sessionId;
   }, [loadMessages]);
 
   const sendMessage = useCallback(async (text: string, files: ComposerFile[]) => {
     const cleanText = text.trim();
     if (!cleanText && files.length === 0) return;
+    if (!canSend) throw new Error(modelProblem || "聊天服务暂不可用，请稍后重试。");
     setError("");
-    setStatus("submitted");
+    setStatusLive("submitted");
     messagesRequestRef.current?.abort();
     olderMessagesRequestRef.current?.abort();
     sendRequestRef.current?.abort();
@@ -602,7 +659,10 @@ export function useDesktopChatController() {
         payload.model_reasoning_effort = selectedReasoningEffort;
       }
       await sendWhenOpen(connect(), payload, controller.signal);
+      controller.signal.throwIfAborted();
+      setActiveSessionId(sessionId);
       console.debug("[chat-ui] send frame delivered", { sessionId });
+      modelDirtyRef.current = false;
       setModelSelectionDirty(false);
       setReplyTarget(null);
     } catch (error) {
@@ -613,7 +673,7 @@ export function useDesktopChatController() {
     } finally {
       if (sendRequestRef.current === controller) sendRequestRef.current = null;
     }
-  }, [connect, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages]);
+  }, [canSend, modelProblem, connect, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages, setStatusLive]);
 
   const stopTurn = useCallback(() => {
     if (sendRequestRef.current) {
@@ -670,6 +730,8 @@ export function useDesktopChatController() {
     setReplyTarget(null);
     setStatus("idle");
     setStopPending(false);
+    modelDirtyRef.current = false;
+    modelEditRef.current += 1;
     setSelectedRuntimeId("");
     setSelectedReasoningEffort("");
     setModelSelectionDirty(false);
@@ -734,6 +796,8 @@ export function useDesktopChatController() {
     setHistoryBeforeSeq(cached?.beforeSeq ?? null);
     setHistoryHasMore(cached?.hasMore ?? false);
     setReplyTarget(null);
+    modelDirtyRef.current = false;
+    modelEditRef.current += 1;
     setModelState(null);
     setSelectedRuntimeId("");
     setModelSelectionDirty(false);
@@ -755,6 +819,8 @@ export function useDesktopChatController() {
 
   const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
   const handleModelChange = useCallback((runtimeId: string, effort: string) => {
+    modelDirtyRef.current = true;
+    modelEditRef.current += 1;
     setSelectedRuntimeId(runtimeId);
     setSelectedReasoningEffort(effort);
     setModelSelectionDirty(true);
@@ -794,6 +860,7 @@ export function useDesktopChatController() {
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
+    canSend, modelProblem, modelsPhase, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
