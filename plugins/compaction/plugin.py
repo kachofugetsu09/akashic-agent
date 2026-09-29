@@ -10,7 +10,7 @@ from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPP
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
-from agent.plugin_contracts import Message
+from agent.plugin_contracts import Input, Message
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, closed_groups, source_text, summarize, summary_groups, window_starts
@@ -114,6 +114,19 @@ async def apply(ctx: Context) -> None:
                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool) -> MaterialData | None:
         """选完整旧前缀、生成摘要，再把不可变记录与 head 一起发布。"""
         # 1. 容量与近期保留均按当前已固定的业务模型判断。
+        reminder = context.reminder_content(materials)
+        reminder_input_id = (
+            next(
+                (
+                    message.message_id
+                    for message in reversed(snapshot)
+                    if message.source == source and isinstance(message.body, Input)
+                ),
+                None,
+            )
+            if reminder is not None
+            else None
+        )
         window = projection.context_window
         before = projection.estimate(request)
         if window is None or not snapshot or (not force and before < int(window * 0.74)):
@@ -135,6 +148,7 @@ async def apply(ctx: Context) -> None:
                     snapshot, materials=materials, model=projection,
                     tools=request.tools, max_output_tokens=request.max_output_tokens,
                     window_start=snapshot[index].message_id,
+                    current_reminder_input_id=reminder_input_id,
                 )
                 if error is not None:
                     break
@@ -154,7 +168,13 @@ async def apply(ctx: Context) -> None:
         # 原文保留量来自实际 Model 投影，包含尚未闭合的尾部与当前输入。
         for size in range(len(groups), 0, -1):
             after_seq = groups[size - 1][-1].seq
-            tail = projection.render(snapshot, after_seq=after_seq, fresh=True)
+            tail = projection.render(
+                snapshot,
+                after_seq=after_seq,
+                fresh=True,
+                current_reminder=reminder if reminder_input_id is not None else None,
+                current_reminder_input_id=reminder_input_id,
+            )
             if projection.estimate(tail) >= config.keep_recent_tokens:
                 selected = groups[:size]
                 break
@@ -195,6 +215,7 @@ async def apply(ctx: Context) -> None:
         after_request, error = ctx.require(CONTEXT).build_attempt(
             snapshot, materials=after_materials, model=projection,
             tools=request.tools, max_output_tokens=request.max_output_tokens,
+            current_reminder_input_id=reminder_input_id,
         )
         if error is not None:
             raise SummaryError(error)

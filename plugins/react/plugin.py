@@ -414,6 +414,7 @@ async def _complete(
     context: ContextBuilder, model: BoundChatModel, projection: MessageProjection,
     tools: ToolMenu, max_output_tokens: int, reduce: SummaryReducer | None,
     preview: Preview | None,
+    reminder_input_id: str | None,
     claim: Callable[[int], tuple[str, str | None]] | None = None,
     fallback_key: str | None = None,
     freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None,
@@ -429,7 +430,8 @@ async def _complete(
     # 1. 本地容量与软水位先交给同一摘要 owner，其他材料不重新获取。
     def build(mats: Materials) -> tuple[ModelRequest, str | None]:
         return context.build_attempt(snapshot, materials=mats, model=projection,
-                                     tools=tools.schemas, max_output_tokens=max_output_tokens)
+                                     tools=tools.schemas, max_output_tokens=max_output_tokens,
+                                     current_reminder_input_id=reminder_input_id)
 
     prepared_attempt = prepared
     if resumed is not None and start_at in resumed:
@@ -558,6 +560,14 @@ async def react(
                 )
             ),
             "initial",
+        )
+        reminder_input_id = next(
+            (
+                message.message_id
+                for message in reversed(snapshot)
+                if message.source == writer.source and isinstance(message.body, Input)
+            ),
+            None,
         )
         frozen = snapshot
 
@@ -769,6 +779,7 @@ async def react(
         async with _complete(
             frozen, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
+            reminder_input_id=reminder_input_id,
             claim=claim,
             freeze=freeze,
             resumed=resumed,
@@ -795,10 +806,12 @@ async def react(
                 parts.append(actual)
             if not parts:
                 raise EmptyResponseError("模型没有产生内容或工具调用；空响应不是 quiet")
+            reminder = context.reminder_content(prepared)
             parts.append(projection.facts(
                 response,
                 indices,
-                reminder=context.reminder_content(prepared),
+                reminder=reminder,
+                reminder_input_id=reminder_input_id if reminder is not None else None,
                 actual_calls=actual_calls,
             ))
             summary = cast(Mapping[str, object] | None, prepared.get("summary"))

@@ -287,8 +287,10 @@ VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则、固定工具�
 提醒不另写独立 Message、不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
 提醒块身份为实际贡献插件 ID 与局部名称，同一身份重复时报错；priority 升序，仅决定排列，同优先级按插件 ID、名称的 UTF-8 字节升序。
 SELF/MEMORY 低频更新不要求迁出 system，也不承诺其异步发布与 compaction 只产生一次 provider 缓存失效。
-成功的模型 Output 在 `model.facts` 中保存当次 reminder 与 wire tool call replay；恢复旧请求时使用该
-已提交事实重建原 provider 前缀。它不新增 Input、授权或持久上下文副本，失败和取消也不伪造 replay。
+成功的模型 Output 在 `model.facts` 中保存当次 reminder、其真实 Input 身份与 SHA-256 摘要，以及 wire tool
+call replay；恢复旧请求时使用该已提交事实重建原 provider 前缀。同一 Input 的同一 reminder 只在
+prompt history 重放一次，当前请求的同一材料仍作为末尾 reminder 出现；同一 Input 后续材料改变、
+不同 Input 的材料和未带身份的旧事实都照实保留。它不新增 Input、授权或持久上下文副本，失败和取消也不伪造 replay。
 
 ### CTX-005 新设计不得使用无修饰的 history
 
