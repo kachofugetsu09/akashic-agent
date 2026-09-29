@@ -173,22 +173,26 @@ class RecallTool:
                     dense=dense, stamp=stamp, source=source, limit=request.limit,
                 ))
             # 2. 材料和呈现出处固定后一次发布；失败不能暴露成功 Result。
-            material = render_materials(identity, recall, learning, self._catalog, max_chars=request.max_chars)
+            material = await run_memory_job(lambda: render_materials(
+                identity, recall, learning, self._catalog, max_chars=request.max_chars,
+            ))
             recall = recall.model_copy(update={
                 "max_chars": request.max_chars,
                 "presented_message_ids": tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))),
             })
-            _ = self._records.save(identity, recall)
+            _ = await run_memory_job(lambda: self._records.save(identity, recall))
             return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))
 
     async def query(self, key: str) -> Result | None:
         """工具外部结果恢复只读实际查询记录；不读当前图或重跑模型。"""
         identity = "tool:" + key
-        recall = self._records.read(identity)
+        recall = await run_memory_job(lambda: self._records.read(identity))
         if recall is None:
             return None
         async with self._bindings.open(recall.learning_binding, AKASHA_LEARNING) as (learning, _metadata):
-            material = render_materials(identity, recall, learning, self._catalog, max_chars=recall.max_chars)
+            material = await run_memory_job(lambda: render_materials(
+                identity, recall, learning, self._catalog, max_chars=recall.max_chars,
+            ))
         if tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))) != recall.presented_message_ids:
             raise ValueError("原查询呈现的材料发生变化，不能用当前结果冒充恢复")
         return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))

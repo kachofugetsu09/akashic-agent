@@ -77,6 +77,29 @@ class MessageConsumer:
             raise
 
     @classmethod
+    async def create(
+        cls, path: Path, *, turns: list[Turn], state: Consumption, config: MemoryConfig,
+        deferred_publish: bool = False,
+    ) -> MessageConsumer:
+        """在后台取得 writer；取消期间构造成功的资源仍必须关闭。"""
+        consumer: MessageConsumer | None = None
+
+        def build() -> None:
+            nonlocal consumer
+            consumer = cls(path, turns=turns, state=state, config=config,
+                           deferred_publish=deferred_publish)
+
+        try:
+            await run_memory_job(build)
+        except BaseException:
+            # run_memory_job 已排空线程，构造结果不会在关闭后才出现。
+            if consumer is not None:
+                consumer.close()
+            raise
+        assert consumer is not None
+        return consumer
+
+    @classmethod
     async def load(
         cls, path: Path, *, catalog: MessageCatalog,
         embeddings: MessageEmbeddings, bindings: Bindings,
@@ -90,8 +113,8 @@ class MessageConsumer:
         if not path.exists():
             heads = catalog.snapshot_heads().items() if cutover else ()
             state = Consumption(cutover_heads=tuple(sorted(heads)))
-            return cls(path, turns=[], state=state, config=config)
-        state = load_consumption(path)
+            return await cls.create(path, turns=[], state=state, config=config)
+        state = await run_memory_job(partial(load_consumption, path))
         if state is None:
             raise MemoryRebuildRequiredError("学习图缺少当前消费出处，需要显式重建")
         # 2. 逐项打开原算法闭包；不开模型、不嵌入，也不调用 commit。
@@ -101,13 +124,17 @@ class MessageConsumer:
             entries = tuple(grouped)
             async with bindings.open(identity, AKASHA_LEARNING) as (learning, metadata):
                 rule = LearningConfig.model_validate(dict(metadata))
-                _check_embedding_space(rule.embedding_model, rule.dimension, space, turns)
+                def restore_entries() -> None:
+                    """按原前缀逐条恢复；后一条只能读取已完成的 previous。"""
+                    _check_embedding_space(rule.embedding_model, rule.dimension, space, turns)
+                    for entry in entries:
+                        turns.append(learning.restore(
+                            catalog, embeddings, rule, entry, previous=turns, state=state, bindings=bindings,
+                        ))
+
+                await run_memory_job(restore_entries)
                 space = rule.embedding_model
-                for entry in entries:
-                    turns.append(learning.restore(
-                        catalog, embeddings, rule, entry, previous=turns, state=state, bindings=bindings,
-                    ))
-        consumer = cls(path, turns=turns, state=state, config=config)
+        consumer = await cls.create(path, turns=turns, state=state, config=config)
         consumer._embedding_model = space
         return consumer
 
@@ -157,7 +184,9 @@ class MessageConsumer:
         async with bindings.open(learning_binding, AKASHA_LEARNING) as (learning, metadata):
             rule = LearningConfig.model_validate(dict(metadata))
             # 图空间从原出处恢复；切换模型不能把新向量接到旧图中。
-            self.check_embedding_space(rule.embedding_model, rule.dimension, bindings)
+            await run_memory_job(partial(
+                self.check_embedding_space, rule.embedding_model, rule.dimension, bindings,
+            ))
             heads = {
                 session: head for session, head in catalog.snapshot_heads().items()
                 if member is None or member(session)
@@ -180,9 +209,11 @@ class MessageConsumer:
                 if not isinstance(sample.ending.body, Output) or sample.ending.body.finish != "complete":
                     continue
                 # 2. 固定消息向量先于学习发布，缺失之外的空间差异直接失败。
-                missing = [message for message in (*inputs, sample.ending)
-                           if learning.text(message).strip()
-                           and records.read(message, model=rule.embedding_model, dimension=rule.dimension) is None]
+                missing = await run_memory_job(lambda: [
+                    message for message in (*inputs, sample.ending)
+                    if learning.text(message).strip()
+                    and records.read(message, model=rule.embedding_model, dimension=rule.dimension) is None
+                ])
                 if missing:
                     if skip_missing_embeddings:
                         # 缺少固定向量的闭段明确跳过；跳过必须持久，避免在线路径稍后乱序补学。
@@ -194,15 +225,23 @@ class MessageConsumer:
                     vectors = await embed_batch([learning.text(message) for message in missing])
                     if len(vectors) != len(missing) or any(len(vector) != rule.dimension for vector in vectors):
                         raise ValueError("embedding 返回数量或维度不匹配固定学习空间")
-                    for message, vector in zip(missing, vectors):
-                        records.save(message, model=rule.embedding_model, embedding=vector)
-                turn = learning.make_turn(sample, rule, embeddings, previous=self.cycle.turns,
-                                          state=self.state, bindings=bindings)
-                if turn is None:
-                    raise RuntimeError("已接纳的学习样本没有产生节点")
-                entry = applied_source(sample, learning_binding=learning_binding)
-                count += await run_memory_job(partial(self.apply, turn, entry))
-                self._embedding_model = rule.embedding_model
+                    def save_vectors() -> None:
+                        for message, vector in zip(missing, vectors):
+                            records.save(message, model=rule.embedding_model, embedding=vector)
+                    await run_memory_job(save_vectors)
+
+                def learn_sample() -> bool:
+                    """材料依赖当前图；发布完成后调用方才处理下一条经历。"""
+                    turn = learning.make_turn(sample, rule, embeddings, previous=self.cycle.turns,
+                                              state=self.state, bindings=bindings)
+                    if turn is None:
+                        raise RuntimeError("已接纳的学习样本没有产生节点")
+                    entry = applied_source(sample, learning_binding=learning_binding)
+                    applied = self.apply(turn, entry)
+                    self._embedding_model = rule.embedding_model
+                    return applied
+
+                count += await run_memory_job(learn_sample)
             return count
 
     def publish_snapshot(self) -> str:

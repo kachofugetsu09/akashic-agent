@@ -74,12 +74,14 @@ async def run_reply(
     prompt_hints = tuple(prompt_hints)
     reader = reader.incremental()
     source_head = reader.head(source=source)
-    snapshot = reader.snapshot()
+    through_seq = reader.head()
+    saved_selection = reader.metadata()
+    snapshot = await reader.snapshot_async(through_seq=through_seq)
     turns = turn_projection.project(snapshot, source)
     open_ids: set[str] = set(turns[-1].message_ids) if turns and turns[-1].status == "open" else set()
     chosen = selection.read(tuple(message for message in snapshot if message.message_id in open_ids))
     if chosen is None:
-        chosen = selection.read_saved(reader.metadata() or {})
+        chosen = selection.read_saved(saved_selection or {})
     from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
     async with (
         cleanup(reader, source, from_seq, task=task, drain=tools.drain_calls),
