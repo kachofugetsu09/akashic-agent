@@ -195,3 +195,11 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 - O / MEM-013: `test_slow_graph_does_not_block_another_graph_publication` holds one real installed graph at the embedding boundary, proves another graph's durable publication, then checks both pending steps of the slow graph publish in order.
 
 - O: `test_slow_destination_does_not_delay_next_fast_receipt` gates a real Delivery sender and checks the second fast destination's durable receipt while the first slow destination remains started.
+
+- O: `test_shell_cleanup_only_blocks_its_own_owner` holds physical cleanup, proves another owner can run a real subprocess, and proves the same owner remains waiting until cleanup ends.
+
+- O: `test_workload_plugin_cleanup_does_not_block_neighbor_receipt` gates one plugin's Docker observation and verifies another plugin's durable stop receipt, while the same plugin remains serialized.
+
+- O: `test_due_alert_bypasses_running_content_score` runs real EventMail/Wake state under a Root, holds Content scoring, and verifies the due Alert is admitted with its original durable mail identity before scoring finishes.
+
+- O / C1: `test_slow_ui_owner_leaves_capacity_and_queued_timeout_never_runs` uses real Root/UI registrations and physical worker threads. It proves another owner can query, a queued timeout never invokes its handler, and shutdown waits for running work even after caller cancellation.
