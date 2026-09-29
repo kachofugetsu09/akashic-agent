@@ -72,3 +72,15 @@ Core 不增加子任务状态或来源专属查询。
 `PYTHONPATH=. .venv/bin/python docker/debug/store_read_isolation.py` 使用临时数据库，
 持有未提交写事务时验证已提交快照可读，提交后新快照可见，并检查数据库完整性。
 旧代码在读取时报告 database is locked；无需靠 sleep 调度。
+
+## 插件源码准备（#879）
+
+PluginManager 保留唯一操作 owner。变化检测的源码哈希，以及完整的检查、复制、
+编译、归档事务交给 `run_file_io`；模块导入、Scope 创建、正式 selection 条件提交、
+挂载与事件仍在原事件循环执行。取消观察者会撤销提交许可，但 Manager 在物理工作
+完成前仍拒绝新操作。未发布归档沿用原有保留规则，不把取消伪装成文件回滚。
+
+`test_cancelled_source_preparation_drains_before_manager_reuse` 守护 O/C1：
+真实 Manager 热更新在归档屏障处仍能处理取消，排空前拒绝重用，旧 generation 和
+selection 不变，排空后可正常重试。旧的编译失败与局部更新测试不能覆盖后台线程
+尚未退出时的 owner 生命周期；该回归在同步实现上因 loop 无法接收释放信号而失败。
