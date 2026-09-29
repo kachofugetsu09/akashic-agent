@@ -197,3 +197,5 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 - O: `test_slow_destination_does_not_delay_next_fast_receipt` gates a real Delivery sender and checks the second fast destination's durable receipt while the first slow destination remains started.
 
 - O: `test_shell_cleanup_only_blocks_its_own_owner` holds physical cleanup, proves another owner can run a real subprocess, and proves the same owner remains waiting until cleanup ends.
+
+- O: `test_workload_plugin_cleanup_does_not_block_neighbor_receipt` gates one plugin's Docker observation and verifies another plugin's durable stop receipt, while the same plugin remains serialized.
