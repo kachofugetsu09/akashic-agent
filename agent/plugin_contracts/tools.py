@@ -178,8 +178,6 @@ class ToolCatalog(Protocol):
         capture: Callable[[Mapping[str, object]], Mapping[str, object] | Awaitable[Mapping[str, object]]] | None = None,
         public: bool = True,
         idempotent: bool = False,
-        risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
-        search_hint: str | None = None,
         parallel: bool = False,
     ) -> ToolRef: ...
     async def register_prepare(
@@ -237,9 +235,9 @@ class ToolCatalog(Protocol):
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
 TOOL_DISPLAY_NAME = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
-TOOL_SEARCH_PRESENTATION = ServiceKey[
+TOOL_LOADING_PRESENTATION = ServiceKey[
     Callable[[ToolView], tuple[ToolView, ToolPresentation]]
-]("tool-search.presentation.v2")
+]("tools.loading.presentation.v1")
 
 
 class DecodedCall(Protocol):

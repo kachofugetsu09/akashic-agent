@@ -96,7 +96,6 @@ PluginToolDefinition(
     description="...",
     parameters={...},
     handler_export="run_github_watch_post_comment",
-    risk="external-side-effect",
     always_on=True,
 )
 ```

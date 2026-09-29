@@ -87,7 +87,10 @@
 | 42 | `tests/test_message_log.py::test_session_scope_is_fixed_at_admission_and_absent_for_old_sessions` | C4 Session 固定事实不可改写；O：新增维度不改旧行（SES-010） | 真实 `MessageLog` 上断言 scope 首次接纳后同值幂等、异值失败，已有消息的 Session 不能补写 scope，旧 Session 属性字节不变。Akasha 分图和项目归属都以此为唯一依据。 |
 | 43 | `tests/test_akasha_graphs.py::test_unavailable_graph_does_not_stop_other_graphs` | O：故障局部化；MEM-013 独立图消费进度 | 真实安装 Akasha 与 MessageLog，default 或独立图缺少消费出处时，另一图仍完成学习与召回，原图错误保持可见。既有插件生命周期测试没有覆盖同一记忆插件内的独立图。 |
 | 44 | `tests/test_parallel_tool_calls.py`（2 个节点） | C4/SES-002：重叠执行不得改变同一来源事实的提交顺序 | 0079 引入受控重叠后，"ToolResult 按模型顺序落盘"成为新的失败面，同一不变量只留两条最直接路径：`test_parallel_calls_overlap_but_results_commit_in_model_order`（正常提交按模型顺序落盘）与 `test_parallel_failure_does_not_commit_later_results_first`（前驱失败时后继不得抢先落盘）；旧串行实现没有 `parallel` 注册与提交门，这些用例在其上直接失败。分组、容量与取消竞态属于 §1 不保留的实现细节。 |
-| 45 | `tests/test_tool_bindings.py::test_parallel_flag_stays_out_of_binding_description` | PLG-018 工具按引用而非名字；0079 | `parallel` 是目录注册事实，不进入 binding 描述与归档比较；写入工具声明重叠必须被拒绝。 |
+| 45 | `tests/test_tool_bindings.py::test_parallel_flag_stays_out_of_binding_description` | PLG-018 工具按引用而非名字；0079 | `parallel` 是目录注册事实，不进入 binding 描述与归档比较；Catalog 不从效果标签判断其资格。 |
+| 46 | `tests/test_tool_bindings.py::test_prepare_and_authorize_follow_exact_registration_identity` | PLG-018 归档工具描述仍固定选择 | 仅 v2 已退役的 `risk`/`search_hint` 可在恢复比较中移除；其他描述变化、同名新注册和失效引用都不能借恢复改选工具。 |
+| 47 | `tests/test_tool_bindings.py::test_load_tools_returns_only_the_requested_frozen_group` | PLG-018 按准确插件 ID 的完整组加载 | loader 只返回该次获授 view 中准确 ID 的全部 schema；近似或未获授 ID 明确失败且不泄漏另一组。 |
+| 48 | `tests/test_default_reply.py::test_default_reply_loads_one_complete_granted_plugin_group` | PLG-018 已安装回复的目录、加载与执行边界 | 真实 PluginManager 只在 system 显示插件 ID/用途/数量，`load_tools` 返回完整组后经固定 `tool_call` 调用真实 binding；无 loaded 状态。 |
 
 Akasha 后台执行回归补充：`tests/test_akasha_execution.py` 的 10 个受控场景守护
 O（耗时工作不冻结宿主）、PLG-003/006（在途工作排空后才能关闭绑定与 writer）以及

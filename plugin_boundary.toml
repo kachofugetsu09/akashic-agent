@@ -230,9 +230,9 @@ note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 �
 role = "seam"
 note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
 
-[capabilities."tool-search.presentation.v2"]
+[capabilities."tools.loading.presentation.v1"]
 role = "seam"
-note = "独立公共合同；实现由普通插件提供，来源见 Issue 766 设计"
+note = "独立公共合同；按插件加载的展示由普通插件提供，来源见 Issue 766 设计"
 
 [capabilities."models.selection.v1"]
 role = "seam"

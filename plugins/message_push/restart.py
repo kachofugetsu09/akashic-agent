@@ -388,8 +388,6 @@ async def register_restart(ctx: Context) -> ToolRef | None:
             "additionalProperties": False,
         },
         open=open_tool,
-        risk="external-side-effect",
-        search_hint="重启 reload restart 核心代码",
     )
     _ = await ctx.on(RUNTIME_STARTING, watcher.prepare)
     _ = await ctx.on(RUNTIME_STARTED, watcher.start)

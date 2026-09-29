@@ -145,8 +145,5 @@ async def register_file(
         parameters=normalize_tool_parameters(prototype.parameters),
         open=open_tool,
         capture=capture,
-        risk=(
-            "read-only" if backend_type in (ReadFileTool, ListDirTool) else "read-write"
-        ),
         parallel=backend_type in (ReadFileTool, ListDirTool),
     ))
