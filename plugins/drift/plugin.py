@@ -11,6 +11,8 @@ from agent.plugin_contracts.proactive import (
     DriftWakeServices as DriftWakeServices,
 )
 
+from core.common.file_io import run_file_io
+
 from .store import DriftStore
 
 api_version = 3
@@ -112,7 +114,7 @@ async def apply(ctx: Context) -> None:
     """Publish the narrow Drift view over one generation-scoped store."""
 
     store = DriftStore(ctx.data_root / "drift.sqlite3")
-    store.initialize()
+    await run_file_io(store.initialize)
     _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store, lambda: ctx.emit(DRIFT_CHANGED, None)))
     _ = await ctx.provide(DRIFT_WAKE, _WakeServices(store))
     _ = await ctx.provide(DRIFT_DELIVERY, _DeliveryServices(store))
