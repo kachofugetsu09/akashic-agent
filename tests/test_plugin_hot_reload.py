@@ -1,5 +1,7 @@
 from __future__ import annotations
 import ast
+import asyncio
+import threading
 from pathlib import Path
 from typing import cast
 import pytest
@@ -7,6 +9,7 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition import FiberState
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
+from agent.plugins import manager as manager_module
 
 def _v3_source(
     name: str,
@@ -50,6 +53,57 @@ def _manager(
         workspace=workspace or tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_source_preparation_drains_before_manager_reuse(tmp_path, monkeypatch):
+    """O/C1：源码准备不占用 loop，撤销后先排空归档，再释放操作 owner。"""
+    plugin = _write_plugin(tmp_path / "plugins", "slow", _v3_source("slow"))
+    initialize_plugin_workspace(tmp_path / "workspace")
+    manager = _manager(tmp_path)
+    release = threading.Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    original = manager_module.prepare_plugin_input
+
+    def blocked(*args, **kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        if not release.wait(5):
+            raise RuntimeError("源码准备阻塞了事件循环，无法接收释放信号")
+        return original(*args, **kwargs)
+
+    try:
+        await manager.load_all()
+        before = manager._selection.read()
+        old = manager.generation("slow")
+        (plugin / "plugin.py").write_text(_v3_source("slow", version="2"))
+        monkeypatch.setattr(manager_module, "prepare_plugin_input", blocked)
+        observer = asyncio.create_task(manager.reconcile_changed())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            operation = manager._operation
+            assert operation is not None and not operation.task.done()
+            observer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await observer
+            assert not operation.task.done()
+            with pytest.raises(manager_module.OperationBusyError):
+                await manager.reconcile_changed()
+            assert manager._selection.read() == before
+            assert manager.generation("slow") is old
+        finally:
+            release.set()
+            await asyncio.gather(observer, return_exceptions=True)
+        with pytest.raises(asyncio.CancelledError):
+            await operation.task
+        assert manager._selection.read() == before
+        monkeypatch.setattr(manager_module, "prepare_plugin_input", original)
+        result = await manager.reconcile_changed()
+        assert result[0]["publication_state"] == "active"
+        assert manager.generation("slow") is not old
+    finally:
+        release.set()
+        await manager.terminate_all()
 
 @pytest.mark.asyncio
 async def test_live_selection_compile_abort_then_commit(tmp_path: Path) -> None:

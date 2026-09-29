@@ -16,6 +16,7 @@ from typing import Any, Literal, TypeVar, cast
 from uuid import uuid4
 
 from core.common.diagnostic_log import log_event
+from core.common.file_io import run_file_io
 
 from agent.control.frame_book import FrameBook
 from agent.host_bridge.plugin_execution import (
@@ -1500,7 +1501,7 @@ class PluginManager:
                     ),
                 })
                 continue
-            revision = _source_revision(Path(mod["plugin_root"]))
+            revision = await run_file_io(lambda: _source_revision(Path(mod["plugin_root"])))
             _config, config_revision = load_config(
                 _resolve_plugin_data_dir(mod["name"], mod, self._workspace),
             )
@@ -1959,9 +1960,9 @@ class PluginManager:
         selected_ids = set() if selection_ref is None else {
             self._archive.read_descriptor(ref)["plugin_id"] for ref in self._selection_components(selection_ref)
         }
-        prepared = prepare_plugin_input(
+        prepared = await run_file_io(lambda: prepare_plugin_input(
             mod, workspace=self._workspace, archive=self._archive, initial=plugin_id not in selected_ids,
-        )
+        ))
         plugin_id = prepared.plugin_id
         # 1. Preparation owns only the returned generation; no candidate Root is built.
         namespace = secrets.token_hex(12)
@@ -2361,14 +2362,6 @@ def _plugins_home(installed_cache_root: Path | None) -> Path:
     if installed_cache_root is not None:
         return installed_cache_root.parent
     return plugins_root()
-
-
-async def _copy_in_thread(copy_files: Callable[..., U], *args: Any, **kwargs: Any) -> U:
-    """复制完成后才传播取消，避免清理目录时后台线程仍在写入。"""
-    result, cancelled = await _complete_critical(asyncio.to_thread(copy_files, *args, **kwargs))
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
 
 
 def _source_failure_key(failure: PluginSourceFailure) -> str:
