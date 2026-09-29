@@ -144,6 +144,7 @@ RPC，验证缺能力、正常列表/详情、慢读不冻结 loop、取消排�
 MessageReader.scan 在一个短读快照内逐页交给同步消费者，页大小 64；迭代器离开
 回调即关闭，不能跨 await 或把连接交给插件。完整 snapshot 仍明确返回全部正文。
 TurnProjection 接收有序流，待闭合状态只保存 seq、消息 ID 和调用引用，不保留正文。
+Message ID 唯一性由消息库主键拥有，投影不再另建全历史 seen 集合。
 显式 after_seq 只能来自已提交闭合 Turn；重读尾部时忽略已消费边界内的 abandon。
 这是投影消费起点，不是新的执行事实；原始 Message、schema 和删除权限保持不变。
 
@@ -156,7 +157,8 @@ TurnProjection 接收有序流，待闭合状态只保存 seq、消息 ID 和调
 
 ## Reply 的阶段内存（#879）
 
-启动选模用 scan 分段，只在同一快照内读取开放 Turn 的 Input/Output，选模与工具
+启动选模用 scan 分段，并用 include_closed=False 不保留已闭合 Turn 的引用，
+只在同一快照内读取开放 Turn 的 Input/Output，选模与工具
 起点计算后释放这些正文。React 工具结算从流式扫描取得调用引用，不持有完整前缀；
 完成一轮输出后释放该轮快照和材料，再进入可能很慢的工具执行。
 增量 reader 只保留最多 256 行且序列化正文/metadata 不超过 4 MiB 的小前缀，大会话

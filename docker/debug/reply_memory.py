@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import weakref
+import sqlite3
 
 from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Input
@@ -46,4 +47,16 @@ async def check(path: Path) -> None:
 
 if __name__ == '__main__':
     with TemporaryDirectory() as directory:
-        asyncio.run(check(Path(directory) / 'sessions.db'))
+        path = Path(directory) / 'sessions.db'
+        asyncio.run(check(path))
+        # 已发布且仍允许打开的无 metadata 列 schema 仍可读取。
+        with sqlite3.connect(path) as connection:
+            connection.execute('ALTER TABLE messages DROP COLUMN metadata')
+        log = MessageLog(path)
+        try:
+            reader = log.reader('small').incremental()
+            assert len(reader.snapshot()) == 2
+            assert len(asyncio.run(reader.snapshot_async(through_seq=1))) == 2
+            print('PASS: existing schema without metadata stays readable')
+        finally:
+            log.close()

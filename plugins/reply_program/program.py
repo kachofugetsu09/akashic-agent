@@ -78,7 +78,7 @@ async def run_reply(
     saved_selection = reader.metadata()
     def read_open(messages: Iterable[Message]) -> tuple[Message, ...]:
         """同一短快照内只取未闭合 Turn 正文，历史分段只保留引用。"""
-        turns = turn_projection.project(messages, source)
+        turns = turn_projection.project(messages, source, include_closed=False)
         if not turns or turns[-1].status != "open":
             return ()
         members: list[Message] = []

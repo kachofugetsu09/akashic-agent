@@ -976,9 +976,9 @@ class _IncrementalMessageReader(MessageReader):
             self._messages = ()
         else:
             through = messages[-1].seq if messages else -1
+            metadata_size = " + length(CAST(metadata AS BLOB))" if self._log._has_metadata else ""
             size = self._log._connection.execute(
-                "SELECT COALESCE(SUM(length(CAST(body AS BLOB)) + "
-                "length(CAST(metadata AS BLOB))), 0) FROM messages "
+                "SELECT COALESCE(SUM(length(CAST(body AS BLOB))" + metadata_size + "), 0) FROM messages "
                 "WHERE session_key=? AND seq<=?", (self._session_id, through),
             ).fetchone()[0]
             self._messages = messages if size <= self._CACHE_BYTES else ()

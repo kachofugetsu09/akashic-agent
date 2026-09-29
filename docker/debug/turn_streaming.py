@@ -22,6 +22,7 @@ def check() -> None:
     messages = tuple(Message(f'm{i}', 's', i, now, 'author', 'source', body)
                      for i, body in enumerate(bodies))
     turns = projection.project(messages, 'source')
+    assert projection.project(iter(messages), 'source', include_closed=False) == (turns[-1],)
     assert [turn.status for turn in turns] == ['abandoned', 'complete', 'quiet', 'open']
     assert turns[1].message_ids == ('m2', 'm5') and not turns[1].observations
     for closed in turns[:-1]:

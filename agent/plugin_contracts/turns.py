@@ -26,7 +26,7 @@ class Turn:
 class TurnProjection(Protocol):
     def project(
         self, messages: Iterable[Message], source: str, *,
-        after_seq: int = -1,
+        after_seq: int = -1, include_closed: bool = True,
     ) -> tuple[Turn, ...]:
         """输入完整前缀或闭合 Turn 后的尾部；只返回引用，不保留正文。"""
         ...
