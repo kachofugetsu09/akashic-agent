@@ -17,6 +17,7 @@ from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 import httpcore
 
 from infra.channels.base import AttachmentStore
+from core.common.file_io import run_file_io
 
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -222,36 +223,46 @@ async def _persist_response(
         suffix = mimetypes.guess_extension(content_type) or ""
     if not _SAFE_SUFFIX_PATTERN.fullmatch(suffix):
         suffix = ""
-    final_path = attachment_store.create_persistent_path("remote_media_", suffix)
+    final_path = await run_file_io(lambda: attachment_store.create_persistent_path("remote_media_", suffix))
     partial_path = final_path.with_name(f"{final_path.name}.part")
 
-    # 2. 流式写入并同时实施实际字节上限
+    # 2. 每次只接纳一个 chunk；先完成写入，再向网络读取下一块。
     size_bytes = 0
     digest = hashlib.sha256()
+    first_chunk = True
     try:
-        with partial_path.open("xb") as stream:
-            async for chunk in response.aiter_stream():
-                size_bytes += len(chunk)
-                if size_bytes > max_bytes:
-                    raise RemoteMediaError(f"远程媒体超过大小上限: {max_bytes}")
-                _ = stream.write(chunk)
-                digest.update(chunk)
-            if size_bytes == 0:
-                raise RemoteMediaError("远程媒体内容为空")
-            if declared_length is not None and size_bytes != declared_length:
-                raise RemoteMediaError(
-                    f"远程媒体长度不一致: expected={declared_length} actual={size_bytes}"
-                )
-            stream.flush()
-            os.fsync(stream.fileno())
+        async for chunk in response.aiter_stream():
+            size_bytes += len(chunk)
+            if size_bytes > max_bytes:
+                raise RemoteMediaError(f"远程媒体超过大小上限: {max_bytes}")
 
-        # 3. 原子提交文件并同步目录元数据
-        os.replace(partial_path, final_path)
-        directory_fd = os.open(final_path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            def write_chunk() -> None:
+                # 文件句柄只活在本次物理工作内，取消不会丢失待关闭的句柄。
+                with partial_path.open("xb" if first_chunk else "ab") as stream:
+                    _ = stream.write(chunk)
+                digest.update(chunk)
+
+            await run_file_io(write_chunk)
+            first_chunk = False
+        if size_bytes == 0:
+            raise RemoteMediaError("远程媒体内容为空")
+        if declared_length is not None and size_bytes != declared_length:
+            raise RemoteMediaError(
+                f"远程媒体长度不一致: expected={declared_length} actual={size_bytes}"
+            )
+
+        # 3. 同一工作完成文件与目录 fsync；取消排空后才允许异常路径删除。
+        def commit() -> None:
+            with partial_path.open("r+b") as stream:
+                os.fsync(stream.fileno())
+            os.replace(partial_path, final_path)
+            directory_fd = os.open(final_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+        await run_file_io(commit)
         return RemoteMediaSnapshot(
             path=final_path,
             filename=filename,
