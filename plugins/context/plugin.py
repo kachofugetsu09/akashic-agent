@@ -110,6 +110,7 @@ class ContextBuilder:
         tools: Sequence[Mapping[str, Any]] = (),
         max_output_tokens: int,
         window_start: str | None = None,
+        current_reminder_input_id: str | None = None,
     ) -> ModelRequest:
         """纯函数式组装；容量不足明确报错，由调用程序取得更小视图。"""
         if type(max_output_tokens) is not int or max_output_tokens < 0:
@@ -118,6 +119,10 @@ class ContextBuilder:
         # 1. Model owner 保留自身的 call IDs 与 opaque replay，Context 不重造它们。
         snapshot = tuple(snapshot)
         cutoff = _summary_cutoff(snapshot, decoded_materials.summary)
+        reminder = self._reminder_content(decoded_materials)
+        if reminder is None:
+            current_reminder_input_id = None
+        replay_reminder = reminder if current_reminder_input_id is not None else None
         if window_start is not None:
             if decoded_materials.summary is not None:
                 raise ValueError("已有摘要的请求不能重新选择首次窗口")
@@ -128,11 +133,19 @@ class ContextBuilder:
             if start and start not in settled_prefixes(snapshot[:start]):
                 raise ValueError("首次窗口不能切开尚未结算的工具调用")
             cutoff = -1 if start == 0 else snapshot[start - 1].seq
-            rendered = model.render(snapshot, after_seq=cutoff, fresh=True)
+            rendered = model.render(
+                snapshot,
+                after_seq=cutoff,
+                fresh=True,
+                current_reminder=replay_reminder,
+                current_reminder_input_id=current_reminder_input_id,
+            )
         else:
             rendered = model.render(
                 snapshot, after_seq=cutoff,
                 summary_reference=None if decoded_materials.summary is None else decoded_materials.summary.reference,
+                current_reminder=replay_reminder,
+                current_reminder_input_id=current_reminder_input_id,
             )
         if any(
             row["role"] not in {"user", "assistant", "tool"}
@@ -158,7 +171,6 @@ class ContextBuilder:
                 }
             )
         rows.extend(rendered.messages)
-        reminder = self._reminder_content(decoded_materials)
         if reminder is not None:
             rows.append({"role": "user", "content": reminder})
         request = replace(
@@ -188,12 +200,14 @@ class ContextBuilder:
         tools: Sequence[Mapping[str, Any]] = (),
         max_output_tokens: int,
         window_start: str | None = None,
+        current_reminder_input_id: str | None = None,
     ) -> tuple[ModelRequest, str | None]:
         """返回请求及容量拒绝说明；异常类型留在 Context owner 内。"""
         try:
             return self.build(
                 snapshot, materials=materials, model=model, tools=tools,
                 max_output_tokens=max_output_tokens, window_start=window_start,
+                current_reminder_input_id=current_reminder_input_id,
             ), None
         except ContextOverflow as overflow:
             return overflow.request, str(overflow)
