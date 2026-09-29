@@ -195,3 +195,5 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 - O / MEM-013: `test_slow_graph_does_not_block_another_graph_publication` holds one real installed graph at the embedding boundary, proves another graph's durable publication, then checks both pending steps of the slow graph publish in order.
 
 - O: `test_slow_destination_does_not_delay_next_fast_receipt` gates a real Delivery sender and checks the second fast destination's durable receipt while the first slow destination remains started.
+
+- O: `test_shell_cleanup_only_blocks_its_own_owner` holds physical cleanup, proves another owner can run a real subprocess, and proves the same owner remains waiting until cleanup ends.
