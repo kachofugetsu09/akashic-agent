@@ -136,7 +136,6 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           <HostBridgeNotice />
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton>
-            <a href="/#models" target="_blank" rel="noopener">查看模型设置</a>
           </div> : null}
         </div>
       </section>
