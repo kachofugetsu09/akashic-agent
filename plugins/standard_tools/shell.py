@@ -299,7 +299,6 @@ async def _register(
         parameters=schema.model_json_schema(),
         open=open_tool,
         capture=capture,
-        risk="external-side-effect",
     ))
 
 

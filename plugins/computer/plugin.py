@@ -293,7 +293,6 @@ async def apply(ctx: Context) -> None:
         capture=lambda options: _capture(ctx, options),
         public=True,
         idempotent=False,
-        risk="external-side-effect",
     )
     workload = await _register_workload(ctx)
     await ctx.require(MCP_SERVERS).register(

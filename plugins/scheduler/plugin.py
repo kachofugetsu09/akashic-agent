@@ -95,7 +95,6 @@ async def apply(ctx: Context) -> None:
         parameters={"type": "object", "properties": {}},
         open=open_list,
         idempotent=True,
-        risk="read-only",
         parallel=True,
     )
 
