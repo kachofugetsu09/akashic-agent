@@ -194,3 +194,7 @@ Akasha 的目标是让有出处的过去经历参与理解当前需要。一个�
 剩余恢复成本见 [issue #825](https://github.com/kachofugetsu09/akashic-agent/issues/825)。
 函数级采样中历史分词累计耗时最高，前缀消息映射重复构建其次；采样自身有开销，
 不能把其耗时与表中未采样数据直接相加。此修复不改变分词、反馈或来源校验规则。
+
+### Interest scoring execution
+
+Historical sample projection, vector reads and prototype construction run in a drained memory job. Model selection and candidate embedding remain in the owning async scope. Sample order, cutoff, eligibility, missing-vector handling and the last 256 valid prototypes are unchanged. This isolates host scheduling; it does not reduce historical work or promise a shorter total query. See issue #829 and stack #827.

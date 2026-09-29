@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
 from importlib import import_module
@@ -198,7 +198,26 @@ async def run(ctx: Context, interest: Interest) -> None:
     memory_rule: LearningConfig | None = None
     watcher: asyncio.Task[None] | None = None
     running = False
-    start_lock = asyncio.Lock()
+    graph_locks: dict[str, asyncio.Lock] = {}
+    starting_rules: dict[str, LearningConfig] = {}
+    rebuild_lock = asyncio.Lock()
+    graphs_ready = asyncio.Event()
+    graphs_ready.set()
+
+    @asynccontextmanager
+    async def graph_access(key: str):
+        """Keep each graph ordered and drain all graph users before rebuild."""
+        while True:
+            await graphs_ready.wait()
+            lock = graph_locks.setdefault(key, asyncio.Lock())
+            await lock.acquire()
+            if graphs_ready.is_set():
+                break
+            lock.release()
+        try:
+            yield
+        finally:
+            lock.release()
     health = await ctx.health("embedding", required=False)
     graph_health = await ctx.health("graphs", required=False)
     graph_errors: dict[str, str] = {}
@@ -323,9 +342,10 @@ async def run(ctx: Context, interest: Interest) -> None:
     def select_learning() -> tuple[str, LearningConfig, str]:
         try:
             descriptor = ctx.require(EMBEDDINGS).describe()
-            if memory_rule is not None and (descriptor.identity, descriptor.dimensions) != (
-                memory_rule.embedding_model, memory_rule.dimension,
-            ):
+            selected_rules = (*starting_rules.values(), *((memory_rule,) if memory_rule else ()))
+            if any((descriptor.identity, descriptor.dimensions) != (
+                selected.embedding_model, selected.dimension,
+            ) for selected in selected_rules):
                 raise EmbeddingSpaceMismatchError("默认 embedding 空间已变化，需显式重建 Akasha")
         except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError) as error:
             health.degrade(str(error))
@@ -390,16 +410,17 @@ async def run(ctx: Context, interest: Interest) -> None:
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         key = policies.route(snapshot[0].session_id).read if snapshot else DEFAULT_GRAPH
         if running:
-            if not await start_if_available(key):
-                return unavailable(key)
-            try:
-                return await memories[key].prepare(snapshot, source)
-            except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
-                set_graph_error(key, str(error))
-                return unavailable(key)
-            except (ModelUnavailableError, DriverUnavailableError) as error:
-                health.degrade(str(error))
-                return unavailable(key)
+            async with graph_access(key):
+                if not await start_memory(key):
+                    return unavailable(key)
+                try:
+                    return await memories[key].prepare(snapshot, source)
+                except (EmbeddingSpaceMismatchError, MemoryRebuildRequiredError) as error:
+                    set_graph_error(key, str(error))
+                    return unavailable(key)
+                except (ModelUnavailableError, DriverUnavailableError) as error:
+                    health.degrade(str(error))
+                    return unavailable(key)
         # 归档和显式程序只查询已发布图的副本，不取得正式学习 writer。
         try:
             identity, rule, model_id = select_learning()
@@ -509,17 +530,18 @@ async def run(ctx: Context, interest: Interest) -> None:
             await closing.close()
     _ = await ctx.effect(lambda: close_memory, label="message-memory")
 
-    async def start_if_available(key: str = DEFAULT_GRAPH) -> bool:
-        """模型设置后在首次实际使用时启用；每张图只取得一个学习 writer。"""
+    async def start_memory(key: str) -> bool:
+        """Start one writer while holding that graph's access lock."""
         nonlocal memory_rule
-        async with start_lock:
-            # 1. 未配置或空间变化只停用记忆；其他数据损坏仍明确失败。
-            try:
-                identity, rule, model_id = select_learning()
-            except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
-                return False
-            if key in memories:
-                return key not in graph_errors
+        # 1. 未配置或空间变化只停用记忆；其他数据损坏仍明确失败。
+        try:
+            identity, rule, model_id = select_learning()
+        except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError):
+            return False
+        if key in memories:
+            return key not in graph_errors
+        starting_rules[key] = rule
+        try:
             try:
                 consumer = await MessageConsumer.load(
                     ensure_graph_directory(memory_path, key), catalog=ctx.require(MESSAGE_CATALOG),
@@ -553,30 +575,43 @@ async def run(ctx: Context, interest: Interest) -> None:
             memories[key], memory_rule = prepared, rule
             set_graph_error(key, None)
             return True
+        finally:
+            del starting_rules[key]
+
+    async def start_if_available(key: str = DEFAULT_GRAPH) -> bool:
+        async with graph_access(key):
+            return await start_memory(key)
 
     async def rebuild_now() -> str:
         """全量重放 canonical 来源；失败时已发布学习图保持不变。"""
         nonlocal memory_rule
         # 1. 先确认 embedding 空间可用，避免无谓地停掉在线学习。
         identity, rule, model_id = select_learning()
-        async with start_lock:
-            # 2. 先归还全部 writer，再逐图生成候选；每张图各自原子替换并留恢复点。
-            await close_memory()
-            memory_rule = None
-            reports: list[str] = []
-            for key in write_graphs():
-                path = ensure_graph_directory(memory_path, key)
-                backup_root = rebuild_backup_root if key == DEFAULT_GRAPH else (
-                    rebuild_backup_root / "graphs" / path.parent.name
-                )
-                report = await rebuild_from_catalog(
-                    catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
-                    bindings=ctx.require(BINDINGS), config=settings.memory_config(),
-                    learning_binding=identity, embed_batch=embedder(rule, model_id),
-                    memory_path=path, backup_root=backup_root, member=member(key),
-                )
-                set_graph_error(key, None)
-                reports.append(manifest_json(report))
+        async with rebuild_lock:
+            graphs_ready.clear()
+            try:
+                async with AsyncExitStack() as locks:
+                    for lock in tuple(graph_locks.values()):
+                        await locks.enter_async_context(lock)
+                    # 2. 先归还全部 writer，再逐图生成候选；每张图各自原子替换并留恢复点。
+                    await close_memory()
+                    memory_rule = None
+                    reports: list[str] = []
+                    for key in write_graphs():
+                        path = ensure_graph_directory(memory_path, key)
+                        backup_root = rebuild_backup_root if key == DEFAULT_GRAPH else (
+                            rebuild_backup_root / "graphs" / path.parent.name
+                        )
+                        report = await rebuild_from_catalog(
+                            catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
+                            bindings=ctx.require(BINDINGS), config=settings.memory_config(),
+                            learning_binding=identity, embed_batch=embedder(rule, model_id),
+                            memory_path=path, backup_root=backup_root, member=member(key),
+                        )
+                        set_graph_error(key, None)
+                        reports.append(manifest_json(report))
+            finally:
+                graphs_ready.set()
         # 3. 用同一启动边界重新装载；装载失败必须让调用者看到。
         if not await start_if_available():
             raise RuntimeError("Akasha 重建后无法重新装载学习图")
@@ -631,11 +666,15 @@ async def run(ctx: Context, interest: Interest) -> None:
 
     # 3. 通知只唤醒消费者；模型后配时下一条输入也会经过同一启动边界。
     async def follow() -> None:
-        async for _heads in ctx.require(MESSAGE_CATALOG).follow():
-            async with ctx.runtime_scope():
-                await run_pending_rebuild()
-                for key in write_graphs():
-                    if not await start_if_available(key):
+        """Coalesce notifications per graph; a slow graph owns only its own wait."""
+        pending: dict[str, asyncio.Event] = {}
+
+        async def consume_graph(key: str, changed: asyncio.Event) -> None:
+            while True:
+                await changed.wait()
+                changed.clear()
+                async with ctx.runtime_scope(), graph_access(key):
+                    if not await start_memory(key):
                         continue
                     try:
                         _ = await memories[key].consume()
@@ -643,6 +682,17 @@ async def run(ctx: Context, interest: Interest) -> None:
                         set_graph_error(key, str(error))
                     except (ModelUnavailableError, DriverUnavailableError) as error:
                         health.degrade(str(error))
+
+        async with asyncio.TaskGroup() as group:
+            async for _heads in ctx.require(MESSAGE_CATALOG).follow():
+                async with ctx.runtime_scope():
+                    await run_pending_rebuild()
+                    for key in write_graphs():
+                        changed = pending.get(key)
+                        if changed is None:
+                            changed = pending[key] = asyncio.Event()
+                            group.create_task(consume_graph(key, changed), name=f"akasha-graph:{key}")
+                        changed.set()
 
     async def start(_event: object) -> None:
         nonlocal watcher, running, inspector
@@ -655,7 +705,6 @@ async def run(ctx: Context, interest: Interest) -> None:
             inspector = RecallInspector(read=runtime_records.read, list_records=runtime_records.list,
                                         catalog=ctx.require(MESSAGE_CATALOG))
             await run_pending_rebuild()
-            _ = await start_if_available()
         watcher = await ctx.spawn(follow(), name="akasha-messages")
 
     async def stop(_event: object) -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 
@@ -12,6 +11,7 @@ from agent.plugin_contracts.proactive import (
     SEMANTIC_INTEREST as SEMANTIC_INTEREST,
 )
 
+from .application.consumer import run_memory_job
 from .learning import Learning, LearningConfig
 from .projection import Sample, input_features
 
@@ -36,6 +36,28 @@ class SemanticInterest:
         if any(not isinstance(text, str) for text in texts):
             raise TypeError("兴趣候选必须是字符串")
         rule, embed = await self._select()
+        prototypes = await run_memory_job(lambda: self._prototypes(rule, through))
+
+        # 2. 仅嵌入本轮非空候选；无历史证据返回零，provider 错误保持失败。
+        scores = [0.0] * len(texts)
+        indexed = [(index, text) for index, text in enumerate(texts) if text.strip()]
+        if not indexed or not prototypes:
+            return tuple(scores)
+        vectors = await embed([text for _, text in indexed])
+        if len(vectors) != len(indexed):
+            raise ValueError("兴趣候选 embedding 数量不一致")
+        for (index, _), vector in zip(indexed, vectors, strict=True):
+            candidate = np.asarray(vector, dtype=np.float32)
+            if candidate.shape != (rule.dimension,) or not np.all(np.isfinite(candidate)):
+                raise ValueError("兴趣候选 embedding 不属于固定向量空间")
+            norm = float(np.linalg.norm(candidate))
+            if norm > 0:
+                similarity = max(float(np.dot(candidate / norm, prototype)) for prototype in prototypes)
+                scores[index] = min(0.999, max(0.0, similarity) ** 4)
+        return tuple(scores)
+
+    def _prototypes(self, rule: LearningConfig, through: datetime) -> list[np.ndarray]:
+        """Read the fixed historical inputs off the host event loop."""
         records = self._embeddings.bind(self._learning.text)
         prototypes: list[np.ndarray] = []
         # 1. 固定消息上界；学习准入继续由 Akasha 独占，内部和未完成工作没有样本。
@@ -43,11 +65,8 @@ class SemanticInterest:
         samples: list[Sample] = []
         for session_id, head in heads.items():
             samples.extend(self._learning.samples(self._catalog, rule, heads={session_id: head}))
-            await asyncio.sleep(0)
         samples.sort(key=lambda sample: sample.key)
-        for index, sample in enumerate(samples):
-            if index % 32 == 0:
-                await asyncio.sleep(0)
+        for sample in samples:
             ending = sample.ending
             if ending.recorded_at > through or not isinstance(ending.body, Output) or ending.body.finish != "complete":
                 continue
@@ -67,22 +86,4 @@ class SemanticInterest:
             norm = float(np.linalg.norm(combined))
             if norm > 0:
                 prototypes.append(combined / norm)
-        prototypes = prototypes[-256:]
-
-        # 2. 仅嵌入本轮非空候选；无历史证据返回零，provider 错误保持失败。
-        scores = [0.0] * len(texts)
-        indexed = [(index, text) for index, text in enumerate(texts) if text.strip()]
-        if not indexed or not prototypes:
-            return tuple(scores)
-        vectors = await embed([text for _, text in indexed])
-        if len(vectors) != len(indexed):
-            raise ValueError("兴趣候选 embedding 数量不一致")
-        for (index, _), vector in zip(indexed, vectors, strict=True):
-            candidate = np.asarray(vector, dtype=np.float32)
-            if candidate.shape != (rule.dimension,) or not np.all(np.isfinite(candidate)):
-                raise ValueError("兴趣候选 embedding 不属于固定向量空间")
-            norm = float(np.linalg.norm(candidate))
-            if norm > 0:
-                similarity = max(float(np.dot(candidate / norm, prototype)) for prototype in prototypes)
-                scores[index] = min(0.999, max(0.0, similarity) ** 4)
-        return tuple(scores)
+        return prototypes[-256:]
