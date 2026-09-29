@@ -8,14 +8,21 @@ import "./style.css";
 interface Step { id: string; title: string; group: string; group_title: string; route: string; }
 interface StepStatus extends Partial<Status> { fault?: string; }
 interface Catalog { steps: Step[]; }
-function done(status?: StepStatus): boolean { return !!status && !status.fault && (status.ready === true || status.enabled === false || status.blocked === true); }
+function hasDecision(status?: StepStatus): boolean {
+  return status?.enabled === true || status?.enabled === false;
+}
+function canAdvance(status?: StepStatus): boolean {
+  return !!status && !status.fault && (status.ready === true || status.enabled === false || status.blocked === true);
+}
 function label(status?: StepStatus): string {
   if (!status) return "读取中";
-  if (status.fault) return "读取失败";
-  if (status.blocked) return "前置不可用";
-  if (status.enabled === false) return "已关闭";
-  if (status.ready) return "已开启";
-  return "待配置";
+  if (status.fault) return hasDecision(status)
+    ? `读取失败 · 上次确认${status.enabled ? "已开启" : "已关闭"}` : "读取失败 · 选择未知";
+  const choice = status.enabled === false ? "已关闭" : status.enabled === true ? "已开启" : "尚未决定";
+  if (status.blocked) return `${choice} · 前置不可用`;
+  if (status.enabled === false) return choice;
+  if (status.ready) return choice;
+  return status.enabled === true ? "已开启 · 尚未就绪" : "待决定";
 }
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
@@ -38,37 +45,67 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const [error, setError] = useState("");
   const [withdrawn, setWithdrawn] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [leave, setLeave] = useState<(() => void) | null>(null);
+  const [leave, setLeave] = useState<{kind: "navigate"; go: () => void} | {kind: "catalog"} | null>(null);
   const [finished, setFinished] = useState(false);
+  const [checkingRemoval, setCheckingRemoval] = useState(false);
+  const confirmRead = useRef(false);
   const formHost = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const invitation = useRef<HTMLDialogElement>(null);
   const focusedStep = useRef<string | null>(null);
   const alive = useRef(true);
   const refreshes = useRef(0);
+  const knownStates = useRef<Record<string, StepStatus>>({});
+  const editing = useRef(false);
+  const markDirty = useCallback((value: boolean) => { editing.current = value; setDirty(value); }, []);
   const selection = useRef(selected); selection.current = selected;
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (discardRemoved = false) => {
+    if (confirmRead.current && !discardRemoved) return undefined;
+    const signal = discardRemoved ? AbortSignal.timeout(30_000) : undefined;
     const sequence = ++refreshes.current;
     try {
-      const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog");
+      const catalog = await request<Catalog>(ctx, "/api/dashboard/onboarding/catalog", {signal});
       const statuses = await Promise.all(catalog.steps.map(async step => {
-        try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${encodeURIComponent(step.id)}`)] as const; }
+        try { return [step.id, await request<StepStatus>(ctx, `/api/dashboard/onboarding/status/${encodeURIComponent(step.id)}`, {signal})] as const; }
         catch (reason) { return [step.id, {fault: reason instanceof Error ? reason.message : String(reason)}] as const; }
       }));
       if (!alive.current || sequence !== refreshes.current) return;
-      const next = Object.fromEntries(statuses);
-      setSteps(catalog.steps); setStates(next); setError("");
-      if (selection.current && !catalog.steps.some(step => step.id === selection.current)) setWithdrawn(true);
-      setSelected(current => catalog.steps.some(step => step.id === current) ? current : (catalog.steps.find(step => !done(next[step.id])) ?? catalog.steps[0])?.id ?? "");
+      if (discardRemoved && statuses.some(([, status]) => status.fault)) {
+        throw new Error("配置状态没有完整读取，原草稿保留。请重新核对。");
+      }
+      // 读取失败只保留上次确知的选择，不能把故障当成新决定。
+      const next: Record<string, StepStatus> = Object.fromEntries(statuses.map(([id, status]) =>
+        [id, status.fault ? {...knownStates.current[id], ...status} : status]));
+      const apply = () => {
+        if (!alive.current || sequence !== refreshes.current) return;
+        knownStates.current = next;
+        setSteps(catalog.steps); setStates(next); setError("");
+        setSelected(current => catalog.steps.some(step => step.id === current) ? current : (catalog.steps.find(step => !canAdvance(next[step.id])) ?? catalog.steps[0])?.id ?? "");
+      };
+      const removed = !!selection.current && !catalog.steps.some(step => step.id === selection.current);
+      setWithdrawn(removed);
+      if (removed && editing.current && !discardRemoved) {
+        // 确认只记录离开意图；确认后重读目录，不执行已过期的候选。
+        setLeave({kind: "catalog"}); return undefined;
+      }
+      setLeave(pending => pending?.kind === "catalog" ? null : pending);
+      if (removed && discardRemoved) markDirty(false);
+      apply();
       if (catalog.steps.length && statuses.every(([, status]) => "enabled" in status && status.enabled === null)
           && !window.location.hash && !sessionStorage.getItem("onboarding-invited")) {
         sessionStorage.setItem("onboarding-invited", "1"); invitation.current?.showModal();
       }
       return {steps: catalog.steps, states: next};
-    } catch (reason) { if (alive.current && sequence === refreshes.current) setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) {
+      if (alive.current && sequence === refreshes.current) {
+        const fault = `配置读取失败：${reason instanceof Error ? reason.message : String(reason)}`;
+        setError(fault);
+        setStates(Object.fromEntries(Object.entries(knownStates.current).map(([id, status]) => [id, {...status, fault}])));
+      }
+    }
     finally { if (alive.current && sequence === refreshes.current) setLoading(false); }
     return undefined;
-  }, [ctx]);
+  }, [ctx, markDirty]);
   useEffect(() => {
     alive.current = true; void refresh();
     const change = () => { void refresh(); };
@@ -80,9 +117,9 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
   const index = steps.findIndex(step => step.id === selected);
   const state = states[selected];
   // 状态读取失败不是"未决定"：只锁定故障项自身，后续步骤仍可查看。
-  const firstUndecided = steps.findIndex(step => !done(states[step.id]) && !states[step.id]?.fault);
-  const decidedCount = steps.filter(step => done(states[step.id])).length;
-  const allDone = steps.length > 0 && steps.every(step => done(states[step.id]));
+  const firstCannotAdvance = steps.findIndex(step => !canAdvance(states[step.id]) && !states[step.id]?.fault);
+  const decidedCount = steps.filter(step => hasDecision(states[step.id])).length;
+  const allCanAdvance = !error && steps.length > 0 && steps.every(step => canAdvance(states[step.id]));
   useEffect(() => {
     if (!current || !formHost.current || finished) return;
     sessionStorage.setItem("onboarding-page", current.id);
@@ -92,18 +129,18 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
     const page = pages.entries.find(entry => entry.route === current.route);
     const host = formHost.current;
     if (!page) { host.textContent = "此插件的设置页面尚未就绪，请刷新或检查插件状态。"; return; }
-    const dispose = pages.render(page.id, host, {embedded: true, changed, dirty: setDirty});
+    const dispose = pages.render(page.id, host, {embedded: true, changed, dirty: markDirty});
     // 子插件可能拥有独立 React root；等父页面提交结束后销毁，避免提前清空子节点。
     return () => queueMicrotask(dispose);
-  }, [current?.id, current?.route, pages, finished, changed]);
-  const navigate = (go: () => void) => { if (dirty) setLeave(() => go); else go(); };
+  }, [current?.id, current?.route, pages, finished, changed, markDirty]);
+  const navigate = (go: () => void) => { if (editing.current) setLeave({kind: "navigate", go}); else go(); };
   const choose = (step: Step) => navigate(() => { setSelected(step.id); setFinished(false); });
   const next = async () => {
     const fresh = await refresh();
-    if (!fresh || !done(fresh.states[selected])) return;
+    if (!fresh || selection.current !== selected || !canAdvance(fresh.states[selected])) return;
     const at = fresh.steps.findIndex(step => step.id === selected);
     if (at >= 0 && at + 1 < fresh.steps.length) choose(fresh.steps[at + 1]);
-    else if (fresh.steps.every(step => done(fresh.states[step.id]))) navigate(() => setFinished(true));
+    else if (fresh.steps.every(step => canAdvance(fresh.states[step.id]))) navigate(() => setFinished(true));
   };
   return <main className="onboarding-page">
     <header className="onboarding-header">
@@ -115,12 +152,12 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
       <button type="button" disabled={loading || dirty} onClick={() => void refresh()}>刷新状态</button>
     </header>
     {error && <div className="config-error" role="alert">{error}</div>}
-    {withdrawn && <p role="status" className="config-hint">刚才的配置项已不在当前安装组合中，已转到可用步骤；已有配置和数据会保留。</p>}
-    {loading ? <p role="status">正在读取已安装的功能…</p> : !steps.length && !error ? <div className="config-hint">当前没有需要配置的插件。你仍可使用功能设置。</div> : finished && allDone ?
+    {withdrawn && <p role="status" className="config-hint">刚才的配置项已不在新的安装组合中。未保存的修改需先确认是否放弃，之后转到可用步骤；已有配置和数据会保留。</p>}
+    {loading ? <p role="status">正在读取已安装的功能…</p> : !steps.length && !error ? <div className="config-hint">当前没有需要配置的插件。你仍可使用功能设置。</div> : finished && allCanAdvance ?
       <section className="onboarding-complete">
-        <div className="onboarding-complete-badge" aria-hidden="true">✓</div>
-        <h2 tabIndex={-1}>配置已完成</h2>
-        <p>已保存你的选择。前置关闭的功能保持不可用，已有数据会保留。</p>
+        <div className="onboarding-complete-badge" aria-hidden="true">{decidedCount === steps.length ? "✓" : "—"}</div>
+        <h2 tabIndex={-1}>配置检查已结束</h2>
+        <p>已保存 {decidedCount} / {steps.length} 项选择。前置不可用的未决定项没有被自动关闭，之后仍可配置；已有数据会保留。</p>
         <ul>{steps.map(step => <li key={step.id}><span>{step.title}</span><strong>{label(states[step.id])}</strong></li>)}</ul>
         <div className="onboarding-complete-actions"><a className="onboarding-chat" href="#">开始对话</a><button type="button" onClick={() => setFinished(false)}>查看配置</button></div>
       </section> :
@@ -133,14 +170,14 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
             </div>
           </div>
           <ol className="onboarding-step-list">{steps.map((step, i) => {
-            const ready = done(states[step.id]);
-            const locked = firstUndecided >= 0 && i > firstUndecided;
+            const decided = hasDecision(states[step.id]);
+            const locked = firstCannotAdvance >= 0 && i > firstCannotAdvance;
             return <li key={step.id}><button type="button"
               aria-current={step.id === selected ? "step" : undefined}
               disabled={locked}
-              data-state={ready ? "done" : locked ? "locked" : step.id === selected ? "current" : "pending"}
+              data-state={decided ? "done" : locked ? "locked" : step.id === selected ? "current" : "pending"}
               onClick={() => choose(step)}>
-              <span className="onboarding-number" aria-hidden="true">{ready ? "✓" : i + 1}</span>
+              <span className="onboarding-number" aria-hidden="true">{decided ? "✓" : i + 1}</span>
               <span className="onboarding-step-text"><strong>{step.title}</strong><small>{label(states[step.id])}</small></span>
             </button></li>;
           })}</ol>
@@ -151,16 +188,23 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
             <h2 id="onboarding-step-title" ref={heading} tabIndex={-1}>{current?.title}</h2>
           </header>
           {state?.fault && <div role="alert" className="config-error">{state.fault}<button type="button" onClick={() => void refresh()}>重试读取</button></div>}
-          {state?.blocked && <p className="config-hint">{state.reason}。此项目前不可开启，可以继续下一步；不会记录为你主动关闭。</p>}
+          {state?.blocked && !state.fault && <p className="config-hint">{state.reason}。此项目前不可开启，可以继续下一步；不会记录为你主动关闭。</p>}
           <div ref={formHost} />
           <footer className="onboarding-footer">
             <button type="button" disabled={index <= 0} onClick={() => choose(steps[index - 1])}>上一步</button>
             <span>{dirty ? "请先保存本页选择" : label(state)}</span>
-            <button className="config-primary" type="button" disabled={!done(state) || dirty} onClick={() => void next()}>{index === steps.length - 1 ? "查看完成情况" : "下一步"}</button>
+            <button className="config-primary" type="button" disabled={!!error || !canAdvance(state) || dirty} onClick={() => void next()}>{index === steps.length - 1 ? "查看完成情况" : "下一步"}</button>
           </footer>
         </section>
       </div>}
-    {leave && <Confirm title="离开前要放弃修改吗？" accept={() => { setDirty(false); const go = leave; setLeave(null); go(); }} cancel={() => setLeave(null)}>本页尚有未保存的修改。离开不会改变已保存的配置。</Confirm>}
+    {leave && <Confirm title="离开前要放弃修改吗？" busy={checkingRemoval} accept={() => {
+      if (confirmRead.current) return;
+      const pending = leave;
+      if (pending.kind === "catalog") {
+        confirmRead.current = true; setCheckingRemoval(true);
+        void refresh(true).finally(() => { confirmRead.current = false; if (alive.current) { setCheckingRemoval(false); setLeave(null); } });
+      } else { setLeave(null); markDirty(false); pending.go(); }
+    }} cancel={() => setLeave(null)}>{checkingRemoval ? "正在核对当前安装组合，请稍等。原草稿保留，核对完成前不能继续编辑；读取失败后可继续填写。" : "本页尚有未保存的修改。离开不会改变已保存的配置。"}</Confirm>}
     {createPortal(<dialog ref={invitation} className="config-dialog onboarding-invite" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, document.body)}
   </main>;
 }

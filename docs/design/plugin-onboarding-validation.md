@@ -157,3 +157,15 @@ Chromium 146 / 真实 CDP 13/13 PASS，无页面异常：
 概念基线 47 passed，10 项对应检查通过。两个独立 workspace 的 SQLite 原生完整性检查均为 ok。未执行真实 OAuth、Android 或生产部署；没有启动第二个 Telegram 接收器。SessionStorage 只保存未发送文字及导航 ID，不保存 Key。恢复凭据和原始数据库是 0700/0600 本机私有恢复点，不引用或上传 GitHub。
 
 证据根 `/mnt/data/akashic-onboarding-fixes-20260928/`：`issue806-accepted.json`、`issue806-v11-browser.json`、`issue806-v11-boundaries.json`、`issue806-v11-remaining-boundaries.json`、`issue806-v11-cas-r2-boundaries.json`、`issue806-v11-ui-themes.json`、`issue806-v12-driver-boundaries.json`、`issue806-v11-checks.json`、`issue806-v11-artifacts.json`、`issue806-integrity.json`；备份在 `backups/issue806*/`。
+
+## Issue #807 · 已决定计数与受阻状态
+
+- 接受源码 `783b059fe78c5ba1fd3ed4b2695ca5610098b55c`，tree `a8fc8daab29ed803aa84fa7ebdb64989763f3a98`；base #806 `055f5b0e`。独立发行制品按正式链安装 42 个插件，其中三个 UI 插件显式补装；本层不声称默认安装已通过 #800。Core 676 个文件与 42 个插件源码匹配。
+- 浏览器/CDP、config、plugin home、workspace 全部隔离。真实 CHAT 使用 DeepSeek `deepseek-flash`；真实向量试算 `qwen3.7-text-embedding` 返回 1024 维。完成一段短 Web 对话，用户及助手 Message 可由历史端口读取，并据此配置 Wake 的本机 Web 目标；没有启动第二个 Telegram receiver，也没有向 Telegram 发送测试消息。
+- 接受 20 项独立场景：首次正常引导与读取故障 9；迟到下一步、编辑项正式卸载、确认中的读取失败及重新出现 5；正式撤回后的明确放弃、动态分母及重装保留关闭选择 1；真实向量与 Akasha 开启 1；真实 Web 对话、Wake 关闭且受阻、Wake 开启后关闭/恢复 Akasha 3；保持浏览器的真实 runtime 重启 1。只有各记录中已完成的 PASS 计入，红色中断记录保留。
+- 读取故障不造决定、不允许故障项结束；明确关闭和开启均可与 blocked 并列。pending、校验拒绝和草稿不改变 owner 的决定数。新安装 Wake 被前置阻断时仍为 null，合法结束显示已保存 4/5 与尚未决定，不冒充自动关闭。
+- 动态目录撤回场景用真实 Telegram 发送插件正式卸载/重装；受控宿主目录导航 veto 单独隔离 Onboarding 的撤回协议。取消与重新出现保留实际输入及 dirty；接受后重读当前目录，忙时按钮和 Escape 不可重复操作；status 503 保留草稿。该受控 veto 不是整个宿主换代已接受的替代证据。
+- Wake embedded 页在 blocked 时依既有合同只显示原因与下一步；独立设置页可明确关闭。先前测试误在受阻页寻找开关，未计入 PASS。移除 Models 会使本组合的 Web bootstrap 503，不能据此验收可见标签；已正式恢复 Models，采用真实关闭 Akasha 的 owner 路径验证 Wake 的 true/false + blocked。
+- 重启核对 11 组持久行的计数与哈希：Message/Session、模型配置/绑定/向量定义、记忆 Turn/反馈/Hub；正常随新进程变化的 `model_registry_meta.host_epoch` 单独排除，不声称进程身份应保持。重启前有原生 SQLite 备份；12 个 SQLite integrity_check 全部 ok。
+- 检查 9 项退出码 0，概念基线 pytest 47 passed；前端 typecheck、Core/tests pyright、plugin_boundary、yoyo、两项协议生成物与 diff 检查均通过。独立概念 Gate 的身份与结论见本 PR。
+- 本机证据根 `/mnt/data/akashic-onboarding-fixes-20260928` 的 `issue807-accepted.json` 固定 scenario SHA 与逐项来源；原始配置、日志、数据库和凭据不上传。联合栈首次安装、#808 记忆展示恢复、生产与 Android 尚未在本层执行。恢复点为该目录的原生备份；源码可通过本 PR revert 回退，不需删运行数据。
