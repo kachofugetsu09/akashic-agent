@@ -79,6 +79,7 @@ class _ConnectionConfig:
     read_timeout: float
     max_retries: int
     allow_unverified_manual: bool
+    thinking_format: str = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +120,7 @@ class _BoundChat:
         # 连接配置只留给 embeddings/discovery 等非生成路径。
         connection = replace(self._connection, max_retries=0)
         body = _chat_body(self._descriptor, connection, self._config, request)
-        if request.on_delta is None and not _is_deepseek_v4(self._descriptor.model):
+        if request.on_delta is None and connection.thinking_format != "deepseek":
             payload = await _request_json(
                 connection,
                 self._credential,
@@ -318,7 +319,7 @@ async def _discover(
         seen_models.add(model)
         result.append(
             DiscoveredModel(
-                kind=ModelKind.CHAT,
+                kind=None,
                 model=model,
                 default_reasoning_effort=None,
                 capabilities=ModelCapabilities(),
@@ -340,6 +341,7 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         "max_attempts",
         "allow_unverified_manual",
         "catalog_provider_id",
+        "thinking_format",
     }
     unknown = sorted(set(config) - allowed)
     if unknown:
@@ -370,7 +372,11 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
     allow_unverified_manual = config.get("allow_unverified_manual", False)
     if not isinstance(allow_unverified_manual, bool):
         raise ValueError("allow_unverified_manual must be boolean")
+    thinking_format = config.get("thinking_format", "none")
+    if not isinstance(thinking_format, str) or thinking_format not in {"none", "deepseek"}:
+        raise ValueError("thinking_format must be none or deepseek")
     return _ConnectionConfig(
+        thinking_format=thinking_format,
         base_url=_normalize_base_url(descriptor.endpoint),
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
@@ -417,10 +423,6 @@ def _model_config(config: Mapping[str, Any]) -> _ModelConfig:
     )
 
 
-def _is_deepseek_v4(model: str) -> bool:
-    return model.rsplit("/", 1)[-1].lower().startswith("deepseek-v4-")
-
-
 def _chat_body(
     descriptor: BoundModelDescriptor,
     connection: _ConnectionConfig,
@@ -445,7 +447,7 @@ def _chat_body(
     if request.disable_reasoning:
         for key in ("enable_thinking", "thinking", "reasoning_effort"):
             body.pop(key, None)
-        if _is_deepseek_v4(descriptor.model):
+        if connection.thinking_format == "deepseek":
             body["thinking"] = {"type": "disabled"}
     return body
 

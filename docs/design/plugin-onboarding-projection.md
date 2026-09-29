@@ -521,3 +521,26 @@ Shell 的 hashchange / popstate 也发送既有 `akashic:before-navigate` 事件
 provider 动作在已有 auth owner 的 closed 边界前后检查存活状态。正式模块撤回后，不再启动同步或默认绑定；auth 取消仍由原 owner 幂等收束，不与业务请求争用 busy。向量弹窗没有 auth，因此由自己的 dialog 生命周期在两个持久化请求之间判断 closed。文档实际离开（非 BFCache pagehide）释放已登记 auth attempt；beforeunload 拒绝离开时不提前取消。已提交请求不因撤回而回滚。
 
 取消浏览器历史离开时，Shell 替换当前历史条目的地址为仍可见的页面；不增加条目，不承诺保留被拒绝条目的原目标。这是 route/page 一致的现行恢复语义，不引入跨文档历史位置状态机。
+
+
+## 模型目录与用途证据（Issue #803）
+
+`DiscoveredModel.kind=None` 只表示服务未给出用途，允许前端展示候选 ID，禁止直接 sync 到已保存模型；`ModelKind` 继续只有 chat/embedding。Compatible `/models` 返回 ID 不能证明支持聊天，不按型号名称猜用途。Provider 自己给出的可信用途资料仍可沿用原同步合同，本单不要求其他 provider 逐个付费调用。
+
+```text
+┌─ URL/Key 或已保存连接 ───────────────────────┐
+│ 读取候选 ID → 用户选聊天 → 短消息实际验证   │
+│             → 原子保存连接与首模型          │
+│ 已有连接：读取候选 → 验证并添加             │
+│ 历史行：用户逐个验证 → 成功仅返回 verified  │
+│         → 失败说明原因，由用户停用/重配    │
+└───────────────────────────────────────────┘
+```
+
+Models 独占凭证、候选校验、模型记录和默认绑定。`discoverSaved` 仅在 owner 内读取凭证，返回候选与已有 revision 的 CAS 结果，不向浏览器回显 Key；`verifyModel` 不修改旧用途、启停、默认、模型 ID 或 revision。旧记录保留原证据，不宣称被自动重新验证。显式“停用此连接”复用既有 DisableConnection，确认后逻辑停用该连接的全部模型，保留所有持久行；不是单个模型的静默修复或删除。不能为修复错误用途自动删除模型、会话、向量或图。
+
+公开 connection-type ABI 对账 `discover/discoverSaved/addModel/verifyModel/disableConnection`；三个 provider 与宿主同步 contract digest。短聊天 probe 有界输出，不使用目录 HTTP 200 代替完成结果。更换连接地址、凭证、认证身份或协议时，在候选配置上验证原有 enabled 模型，全部成功才执行原 CAS 事务；最多16个、模型验证总计一分钟，超限建议新建所需型号再显式停用旧连接，不自动批量外发。仅改名称不启动模型调用。候选失败不写连接或模型；正常写入仍由原事务 owner 校验 revision。
+
+DeepSeek 的私有 thinking 字段与 SSE 行为属于连接的 `thinking_format`，不由模型名推断。官方模板选择 deepseek，自定义模板默认 none，可在高级设置明确选择。既有连接保留配置，不静默迁移。依据 [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)，关闭思考须实际发送 `thinking.type=disabled`。
+
+所有源文件的恢复点与隔离验证证据保留在 `/mnt/data/akashic-onboarding-fixes-20260928/backups/issue803/`。不修改正式 workspace。

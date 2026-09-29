@@ -52,6 +52,7 @@ from .settings import (
     StartConnectionAuth,
     SyncModels,
     UpdateConnection,
+    VerifyModel,
 )
 from .selection import MODEL_SELECTION
 
@@ -64,6 +65,8 @@ class ModelControl(Protocol):
     async def discover(
         self, connection: AddConnection
     ) -> tuple[DiscoveredModel, ...]: ...
+
+    async def discover_saved(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]: ...
 
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
 
@@ -93,6 +96,9 @@ class BoundModelControl:
         connection: AddConnection,
     ) -> tuple[DiscoveredModel, ...]:
         return await self._resolver.require(MODEL_SETTINGS).discover(connection)
+
+    async def discover_saved(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]:
+        return await self._resolver.require(MODEL_SETTINGS).discover_saved(connection_id, expected_revision)
 
     async def apply(self, command: ModelChange) -> SettingsReceipt:
         return await self._resolver.require(MODEL_SETTINGS).apply(command)
@@ -182,6 +188,17 @@ class SetDefaultPayload(_Payload):
     model_id: str = Field(min_length=1, max_length=128)
 
 
+class SavedDiscoveryPayload(_Payload):
+    expected_revision: int = Field(ge=0)
+    connection_id: str = Field(min_length=1, max_length=128)
+
+
+class VerifyModelPayload(_Payload):
+    type: Literal["verify_model"]
+    expected_revision: int = Field(ge=0)
+    model_id: str = Field(min_length=1, max_length=128)
+
+
 class SyncModelsPayload(_Payload):
     type: Literal["sync_models"]
     expected_revision: int = Field(ge=0)
@@ -217,6 +234,7 @@ CommandPayload = Annotated[
     | UpdateConnectionPayload
     | DisableConnectionPayload
     | AddModelPayload
+    | VerifyModelPayload
     | SetDefaultPayload
     | SyncModelsPayload
     | StartAuthPayload
@@ -361,6 +379,20 @@ def create_model_settings_router(
         ) as error:
             raise _http_error(error, operation="discover") from error
 
+    @router.post("/discover_saved")
+    async def discover_saved(request: Request) -> dict[str, object]:
+        try:
+            payload = SavedDiscoveryPayload.model_validate(await request.json())
+        except (ValueError, ValidationError) as error:
+            raise HTTPException(status_code=422, detail=_validation_detail(error)) from error
+        try:
+            models = await control.discover_saved(payload.connection_id, payload.expected_revision)
+            return {"models": [_discovered_payload(model) for model in models]}
+        except (RevisionConflictError, AuthenticationError, RateLimitError, QuotaError,
+                ModelControlUnavailable, DriverUnavailableError, ModelUnavailableError,
+                ModelTimeoutError, TransportError, ModelError, ValueError) as error:
+            raise _http_error(error, operation="discover") from error
+
     @router.post("/command")
     async def command(request: Request) -> dict[str, object]:
         try:
@@ -424,6 +456,16 @@ def rpc_methods(control: ModelControl) -> dict[str, RpcMethod]:
         ) as error:
             return _rpc_error(_http_error(error, operation="discover"))
 
+    async def discover_saved(params: BaseModel) -> object:
+        assert isinstance(params, SavedDiscoveryPayload)
+        try:
+            models = await control.discover_saved(params.connection_id, params.expected_revision)
+            return _rpc_ok({"models": [_discovered_payload(model) for model in models]})
+        except (RevisionConflictError, AuthenticationError, RateLimitError, QuotaError,
+                ModelControlUnavailable, DriverUnavailableError, ModelUnavailableError,
+                ModelTimeoutError, TransportError, ModelError, ValueError) as error:
+            return _rpc_error(_http_error(error, operation="discover"))
+
     async def command(params: BaseModel) -> object:
         assert isinstance(params, CommandParams)
         try:
@@ -448,6 +490,7 @@ def rpc_methods(control: ModelControl) -> dict[str, RpcMethod]:
         "models/call_stats": RpcMethod(CallStatsParams, call_stats),
         "models/catalog": RpcMethod(EmptyParams, catalog),
         "models/discover": RpcMethod(ConnectionInput, discover),
+        "models/discover_saved": RpcMethod(SavedDiscoveryPayload, discover_saved),
         "models/command": RpcMethod(CommandParams, command),
     }
 
@@ -469,6 +512,8 @@ def _command(payload: CommandPayload) -> ModelChange:
         return DisableConnection(payload.expected_revision, payload.connection_id)
     if isinstance(payload, AddModelPayload):
         return _add_model(payload)
+    if isinstance(payload, VerifyModelPayload):
+        return VerifyModel(expected_revision=payload.expected_revision, model_id=payload.model_id)
     if isinstance(payload, SetDefaultPayload):
         return SetDefaultModel(
             payload.expected_revision,
@@ -595,7 +640,7 @@ def _discovered_payload(model: DiscoveredModel) -> dict[str, object]:
     """Project an unsaved provider model without inventing a registry ID."""
 
     return {
-        "kind": model.kind.value,
+        "kind": model.kind.value if model.kind is not None else None,
         "model": model.model,
         "defaultReasoningEffort": model.default_reasoning_effort,
         "capabilities": {

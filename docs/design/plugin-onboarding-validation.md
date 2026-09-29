@@ -99,3 +99,27 @@ Chromium 146 / axe-core 4.13.0：纸感、墨纸 × 1440/390/320 CSS px × 普�
 | BFCache pagehide | 保留上下文 | 保留上下文，不提前取消 |
 
 本机证据 `issue801-browser.json`、`issue801-lifecycle.json`；未上传凭据。生命周期回执是明确的前端协议场景，不能当成真实账号 OAuth 登录验收。真实 Codex/OpenCode 登录、读屏、Android 与生产发布未验证。
+
+
+## Issue #803：模型 ID 与用途证据（2026-09-29）
+
+冻结源码 `62dfa5a6f39ab7944bcf29e91c2350e8f0f0faf0`，全包经正式安装链进入全新 HOME/config/workspace，四个受影响插件的 Python 和手写 JS 与源码逐字节一致。基于 #801 的离开协议；默认 UI 组合仍由 #800 独立交付，本轮显式补装同一发行包的三个 UI。
+
+Chromium 146 / 真实 CDP 13/13 PASS，无页面异常：
+
+- 真实混合目录 261 个 ID 保持 kind=null；实际向量型号走 CHAT 保存返回失败，连接、模型和默认均未写入，密码草稿保留。
+- 修改 Key 立即使旧目录不可保存；真实鉴权失败后草稿仍在。
+- DeepSeek 官方模板实际短回复验证后原子保存连接和聊天型号，再设置默认。
+- 现有行由用户逐个验证，成功没有 revision 或记录变更。
+- 已保存凭证的目录 REST：422（缺字段）、409（revision 已变）、200（正确输入）；响应没有 Key。
+- 已有连接可以选择新 ID 或手动型号。重复型号只验证，不重复创建；新型号实际验证后添加，已有默认不改变。
+- kind=null 的 sync 明确拒绝，未写持久状态。
+- 更新到不支持既有聊天型号的服务：旧包错误提交（真实复现）；新包拒绝并保留旧 revision、连接和密码草稿。之后用旧凭证仍得到真实回复验证。
+- 仅改名称、Key 留空，仍可使用原凭证。
+- 显式停用整个连接保留全部模型行。UI 卡片不可编辑；HTTP/RPC 编辑停用连接在任何网络调用前返回失败，受控目标服务请求计数为零。
+
+受控 HTTP 协议捕获独立标注：同名 deepseek-flash 在标准兼容格式下无 thinking/stream 字段；明确 DeepSeek 格式发送 thinking.type=disabled 和 stream=true。此夹具证明协议选择，不代替真实云服务验收。
+
+概念基线 47 passed；pyright、tests pyright、plugin_boundary、yoyo、控制协议、HostBridge 协议、前端 typecheck 和 diff 检查通过。独立只读概念 Gate（请求配置 gpt-5.6-terra/xhigh）在上述源码提交 PASS，must-fix=0。未执行实际 Codex/OpenCode OAuth、Android 或生产部署，也没有自动探测全部目录 ID。
+
+证据：`/mnt/data/akashic-onboarding-fixes-20260928/issue803-verified.json`、`issue803-verified-artifacts.json`、`issue803-before-update.json`、`issue803-real-probe.json`、`issue803-wire-capture.json` 与检查日志；恢复点在相邻 `backups/issue803*/`。凭证和原始数据库不上传 GitHub。

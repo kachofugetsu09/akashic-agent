@@ -55,6 +55,7 @@ from agent.plugin_composition import (
     ModelKind,
     ModelRequest,
     ModelUnavailableError,
+    ModelTimeoutError,
     SavedEmbedding,
     ServiceKey,
 )
@@ -76,10 +77,12 @@ from .settings import (
     StartConnectionAuth,
     SyncModels,
     UpdateConnection,
+    VerifyModel,
 )
 from .store import (
     MODEL_ROLES,
     ModelsStore,
+    RevisionConflictError,
     StoredConnection,
     StoredModel,
     StoredSnapshot,
@@ -94,6 +97,8 @@ _LOCAL_ROOT = secrets.token_hex(8)
 _LIVE_CALLS: set[str] = set()
 _RUN_ADMISSION = threading.Lock()
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
+_SETTINGS_MAX_MODEL_PROBES = 16
+_SETTINGS_MODEL_PROBE_SECONDS = 60
 _DEFAULT_ROLE = "default"
 _AGENT_ROLE = "agent"
 _VISION_ROLE = "vision"
@@ -729,6 +734,9 @@ class _SettingsView:
     async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]:
         return await self._state.discover_models(connection)
 
+    async def discover_saved(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]:
+        return await self._state.discover_saved_models(connection_id, expected_revision)
+
     async def apply(self, command: ModelChange) -> SettingsReceipt:
         return await self._state.apply_change(command)
 
@@ -1336,6 +1344,21 @@ class ModelsState:
         elif isinstance(command, AddModel):
             await self._check_model(command)
             revision = self.store.add_model(command)
+        elif isinstance(command, VerifyModel):
+            snapshot = self._snapshot_required()
+            model = snapshot.models.get(command.model_id)
+            if model is None or not model.enabled:
+                raise ModelUnavailableError("模型不存在或已停用。")
+            await self._check_model(AddModel(
+                expected_revision=command.expected_revision, model_id=model.model_id,
+                connection_id=model.connection_id, kind=model.kind, model=model.model,
+                default_reasoning_effort=model.default_reasoning_effort,
+                capabilities=model.capabilities, capability_sources=model.capability_sources,
+                driver_config=model.driver_config,
+            ))
+            if self._snapshot_required().revision != command.expected_revision:
+                raise RevisionConflictError("配置已改变，请重新验证当前模型。")
+            return SettingsReceipt(revision=command.expected_revision, status="verified")
         elif isinstance(command, SetDefaultModel):
             revision = self.store.set_default(command)
         elif isinstance(command, SyncModels):
@@ -1382,6 +1405,28 @@ class ModelsState:
             connection.connection_id,
             discovered,
         )
+
+    async def discover_saved_models(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]:
+        """用 owner 保存的凭证读取候选，不发布或修改现有模型。"""
+        snapshot = self._snapshot_required()
+        if snapshot.revision != expected_revision:
+            raise RevisionConflictError("配置已改变，请重新读取目录。")
+        connection = snapshot.connections.get(connection_id)
+        if connection is None or not connection.enabled:
+            raise ModelUnavailableError("连接不存在或已停用。")
+        registration = self._registration_required(connection.driver_id)
+        discover = registration.definition.discover
+        if discover is None:
+            raise ModelUnavailableError("该连接不支持读取模型目录。")
+        async with registration.context.runtime_scope():
+            models = await discover(_driver_connection_descriptor(connection),
+                self.store.credential_handle(connection_id, connection.auth_identity))
+        if self.capability_catalog is not None:
+            models = await self.capability_catalog.enrich(models,
+                provider_id=_capability_provider_id(connection.driver_config, connection.driver_id))
+        if self._snapshot_required().revision != expected_revision:
+            raise RevisionConflictError("配置已改变，请重新读取目录。")
+        return models
 
     async def _discover_new_connection(
         self,
@@ -1440,6 +1485,8 @@ class ModelsState:
         existing = snapshot.connections.get(command.connection_id)
         if existing is None:
             raise ModelUnavailableError(f"模型连接不存在: {command.connection_id}")
+        if not existing.enabled:
+            raise ModelUnavailableError("连接已停用；请新建连接，历史配置保留。")
         connection = replace(
             existing,
             name=command.name,
@@ -1460,9 +1507,28 @@ class ModelsState:
                 connection.connection_id, command.auth_identity
             )
         )
+        # 1. 用途证据绑定地址、凭证和协议；仅改名称不启动模型调用。
+        changed = (connection.endpoint != existing.endpoint
+                   or command.credential is not None
+                   or connection.auth_identity != existing.auth_identity
+                   or connection.driver_config != existing.driver_config)
+        models = tuple(model for model in snapshot.models.values()
+                       if changed and model.connection_id == connection.connection_id and model.enabled)
+        if len(models) > _SETTINGS_MAX_MODEL_PROBES:
+            raise ValueError(f"连接有 {len(models)} 个已启用模型，超出一次验证上限 {_SETTINGS_MAX_MODEL_PROBES}。请新建连接选择需要的型号，再显式停用旧连接。")
         selected = self._select_driver_records((connection,))
         async with _driver_scope(self, (connection,), selected=selected) as opened:
             await self._probe_connection(connection, credential, opened)
+            if not models:
+                return
+            # 2. 所有候选调用成功才允许原事务更新；失败不改写旧凭证或用途。
+            definition, driver = await self._open_driver(connection, opened, credential=credential)
+            try:
+                async with asyncio.timeout(_SETTINGS_MODEL_PROBE_SECONDS):
+                    for model in models:
+                        await self._check_bound_model(snapshot, connection, model, definition, driver)
+            except TimeoutError as error:
+                raise ModelTimeoutError("模型验证超过一分钟；连接未更新，请稍后重试。") from error
 
     async def _probe_connection(
         self,
@@ -1545,14 +1611,21 @@ class ModelsState:
         definition: ModelDriverDefinition,
         driver: DriverConnection,
     ) -> None:
-        """Bind one model and probe embedding output before any durable write."""
+        """验证所选用途后才允许写入模型与连接。"""
 
         if model.kind is ModelKind.CHAT:
             descriptor = self._temporary_chat_descriptor(
                 snapshot, connection, model, definition
             )
-            _ = driver.bind_chat(descriptor, model.driver_config)
-        else:
+            bound = driver.bind_chat(descriptor, model.driver_config)
+            response = await bound.complete(ModelRequest(
+                messages=({"role": "user", "content": "Reply OK."},),
+                max_output_tokens=256,
+                disable_reasoning=True,
+            ))
+            if not response.content or not response.content.strip():
+                raise ModelUnavailableError("对话验证没有返回文字；请选择支持对话的模型。")
+        elif model.kind is ModelKind.EMBEDDING:
             descriptor = self._temporary_embedding_descriptor(
                 snapshot, connection, model, definition
             )
@@ -1561,6 +1634,8 @@ class ModelsState:
                 driver.bind_embedding(descriptor, model.driver_config),
             )
             _ = await bound.embed(("Akashic embedding setup check",))
+        else:
+            raise ModelUnavailableError("模型用途尚未验证，不能保存。")
 
     @staticmethod
     def _check_initial_model_identity(command: CreateConnectionWithModel) -> None:

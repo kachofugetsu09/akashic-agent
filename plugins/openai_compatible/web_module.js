@@ -23,6 +23,7 @@ export function activate(ctx) {
           name: "DeepSeek",
           endpoint: "https://api.deepseek.com/v1",
           provider: "deepseek",
+          thinkingFormat: "deepseek",
         },
       },
       {
@@ -41,7 +42,7 @@ export function activate(ctx) {
       const isDeepSeek = !existing && provider === "deepseek";
       const title = existing ? `编辑 ${existing.name}` : isDeepSeek ? "连接 DeepSeek" : "连接自定义 API";
       const description = existing
-        ? "更新连接信息，或重新读取服务的模型目录。"
+        ? "更新地址、密钥或协议前会逐个验证已启用模型（最多16个，总计一分钟）；会产生真实服务调用，失败保留原配置。仅改名称不调用模型。"
         : "填写连接信息，然后检测账号可用的模型。";
       host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(title)}</h2><p class="settings-dialog-description">${description}</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
@@ -50,18 +51,18 @@ export function activate(ctx) {
           <label class="is-wide"><span>Base URL${existing ? "（留空则保持不变）" : ""}</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="https://api.example.com/v1"></label>
           <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "sk-…"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
-        ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 仅用于补充模型能力；通常无需修改。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label></div></details>`}
+        ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 仅用于补充模型能力；思考格式仅在服务明确支持时选择。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label><label class="is-wide"><span>思考开关格式</span><select name="thinkingFormat" aria-label="思考开关格式"><option value="none">标准兼容格式</option><option value="deepseek">DeepSeek 格式</option></select></label></div></details>`}
         <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会显示在页面中</span></p>
-        <section class="settings-model-discovery"><header><div><h3>模型</h3><p>${existing ? "检测使用已保存的地址和密钥；修改后请先保存连接。" : "从服务目录选择一个默认模型，不必手填名称。"}</p></div></header>
-          ${existing ? `<p class="settings-discovery-summary">当前已保存 ${props.state.models.length} 个模型。</p>` : `<div class="settings-discovery-empty" data-discovery-empty>
+        <section class="settings-model-discovery"><header><div><h3>模型</h3><p>${existing ? "检测使用已保存的地址和密钥；修改后请先保存连接。" : "目录只提供模型 ID；选择对话用途后，保存前会验证所选模型。"}</p></div></header>
+          ${existing ? `<p class="settings-discovery-summary">现有 ${props.state.models.length} 个模型；历史记录保留原用途，请逐个验证。失败时可在下方停用整个连接并重新配置；历史数据保留。</p><div data-saved-models></div><p role="status" data-saved-feedback></p><button type="button" class="settings-text-button" data-saved-manual>目录不可读取？手动指定对话型号</button><div data-saved-candidates hidden><label data-saved-manual-field hidden><span>对话型号</span><input aria-label="手动添加对话型号" data-saved-manual-input maxlength="256"></label><label><span>用于对话的模型</span><select aria-label="用于对话的模型" data-saved-select></select></label><p>目录只提供 ID；保存时会发送短消息验证对话用途。</p><button type="button" class="settings-primary-button" data-add-saved>验证并添加对话模型</button></div>` : `<div class="settings-discovery-empty" data-discovery-empty>
             <button type="button" class="settings-primary-button" data-discover>检测可用模型</button>
             <button type="button" class="settings-text-button" data-manual>无法检测？手动填写模型名</button>
           </div>
           <div class="settings-discovery-result" data-discovery-result hidden><label><span>默认模型</span><select name="detectedModel" aria-label="默认模型"></select></label><p data-model-detail></p></div>
-          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：your-model-name"}"></label><p>手动添加时图片等能力保持待识别，保存后仍可重新检测。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我知道模型目录未经验证，仍要保存这个连接。</span></label></div>
+          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：your-model-name"}"></label><p>手动添加时图片等能力保持待识别，保存后仍可重新检测。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我选择将此型号用于对话，保存前实际验证。</span></label></div>
           <p class="settings-discovery-status" data-status role="status" aria-live="polite" hidden></p>`}
         </section><p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}连接信息会在保存前验证</span><div class="settings-dialog-actions"><button type="button" class="settings-secondary-button" data-rescan>${existing ? "检测已保存连接" : "重新检测"}</button><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
+        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}保存前会向所选模型发送一条短消息，验证对话用途</span><div class="settings-dialog-actions"><button type="button" class="settings-secondary-button" data-rescan>${existing ? "读取已保存连接的模型 ID" : "重新检测"}</button><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
       const form = host.querySelector("form");
       const changed = () => props.dirty(true);
       form.addEventListener("input", changed);
@@ -69,6 +70,7 @@ export function activate(ctx) {
       form.elements.name.value = existing?.name ?? defaults.name ?? "";
       form.elements.endpoint.value = defaults.endpoint ?? "";
       if (form.elements.provider) form.elements.provider.value = provider;
+      if (form.elements.thinkingFormat) form.elements.thinkingFormat.value = defaults.thinkingFormat ?? "none";
       const showKey = host.querySelector("[data-show-key]");
       showKey.addEventListener("click", () => {
         const visible = form.elements.apiKey.type === "text";
@@ -79,10 +81,7 @@ export function activate(ctx) {
       host.querySelector("[data-close]").addEventListener("click", props.close);
       let stopDiscovery = () => {};
       if (existing) {
-        host.querySelector("[data-rescan]").addEventListener("click", () => {
-          void runButton(host.querySelector("[data-rescan]"), "检测中", props.actions.sync()
-            .then(() => props.changed("模型目录与能力已更新")), host.querySelector("[data-error]")).catch(() => {});
-        });
+        stopDiscovery = setupSavedDiscovery(host, form, props);
       } else {
         stopDiscovery = setupDiscovery(host, form, props);
       }
@@ -106,7 +105,7 @@ export function activate(ctx) {
             name: String(data.get("name")),
             endpoint: String(data.get("endpoint")),
             credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
-            driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), allow_unverified_manual: true},
+            driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
           model: modelInput(selected),
         }).then(() => props.changed("OpenAI Compatible 连接已保存")));
       });
@@ -127,6 +126,8 @@ function requireProps(value) {
   if (!value || typeof value !== "object" || typeof value.actions !== "object"
     || typeof value.actions.discover !== "function" || typeof value.actions.createManual !== "function"
     || typeof value.actions.update !== "function" || typeof value.actions.sync !== "function"
+    || typeof value.actions.discoverSaved !== "function" || typeof value.actions.addModel !== "function"
+    || typeof value.actions.verifyModel !== "function"
     || typeof value.dirty !== "function" || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
     throw new Error("models.connection-types.v1 props 无效");
   }
@@ -162,7 +163,7 @@ function setupDiscovery(host, form, props) {
     footer.hidden = false;
     manualInput.required = true;
     manualConfirm.required = true;
-    footerNote.lastChild.textContent = "模型目录未经验证；确认后仍可保存";
+    footerNote.lastChild.textContent = "目录未读取；保存时仍会实际验证对话用途";
     status.hidden = true;
     manualInput.focus();
   };
@@ -181,19 +182,19 @@ function setupDiscovery(host, form, props) {
         name: String(data.get("name")),
         endpoint: String(data.get("endpoint")),
         credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
-        driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), allow_unverified_manual: true},
+        driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
       }, attempt.signal), host.querySelector("[data-error]"), false);
       if (!attempt.isCurrent(connectionFingerprint(form))) return;
-      models = nextModels.filter((model) => model.kind === "chat");
-      if (models.length === 0) throw new Error("服务返回了模型目录，但没有可用于对话的模型");
+      models = nextModels.filter((model) => ["chat", null].includes(model.kind));
+      if (models.length === 0) throw new Error("服务返回了模型目录，但没有可选择的模型");
       detectedConnection = fingerprint;
       select.replaceChildren(...models.map((model, index) => new Option(model.model, String(index))));
       empty.hidden = true;
       manual.hidden = true;
       result.hidden = false;
       footer.hidden = false;
-      footerNote.lastChild.textContent = "连接信息会在保存前验证";
-      status.textContent = `找到 ${models.length} 个对话模型，请选择默认模型。`;
+      footerNote.lastChild.textContent = "保存前会向所选模型发送一条短消息，验证对话用途";
+      status.textContent = `找到 ${models.length} 个模型 ID；请选择用于对话的模型，保存时会实际验证。`;
       updateModelDetail(host, models[0]);
       select.focus();
     } catch (reason) {
@@ -216,7 +217,7 @@ function setupDiscovery(host, form, props) {
   rescanButton.addEventListener("click", () => detect(rescanButton));
   host.querySelector("[data-manual]").addEventListener("click", showManual);
   select.addEventListener("change", () => updateModelDetail(host, models[Number(select.value)]));
-  for (const field of [form.elements.endpoint, form.elements.apiKey, form.elements.provider]) {
+  for (const field of [form.elements.endpoint, form.elements.apiKey, form.elements.provider, form.elements.thinkingFormat]) {
     field.addEventListener("input", () => {
       const current = connectionFingerprint(form);
       if (detectedConnection === current) return;
@@ -231,6 +232,55 @@ function setupDiscovery(host, form, props) {
     });
   }
   host._discoveredModels = () => models;
+  return () => owner.close();
+}
+
+function setupSavedDiscovery(host, form, props) {
+  const owner = createDiscoveryOwner(), panel = host.querySelector("[data-saved-candidates]"), select = host.querySelector("[data-saved-select]");
+  const error = host.querySelector("[data-error]"), manual = host.querySelector("[data-saved-manual-field]"), manualInput = host.querySelector("[data-saved-manual-input]");
+  let candidates = [];
+  const fingerprint = () => JSON.stringify([form.elements.name.value, form.elements.endpoint.value, form.elements.apiKey.value]);
+  for (const model of props.state.models) {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "settings-text-button";
+    button.textContent = `验证 ${model.model}`;
+    button.addEventListener("click", () => {
+      void runButton(button, "验证中", props.actions.verifyModel(model.id)
+        .then(() => { if (!host.isConnected) return; host.querySelector("[data-saved-feedback]").textContent = `${model.model} 已按保存的用途验证；配置没有改动。`; }), error).catch(() => {});
+    });
+    host.querySelector("[data-saved-models]").appendChild(button);
+  }
+  const initialFingerprint = fingerprint();
+  const read = host.querySelector("[data-rescan]");
+  read.addEventListener("click", async () => {
+    const attempt = owner.start(fingerprint());
+    try {
+      const rows = await runButton(read, "读取中", props.actions.discoverSaved(attempt.signal), error, false);
+      if (!attempt.isCurrent(fingerprint())) return;
+      candidates = rows.filter((model) => ["chat", null].includes(model.kind));
+      if (!candidates.length) throw new Error("目录没有可选择的对话候选。请使用正确用途的连接。");
+      select.replaceChildren(...candidates.map((model, index) => new Option(model.model, String(index))));
+      manual.hidden = true; select.hidden = false;
+      panel.hidden = false; select.focus();
+    } catch (reason) {
+      if (!attempt.isCurrent(fingerprint())) return;
+      panel.hidden = true; error.textContent = reason instanceof Error ? reason.message : String(reason); error.hidden = false;
+    }
+  });
+  host.querySelector("[data-saved-manual]").addEventListener("click", () => { owner.invalidate(); candidates = []; manual.hidden = false; select.hidden = true; panel.hidden = false; manualInput.focus(); });
+  host.querySelector("[data-add-saved]").addEventListener("click", (event) => {
+    const candidate = manual.hidden ? candidates[Number(select.value)] : {kind:"chat", model:manualInput.value.trim()};
+    if (!candidate?.model) { manualInput.focus(); return; }
+    void runButton(event.currentTarget, "验证中", props.actions.addModel(modelInput(candidate))
+      .then(() => {
+        if (!host.isConnected) return;
+        host.querySelector("[data-saved-feedback]").textContent = `${candidate.model} 对话用途已验证并保存。`;
+        props.dirty(fingerprint() !== initialFingerprint);
+      }), error).catch(() => {});
+  });
+  for (const field of [form.elements.name, form.elements.endpoint, form.elements.apiKey]) {
+    field.addEventListener("input", () => { owner.invalidate(); candidates = []; panel.hidden = true; });
+  }
   return () => owner.close();
 }
 
@@ -272,6 +322,7 @@ function connectionFingerprint(form) {
     form.elements.endpoint.value,
     form.elements.apiKey.value,
     form.elements.provider.value,
+    form.elements.thinkingFormat.value,
   ]);
 }
 
