@@ -241,10 +241,11 @@ async def test_reminder_replay_is_once_per_input_and_material_identity(tmp_path:
             if isinstance(part, ContentPart) and part.kind == "model.facts"
         ]
         assert len(facts) == 4
-        assert all(isinstance(value, Mapping) for value in facts)
-        first_input_ids = {value["reminder_input_id"] for value in facts[:3]}
-        assert first_input_ids == {"first-input"}
-        assert facts[3]["reminder_input_id"] == "second-input"
+        input_ids: list[object] = []
+        for value in facts:
+            assert isinstance(value, Mapping)
+            input_ids.append(value["reminder_input_id"])
+        assert input_ids == ["first-input"] * 3 + ["second-input"]
 
 
 @pytest.mark.asyncio
