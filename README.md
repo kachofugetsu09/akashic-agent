@@ -14,9 +14,9 @@ cd akashic-agent
 ./start
 ```
 
-启动器会打开 <http://127.0.0.1:2236>。首次启动自动安装 Python 依赖、构建网页和插件发行包、创建数据目录并安装默认功能。网页显示进度；失败后可以查看日志和重试。无需手动运行 `init`、`npm ci` 或插件安装命令。
+终端会显示启动进度：首次自动安装 Python 依赖、构建网页和插件发行包、创建数据目录并安装默认功能。等服务和插件界面就绪后，启动器会打开 <http://127.0.0.1:2236>，并在终端打印访问地址。失败时会显示原因和日志路径，处理后重新运行同一命令。无需手动运行 `init`、`npm ci` 或插件安装命令。
 
-以后仍运行 `./start`，同一版本会复用构建结果。终端按 Ctrl+C 停止服务；关闭浏览器不会停止服务。无桌面环境或 Agent 使用 `./start --no-browser --non-interactive`，失败返回非零退出码。端口被占用时可用 `--port 2237`。
+以后仍运行 `./start`，同一版本会复用构建结果。终端按 Ctrl+C 停止服务；关闭浏览器不会停止服务。无桌面环境或 Agent 使用 `./start --no-browser`，失败返回非零退出码。端口被占用时可用 `--port 2237`。
 
 运行数据默认在 `~/.akashic`（配置、workspace 和 plugin-home）；构建缓存位于 checkout 的 `.akashic-start`。试用独立实例可运行 `./start --state /path/to/empty-directory --port 2237`。启动器不会接管已有的手工安装，也不会覆盖关闭或卸载选择。不要删除运行数据来解决构建问题。
 
@@ -25,10 +25,10 @@ cd akashic-agent
 只需 Docker 和 Compose v2 或更新版本。在仓库目录运行：
 
 ```bash
-docker compose up -d
+docker compose up --build
 ```
 
-然后打开 <http://localhost:2236>。首次会构建镜像，因此需要等待镜像构建完成；网页出现后可查看安装默认功能的进度。无需模型 Key、宿主 Python/Node、Host Bridge、systemd 单元或手动创建网络。
+首次会在终端构建镜像并显示安装进度；看到“WebUI 已就绪”后打开 <http://localhost:2236>。此命令保持前台运行，Ctrl+C 停止；需要后台运行可用 `docker compose up -d`，进度在 Docker Desktop 的日志中查看。无需模型 Key、宿主 Python/Node、Host Bridge、systemd 单元或手动创建网络。
 
 构建默认从本仓库 `main` 取得固定提交；本地未提交改动不会进入镜像。需要复现某个版本时设置 `AKASHIC_REVISION=<完整的 40 位 commit>`。镜像内包含已构建的网页和插件包，重启不重新编译。`AKASHIC_PORT=2237 docker compose up -d` 可更换本机端口。
 

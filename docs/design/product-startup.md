@@ -2,21 +2,25 @@
 
 Status: implementation; local acceptance is recorded in the pull request.
 
-`./start` owns product preparation. It serves a small page that does not need Node or Python dependencies, builds one committed distribution, installs its default profile through the formal installer, and replaces itself with that distribution's Supervisor. Core does not discover or install business plugins.
+`./start` owns product preparation. It reports terminal progress, builds one committed distribution, installs its default profile through the formal installer, and starts that distribution's Supervisor. Core does not discover or install business plugins.
 
 ```text
 ┌───────────────────────────────────────┐
-│ Product preparation owns port 2236     │
+│ Terminal: product preparation         │
 │ dependencies → distribution → install │
 └──────────────────┬────────────────────┘
-                   │ release listener, then exec
+                   │ start Supervisor, wait for readiness
 ┌──────────────────▼────────────────────┐
 │ Supervisor owns port 2236              │
-│ existing Web shell → onboarding → Chat│
+│ Web shell + plugin gateway ready       │
+└──────────────────┬────────────────────┘
+                   │ print URL and open browser
+┌──────────────────▼────────────────────┐
+│ existing onboarding → Chat             │
 └───────────────────────────────────────┘
 ```
 
-Preparation status is process-local. The browser polls through the listener handoff and enters the existing Web shell when it becomes available. Failures keep the preparation page and log available for an explicit retry. `--non-interactive` exits with failure instead. Ctrl+C or SIGTERM stops a running preparation child before releasing the listener.
+Preparation status is process-local terminal output. The launcher waits for `chatReady` and a successful Web bootstrap before opening the browser. `--no-browser` keeps URL output for headless machines and Agents. Failures return a nonzero exit code with the log path; fix the cause and run the same command again. Ctrl+C or SIGTERM stops the child process group before releasing the state lock. The launcher remains attached while Supervisor runs. Compose shows the same progress in its foreground output or Docker Desktop logs; it never tries to open a browser inside the container.
 
 ## State and versions
 
@@ -49,4 +53,4 @@ The full build/install API is `scripts/build_plugin_distribution.py --help` and 
 
 ## Acceptance
 
-Use isolated HOME, state, plugin home, cache, browser profile and Compose project. Verify the distribution commit, default profile, formal install receipt, selected runtime and actual Web bootstrap modules. Exercise cold start, warm start, failed preparation/retry, port collision, stop/restart, and persistence. An HTTP 200 or a running container alone does not prove that the plugins loaded.
+Use isolated HOME, state, plugin home, cache, browser profile and Compose project. Verify the distribution commit, default profile, formal install receipt, selected runtime and actual Web bootstrap modules. Exercise cold start, warm start, failed preparation and rerun, port collision, stop/restart, and persistence. An HTTP 200 or a running container alone does not prove that the plugins loaded.

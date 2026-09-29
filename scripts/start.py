@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the default product, then hand its Web port to the Supervisor."""
+"""Prepare the product in the terminal and open its ready Web UI."""
 from __future__ import annotations
 
 import argparse
@@ -13,27 +13,24 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+import socket
+import time
+from urllib.error import URLError
+from urllib.request import ProxyHandler, build_opener
 import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class Preparation:
-    """Own one launch attempt and expose only fixed retry and status actions."""
+    """Report preparation stages and keep detailed command output in one log."""
 
     def __init__(self, log: Path) -> None:
         self.log = log
         self.stage = "准备启动"
-        self.error = ""
-        self.retry = threading.Event()
-        self.token = secrets.token_urlsafe(32)
 
     def step(self, title: str) -> None:
         self.stage = title
-        self.error = ""
         print(title, flush=True)
         with self.log.open("a", encoding="utf-8") as stream:
             stream.write(f"\n{title}\n")
@@ -55,65 +52,7 @@ class Preparation:
                     child.wait()
                 raise
         if result:
-            raise RuntimeError(f"{self.stage}失败（退出码 {result}）。查看日志，处理原因后重试。")
-
-
-def create_server(preparation: Preparation, host: str, port: int) -> ThreadingHTTPServer:
-    """Serve an asset-free preparation page until the runtime takes the same port."""
-    page = (ROOT / "scripts/start.html").read_text(encoding="utf-8")
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: object) -> None:
-            pass
-
-        def reply(self, status: int, body: bytes, content_type: str) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def allowed_host(self) -> bool:
-            host = urlsplit("//" + self.headers.get("Host", "")).hostname
-            if host not in {"localhost", "127.0.0.1"}:
-                self.reply(403, b"Use localhost or 127.0.0.1", "text/plain")
-                return False
-            return True
-
-        def do_GET(self) -> None:
-            if not self.allowed_host():
-                return
-            if self.path == "/api/startup":
-                data = {"stage": preparation.stage, "error": preparation.error,
-                        "token": preparation.token}
-                self.reply(200, json.dumps(data).encode(), "application/json")
-            elif self.path == "/startup.log":
-                # Download only the current launch log, never arbitrary filesystem paths.
-                self.reply(200, preparation.log.read_bytes(), "text/plain; charset=utf-8")
-            elif self.path == "/":
-                self.reply(200, page.encode(), "text/html; charset=utf-8")
-            else:
-                self.reply(404, b"Not found", "text/plain")
-
-        def do_POST(self) -> None:
-            if not self.allowed_host():
-                return
-            origin = self.headers.get("Origin", "")
-            if (self.path != "/api/startup/retry"
-                    or urlsplit(origin).netloc != self.headers.get("Host")
-                    or self.headers.get("X-Startup-Token") != preparation.token):
-                self.reply(403, b"Forbidden", "text/plain")
-                return
-            if not preparation.error:
-                self.reply(409, b"Already running", "text/plain")
-                return
-            preparation.retry.set()
-            self.reply(202, b"{}", "application/json")
-
-    return ThreadingHTTPServer((host, port), Handler)
+            raise RuntimeError(f"{self.stage}失败（退出码 {result}）。查看日志，处理原因后重新运行 ./start。")
 
 
 def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, Path]:
@@ -123,9 +62,9 @@ def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, P
         raise RuntimeError("需要 Python 3.12 或更新版本。安装后重新运行 ./start。")
     for command in ("git",):
         if shutil.which(command) is None:
-            raise RuntimeError(f"缺少 {command}。请安装 Git 和 Node.js 20+，然后点击重试。")
+            raise RuntimeError(f"缺少 {command}。请安装 Git 和 Node.js 20+，然后重新运行 ./start。")
     if subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=ROOT).returncode:
-        raise RuntimeError("源码有未提交修改。请先提交，再重试；开发调试可直接使用 main.py。")
+        raise RuntimeError("源码有未提交修改。请先提交，再运行 ./start；开发调试可直接使用 main.py。")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     cache.mkdir(parents=True, exist_ok=True)
     target = cache / revision
@@ -136,7 +75,7 @@ def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, P
 
     for command in ("node", "npm"):
         if shutil.which(command) is None:
-            raise RuntimeError(f"缺少 {command}。请安装 Node.js 20+，然后点击重试。")
+            raise RuntimeError(f"缺少 {command}。请安装 Node.js 20+，然后重新运行 ./start。")
 
     # 2. Stage all outputs together. Failed attempts remain available for diagnosis.
     stage = Path(tempfile.mkdtemp(prefix="prepare-", dir=cache))
@@ -210,14 +149,73 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
                      "--ensure-profile", "--receipt", str(receipt)], cwd=core)
 
 
+def run_service(preparation: Preparation, core: Path, python: Path,
+                state: Path, port: int, container: bool, open_browser: bool) -> int:
+    """Wait for loaded Web modules, then keep the Supervisor attached to this launch."""
+    environment = dict(os.environ, AKASHIC_PLUGIN_HOME=str(state / "plugin-home"),
+                       AKASHIC_WEB_PORT=str(port),
+                       AKASHIC_WEB_HOST="0.0.0.0" if container else "127.0.0.1",
+                       AKASHIC_WEB_ALLOW_NON_LOOPBACK="1" if container else "0")
+    url = f"http://127.0.0.1:{port}"
+    # 1. The Supervisor alone owns HTTP; the launcher only observes readiness.
+    preparation.step("启动服务并加载插件")
+    with preparation.log.open("ab") as stream:
+        child = subprocess.Popen(
+            [str(python), str(core / "main.py"), "--config", str(state / "config.toml"),
+             "--workspace", str(state / "workspace")], cwd=core, env=environment,
+            stdout=stream, stderr=stream, start_new_session=True)
+        try:
+            opener = build_opener(ProxyHandler({}))
+            deadline = time.monotonic() + 180
+            while True:
+                if child.poll() is not None:
+                    raise RuntimeError(f"服务在就绪前退出（退出码 {child.returncode}）。")
+                try:
+                    with opener.open(url + "/api/shell/state", timeout=3) as response:
+                        ready = json.load(response)["chatReady"]
+                    if ready:
+                        with opener.open(url + "/api/chat/web-ui/bootstrap", timeout=3) as response:
+                            json.load(response)["modules"]
+                        break
+                except (URLError, TimeoutError, ConnectionError):
+                    # The Supervisor may listen before the plugin gateway is ready.
+                    pass
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("等待 WebUI 和插件就绪超时（180 秒）。请查看日志后重新启动。")
+                try:
+                    child.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            # 2. Present the product only after its plugin gateway can serve the UI.
+            if container:
+                preparation.step("WebUI 已就绪。请打开 Compose 映射的本机地址（默认 http://localhost:2236）。")
+            else:
+                preparation.step(f"WebUI 已就绪：{url}")
+                if open_browser:
+                    try:
+                        webbrowser.open(url)
+                    except webbrowser.Error as error:
+                        print(f"无法自动打开浏览器：{error}。请手动打开上方地址。", flush=True)
+            print(f"按 Ctrl+C 停止服务。运行日志：{preparation.log}", flush=True)
+            return child.wait()
+        finally:
+            # 3. Keep shutdown and the state lock under the same launch owner.
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    child.wait(timeout=45)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
+
+
 def main() -> int:
-    """Keep preparation retryable, then replace this process with the Supervisor."""
+    """Prepare once, report failures in the terminal, and keep the service attached."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, default=Path.home() / ".akashic")
     parser.add_argument("--cache", type=Path, default=ROOT / ".akashic-start")
     parser.add_argument("--port", type=int, default=int(os.environ.get("AKASHIC_WEB_PORT", "2236")))
     parser.add_argument("--no-browser", action="store_true")
-    parser.add_argument("--non-interactive", action="store_true", help="Exit on preparation failure instead of waiting for a Web retry")
     parser.add_argument("--distribution", type=Path, help="Use the distribution shipped in the container")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
@@ -235,60 +233,33 @@ def main() -> int:
                     print("此数据目录的服务已在运行，请打开原来的网页。", file=sys.stderr)
                     return 2
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock = (state / ".startup.lock").open("a+")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        print("此数据目录已有启动任务。请回到已打开的页面。", file=sys.stderr)
-        return 2
-    # Keep this product-instance lock in the Supervisor after exec.
-    os.set_inheritable(lock.fileno(), True)
-    preparation = Preparation(state / f"startup-{secrets.token_hex(4)}.log")
-    preparation.log.touch(mode=0o600)
-    host = "0.0.0.0" if args.distribution else "127.0.0.1"
-    try:
-        server = create_server(preparation, host, args.port)
-    except OSError as error:
-        print(f"无法打开端口 {args.port}: {error}。请停止占用该端口的服务，或使用 --port。", file=sys.stderr)
-        return 2
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    url = f"http://127.0.0.1:{args.port}"
-    print(f"打开 {url} 查看准备进度。日志：{preparation.log}", flush=True)
-    if not args.no_browser:
-        webbrowser.open(url)
-    signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(143))
-    try:
-        while True:
-            try:
+    with (state / ".startup.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("此数据目录已有启动任务，请查看原来的终端。", file=sys.stderr)
+            return 2
+        preparation = Preparation(state / f"startup-{secrets.token_hex(4)}.log")
+        preparation.log.touch(mode=0o600)
+        print(f"正在准备 Akashic，完成后将显示 WebUI 地址。日志：{preparation.log}", flush=True)
+        signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(143))
+        try:
+            # Reserve the port during slow builds, then release it for Supervisor.
+            with socket.socket() as reservation:
+                reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                reservation.bind(("0.0.0.0" if args.distribution else "127.0.0.1", args.port))
                 if args.distribution:
                     core, distribution, python = ROOT, args.distribution.resolve(), Path(sys.executable)
                 else:
                     core, distribution, python = prepare_source(preparation, args.cache.expanduser().resolve())
                 prepare_install(preparation, core, distribution, python, state)
-                break
-            except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
-                preparation.error = str(error)
-                print(preparation.error, file=sys.stderr, flush=True)
-                if args.non_interactive:
-                    return 1
-                preparation.retry.wait()
-                preparation.retry.clear()
-                preparation.error = ""
-        preparation.step("启动服务 · 即将进入初始配置")
-    except KeyboardInterrupt:
-        return 130
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-    # 3. One listener at a time: release preparation HTTP before Supervisor binds.
-    os.environ.update(AKASHIC_PLUGIN_HOME=str(state / "plugin-home"),
-                      AKASHIC_WEB_PORT=str(args.port), AKASHIC_WEB_HOST=host,
-                      AKASHIC_WEB_ALLOW_NON_LOOPBACK="1" if args.distribution else "0")
-    os.chdir(core)
-    os.execv(str(python), [str(python), "main.py", "--config", str(state / "config.toml"),
-                          "--workspace", str(state / "workspace")])
+            return run_service(preparation, core, python, state, args.port,
+                               args.distribution is not None, not args.no_browser)
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+            print(f"启动失败：{error}\n日志：{preparation.log}\n处理原因后重新运行同一启动命令。", file=sys.stderr, flush=True)
+            return 1
+        except KeyboardInterrupt:
+            return 130
 
 
 if __name__ == "__main__":
