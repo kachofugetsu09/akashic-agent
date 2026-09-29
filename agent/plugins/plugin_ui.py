@@ -38,6 +38,8 @@ from core.error_context import current_session_key
 PLUGIN_UI_QUERY_TIMEOUT_SECONDS = 20.0
 PLUGIN_UI_QUERY_WORKERS = 8
 PLUGIN_UI_QUERY_QUEUE_LIMIT = 16
+PLUGIN_UI_QUERY_WORKERS_PER_PLUGIN = 4
+PLUGIN_UI_QUERY_LIMIT_PER_PLUGIN = 12
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +57,8 @@ class LivePluginUiProvider:
         self._queries_idle = asyncio.Event()
         self._queries_idle.set()
         self._admitted_queries = 0
+        self._plugin_queries: dict[str, int] = {}
+        self._plugin_workers: dict[str, asyncio.Semaphore] = {}
         self._accepting = True
         self._executor_closed = False
 
@@ -190,7 +194,7 @@ class LivePluginUiProvider:
     ) -> dict[str, object]:
         """Admit a fixed target, then drain its physical thread independently."""
 
-        await self._reserve_query_slot()
+        await self._reserve_query_slot(plugin_id)
         captured_scope: RuntimeScope | None = None
         task: asyncio.Task[dict[str, object]] | None = None
         try:
@@ -207,23 +211,25 @@ class LivePluginUiProvider:
             )
             task = await self._publish_query(coroutine)
             task.add_done_callback(
-                lambda completed: self._query_done(completed, captured_scope)
+                lambda completed: self._query_done(completed, captured_scope, plugin_id)
             )
             try:
                 async with asyncio.timeout(PLUGIN_UI_QUERY_TIMEOUT_SECONDS):
                     return await asyncio.shield(task)
             except TimeoutError as error:
+                task.cancel()
                 raise PluginUiQueryTimeout(
                     f"插件 UI query 超时: {plugin_id}.{method}"
                 ) from error
             except asyncio.CancelledError:
+                task.cancel()
                 raise
         except BaseException:
             if task is None:
                 if captured_scope is not None and not captured_scope._closed:  # pyright: ignore[reportPrivateUsage]
                     if captured_scope._entered_task is None:  # pyright: ignore[reportPrivateUsage]
                         captured_scope._close()  # pyright: ignore[reportPrivateUsage]
-                await self._release_query_slot()
+                await self._release_query_slot(plugin_id)
             raise
 
     async def _wait_for_queries(self) -> None:
@@ -239,7 +245,7 @@ class LivePluginUiProvider:
             # child is done, so the callback gets a turn before shutdown.
             await self._queries_idle.wait()
 
-    async def _reserve_query_slot(self) -> None:
+    async def _reserve_query_slot(self, plugin_id: str) -> None:
         """Reserve bounded admission before selecting or capturing a target."""
 
         async with self._admission_lock:
@@ -248,16 +254,32 @@ class LivePluginUiProvider:
             limit = PLUGIN_UI_QUERY_WORKERS + PLUGIN_UI_QUERY_QUEUE_LIMIT
             if self._admitted_queries >= limit:
                 raise PluginUiQueryOverloaded("插件 UI query 队列已满")
+            count = self._plugin_queries.get(plugin_id, 0)
+            if count >= PLUGIN_UI_QUERY_LIMIT_PER_PLUGIN:
+                raise PluginUiQueryOverloaded(f"插件 UI query 队列已满: {plugin_id}")
+            if count == 0:
+                self._plugin_workers[plugin_id] = asyncio.Semaphore(PLUGIN_UI_QUERY_WORKERS_PER_PLUGIN)
+            self._plugin_queries[plugin_id] = count + 1
             self._admitted_queries += 1
             self._queries_idle.clear()
 
-    async def _release_query_slot(self) -> None:
+    def _settle_query_slot(self, plugin_id: str) -> None:
+        """Release admission only after the physical worker and scope settle."""
+        count = self._plugin_queries[plugin_id] - 1
+        if count:
+            self._plugin_queries[plugin_id] = count
+        else:
+            del self._plugin_queries[plugin_id]
+            del self._plugin_workers[plugin_id]
+        self._admitted_queries -= 1
+        if self._admitted_queries < 0:
+            raise RuntimeError("插件 UI query admission 计数失衡")
+        if self._admitted_queries == 0:
+            self._queries_idle.set()
+
+    async def _release_query_slot(self, plugin_id: str) -> None:
         async with self._admission_lock:
-            self._admitted_queries -= 1
-            if self._admitted_queries < 0:
-                raise RuntimeError("插件 UI query admission 计数失衡")
-            if self._admitted_queries == 0:
-                self._queries_idle.set()
+            self._settle_query_slot(plugin_id)
 
     async def _publish_query(
         self,
@@ -281,17 +303,14 @@ class LivePluginUiProvider:
         self,
         completed: asyncio.Task[dict[str, object]],
         captured_scope: RuntimeScope,
+        plugin_id: str,
     ) -> None:
         """Settle one child, including a child cancelled before its first line."""
 
         self._draining_queries.discard(completed)
         if not captured_scope._closed and captured_scope._entered_task is None:  # pyright: ignore[reportPrivateUsage]
             captured_scope._close()  # pyright: ignore[reportPrivateUsage]
-        self._admitted_queries -= 1
-        if self._admitted_queries < 0:
-            raise RuntimeError("插件 UI query admission 计数失衡")
-        if self._admitted_queries == 0:
-            self._queries_idle.set()
+        self._settle_query_slot(plugin_id)
         if not completed.cancelled():
             _ = completed.exception()
 
@@ -432,7 +451,7 @@ class LivePluginUiProvider:
     ) -> dict[str, object]:
         """Run one fixed handler inside its captured scope and physical worker."""
 
-        async with captured_scope:
+        async with captured_scope, self._plugin_workers[binding.descriptor.owner]:
             plugin_id = binding.descriptor.owner
             session_token = current_session_key.set(session_id)
             turn_token = running_turn_id.set(turn_id or "")
@@ -446,8 +465,7 @@ class LivePluginUiProvider:
                     operation="plugin_ui.query",
                 ):
                     diagnostic_context = copy_context()
-                    future = loop.run_in_executor(
-                        self._executor,
+                    job = self._executor.submit(
                         lambda: diagnostic_context.run(
                             binding.query,
                             method,
@@ -456,9 +474,15 @@ class LivePluginUiProvider:
                             turn_id=turn_id,
                         ),
                     )
-                    result, cancelled = await complete_critical(future)
-                    if cancelled:
-                        raise asyncio.CancelledError
+                    future = asyncio.wrap_future(job, loop=loop)
+                    try:
+                        result = await asyncio.shield(future)
+                    except asyncio.CancelledError:
+                        # Queued work can be withdrawn. Running threads retain
+                        # their scope and quota until actual completion.
+                        job.cancel()
+                        await complete_critical(future)
+                        raise
                     failure = "返回无效"
                     normalized = _normalize_rpc_result(
                         result,

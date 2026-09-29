@@ -55,7 +55,15 @@ class Duties:
         return min((value for value in values if value is not None), default=None)
 
     async def check(self, now: datetime) -> Admission:
-        """先维护池，再按 Alert、通过阈值的 Content、到期 Drift 依次选择。"""
+        """Admit due Alerts before unrelated Content scoring or maintenance."""
+        alert = self.content.alert_deadline(now)
+        if alert is not None and alert <= now:
+            snapshot = self.content.snapshot(now)
+            items = tuple(_sequence(snapshot.get("items"), "Content items"))
+            pool = Pool(_integer(snapshot.get("snapshot_seq"), "snapshot_seq"), items,
+                        sum(item.get("status") in {"pending", "deferred"} for item in items),
+                        sum(item.get("due") is True for item in items), 0, 0)
+            return Admission("alert", pool.detail + "；Alert 已到期；Content 评分延后", pool)
         pool = await self.maintain(now)
         count = self.state.unseen_due_count(pool.items, now)
         audit = self.state.audit_pool(pool.items, now=now)
