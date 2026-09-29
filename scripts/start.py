@@ -76,7 +76,16 @@ def create_server(preparation: Preparation, host: str, port: int) -> ThreadingHT
             self.end_headers()
             self.wfile.write(body)
 
+        def allowed_host(self) -> bool:
+            host = urlsplit("//" + self.headers.get("Host", "")).hostname
+            if host not in {"localhost", "127.0.0.1"}:
+                self.reply(403, b"Use localhost or 127.0.0.1", "text/plain")
+                return False
+            return True
+
         def do_GET(self) -> None:
+            if not self.allowed_host():
+                return
             if self.path == "/api/startup":
                 data = {"stage": preparation.stage, "error": preparation.error,
                         "token": preparation.token}
@@ -90,6 +99,8 @@ def create_server(preparation: Preparation, host: str, port: int) -> ThreadingHT
                 self.reply(404, b"Not found", "text/plain")
 
         def do_POST(self) -> None:
+            if not self.allowed_host():
+                return
             origin = self.headers.get("Origin", "")
             if (self.path != "/api/startup/retry"
                     or urlsplit(origin).netloc != self.headers.get("Host")
@@ -120,7 +131,8 @@ def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, P
     target = cache / revision
     if (target / "complete").is_file():
         preparation.step("复用已准备的界面和默认功能")
-        return target / "core", target / "distribution", target / "env/bin/python"
+        ready = target.resolve()
+        return ready / "core", ready / "distribution", ready / "env/bin/python"
 
     for command in ("node", "npm"):
         if shutil.which(command) is None:
@@ -148,8 +160,10 @@ def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, P
                      "import sys; extract_core(Path(sys.argv[1]), Path(sys.argv[2]))",
                      str(distribution), str(stage / "core")])
     # Virtual environments contain absolute paths; keep the stage directory in place.
-    target.symlink_to(stage.name, target_is_directory=True)
     (stage / "complete").touch()
+    link = cache / (".ready-" + secrets.token_hex(8))
+    link.symlink_to(stage.name, target_is_directory=True)
+    os.replace(link, target)
     return stage / "core", distribution, python
 
 
@@ -163,15 +177,28 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
     marker = state / "startup.json"
     revision = json.loads((distribution / "distribution.json").read_text())["source_commit"]
     if marker.exists():
-        previous = json.loads(marker.read_text())
+        try:
+            previous = json.loads(marker.read_text())
+        except json.JSONDecodeError as error:
+            raise ValueError(f"安装标记损坏：{marker}。请从备份恢复该文件；已有运行数据不会被重装。") from error
         if previous["source_commit"] != revision:
             raise RuntimeError("此数据目录属于另一软件版本。请使用原版本启动；升级需走正式发布流程，试用新版本可指定新的 --state 目录。")
     # 1. Do not treat an existing installation without a receipt as a fresh product.
     if not marker.exists():
         if config.exists() or (workspace.exists() and any(workspace.iterdir())) or (plugin_home.exists() and any(plugin_home.iterdir())):
             raise RuntimeError("此目录已有运行数据，启动器不会重装默认组合。请使用原入口，或用 --state 指定新的空目录。")
-        marker.write_text(json.dumps({"schema_version": 1, "source_commit": revision, "distribution": str(distribution.resolve()),
-                                      "python": str(python.resolve()), "core": str(core.resolve())}) + "\n")
+        temporary = marker.with_name(".startup-" + secrets.token_hex(8) + ".json")
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump({"schema_version": 1, "source_commit": revision}, stream)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+        directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     preparation.step("准备数据目录")
     preparation.run([str(python), str(core / "main.py"), "init", "--config", str(config),
                      "--workspace", str(workspace)], cwd=core)
@@ -196,14 +223,26 @@ def main() -> int:
     if not 1 <= args.port <= 65535:
         parser.error("--port 必须在 1 到 65535 之间")
     state = args.state.expanduser().resolve()
-    state.mkdir(parents=True, exist_ok=True)
     os.umask(0o077)
+    # Existing direct-runtime owners also block preparation, even on another port.
+    for name in (".supervisor.lock", ".instance.lock"):
+        path = state / "workspace" / name
+        if path.exists():
+            with path.open("rb") as stream:
+                try:
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    print("此数据目录的服务已在运行，请打开原来的网页。", file=sys.stderr)
+                    return 2
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = (state / ".startup.lock").open("a+")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         print("此数据目录已有启动任务。请回到已打开的页面。", file=sys.stderr)
         return 2
+    # Keep this product-instance lock in the Supervisor after exec.
+    os.set_inheritable(lock.fileno(), True)
     preparation = Preparation(state / f"startup-{secrets.token_hex(4)}.log")
     preparation.log.touch(mode=0o600)
     host = "0.0.0.0" if args.distribution else "127.0.0.1"

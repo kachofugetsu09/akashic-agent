@@ -1,4 +1,3 @@
-name: akashic
 services:
   akashic:
     # The first run builds a fixed Git revision. Later starts reuse this image.

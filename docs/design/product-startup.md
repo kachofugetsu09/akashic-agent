@@ -29,7 +29,7 @@ Preparation status is process-local. The browser polls through the listener hand
 
 The standalone Compose image builds a fetched Git commit in a builder stage. It contains the Core archive and independent plugin bundles, with no business plugin source in Core. Default tools run inside the container; the Docker socket and host filesystem are not exposed. Plugins needing external Workload infrastructure require that infrastructure to be explicitly configured; the default profile does not start Computer.
 
-The image workflow is manually dispatched and publishes a commit-tagged GHCR image. The default Compose works through a source build without assuming that a public image tag already exists. Image publishing and production deployment are separate from this PR's local validation.
+The image workflow is manually dispatched and publishes a commit-tagged GHCR image. Before this PR is merged, candidate validation sets `AKASHIC_REVISION` to the full pushed candidate SHA; upstream main does not yet contain this entry. The default Compose works through a source build without assuming that a public image tag already exists. Image publishing and production deployment are separate from this PR's local validation.
 
 ## Development entry
 

@@ -30,9 +30,9 @@ docker compose up -d
 
 然后打开 <http://localhost:2236>。首次会构建镜像，因此需要等待镜像构建完成；网页出现后可查看安装默认功能的进度。无需模型 Key、宿主 Python/Node、Host Bridge、systemd 单元或手动创建网络。
 
-构建默认从本仓库 `main` 取得固定提交；本地未提交改动不会进入镜像。需要复现某个版本时设置 `AKASHIC_REVISION=<commit>`。镜像内包含已构建的网页和插件包，重启不重新编译。`AKASHIC_PORT=2237 docker compose up -d` 可更换本机端口。
+构建默认从本仓库 `main` 取得固定提交；本地未提交改动不会进入镜像。需要复现某个版本时设置 `AKASHIC_REVISION=<完整的 40 位 commit>`。镜像内包含已构建的网页和插件包，重启不重新编译。`AKASHIC_PORT=2237 docker compose up -d` 可更换本机端口。
 
-数据保存在此 Compose project 的 `data` 卷。用 Docker Desktop 的启动、停止和日志操作管理服务，或运行 `docker compose stop` / `docker compose up -d`。`docker compose down` 保留数据；**不要加 `-v`，它会删除数据卷**。默认仅向本机开放网页，文件和 Shell 工具在容器内部运行。
+数据保存在此 Compose project 的 `data` 卷。独立实例使用不同的 `docker compose -p <名称>`；同一项目名称表示管理同一个实例。用 Docker Desktop 的启动、停止和日志操作管理服务，或运行 `docker compose stop` / `docker compose up -d`。`docker compose down` 保留数据；**不要加 `-v`，它会删除数据卷**。默认仅向本机开放网页，文件和 Shell 工具在容器内部运行。
 
 ## 在网页中开始使用
 
