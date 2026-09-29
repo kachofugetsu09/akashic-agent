@@ -290,7 +290,7 @@ class BoundChatModel(Protocol):
 
 `default`、`fast`、`agent`、`vision` 是 Models artifact 解释的四个持久 role 字符串，不是 Core 的 `ModelRole` enum 或角色目录。`plugins/models/store.py:MODEL_ROLES` 保存允许集合，`plugins/models/state.py` 负责按 role 构造完整 execution、default fallback、显式 agent 选择和 vision 能力检查；Core 的 `ModelExecution.chat(role)` 只接受字符串。已有数据库中的 role 字符串不因 owner 迁移而重写；未来增加或放开 role 只改变 Models artifact 的校验和 fallback，不要求 Core 增加业务分支。
 
-同一个 Turn、job 或 scoped work 只能建立一个 `ModelExecution`。compaction、vision、summary 和 ReAct 的所有请求都从它按 role 取得模型；不同 role 合法，不建立嵌套 generation。嵌套执行只有复用同一个 execution object 时允许；尝试在同一执行中重新读取 current 或改变 selection 必须 fail-loud。
+同一个 task 内的 Turn、job 或 scoped work 复用一个 `ModelExecution`。compaction、vision、summary 和 ReAct 的所有请求都从它按 role 取得模型；不同 role 合法，不建立嵌套 generation。同一 task 的嵌套执行必须复用同一个 execution object；尝试在同一执行中重新读取 current 或改变 selection 必须 fail-loud。下文 §7.2 的并行材料子任务由父任务 cancel-and-drain，复制不可变的模型选择并建立各自的 binding，不共享父任务的 execution object。
 
 `ModelRequest`/`LLMResponse` 不是新建的第二套 DTO：迁移现有 `agent.model_runtime.types` 合同到公开 facade，并让它成为唯一 provider-neutral request/response vocabulary。公开 `ModelRequest` 不再允许调用者传 model、Base URL、API Key、provider 名、transport flavor 或 provider `extra_body`；这些由 bound model 与 driver 拥有。Adapter 独自负责公共 DTO 与 wire payload 的转换。
 
@@ -328,6 +328,8 @@ class BoundEmbeddingModel(Protocol):
 `describe()` 只读取当前 models revision 的配置和已封印 driver 定义，不读取 credential、不打开网络，也不拥有 lease 或第二份 identity 算法。它让 Akasha 在构造 kernel 前审计既有 sparse index。`bind()` 是 embedding 的唯一执行入口：当前 task 有 `ModelExecution` 时复用其 frozen snapshot；没有时必须已处于 exact runtime scope，再建立短命 embedding binding。Akasha 只取得 `EMBEDDINGS`，不取得完整 chat execution；Turn、post-commit worker 和 Wake maintenance 都沿用各自已有或短命的 generic runtime scope。ContextVar 只是 models 插件内部的 snapshot 传播，不是第二个公共参数；继承到子 task 不构成授权，owner task 不同必须 fail-loud。
 
 `EmbeddingSpaceDescriptor` 至少包含 driver identity、model ID、dimensions、normalization 和 schema version；这些字段共同决定 embedding space identity，不另造一个 owner 类型。默认 embedding 改变时产生新 space；不得把新旧向量静默写入同一索引空间。
+
+同一回复内受父任务 cancel-and-drain 的并行材料，通过 generic child context 边界显式复制 frozen revision 和模型选择，不复制 `ModelExecution`、driver connection 或 runtime permit。子任务用自己的 Models/driver scope 重新绑定，chat 和 embedding 均保持父选择；设置并发更新不改变该回复。未经此边界创建的 raw child 仍不能借用父 execution。独立 `Task` 和 `independent_execution()` 清除这份请求选择，按自己的 admission 读取当前配置。
 
 首版继续把 dimensions 写入现有列，同时把完整 capability/source snapshot 写入 additive JSON；normalization 因此可以原样持久化。space identity 还包含 connection fingerprint 与 capability digest，因此 endpoint、driver config、normalization 或维度证据变化不会复用旧索引。
 

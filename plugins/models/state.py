@@ -646,8 +646,40 @@ _CURRENT_EXECUTION: ContextVar[_Execution | None] = ContextVar(
     "models_current_execution",
     default=None,
 )
-# 独立 Task 不得继承父任务已绑定的 execution；由 Task 创建点统一清空。
-register_task_bound_context(_CURRENT_EXECUTION)
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelSelection:
+    """Frozen request choices; no bound models, connections, or runtime permits."""
+
+    state: ModelsState
+    snapshot: StoredSnapshot
+    model_id: str | None
+    reasoning_effort: str | None
+
+
+_CURRENT_MODEL_SELECTION: ContextVar[_ModelSelection | None] = ContextVar(
+    "models_current_selection", default=None,
+)
+
+
+def _copy_model_selection(selection: _ModelSelection) -> None:
+    _ = _CURRENT_MODEL_SELECTION.set(selection)
+
+
+def _copy_execution_selection(execution: _Execution) -> None:
+    """Transfer only choices from the parent task's admitted execution."""
+    if execution.owner_task is not asyncio.current_task():
+        raise RuntimeError("model execution 不能由子 task 继承")
+    _copy_model_selection(_ModelSelection(
+        execution.state, execution.snapshot, execution.model_id, execution.reasoning_effort,
+    ))
+
+
+# Joined children keep frozen choices and open their own bindings. Independent
+# Tasks clear both values; raw children still cannot use a parent's execution.
+register_task_bound_context(_CURRENT_MODEL_SELECTION, copy_to_child=_copy_model_selection)
+register_task_bound_context(_CURRENT_EXECUTION, copy_to_child=_copy_execution_selection)
 
 
 def _check_vision_binding(snapshot: StoredSnapshot) -> None:
@@ -1015,10 +1047,21 @@ class ModelsState:
                     raise RuntimeError("嵌套 model execution 选择冲突")
                 yield existing
                 return
-            selection = self.validate_chat_selection(
-                ChatModelSelection(model_id, reasoning_effort)
-            )
-            snapshot = self._snapshot_required()
+            frozen = _CURRENT_MODEL_SELECTION.get()
+            if frozen is not None:
+                if frozen.state is not self:
+                    raise RuntimeError("同一执行不能绑定两个 models Service")
+                if (model_id is not None or reasoning_effort is not None) and (
+                    model_id != frozen.model_id or reasoning_effort != frozen.reasoning_effort
+                ):
+                    raise RuntimeError("嵌套 model execution 选择冲突")
+                selection = ChatModelSelection(frozen.model_id, frozen.reasoning_effort)
+                snapshot = frozen.snapshot
+            else:
+                selection = self.validate_chat_selection(
+                    ChatModelSelection(model_id, reasoning_effort)
+                )
+                snapshot = self._snapshot_required()
             selected_models = self._select_chat_models(
                 snapshot,
                 selection.model_id,
@@ -1059,10 +1102,12 @@ class ModelsState:
         if inherited is not None and inherited.owner_task is asyncio.current_task():
             raise RuntimeError("当前 task 已绑定 model execution")
         token = _CURRENT_EXECUTION.set(None)
+        selection_token = _CURRENT_MODEL_SELECTION.set(None)
         try:
             async with self.execution(model_id, reasoning_effort) as execution:
                 yield execution
         finally:
+            _CURRENT_MODEL_SELECTION.reset(selection_token)
             _CURRENT_EXECUTION.reset(token)
 
     @asynccontextmanager
@@ -1084,7 +1129,10 @@ class ModelsState:
                     raise ModelUnavailableError("尚未配置默认 embedding 模型")
                 snapshot = existing.snapshot
             else:
-                snapshot = self._snapshot_required()
+                frozen = _CURRENT_MODEL_SELECTION.get()
+                if frozen is not None and frozen.state is not self:
+                    raise RuntimeError("同一执行不能绑定两个 models Service")
+                snapshot = self._snapshot_required() if frozen is None else frozen.snapshot
                 selected = model_id or snapshot.default_embedding_model_id
                 if selected is None:
                     raise ModelUnavailableError("尚未配置默认 embedding 模型")

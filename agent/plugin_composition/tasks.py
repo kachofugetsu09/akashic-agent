@@ -30,12 +30,32 @@ from agent.plugin_composition.model import ServiceKey
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
 
-_TASK_BOUND_VARS: list[ContextVar[Any]] = []
+_TASK_BOUND_VARS: list[tuple[ContextVar[Any], Callable[[Any], None] | None]] = []
 
 
-def register_task_bound_context(var: ContextVar[Any]) -> None:
-    """登记属于单个 Task 的 ContextVar；新 Task 在创建时不再继承父任务值。"""
-    _TASK_BOUND_VARS.append(var)
+def register_task_bound_context(
+    var: ContextVar[Any], *, copy_to_child: Callable[[Any], None] | None = None,
+) -> None:
+    """Register a task-owned value and optional frozen-data transfer to joined children."""
+    _TASK_BOUND_VARS.append((var, copy_to_child))
+
+
+def independent_task_context() -> contextvars.Context:
+    """Copy diagnostics and request values without another task's owned handles."""
+    context = contextvars.copy_context()
+    for var, _ in _TASK_BOUND_VARS:
+        _ = context.run(var.set, None)
+    return context
+
+
+def child_task_context() -> contextvars.Context:
+    """Copy declared request data to a child that its parent will cancel and drain."""
+    context = independent_task_context()
+    for var, copy_to_child in _TASK_BOUND_VARS:
+        value = var.get(None)
+        if copy_to_child is not None and value is not None:
+            context.run(copy_to_child, value)
+    return context
 
 
 class TaskBusy(RuntimeError):
@@ -78,9 +98,7 @@ class Task:
             current_scope = _current_runtime_scope()
             if current_scope is not None:
                 self._scope = current_scope.capture()
-            context = contextvars.copy_context()
-            for var in _TASK_BOUND_VARS:
-                _ = context.run(var.set, None)
+            context = independent_task_context()
             run_coroutine = self._run(operation, admitted)
             task = asyncio.create_task(run_coroutine, context=context)
             run_coroutine = None
