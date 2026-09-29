@@ -290,7 +290,7 @@ class BoundChatModel(Protocol):
 
 `default`、`fast`、`agent`、`vision` 是 Models artifact 解释的四个持久 role 字符串，不是 Core 的 `ModelRole` enum 或角色目录。`plugins/models/store.py:MODEL_ROLES` 保存允许集合，`plugins/models/state.py` 负责按 role 构造完整 execution、default fallback、显式 agent 选择和 vision 能力检查；Core 的 `ModelExecution.chat(role)` 只接受字符串。已有数据库中的 role 字符串不因 owner 迁移而重写；未来增加或放开 role 只改变 Models artifact 的校验和 fallback，不要求 Core 增加业务分支。
 
-同一个 Turn、job 或 scoped work 只能建立一个 `ModelExecution`。compaction、vision、summary 和 ReAct 的所有请求都从它按 role 取得模型；不同 role 合法，不建立嵌套 generation。嵌套执行只有复用同一个 execution object 时允许；尝试在同一执行中重新读取 current 或改变 selection 必须 fail-loud。
+同一个 task 内的 Turn、job 或 scoped work 复用一个 `ModelExecution`。compaction、vision、summary 和 ReAct 的所有请求都从它按 role 取得模型；不同 role 合法，不建立嵌套 generation。同一 task 的嵌套执行必须复用同一个 execution object；尝试在同一执行中重新读取 current 或改变 selection 必须 fail-loud。下文 §7.2 的并行材料子任务由父任务 cancel-and-drain，复制不可变的模型选择并建立各自的 binding，不共享父任务的 execution object。
 
 `ModelRequest`/`LLMResponse` 不是新建的第二套 DTO：迁移现有 `agent.model_runtime.types` 合同到公开 facade，并让它成为唯一 provider-neutral request/response vocabulary。公开 `ModelRequest` 不再允许调用者传 model、Base URL、API Key、provider 名、transport flavor 或 provider `extra_body`；这些由 bound model 与 driver 拥有。Adapter 独自负责公共 DTO 与 wire payload 的转换。
 
