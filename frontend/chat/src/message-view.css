@@ -11,8 +11,8 @@
   max-width: min(88%, 34rem);
   border-radius: 12px;
   padding: 8px 12px;
-  color: var(--chat-ink, #242424);
-  background: var(--chat-chip, #ececec);
+  color: var(--chat-ink, var(--ak-ink-primary));
+  background: var(--chat-chip, var(--ak-paper-sheet));
   font-size: 0.9375rem;
   line-height: 1.45;
   overflow-wrap: break-word;
@@ -36,12 +36,15 @@
   color: var(--ak-color-text-primary);
   font-weight: 650;
   line-height: 1.15;
-  letter-spacing: -0.012em;
   text-wrap: balance;
 }
 
 .agent-content h1 { font-size: 1.5rem; }
-.agent-content h2 { font-size: 1.3rem; }
+.agent-content h2 {
+  font-size: 1.3rem;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+  padding-bottom: 0.3em;
+}
 .agent-content h3 { font-size: 1.15rem; }
 .agent-content h4 { font-size: 1rem; }
 
@@ -164,7 +167,7 @@
   padding: 0.125rem 0.375rem;
   color: var(--md-sys-color-on-surface);
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 6%, transparent);
-  font-family: var(--md-ref-typeface-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.875em;
   font-weight: 480;
 }
@@ -190,9 +193,9 @@
   border: none !important;
   border-radius: var(--md-sys-shape-corner-medium) !important;
   padding: 10px 14px !important;
-  color: var(--md-sys-color-on-surface) !important;
-  background: var(--md-sys-color-surface-container-low) !important;
-  font-family: var(--md-ref-typeface-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
+  color: var(--ak-ink-primary) !important;
+  background: var(--ak-paper-quiet) !important;
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
   font-size: 0.8125rem !important;
   font-weight: 480;
   line-height: 1.55 !important;
@@ -251,7 +254,7 @@
   border: none !important;
   border-radius: var(--md-sys-shape-corner-medium) !important;
   box-shadow: none !important;
-  background: var(--md-sys-color-surface-container-low) !important;
+  background: var(--ak-paper-quiet) !important;
 }
 
 .agent-content .code-block-header,
@@ -268,9 +271,9 @@
 
 .agent-content .code-header-title,
 .process-markdown .code-header-title {
-  font-family: var(--md-ref-typeface-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.6875rem;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
 }
 
 .agent-content .code-header-actions .code-action-btn:not([aria-label="Copy"]):not([aria-label="Copied"]),
@@ -290,14 +293,14 @@
 .process-markdown .code-action-btn[aria-label="Copy"]::after {
   content: "复制";
   font-size: 0.6875rem;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
 }
 
 .agent-content .code-action-btn[aria-label="Copied"]::after,
 .process-markdown .code-action-btn[aria-label="Copied"]::after {
   content: "已复制";
   font-size: 0.6875rem;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
 }
 
 .agent-content .code-block-container pre,
@@ -526,7 +529,7 @@
   align-items: center;
   gap: 6px;
   color: color-mix(in oklch, var(--ak-color-text-primary) 60%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.75rem;
   font-weight: 500;
 }
@@ -557,7 +560,7 @@
 
 button.tool-step-summary:hover {
   color: color-mix(in oklch, var(--ak-color-text-primary) 72%, transparent);
-  background: color-mix(in oklch, var(--ak-color-text-primary) 3.5%, transparent);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 button.tool-step-summary:active {
@@ -678,7 +681,7 @@ button.tool-step-summary:active {
 .tool-detail-copy:hover,
 .tool-detail-copy:active {
   scale: 0.96;
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 .tool-detail-copy.copied {
@@ -709,7 +712,7 @@ button.tool-step-summary:active {
   overflow-wrap: anywhere;
   margin: 0;
   color: color-mix(in oklch, var(--ak-color-text-primary) 52%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.75rem;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -1045,7 +1048,7 @@ button.tool-step-summary:active {
 .timeline-details { margin-block: 0.5rem; color: var(--ak-color-text-secondary); }
 .timeline-details summary { cursor: pointer; padding-block: 0.5rem; overflow-wrap: anywhere; }
 .timeline-details summary:focus-visible,
-.timeline-result-heading button:focus-visible { outline: 2px solid var(--ak-color-text-primary); outline-offset: 3px; }
+.timeline-result-heading button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; }
 .timeline-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8125rem; max-height: 32rem; overflow-y: auto; }
 .timeline-details p { overflow-wrap: anywhere; }
 .timeline-control-summary, .timeline-result-heading { border-inline-start: 2px solid var(--ak-color-border-default); padding-inline-start: 0.875rem; }
@@ -1053,7 +1056,8 @@ button.tool-step-summary:active {
 .reply-activity-label { display: flex; gap: 0.75rem; color: var(--ak-color-text-secondary); font-size: 0.8125rem; }
 .reply-unavailable { color: var(--ak-color-text-secondary); font-size: 0.8125rem; text-align: center; }
 .timeline-control-summary strong, .timeline-result-heading strong { font-size: 0.875rem; }
-.timeline-result-heading button { display: block; min-height: 2.75rem; text-decoration: underline; font-size: 0.8125rem; }
+.timeline-result-heading button { display: block; min-height: 2.75rem; color: var(--ak-ink-secondary); font-size: 0.8125rem; }
+.timeline-result-heading button:hover { color: var(--ak-ink-primary); }
 .timeline-result-heading button:disabled { text-decoration: none; color: var(--ak-color-text-secondary); }
 .timeline-state { color: var(--ak-color-text-secondary); font-size: 0.8125rem; }
 .timeline-meta { flex-wrap: wrap; overflow-wrap: anywhere; }

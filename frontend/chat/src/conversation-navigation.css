@@ -56,12 +56,13 @@
 
 .conversation-destination:hover,
 .conversation-destination:focus-visible {
-  background: var(--ak-paper-sheet);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 .conversation-destination.active {
   color: var(--ak-ink-primary);
   background: var(--ak-paper-sheet);
+  box-shadow: inset 2px 0 0 var(--ak-rule-strong);
 }
 
 .conversation-destination.active .conversation-destination__icon,
@@ -197,7 +198,7 @@
 
 .conversation-session:hover,
 .conversation-session:focus-visible {
-  background: var(--ak-paper-sheet);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 .conversation-session:active {
@@ -206,6 +207,14 @@
 
 .conversation-session.active {
   background: var(--ak-paper-sheet);
+  box-shadow: inset 2px 0 0 var(--ak-rule-strong);
+}
+
+/* Desktop entry 侧栏（styles.css 的 .chat-sidebar--entry）有自己的 active 底色，
+   不继承基础会话导航的左侧墨色标记线。 */
+.chat-sidebar--entry .conversation-destination.active,
+.chat-sidebar--entry .conversation-session.active {
+  box-shadow: none;
 }
 
 .conversation-session.unavailable {

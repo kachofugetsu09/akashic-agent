@@ -58,13 +58,6 @@
   --md-sys-shape-corner-extra-large: 1.75rem;
   --md-sys-shape-corner-full: 9999px;
 
-  --ak-sys-space-1: 0.25rem;
-  --ak-sys-space-2: 0.5rem;
-  --ak-sys-space-3: 0.75rem;
-  --ak-sys-space-4: 1rem;
-  --ak-sys-space-5: 1.5rem;
-  --ak-sys-space-6: 2rem;
-  --ak-sys-space-7: 3rem;
   --ak-sys-motion-standard: cubic-bezier(0.2, 0, 0, 1);
   --ak-sys-motion-emphasized: cubic-bezier(0.2, 0, 0, 1);
   --ak-sys-duration-short: 150ms;

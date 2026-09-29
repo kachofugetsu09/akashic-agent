@@ -78,7 +78,7 @@ function fadeFor(index: number, last: number): string {
   return "none";
 }
 
-/** 正中的一格放大、加粗、去模糊；旁边的格子按距离略微发虚。 */
+/** 正中的一格放大、加粗；旁边的格子按距离淡出，不再做模糊（文楷小字发虚）。 */
 function paintFocus(items: HTMLElement[], index: number) {
   const focus = Math.round(index);
   for (const [itemIndex, item] of items.entries()) {
@@ -86,9 +86,7 @@ function paintFocus(items: HTMLElement[], index: number) {
     const near = Math.max(0, 1 - distance);
     const mark = itemIndex === focus ? "1" : "0";
     if (item.dataset.focus !== mark) item.dataset.focus = mark;
-    const blur = distance < 0.15 ? 0 : distance < 1.8 ? Math.min(1, (distance - 0.15) * 0.7) : 0;
     item.style.transform = `scale(${(1 + 0.18 * near).toFixed(3)})`;
-    item.style.filter = blur > 0.04 ? `blur(${blur.toFixed(2)}px)` : "";
     item.style.opacity = (0.48 + 0.52 * Math.max(0, 1 - distance * 0.62)).toFixed(3);
   }
 }

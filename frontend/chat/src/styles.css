@@ -81,7 +81,6 @@ input {
   --chat-line: var(--ak-rule-subtle);
   --chat-chip: var(--ak-paper-sheet);
   --chat-lift: var(--ak-paper-editing);
-  --chat-whisper: none;
   --chat-band-height: 48px;
   --chat-band-gap: 8px;
   --chat-nav-gap: 6px;
@@ -382,12 +381,12 @@ input {
 
 .chat-sidebar--entry .conversation-session:hover,
 .chat-sidebar--entry .conversation-session:focus-visible {
-  background: rgb(20 20 20 / 6%);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 .chat-sidebar--entry .conversation-session.active {
   color: var(--chat-ink);
-  background: rgb(20 20 20 / 8%);
+  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
 }
 
 .chat-sidebar--entry .conversation-session__title strong {
@@ -409,7 +408,7 @@ input {
 .chat-sidebar--entry .conversation-navigation__action:hover,
 .chat-sidebar--entry .conversation-navigation__action:focus-visible {
   color: var(--chat-ink);
-  background: rgb(20 20 20 / 6%);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 .chat-sidebar--entry .conversation-navigation__action.primary {
@@ -456,7 +455,7 @@ input {
 .project-navigation__icon:hover,
 .project-navigation__icon:focus-visible {
   color: var(--chat-ink);
-  background: rgb(20 20 20 / 6%);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 .project-pending {
@@ -512,7 +511,7 @@ input {
 .project-navigation__empty:focus-visible,
 .project-group__open:focus-visible,
 .project-session:focus-visible {
-  background: rgb(20 20 20 / 6%);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 .project-group__row {
@@ -610,10 +609,10 @@ input {
 }
 
 .project-session.active {
-  background: rgb(20 20 20 / 8%);
+  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
 }
 
-.project-dialog-overlay { background: rgb(0 0 0 / 22%); }
+.project-dialog-overlay { background: rgb(var(--ak-color-shadow-rgb) / 0.32); }
 
 .project-dialog {
   width: min(calc(100vw - 32px), 560px);
@@ -718,7 +717,7 @@ input {
   height: 28px;
   flex: 0 0 28px;
   border-radius: 7px;
-  background: #202227;
+  background: var(--ak-ink-primary);
   -webkit-mask-position: center;
   mask-position: center;
   -webkit-mask-repeat: no-repeat;
@@ -1147,8 +1146,6 @@ input {
   color: var(--md-sys-color-primary);
   font-size: var(--md-sys-typescale-label-medium-size);
   font-weight: 650;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .model-connection-state h1 {
@@ -1178,7 +1175,7 @@ input {
 }
 
 .model-connection-state a:hover {
-  box-shadow: 0 1px 3px rgb(var(--md-sys-color-shadow-rgb) / 0.32);
+  box-shadow: 0 1px 3px rgb(var(--md-sys-color-shadow-rgb) / 0.18);
 }
 
 .model-connection-state a:focus-visible {
@@ -1270,7 +1267,7 @@ input {
 }
 
 .composer:focus-within {
-  border-color: var(--ak-rule-focus-soft);
+  border-color: var(--ak-rule-focus);
   box-shadow: none;
 }
 
@@ -1509,7 +1506,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .attachment-hover-type {
   margin-top: 4px;
   color: var(--ak-color-text-secondary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 11px;
 }
 
@@ -1528,7 +1525,7 @@ form.composer:focus-within [data-slot="input-group"] {
   margin: 0;
   padding-inline-start: 16px;
   color: color-mix(in oklch, var(--chat-faint, var(--ak-ink-muted)) 78%, transparent);
-  font-family: var(--ak-type-ui, var(--ak-font-ui, inherit));
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.625rem;
   font-weight: 450;
   line-height: 1.2;
@@ -1727,7 +1724,7 @@ form.composer:focus-within [data-slot="input-group"] {
   border-color: var(--md-sys-color-outline-variant);
   border-radius: var(--md-sys-shape-corner-extra-large);
   background: var(--md-sys-color-surface-container-high);
-  box-shadow: 0 0.75rem 2rem rgb(var(--md-sys-color-shadow-rgb) / 0.22);
+  box-shadow: 0 8px 24px rgb(var(--ak-color-shadow-rgb) / 0.12);
 }
 
 .model-capsule__trigger {
@@ -1824,7 +1821,7 @@ form.composer:focus-within [data-slot="input-group"] {
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: 14px;
   background: var(--md-sys-color-surface-container-high);
-  box-shadow: var(--chat-whisper, 0 4px 24px rgb(20 20 19 / 0.05));
+  box-shadow: none;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);

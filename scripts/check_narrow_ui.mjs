@@ -261,7 +261,7 @@ async function workbench(page, prefix, narrow) {
       `${prefix}-${option.id.replaceAll(/[^a-zA-Z0-9_-]/g, "-")}`,
     );
     await customPanel(page, prefix, option.id);
-    const row = view.locator(".table-row-wrap .table-row").first();
+    const row = view.locator(".table-row-wrap .wb-table-row").first();
     if (await row.count()) {
       await row.click();
       await view.locator(".detail-pane.is-open").waitFor();
