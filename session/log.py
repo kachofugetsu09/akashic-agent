@@ -11,7 +11,7 @@ import re
 import sqlite3
 import threading
 from bisect import bisect_right
-from collections.abc import AsyncGenerator, Callable, Generator, Mapping
+from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from dataclasses import dataclass
@@ -815,19 +815,34 @@ class MessageReader:
             ).fetchone()
         return None if row is None else self._log._decode(row)
 
-    def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
-        """固定上界后分页读取消息区间，默认保留完整前缀。"""
+    def scan(
+        self, consume: Callable[[Iterable[Message]], _T], *, after_seq: int = -1,
+        through_seq: int | None = None, source: str | None = None,
+    ) -> _T:
+        """在同一读快照内分页消费；回调必须同步完成，不能保留迭代器。"""
         with self._log._read():
             head = self.head() if through_seq is None else through_seq
-            messages: list[Message] = []
-            cursor = after_seq
-            while cursor < head:
-                page = self.read(after_seq=cursor, through_seq=head)
-                if not page:
-                    break
-                messages.extend(page)
-                cursor = page[-1].seq
-            return tuple(messages)
+
+            def messages() -> Generator[Message, None, None]:
+                cursor = after_seq
+                while cursor < head:
+                    page = self.read(after_seq=cursor, through_seq=head, source=source, limit=64)
+                    if not page:
+                        break
+                    yield from page
+                    cursor = page[-1].seq
+
+            with closing(messages()) as rows:
+                result = consume(rows)
+                if inspect.isawaitable(result):
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise TypeError("消息扫描回调必须同步，不能跨 await")
+                return result
+
+    def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
+        """固定上界后读取完整区间；无需完整正文的消费者应使用 scan。"""
+        return self.scan(tuple, after_seq=after_seq, through_seq=through_seq)
 
     def read_page(
         self, *, after_seq: int = -1, through_seq: int | None = None, limit: int = 50,

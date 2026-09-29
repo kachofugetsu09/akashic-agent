@@ -138,3 +138,18 @@ Scheduler provider 中 offload load，RPC 逐层 await。请求通过 borrow 保
 缺能力错误保持，存储内容与恢复回执不变。
 `docker/debug/scheduler_inspection_isolation.py` 经过真实 Root、客户端 adapter 和
 RPC，验证缺能力、正常列表/详情、慢读不冻结 loop、取消排空前 owner 不卸载。
+
+## 流式读取与 Turn 引用（#879）
+
+MessageReader.scan 在一个短读快照内逐页交给同步消费者，页大小 64；迭代器离开
+回调即关闭，不能跨 await 或把连接交给插件。完整 snapshot 仍明确返回全部正文。
+TurnProjection 接收有序流，待闭合状态只保存 seq、消息 ID 和调用引用，不保留正文。
+显式 after_seq 只能来自已提交闭合 Turn；重读尾部时忽略已消费边界内的 abandon。
+这是投影消费起点，不是新的执行事实；原始 Message、schema 和删除权限保持不变。
+
+能力 owner 为 MessageLog 的只读快照和 turn_projection 的分段算法；消费者为 Reply
+与外部 Observe。Core 仅增加中立 scan，无插件名称或专属状态。普通客户端无法独立
+实现同一 SQLite 快照下的流式读取，因此需要存储 owner 提供窄接口。
+验证见 docker/debug/turn_streaming.py：真实 SQLite 分页、abandon 后仍开放的输入、
+迟到工具结果、从闭合边界重读等价，以及大开放 Turn 的正文对象可回收。
+恢复点为 pre-memory-stack.bundle；不迁移、删除或重写正式消息和插件数据。

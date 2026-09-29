@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -24,7 +24,12 @@ class Turn:
 
 
 class TurnProjection(Protocol):
-    def project(self, messages: Sequence[Message], source: str) -> tuple[Turn, ...]: ...
+    def project(
+        self, messages: Iterable[Message], source: str, *,
+        after_seq: int = -1,
+    ) -> tuple[Turn, ...]:
+        """输入完整前缀或闭合 Turn 后的尾部；只返回引用，不保留正文。"""
+        ...
 
 
 TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
