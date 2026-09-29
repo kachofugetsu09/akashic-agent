@@ -15,6 +15,7 @@ from agent.plugin_contracts import ContentPart
 
 from .schedule import ScheduledJob, compute_fire_at, is_cron_expr, parse_duration
 from .store import JobStore, Operation
+from core.common.file_io import run_file_io
 
 
 class ScheduleInput(BaseModel):
@@ -70,7 +71,7 @@ async def cancel_fires(store: JobStore, tasks: TaskAdmission, job_ids: tuple[str
         task = slot.current
         if task is not None:
             task.cancel()
-    for key, fire in store.read().fires.items():
+    for key, fire in (await run_file_io(store.read)).fires.items():
         if fire.job.id in job_ids and fire.status == "cancelled":
             await tasks.admit(("fire", key), cancel)
 
@@ -94,7 +95,7 @@ class ScheduleTool:
                 request = CancelInput.model_validate(dict(arguments))
             except ValidationError as error:
                 return str(error)
-            jobs = self._store.load()
+            jobs = await run_file_io(self._store.load)
             ids = tuple(job.id for job in jobs if (
                 job.id.startswith(request.id) if request.id else job.name == request.name))
             return {"job_ids": ids}
@@ -130,18 +131,18 @@ class ScheduleTool:
             if any(not isinstance(item, str) or not item for item in values):
                 raise ValueError("原取消参数损坏")
             ids = tuple(cast(tuple[str, ...], values))
-            operation = self._store.cancel(key, ids)
+            operation = await self._store.cancel(key, ids)
             await cancel_fires(self._store, self._tasks, ids)
         else:
             job = arguments["job"]
             response = arguments["response"]
             if set(arguments) != {"job", "response"} or not isinstance(job, Mapping) or not isinstance(response, str):
                 raise ValueError("原调度参数损坏")
-            operation = self._store.add(key, self._store.decode_job(dict(cast(Mapping[str, object], job))), response)
+            operation = await self._store.add(key, self._store.decode_job(dict(cast(Mapping[str, object], job))), response)
         return _result(operation)
 
     async def query(self, key: str) -> Result | None:
-        operation = self._store.read().operations.get(key)
+        operation = (await run_file_io(self._store.read)).operations.get(key)
         if operation is None:
             return None
         if operation.kind != self._kind:
@@ -163,7 +164,7 @@ class ListSchedules:
         return {}
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        jobs = [job for job in self._store.load() if job.enabled]
+        jobs = [job for job in await run_file_io(self._store.load) if job.enabled]
         lines = [f"定时任务列表（共 {len(jobs)} 个）："] if jobs else ["当前没有待执行的定时任务"]
         for job in jobs:
             action = job.message if job.tier == "instant" else f"[AI] {job.prompt}"
