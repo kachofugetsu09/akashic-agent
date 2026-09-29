@@ -82,3 +82,20 @@ Chromium 146 / axe-core 4.13.0：纸感、墨纸 × 1440/390/320 CSS px × 普�
 ## 配置回执启动恢复补充
 
 真实 Manager、固定输入、selection 与 SQLite 场景复现了提交 CAS 后、写 active 回执前退出的窗口。旧提交 `a79e9f21` 在重启后输入已选中、generation 已就绪、启动任务已完成，回执却保持 selected；同一场景在修复后返回 active。修复复用宿主任务的 done 状态，不新增恢复 owner、不重试未提交请求，也不改写业务数据。
+
+## Issue #801 弹窗离开与撤回回归
+
+独立分支 `codex/onboarding-801-dialog-lifecycle`，基线 `efb36cd596e1bcd3ac35e4c435401bd752c13878`，隔离根目录 `/mnt/data/akashic-onboarding-fixes-20260928/`。模型草稿、dialog 和请求生命周期修复不改业务数据库 schema，也不删除已有模型、连接或认证凭证。
+
+真实 Chromium 146 / CDP 首轮场景覆盖 clean Escape、dirty Escape 拒绝保留字段和密码显隐、X 拒绝与显式放弃、真实 hash / back / forward、busy 检测离开阻止与失败保留草稿。原生 modal 的 Tab 可能短暂进入浏览器界面，随后回到表单；不能把单次 BODY 当成旧版隐藏 top layer 的连续焦点陷阱。没有增加自定义 Tab 拦截。最终发行包的浏览器复跑结果、SHA 与完整检查在关联 PR 单列。
+
+确定性生命周期场景加载真实前端代码，使用受控协议回执，不调用实际 OAuth、不写业务状态：
+
+| 场景 | main 旧代码 | 修复后 |
+|---|---|---|
+| OpenCode finishAuth 晚到，模块已撤回 | 继续发 sync_models | 只保留已提交请求和原 cancel_auth |
+| 向量 add_model 晚到，模块已撤回 | 继续发 set_default | 不发尚未提交的默认绑定 |
+| 已登记 auth 的非 BFCache pagehide | 不取消、继续同步 | 取消 attempt，不继续同步 |
+| BFCache pagehide | 保留上下文 | 保留上下文，不提前取消 |
+
+本机证据 `issue801-browser.json`、`issue801-lifecycle.json`；未上传凭据。生命周期回执是明确的前端协议场景，不能当成真实账号 OAuth 登录验收。真实 Codex/OpenCode 登录、读屏、Android 与生产发布未验证。
