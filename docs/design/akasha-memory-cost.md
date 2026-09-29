@@ -195,6 +195,33 @@ Akasha 的目标是让有出处的过去经历参与理解当前需要。一个�
 函数级采样中历史分词累计耗时最高，前缀消息映射重复构建其次；采样自身有开销，
 不能把其耗时与表中未采样数据直接相加。此修复不改变分词、反馈或来源校验规则。
 
+### #825：无反馈恢复不建立历史消息索引（2026-09-29）
+
+`Learning.feedback` 先读取本样本成功的 `akasha.feedback` receipt。没有 receipt 时它直接
+返回空 `TurnFeedback`，不再为恢复到该节点而建立 `state.applied[:len(previous)]` 的消息
+索引。存在 receipt 时，仍按原顺序建立完整已发布前缀、核对记录工具 owner，并把当前 Input
+映射为当前节点；没有进入此前缀的 future target 继续失败。因此这个快路径不改变
+`S(t+1) = F(S(t), E(t), feedback(t))` 的因果输入，也不跳过有反馈的历史归因。
+
+使用私有的 5,620 节点 SQLite 快照，以独立进程依次运行 `replay-product.py` 的实际
+`read_memory` 路径。基线源码为 `98d460ef`，候选是本节改动后的源码；两次运行各自复制
+快照，并使用同一条记录 Input 的已有向量做一次恢复后查询。基线的 feedback 为 4.628 s、
+完整恢复为 21.288 s；候选分别为 0.023 s 与 16.486 s。两次的节点数、Turn 字段摘要、
+查询命中顺序和分数相同，harness 的 `logical_state_sha256` 都是
+`ed32e3ab79061f20dfcdaee6b66e6a447144d291438aed0f1b059d9e4ceb7bc2`。Turn 摘要只覆盖
+harness 明列的 Turn 字段；这里把 `logical_state_sha256` 相同和固定查询相同作为本次
+恢复等价证据，不把它们表述成任意未来输入上的证明。
+
+这两次是单次冷恢复加一次验证查询，查询不参与恢复速度结论，也没有测量或引用 warm query。
+候选的单独 cProfile 中，恢复内最大的应用级累计热点是历史 `tokenize`（17.051 s）；profile
+本身把总耗时放大到 39.250 s，不能与上述未采样时长相减或相加。此改动没有加入 chunk cache
+或全文 warm cache：前者没有实测收益，后者在这次实验未显示冷恢复收益，且需要额外常驻内存和
+失效约定。这个快路径没有解决分词、固定 embedding 读取、出处还原或图构建成本。
+
+回归覆盖空 receipt 不调用 `message_nodes`，以及真实 `ToolResult(akasha.feedback)` 保持
+历史/当前映射并拒绝 future target。完整已保存轨迹的合成验证继续使用本页列出的
+`scripts/akasha_cost_scenario.py`，而不是用这次私有组件计时替代它。
+
 ### Interest scoring execution
 
 Historical sample projection, vector reads and prototype construction run in a drained memory job. Model selection and candidate embedding remain in the owning async scope. Sample order, cutoff, eligibility, missing-vector handling and the last 256 valid prototypes are unchanged. This isolates host scheduling; it does not reduce historical work or promise a shorter total query. See issue #829 and stack #827.
