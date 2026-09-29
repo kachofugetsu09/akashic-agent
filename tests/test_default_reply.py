@@ -290,3 +290,76 @@ async def test_default_reply_loads_one_complete_granted_plugin_group(tmp_path):
         )
         assert "test_provider · Write local evidence · 1 个工具" in prompt
         assert "write_evidence" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_text_reply_keeps_five_historical_images(tmp_path):
+    """A text-only input must not count separate historical images as one upload."""
+    import io
+    from PIL import Image
+    from agent.plugin_composition import ServiceKey
+    from agent.plugin_contracts import ContentPart, Control
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+    from plugins.content.plugin import check_artifact
+    from session.artifact_store import ArtifactStore
+    from session.artifacts import AttachmentKind
+
+    def vision_provider(sources):
+        module = sources / "test_provider/plugin.py"
+        module.write_text(module.read_text().replace(
+            "ModelCapabilities(context_window=10000)",
+            'ModelCapabilities(context_window=10000, input_modalities=("text", "image"))',
+        ))
+
+    async with application(tmp_path, replying=True, extra_sources=vision_provider) as (log, host):
+        # 1. Publish five real image artifacts on separate settled history messages.
+        metadata = ArtifactStore(tmp_path / "sessions.db")
+        store = ChannelAttachmentArtifactStore(
+            workspace=tmp_path / "workspace", metadata_store=metadata,
+        )
+        try:
+            writer = log.writer(
+                "test:room", author="scheduler", source="scheduler", body_types=(Output,),
+                content={"artifact_ref": check_artifact},
+            )
+            for index in range(5):
+                data = io.BytesIO()
+                Image.new("RGB", (2, 2), (index * 40, 0, 0)).save(data, format="PNG")
+                ref = await store.import_bytes(
+                    data.getvalue(), kind=AttachmentKind.IMAGE,
+                    filename=f"history-{index}.png", media_type="image/png",
+                )
+                writer.append(f"history-{index}", Output((ContentPart("artifact_ref", ref.artifact_id),), "complete"))
+            writer.expire()
+        finally:
+            metadata.close()
+
+        # 2. Observe the durable terminal result, including the old failure path.
+        async with live_root(host) as root:
+            accepted = await root.context.require(CHANNEL_INPUT)(
+                "test:room", "u1", ChannelInboundMessage(
+                    "test", "user", "room", "Will it rain tomorrow morning?",
+                    datetime(2026, 9, 29, tzinfo=UTC), {},
+                ),
+            )
+            requests = root.context.require(ServiceKey("fixture.calls"))
+        assert log.reader("test:room").attachments(accepted.message_id) == ()
+
+        async def completed():
+            async for _ in log.catalog().follow():
+                for row in log.reader("test:room").snapshot():
+                    if row.seq > accepted.seq and (
+                        isinstance(row.body, Control)
+                        or isinstance(row.body, Output) and row.body.finish == "complete"
+                    ):
+                        return row
+
+        terminal = await asyncio.wait_for(completed(), 5)
+        assert terminal is not None
+        assert isinstance(terminal.body, Output), terminal.body
+        assert terminal.body.finish == "complete"
+        assert len(requests) == 2
+        for request in requests:
+            images = [part for row in request.messages if isinstance(row["content"], (list, tuple))
+                      for part in row["content"] if part["type"] == "image_url"]
+            assert len(images) == 5

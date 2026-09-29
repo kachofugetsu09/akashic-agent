@@ -7,7 +7,6 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 
-MAX_IMAGE_COUNT = 4
 MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_TOTAL_BYTES = 40 * 1024 * 1024
 MAX_IMAGE_DATA_URI_BYTES = 8 * 1024 * 1024
@@ -33,10 +32,8 @@ def detect_supported_image_mime(head: bytes) -> str | None:
 
 
 def validate_image_attachment_budget(sizes: list[int]) -> None:
-    """在取得 lease 前限制本轮图片数量和原始字节。"""
+    """Bound raw image bytes across a model request, including retained history."""
 
-    if len(sizes) > MAX_IMAGE_COUNT:
-        raise ValueError(f"每条消息最多可以添加 {MAX_IMAGE_COUNT} 张图片。")
     oversized = next((size for size in sizes if size > MAX_IMAGE_FILE_BYTES), None)
     if oversized is not None:
         raise ValueError(
@@ -46,7 +43,7 @@ def validate_image_attachment_budget(sizes: list[int]) -> None:
     total = sum(sizes)
     if total > MAX_IMAGE_TOTAL_BYTES:
         raise ValueError(
-            f"每条消息的图片合计不能超过 "
+            f"模型请求中的图片（含历史消息）合计不能超过 "
             f"{MAX_IMAGE_TOTAL_BYTES // 1024 // 1024}MB"
             f"（当前 {total / 1024 / 1024:.1f}MB）。"
         )
