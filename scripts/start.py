@@ -242,7 +242,8 @@ def main() -> int:
         preparation = Preparation(state / f"startup-{secrets.token_hex(4)}.log")
         preparation.log.touch(mode=0o600)
         print(f"正在准备 Akashic，完成后将显示 WebUI 地址。日志：{preparation.log}", flush=True)
-        signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(143))
+        for shutdown_signal in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(shutdown_signal, lambda signum, _frame: sys.exit(128 + signum))
         try:
             # Reserve the port during slow builds, then release it for Supervisor.
             with socket.socket() as reservation:
