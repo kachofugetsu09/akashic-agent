@@ -124,7 +124,7 @@ class Spawn:
             return Result("success", (ContentPart("text", f"已创建后台任务「{request.label}」（job_id={request.job_id}）。完成后会回传当前会话。"),))
         if not record.value["settled"]:
             return None
-        outcome = self.jobs.outcome(reader)
+        outcome = await self.jobs.outcome(reader)
         if outcome is None:
             raise ValueError("子任务结算记录缺少消息终态")
         return Result("success" if outcome[0] == "completed" else "error",

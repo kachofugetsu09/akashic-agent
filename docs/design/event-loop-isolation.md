@@ -38,3 +38,19 @@ Workload start/adopt/stop serialize by plugin, since workloads of the same plugi
 A due Alert is selected before taking the Content maintenance lock or calling semantic interest. Its request keeps the real unscored Content snapshot and reports scoring as deferred; it does not persist fake zero scores. The due loop requires the chat model but does not require semantic-interest readiness for an already due Alert. Content/Drift admission still uses the original scoring rules. This bypass covers Alerts due at admission; it does not preempt an already accepted Wake flow or a Content check already awaiting its score.
 
 Plugin UI queries share eight physical workers with a per-plugin limit of four running and twelve admitted queries; the existing global admission limit remains 24. A single slow plugin cannot occupy every worker or every admission slot. Timeout/caller cancellation withdraws work waiting for a plugin slot or an executor start. A running thread cannot be stopped: it keeps its original captured scope and quota until it physically finishes, and provider shutdown waits for that completion. These limits do not promise capacity when several different plugins saturate the shared pool.
+
+## 子任务终态与回传读取
+
+子任务的启动、结算、取消、同步工具回查和后台完成回传使用既有
+`MessageReader.snapshot_async` 读取固定前缀，避免主会话或子会话的完整历史解码
+阻塞事件循环。读取取消时仍排空 worker 后退出，不提前关闭其数据库资源。
+
+取消命令在读取前固定子来源 head，以同一 head 条件追加 pause；如果读取期间子任务
+有新消息，提交冲突后重新检查终态。刚完成的任务不会被旧快照改成 cancelled，
+已经保存的 Control/Output 和所有历史正文不变。来源规则继续由 subagent 拥有，
+Core 不增加子任务状态或来源专属查询。
+
+`tests/test_storage_read_execution.py` 的子任务回归用真实 MessageLog 和受控解码屏障
+守护 O/C3/C4：历史读取期间对等来源和 pause 都能提交，旧快照不吸收后来消息。
+已有存储层回归不能证明实际子任务消费者使用异步入口，所以增加该消费者回归。
+其他来源的同步历史入口仍需独立定位与验证；本变更不宣称全系统 I/O 已异步化。
