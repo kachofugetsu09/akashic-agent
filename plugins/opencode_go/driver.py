@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
-from core.net.http import HttpClient, finish_response
+from core.net.http import HttpClient, StreamProgress, finish_response
 
 import httpx
 
@@ -74,6 +74,7 @@ class _ConnectionConfig:
     connect_timeout: float
     read_timeout: float
     max_retries: int
+    progress_timeout: float = 300.0
 
 
 class _BoundChat:
@@ -480,6 +481,7 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         "format_version",
         "connect_timeout",
         "read_timeout",
+        "progress_timeout",
         "max_retries",
         "max_attempts",
         "catalog_provider_id",
@@ -509,6 +511,7 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
         base_url=_normalize_base_url(descriptor.endpoint),
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
+        progress_timeout=_positive_float(config.get("progress_timeout", 300.0), "progress_timeout"),
         max_retries=max_retries,
     )
 
@@ -730,7 +733,7 @@ async def _stream_chat(
                 if response.status_code >= 400:
                     _ = await response.aread()
                 _raise_status(response, secret=token)
-                return await _consume_stream(response, on_delta)
+                return await _consume_stream(response, on_delta, progress_timeout=connection.progress_timeout)
         except asyncio.CancelledError:
             raise
         except _CallbackError as error:
@@ -765,6 +768,8 @@ class _CallbackError(RuntimeError):
 async def _consume_stream(
     response: httpx.Response,
     on_delta: Callable[[dict[str, str]], Awaitable[None]],
+    *,
+    progress_timeout: float = 300.0,
 ) -> LLMResponse:
     content: list[str] = []
     thinking: list[str] = []
@@ -774,9 +779,10 @@ async def _consume_stream(
     usage: ModelUsage | None = None
     response_delta_seen = False
     completed = False
+    progress = StreamProgress(progress_timeout)
     try:
         lines = response.aiter_lines()
-        async for line in lines:
+        async for line in progress.read(lines):
             if not line.startswith("data:"):
                 continue
             data = line[5:].strip()
@@ -811,17 +817,20 @@ async def _consume_stream(
             if isinstance(raw_calls, list) and raw_calls:
                 response_delta_seen = True
                 tool_seen = True
-                _merge_tool_deltas(calls, raw_calls)
+                if _merge_tool_deltas(calls, raw_calls):
+                    progress.advance()
             reasoning = delta.get("reasoning_content")
             if reasoning is None:
                 reasoning = delta.get("reasoning")
             if isinstance(reasoning, str) and reasoning:
+                progress.advance()
                 response_delta_seen = True
                 thinking.append(reasoning)
                 if not tool_seen:
                     await _emit_delta(on_delta, {"thinking_delta": reasoning})
             piece = delta.get("content")
             if isinstance(piece, str) and piece:
+                progress.advance()
                 response_delta_seen = True
                 content.append(piece)
                 if not tool_seen:
@@ -830,6 +839,9 @@ async def _consume_stream(
         raise
     except _CallbackError:
         raise
+    except TimeoutError as error:
+        failure = ModelTimeoutError(f"模型流超过 {progress_timeout:g} 秒没有有效进展")
+        raise _StreamReadError(failure, response_delta_seen=response_delta_seen) from error
     except Exception as error:
         raise _StreamReadError(error, response_delta_seen=response_delta_seen) from error
     if not completed:
@@ -923,7 +935,9 @@ def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
 
 def _merge_tool_deltas(
     calls: dict[int, dict[str, str]], raw_calls: list[Any]
-) -> None:
+) -> bool:
+    """合并合法工具片段，并报告是否增加了调用内容。"""
+    advanced = False
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
             raise TransportError("stream tool call delta must be an object")
@@ -934,14 +948,19 @@ def _merge_tool_deltas(
         raw_id = raw.get("id")
         if isinstance(raw_id, str):
             slot["id"] += raw_id
+            advanced = advanced or bool(raw_id)
         function = raw.get("function")
         if isinstance(function, Mapping):
             name = function.get("name")
             arguments = function.get("arguments")
             if isinstance(name, str):
                 slot["name"] += name
+                advanced = advanced or bool(name)
             if isinstance(arguments, str):
                 slot["arguments"] += arguments
+                advanced = advanced or bool(arguments)
+
+    return advanced
 
 
 def _tool_calls(calls: Mapping[int, Mapping[str, str]]) -> list[ToolCall]:
