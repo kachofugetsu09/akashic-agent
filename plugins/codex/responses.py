@@ -498,9 +498,9 @@ def _responses_tools(tools: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
                 "type": "function",
                 "name": function["name"],
                 "description": function.get("description", ""),
-                "parameters": function.get(
+                "parameters": _thaw(function.get(
                     "parameters", {"type": "object", "properties": {}}
-                ),
+                )),
                 "strict": bool(function.get("strict", False)),
             }
         )
