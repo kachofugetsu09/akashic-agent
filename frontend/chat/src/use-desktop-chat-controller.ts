@@ -174,7 +174,11 @@ export function useDesktopChatController() {
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const olderMessagesRequestRef = useRef<AbortController | null>(null);
-  const modelsRequestRef = useRef<AbortController | null>(null);
+  const modelsRequestRef = useRef<{
+    sessionId: string; controller: AbortController; promise: Promise<void>;
+  } | null>(null);
+  // 仅当前对话已核对的快照可在后台刷新时继续使用。
+  const modelsSnapshotSessionRef = useRef<string | null>(null);
   const sendRequestRef = useRef<AbortController | null>(null);
   const stopRequestRef = useRef<AbortController | null>(null);
   const tailCacheRef = useRef(new Map<string, SessionTail>());
@@ -344,44 +348,57 @@ export function useDesktopChatController() {
   const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
   const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
 
-  /** 只发布当前会话的最后一次读取；编辑与在途选择由本页保留。 */
-  const loadModels = useCallback(async (sessionId: string) => {
-    modelsRequestRef.current?.abort();
+  /** 同会话读取合并；设置变更须废弃变更前的读取，迟到结果不能覆盖新事实。 */
+  const loadModels = useCallback((sessionId: string, force = false): Promise<void> => {
+    const previous = modelsRequestRef.current;
+    if (!force && previous?.sessionId === sessionId && !previous.controller.signal.aborted) {
+      return previous.promise;
+    }
+    previous?.controller.abort();
     const controller = new AbortController();
     const edit = modelEditRef.current;
-    modelsRequestRef.current = controller;
-    setModelsPhase("loading");
-    setModelsError("");
-    const current = () => modelsRequestRef.current === controller
+    const request = { sessionId, controller, promise: Promise.resolve() };
+    modelsRequestRef.current = request;
+    if (modelsSnapshotSessionRef.current !== sessionId) {
+      setModelsPhase("loading");
+      setModelsError("");
+    }
+    const current = () => modelsRequestRef.current === request
       && !controller.signal.aborted && activeSessionRef.current === sessionId;
     const query = sessionId ? `?session_key=${encodeURIComponent(sessionId)}` : "";
-    try {
-      const next = chatModelState(await fetchChatJson<unknown>(`/api/chat/models${query}`, { signal: controller.signal }));
-      if (!current()) return;
-      setModelState(next);
-      setModelsPhase("ready");
-      if (!modelDirtyRef.current && modelEditRef.current === edit
-        && statusLiveRef.current !== "submitted" && statusLiveRef.current !== "streaming") {
-        setSelectedRuntimeId(next.sessionOverride);
-        setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
-        setModelSelectionDirty(false);
+    request.promise = (async () => {
+      try {
+        const next = chatModelState(await fetchChatJson<unknown>(`/api/chat/models${query}`, { signal: controller.signal }));
+        if (!current()) return;
+        modelsSnapshotSessionRef.current = sessionId;
+        setModelState(next);
+        setModelsPhase("ready");
+        setModelsError("");
+        if (!modelDirtyRef.current && modelEditRef.current === edit
+          && statusLiveRef.current !== "submitted" && statusLiveRef.current !== "streaming") {
+          setSelectedRuntimeId(next.sessionOverride);
+          setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
+          setModelSelectionDirty(false);
+        }
+      } catch (error) {
+        if (!current() || isAbortError(error)) return;
+        setModelsPhase("error");
+        setModelsError(error instanceof ChatRequestError && error.status === 401
+          ? "登录状态需要恢复，暂时无法核对模型。请重新登录后重试。"
+          : error instanceof ChatRequestError && error.status === 403
+            ? "当前身份没有读取模型设置的权限。请恢复访问权限后重试。"
+            : error instanceof ChatRequestError && error.status === 503
+              ? "模型服务暂不可用。请稍后重新核对；已知模型和输入会保留。"
+              : `暂时无法核对模型。${errorMessage(error)}`);
+      } finally {
+        if (modelsRequestRef.current === request) modelsRequestRef.current = null;
       }
-    } catch (error) {
-      if (!current() || isAbortError(error)) return;
-      setModelsPhase("error");
-      setModelsError(error instanceof ChatRequestError && error.status === 401
-        ? "登录状态需要恢复，暂时无法核对模型。请重新登录后重试。"
-        : error instanceof ChatRequestError && error.status === 403
-          ? "当前身份没有读取模型设置的权限。请恢复访问权限后重试。"
-          : error instanceof ChatRequestError && error.status === 503
-            ? "模型服务暂不可用。请稍后重新核对；已知模型和输入会保留。"
-            : `暂时无法核对模型。${errorMessage(error)}`);
-    } finally {
-      if (modelsRequestRef.current === controller) modelsRequestRef.current = null;
-    }
+    })();
+    return request.promise;
   }, []);
 
   useEffect(() => {
+    if (!chatReady) return;
     const refresh = () => { void loadModels(activeSessionRef.current); };
     const visible = () => { if (document.visibilityState === "visible") refresh(); };
     const handleModelsChanged = (event: MessageEvent<unknown>): void => {
@@ -389,7 +406,7 @@ export function useDesktopChatController() {
       if (event.origin !== window.location.origin || event.source !== window.parent
         || typeof payload !== "object" || payload === null
         || !("type" in payload) || payload.type !== "akashic.models.changed") return;
-      refresh();
+      void loadModels(activeSessionRef.current, true);
     };
     window.addEventListener("message", handleModelsChanged);
     window.addEventListener("focus", refresh);
@@ -399,7 +416,7 @@ export function useDesktopChatController() {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [loadModels]);
+  }, [chatReady, loadModels]);
 
   const modelId = selectedRuntimeId || modelState?.defaultRuntime || "";
   const unavailableModel = modelState?.unavailableRuntimes.find((item) => item.id === modelId);
@@ -414,7 +431,7 @@ export function useDesktopChatController() {
     : modelState?.unavailableRuntimes.length ? "已保存的对话连接当前不可用，请在模型设置中恢复连接。"
     : "先连接一个对话模型，之后就可以发送消息。你可以先写下想说的话。";
   const canSend = chatReady && !modelProblem;
-  const retryModels = useCallback(() => { void loadModels(activeSessionRef.current); }, [loadModels]);
+  const retryModels = useCallback(() => { void loadModels(activeSessionRef.current, true); }, [loadModels]);
 
   const closeConnection = useCallback(() => {
     // React 可立即重新挂载；先撤销旧连接，不能等异步 finalizer 才清引用。
@@ -537,10 +554,10 @@ export function useDesktopChatController() {
   }, [closeConnection, connect]);
 
   // 就绪后继续等待在途请求；只有旧请求失败才补发一次，成功结果直接复用。
-  const startupRequestsRef = useRef<Partial<Record<"sessions" | "models", Promise<void>>>>({});
+  const startupRequestsRef = useRef<Partial<Record<"sessions", Promise<void>>>>({});
   useEffect(() => {
     let cancelled = false;
-    const run = async (key: "sessions" | "models", task: () => Promise<void>): Promise<void> => {
+    const run = async (key: "sessions", task: () => Promise<void>): Promise<void> => {
       const previous = startupRequestsRef.current[key];
       const request = previous ?? task();
       startupRequestsRef.current[key] = request;
@@ -555,9 +572,15 @@ export function useDesktopChatController() {
       }
     };
     void run("sessions", loadSessions);
-    void loadModels(activeSessionRef.current);
     return () => { cancelled = true; };
-  }, [chatReady, loadModels, loadSessions, reportError]);
+  }, [chatReady, loadSessions, reportError]);
+
+  // 模型只在服务就绪后读取；恢复指定会话时由激活路径读取该会话，避免先读默认再中止。
+  useEffect(() => {
+    if (chatReady && !requestedSessionId && modelsSnapshotSessionRef.current !== activeSessionRef.current) {
+      void loadModels(activeSessionRef.current);
+    }
+  }, [chatReady, loadModels, requestedSessionId]);
 
   // ?session= 直达会话时同步预热尾页缓存；激活仍等 chatReady，命中后立即可见。
   useEffect(() => {
@@ -569,7 +592,7 @@ export function useDesktopChatController() {
       sessionsRequestRef.current?.abort();
       messagesRequestRef.current?.abort();
       olderMessagesRequestRef.current?.abort();
-      modelsRequestRef.current?.abort();
+      modelsRequestRef.current?.controller.abort();
       sendRequestRef.current?.abort();
       stopRequestRef.current?.abort();
   }, []);
@@ -617,6 +640,8 @@ export function useDesktopChatController() {
     const sessionId = `akashic:${createUuid().replaceAll("-", "")}`;
     if (newChatScopeRef.current) sessionScopesRef.current.set(sessionId, newChatScopeRef.current);
     newChatScopeRef.current = null;
+    // 首次发送沿用同一草稿的模型事实，不是切换到另一条已有会话。
+    if (modelsSnapshotSessionRef.current === "") modelsSnapshotSessionRef.current = sessionId;
     activeSessionRef.current = sessionId;
     followAfterRef.current = -1;
     followSession(socketRef.current, sessionId, -1);
@@ -724,10 +749,12 @@ export function useDesktopChatController() {
     setSurface("chat");
     window.history.replaceState(null, "", window.location.pathname);
     activeSessionRef.current = "";
+    modelsSnapshotSessionRef.current = null;
+    setModelState(null);
     closeConnection();
     messagesRequestRef.current?.abort();
     olderMessagesRequestRef.current?.abort();
-    modelsRequestRef.current?.abort();
+    modelsRequestRef.current?.controller.abort();
     sendRequestRef.current?.abort();
     stopRequestRef.current?.abort();
     setActiveSessionId("");
@@ -819,6 +846,7 @@ export function useDesktopChatController() {
     setReplyTarget(null);
     modelDirtyRef.current = false;
     modelEditRef.current += 1;
+    modelsSnapshotSessionRef.current = null;
     setModelState(null);
     setSelectedRuntimeId("");
     setModelSelectionDirty(false);
