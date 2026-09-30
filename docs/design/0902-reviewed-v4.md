@@ -339,6 +339,14 @@ context.build → model.complete → content.decode
 
 transport retry 由 Model owner 实施；context overflow 是明确的可恢复错误，由 ReAct 请 context 用同一输入快照准备更小请求，最多按已声明预算重试；Tool effect 恢复由 Tool owner 实施。这三类重试不进入一个万能 RetryManager。
 
+Models 的带 request key 聊天调用默认最多 3 次尝试（首次加 2 次安全重试）。
+连接的 driver_config.max_attempts 显式值优先，旧 max_retries 按 N+1 次尝试解释；
+设置 max_attempts=1 可关闭自动重试。这些字段由公开 Models 设置命令的连接配置拥有，
+driver 每次仍只发送一次。只有发送边界明确证明 unsent/rejected 且错误可重试时才继续；
+5xx、流中断、读写超时和取消等效果不确定的失败不因默认额度增加而重发。
+每次尝试与 next_attempt_at 在 Models 账本中记录，同 key 的重调或重启不刷新额度，
+没有 key 的调用仍只尝试一次。此额度不是精确费用上限。
+
 预算必须注明适用范围。单次请求内的纠正/传输重试计数可以在内存；默认来源的已完成循环步数从最后 complete/quiet 或 abandon 边界后的 Output 重建，不因 scope 替换归零。若配置跨重启的模型调用/费用硬上限，额度 owner 在发请求前耐久占额，Model owner 保存实际调用、binding、usage 或 unknown；未知费用不得算作零。调用方用来源与边界消息引用绑定额度，Model 只接收额度凭据，无需理解 Session/Turn。没有这套 provider/query 证据时，只能承诺本地调用次数限制，不能声称精确费用硬上限。
 
 Tool Search 自己提供候选 schema 和选择状态。ReAct 只取得 tool view，不识别字符串 `tool_search`，更不写 `message_push._commit_role=passive`。工具发现不等于授权；Tool 执行边界始终验证真实权限。可见工具集、LRU/preload 属于发现插件，catalog 注册与 exact binding 属于能力 owner。

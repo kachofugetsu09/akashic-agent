@@ -1,7 +1,9 @@
+from contextlib import nullcontext
 from functools import partial
 from typing import Any
 
 from agent.plugin_contracts import Message
+from agent.plugin_contracts.models import CONTENT_VIEWS
 from agent.plugin_contracts.context import MATERIALS as LEGACY_MATERIALS, MaterialKind
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.tasks import Task
@@ -39,7 +41,7 @@ inject = (SOURCE_CHECK, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, M
 
 async def apply(ctx: Context) -> None:
     """在同一代绑定程序依赖；每次调用仍自行持有实际执行租约。"""
-    execute = partial(
+    run = partial(
         run_reply, models=ctx.require(CHAT_MODELS), content=ctx.require(CONTENT),
         context=ctx.require(CONTEXT), tools=ctx.require(TOOLS), cleanup=ctx.require(TOOL_CLEANUP),
         react=ctx.require(REACT),
@@ -49,6 +51,13 @@ async def apply(ctx: Context) -> None:
         model_content=ctx.require(MODEL_CONTENT), model_projection=ctx.require(MODEL_PROJECTION),
         writers=ctx.require(MESSAGE_WRITERS), owner_state=ctx.require(OWNER_STATE),
     )
+    async def execute(caller: Context, task: Task, reader: MessageReader, source: str,
+                      **options: Any) -> Message:
+        """固定可选内容贡献者；无贡献服务的组合保留基础模型投影。"""
+        with ctx.borrow(CONTENT_VIEWS) as views:
+            async with (nullcontext(None) if views is None else views.bind()) as prepare:
+                return await run(caller, task, reader, source, prepare_content=prepare, **options)
+
     materials = ctx.require(MATERIALS)
 
     async def selected(ctx: Context, task: Task, reader: MessageReader, source: str, *,
