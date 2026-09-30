@@ -28,6 +28,8 @@ SSE 数据 ──▶ Provider parser ──▶ 内容/工具进展：续期
 
 期限耗尽返回可辨认的模型超时错误，保留已观察到部分响应的事实；它不证明请求未送达，
 不得自动重发。取消仍传播给原 owner，HTTP stream 由原请求作用域关闭。
+取消发生在已接收增量之后时，原取消异常仍携带部分响应事实，Models 按原失败路径记账；
+取消只停止本地等待，不证明远端请求未发送。
 进展判断由 Provider 拥有，网络公共代码不识别 Provider、模型或 Session。
 
 隔离验证入口：`python scripts/check_stream_progress.py`。该脚本使用真实 parser 与

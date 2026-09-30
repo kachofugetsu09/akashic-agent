@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import builtins
 import difflib
+import heapq
+import json
 import logging
 import os
 from collections.abc import Callable
@@ -459,22 +461,48 @@ class EditFileOperation(_FileOperation):
             return ToolResult(text=f"编辑文件失败：{e}", is_error=True)
 
 
+LIST_DIR_MAX_ENTRIES = 500
+LIST_DIR_MAX_BYTES = 10_000
+
+
+def _list_dir_next_page(after: str) -> str:
+    return (
+        "\n\n[还有条目；继续调用 list_dir，保持 path 不变，设置 after="
+        f"{json.dumps(after, ensure_ascii=True)}。目录变化可能影响后续页面。]"
+    )
+
+
 class ListDirOperation(_FileOperation):
     """列举目录内容。"""
 
-    async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
+    async def execute(
+        self, path: str, limit: int | None = None, after: str | None = None,
+        **kwargs: Any,
+    ) -> str | ToolResult:
+        """校验页大小，再由本地或 Bridge 的文件线程读取同一页。"""
+        # 1. 此入口是目录参数的唯一校验 owner，内部遍历信任已检查的值。
+        page_size = LIST_DIR_MAX_ENTRIES if limit is None else limit
+        if type(page_size) is not int or not 1 <= page_size <= LIST_DIR_MAX_ENTRIES:
+            return ToolResult(
+                text=f"错误：limit 必须是 1～{LIST_DIR_MAX_ENTRIES} 的整数",
+                is_error=True,
+            )
+        if after is not None and not isinstance(after, str):
+            return ToolResult(text="错误：after 必须是文件名字符串", is_error=True)
         bridge = self._get_bridge()
         if bridge is not None:
             result = await bridge.execute_file_tool(
                 "list_dir",
                 allowed_dir=self._allowed_dir,
-                arguments={"path": path, **kwargs},
+                arguments={"path": path, "limit": page_size, "after": after, **kwargs},
             )
             return result
-        return await _run_file_io(lambda: self._list_from_disk(path))
+        return await _run_file_io(lambda: self._list_from_disk(path, page_size, after))
 
-    def _list_from_disk(self, path: str) -> str | ToolResult:
-        """在线程中完成路径解析、目录遍历和文件类型查询。"""
+    def _list_from_disk(
+        self, path: str, limit: int, after: str | None,
+    ) -> str | ToolResult:
+        """遍历全部名字，只保留一页及一个后续标记，不读取文件正文。"""
         try:
             dir_path = _resolve_path(path, self._allowed_dir)
             if not dir_path.exists():
@@ -482,15 +510,37 @@ class ListDirOperation(_FileOperation):
             if not dir_path.is_dir():
                 return ToolResult(text=f"错误：路径不是目录：{path}", is_error=True)
 
-            items: list[str] = []
-            for item in sorted(dir_path.iterdir()):
-                prefix = "📁 " if item.is_dir() else "📄 "
-                items.append(f"{prefix}{item.name}")
+            # 2. 名字按原来的区分大小写顺序排列；堆的内存最多为 limit+1 个名字。
+            with os.scandir(dir_path) as entries:
+                names = heapq.nsmallest(
+                    limit + 1,
+                    (entry.name for entry in entries if after is None or entry.name > after),
+                )
 
-            if not items:
+            if not names and after is not None:
+                return "该文件名之后没有更多条目"
+            if not names:
                 return f"目录 {path} 为空"
 
-            return "\n".join(items)
+            # 3. 字节上限包含续读提示；只为实际展示的名字查询文件类型。
+            items: list[str] = []
+            used_bytes = 0
+            for index, name in enumerate(names[:limit]):
+                prefix = "📁 " if (dir_path / name).is_dir() else "📄 "
+                line = f"{prefix}{name}"
+                line_bytes = len(line.encode("utf-8")) + bool(items)
+                hint = _list_dir_next_page(name) if index + 1 < len(names) else ""
+                if used_bytes + line_bytes + len(hint.encode("utf-8")) > LIST_DIR_MAX_BYTES:
+                    break
+                items.append(line)
+                used_bytes += line_bytes
+
+            if not items:
+                return ToolResult(text="错误：单个目录条目超过 10KB 输出上限", is_error=True)
+            output = "\n".join(items)
+            if len(items) < len(names):
+                output += _list_dir_next_page(names[len(items) - 1])
+            return output
         except PermissionError as e:
             return ToolResult(text=f"错误：{e}", is_error=True)
         except OSError as e:

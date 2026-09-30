@@ -53,6 +53,7 @@ interface SessionTail {
 }
 
 const SESSION_TAIL_CACHE_LIMIT = 8;
+const RECONNECT_MAX_DELAY_MS = 30_000;
 // 新鲜快照激活时不再重复拉尾页；超过窗口或实时跟随断档仍回到权威分页。
 const SESSION_TAIL_FRESH_MS = 30_000;
 
@@ -161,7 +162,7 @@ export function useDesktopChatController() {
   const connectionTaskRef = useRef<Fiber.RuntimeFiber<void> | null>(null);
   const connectRef = useRef<(() => WebSocket) | null>(null);
   const [reconnect] = useState(() => Effect.runSync(Schedule.driver(Schedule.exponential("1 second").pipe(
-    Schedule.modifyDelay((_, delay) => Math.min(Duration.toMillis(delay), 30_000)),
+    Schedule.modifyDelay((_, delay) => Math.min(Duration.toMillis(delay), RECONNECT_MAX_DELAY_MS)),
     Schedule.jitteredWith({ min: 0, max: 1 }),
     Schedule.intersect(Schedule.recurs(12)),
   ))));
@@ -424,6 +425,7 @@ export function useDesktopChatController() {
   const connect = useCallback(() => {
     if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) return socketRef.current;
     closeConnection();
+    Effect.runSync(reconnect.reset);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const url = `${protocol}://${window.location.host}/ws`;
     const first = new WebSocket(url);
@@ -432,6 +434,7 @@ export function useDesktopChatController() {
       let socket = first;
       while (true) {
         const current = socket;
+        let openedAt: number | null = null;
         const event = yield* Effect.async<CloseEvent>((resume) => {
           current.onmessage = (event) => {
             if (socketRef.current !== current) return;
@@ -473,7 +476,7 @@ export function useDesktopChatController() {
           };
           current.onopen = () => {
             if (socketRef.current !== current) return;
-            Effect.runSync(reconnect.reset);
+            openedAt = performance.now();
             setConnectionError("");
             console.info("[chat-ui] ws connected", current.url);
             const sessionId = activeSessionRef.current;
@@ -483,7 +486,13 @@ export function useDesktopChatController() {
             }
           };
           current.onerror = () => current.close();
-          current.onclose = (event) => resume(Effect.succeed(event));
+          current.onclose = (event) => {
+            // 短连仍属于同一次中断，不能凭握手成功刷新退避和预算。
+            if (openedAt !== null && performance.now() - openedAt >= RECONNECT_MAX_DELAY_MS) {
+              Effect.runSync(reconnect.reset);
+            }
+            resume(Effect.succeed(event));
+          };
         }).pipe(Effect.ensuring(Effect.sync(() => {
           current.onmessage = current.onopen = current.onerror = current.onclose = null;
           if (socketRef.current === current) socketRef.current = null;

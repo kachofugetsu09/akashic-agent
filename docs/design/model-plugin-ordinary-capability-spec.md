@@ -430,6 +430,13 @@ Provider driver 拥有：
 
 `models` 插件拥有统一请求/响应 DTO、selection、binding、normalized capability schema、usage 汇总和 registry revision。Core 不参与这两者的领域分工。
 
+内置 Chat Completions / Responses driver 保留 provider 报告的 input 总数；cached input 是其中的子集，
+不能再次相加，reasoning output 也不再加到已含它的 output 总数。兼容 driver 先读现有嵌套字段与
+DeepSeek 命中字段，只有没有已识别值时才读 Kimi 的顶层 `cached_tokens`；明确的零值仍是事实，
+缺失值保持未知。Codex 在转为外部 JSON 时展开冻结的工具参数，不改变请求的 schema 或顺序。
+`docker/debug/model_request_costs.py` 用合成输入与本地 HTTP 分开量测提示、历史和 schema，
+并核对实际调用账与重开；诊断 tokenizer 数字不是实际 provider token、缓存命中收益或费用证明。
+
 ### 8.3 Credential 边界
 
 Credential 随 Connection 由 `models` 插件保存，延续 0028。Driver factory 获得只绑定一个 Connection/auth identity 的 `CredentialHandle`，只能读取或原位刷新该 identity 的 credential payload。它不能枚举其他 Connection，也不能取得 credential store。
