@@ -251,3 +251,11 @@ Manager 的逐插件局部更新不能跨越整组能力版本：它会明确拒
 内部 pause 等待磁盘时，活动回复仍可能追加 Output。来源 head 的 CAS 失败不提交任何事实；
 内部 pause 重新读取前缀再尝试。显式 control 的 expected head 不重试，身份、权限或引用错误也不重试。
 停止完成前后已提交的 Input/Output 都保留，不能用撤销正文消除这类竞态。
+
+直接调用回复程序的 Scheduler、Subagent 和 Wake 也由各自来源固定实际 Input 的 seq，
+不能依赖只在 SourceSession 设置的默认 Task 边界。Scheduler 使用 append 的原收据，
+Subagent 核对原请求的同来源 Input，Wake 按每个实际阶段 Input 固定边界；重放不吸收
+后来 Input/Control。共享回复程序仍拒绝被替代的边界，不把负边界放宽为当前 head。
+`docker/debug/source_reply_boundaries.py` 在真实来源、Task、MessageLog、回复程序、ReAct
+和 Models 账本上验证首次/恢复调用、后来输入/控制拒绝和 Wake 同 Task 多阶段。
+模型 driver 与发送端为本地夹具，不代表真实 provider 或正式投递验收。

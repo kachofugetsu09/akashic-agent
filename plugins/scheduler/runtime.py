@@ -196,7 +196,10 @@ class SchedulerRuntime:
                 content={"text": ctx.require(CONTENT).check_text},
             )(fire.session_id)
             task.on_close(writer.expire)
-            _ = writer.append("scheduler-input:" + fire.key, Input((ContentPart("text", fire.job.prompt),)))
+            admitted = writer.append("scheduler-input:" + fire.key, Input((ContentPart("text", fire.job.prompt),)))
+            # The source owns this input, including replay; later controls must not
+            # become a new grant merely because reply preparation starts later.
+            task.boundary_hint = admitted.seq
             started = time.monotonic()
             output = await self._program(task, reader)
             self.tracker.record(time.monotonic() - started)

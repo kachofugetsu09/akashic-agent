@@ -187,9 +187,12 @@ class Source:
                 )
             finally:
                 writer.expire()
-        elif not isinstance(phase_message.body, Input):
-            raise ValueError("Wake 阶段引用不是 Input")
+        elif phase_message.source != "wake" or not isinstance(phase_message.body, Input):
+            raise ValueError("Wake 阶段引用不是同来源的 Input")
 
+        # A flow may run several phases in one Task. Each phase grants only its
+        # actual Input, never a newer head observed after an asynchronous wait.
+        task.boundary_hint = phase_message.seq
         async with ctx.require(BINDINGS).open(request.program_binding, WAKE_PROGRAM) as (program, _):
             return await program(task, reader, request)
 

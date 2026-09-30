@@ -118,6 +118,10 @@ class Subagents:
         found = self.read(key)
         assert found is not None
         _, request, reader = found
+        admitted = reader.get(request.input_id)
+        if admitted is None or admitted.source != "subagent" or not isinstance(admitted.body, Input):
+            raise ValueError("子任务程序缺少同来源的原 Input")
+        task.boundary_hint = admitted.seq
         try:
             # 1. 只有未关闭输入才进入原程序；最终消息或控制足以决定恢复方向。
             if await self.outcome(reader) is None:

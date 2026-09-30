@@ -19,7 +19,11 @@ from agent.plugin_contracts.tools import ToolPresentation, ToolView
 
 
 class ReplyExecute(Protocol):
-    """在来源已接纳的 Task 与 Input 上运行；调用者只交入授权与本次选择。"""
+    """在来源已接纳的 Task 与 Input 上运行。
+
+    来源在调用前把 Task.boundary_hint 固定为本次授权的 Input/Control seq；
+    不能用稍后读取的 head 代替。多阶段来源为每个实际阶段输入重新固定边界。
+    """
 
     async def __call__(
         self,
@@ -47,7 +51,7 @@ class ReplyExecute(Protocol):
 
 
 class ReplyExecuteV2(Protocol):
-    """在来源已接纳的 Task 与 Input 上运行；调用者只交入授权与本次选择。"""
+    """在来源已接纳的 Task 与 Input 上运行，边界固定规则同 ReplyExecute。"""
 
     async def __call__(
         self,
