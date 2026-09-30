@@ -151,15 +151,29 @@ async def run(args: argparse.Namespace) -> dict:
         # 4. 真实 gRPC UDS、认证与 manager admission，不替换 RPC 或业务 handler。
         import grpc
         from agent.host_bridge import host_bridge_pb2_grpc as rpc
-        from agent.host_bridge.client import HostBridgeShellProcessManager
+        from agent.host_bridge.client import HostBridgeRpcError, HostBridgeShellProcessManager
         from agent.host_bridge.server import HostBridgeService
+
+        class ReplyLossService(HostBridgeService):
+            """完成真实目录读取后只丢一次 RPC 响应，不替换目录业务。"""
+            list_calls = 0
+            drop_next_list = False
+
+            async def FileTool(self, request, context):
+                if request.WhichOneof('operation') == 'list':
+                    self.list_calls += 1
+                reply = await super().FileTool(request, context)
+                if request.WhichOneof('operation') == 'list' and self.drop_next_list:
+                    self.drop_next_list = False
+                    await context.abort(grpc.StatusCode.UNAVAILABLE, '场景：目录读取后响应丢失')
+                return reply
 
         commit = subprocess.check_output(
             ["git", "-C", str(args.source), "rev-parse", "HEAD"], text=True
         ).strip()
         digest = "b" * 64
         socket = root / "bridge.sock"
-        service = HostBridgeService(
+        service = ReplyLossService(
             "scenario-token", 60, root / "artifacts", release_commit=commit,
             toolchain_digest=digest, runtime_checkout=args.source,
             bridge_python=Path(sys.executable),
@@ -198,12 +212,33 @@ async def run(args: argparse.Namespace) -> dict:
                 else:
                     raise AssertionError("Python bool 被 protobuf 静默转换成了整数")
             report["checks"].append("real_uds_pages_and_invalid_limits")
+            # 5. 服务端读完但响应丢失；客户端不自动重发，重接后显式读取同一页。
+            before = service.list_calls
+            service.drop_next_list = True
+            try:
+                await client.execute_file_tool('list_dir', allowed_dir=large, arguments={'path': str(large)})
+            except HostBridgeRpcError as error:
+                assert error.code is grpc.StatusCode.UNAVAILABLE
+            else:
+                raise AssertionError('目录响应丢失被伪装成成功')
+            assert service.list_calls == before + 1, '响应丢失触发了隐含重发'
+            await client.close_transport()
+            client = HostBridgeShellProcessManager(socket, 'scenario-boot', 'scenario-token', commit, digest)
+            await client.claim_boot()
+            repeated = await client.execute_file_tool(
+                'list_dir', allowed_dir=large, arguments={'path': str(large)})
+            assert repeated == first and service.list_calls == before + 2
+            report['checks'].append('lost_directory_reply_no_automatic_replay_and_explicit_reconnect')
         finally:
             try:
                 cleanup = await client.shutdown()
                 assert not cleanup.failures, cleanup
             finally:
-                await server.stop(0)
+                try:
+                    await service.shutdown()
+                    assert not service._managers
+                finally:
+                    await server.stop(0)
     return report
 
 
