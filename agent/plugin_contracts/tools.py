@@ -291,7 +291,7 @@ class ToolProgram(Protocol):
 
 class StartCheck(Protocol):
     def __call__(self, transaction: OwnerTransaction, /) -> None:
-        """检查与首次 started intent 在同一 Core SQL 事务内提交。"""
+        """核对执行前提，与首次效果或新 Output 在同一 Core SQL 事务内提交。"""
         ...
 
 
