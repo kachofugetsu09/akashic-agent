@@ -13,6 +13,7 @@ export function activate(ctx) {
     icon: OPENCODE_ICON,
     connectionIcon: OPENCODE_ICON,
     order: 20,
+    catalogSync: true,
     render(host, _view, rawProps) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;

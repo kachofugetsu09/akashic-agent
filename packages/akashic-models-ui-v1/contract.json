@@ -2,16 +2,17 @@
   "contract": "models.connection-types.v1",
   "entry": {
     "required": ["id", "label", "detail", "render"],
-    "optional": ["icon", "connectionIcon", "editTemplateId", "templates", "embeddingApiKey"],
+    "optional": ["icon", "connectionIcon", "editTemplateId", "templates", "embeddingApiKey", "catalogSync"],
     "render": {
       "arguments": ["host", "view", "props"],
       "returns": "dispose"
     }
   },
   "props": {
-    "required": ["state", "actions", "dirty", "close", "changed"],
+    "required": ["state", "actions", "ui", "dirty", "close", "changed"],
     "state": ["connection", "models", "template"],
-    "actions": ["discover", "discoverSaved", "addModel", "verifyModel", "disableConnection", "createManual", "update", "startAuth", "finishAuth", "cancelAuth", "sync"]
+    "actions": ["discover", "discoverSaved", "addModel", "verifyModel", "disableConnection", "createManual", "update", "startAuth", "finishAuth", "cancelAuth", "sync"],
+    "ui": ["pickModels"]
   },
   "template": {
     "required": ["id", "label", "detail"],

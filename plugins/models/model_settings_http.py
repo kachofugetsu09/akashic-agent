@@ -49,6 +49,7 @@ from .settings import (
     ModelChange,
     MODEL_SETTINGS,
     SetDefaultModel,
+    SetModelEnabled,
     SettingsReceipt,
     StartConnectionAuth,
     SyncModels,
@@ -234,6 +235,13 @@ class VerifyModelPayload(_Payload):
     model_id: str = Field(min_length=1, max_length=128)
 
 
+class SetModelEnabledPayload(_Payload):
+    type: Literal["set_model_enabled"]
+    expected_revision: int = Field(ge=0)
+    model_id: str = Field(min_length=1, max_length=128)
+    enabled: bool
+
+
 class SyncModelsPayload(_Payload):
     type: Literal["sync_models"]
     expected_revision: int = Field(ge=0)
@@ -270,6 +278,7 @@ CommandPayload = Annotated[
     | DisableConnectionPayload
     | AddModelPayload
     | VerifyModelPayload
+    | SetModelEnabledPayload
     | SetDefaultPayload
     | SyncModelsPayload
     | StartAuthPayload
@@ -563,6 +572,8 @@ def _command(payload: CommandPayload) -> ModelChange:
         return _add_model(payload)
     if isinstance(payload, VerifyModelPayload):
         return VerifyModel(expected_revision=payload.expected_revision, model_id=payload.model_id)
+    if isinstance(payload, SetModelEnabledPayload):
+        return SetModelEnabled(payload.expected_revision, payload.model_id, payload.enabled)
     if isinstance(payload, SetDefaultPayload):
         return SetDefaultModel(
             payload.expected_revision,

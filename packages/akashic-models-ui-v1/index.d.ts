@@ -60,9 +60,33 @@ export interface ProviderActions {
   sync(): Promise<void>;
 }
 
+export interface ModelPickOptions {
+  /** Sheet title, for example `目录 · ${connectionName}`. */
+  title?: string;
+  /** Extra hint line under the title; keep it to one sentence. */
+  hint?: string;
+  /** Candidate `model` names that start checked. */
+  checked?: readonly string[];
+  /** Candidate `model` names already saved in the catalog; the sheet marks them 已有. */
+  present?: readonly string[];
+  /** Candidate `model` names whose checkbox is locked checked (in-use models). */
+  locked?: readonly string[];
+  confirmLabel?: string;
+}
+
+export interface ProviderUi {
+  /**
+   * Host-owned candidate sheet with checkbox selection.
+   * Resolves the selected candidate subset, or null when the user cancels.
+   * Selection is not adoption: the caller still verifies/saves via actions.
+   */
+  pickModels(candidates: readonly Record<string, unknown>[], options?: ModelPickOptions): Promise<readonly Record<string, unknown>[] | null>;
+}
+
 export interface ProviderProps {
   readonly state: ProviderState;
   readonly actions: ProviderActions;
+  readonly ui: ProviderUi;
   /** Report unsaved changes; the host owns close and navigation checks. */
   dirty(value: boolean): void;
   close(): void;
@@ -78,6 +102,8 @@ export type ModelProviderEntry = Omit<WebEntry, "render"> & {
   templates?: readonly ModelProviderTemplate[];
   /** Direct API-key connection with an actual embedding dimension probe. */
   embeddingApiKey?: boolean;
+  /** Driver discovery returns verified model purposes; the host offers whole-catalog sync. */
+  catalogSync?: boolean;
   /** Build the dialog with the public settings-dialog-* form classes. */
   render(host: HTMLElement, view: WebEntryView, props: ProviderProps): WebUiDisposer;
 };

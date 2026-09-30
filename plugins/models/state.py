@@ -77,6 +77,7 @@ from .settings import (
     FinishConnectionAuth,
     ModelChange,
     SetDefaultModel,
+    SetModelEnabled,
     SettingsReceipt,
     StartConnectionAuth,
     SyncModels,
@@ -1468,6 +1469,25 @@ class ModelsState:
             if self._snapshot_required().revision != command.expected_revision:
                 raise RevisionConflictError("配置已改变，请重新验证当前模型。")
             return SettingsReceipt(revision=command.expected_revision, status="verified")
+        elif isinstance(command, SetModelEnabled):
+            snapshot = self._snapshot_required()
+            model = snapshot.models.get(command.model_id)
+            if model is None:
+                raise ModelUnavailableError(f"模型不存在: {command.model_id}")
+            if command.enabled and not model.enabled:
+                # 重新开放前按当前凭据实际验证，不把停用期间的失效静默带回来。
+                await self._check_model(AddModel(
+                    expected_revision=command.expected_revision,
+                    model_id=model.model_id,
+                    connection_id=model.connection_id,
+                    kind=model.kind,
+                    model=model.model,
+                    default_reasoning_effort=model.default_reasoning_effort,
+                    capabilities=model.capabilities,
+                    capability_sources=model.capability_sources,
+                    driver_config=model.driver_config,
+                ))
+            revision = self.store.set_model_enabled(command)
         elif isinstance(command, SetDefaultModel):
             if command.verify_embedding:
                 if command.role is not None:

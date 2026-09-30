@@ -11,6 +11,7 @@ export function activate(ctx) {
     icon: CODEX_ICON,
     connectionIcon: CODEX_ICON,
     order: 10,
+    catalogSync: true,
     render(host, _view, rawProps) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;

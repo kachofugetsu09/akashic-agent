@@ -66,6 +66,15 @@ class VerifyModel:
 
 
 @dataclass(frozen=True, slots=True)
+class SetModelEnabled:
+    """Flip one model's catalog exposure while keeping its durable row."""
+
+    expected_revision: int
+    model_id: str
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SetDefaultModel:
     expected_revision: int
     role: str | None
@@ -111,6 +120,7 @@ ModelChange: TypeAlias = (
     | DisableConnection
     | AddModel
     | VerifyModel
+    | SetModelEnabled
     | SetDefaultModel
     | SyncModels
     | StartConnectionAuth
@@ -161,6 +171,7 @@ __all__ = [
     "ModelChange",
     "ModelSettings",
     "SetDefaultModel",
+    "SetModelEnabled",
     "SettingsReceipt",
     "StartConnectionAuth",
     "SyncModels",

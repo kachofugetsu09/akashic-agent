@@ -44,7 +44,7 @@ export function activate(ctx) {
       const title = existing ? `编辑 ${existing.name}` : isDeepSeek ? "连接 DeepSeek" : "连接自定义 API";
       const description = existing
         ? "更新地址、密钥或协议前会逐个验证已启用模型（最多16个，总计一分钟）；会产生真实服务调用，失败保留原配置。仅改名称不调用模型。"
-        : "填写连接信息，然后检测账号可用的模型。";
+        : "填写连接信息，探测目录后勾选要开放的模型。";
       host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(title)}</h2><p class="settings-dialog-description">${description}</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
@@ -54,16 +54,17 @@ export function activate(ctx) {
         </div>
         ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 仅用于补充模型能力；思考格式仅在服务明确支持时选择。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label><label class="is-wide"><span>思考开关格式</span><select name="thinkingFormat" aria-label="思考开关格式"><option value="none">标准兼容格式</option><option value="deepseek">DeepSeek 格式</option></select></label></div></details>`}
         <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会显示在页面中</span></p>
-        <section class="settings-model-discovery"><header><div><h3>模型</h3><p>${existing ? "检测使用已保存的地址和密钥；修改后请先保存连接。" : "目录只提供模型 ID；选择对话用途后，保存前会验证所选模型。"}</p></div></header>
-          ${existing ? `<p class="settings-discovery-summary">现有 ${props.state.models.length} 个模型；历史记录保留原用途，请逐个验证。失败时可在下方停用整个连接并重新配置；历史数据保留。</p><div data-saved-models></div><p role="status" data-saved-feedback></p><button type="button" class="settings-text-button" data-saved-manual>目录不可读取？手动指定对话型号</button><div data-saved-candidates hidden><label data-saved-manual-field hidden><span>对话型号</span><input aria-label="手动添加对话型号" data-saved-manual-input maxlength="256"></label><label><span>用于对话的模型</span><select aria-label="用于对话的模型" data-saved-select></select></label><p>目录只提供 ID；保存时会发送短消息验证对话用途。</p><button type="button" class="settings-primary-button" data-add-saved>验证并添加对话模型</button></div>` : `<div class="settings-discovery-empty" data-discovery-empty>
-            <button type="button" class="settings-primary-button" data-discover>检测可用模型</button>
-            <button type="button" class="settings-text-button" data-manual>无法检测？手动填写模型名</button>
+        ${existing ? "" : `<section class="settings-model-discovery"><header><div><h3>模型</h3><p>目录只提供型号；勾选的型号在保存时逐个验证对话用途。</p></div></header>
+          <div class="settings-discovery-empty" data-discovery-empty>
+            <button type="button" class="settings-primary-button" data-discover>探测可用模型</button>
+            <button type="button" class="settings-text-button" data-manual>手动填写型号</button>
           </div>
-          <div class="settings-discovery-result" data-discovery-result hidden><label><span>默认模型</span><select name="detectedModel" aria-label="默认模型"></select></label><p data-model-detail></p></div>
-          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：your-model-name"}"></label><p>手动添加时图片等能力保持待识别，保存后仍可重新检测。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我选择将此型号用于对话，保存前实际验证。</span></label></div>
-          <p class="settings-discovery-status" data-status role="status" aria-live="polite" hidden></p>`}
-        </section><p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}保存前会向所选模型发送一条短消息，验证对话用途</span><div class="settings-dialog-actions"><button type="button" class="settings-secondary-button" data-rescan>${existing ? "读取已保存连接的模型 ID" : "重新检测"}</button><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
+          <p class="settings-discovery-status" data-picked role="status" hidden></p>
+          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：your-model-name"}"></label><p>手动添加时图片等能力保持待识别，保存后仍可重新探测。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我选择将此型号用于对话，保存前实际验证。</span></label></div>
+          <p class="settings-discovery-status" data-status role="status" aria-live="polite" hidden></p>
+        </section>`}
+        <p class="settings-inline-error" data-error role="alert" hidden></p></div>
+        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}保存前会向所选模型发送一条短消息，验证对话用途</span><div class="settings-dialog-actions">${existing ? "" : '<button type="button" class="settings-secondary-button" data-rescan>重新探测</button>'}<button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
       const form = host.querySelector("form");
       const changed = () => props.dirty(true);
       form.addEventListener("input", changed);
@@ -80,12 +81,8 @@ export function activate(ctx) {
         showKey.innerHTML = visible ? EYE_ICON : EYE_OFF_ICON;
       });
       host.querySelector("[data-close]").addEventListener("click", props.close);
-      let stopDiscovery = () => {};
-      if (existing) {
-        stopDiscovery = setupSavedDiscovery(host, form, props);
-      } else {
-        stopDiscovery = setupDiscovery(host, form, props);
-      }
+      const stopDiscovery = existing ? () => {} : setupDiscovery(host, form, props);
+      const pickedModels = () => host._pickedModels?.() ?? [];
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         const data = new FormData(form);
@@ -101,14 +98,41 @@ export function activate(ctx) {
           return;
         }
         if (!form.reportValidity()) return;
-        const selected = selectedModel(host, form);
-        submit(form, props.actions.createManual({
+        const manualVisible = !host.querySelector("[data-discovery-manual]").hidden;
+        const selected = manualVisible
+          ? [{kind: "chat", model: form.elements.manualModel.value.trim()}]
+          : pickedModels();
+        if (!selected.length || !selected[0].model) {
+          const error = host.querySelector("[data-error]");
+          error.textContent = "请先探测目录并勾选型号，或手动填写型号。";
+          error.hidden = false;
+          return;
+        }
+        const status = host.querySelector("[data-status]");
+        submit(form, (async () => {
+          await props.actions.createManual({
             name: String(data.get("name")),
             endpoint: String(data.get("endpoint")),
             credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
             driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
-          model: modelInput(selected),
-        }).then(() => props.changed("OpenAI Compatible 连接已保存")));
+            model: modelInput(selected[0]),
+          });
+          let opened = 1;
+          const failures = [];
+          for (const [index, model] of selected.slice(1).entries()) {
+            status.hidden = false;
+            status.textContent = `正在验证并开放 ${index + 2}/${selected.length}：${model.model}`;
+            try {
+              await props.actions.addModel(modelInput(model));
+              opened += 1;
+            } catch (reason) {
+              failures.push(`${model.model}：${reason instanceof Error ? reason.message : String(reason)}`);
+            }
+          }
+          props.changed(failures.length
+            ? `连接已保存；已开放 ${opened}/${selected.length} 个模型，未开放的可在连接中重试。`
+            : selected.length > 1 ? `连接已保存，已开放 ${opened} 个模型。` : "OpenAI Compatible 连接已保存");
+        })());
       });
       queueMicrotask(() => form.elements.name.focus());
       return () => {
@@ -129,6 +153,7 @@ function requireProps(value) {
     || typeof value.actions.update !== "function" || typeof value.actions.sync !== "function"
     || typeof value.actions.discoverSaved !== "function" || typeof value.actions.addModel !== "function"
     || typeof value.actions.verifyModel !== "function"
+    || typeof value.ui?.pickModels !== "function"
     || typeof value.dirty !== "function" || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
     throw new Error("models.connection-types.v1 props 无效");
   }
@@ -139,27 +164,34 @@ function requireProps(value) {
   return value;
 }
 
+// 新建连接的探测：拿表单当前值读目录 → 宿主勾选层 → 保存时批量验证采纳。
 function setupDiscovery(host, form, props) {
-  const empty = host.querySelector("[data-discovery-empty]");
-  const result = host.querySelector("[data-discovery-result]");
   const manual = host.querySelector("[data-discovery-manual]");
+  const pickedLine = host.querySelector("[data-picked]");
   const status = host.querySelector("[data-status]");
   const footer = host.querySelector("[data-footer]");
-  const select = form.elements.detectedModel;
+  const footerNote = host.querySelector("[data-footer-note]");
   const manualInput = form.elements.manualModel;
+  const manualConfirm = form.elements.manualConfirm;
   const discoverButton = host.querySelector("[data-discover]");
   const rescanButton = host.querySelector("[data-rescan]");
-  const footerNote = host.querySelector("[data-footer-note]");
-  const manualConfirm = form.elements.manualConfirm;
   const owner = createDiscoveryOwner();
-  let models = [];
+  let picked = [];
   let detectedConnection = "";
 
+  const showPicked = () => {
+    if (!picked.length) {
+      pickedLine.hidden = true;
+      return;
+    }
+    const names = picked.map((model) => model.model);
+    pickedLine.hidden = false;
+    pickedLine.textContent = `已选 ${names.length} 个型号：${names.slice(0, 4).join("、")}${names.length > 4 ? ` 等 ${names.length} 个` : ""}；保存时逐个验证。`;
+  };
   const showManual = () => {
     owner.invalidate();
-    models = [];
-    empty.hidden = true;
-    result.hidden = true;
+    picked = [];
+    showPicked();
     manual.hidden = false;
     footer.hidden = false;
     manualInput.required = true;
@@ -179,34 +211,44 @@ function setupDiscovery(host, form, props) {
     status.hidden = false;
     status.textContent = "正在读取服务的模型目录…";
     try {
-      const nextModels = await runButton(button, "检测中", props.actions.discover({
+      const discovered = await runButton(button, "探测中", props.actions.discover({
         name: String(data.get("name")),
         endpoint: String(data.get("endpoint")),
         credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
         driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
       }, attempt.signal), host.querySelector("[data-error]"), false);
       if (!attempt.isCurrent(connectionFingerprint(form))) return;
-      models = nextModels.filter((model) => ["chat", null].includes(model.kind));
-      if (models.length === 0) throw new Error("服务返回了模型目录，但没有可选择的模型");
+      const candidates = discovered.filter((model) => ["chat", null].includes(model.kind));
+      if (candidates.length === 0) throw new Error("服务返回了模型目录，但没有可选择的模型");
+      const selected = await props.ui.pickModels(candidates, {
+        title: `目录 · ${String(data.get("name")).trim() || "新连接"}`,
+        hint: "勾选的型号在保存时逐个验证对话用途。",
+        checked: picked.map((model) => model.model),
+        confirmLabel: "开放所选",
+      });
+      if (!attempt.isCurrent(connectionFingerprint(form))) return;
+      if (selected === null) {
+        status.textContent = picked.length ? "未改动当前选择。" : "未选择型号。";
+        return;
+      }
+      if (!selected.length) {
+        picked = [];
+        showPicked();
+        detectedConnection = fingerprint;
+        status.textContent = "未勾选型号；保存前可重新探测或手动填写。";
+        return;
+      }
+      picked = [...selected];
       detectedConnection = fingerprint;
-      select.replaceChildren(...models.map((model, index) => new Option(model.model, String(index))));
-      empty.hidden = true;
+      showPicked();
       manual.hidden = true;
-      result.hidden = false;
       footer.hidden = false;
       footerNote.lastChild.textContent = "保存前会向所选模型发送一条短消息，验证对话用途";
-      status.textContent = `找到 ${models.length} 个模型 ID；请选择用于对话的模型，保存时会实际验证。`;
-      updateModelDetail(host, models[0]);
-      select.focus();
+      status.textContent = `已选 ${picked.length} 个型号。`;
     } catch (reason) {
       if (!attempt.isCurrent(connectionFingerprint(form))) return;
-      empty.hidden = false;
-      result.hidden = true;
-      manual.hidden = true;
-      footer.hidden = true;
-      status.hidden = false;
       status.textContent = reason?.code === "forbidden_contract"
-        ? "服务刚刚更新。请刷新页面后重新检测；连接信息尚未保存。"
+        ? "服务刚刚更新。请刷新页面后重新探测；连接信息尚未保存。"
         : "未能读取模型目录。请检查 Base URL 和 API Key，或改用手动填写。";
       const error = host.querySelector("[data-error]");
       error.textContent = reason instanceof Error ? reason.message : String(reason);
@@ -217,71 +259,19 @@ function setupDiscovery(host, form, props) {
   discoverButton.addEventListener("click", () => detect(discoverButton));
   rescanButton.addEventListener("click", () => detect(rescanButton));
   host.querySelector("[data-manual]").addEventListener("click", showManual);
-  select.addEventListener("change", () => updateModelDetail(host, models[Number(select.value)]));
   for (const field of [form.elements.endpoint, form.elements.apiKey, form.elements.provider, form.elements.thinkingFormat]) {
     field.addEventListener("input", () => {
       const current = connectionFingerprint(form);
       if (detectedConnection === current) return;
       owner.invalidate();
-      models = [];
+      picked = [];
+      showPicked();
       status.hidden = false;
-      status.textContent = "连接信息已更改，请重新检测。";
-      if (result.hidden) return;
-      result.hidden = true;
-      footer.hidden = true;
-      empty.hidden = false;
+      status.textContent = "连接信息已更改，请重新探测。";
+      footer.hidden = manual.hidden;
     });
   }
-  host._discoveredModels = () => models;
-  return () => owner.close();
-}
-
-function setupSavedDiscovery(host, form, props) {
-  const owner = createDiscoveryOwner(), panel = host.querySelector("[data-saved-candidates]"), select = host.querySelector("[data-saved-select]");
-  const error = host.querySelector("[data-error]"), manual = host.querySelector("[data-saved-manual-field]"), manualInput = host.querySelector("[data-saved-manual-input]");
-  let candidates = [];
-  const fingerprint = () => JSON.stringify([form.elements.name.value, form.elements.endpoint.value, form.elements.apiKey.value]);
-  for (const model of props.state.models) {
-    const button = document.createElement("button");
-    button.type = "button"; button.className = "settings-text-button";
-    button.textContent = `验证 ${model.model}`;
-    button.addEventListener("click", () => {
-      void runButton(button, "验证中", props.actions.verifyModel(model.id)
-        .then(() => { if (!host.isConnected) return; host.querySelector("[data-saved-feedback]").textContent = `${model.model} 已按保存的用途验证；配置没有改动。`; }), error).catch(() => {});
-    });
-    host.querySelector("[data-saved-models]").appendChild(button);
-  }
-  const initialFingerprint = fingerprint();
-  const read = host.querySelector("[data-rescan]");
-  read.addEventListener("click", async () => {
-    const attempt = owner.start(fingerprint());
-    try {
-      const rows = await runButton(read, "读取中", props.actions.discoverSaved(attempt.signal), error, false);
-      if (!attempt.isCurrent(fingerprint())) return;
-      candidates = rows.filter((model) => ["chat", null].includes(model.kind));
-      if (!candidates.length) throw new Error("目录没有可选择的对话候选。请使用正确用途的连接。");
-      select.replaceChildren(...candidates.map((model, index) => new Option(model.model, String(index))));
-      manual.hidden = true; select.hidden = false;
-      panel.hidden = false; select.focus();
-    } catch (reason) {
-      if (!attempt.isCurrent(fingerprint())) return;
-      panel.hidden = true; error.textContent = reason instanceof Error ? reason.message : String(reason); error.hidden = false;
-    }
-  });
-  host.querySelector("[data-saved-manual]").addEventListener("click", () => { owner.invalidate(); candidates = []; manual.hidden = false; select.hidden = true; panel.hidden = false; manualInput.focus(); });
-  host.querySelector("[data-add-saved]").addEventListener("click", (event) => {
-    const candidate = manual.hidden ? candidates[Number(select.value)] : {kind:"chat", model:manualInput.value.trim()};
-    if (!candidate?.model) { manualInput.focus(); return; }
-    void runButton(event.currentTarget, "验证中", props.actions.addModel(modelInput(candidate))
-      .then(() => {
-        if (!host.isConnected) return;
-        host.querySelector("[data-saved-feedback]").textContent = `${candidate.model} 对话用途已验证并保存。`;
-        props.dirty(fingerprint() !== initialFingerprint);
-      }), error).catch(() => {});
-  });
-  for (const field of [form.elements.name, form.elements.endpoint, form.elements.apiKey]) {
-    field.addEventListener("input", () => { owner.invalidate(); candidates = []; panel.hidden = true; });
-  }
+  host._pickedModels = () => picked;
   return () => owner.close();
 }
 
@@ -327,16 +317,6 @@ function connectionFingerprint(form) {
   ]);
 }
 
-function selectedModel(host, form) {
-  if (!host.querySelector("[data-discovery-manual]").hidden) {
-    return {kind: "chat", model: form.elements.manualModel.value.trim()};
-  }
-  const models = host._discoveredModels?.() ?? [];
-  const selected = models[Number(form.elements.detectedModel.value)];
-  if (!selected) throw new Error("请先检测并选择一个模型");
-  return selected;
-}
-
 function modelInput(model) {
   const capabilities = model.capabilities ?? {};
   const sources = model.capabilitySources ?? {};
@@ -366,21 +346,6 @@ function modelInput(model) {
     default_reasoning_effort: model.defaultReasoningEffort ?? null,
     driver_config: model.driverConfig ?? {format_version: 1},
   };
-}
-
-function updateModelDetail(host, model) {
-  const detail = host.querySelector("[data-model-detail]");
-  const modalities = model?.capabilities?.inputModalities ?? ["text"];
-  const source = model?.capabilitySources?.inputModalities ?? "unknown";
-  detail.textContent = modalities.includes("image")
-    ? `已确认可看图 · 能力来源：${sourceLabel(source)}`
-    : source === "unknown" ? "图片能力待识别" : "当前目录未标记图片输入";
-}
-
-function sourceLabel(source) {
-  if (source.startsWith("litellm-remote@")) return "LiteLLM 公共目录";
-  if (source.startsWith("provider")) return "服务目录";
-  return source;
 }
 
 function clearInlineError(host) {

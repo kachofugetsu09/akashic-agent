@@ -33,6 +33,7 @@ from .settings import (
     CreateConnectionWithModel,
     DisableConnection,
     SetDefaultModel,
+    SetModelEnabled,
     UpdateConnection,
 )
 from agent.plugin_composition.models import (
@@ -696,6 +697,64 @@ class ModelsStore:
             _set_added_embedding_default(connection, command)
 
         return self._domain_write(command.expected_revision, "add-model", write)
+
+    def set_model_enabled(self, command: SetModelEnabled) -> int:
+        """Flip one model's catalog exposure as one revision CAS.
+
+        Disabling refuses while a chat role or the default embedding still
+        references the row; durable data is never deleted here.
+        """
+
+        model_id = _required(command.model_id, "model_id")
+        enabled = bool(command.enabled)
+
+        def write(connection: sqlite3.Connection) -> bool:
+            row = connection.execute(
+                "SELECT kind, enabled FROM ("
+                "SELECT id, 'chat' AS kind, enabled FROM model_definitions "
+                "UNION ALL "
+                "SELECT id, 'embedding' AS kind, enabled FROM embedding_models"
+                ") WHERE id = ?",
+                (model_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"model does not exist: {model_id}")
+            if bool(row[1]) == enabled:
+                return False
+            if not enabled:
+                roles = [
+                    str(item[0])
+                    for item in connection.execute(
+                        "SELECT role FROM model_role_bindings WHERE model_id = ?",
+                        (model_id,),
+                    ).fetchall()
+                ]
+                default_embedding = connection.execute(
+                    "SELECT 1 FROM model_registry_meta "
+                    "WHERE singleton = 1 AND default_embedding_model_id = ?",
+                    (model_id,),
+                ).fetchone()
+                reasons = sorted(roles)
+                if default_embedding is not None:
+                    reasons.append("default-embedding")
+                if reasons:
+                    raise ValueError(
+                        f"model is still in use; rebind before disabling: "
+                        f"{', '.join(reasons)}"
+                    )
+            table = (
+                "model_definitions" if str(row[0]) == "chat" else "embedding_models"
+            )
+            connection.execute(
+                f"UPDATE {table} SET enabled = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (int(enabled), model_id),
+            )
+            return True
+
+        return self._domain_write(
+            command.expected_revision, "set-model-enabled", write
+        )
 
     def set_default(self, command: SetDefaultModel) -> int:
         """Set one chat role or the workspace default embedding model."""
