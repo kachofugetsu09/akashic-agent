@@ -4,14 +4,14 @@ from typing import Any
 
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.models import CONTENT_VIEWS
-from agent.plugin_contracts.context import MATERIALS as LEGACY_MATERIALS, MaterialKind
+from agent.plugin_contracts.context import MaterialKind
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.tasks import Task
 
 from agent.plugin_composition import CHAT_MODELS, Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
-from agent.plugin_contracts.reply import REPLY_EXECUTE, REPLY_EXECUTE_V2
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V3
 
 from .inputs import (
     CONTENT,
@@ -69,18 +69,4 @@ async def apply(ctx: Context) -> None:
         return await execute(ctx, task, reader, source,
                              materials=materials.bind(exclude_kinds=exclude_material_kinds), **options)
 
-    _ = await ctx.provide(REPLY_EXECUTE_V2, ctx.entrypoint(selected))
-
-    async def legacy(child: Context) -> None:
-        """旧调用恢复独立借用 v3；缺席不阻断新用途接口。"""
-        old_materials = child.require(LEGACY_MATERIALS)
-
-        async def named(ctx: Context, task: Task, reader: MessageReader, source: str, *,
-                        exclude_materials: frozenset[str] = frozenset(), **options: Any) -> Message:
-            """仅解释旧名称选择，回复程序与新入口共用。"""
-            return await execute(ctx, task, reader, source,
-                                 materials=old_materials.bind(exclude=exclude_materials), **options)
-
-        _ = await child.provide(REPLY_EXECUTE, child.entrypoint(named))
-
-    await ctx.inject((LEGACY_MATERIALS,), legacy, name="legacy-materials")
+    _ = await ctx.provide(REPLY_EXECUTE_V3, ctx.entrypoint(selected))

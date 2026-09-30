@@ -50,7 +50,7 @@ from agent.plugin_contracts.models import (
     MessageProjection as MessageProjection,
 )
 from agent.plugin_contracts.react import (
-    REACT_ORDERED as REACT,
+    REACT_ORDERED_V2 as REACT,
 )
 from agent.plugin_contracts.tools import (
     DecodedCall as DecodedCall,
@@ -607,6 +607,8 @@ async def react(
                 existing = reader.get(message_id)
                 if existing is not None:
                     return existing
+                if check_start is not None:
+                    check_start(transaction)
                 for message in reader.snapshot(after_seq=head):
                     if _competing(message, writer.source, related):
                         raise _Superseded

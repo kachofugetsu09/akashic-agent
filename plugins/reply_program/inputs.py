@@ -33,7 +33,7 @@ from agent.plugin_contracts.models import (
     ModelSelection as ModelSelection,
 )
 from agent.plugin_contracts.react import (
-    REACT_ORDERED as REACT,
+    REACT_ORDERED_V2 as REACT,
 )
 from agent.plugin_contracts.sources import (
     SOURCE_CHECK_V2 as SOURCE_CHECK,

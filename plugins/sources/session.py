@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import cast
+from functools import partial
 from uuid import uuid4
 
 from agent.plugin_composition.messages import (
@@ -15,6 +16,7 @@ from agent.plugin_composition.messages import (
 )
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts import Control, Input, Message, Output
+from agent.plugin_contracts.sources import CompletionProgram
 
 logger = logging.getLogger(__name__)
 Changed = Callable[[MessageReader, str], None]
@@ -90,12 +92,11 @@ class SourceSession:
         self._restart_gate = restart_gate
         self._key = (reader.session_id, self._source)
 
-    def _changed(self, message: Message) -> Message:
+    def _changed(self, message: Message) -> None:
         """提交后仍在同步准入段通知可选回复消费者，后续发送不能抢过已接纳输入。"""
         if self._on_changed is not None:
             with self._reader.read_snapshot():
                 self._on_changed(self._reader, self._source)
-        return message
 
     def _committed(self, slot: TaskSlot, message: Message, created: bool) -> None:
         """提交通知失败也必须撤权；重放不重复通知或取消。"""
@@ -271,7 +272,7 @@ class SourceSession:
 
         return await self._tasks.admit_async(self._key, admit)
 
-    async def complete(self, program: Callable[[Task, MessageReader], Awaitable[Message]]) -> Message:
+    async def complete(self, program: CompletionProgram) -> Message:
         """在主回复空闲后处理材料；新输入可以撤权，只重试被抢占的本次程序。"""
         # 1. 用户输入优先；等待旧 Task 不取得其取消权。
         async for _ in self._reader.follow():
@@ -281,9 +282,13 @@ class SourceSession:
                         return slot.current, False
                     if self.needs_reply(self._reader, self._source):
                         return None, False
-                    task = slot.start(lambda task: program(task, self._reader))
                     with self._reader.read_snapshot():
-                        task.boundary_hint = self._reader.head(source=self._source)
+                        boundary = self._reader.head(source=self._source)
+                    task = slot.start(lambda task: program(
+                        task, self._reader,
+                        partial(check_source, task, self._reader, self._source, boundary),
+                    ))
+                    task.boundary_hint = boundary
                     return task, True
 
                 task, owned = await self._tasks.admit(self._key, admit)

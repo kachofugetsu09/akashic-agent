@@ -12,7 +12,7 @@ from agent.plugin_contracts.models import (
     MODEL_CONTENT as MODEL_CONTENT,
     ModelContent as ModelContent,
 )
-from agent.plugin_contracts.reply import REPLY_EXECUTE_V2 as REPLY_EXECUTE
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V3 as REPLY_EXECUTE
 
 from .messages import HINTS, render
 from .request import STAGE_TOOLS, Request, WakeFailure, read_phase

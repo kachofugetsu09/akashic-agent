@@ -1,6 +1,6 @@
 
 from agent.plugin_contracts.reply import (
-    REPLY_PROGRAM as REPLY_PROGRAM,
+    REPLY_PROGRAM_V3 as REPLY_PROGRAM,
 )
 
 

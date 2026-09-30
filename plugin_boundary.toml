@@ -433,3 +433,27 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 [capabilities."tools.program.v2"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."conversation.complete.v2"]
+role = "seam"
+note = "来源固定控制前提，交给完成程序；输出来源不能代替控制来源"
+
+[capabilities."reply.program.v3"]
+role = "seam"
+note = "回传程序显式携带来源控制前提，不另存执行权威状态"
+
+[capabilities."reply.execute.v3"]
+role = "seam"
+note = "独立回复入口核对来源控制前提与输出前提；旧 key 不静默升级"
+
+[capabilities."source.session.v3"]
+role = "seam"
+note = "来源完成回调必须接收原控制前提；旧二参数回调不静默兼容"
+
+[capabilities."react.ordered-start.v2"]
+role = "seam"
+note = "首次效果和新 Output 在各自原事务核对同一来源控制前提"
+
+[capabilities."sources.v4"]
+role = "seam"
+note = "注册表 open 返回带显式完成控制前提的来源；旧 session 形状不静默升级"

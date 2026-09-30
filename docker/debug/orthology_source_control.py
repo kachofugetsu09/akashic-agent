@@ -7,12 +7,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition import CompositionRoot, CredentialRef
-from agent.plugin_composition.channels import CHANNEL_INPUT as LEGACY_CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
+from agent.plugin_composition.channels import CHANNEL_INPUT as LEGACY_CHANNEL_INPUT, CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from agent.plugin_composition.tasks import Tasks
-from agent.plugin_contracts.sources import SOURCES as LEGACY_SOURCES, SOURCES_V3 as SOURCES
+from agent.plugin_contracts.sources import (SOURCES as LEGACY_SOURCES, SOURCES_V3, SOURCES_V4 as SOURCES,
+    SOURCE_SESSION, SOURCE_SESSION_V2, SOURCE_SESSION_V3)
 from plugins.sources import plugin as sources
 from plugins.sources.session import SourceSession
 from plugins.telegram_channel import plugin as telegram
@@ -74,6 +75,15 @@ async def check(workspace: Path) -> None:
         await waiting.dispose()
         await legacy.dispose()
         await root.mount(sources.apply, name="routes")
+        assert root.context.get(SOURCES_V3) is None
+        assert root.context.get(SOURCE_SESSION) is None
+        assert root.context.get(SOURCE_SESSION_V2) is None
+        assert root.context.get(SOURCE_SESSION_V3) is not None
+        async def obsolete_factory(_ctx):
+            raise AssertionError("旧完成回调形状被静默接纳")
+        obsolete = await root.mount(obsolete_factory, name="obsolete-factory", inject=(SOURCE_SESSION_V2, SOURCES_V3))
+        assert obsolete.state is FiberState.PENDING
+        await obsolete.dispose()
         await root.mount(registration("default_lane", None), name="default", inject=(SOURCES,))
         dedicated = await root.mount(registration("assistant_lane", ("telegram",)), name="dedicated", inject=(SOURCES,))
         runtime = PluginRuntime("telegram", "generation", workspace, workspace / "telegram", workspace,

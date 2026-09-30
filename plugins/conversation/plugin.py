@@ -36,14 +36,15 @@ from agent.plugin_contracts.models import (
 )
 from agent.plugin_contracts.sources import (
     CHECK_ORIGIN as CHECK_ORIGIN,
-    CONVERSATION_COMPLETE as CONVERSATION_COMPLETE,
+    CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
     SOURCE_CHANGED_V2 as SOURCE_CHANGED,
-    SOURCE_SESSION_V2 as SOURCE_SESSION,
-    SOURCES_V3 as SOURCES,
-    ConversationComplete as ConversationComplete,
-    SessionFactory as SessionFactory,
+    SOURCE_SESSION_V3 as SOURCE_SESSION,
+    SOURCES_V4 as SOURCES,
+    ConversationCompleteV2 as ConversationComplete,
+    CompletionProgram,
+    GuardedSessionFactory as SessionFactory,
     SourceChanged,
-    SourceSession as SourceSession,
+    GuardedSourceSession as SourceSession,
 )
 
 from .commands import CONTENT, CONVERSATION_COMMANDS, SOURCE_CHECK, run_commands
@@ -156,7 +157,7 @@ async def apply(ctx: Context) -> None:
 
     @ctx.entrypoint
     async def complete(
-        session_id: str, program: Callable[[Task, MessageReader], Awaitable[Message]],
+        session_id: str, program: CompletionProgram,
     ) -> Message:
         return await open(session_id).complete(program)
 
