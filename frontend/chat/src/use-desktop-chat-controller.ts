@@ -25,7 +25,6 @@ import { replyChatStatus, type ChatStatus } from "./web-chat-status";
 import {
   chatHistoryPage,
   chatModelState,
-  ChatRequestError,
   errorMessage,
   fetchChatJson,
   isAbortError,
@@ -291,10 +290,11 @@ export function useDesktopChatController() {
       const page = await request.promise;
       if (!current()) return;
       streamStore.clear();
-      setMessages([]);
+      const saved = new Set(page.items.map((item) => item.id));
+      setMessages((current) => sendRequestRef.current ? current.filter((item) => !saved.has(item.id)) : []);
       setTimelineMessages(page.items);
       setTimelineRefresh((revision) => revision + 1);
-      setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length,
+      if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length,
         page.items, replyAvailableRef.current));
       followAfterRef.current = page.throughSeq;
       setHistoryThroughSeq(page.throughSeq);
@@ -381,7 +381,7 @@ export function useDesktopChatController() {
         setModelsPhase("ready");
         setModelsError("");
         if (!modelDirtyRef.current && modelEditRef.current === edit
-          && statusLiveRef.current !== "submitted" && statusLiveRef.current !== "streaming") {
+          && statusLiveRef.current !== "uploading" && statusLiveRef.current !== "submitted" && statusLiveRef.current !== "streaming") {
           setSelectedRuntimeId(next.sessionOverride);
           setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
           setModelSelectionDirty(false);
@@ -389,13 +389,7 @@ export function useDesktopChatController() {
       } catch (error) {
         if (!current() || isAbortError(error)) return;
         setModelsPhase("error");
-        setModelsError(error instanceof ChatRequestError && error.status === 401
-          ? "登录状态需要恢复，暂时无法核对模型。请重新登录后重试。"
-          : error instanceof ChatRequestError && error.status === 403
-            ? "当前身份没有读取模型设置的权限。请恢复访问权限后重试。"
-            : error instanceof ChatRequestError && error.status === 503
-              ? "模型服务暂不可用。请稍后重新核对；已知模型和输入会保留。"
-              : `暂时无法核对模型。${errorMessage(error)}`);
+        setModelsError(`模型列表加载失败：${errorMessage(error)}。发送时仍使用会话已保存的模型。`);
       } finally {
         if (modelsRequestRef.current === request) modelsRequestRef.current = null;
       }
@@ -424,15 +418,15 @@ export function useDesktopChatController() {
     };
   }, [chatReady, loadModels]);
 
-  const modelId = selectedRuntimeId || modelState?.defaultRuntime || "";
+  const modelId = (modelSelectionDirty ? selectedRuntimeId : selectedRuntimeId || modelState?.sessionOverride) || modelState?.defaultRuntime || "";
   const unavailableModel = modelState?.unavailableRuntimes.find((item) => item.id === modelId);
-  const modelProblem = modelsPhase === "loading" ? "正在核对对话模型，请稍等。"
-    : modelsPhase === "error" ? modelsError
+  // 只有已读回的当前会话配置能要求用户处理；目录读取不参与发送准入。
+  const modelProblem = !modelState ? ""
     : modelState?.runtimes.some((item) => item.id === modelId) ? ""
     : unavailableModel ? unavailableModel.availability === "disabled"
       ? `连接「${unavailableModel.sourceName}」已停用，请在模型设置中恢复连接或选择其他模型。`
       : `连接「${unavailableModel.sourceName}」所需的模型驱动尚未加载或已卸载，请恢复驱动或选择其他模型。`
-    : modelId ? "已选的对话模型暂不可用，请在模型设置中核对或选择其他模型。"
+    : modelId ? "已选的对话模型暂不可用，请在模型设置中恢复或选择其他模型。"
     : modelState?.runtimes.length ? "还没选择默认对话模型。请在下方选择模型，或在模型设置中设为默认。"
     : modelState?.unavailableRuntimes.length ? "已保存的对话连接当前不可用，请在模型设置中恢复连接。"
     : "先连接一个对话模型，之后就可以发送消息。你可以先写下想说的话。";
@@ -480,13 +474,13 @@ export function useDesktopChatController() {
                   followAfterRef.current = frame.next_after_seq;
                   const saved = new Set(frame.items.map((item) => item.id));
                   setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
-                  setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
+                  if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, replyAvailableRef.current));
                   void loadSessionsSafely();
                 } else if (frame.type === "reply.status") {
                   replyActivitiesRef.current = frame.items;
                   setReplyActivities(frame.items);
                   setReplyAvailable(frame.available);
-                  setStatusLive(replyChatStatus(frame.items, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, frame.available));
+                  if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(frame.items, messagesRef.current.length + Number(sendRequestRef.current !== null), timelineRef.current, frame.available));
                 }
                 return;
               }
@@ -660,15 +654,24 @@ export function useDesktopChatController() {
     const cleanText = text.trim();
     if (!cleanText && files.length === 0) return;
     if (!canSend) throw new Error(modelProblem || "聊天服务暂不可用，请稍后重试。");
+    if (sendRequestRef.current) throw new Error("消息正在发送，请稍等。");
     setError("");
-    setStatusLive("submitted");
+    setStatusLive(files.length ? "uploading" : "submitted");
     messagesRequestRef.current?.abort();
     olderMessagesRequestRef.current?.abort();
-    sendRequestRef.current?.abort();
     const controller = new AbortController();
     sendRequestRef.current = controller;
     const clientMessageId = createUuidV7();
     const reply = replyTarget;
+    // 本地预览先进入消息区；上传完成后换成服务端附件身份。
+    setMessages((current) => [...current, {
+      id: clientMessageId, role: "user", content: cleanText || files.map((item) => item.filename || "附件").join("\n"),
+      attachments: files.map((file, index) => ({
+        id: `${clientMessageId}:${index}`, type: "file", filename: file.filename,
+        mediaType: file.mediaType || "application/octet-stream", url: file.url || "",
+      })),
+      blocks: [], createdAt: new Date().toISOString(), canonical: false,
+    }]);
     try {
       const sessionId = await ensureSession();
       controller.signal.throwIfAborted();
@@ -678,19 +681,10 @@ export function useDesktopChatController() {
         files: files.length,
       });
       const media = await uploadFiles(files, controller.signal);
+      controller.signal.throwIfAborted();
       const attachments = media.map((item) => uploadedFileToAttachment(item));
-      setMessages((current) => [
-        ...current,
-        {
-          id: clientMessageId,
-          role: "user",
-          content: cleanText || media.map((item) => item.filename).join("\n"),
-          attachments,
-          blocks: [],
-          createdAt: new Date().toISOString(),
-          canonical: false,
-        },
-      ]);
+      setMessages((current) => current.map((item) => item.id === clientMessageId ? { ...item, attachments } : item));
+      setStatusLive("submitted");
       const payload: Record<string, unknown> = {
         type: "message.send",
         request_id: clientMessageId,
@@ -712,9 +706,13 @@ export function useDesktopChatController() {
       modelDirtyRef.current = false;
       setModelSelectionDirty(false);
       setReplyTarget(null);
+      return sessionId;
     } catch (error) {
       setMessages((current) => current.filter((message) => message.id !== clientMessageId));
-      if (isAbortError(error)) throw error;
+      if (isAbortError(error)) {
+        if (sendRequestRef.current === controller) setStatusLive("idle");
+        throw error;
+      }
       reportError(error, "error");
       throw error;
     } finally {
@@ -730,7 +728,7 @@ export function useDesktopChatController() {
         socketRef.current = null;
         statusRef.current = "idle";
       }
-      setStatus("idle");
+      setStatusLive("idle");
       return;
     }
     if (!activeSessionId || stopRequestRef.current) return;
@@ -750,7 +748,7 @@ export function useDesktopChatController() {
         if (stopRequestRef.current === controller) stopRequestRef.current = null;
         setStopPending(false);
       });
-  }, [activeSessionId, closeConnection, connect, reportError]);
+  }, [activeSessionId, closeConnection, connect, reportError, setStatusLive]);
 
   const startNewChat = useCallback(() => {
     setSurface("chat");
@@ -865,7 +863,8 @@ export function useDesktopChatController() {
     setModelState(null);
     setSelectedRuntimeId("");
     setModelSelectionDirty(false);
-    void Promise.all([cachedFresh ? Promise.resolve() : loadMessages(sessionId), loadModels(sessionId)])
+    void loadModels(sessionId);
+    void (cachedFresh ? Promise.resolve() : loadMessages(sessionId))
       .catch((reason: unknown) => reportError(reason))
       .finally(() => {
         if (activeSessionRef.current === sessionId) setPendingSessionId("");
@@ -930,7 +929,7 @@ export function useDesktopChatController() {
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
-    canSend, modelProblem, modelsPhase, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
+    canSend, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,

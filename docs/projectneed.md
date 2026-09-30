@@ -147,6 +147,13 @@ Web 聊天页通过现有 HTTP 接口读写会话；Android Shell 拥有服务�
 
 Thinking 与工具调用沿共享页面的一条过程轨迹展示；流式消息按同一消息的最新 target 更新，terminal 立即提交。窄屏布局和历史恢复不得修改原始 Message、seq、SessionDB 或 Akasha 学习材料。旧独立 Mobile WebUI 的发布与 OTA 条款由 [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) 退役。
 
+模型配置提示只在当前会话已知的选择或默认模型不可用、确实需要用户处理时阻止发送。
+模型目录读取、会话切换、页面恢复和后台刷新不参与发送准入；没有显式修改选择时，
+服务端使用该会话保存的选择。读取失败须与配置不可用分开说明，并保留输入与重试入口。
+
+发送附件时立即在消息区显示本地预览，上传与等待回答分别反馈。上传失败或取消时保留
+本次文字和附件；成功只清除本次提交内容，上传期间新写的草稿和新添加的附件继续保留。
+
 ### WEBUI-004 Shell 通知消费已提交消息
 
 `/api/chat/notifications/stream` 只读取已提交的 Session/Message，提供可重放的 cursor 和通知事件；不建立第二份服务端消息、通知队列或已读状态。Android 先提交系统通知，再保存本地进度；失败时保留旧进度以便重放。`/api/shell/state` 提供 Shell 启动所需的只读状态。详细边界见 [Android Shell 合同](design/android-shell-experiment.md)。

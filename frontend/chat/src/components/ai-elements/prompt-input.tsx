@@ -78,25 +78,6 @@ import {
 // Helpers
 // ============================================================================
 
-const convertBlobUrlToDataUrl = async (url: string): Promise<string | null> => {
-  try {
-    const response = await fetch(url);
-    const blob = await response.blob();
-    // FileReader uses callback-based API, wrapping in Promise is necessary
-    // oxlint-disable-next-line eslint-plugin-promise(avoid-new)
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      // oxlint-disable-next-line eslint-plugin-unicorn(prefer-add-event-listener)
-      reader.onloadend = () => resolve(reader.result as string);
-      // oxlint-disable-next-line eslint-plugin-unicorn(prefer-add-event-listener)
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
-  } catch {
-    return null;
-  }
-};
-
 const captureScreenshot = async (): Promise<File | null> => {
   if (
     typeof navigator === "undefined" ||
@@ -527,10 +508,14 @@ export const PromptInput = ({
   // Try to use a provider controller if present
   const controller = useOptionalPromptInputController();
   const usingProvider = !!controller;
+  const controllerRef = useRef(controller);
+  controllerRef.current = controller;
 
   // Refs
   const inputRef = useRef<HTMLInputElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const submittingRef = useRef(false);
+  const [submittedFileIds, setSubmittedFileIds] = useState<string[]>([]);
 
   // ----- Local attachments (only used when no provider)
   const [items, setItems] = useState<(FileUIPart & { id: string })[]>([]);
@@ -708,11 +693,6 @@ export const PromptInput = ({
     ? controller.attachments.openFileDialog
     : openFileDialogLocal;
 
-  const clear = useCallback(() => {
-    clearAttachments();
-    clearReferencedSources();
-  }, [clearAttachments, clearReferencedSources]);
-
   // Let provider know about our hidden file input so external menus can call openFileDialog()
   useEffect(() => {
     if (!usingProvider) {
@@ -817,11 +797,11 @@ export const PromptInput = ({
       add,
       clear: clearAttachments,
       fileInputRef: inputRef,
-      files: files.map((item) => ({ ...item, id: item.id })),
+      files: files.filter((item) => !submittedFileIds.includes(item.id)),
       openFileDialog,
       remove,
     }),
-    [files, add, remove, clearAttachments, openFileDialog]
+    [files, submittedFileIds, add, remove, clearAttachments, openFileDialog]
   );
 
   const refsCtx = useMemo<ReferencedSourcesContext>(
@@ -845,6 +825,8 @@ export const PromptInput = ({
   const handleSubmit: FormEventHandler<HTMLFormElement> = useCallback(
     async (event) => {
       event.preventDefault();
+      if (submittingRef.current) return;
+      submittingRef.current = true;
 
       const form = event.currentTarget;
       const text = usingProvider
@@ -854,53 +836,28 @@ export const PromptInput = ({
             return (formData.get("message") as string) || "";
           })();
 
-      // Reset form immediately after capturing text to avoid race condition
-      // where user input during async blob conversion would be lost
+      // 提交中的附件由本次发送持有；编辑器仍可接收下一份草稿。
+      const submitted = files.map(({ id, ...file }) => ({ id, file }));
+      setSubmittedFileIds(submitted.map((item) => item.id));
       if (!usingProvider) {
         form.reset();
       }
 
       try {
-        // Convert blob URLs to data URLs asynchronously
-        const convertedFiles: FileUIPart[] = await Promise.all(
-          files.map(async ({ id: _id, ...item }) => {
-            if (item.url?.startsWith("blob:")) {
-              const dataUrl = await convertBlobUrlToDataUrl(item.url);
-              // If conversion failed, keep the original blob URL
-              return {
-                ...item,
-                url: dataUrl ?? item.url,
-              };
-            }
-            return item;
-          })
-        );
-
-        const result = onSubmit({ files: convertedFiles, text }, event);
-
-        // Handle both sync and async onSubmit
-        if (result instanceof Promise) {
-          try {
-            await result;
-            clear();
-            if (usingProvider) {
-              controller.textInput.clear();
-            }
-          } catch {
-            // Don't clear on error - user may want to retry
-          }
-        } else {
-          // Sync function completed without throwing, clear inputs
-          clear();
-          if (usingProvider) {
-            controller.textInput.clear();
-          }
-        }
+        // 原 Blob URL 直接交给上传 owner，成功后才释放，不做 Base64 往返转换。
+        await onSubmit({ files: submitted.map((item) => item.file), text }, event);
+        for (const item of submitted) remove(item.id);
+        if (controllerRef.current?.textInput.value === text) controllerRef.current.textInput.clear();
+        const sentSources = new Set(referencedSources.map((item) => item.id));
+        setReferencedSources((current) => current.filter((item) => !sentSources.has(item.id)));
       } catch {
-        // Don't clear on error - user may want to retry
+        // 发送者显示失败原因；原附件保留供重试，不清除后来输入的内容。
+      } finally {
+        submittingRef.current = false;
+        setSubmittedFileIds([]);
       }
     },
-    [usingProvider, controller, files, onSubmit, clear]
+    [usingProvider, controller, files, referencedSources, onSubmit, remove]
   );
 
   // Render with or without local provider
@@ -989,7 +946,7 @@ export const PromptInputTextarea = ({
         const submitButton = form?.querySelector(
           'button[type="submit"]'
         ) as HTMLButtonElement | null;
-        if (submitButton?.disabled) {
+        if (!submitButton || submitButton.disabled) {
           return;
         }
 

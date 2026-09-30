@@ -36,7 +36,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
-    canSend, modelProblem, modelsPhase, retryModels, draftKey,
+    canSend, modelProblem, modelsError, retryModels, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
@@ -120,11 +120,13 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         </Conversation>
 
         <div className={`composer-wrap ${!hasMessages ? "home" : ""}`}>
-          {chatReady && modelProblem ? <div className="chat-model-notice" role={modelsPhase === "error" ? "alert" : "status"}>
-            <p id="chat-model-reason">{modelProblem}</p>
+          {status === "uploading" ? <p className="reply-unavailable" role="status">正在上传附件…</p> : null}
+          {chatReady && (modelProblem || modelsError) ? <div className="chat-model-notice" role="status">
+            {modelProblem ? <p id="chat-model-reason">{modelProblem}</p> : null}
+            {modelsError ? <p>{modelsError}</p> : null}
             <div>
-              <a href="/#models" target="_blank" rel="noopener">打开模型设置</a>
-              {modelsPhase !== "ready" ? <button type="button" onClick={retryModels}>重新核对模型</button> : null}
+              {modelProblem ? <a href="/#models" target="_blank" rel="noopener">打开模型设置</a> : null}
+              {modelsError ? <button type="button" onClick={retryModels}>重试加载模型列表</button> : null}
             </div>
           </div> : null}
           <DesktopComposer
