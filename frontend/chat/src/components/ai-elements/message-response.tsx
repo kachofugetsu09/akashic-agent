@@ -1,11 +1,11 @@
 "use client";
 
+import { alignNumericTableTokens } from "@/markdown-reading";
 import { configureKaomojiMarkdown } from "@/kaomoji-markdown";
 import { cn } from "@/lib/utils";
 import { canBatchStreamingMarkdown } from "@/message-rendering-policy";
 import { memo, type ComponentProps, useEffect } from "react";
 import MarkdownRender, {
-  CodeBlockNode,
   MathBlockNode,
   MathInlineNode,
   setCustomComponents,
@@ -13,6 +13,7 @@ import MarkdownRender, {
 } from "markstream-react";
 import "markstream-react/index.px.css";
 import { useReducedMotion } from "motion/react";
+import { CODE_BLOCK_PROPS, ReadingCode, ReadingList, ReadingParagraph, ReadingTable } from "@/markdown-reading-nodes";
 
 export interface MessageResponseProps {
   children: string;
@@ -39,18 +40,6 @@ function useMathStyles() {
   }, []);
 }
 
-/** 聊天代码块 chrome 对齐 dsh：只留语言标签与复制，去掉行号、折叠、字号等编辑器控件。 */
-const CODE_BLOCK_PROPS = {
-  showLineNumbers: false,
-  showCollapseButton: false,
-  showFontSizeButtons: false,
-  showExpandButton: false,
-  showPreviewButton: false,
-  showTooltips: false,
-  enableFontSizeControl: false,
-  isShowPreview: false,
-} as const;
-
 function DeferredMathBlock({ node, ctx }: NodeComponentProps<DeferredNode>) {
   useMathStyles();
   if (!ctx?.final) return <pre className="markstream-deferred-source">{String(node.raw ?? node.content ?? "")}</pre>;
@@ -63,15 +52,9 @@ function DeferredMathInline({ node, ctx }: NodeComponentProps<DeferredNode>) {
   return <MathInlineNode node={node as ComponentProps<typeof MathInlineNode>["node"]} />;
 }
 
-/** Mermaid 已下线；围栏改按普通代码块渲染源码。 */
-function MermaidAsCode({ node, isDark }: NodeComponentProps<DeferredNode>) {
-  return (
-    <CodeBlockNode
-      node={{ ...node, type: "code_block", language: "mermaid", code: String(node.code ?? node.content ?? "") } as ComponentProps<typeof CodeBlockNode>["node"]}
-      isDark={isDark}
-      {...CODE_BLOCK_PROPS}
-    />
-  );
+/** Mermaid 已下线，保留源码展示。 */
+function MermaidAsCode(props: NodeComponentProps<DeferredNode>) {
+  return <ReadingCode {...props} node={{ ...props.node, type: "code_block", language: "mermaid", code: String(props.node.code ?? props.node.content ?? ""), raw: String(props.node.raw ?? "") }} />;
 }
 
 setCustomComponents({
@@ -79,6 +62,10 @@ setCustomComponents({
   math_block: DeferredMathBlock,
   math_inline: DeferredMathInline,
   mermaid: MermaidAsCode,
+  list: ReadingList,
+  paragraph: ReadingParagraph,
+  table: ReadingTable,
+  code_block: ReadingCode,
 });
 
 /** Render complete or append-only Markdown with Markstream's incremental parser. */
@@ -89,7 +76,7 @@ export const MessageResponse = memo(function MessageResponse({
 }: MessageResponseProps) {
   const reducedMotion = useReducedMotion();
   return (
-    <div className={cn("message-response-markstream size-full", isAnimating && "is-streaming", className)}>
+    <div className={cn("message-response-markstream markdown-reading size-full", isAnimating && "is-streaming", className)}>
       <MarkdownRender
         content={children}
         final={!isAnimating}
@@ -114,7 +101,7 @@ export const MessageResponse = memo(function MessageResponse({
         codeBlockProps={CODE_BLOCK_PROPS}
         codeBlockLightTheme="vitesse-light"
         codeBlockDarkTheme="vitesse-dark"
-        parseOptions={{ reuseStableTopLevelNodes: true }}
+        parseOptions={{ reuseStableTopLevelNodes: true, postTransformTokens: alignNumericTableTokens }}
         customMarkdownIt={configureKaomojiMarkdown}
       />
     </div>

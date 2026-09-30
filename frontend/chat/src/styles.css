@@ -929,68 +929,6 @@ input {
   contain-intrinsic-block-size: auto 160px;
 }
 
-.static-code-block {
-  display: flex;
-  width: fit-content;
-  max-width: 100%;
-  align-items: flex-start;
-  gap: 6px;
-  box-sizing: border-box;
-  margin-block: 0.5rem;
-  overflow: hidden;
-  border: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
-  border-radius: var(--md-sys-shape-corner-small);
-  padding: 4px 6px 4px 14px;
-  color: var(--md-sys-color-on-surface);
-  background: var(--md-sys-color-surface);
-}
-
-.static-code-block > pre {
-  margin: 0;
-  padding: 10px 0;
-  overflow-x: auto;
-  background: transparent;
-  font-family: var(--md-ref-typeface-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 0.8125rem;
-  font-weight: 480;
-  line-height: 1.55;
-}
-
-.static-code-block > pre > code {
-  font: inherit;
-  background: transparent;
-}
-
-.static-code-copy {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  place-items: center;
-  margin-top: 4px;
-  border: 0;
-  border-radius: 8px;
-  padding: 0;
-  color: var(--md-sys-color-on-surface-variant);
-  background: transparent;
-  font: inherit;
-  font-size: 0.75rem;
-  cursor: pointer;
-  transition-property: color, background-color;
-  transition-duration: 120ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-}
-
-.static-code-copy:hover {
-  color: var(--md-sys-color-on-surface);
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 4%, transparent);
-}
-
-.static-code-copy:focus-visible {
-  outline: 2px solid var(--md-sys-color-primary);
-  outline-offset: 2px;
-}
-
 .web-message-anchor.user {
   display: grid;
   justify-items: end;
@@ -1082,6 +1020,7 @@ input {
 }
 
 .chat-main {
+  --chat-concept-columns: minmax(5.6rem, 0.38fr) minmax(0, 1fr);
   position: relative;
   display: flex;
   min-width: 0;
@@ -2539,10 +2478,6 @@ form.composer:focus-within [data-slot="input-group"] {
   outline-offset: 2px;
 }
 .chat-main .user-bubble { font-size: var(--chat-type-body); }
-.chat-main .agent-content h1 { font-size: 1.375rem; }
-.chat-main .agent-content h2 { font-size: 1.175rem; }
-.chat-main .agent-content h3 { font-size: 1.025rem; }
-.chat-main .agent-content h4 { font-size: 0.875rem; }
 .chat-main .composer-wrap {
   /* 宽屏：输入卡以阅读列为中心、两侧各宽出 text-inset，输入文字与消息正文共用一条左竖线。 */
   inset-inline-start: max(
@@ -2574,6 +2509,7 @@ form.composer:focus-within [data-slot="input-group"] {
 @media (max-width: 36rem) {
   .chat-main {
     --chat-dock-inset: 16px;
+    --chat-concept-columns: minmax(0, 1fr);
     --chat-type-body: 1rem;
     --composer-control-size: 44px;
     --composer-dock-end: max(8px, env(safe-area-inset-bottom, 0px));
