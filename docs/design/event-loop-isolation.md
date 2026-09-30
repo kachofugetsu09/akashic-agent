@@ -16,12 +16,12 @@ Long history reads use a private read-only SQLite transaction and connection. Ne
 └───────────────────────┘       └────────────────────────┘
 ```
 
-同步 head、writer expire/close 以及增量 reader 的缓存版本读取仍有各自的同步锁路径。
-这里仅修复普通异步前缀和只读快照的准入，不代表 Source 或全部 Core 写入已异步化。
+同步 head、writer expire/close 以及增量 reader 的同步 snapshot 仍有各自的同步锁路径。
+这里修复普通和增量异步前缀、只读快照的准入及增量缓存 SQL，不代表 Source 或全部 Core 写入已异步化。
 
 MessageLog uses file-backed WAL mode so a pinned read does not delay a writer's commit. This changes the runtime journal mode, not the schema. Backups must use SQLite backup or include the SQLite sidecars; copying only the live main database file is not a snapshot. Existing databases keep their schema and data; an unsupported journal mode is rejected explicitly. Short synchronous writes can still wait on SQLite file-level contention; this change does not claim that all storage I/O is asynchronous.
 
-Reply preparation captures the source head and full message head before awaiting history. Async warmup decodes only that fixed prefix, drains the worker on cancellation, and installs the existing incremental cache only if the original connection's data version is unchanged. An external edit during the read prevents cache reuse; the caller still receives that one consistent SQLite snapshot without retrying or blocking the event loop. Later appends are read as a tail; external edits invalidate the cache on the next read.
+回复准备在等待历史前固定来源 head 和完整消息 head。增量异步快照的解码、原连接 data_version 核对和缓存大小 SQL 都在同一个文件 worker 完成，取消等待 worker 实际退出。writer 忙时跳过可选缓存预热，private RO 仍可读取已提交前缀；只有原连接版本未变且 writer 空闲时才发布原有有界缓存。外部编辑使缓存不能复用，不重跑或推翻本次固定快照。后续追加仍按尾部补读，外部编辑仍在下次同步读取时使旧缓存失效。已准入的 private reader 可跨 close 完成，关闭后跳过缓存发布。
 
 Interest scoring keeps model selection and candidate embedding in the original async owner. Historical sample and prototype construction run in a drained worker without changing the formula, sample order or cutoff.
 
