@@ -150,4 +150,48 @@ for (const hasAvailable of [true, false]) {
   }
 }
 
+// Ordinary external providers receive this public API through the same mount
+// contract as built-ins. Locked candidates must not depend on checked defaults.
+let externalUi;
+const externalFixture = await mount({
+  id: "external-fixture", label: "External fixture", detail: "Public API fixture",
+  render(_host, _view, props) { externalUi = props.ui; return () => {}; },
+});
+try {
+  document.querySelector("[data-providers] button").click();
+  await settle();
+  const candidates = Object.freeze([
+    Object.freeze({kind: "chat", model: "locked"}),
+    Object.freeze({kind: "chat", model: "optional"}),
+  ]);
+  const options = Object.freeze({locked: Object.freeze(["locked"])});
+  const before = JSON.stringify({candidates, options});
+  const selected = externalUi.pickModels(candidates, options);
+  const boxes = [...document.querySelectorAll(".settings-sheet-row input")];
+  assert.equal(boxes[0].checked, true);
+  assert.equal(boxes[0].disabled, true);
+  assert.equal(boxes[1].checked, false);
+  const tools = [...document.querySelectorAll(".settings-sheet-tools button")];
+  tools.find(button => button.textContent === "全选").click();
+  assert.deepEqual(boxes.map(box => box.checked), [true, true]);
+  tools.find(button => button.textContent === "全不选").click();
+  assert.deepEqual(boxes.map(box => box.checked), [true, false]);
+  document.querySelector(".settings-sheet-foot .settings-primary-button").click();
+  const result = await selected;
+  assert.deepEqual(result, [candidates[0]]);
+  assert.equal(result[0], candidates[0], "selection returns the original candidate");
+  assert.equal(JSON.stringify({candidates, options}), before, "caller inputs stay immutable");
+  assert.deepEqual(externalFixture.commands, [], "picking never saves without a provider action");
+
+  const cancelled = externalUi.pickModels(candidates, options);
+  document.querySelector(".settings-sheet-foot .settings-secondary-button").click();
+  assert.equal(await cancelled, null);
+  assert.equal(document.querySelector(".settings-sheet-scrim"), null);
+  assert.equal(JSON.stringify({candidates, options}), before);
+  assert.deepEqual(externalFixture.commands, [], "cancelling a locked selection never saves");
+  checks.push("External provider pickModels keeps locked candidates checked through bulk actions; confirm/cancel preserve inputs and never auto-save");
+} finally {
+  await externalFixture.close();
+}
+
 console.log(JSON.stringify({passed: checks.length, boundary: "Actual UI modules, synthetic HTTP and JSDOM; no browser/backend validation", checks}, null, 2));

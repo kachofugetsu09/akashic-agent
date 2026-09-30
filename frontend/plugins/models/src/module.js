@@ -659,7 +659,7 @@ export function activate(ctx) {
             primary: candidate.model,
             marks: [isPresent ? "已有" : "新", ...(isLocked ? ["在用"] : [])],
             badges: capabilityBadges(candidate.capabilities),
-            checked: checked.has(candidate.model),
+            checked: isLocked || checked.has(candidate.model),
             disabled: isLocked,
             disabledNote: isLocked ? "在用不可关闭" : "",
           };
