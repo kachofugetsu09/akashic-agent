@@ -61,7 +61,7 @@ async function mount(provider, initialCatalog = null) {
           result = {revision: ++catalog.revision, status: "committed"};
         } else if (payload.type === "sync_models") {
           assert.equal(catalog.connections.length, 1, "sync follows committed authentication");
-          catalog.models.push({id: "fixture-model", connectionId, kind: "chat", model: "fixture-chat", availability: "available", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}});
+          if (!initialCatalog) catalog.models.push({id: "fixture-model", connectionId, kind: "chat", model: "fixture-chat", availability: "available", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}});
           result = {revision: ++catalog.revision, status: "committed"};
         } else if (payload.type === "set_default") {
           catalog.roleBindings[payload.role] = payload.model_id;
@@ -127,6 +127,27 @@ try {
   checks.push("Role chooser preserves cancelled navigation and releases accepted navigation without writing a binding");
 } finally {
   await roleFixture.close();
+}
+
+for (const hasAvailable of [true, false]) {
+  const provider = providerEntry(activateCodex);
+  const makeModel = (id, availability) => ({id, connectionId: "saved", kind: "chat", model: id, availability, capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}});
+  const fixture = await mount(provider, {
+    revision: 1, connections: [{id: "saved", name: "Saved", driverId: "codex", availability: "available"}],
+    models: [makeModel("disabled-first", "disabled"), ...(hasAvailable ? [makeModel("available-second", "available")] : [])],
+    roleBindings: {}, defaultEmbeddingModelId: null,
+  });
+  try {
+    document.querySelector("[data-connections] button").click();
+    await settle();
+    document.querySelector("[data-sync]").click();
+    await settle();
+    const bindings = fixture.commands.filter(command => command.type === "set_default");
+    assert.deepEqual(bindings.map(command => command.model_id), hasAvailable ? ["available-second"] : []);
+    checks.push(hasAvailable ? "Sync bootstraps a missing default from an available model, skipping opted-out rows" : "Sync leaves the default unset when every saved model is disabled");
+  } finally {
+    await fixture.close();
+  }
 }
 
 console.log(JSON.stringify({passed: checks.length, boundary: "Actual UI modules, synthetic HTTP and JSDOM; no browser/backend validation", checks}, null, 2));

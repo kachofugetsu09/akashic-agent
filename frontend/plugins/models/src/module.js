@@ -933,7 +933,7 @@ export function activate(ctx) {
         const setDefaultIfMissing = async (revision, preferredModelId = "") => {
           if (auth.closed || catalog.roleBindings.default) return;
           const modelId = preferredModelId || catalog.models.find(
-            (model) => model.connectionId === connectionId && model.kind === "chat",
+            (model) => model.connectionId === connectionId && model.kind === "chat" && model.availability === "available",
           )?.id;
           if (modelId) await command({type: "set_default", expected_revision: revision, role: "default", model_id: modelId});
         };

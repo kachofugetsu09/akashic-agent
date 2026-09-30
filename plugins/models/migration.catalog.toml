@@ -1,0 +1,20 @@
+schema_version = 1
+bundle_id = "models"
+version = "1.0.0"
+migration_root = "models_migrations"
+package_name = "models_migrations"
+
+[[files]]
+path = "20260930_01_model_user_disabled.py"
+sha256 = "3abf817e10b5a9314c2c4787b019230bbb29118a88b78eb805fe6f52db7b426f"
+
+[[files]]
+path = "__init__.py"
+sha256 = "6a75e9f0656a93e84d982785e24d50246c2bec7caa1ddbcc1ac0141b12c40e45"
+
+[[migrations]]
+id = "20260930_01_model_user_disabled"
+path = "20260930_01_model_user_disabled.py"
+depends = []
+transactional = false
+sha256 = "3abf817e10b5a9314c2c4787b019230bbb29118a88b78eb805fe6f52db7b426f"

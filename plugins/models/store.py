@@ -79,6 +79,7 @@ class StoredModel:
     driver_config: Mapping[str, Any]
     discovery_owned: bool
     enabled: bool
+    user_disabled: bool = False
 
     @classmethod
     def from_command(cls, command: AddModel) -> StoredModel:
@@ -219,7 +220,7 @@ class ModelsStore:
         return self._host_epoch
 
     def initialize(self) -> None:
-        """Create a new registry or expand the two approved additive columns."""
+        """Create the current schema; retain only previously approved expansions."""
 
         if not self.writable:
             if not self.path.is_file():
@@ -239,6 +240,7 @@ class ModelsStore:
                 else:
                     connection.execute("BEGIN IMMEDIATE")
                     _require_base_schema(connection)
+                    _require_user_disabled_schema(connection)
                     additions = _missing_additive_columns(connection)
                     legacy_driver_ids = _legacy_openai_driver_ids(connection)
                     if additions or legacy_driver_ids:
@@ -285,6 +287,12 @@ class ModelsStore:
             connection_columns = _columns(connection, "model_connections")
             model_columns = _columns(connection, "model_definitions")
             embedding_columns = _columns(connection, "embedding_models")
+            opt_out_columns = (
+                "user_disabled" in model_columns,
+                "user_disabled" in embedding_columns,
+            )
+            if any(opt_out_columns) and not all(opt_out_columns):
+                raise RuntimeError("model user-disabled schema is incomplete")
             default_column = (
                 ", default_embedding_model_id"
                 if "default_embedding_model_id" in meta_columns
@@ -311,7 +319,8 @@ class ModelsStore:
                         "capabilities_json"
                         if "capabilities_json" in model_columns
                         else "NULL"
-                    )
+                    ),
+                    user_disabled="user_disabled" if all(opt_out_columns) else "0",
                 )
             ).fetchall()
             embedding_rows = connection.execute(
@@ -320,7 +329,8 @@ class ModelsStore:
                         "capabilities_json"
                         if "capabilities_json" in embedding_columns
                         else "NULL"
-                    )
+                    ),
+                    user_disabled="user_disabled" if all(opt_out_columns) else "0",
                 )
             ).fetchall()
             role_rows = connection.execute(
@@ -710,16 +720,16 @@ class ModelsStore:
 
         def write(connection: sqlite3.Connection) -> bool:
             row = connection.execute(
-                "SELECT kind, enabled FROM ("
-                "SELECT id, 'chat' AS kind, enabled FROM model_definitions "
+                "SELECT kind, enabled, user_disabled FROM ("
+                "SELECT id, 'chat' AS kind, enabled, user_disabled FROM model_definitions "
                 "UNION ALL "
-                "SELECT id, 'embedding' AS kind, enabled FROM embedding_models"
+                "SELECT id, 'embedding' AS kind, enabled, user_disabled FROM embedding_models"
                 ") WHERE id = ?",
                 (model_id,),
             ).fetchone()
             if row is None:
                 raise ValueError(f"model does not exist: {model_id}")
-            if bool(row[1]) == enabled:
+            if bool(row[1]) == enabled and bool(row[2]) == (not enabled):
                 return False
             if not enabled:
                 roles = [
@@ -746,9 +756,9 @@ class ModelsStore:
                 "model_definitions" if str(row[0]) == "chat" else "embedding_models"
             )
             connection.execute(
-                f"UPDATE {table} SET enabled = ?, updated_at = CURRENT_TIMESTAMP "
+                f"UPDATE {table} SET enabled = ?, user_disabled = ?, updated_at = CURRENT_TIMESTAMP "
                 "WHERE id = ?",
-                (int(enabled), model_id),
+                (int(enabled), int(not enabled), model_id),
             )
             return True
 
@@ -1236,7 +1246,8 @@ def _sync_would_change(
             capability_sources=item.capability_sources,
             driver_config=item.driver_config,
             discovery_owned=True,
-            enabled=True,
+            enabled=not stored.user_disabled if stored else True,
+            user_disabled=stored.user_disabled if stored else False,
         )
         if stored != desired:
             return True
@@ -1298,6 +1309,27 @@ def _missing_additive_columns(connection: sqlite3.Connection) -> tuple[str, ...]
             if name not in call_columns
         )
     return tuple(statements)
+
+
+def _require_user_disabled_schema(connection: sqlite3.Connection) -> None:
+    """The user-choice expansion requires an explicitly installed migration."""
+
+    for table in ("model_definitions", "embedding_models"):
+        columns = {row[1]: row for row in connection.execute(f"PRAGMA table_info({table})")}
+        column = columns.get("user_disabled")
+        if column is None:
+            raise RuntimeError(
+                "model registry requires migration 20260930_01_model_user_disabled; "
+                "install the Models migration before starting this version"
+            )
+        if (str(column[2]).upper(), column[3], column[4], column[5]) != ("INTEGER", 1, "0", 0):
+            raise RuntimeError(f"{table}.user_disabled has an incompatible definition")
+
+
+def _user_disabled(value: object) -> bool:
+    if type(value) is not int or value not in (0, 1):
+        raise RuntimeError("model user_disabled must be a stored boolean")
+    return value == 1
 
 
 def _legacy_openai_driver_ids(connection: sqlite3.Connection) -> tuple[str, ...]:
@@ -1373,7 +1405,8 @@ def _chat_model_from_row(row: sqlite3.Row) -> StoredModel:
         capability_sources=sources,
         driver_config=driver_config,
         discovery_owned=source == "discovery",
-        enabled=bool(row[3]),
+        enabled=bool(row[3]) and not _user_disabled(row[17]),
+        user_disabled=_user_disabled(row[17]),
     )
 
 
@@ -1403,7 +1436,8 @@ def _embedding_model_from_row(row: sqlite3.Row) -> StoredModel:
         capability_sources=sources,
         driver_config=driver_config,
         discovery_owned=("manual" if payload is None else source) == "discovery",
-        enabled=bool(row[3]),
+        enabled=bool(row[3]) and not _user_disabled(row[6]),
+        user_disabled=_user_disabled(row[6]),
     )
 
 
@@ -1771,14 +1805,14 @@ SELECT
     input_modalities, capability_source, context_window_source,
     max_output_tokens_source, input_modalities_source,
     supports_parallel_tool_calls, use_responses_lite, reasoning_summary,
-    {capabilities_json}
+    {capabilities_json}, {user_disabled}
 FROM model_definitions
 ORDER BY created_at, id
 """
 
 
 _SELECT_EMBEDDING_MODELS = """
-SELECT id, connection_id, model, enabled, dimensions, {capabilities_json}
+SELECT id, connection_id, model, enabled, dimensions, {capabilities_json}, {user_disabled}
 FROM embedding_models
 ORDER BY created_at, id
 """
@@ -1798,7 +1832,7 @@ INSERT INTO model_definitions(
 _UPSERT_CHAT_MODEL = _INSERT_CHAT_MODEL.rstrip() + """
 ON CONFLICT(id) DO UPDATE SET
     model = excluded.model,
-    enabled = 1,
+    enabled = CASE WHEN model_definitions.user_disabled = 1 THEN 0 ELSE 1 END,
     reasoning_effort = excluded.reasoning_effort,
     supported_reasoning_efforts = excluded.supported_reasoning_efforts,
     context_window = excluded.context_window,
@@ -1821,7 +1855,7 @@ INSERT INTO embedding_models(id, connection_id, model, dimensions, capabilities_
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     model = excluded.model,
-    enabled = 1,
+    enabled = CASE WHEN embedding_models.user_disabled = 1 THEN 0 ELSE 1 END,
     dimensions = excluded.dimensions,
     capabilities_json = excluded.capabilities_json,
     updated_at = CURRENT_TIMESTAMP
@@ -1939,6 +1973,7 @@ CREATE TABLE model_definitions (
     connection_id TEXT NOT NULL REFERENCES model_connections(id) ON DELETE RESTRICT,
     model TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    user_disabled INTEGER NOT NULL DEFAULT 0 CHECK (user_disabled IN (0, 1)),
     reasoning_effort TEXT NOT NULL DEFAULT '',
     supported_reasoning_efforts TEXT NOT NULL DEFAULT '[]',
     context_window INTEGER NOT NULL DEFAULT 0 CHECK (context_window >= 0),
@@ -1965,6 +2000,7 @@ CREATE TABLE embedding_models (
     model TEXT NOT NULL,
     dimensions INTEGER NOT NULL CHECK (dimensions > 0),
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    user_disabled INTEGER NOT NULL DEFAULT 0 CHECK (user_disabled IN (0, 1)),
     capabilities_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
