@@ -182,7 +182,7 @@ export function useDesktopChatController() {
   const sendRequestRef = useRef<AbortController | null>(null);
   const stopRequestRef = useRef<AbortController | null>(null);
   const tailCacheRef = useRef(new Map<string, SessionTail>());
-  const prefetchInflightRef = useRef(new Map<string, AbortController>());
+  const tailRequestsRef = useRef(new Map<string, { controller: AbortController; promise: Promise<SessionTail> }>());
   const chatReady = shellState?.chatReady === true;
   const navigationPins = useNavigationPins(chatReady);
 
@@ -220,27 +220,37 @@ export function useDesktopChatController() {
     }
   }, []);
 
-  // 预取只写尾页缓存，不触碰会话状态；失败由正式激活路径兜底，无需打扰用户。
-  const prefetchSessionTail = useCallback((sessionId: string) => {
-    if (!sessionId || tailCacheRef.current.has(sessionId) || prefetchInflightRef.current.has(sessionId)) return;
+  // 预取与正式激活共享尾页读取；缓存被分页/实时帧更新后，旧快照不能覆盖它。
+  const readSessionTail = useCallback((sessionId: string) => {
+    const pending = tailRequestsRef.current.get(sessionId);
+    if (pending && !pending.controller.signal.aborted) return pending;
     const controller = new AbortController();
-    prefetchInflightRef.current.set(sessionId, controller);
+    const previous = tailCacheRef.current.get(sessionId);
     const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
-    void fetchChatJson<unknown>(`${endpoint}?page_size=50`, { signal: controller.signal })
+    const promise = fetchChatJson<unknown>(`${endpoint}?page_size=50`, { signal: controller.signal })
       .then((payload) => {
         const page = chatHistoryPage(payload, endpoint);
-        if (controller.signal.aborted
-          || page.items.some((row) => row.session_id !== sessionId)) return;
-        cacheSessionTail(sessionId, {
-          items: page.items, throughSeq: page.throughSeq,
-          beforeSeq: page.beforeSeq, hasMore: page.hasMore, fetchedAt: Date.now(),
-        });
+        if (page.items.some((row) => row.session_id !== sessionId)) throw new Error("历史页属于其他会话");
+        const tail = { items: page.items, throughSeq: page.throughSeq,
+          beforeSeq: page.beforeSeq, hasMore: page.hasMore, fetchedAt: Date.now() };
+        if (!controller.signal.aborted && tailCacheRef.current.get(sessionId) === previous) {
+          cacheSessionTail(sessionId, tail);
+        }
+        return tailCacheRef.current.get(sessionId) ?? tail;
       })
-      .catch(() => undefined)
       .finally(() => {
-        if (prefetchInflightRef.current.get(sessionId) === controller) prefetchInflightRef.current.delete(sessionId);
+        if (tailRequestsRef.current.get(sessionId)?.controller === controller) tailRequestsRef.current.delete(sessionId);
       });
+    const request = { controller, promise };
+    tailRequestsRef.current.set(sessionId, request);
+    return request;
   }, [cacheSessionTail]);
+
+  // 预取失败由正式激活路径报告；已经结束的失败不会阻止下一次读取。
+  const prefetchSessionTail = useCallback((sessionId: string) => {
+    if (!sessionId || tailCacheRef.current.has(sessionId)) return;
+    void readSessionTail(sessionId).promise.catch(() => undefined);
+  }, [readSessionTail]);
 
   const loadSessions = useCallback(async () => {
     sessionsRequestRef.current?.abort();
@@ -269,26 +279,17 @@ export function useDesktopChatController() {
   }, []);
 
   const loadMessages = useCallback(async (sessionId: string) => {
-    messagesRequestRef.current?.abort();
+    const request = readSessionTail(sessionId);
+    const { controller } = request;
+    if (messagesRequestRef.current !== controller) messagesRequestRef.current?.abort();
     olderMessagesRequestRef.current?.abort();
-    const controller = new AbortController();
     messagesRequestRef.current = controller;
     setHistoryLoading(true);
-    const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
+    const current = () => messagesRequestRef.current === controller
+      && !controller.signal.aborted && activeSessionRef.current === sessionId;
     try {
-      const page = chatHistoryPage(
-        await fetchChatJson<unknown>(`${endpoint}?page_size=50`, { signal: controller.signal }),
-        endpoint,
-      );
-      if (
-        controller.signal.aborted
-        || activeSessionRef.current !== sessionId
-      ) return;
-      if (page.items.some((row) => row.session_id !== sessionId)) throw new Error("历史页属于其他会话");
-      cacheSessionTail(sessionId, {
-        items: page.items, throughSeq: page.throughSeq,
-        beforeSeq: page.beforeSeq, hasMore: page.hasMore, fetchedAt: Date.now(),
-      });
+      const page = await request.promise;
+      if (!current()) return;
       streamStore.clear();
       setMessages([]);
       setTimelineMessages(page.items);
@@ -300,13 +301,15 @@ export function useDesktopChatController() {
       setHistoryBeforeSeq(page.beforeSeq);
       setHistoryHasMore(page.hasMore);
       followSession(socketRef.current ?? connectRef.current?.() ?? null, sessionId, page.throughSeq);
+    } catch (error) {
+      if (current()) throw error;
     } finally {
       if (messagesRequestRef.current === controller) {
         messagesRequestRef.current = null;
         setHistoryLoading(false);
       }
     }
-  }, [cacheSessionTail, setMessages, setStatusLive, setTimelineMessages, streamStore]);
+  }, [readSessionTail, setMessages, setStatusLive, setTimelineMessages, streamStore]);
 
   const loadOlderMessages = useCallback(async () => {
     const sessionId = activeSessionRef.current;
@@ -331,6 +334,9 @@ export function useDesktopChatController() {
       if (cached) cacheSessionTail(sessionId, { ...cached, items: merged, beforeSeq: page.beforeSeq, hasMore: page.hasMore });
       setHistoryBeforeSeq(page.beforeSeq);
       setHistoryHasMore(page.hasMore);
+    } catch (error) {
+      if (olderMessagesRequestRef.current === controller
+        && !controller.signal.aborted && activeSessionRef.current === sessionId) throw error;
     } finally {
       if (olderMessagesRequestRef.current === controller) {
         olderMessagesRequestRef.current = null;
@@ -595,6 +601,7 @@ export function useDesktopChatController() {
       modelsRequestRef.current?.controller.abort();
       sendRequestRef.current?.abort();
       stopRequestRef.current?.abort();
+      tailRequestsRef.current.forEach((request) => request.controller.abort());
   }, []);
 
   useEffect(() => {
@@ -757,6 +764,9 @@ export function useDesktopChatController() {
     modelsRequestRef.current?.controller.abort();
     sendRequestRef.current?.abort();
     stopRequestRef.current?.abort();
+    messagesRequestRef.current = null;
+    olderMessagesRequestRef.current = null;
+    setHistoryLoading(false);
     setActiveSessionId("");
     setPendingSessionId("");
     setMessages([]);
@@ -827,6 +837,12 @@ export function useDesktopChatController() {
     sendRequestRef.current?.abort();
     stopRequestRef.current?.abort();
     closeConnection();
+    messagesRequestRef.current?.abort();
+    messagesRequestRef.current = null;
+    setHistoryLoading(false);
+    olderMessagesRequestRef.current?.abort();
+    olderMessagesRequestRef.current = null;
+    setHistoryLoadingOlder(false);
     const cached = tailCacheRef.current.get(sessionId);
     const cachedFresh = cached !== undefined && Date.now() - cached.fetchedAt < SESSION_TAIL_FRESH_MS;
     followAfterRef.current = cached?.throughSeq ?? null;
@@ -835,7 +851,6 @@ export function useDesktopChatController() {
     setReplyAvailable(null);
     setStatusLive("idle");
     setStopPending(false);
-    olderMessagesRequestRef.current?.abort();
     setActiveSessionId(sessionId);
     setPendingSessionId(sessionId);
     setTimelineMessages(cached?.items ?? []);
