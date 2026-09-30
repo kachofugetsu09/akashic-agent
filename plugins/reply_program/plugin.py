@@ -9,6 +9,7 @@ from agent.plugin_composition.messages import MessageReader
 from agent.plugin_composition.tasks import Task
 
 from agent.plugin_composition import CHAT_MODELS, Context
+from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_contracts.reply import REPLY_EXECUTE, REPLY_EXECUTE_V2
 
@@ -36,7 +37,7 @@ version = "1.0.0"
 desc = "一次回复的资源与执行组合；不拥有来源策略或后台监听"
 inject = (SOURCE_CHECK, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, MODEL_CHECKS,
           MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION, REACT, TOOL_CLEANUP,
-          TOOL_PROGRAM, TOOLS, TURN_PROJECTION, OWNER_STATE, MESSAGE_WRITERS)
+          TOOL_PROGRAM, TOOLS, TURN_PROJECTION, OWNER_STATE, MESSAGE_WRITERS, ARTIFACT_READ)
 
 
 async def apply(ctx: Context) -> None:
@@ -50,6 +51,7 @@ async def apply(ctx: Context) -> None:
         tool_program=ctx.require(TOOL_PROGRAM), model_checks=ctx.require(MODEL_CHECKS),
         model_content=ctx.require(MODEL_CONTENT), model_projection=ctx.require(MODEL_PROJECTION),
         writers=ctx.require(MESSAGE_WRITERS), owner_state=ctx.require(OWNER_STATE),
+        artifact_reader=ctx.require(ARTIFACT_READ),
     )
     async def execute(caller: Context, task: Task, reader: MessageReader, source: str,
                       **options: Any) -> Message:

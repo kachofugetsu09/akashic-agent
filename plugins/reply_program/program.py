@@ -6,6 +6,7 @@ from contextlib import AbstractAsyncContextManager
 
 from core.common.file_io import run_file_io
 from agent.plugin_composition import Context
+from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
@@ -44,7 +45,7 @@ async def run_reply(
     check_source: Callable[[Task, MessageReader, str, int], None],
     selection: ModelSelection, tool_program: ToolProgram,
     model_checks: ModelChecks, model_content: ModelContent, model_projection: ModelProjections,
-    writers: MessageWriters, owner_state: OwnerState,
+    writers: MessageWriters, owner_state: OwnerState, artifact_reader: ArtifactRead,
     react: Callable[..., Awaitable[Message]],
     materials: AbstractAsyncContextManager[MaterialView],
     turn_projection: TurnProjection,
@@ -143,7 +144,13 @@ async def run_reply(
                     if index >= start or message.message_id in keep_input_ids
                 ))
                 if refs:
-                    artifacts = model_content.describe_artifacts(refs)
+                    artifacts = await model_content.load_artifacts(
+                        artifact_reader, refs,
+                        accepts_images="image" in model.descriptor.capabilities.input_modalities,
+                        current_artifact_ids=frozenset(
+                            ref.artifact_id for ref in reader.attachments_for(keep_input_ids)
+                        ),
+                    )
             check_source(task, reader, source, source_head)
             return {**result, "system_prompt": "\n\n".join(
                 part for part in (cast(str, result["system_prompt"]), *view.prompts, *prompt_hints, menu.system_prompt) if part
