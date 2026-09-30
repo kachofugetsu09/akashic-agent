@@ -490,35 +490,6 @@ def create_chat_app(
     return app
 
 
-def _project_message_attachments(
-    channel: WebChatChannel,
-    items: list[dict[str, Any]],
-) -> None:
-    """把 durable message artifact identity 投影为不含路径的 Web descriptor。"""
-
-    # 1. Only messages with durable bindings require the Core artifact owner.
-    for item in items:
-        raw_ids = item.get("attachment_ids")
-        if raw_ids is None:
-            continue
-        if not isinstance(raw_ids, list) or not all(
-            isinstance(artifact_id, str) and artifact_id for artifact_id in raw_ids
-        ):
-            raise RuntimeError("chat message attachment_ids 投影无效")
-        store = channel.artifact_store
-        if store is None:
-            raise RuntimeError("Web artifact store 尚未绑定")
-
-        # 2. Preserve durable order and expose no filesystem path.
-        artifact_ids = tuple(raw_ids)
-        refs = store.resolve_refs(artifact_ids)
-        if tuple(ref.artifact_id for ref in refs) != artifact_ids:
-            raise RuntimeError("chat message attachment_ids 无法 exact resolve")
-        item["attachments"] = [
-            channel.artifact_descriptor(ref) for ref in refs
-        ]
-
-
 def build_chat_server(
     *,
     workspace: Path,

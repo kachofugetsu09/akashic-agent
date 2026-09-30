@@ -144,22 +144,10 @@ class Context:
         reject_executor_context_access()
         return self._root.instance_token
 
-    def _root_instance_token(self) -> object:
-        """Return the Core-only identity of this Context's Root."""
-
-        reject_executor_context_access()
-        return self._root.instance_token
-
     def _declared_dependencies(self) -> tuple[ServiceKey[Any], ...]:
         """供 Core 请求边界冻结声明 Fiber 的能力集合。"""
         reject_executor_context_access()
         return self._fiber.dependencies
-
-    def _plugin_module(self) -> ModuleType | None:
-        """Return the exact module mounted on this Fiber when one exists."""
-
-        reject_executor_context_access()
-        return self._fiber.plugin_module
 
     def _reserve_scope(self) -> RuntimeScope | None:
         """在派发时保留准确 owner；生命周期与 Root 由其外层寿命保护。"""
@@ -1402,7 +1390,6 @@ class CompositionRoot:
             self._record_listener_failure,
         )
         self._internal_cleanups: list[tuple[str, Callable[[], object]]] = []
-        self._runtime_scope_acquirer: Callable[[], Awaitable[Any]] | None = None
         self._dispose_task: asyncio.Task[None] | None = None
         self.root_fiber = Fiber(
             root=self,
@@ -1423,22 +1410,6 @@ class CompositionRoot:
         """标识单个 Root 实例，不参与可持久化拓扑身份。"""
 
         return self._instance_token
-
-    def _bind_runtime_scope_acquirer(
-        self,
-        acquire: Callable[[], Awaitable[Any]],
-    ) -> None:
-        """Bind the Core-owned exact-Root lease source before mounting plugins."""
-
-        if self._runtime_scope_acquirer is not None:
-            raise RuntimeError("composition Root runtime scope 已绑定")
-        self._runtime_scope_acquirer = acquire
-
-    async def _acquire_runtime_scope(self):
-        acquire = self._runtime_scope_acquirer
-        if acquire is None:
-            raise RuntimeError("composition Root runtime scope 不可用")
-        return await acquire()
 
     async def mount(
         self,
@@ -2083,15 +2054,6 @@ class CompositionRoot:
             and fiber.state != FiberState.DISPOSED
             and any(key in fiber.dependencies for key in keys)
         ]
-
-    def _service_wait_set(self, registration: _Provider) -> tuple[Fiber, ...]:
-        """Expand one registration to children and downstream hard consumers."""
-
-        return self._service_wait_set_for(
-            registration.key,
-            registration.owner,
-            registration=registration,
-        )
 
     def _service_wait_set_for(
         self,
