@@ -116,24 +116,6 @@ class _ChannelArtifactStore:
         return _ChannelArtifactReadLease(ref, lease)
 
 
-async def _stop_started_children(
-    children: Sequence[Any],
-    *,
-    primary: BaseException,
-    message: str,
-) -> None:
-    """Stop every started child and preserve all rollback failures."""
-
-    results = await asyncio.gather(
-        *(child.stop() for child in reversed(children)),
-        return_exceptions=True,
-    )
-    errors = tuple(result for result in results if isinstance(result, BaseException))
-    if errors:
-        raise BaseExceptionGroup(message, (primary, *errors))
-    raise primary
-
-
 def _close_children(
     children: Sequence[Any],
     *,
