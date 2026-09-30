@@ -314,6 +314,17 @@ call replay；恢复旧请求时使用该已提交事实重建原 provider 前�
 prompt history 重放一次，当前请求的同一材料仍作为末尾 reminder 出现；同一 Input 后续材料改变、
 不同 Input 的材料和未带身份的旧事实都照实保留。它不新增 Input、授权或持久上下文副本，失败和取消也不伪造 replay。
 
+用户提交的图片在当前模型声明支持图片输入时，须以真实图片内容进入请求。附件名称与
+文字占位不能代替原图。Model 内容 owner 通过窄 Artifact 只读租约取得有界字节，构造请求图；
+当前 Input 的图片优先；其余保留的 prompt history 和工具图从最近引用开始纳入临时图片
+视图。单图最多读取 20MB；按最终请求中的出现次数计，原始字节合计最多 40MB，data URI
+合计最多 16MB。同一 artifact 的重复引用共用投影，并按全部出现次数计费。当前 Input 图
+超过资源预算明确失败；其余图超限时保留附件身份，明确标记本次未提供内容，并停止读取
+更旧图片。这是临时图片视图的资源边界，Context 仍独占完整实际 payload 的 token 预算
+与摘要决策。原附件与 Message 不受
+请求图的缩放、编码或上下文摘要影响。不支持图片、读取失败、图片损坏或预算超限必须明确
+说明原因，不伪装成已经看图，也不按文件展示名猜测宿主路径。
+
 ### CTX-005 新设计不得使用无修饰的 history
 
 新增接口、变量和设计文档必须区分 `persistent history`、`runtime history view` 和 `prompt history`。只写 `history`、`trim history` 或 `replace history` 且无法判断对象类别，设计不能通过评审。

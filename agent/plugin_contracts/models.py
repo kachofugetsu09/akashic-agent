@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from agent.plugin_composition import Context, Effect
+from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.models import (
@@ -105,9 +106,13 @@ class ModelContent(Protocol):
         read_message: Callable[[str], Message | None] | None = None,
     ) -> tuple[Mapping[str, Any], ...]: ...
 
-    def describe_artifacts(
+    async def load_artifacts(
         self,
+        reader: ArtifactRead,
         refs: Sequence[AttachmentRef],
+        *,
+        accepts_images: bool,
+        current_artifact_ids: frozenset[str],
     ) -> Mapping[str, tuple[Mapping[str, Any], ...]]: ...
 
 
@@ -133,7 +138,7 @@ class ModelProjections(Protocol):
 
 
 MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
-MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v2")
+MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v3")
 MODEL_CHECKS = ServiceKey[ModelChecks]("models.message-checks.v1")
 MODEL_PROJECTION = ServiceKey[ModelProjections]("models.projection.v1")
 MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")

@@ -295,8 +295,8 @@ async def test_default_reply_loads_one_complete_granted_plugin_group(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("vision", [False, True])
 @pytest.mark.parametrize("attach_image", [False, True])
-async def test_reply_uses_image_placeholders(tmp_path, vision, attach_image):
-    """Current and historical images remain text labels for every model capability."""
+async def test_reply_projects_images_by_model_capability(tmp_path, vision, attach_image):
+    """图片与附件身份沿同一回复链路进入模型，文本模型保留明确能力说明。"""
     import io
     from PIL import Image
     from agent.plugin_composition import ServiceKey
@@ -367,10 +367,19 @@ async def test_reply_uses_image_placeholders(tmp_path, vision, attach_image):
         for request in requests:
             images = [part for row in request.messages if isinstance(row["content"], (list, tuple))
                       for part in row["content"] if part["type"] == "image_url"]
-            assert images == []
+            assert len(images) == (5 + int(attach_image) if vision else 0)
             text = str(request.messages)
-            assert "data:image" not in text
-            assert "图片占位符" in text
+            if vision:
+                import base64
+                colors = set()
+                for part in images:
+                    encoded = part["image_url"]["url"].split(",", 1)[1]
+                    with Image.open(io.BytesIO(base64.b64decode(encoded, validate=True))) as image:
+                        colors.add(image.getpixel((0, 0)))
+                assert colors == {(index * 40, 0, 0) for index in range(5)}
+            else:
+                assert "data:image" not in text
+                assert "当前模型不接收图片" in text
             for ref in refs:
                 assert ref.artifact_id in text
                 assert ref.filename in text
