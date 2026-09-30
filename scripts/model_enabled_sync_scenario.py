@@ -26,7 +26,7 @@ from agent.plugin_composition import (
     ModelCapabilities,
     ModelKind,
 )
-from plugins.models.settings import SetModelEnabled, SyncModels
+from plugins.models.settings import SetDefaultModel, SetModelEnabled, SyncModels
 from plugins.models.state import ModelUnavailableError
 from plugins.models.store import ModelsStore, RevisionConflictError
 from tests.support.material_models import MaterialModelDriver, material_models
@@ -117,6 +117,32 @@ async def model_scenario(workspace: Path) -> None:
             assert readonly.read_snapshot() == snapshot
             CHECKS.append(
                 "Chat and embedding opt-outs survive sync/readback; capability refresh and ownership remain intact"
+            )
+
+            # An older artifact can refresh the raw enabled bit without knowing
+            # the additive opt-out flag. All new writer eligibility must agree
+            # with the effective availability exposed by the current reader.
+            with closing(sqlite3.connect(models.store.path)) as connection:
+                for table, model_id in zip(
+                    ("model_definitions", "embedding_models"), ids
+                ):
+                    connection.execute(
+                        f"UPDATE {table} SET enabled=1 WHERE id=?", (model_id,)
+                    )
+                connection.commit()
+            before_binding = models.store.read_snapshot()
+            for role, model_id in zip(("agent", None), ids):
+                try:
+                    await apply(SetDefaultModel(revision(), role, model_id))
+                except ValueError as error:
+                    assert "unavailable" in str(error)
+                else:
+                    raise AssertionError(
+                        "an opted-out model became a default after an old writer refresh"
+                    )
+                assert models.store.read_snapshot() == before_binding
+            CHECKS.append(
+                "Direct default commands reject retained opt-outs even after an old writer sets raw enabled=1; no revision or binding changes"
             )
 
             original_bind = MaterialModelDriver.bind_chat

@@ -781,7 +781,7 @@ class ModelsStore:
                     """
                     SELECT 1 FROM embedding_models AS m
                     JOIN model_connections AS c ON c.id = m.connection_id
-                    WHERE m.id = ? AND m.enabled = 1 AND c.enabled = 1
+                    WHERE m.id = ? AND m.enabled = 1 AND m.user_disabled = 0 AND c.enabled = 1
                     """,
                     (model_id,),
                 ).fetchone()
@@ -800,7 +800,7 @@ class ModelsStore:
                 SELECT m.input_modalities, m.capabilities_json
                 FROM model_definitions AS m
                 JOIN model_connections AS c ON c.id = m.connection_id
-                WHERE m.id = ? AND m.enabled = 1 AND c.enabled = 1
+                WHERE m.id = ? AND m.enabled = 1 AND m.user_disabled = 0 AND c.enabled = 1
                 """,
                 (model_id,),
             ).fetchone()
