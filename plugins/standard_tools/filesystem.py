@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from agent.host_bridge.filesystem import (
+    LIST_DIR_MAX_BYTES,
+    LIST_DIR_MAX_ENTRIES,
     EditFileOperation,
     ListDirOperation,
     ReadFileOperation,
@@ -138,14 +140,26 @@ class ListDirTool(ListDirOperation):
 
     @property
     def description(self) -> str:
-        return "列举指定目录下的文件和子目录。"
+        return (
+            f"按文件名排序列举直接子项，每页最多 {LIST_DIR_MAX_ENTRIES} 项、"
+            f"{LIST_DIR_MAX_BYTES} 字节。出现续读提示时，用提示里的 after 文件名读取下一页。"
+            "每页反映当前目录；目录变化可能影响后续页面。"
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "要列举的目录路径"}
+                "path": {"type": "string", "description": "要列举的目录路径"},
+                "limit": {
+                    "type": "integer", "minimum": 1, "maximum": LIST_DIR_MAX_ENTRIES,
+                    "description": f"每页最多条目数，默认 {LIST_DIR_MAX_ENTRIES}",
+                },
+                "after": {
+                    "type": "string",
+                    "description": "返回文件名严格大于此值的条目；使用上一页提示里的完整文件名",
+                },
             },
             "required": ["path"],
         }
