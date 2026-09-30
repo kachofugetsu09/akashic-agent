@@ -84,6 +84,13 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 
 代码里存在 `DELETE` 方法，只证明存储层具备能力，不证明普通运行、重构或后台清理拥有调用授权。没有写明物理减少协议的对象，默认不得自动减少。
 
+### 长结果折叠与回读
+
+`content_view` 不增加归档库或 seen 状态。Tools 追加原文或回读位置范围；ReAct 冻结请求的
+来源位置，Models 的成功响应与 Output 一起追加首次展示证据。旧消息、原文、附件和回执不改写，
+无新增物理减少协议。恢复依赖原 sessions.db；具体 owner 与增改减见
+[0081](../decisions/0081-content-views-keep-original-messages.md#持久化失败与恢复)。
+
 ### 3.1 对话与附件
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
