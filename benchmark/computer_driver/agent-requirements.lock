@@ -1,0 +1,16 @@
+# 仅补齐固定 Cua SDK 的 callable schema 依赖；基础版本保持不变。
+-r requirements.lock
+alabaster==1.0.0
+babel==2.18.0
+docutils==0.22.4
+imagesize==2.0.1
+numpydoc==1.9.0
+roman-numerals==4.1.0
+snowballstemmer==3.1.1
+sphinx==9.1.0
+sphinxcontrib-applehelp==2.0.0
+sphinxcontrib-devhelp==2.0.0
+sphinxcontrib-htmlhelp==2.1.0
+sphinxcontrib-jsmath==1.0.1
+sphinxcontrib-qthelp==2.0.0
+sphinxcontrib-serializinghtml==2.0.0
