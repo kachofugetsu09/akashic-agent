@@ -295,6 +295,40 @@ export function timelineToolResults(messages: TimelineMessage[]): Map<string, Ti
     ? [[`${message.body.call_ref.message_id}:${message.body.call_ref.part_index}`, message] as const] : []));
 }
 
+/** 实时召回槽位只由已接纳的用户 Input 持有。 */
+export function timelineInputStarts(messages: TimelineMessage[]): Map<string, number> {
+  const starts = new Map<string, number>();
+  for (const message of messages) {
+    const key = timelineSourceKey(message);
+    if (message.body.kind === "input" && message.author === "user" && !starts.has(key)) starts.set(key, message.seq);
+  }
+  return starts;
+}
+
+export function timelineSourceKey(value: { session_id: string; source: string }): string {
+  return JSON.stringify([value.session_id, value.source]);
+}
+
+/** 历史尾页可能缺少 Input；保留输出锚点，由服务端解析真实归属。 */
+export function needsBeforeReasoningFallback(message: TimelineMessage, inputStarts: ReadonlyMap<string, number>): boolean {
+  return message.body.kind === "output" && message.seq < (inputStarts.get(timelineSourceKey(message)) ?? Infinity);
+}
+
+/** 同来源提交进度与预览身份使事实失效；逐 token 正文不参与。 */
+export function timelineSourceRefreshTokens(messages: TimelineMessage[], activities: ReplyActivity[], refresh: number): Map<string, string> {
+  const heads = new Map<string, number>();
+  for (const message of messages) heads.set(timelineSourceKey(message), message.seq);
+  const previews = new Map<string, unknown[]>();
+  for (const activity of activities) {
+    const key = timelineSourceKey(activity);
+    const items = previews.get(key) ?? [];
+    items.push([activity.handle, activity.active, activity.preview?.message_id ?? null]);
+    previews.set(key, items);
+  }
+  return new Map([...new Set([...heads.keys(), ...previews.keys()])].map((key) =>
+    [key, JSON.stringify([heads.get(key) ?? -1, previews.get(key) ?? [], refresh])]));
+}
+
 /** 完成或停止展示时，把同来源的过程归到末条输出；不改变 Turn。 */
 export function timelineReplyGroups(messages: TimelineMessage[], activities: ReplyActivity[] = []) {
   const pending = new Map<string, TimelineMessage[]>();
@@ -338,7 +372,8 @@ export function timelineVisibleMessages(messages: TimelineMessage[], groups = ti
   const byId = new Map(messages.map((message) => [message.id, message]));
   return messages.filter((message) => {
     if (groups.moved.has(message.id) && !message.attachments.length) return false;
-    if (!isTimelineMessageVisible(message) && !groups.completed.has(message.id)) return false;
+    if (!isTimelineMessageVisible(message) && !groups.completed.has(message.id)
+      && !(message.body.kind === "input" && message.author === "user")) return false;
     if (groups.hiddenBodies.has(message.id) && !message.attachments.length && message.body.kind === "output"
       && !message.body.parts.some((part) => part.kind !== "text" && isTimelinePartVisible(part))) return false;
     if (message.body.kind !== "tool_result" || message.attachments.length) return true;

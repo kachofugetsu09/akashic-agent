@@ -17,6 +17,8 @@ export interface PluginUiContext {
   messageId?: string;
   turnId?: string;
   block?: unknown;
+  /** 挂载内的事实失效提示；不改变挂载身份。 */
+  onInvalidate(callback: () => void): () => void;
   capabilities: {
     queryCacheModes?: readonly ("none" | "memory" | "immutable")[];
   };
@@ -81,6 +83,8 @@ const listeners = new Set<() => void>();
 interface PendingQuery {
   pluginId: string;
   method: string;
+  sessionId?: string;
+  messageId?: string;
   queuedAt: number;
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
@@ -432,6 +436,7 @@ export function PluginUiSlot({
   messageId,
   turnId,
   block,
+  refreshToken,
   prefetch = false,
 }: {
   name: Exclude<PluginUiSlotName, "dashboard.main">;
@@ -440,6 +445,7 @@ export function PluginUiSlot({
   messageId?: string;
   turnId?: string;
   block?: unknown;
+  refreshToken?: string | number;
 }) {
   const version = useSyncExternalStore(
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
@@ -476,6 +482,7 @@ export function PluginUiSlot({
           pluginRevision={plugin.revision}
           renderer={renderer}
           prefetch={prefetch}
+          refreshToken={refreshToken}
           context={{ slot: name, sessionId, messageId, turnId, block }}
         />
       ))}
@@ -504,33 +511,52 @@ function MountedPlugin({
   pluginRevision,
   renderer,
   context,
+  refreshToken,
   prefetch = false,
 }: {
   pluginId: string;
   pluginRevision: string;
   renderer: PluginUiRenderer;
   prefetch?: boolean;
-  context: Omit<PluginUiContext, "query" | "capabilities">;
+  context: Omit<PluginUiContext, "query" | "capabilities" | "onInvalidate">;
+  refreshToken?: string | number;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
   const ownerIdRef = React.useRef(createOwnerId());
+  const invalidatorsRef = React.useRef<Set<() => void> | null>(null);
+  const previousRefreshToken = React.useRef(refreshToken);
   const { block, messageId, sessionId, slot, turnId } = context;
   const blockRevision = block === undefined ? undefined : JSON.stringify(block);
   const stableBlock = useMemo(
     () => blockRevision === undefined ? undefined : JSON.parse(blockRevision) as unknown,
     [blockRevision],
   );
+  // 先通知仍存活的挂载；身份切换已执行 cleanup，新挂载只需自己的首次读取。
+  useEffect(() => {
+    if (Object.is(previousRefreshToken.current, refreshToken)) return;
+    previousRefreshToken.current = refreshToken;
+    for (const callback of invalidatorsRef.current ?? []) {
+      try { callback(); }
+      catch (error) { console.error(`[plugin-ui] invalidation failed: ${pluginId}`, error); }
+    }
+  }, [pluginId, refreshToken]);
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const ownerId = ownerIdRef.current;
+    const invalidators = new Set<() => void>();
+    invalidatorsRef.current = invalidators;
     let cleanup: void | (() => void);
     try {
       const queryContext: PluginUiContext = {
         slot, sessionId, messageId, turnId, block: stableBlock,
+        onInvalidate: (callback) => {
+          invalidators.add(callback);
+          return () => { invalidators.delete(callback); };
+        },
         capabilities: { queryCacheModes: ["none", "memory", "immutable"] },
         query: (method, payload = {}, options = {}) => queryPlugin({
-          pluginId, pluginRevision, ownerId, slot, sessionId, turnId, method, payload, options, prefetch,
+          pluginId, pluginRevision, ownerId, slot, sessionId, messageId, turnId, method, payload, options, prefetch,
         }),
       };
       if (prefetch) {
@@ -545,6 +571,8 @@ function MountedPlugin({
       host.classList.add("plugin-ui-host--error");
     }
     return () => {
+      invalidators.clear();
+      invalidatorsRef.current = null;
       releaseQueryOwner(ownerId);
       try {
         cleanup?.();
@@ -558,9 +586,9 @@ function MountedPlugin({
 }
 
 /** 页面缓存查询拥有独立请求，折叠只释放订阅，不打断已经发出的读取。 */
-function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, turnId, method, payload, options, prefetch }: {
+function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messageId, turnId, method, payload, options, prefetch }: {
   pluginId: string; pluginRevision: string; ownerId: string; slot: PluginUiSlotName;
-  sessionId?: string; turnId?: string; method: string; payload: Record<string, unknown>;
+  sessionId?: string; messageId?: string; turnId?: string; method: string; payload: Record<string, unknown>;
   options: PluginUiQueryOptions; prefetch: boolean;
 }): Promise<Record<string, unknown>> {
   // 1. 已读卡片可暂留；旧上下文不能发送请求或读取新版本缓存。
@@ -600,7 +628,7 @@ function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, turnI
     const abort = new AbortController();
     const request: PendingQuery = {
       resolve, reject, ownerId: requestOwnerId, cacheKey, sharedKey, slot, started: false, abort,
-      pluginId, method, queuedAt: performance.now(),
+      pluginId, method, sessionId, messageId, queuedAt: performance.now(),
       interactive: isInteractiveSlot(slot) || (sharedKey !== undefined && !prefetch),
       send: () => {
         tracePluginQuery(requestId, request, "sent");
@@ -797,7 +825,8 @@ function createOwnerId(): string {
 function tracePluginQuery(requestId: string, request: PendingQuery, phase: string) {
   console.log(`[akashic-trace] ${JSON.stringify({
     event: `webui.plugin_query.${phase}`, request_id: requestId, owner_id: request.ownerId,
-    plugin_id: request.pluginId, method: request.method, wall_ms: Date.now(),
+    plugin_id: request.pluginId, method: request.method, slot: request.slot,
+    session_id: request.sessionId, message_id: request.messageId, wall_ms: Date.now(),
     elapsed_ms: Math.round((performance.now() - request.queuedAt) * 1000) / 1000,
   })}`);
 }
