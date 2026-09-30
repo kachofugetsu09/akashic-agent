@@ -90,7 +90,8 @@ export const DesktopComposer = memo(function DesktopComposer({
         setDraft(draftKey, "");
       }
     } catch (error) {
-      setDraft(draftKey, drafts.current.get(draftKey) || text);
+      const later = drafts.current.get(draftKey) || "";
+      setDraft(draftKey, [text, later].filter(Boolean).join("\n\n"));
       setExpanded(wasExpanded);
       throw error;
     }
