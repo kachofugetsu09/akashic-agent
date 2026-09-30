@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 from typing import Any, Protocol
 
+from agent.plugin_composition import Context, Effect
 from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.models import (
@@ -17,6 +20,28 @@ from agent.plugin_contracts import ContentPart, ContentReferences, Message, Tool
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedContent:
+    """一个内容块的模型视图；complete 只在完整表达该块时为真。"""
+
+    blocks: tuple[Mapping[str, Any], ...]
+    complete: bool = False
+
+
+ContentTransform = Callable[[Message, int], RenderedContent | None]
+PrepareContent = Callable[[tuple[Message, ...], str, frozenset[str], frozenset[tuple[str, int]]], ContentTransform]
+
+
+class ContentViews(Protocol):
+    """纯内容投影注册；不授予消息、模型调用或工具执行权限。"""
+
+    async def register(self, ctx: Context, *, name: str, prepare: PrepareContent) -> Effect: ...
+    def bind(self) -> AbstractAsyncContextManager[PrepareContent]: ...
+
+
+CONTENT_VIEWS = ServiceKey[ContentViews]("models.content-views.v1")
 
 
 class ContextModel(Protocol):
@@ -57,6 +82,8 @@ class MessageProjection(ContextModel, Protocol):
         reminder: str | None = None,
         reminder_input_id: str | None = None,
         actual_calls: Sequence[ToolCall | ContentPart] | None = None,
+        content_refs: tuple[tuple[str, int], ...] = (),
+        content_transformed: bool = False,
     ) -> ContentPart: ...
 
 
@@ -100,6 +127,8 @@ class ModelProjections(Protocol):
         read_call: CallReader,
         check_summary: Callable[[ContentPart], ContentReferences],
         keep_input_ids: tuple[str, ...] = (),
+        prepare_content: PrepareContent | None = None,
+        tool_names: frozenset[str] = frozenset(),
     ) -> MessageProjection: ...
 
 
