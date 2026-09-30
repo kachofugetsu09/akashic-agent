@@ -784,8 +784,8 @@ input {
   font-size: 0.75rem;
   cursor: pointer;
   transition-property: color, background-color;
-  transition-duration: var(--ak-sys-duration-short);
-  transition-timing-function: var(--ak-sys-motion-standard);
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .static-code-copy:hover {
