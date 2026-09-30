@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition.message_view import read_message_rows, session_row
+from .navigation import NavigationPreferences, PinUpdate, check_project_pin, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
 from .services import AttachmentStorePort as AttachmentStore
 from .services import (
@@ -77,6 +78,7 @@ def create_chat_app(
     *,
     workspace: Path,
     channel: WebChatChannel,
+    navigation: NavigationPreferences | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: PluginUiProvider | None = None,
@@ -217,6 +219,45 @@ def create_chat_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    async def read_pins() -> dict[str, object]:
+        if navigation is None:
+            raise HTTPException(status_code=503, detail="置顶偏好暂不可用")
+        async with open_message_catalog() as catalog:
+            refs = navigation.read()
+            sessions = [row for ref in refs if ref.kind == "session"
+                        if (row := session_pin_row(catalog, ref.id)) is not None]
+        return {"pins": [ref.model_dump() for ref in refs], "sessions": sessions}
+
+    @app.get("/api/chat/navigation/pins")
+    async def navigation_pins() -> JSONResponse:
+        return JSONResponse(await read_pins(), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/chat/navigation/pins")
+    async def update_navigation_pin(request: PinUpdate) -> dict[str, object]:
+        if navigation is None:
+            raise HTTPException(status_code=503, detail="置顶偏好暂不可用")
+        async with open_message_catalog() as catalog:
+            reference = request.reference()
+            # Replaying an already committed pin must not revalidate a temporarily missing target.
+            if request.pinned and reference not in navigation.read():
+                if reference.kind == "session":
+                    if session_pin_row(catalog, reference.id) is None:
+                        raise HTTPException(status_code=400, detail="只能置顶没有项目归属的可见会话")
+                else:
+                    try:
+                        if plugin_ui_scope is not None:
+                            async with plugin_ui_scope() as provider:
+                                await check_project_pin(provider, reference.id)
+                        else:
+                            await check_project_pin(_require_plugin_ui_provider(plugin_ui_provider), reference.id)
+                    except ValueError as error:
+                        raise HTTPException(status_code=400, detail=str(error)) from error
+                    except (PluginUiPluginUnavailable, PluginUiStaleRevision, PluginUiQueryOverloaded,
+                            PluginUiQueryTimeout, PluginUiRpcInvalidRequest, PluginUiRpcExecutionError) as error:
+                        raise _plugin_ui_http_error(error) from error
+            navigation.update(reference, pinned=request.pinned)
+        return await read_pins()
 
     @app.get("/api/chat/navigation")
     def chat_navigation() -> dict[str, str]:
@@ -523,6 +564,7 @@ def build_chat_server(
     *,
     workspace: Path,
     channel: WebChatChannel,
+    navigation: NavigationPreferences | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: PluginUiProvider | None = None,
@@ -544,6 +586,7 @@ def build_chat_server(
         create_chat_app(
             workspace=workspace,
             channel=channel,
+            navigation=navigation,
             runtime_inspection=runtime_inspection,
             message_display=message_display,
             plugin_ui_provider=plugin_ui_provider,

@@ -202,6 +202,15 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 原 Session/messages 全部字段和正文不变；没有原位 metadata 更新、消息减少、缓存回写或自动清理。迁移中断回滚后可重试；完成后重跑不增加备份、不重置 marker 或覆盖后续路由。旧用户删除仍在备份和审计事务内减少对应 identity；本次不提供尚未批准的新 Message 删除协议，也不宣称正式运行时已切换。
 
 
+### 聊天导航偏好
+
+`plugin:akashic_clients` 的 `owner_records` 中，`navigation:pins` 是 WEBUI-009 的唯一服务端置顶
+记录。显式置顶追加类型与稳定身份引用，显式取消只移除指定引用；整个有序列表在既有 OwnerStore
+事务内原位更新，不另存标题、成员、rank 或 pinned 字段。首次读取不创建记录。目标失联、项目
+归档、插件停用、分页缺席都不自动减少引用。没有自动删除记录或 Session/Message cascade。
+恢复依赖原 sessions.db/OwnerState；重新打开数据库保留准确顺序。代码回滚不删除这一记录。
+浏览器的项目展开状态是独立本地呈现偏好，不参与服务端备份、scope 或学习路由。
+
 ### 3.4 Workspace 之外的 companion state
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |

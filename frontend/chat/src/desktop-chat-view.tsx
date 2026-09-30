@@ -71,7 +71,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
+            themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat}
           />
@@ -81,7 +81,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           <CompactNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-            themeLabel={theme.label} projects={sidebarProjects} onSelectSession={activateSession}
+            themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat}
           />
