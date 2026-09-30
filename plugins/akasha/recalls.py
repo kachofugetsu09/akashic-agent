@@ -1,6 +1,7 @@
 """实际查询的耐久出处独立于学习图，正文仍从 Message 读取。"""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 import numpy as np
@@ -23,6 +24,13 @@ if TYPE_CHECKING:
     from .learning import Learning
 
 Text = Annotated[str, Field(min_length=1)]
+
+
+def context_identity(session_id: str, source: str, input_message_id: str) -> str:
+    """Preserve the original JSON bytes used by the automatic-recall producer."""
+    return "context:" + hashlib.sha256(json.dumps(
+        [session_id, source, input_message_id], ensure_ascii=False,
+    ).encode()).hexdigest()
 
 
 class ContextSource(BaseModel):
@@ -107,6 +115,29 @@ class RecallRecordsRead:
         if record is None:
             return None
         return Recall.model_validate_json(json.dumps(json_value(record.value)))
+
+    def legacy_page(self, before: str = "g", *, limit: int = 64) -> tuple[tuple[tuple[str, Recall], ...], str | None]:
+        """Page the retired uuid4().hex namespace, skipping deterministic keys.
+
+        The two ranges cover every legacy hexadecimal ID without decoding the
+        interleaved context: namespace. Current writers only use context:/tool:.
+        A full final page deliberately needs one empty continuation to prove EOF.
+        """
+        if not "0" < before <= "g" or before.startswith("context:"):
+            raise ValueError("旧召回分页位置无效")
+        rows: list[tuple[str, Recall]] = []
+        while len(rows) < limit:
+            start = "context;" if before > "context;" else "0"
+            page = self._state.scan(start="recall:" + start, stop="recall:" + before,
+                                    limit=limit - len(rows))
+            rows.extend((key.removeprefix("recall:"), Recall.model_validate_json(
+                json.dumps(json_value(record.value)))) for key, record in page)
+            if len(rows) == limit:
+                return tuple(rows), rows[-1][0]
+            if start == "0":
+                return tuple(rows), None
+            before = "context:"
+        raise AssertionError("旧召回分页未前进")
 
     def list(self) -> tuple[tuple[str, Recall], ...]:
         """按实际查询时间返回最新记录，不读取或重算学习图。"""
