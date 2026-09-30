@@ -318,6 +318,7 @@ class MessageLog:
 
     def __init__(self, path: str | Path):
         self._writer_lock = threading.RLock()
+        self._read_admission = threading.Lock()
         self._writer_decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
@@ -490,14 +491,20 @@ class MessageLog:
         if self._reads.current is not None:
             yield self._reads.current.connection
             return
-        with self._writer_lock:
+        # 1. 重入当前线程的写事务；另一个线程持有 writer 时直接读已提交快照。
+        if self._writer_lock.acquire(blocking=False):
+            try:
+                if self._closed:
+                    raise RuntimeError("MessageLog is closed")
+                if self._writer_connection.in_transaction:
+                    yield self._writer_connection
+                    return
+            finally:
+                self._writer_lock.release()
+        # 2. 只读准入与 close 共享短锁，不等待写事务的磁盘或内容校验。
+        with self._read_admission:
             if self._closed:
                 raise RuntimeError("MessageLog is closed")
-            if self._writer_connection.in_transaction:
-                yield self._writer_connection
-                return
-            # Admit the read before close can shut the writer down. Long reads
-            # keep their own connection and release this short writer gate.
             connection = sqlite3.connect(self._path.as_uri() + "?mode=ro", uri=True)
             try:
                 connection.row_factory = sqlite3.Row
@@ -592,9 +599,10 @@ class MessageLog:
     def close(self) -> None:
         """释放数据库并唤醒所有追赶者，让它们正常退出。"""
         with self._writer_lock:
-            if self._closed:
-                return
-            self._closed = True
+            with self._read_admission:
+                if self._closed:
+                    return
+                self._closed = True
             self._writer_connection.close()
             for event, loop in tuple(self._listeners.items()):
                 try:
@@ -732,11 +740,19 @@ class MessageReader:
         """创建本次程序的只读视图，旧前缀复用解码结果，后续读取追赶新增消息。"""
         return _IncrementalMessageReader(self._log, self._session_id)
 
+    def _check_async_snapshot(self) -> None:
+        """异步读取不得离开调用线程自己的未提交事务。"""
+        lock = self._log._lock
+        if lock.acquire(blocking=False):
+            try:
+                if self._log._connection.in_transaction:
+                    raise RuntimeError("Async snapshot cannot leave an active storage transaction")
+            finally:
+                lock.release()
+
     async def snapshot_async(self, *, through_seq: int) -> tuple[Message, ...]:
         """Read a fixed prefix off-loop and drain its connection before cancellation."""
-        with self._log._lock:
-            if self._log._connection.in_transaction:
-                raise RuntimeError("Async snapshot cannot leave an active storage transaction")
+        self._check_async_snapshot()
         return await run_file_io(
             lambda: MessageReader(self._log, self._session_id).snapshot(through_seq=through_seq)
         )
@@ -998,15 +1014,31 @@ class _IncrementalMessageReader(MessageReader):
         return self
 
     async def snapshot_async(self, *, through_seq: int) -> tuple[Message, ...]:
-        """Return one pinned snapshot; cache it only if external writes did not overlap."""
-        with self._log._lock:
-            before = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
-        messages = await super().snapshot_async(through_seq=through_seq)
-        with self._log._lock:
-            after = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
-            if before == after:
-                self._cache(messages, after)
-        # A concurrent edit invalidates reuse, not the completed SQLite snapshot.
+        """固定前缀及可选缓存预热都在 worker 完成，取消等待物理结束。"""
+        self._check_async_snapshot()
+        return await run_file_io(lambda: self._snapshot_with_cache(through_seq))
+
+    def _snapshot_with_cache(self, through_seq: int) -> tuple[Message, ...]:
+        """只在原连接版本未变且 writer 空闲时发布有界解码缓存。"""
+        # 1. 缓存是可选优化；writer 忙时不等待它，也不比较新连接的版本。
+        lock = self._log._lock
+        before: int | None = None
+        if lock.acquire(blocking=False):
+            try:
+                before = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
+            finally:
+                lock.release()
+        messages = MessageReader(self._log, self._session_id).snapshot(through_seq=through_seq)
+        # 2. 外部编辑只使缓存不能复用，不推翻已完成的 private RO 快照。
+        if before is not None and lock.acquire(blocking=False):
+            try:
+                # 已准入的 private reader 可跨 close 完成，关闭后不再预热缓存。
+                if not self._log._closed:
+                    after = self._log._connection.execute("PRAGMA data_version").fetchone()[0]
+                    if before == after:
+                        self._cache(messages, after)
+            finally:
+                lock.release()
         return messages
 
     def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:

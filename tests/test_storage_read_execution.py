@@ -259,3 +259,50 @@ async def test_resume_reads_only_current_source_work_and_replays_fixed_prefix(tm
             await conversation.resume("new-retry", "current")
         monkeypatch.setattr(storage, "_message", original)
         assert sum(item.message_id == "retry" for item in log.reader("s").snapshot()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_kind", ["async-prefix", "owner-snapshot", "incremental-prefix"])
+async def test_committed_read_does_not_wait_for_another_threads_write(tmp_path, read_kind):
+    """O/C4：已提交快照不等待另一个线程的写事务，正文前缀保持不变。"""
+    from session.message import ContentPart, ContentReferences
+
+    log = MessageLog(tmp_path / "sessions.db")
+    original = writer(log).append("first", Input(()))
+    reader = log.reader("s")
+    owner = log.owner("audit")
+    gate = WorkerGate()
+
+    def check_content(_part):
+        gate.stop()
+        return ContentReferences()
+
+    messages = log.writer("s", author="user", source="conversation", body_types=(Input,),
+                          content={"text": check_content})
+    job = asyncio.create_task(asyncio.to_thread(
+        messages.append, "second", Input((ContentPart("text", "new input"),)),
+    ))
+    try:
+        # 1. 真实 append 已进入写事务；内容 owner 仅用屏障延迟本次提交。
+        await gate.wait(job)
+        if read_kind != "owner-snapshot":
+            if read_kind == "incremental-prefix":
+                reader = reader.incremental()
+            snapshot = await reader.snapshot_async(through_seq=original.seq)
+        else:
+            snapshot = owner.snapshot(reader.snapshot)
+        assert snapshot == (original,)
+        assert not job.done(), "读取应在写入仍被屏障暂停时完成"
+
+        # 2. 释放后才接纳第二条；第一次快照不吸收未来消息。
+        gate.release.set()
+        added = await job
+        assert added.seq == original.seq + 1
+        assert reader.snapshot() == (original, added)
+        with closing(sqlite3.connect(tmp_path / "sessions.db")) as raw:
+            assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert not raw.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        gate.release.set()
+        await asyncio.gather(job, return_exceptions=True)
+        log.close()

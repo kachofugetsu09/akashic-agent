@@ -195,6 +195,8 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 
 - `test_storage_read_execution.py`: O/C4, pinned read snapshots do not own unrelated writes; async warmup fixes a prefix and preserves external-change invalidation. Uses the actual MessageLog and SQLite transactions.
 
+- `test_committed_read_does_not_wait_for_another_threads_write`: O/C4，真实 writer 在内容校验边界暂停其写事务时，普通/增量异步前缀与已取得 OwnerStore 的快照仍读到原始已提交消息；释放后新消息按序追加。旧 main 9d522b9a 在两条读取路径都阻塞 loop，无法释放 writer。既有测试只证明长读不阻塞写，不能覆盖写事务反向阻塞读者准入。增量路径在父 commit 01300285 仍失败：其缓存版本核对在 loop 等待 writer；修复后仍保留外部变化失效与有界缓存。
+
 - `test_resume_reads_only_current_source_work_and_replays_fixed_prefix`: O/C3/C4，真实 MessageLog 与 Tasks 上重试不解码关闭历史或对等来源正文，已提交重试的身份仍归原 Input 前缀。旧 main e8224559 在关闭正文解码边界失败；已有异步快照回归不经过 SourceSession 的同步准入。
 
 - O / MEM-013: `test_slow_graph_does_not_block_another_graph_publication` holds one real installed graph at the embedding boundary, proves another graph's durable publication, then checks both pending steps of the slow graph publish in order.

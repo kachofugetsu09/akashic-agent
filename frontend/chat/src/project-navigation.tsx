@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, Folder, FolderPlus, Lightbulb, Plus } from "lucide-react";
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent } from "react";
+import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import {
   Dialog,
   DialogContent,
@@ -66,7 +67,7 @@ export function ProjectNavigation({
   onOpenCreateProject?: () => void;
   expandedProjects: ReadonlySet<string>;
   onToggleProject: (projectId: string) => void;
-  projectActions?: (project: ProjectRow) => ReactNode;
+  projectActions?: (project: ProjectRow) => NavigationRowAction[];
   searching?: boolean;
   heading?: string;
 }) {
@@ -167,11 +168,14 @@ export function ProjectNavigationRow({
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
   onPrefetchSession?: (sessionId: string) => void;
-  actions?: ReactNode;
+  actions?: NavigationRowAction[];
   searching?: boolean;
 }) {
   return <div className={`project-group ${active ? "active" : ""}`}>
-    <div className="project-group__row">
+    <NavigationRowMenu title={project.name} className="project-group__row" actions={[
+      { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
+      ...(actions ?? []),
+    ]}>
       <button type="button" className="project-group__toggle"
         aria-label={`${open ? "收起" : "展开"} ${project.name} 的对话`} aria-expanded={open}
         onClick={onToggle} disabled={searching}>
@@ -185,12 +189,11 @@ export function ProjectNavigationRow({
           <small className="project-group__memory">{projectMemoryLabel(project.memory)}</small>
         ) : project.memoryUnreadable ? <small className="project-group__memory">当前策略未能读取</small> : null}
       </button>
-      <button type="button" className="project-navigation__icon" aria-label={`在 ${project.name} 中新建对话`}
+      <button type="button" className="project-navigation__icon project-group__new-chat" aria-label={`在 ${project.name} 中新建对话`}
         title="新建对话" onClick={onNewChat}>
         <Plus size={14} aria-hidden="true" />
       </button>
-      {actions}
-    </div>
+    </NavigationRowMenu>
     {open ? <nav className="project-group__sessions" aria-label={`${project.name} 的对话`}>
       {items.length === 0 ? <small className="project-group__hint">{searching ? "没有匹配的对话" : "还没有对话"}</small> : null}
       {items.map((session) => <button key={session.id} type="button"
@@ -202,7 +205,6 @@ export function ProjectNavigationRow({
         onPointerEnter={() => onPrefetchSession?.(session.id)}
         onFocus={() => onPrefetchSession?.(session.id)}>
         <span>{session.title}</span>
-        {session.updatedLabel ? <time>{session.updatedLabel}</time> : null}
       </button>)}
     </nav> : null}
   </div>;

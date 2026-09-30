@@ -87,7 +87,7 @@ input {
   --chat-group-gap: 16px;
   --chat-band-inline: 16px;
   --chat-rail-inline: 12px;
-  --chat-rail-width: 14rem;
+  --chat-rail-width: clamp(17rem, 23vw, 20rem);
   --chat-type-control: 0.875rem;
   --chat-type-caption: 0.75rem;
   --chat-type-body: 0.875rem;
@@ -432,8 +432,10 @@ input {
 
 /* One scroll surface keeps pins, project trees and recent sessions reachable together. */
 .chat-sidebar__navigation {
+  min-width: 0;
   min-height: 0;
   flex: 1;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -459,6 +461,73 @@ input {
   flex: 1;
 }
 
+.navigation-menu-row {
+  position: relative;
+  min-width: 0;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: pan-y pinch-zoom;
+}
+
+.navigation-menu-trigger {
+  position: absolute;
+  inset-inline-end: 2px;
+  top: 50%;
+  translate: 0 -50%;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ak-ink-secondary);
+  background: var(--ak-paper-canvas);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.navigation-menu-trigger:focus-visible,
+.navigation-menu-row[data-menu-open] > .navigation-menu-trigger {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.navigation-menu-trigger:focus-visible { outline: 2px solid var(--ak-rule-focus); }
+.navigation-menu-trigger:hover { background: var(--ak-paper-sheet); }
+
+.navigation-row-menu {
+  min-width: min(11rem, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: 12px;
+  padding: 6px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+  font-family: var(--ak-type-reading);
+}
+
+.navigation-row-menu__item {
+  min-height: 44px;
+  gap: 12px;
+  padding: 10px 12px;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.navigation-row-menu__item[data-highlighted] { background: var(--ak-paper-sheet); }
+
+@media (hover: hover) and (pointer: fine) {
+  .navigation-menu-row:hover > .navigation-menu-trigger,
+  .navigation-menu-row:has(:focus-visible) > .navigation-menu-trigger { opacity: 1; pointer-events: auto; }
+  .navigation-menu-row:hover > .conversation-session,
+  .navigation-menu-row:has(:focus-visible) > .conversation-session { padding-inline-end: 44px; }
+}
+
+@media (max-width: 820px), (hover: none) {
+  .navigation-menu-trigger { width: 44px; height: 44px; }
+}
+
 .pinned-navigation {
   display: grid;
   gap: 2px;
@@ -466,23 +535,15 @@ input {
 }
 
 .navigation-search-empty { margin: 8px 16px; color: var(--chat-muted); font-size: 0.8125rem; }
-.navigation-pin-action:disabled { opacity: 0.4; cursor: default; }
 .navigation-pins-error { display: grid; gap: 5px; padding: 8px 16px; font-size: 0.75rem; color: var(--ak-color-status-error); }
 .navigation-pins-error button { justify-self: start; border: 0; background: transparent; color: var(--chat-ink); text-decoration: underline; cursor: pointer; }
 
-@media (hover: hover) and (pointer: fine) {
-  .conversation-session-row .navigation-pin-action { opacity: 0; }
-  .conversation-session-row:hover .navigation-pin-action,
-  .conversation-session-row:focus-within .navigation-pin-action { opacity: 1; }
-}
-
 .project-navigation {
   display: grid;
+  min-width: 0;
   flex: 0 0 auto;
   align-content: start;
   gap: 2px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   padding-block: 0 4px;
   padding-inline: var(--chat-rail-inline);
 }
@@ -515,12 +576,6 @@ input {
 .project-navigation__icon:focus-visible {
   color: var(--chat-ink);
   background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
-}
-
-/* Size overrides follow the base icon rule because both classes apply to pins. */
-.navigation-pin-action { width: 40px; height: 40px; }
-@media (max-width: 820px), (hover: none) {
-  .navigation-pin-action { width: 44px; height: 44px; }
 }
 
 .project-pending {
@@ -585,6 +640,8 @@ input {
   gap: 2px;
 }
 
+.project-group { min-width: 0; }
+
 .project-group__toggle {
   display: grid;
   width: 28px;
@@ -604,6 +661,7 @@ input {
 }
 
 .project-group__open {
+  width: auto;
   min-height: 36px;
   flex: 1;
   padding-inline: 4px;
@@ -616,9 +674,19 @@ input {
 .project-group.active > .project-group__row { background: var(--chat-chip); border-radius: 7px; }
 
 @media (hover: hover) and (pointer: fine) {
-  .project-group__row .project-navigation__icon { opacity: 0; }
-  .project-group__row:hover .project-navigation__icon,
-  .project-group__row:focus-within .project-navigation__icon { opacity: 1; }
+  .project-group__new-chat {
+    position: absolute;
+    inset-inline-end: 42px;
+    width: 40px;
+    height: 40px;
+    background: var(--ak-paper-canvas);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .project-group__row:hover .project-group__new-chat,
+  .project-group__row:has(:focus-visible) .project-group__new-chat { opacity: 1; pointer-events: auto; }
+  .project-group__row:hover .project-group__open,
+  .project-group__row:has(:focus-visible) .project-group__open { padding-inline-end: 84px; }
 }
 
 .project-group__chevron {
@@ -633,6 +701,7 @@ input {
 
 .project-group__name {
   min-width: 0;
+  flex: 1;
   overflow: hidden;
   font-weight: 550;
   text-overflow: ellipsis;
@@ -640,7 +709,11 @@ input {
 }
 
 .project-group__memory {
-  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   border-radius: 999px;
   padding-inline: 6px;
   color: var(--chat-muted);
@@ -651,6 +724,7 @@ input {
 
 .project-group__sessions {
   display: grid;
+  min-width: 0;
   gap: 1px;
   padding-inline-start: 36px;
 }
@@ -670,14 +744,19 @@ input {
   white-space: nowrap;
 }
 
-.project-session time {
-  flex: 0 0 auto;
-  color: var(--chat-muted);
-  font-size: 0.75rem;
-}
-
 .project-session.active {
   background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+}
+
+@media (max-width: 820px), (hover: none) {
+  .project-group__new-chat { display: none; }
+  .project-group__toggle { width: 44px; }
+  .project-group__row,
+  .project-group__open,
+  .project-group__toggle,
+  .project-session,
+  .project-navigation__icon { min-height: 44px; }
+  .project-navigation__header > .project-navigation__icon { width: 44px; }
 }
 
 .project-dialog-overlay { background: rgb(var(--ak-color-shadow-rgb) / 0.32); }
@@ -1707,7 +1786,7 @@ form.composer:focus-within [data-slot="input-group"] {
     top: 0;
     left: 0;
     display: block;
-    width: min(18.5rem, calc(100vw - 4.5rem));
+    width: min(22rem, calc(100vw - 3rem));
     max-width: none;
     height: 100%;
     max-height: none;

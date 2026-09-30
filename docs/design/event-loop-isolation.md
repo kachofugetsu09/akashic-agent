@@ -4,9 +4,24 @@ Related issues: #827 (stack), #828 (storage), #829 (interest), #836 (materials).
 
 Long history reads use a private read-only SQLite transaction and connection. Nested readers of the same MessageLog in that synchronous call share its read snapshot; they do not acquire the writer's connection or decoded-message cache. Reads inside an existing write transaction still see that transaction's uncommitted rows. Owner transactions remain synchronous and atomic, and listeners wake only after commit.
 
+普通 `MessageReader.snapshot_async` 与 `OwnerStore.snapshot` 的只读准入不等待另一个线程
+持有的 writer 锁。当前线程能重入的写事务仍使用原连接，读取自己的未提交行；其他读取
+直接打开独立只读事务。准入与 close 使用短锁：close 拒绝后来读者，已取得的只读连接
+仍由原同步读取关闭。没有改变写入、取消、来源撤权或效果启动的顺序。
+
+```text
+┌───────────────────────┐       ┌────────────────────────┐
+│ writer：未提交事务       │       │ reader：独立只读快照     │
+│ 继续等待或提交           │       │ 只看已提交的固定前缀      │
+└───────────────────────┘       └────────────────────────┘
+```
+
+同步 head、writer expire/close 以及增量 reader 的同步 snapshot 仍有各自的同步锁路径。
+这里修复普通和增量异步前缀、只读快照的准入及增量缓存 SQL，不代表 Source 或全部 Core 写入已异步化。
+
 MessageLog uses file-backed WAL mode so a pinned read does not delay a writer's commit. This changes the runtime journal mode, not the schema. Backups must use SQLite backup or include the SQLite sidecars; copying only the live main database file is not a snapshot. Existing databases keep their schema and data; an unsupported journal mode is rejected explicitly. Short synchronous writes can still wait on SQLite file-level contention; this change does not claim that all storage I/O is asynchronous.
 
-Reply preparation captures the source head and full message head before awaiting history. Async warmup decodes only that fixed prefix, drains the worker on cancellation, and installs the existing incremental cache only if the original connection's data version is unchanged. An external edit during the read prevents cache reuse; the caller still receives that one consistent SQLite snapshot without retrying or blocking the event loop. Later appends are read as a tail; external edits invalidate the cache on the next read.
+回复准备在等待历史前固定来源 head 和完整消息 head。增量异步快照的解码、原连接 data_version 核对和缓存大小 SQL 都在同一个文件 worker 完成，取消等待 worker 实际退出。writer 忙时跳过可选缓存预热，private RO 仍可读取已提交前缀；只有原连接版本未变且 writer 空闲时才发布原有有界缓存。外部编辑使缓存不能复用，不重跑或推翻本次固定快照。后续追加仍按尾部补读，外部编辑仍在下次同步读取时使旧缓存失效。已准入的 private reader 可跨 close 完成，关闭后跳过缓存发布。
 
 Interest scoring keeps model selection and candidate embedding in the original async owner. Historical sample and prototype construction run in a drained worker without changing the formula, sample order or cutoff.
 
