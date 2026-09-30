@@ -14,7 +14,7 @@ export function renderStaticMarkdown(markdown: string) {
   const root = template.content;
 
   for (const paragraph of root.querySelectorAll("p")) {
-    const content = Array.from(paragraph.childNodes).filter((child) => child.textContent?.trim());
+    const content = Array.from(paragraph.childNodes).filter((child) => child.nodeType !== Node.TEXT_NODE || child.textContent?.trim());
     if (content.length !== 1 || !(content[0] instanceof HTMLElement) || content[0].tagName !== "STRONG") continue;
     paragraph.classList.add((content[0].textContent?.length ?? 0) < 65 ? "reading-topic" : "reading-emphasis");
   }
@@ -24,7 +24,8 @@ export function renderStaticMarkdown(markdown: string) {
     const items = Array.from(list.children);
     const labels = items.map((item) => {
       const paragraph = item.firstElementChild?.tagName === "P" ? item.firstElementChild : item;
-      const first = Array.from(paragraph.childNodes).find((child) => child.textContent?.trim());
+      // 只跳过空白文字；图片、勾选框等没有 textContent 的元素仍占据原文位置。
+      const first = Array.from(paragraph.childNodes).find((child) => child.nodeType !== Node.TEXT_NODE || child.textContent?.trim());
       if (!(first instanceof HTMLElement) || first.tagName !== "STRONG") return null;
       const description = item.cloneNode(true) as Element;
       description.querySelector("strong")!.remove();
