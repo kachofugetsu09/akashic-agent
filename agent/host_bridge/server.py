@@ -531,7 +531,11 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 async with self._manager_operation(request.context):
                     result = await ListDirOperation(
                         allowed_dir=allowed_dir, enable_bridge=False
-                    ).execute(request.list.path)
+                    ).execute(
+                        request.list.path,
+                        limit=request.list.limit if request.list.HasField("limit") else None,
+                        after=request.list.after if request.list.HasField("after") else None,
+                    )
             case _:
                 raise ValueError("Host Bridge 文件操作缺失")
         # 2. 模型投影留在 Core；Bridge 只转换已有文件结果。
