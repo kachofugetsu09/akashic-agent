@@ -6,9 +6,12 @@ import hashlib
 import io
 import json
 import os
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiohttp
 import litellm
+from openai import APIError
 from cua_agent import ComputerAgent
 from cua_agent.decorators import register_agent
 from cua_agent.responses import (
@@ -171,7 +174,7 @@ class NativeCompletion:
             view.append({"role": "user", "content": self.tools.images.copy()})
             self.tools.images.clear()
         completion = convert_responses_items_to_completion_messages(view)
-        kwargs = dict(
+        kwargs: dict[str, Any] = dict(
             model=model.removeprefix("benchmark-native/"),
             messages=completion,
             tools=schemas,
@@ -234,7 +237,7 @@ async def run_agent(args, env, description, case_dir, guidance):
     """只运行原版 Agent；原题准备、判分和证据落盘仍归 benchmark host。"""
     # 1. 注册上游正式 loop 接口；custom_loop 在固定 SDK 的 run 中缺少配置记录。
     tools = AgentTools(env.session)
-    functions = [tools.computer_action]
+    functions: list[Callable[..., Awaitable[str]]] = [tools.computer_action]
     if args.agent_browser:
         functions.append(tools.browser_run)
     instruction = (
@@ -274,7 +277,7 @@ async def run_agent(args, env, description, case_dir, guidance):
     except TimeoutError:
         status = "timed_out"
         await env.session.cancel_call()
-    except (litellm.APIError, ToolError) as error:
+    except (APIError, ToolError) as error:
         evidence["error"] = {"type": type(error).__name__, "message": str(error)}
     finally:
         # 3. 保存实际 wire/历史；取消后的 driver 排空由外层 episode owner 负责。
