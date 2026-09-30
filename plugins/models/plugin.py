@@ -14,6 +14,7 @@ from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.ui import UI
 
 from .content import MODEL_CONTENT, ContentOwner
+from .views import CONTENT_VIEWS, ContentViews
 from .litellm_catalog import LiteLlmCapabilityCatalog
 from .model_settings_http import BoundModelControl, rpc_methods
 from .projection import (
@@ -74,6 +75,8 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
     _ = await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
     _ = await ctx.provide(MODEL_CONTENT, ContentOwner())
+    views = ContentViews(ctx)
+    _ = await ctx.provide(CONTENT_VIEWS, views, binding_contributors=views.binding_contributors)
     _ = await ctx.provide(MODEL_SELECTION, SelectionOwner())
     from agent.plugin_contracts.onboarding import ONBOARDING, Step
     async def status():
