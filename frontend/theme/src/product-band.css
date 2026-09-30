@@ -145,7 +145,8 @@
 /* 滑动指示器：宿主在 track 上写 --band-indicator-x/-w；存在时取代逐项 ::after。 */
 .product-band__indicator {
   position: absolute;
-  inset-inline-start: 0;
+  /* --band-indicator-x uses physical offsetLeft in both writing directions. */
+  left: 0;
   bottom: 0;
   width: var(--band-indicator-w, 0);
   height: 2px;
