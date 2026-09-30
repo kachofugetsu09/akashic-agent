@@ -18,6 +18,7 @@ import {
   type ProjectRow,
   type PendingProjectRow,
 } from "./web-projects";
+import { useNavigationPins } from "./use-navigation-pins";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
 import { replyChatStatus, type ChatStatus } from "./web-chat-status";
@@ -179,6 +180,7 @@ export function useDesktopChatController() {
   const tailCacheRef = useRef(new Map<string, SessionTail>());
   const prefetchInflightRef = useRef(new Map<string, AbortController>());
   const chatReady = shellState?.chatReady === true;
+  const navigationPins = useNavigationPins(chatReady);
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
@@ -786,6 +788,12 @@ export function useDesktopChatController() {
 
   const activateSession = useCallback((sessionId: string) => {
     if (surface === "chat" && activeSessionRef.current === sessionId) return;
+    const row = sessions.find((session) => session.key === sessionId)
+      ?? navigationPins.sessions.find((session) => session.key === sessionId);
+    if (row) sessionScopesRef.current.set(sessionId, row.scope ?? {});
+    // 置顶解析可能早于完整目录；打开已有会话不能沿用先前项目草稿的 scope。
+    newChatScopeRef.current = null;
+    setNewChatProjectId("");
     setSurface("chat");
     window.history.replaceState(null, "", window.location.pathname);
     activeSessionRef.current = sessionId;
@@ -821,7 +829,7 @@ export function useDesktopChatController() {
       });
     // 新鲜快照跳过了分页拉取，仍需恢复 WebSocket 增量跟随。
     if (cachedFresh) connectRef.current?.();
-  }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface]);
+  }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setReplyAvailable, setStatusLive, surface, sessions, navigationPins.sessions]);
 
   useEffect(() => {
     if (!chatReady || !requestedSessionId) return;
@@ -843,16 +851,22 @@ export function useDesktopChatController() {
     setCopiedMessageId(messageId);
     window.setTimeout(() => setCopiedMessageId(""), 1200);
   }, []);
-  const sidebarSessions = useMemo(() => sessions.map((session) => ({
-    id: session.key,
-    title: sessionLabel(session),
-    preview: `${session.message_count ?? 0} 条消息`,
-    updatedLabel: formatNavigationTime(session.updated_at),
-    active: activeSessionId === session.key,
-    projectId: session.scope?.[PROJECT_DIMENSION] ?? "",
-  })), [activeSessionId, sessions]);
+  const sidebarSessions = useMemo(() => {
+    const known = new Set(sessions.map((session) => session.key));
+    // 补齐已解析置顶的标题/身份，不改变现有最近目录的自然顺序。
+    return [...sessions, ...navigationPins.sessions.filter((session) => !known.has(session.key))].map((session) => ({
+      id: session.key,
+      title: sessionLabel(session),
+      preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
+      updatedLabel: formatNavigationTime(session.updated_at),
+      active: activeSessionId === session.key,
+      projectId: session.scope?.[PROJECT_DIMENSION] ?? "",
+      projectScoped: Object.hasOwn(session.scope ?? {}, PROJECT_DIMENSION),
+    }));
+  }, [activeSessionId, sessions, navigationPins.sessions]);
   // 新对话在首条消息进入目录前沿用发起时选定的项目。
-  const activeRow = activeSessionId ? sessions.find((session) => session.key === activeSessionId) : undefined;
+  const activeRow = activeSessionId ? sessions.find((session) => session.key === activeSessionId)
+    ?? navigationPins.sessions.find((session) => session.key === activeSessionId) : undefined;
   const activeProjectId = activeRow ? activeRow.scope?.[PROJECT_DIMENSION] ?? "" : newChatProjectId;
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const retry = useCallback(() => {
@@ -878,7 +892,7 @@ export function useDesktopChatController() {
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
-    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
+    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject, navigationPins,
     startProjectChat, createProject, continueProject, stopProject,
   };
 }

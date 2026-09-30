@@ -164,6 +164,21 @@ Thinking 与工具调用沿共享页面的一条过程轨迹展示；流式消�
 或子插件时按 Web module Effect 递归清理。Core Web Host 与 conversation-ui 不得按 Computer、Browser 或
 其他子插件名称分支，工具区也不得取得 Session、Turn 或插件领域状态所有权。
 
+### WEBUI-009 聊天导航置顶与展开状态独立
+
+聊天导航可以置顶真实项目和没有 `project` 维度的普通可见会话。`default` 只表示该维度缺失，
+不是一个项目，也不由 Akasha 的全局学习策略决定。具有项目维度的会话即使项目已归档或暂不可读，
+仍不得单独置顶。
+
+同一 workspace 的置顶偏好由 `akashic_clients` 保存为有序的类型与稳定身份引用；不复制标题、
+项目成员或 Session scope。新置顶追加到列表末尾，重复请求不改变顺序；取消置顶只减少该引用，
+对象按原目录顺序显示且在导航中只出现一次。项目、会话暂不可用或近期目录尚未加载到时保留引用，
+由用户显式取消置顶，不引入自动清理。
+
+真实项目初始折叠，普通会话列表初始展开。手动展开状态属于当前浏览器，独立于置顶、消息到达和
+对象在导航中的位置；项目名称与箭头只展开或收起，独立加号创建项目对话草稿。搜索可临时显示命中
+子会话，清空后恢复手动展开状态；空项目与没有搜索结果分别表达。
+
 ### AKC-001 Akashic Channel 由普通插件拥有
 
 `akashic_clients` 注册一次 `akashic` Channel。Web Chat 是当前对话入口，Shell 加载其页面；Core 不按 Android、Web 或插件 ID 分支。Session 与 Message 的权威身份保持 `channel = "akashic"` 和 `session_key = "akashic:<chat_id>"`。
