@@ -405,3 +405,31 @@ note = "来源传入材料用途选择；旧入口保留归档调用恢复"
 [capabilities."models.content-views.v1"]
 role = "seam"
 note = "模型内容纯投影贡献；不授予消息写入或执行权"
+
+[capabilities."channel.input.v2"]
+role = "seam"
+note = "Channel 入站入口；由 CHANNELS 的注册者提供"
+
+[capabilities."react.ordered-start.v1"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."source.check.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."source.interrupt.v2"]
+role = "seam"
+note = "Sources 拥有输入与停止的共同路由；渠道声明停止能力依赖"
+
+[capabilities."source.session.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."sources.v3"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
+[capabilities."tools.program.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"

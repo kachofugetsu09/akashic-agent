@@ -24,7 +24,7 @@ from agent.plugin_contracts import Message
 from agent.plugin_contracts.reply import REPLY_EXECUTE_V2 as REPLY_EXECUTE
 from agent.plugin_contracts.sources import (
     CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
-    SOURCES as SOURCES,
+    SOURCES_V3 as SOURCES,
 )
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOL_LOADING_PRESENTATION
 
@@ -36,7 +36,7 @@ from .status import REPLY_STATUS, ReplyState
 Reminder = Mapping[str, object]
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
 
-from agent.plugin_contracts.sources import SOURCE_CHANGED
+from agent.plugin_contracts.sources import SOURCE_CHANGED_V2 as SOURCE_CHANGED
 
 api_version = 3
 name = "reply"

@@ -34,9 +34,9 @@ from agent.plugin_contracts.delivery import (
 )
 from agent.plugin_contracts.sources import (
     CHECK_ORIGIN as CHECK_ORIGIN,
-    SOURCE_CHANGED,
-    SOURCE_SESSION as SOURCE_SESSION,
-    SOURCES as SOURCES,
+    SOURCE_CHANGED_V2 as SOURCE_CHANGED,
+    SOURCE_SESSION_V2 as SOURCE_SESSION,
+    SOURCES_V3 as SOURCES,
     SessionFactory as SessionFactory,
     SourceChanged,
     SourceSession as SourceSession,

@@ -79,6 +79,8 @@ def test_close_inside_read_scope_closes_the_actual_writer(tmp_path):
     owner = log.owner("audit")
     owner.snapshot(log.close)
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        writer(log).append("after-close", Input(()))
+    with pytest.raises(RuntimeError, match="closed"):
         log.reader("s").head()
     with pytest.raises(RuntimeError, match="closed"):
         owner.snapshot(lambda: None)

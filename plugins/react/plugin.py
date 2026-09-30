@@ -50,11 +50,12 @@ from agent.plugin_contracts.models import (
     MessageProjection as MessageProjection,
 )
 from agent.plugin_contracts.react import (
-    REACT as REACT,
+    REACT_ORDERED as REACT,
 )
 from agent.plugin_contracts.tools import (
     DecodedCall as DecodedCall,
     ToolMenu as ToolMenu,
+    StartCheck,
 )
 
 Materials = Mapping[str, object]
@@ -420,9 +421,9 @@ async def _complete(
     tools: ToolMenu, max_output_tokens: int, reduce: SummaryReducer | None,
     preview: Preview | None,
     reminder_input_id: str | None,
-    claim: Callable[[int], tuple[str, str | None]] | None = None,
+    claim: Callable[[int], Awaitable[tuple[str, str | None]]] | None = None,
     fallback_key: str | None = None,
-    freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None,
+    freeze: Callable[[int, ModelRequest, Materials], Awaitable[tuple[ModelRequest, Materials]]] | None = None,
     resumed: Mapping[int, tuple[ModelRequest, Materials]] | None = None,
     start_at: int = 0,
     resume_rejected: bool = False,
@@ -456,11 +457,11 @@ async def _complete(
                 raise ContextLengthError(rejection)
     if freeze is not None:
         # 生成准备把当前真实请求与材料一并冻结；恢复后不再重建或漂移。
-        request, prepared_attempt = freeze(start_at, request, prepared_attempt)
+        request, prepared_attempt = await freeze(start_at, request, prepared_attempt)
     prepared = prepared_attempt
     # 2. 每次 provider 调用使用生成准备中已耐久固定的 Output ID 与请求 key。
     with ExitStack() as previews:
-        def begin(attempt: int) -> tuple[str, str | None, StreamCallback | None]:
+        async def begin(attempt: int) -> tuple[str, str | None, StreamCallback | None]:
             if claim is None:
                 # 无准备记录时仍以持久前提界定同一请求，避免跨代重放相同字节。
                 message_id = uuid4().hex
@@ -468,12 +469,12 @@ async def _complete(
                     None if fallback_key is None else f"{fallback_key}:{attempt}"
                 )
             else:
-                message_id, request_key = claim(attempt)
+                message_id, request_key = await claim(attempt)
             callback = None if preview is None else previews.enter_context(preview(message_id))
             return message_id, request_key, callback
 
         attempt = start_at
-        message_id, request_key, callback = begin(attempt)
+        message_id, request_key, callback = await begin(attempt)
         try:
             if resume_rejected:
                 # 该 attempt 的 key 已有耐久的 provider 容量拒绝结算：
@@ -503,8 +504,8 @@ async def _complete(
                     raise ContextLengthError(rejection)
                 if freeze is not None:
                     # 缩减后的第二请求与材料同样耐久冻结，恢复时精确重放。
-                    request, prepared = freeze(attempt, request, prepared)
-            message_id, request_key, callback = begin(attempt)
+                    request, prepared = await freeze(attempt, request, prepared)
+            message_id, request_key, callback = await begin(attempt)
             response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
         yield response, prepared, message_id, request
@@ -528,6 +529,7 @@ async def react(
     capture_scope: Callable[[], RuntimeScope] | None = None,
     state: OwnerStore | None = None,
     max_parallel_calls: int = 1,
+    check_start: StartCheck | None = None,
 ) -> Message:
     """先结算已提交调用，再读日志推理并逐条提交；没有 Turn、Attempt 或历史副本。"""
     if type(max_steps) is not int or max_steps < 0:
@@ -621,8 +623,8 @@ async def react(
             raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出")
 
         # 2. 生成准备冻结请求、材料、binding 与 Output 身份；恢复不重建不漂移。
-        claim: Callable[[int], tuple[str, str | None]] | None = None
-        freeze: Callable[[int, ModelRequest, Materials], tuple[ModelRequest, Materials]] | None = None
+        claim: Callable[[int], Awaitable[tuple[str, str | None]]] | None = None
+        freeze: Callable[[int, ModelRequest, Materials], Awaitable[tuple[ModelRequest, Materials]]] | None = None
         resumed: dict[int, tuple[ModelRequest, Materials]] | None = None
         start_at = 0
         resume_rejection = False
@@ -651,7 +653,7 @@ async def react(
             # 允许开启新一代准备；否则如实停摆。冻结但未 claim 的后续
             # attempt（崩溃于 freeze/claim 之间）不丢弃，直接续用。
             prep_key = prep_base
-            existing = state.transact(lambda transaction: transaction.read(prep_key))
+            existing = state.snapshot(lambda: state.read(prep_key))
             generation = 0
             resume_rejection = False
             while existing is not None:
@@ -698,7 +700,7 @@ async def react(
                     )
                 generation += 1
                 prep_key = f"{prep_base}#{generation}"
-                existing = state.transact(lambda transaction: transaction.read(prep_key))
+                existing = state.snapshot(lambda: state.read(prep_key))
             if existing is not None:
                 prep = dict(existing.value)
                 if prep.get("binding_id") != model.descriptor.binding_id:
@@ -723,16 +725,21 @@ async def react(
             else:
                 prepared = await materials(frozen)
 
-            def freeze_request(
+            async def freeze_request(
                 attempt: int, request: ModelRequest, built: Materials
             ) -> tuple[ModelRequest, Materials]:
+                # Context 与模型句柄只在当前 scope 读取，worker 接收固定普通数据。
+                binding_id = model.descriptor.binding_id
+                encoded_request = _encode_request(request)
+                fixed_materials = dict(built)
+
                 def open_prep(transaction: OwnerTransaction) -> Mapping[str, object]:
                     record = transaction.read(prep_key)
                     if record is None:
                         record = transaction.save(prep_key, {
                             "version": 3, "output_id": uuid4().hex,
                             "request_keys": [uuid4().hex], "base_seq": base_seq,
-                            "binding_id": model.descriptor.binding_id,
+                            "binding_id": binding_id,
                             "attempts": [],
                         }, expected_version=None)
                     value = dict(record.value)
@@ -745,8 +752,8 @@ async def react(
                         entries.append(None)
                     if entries[attempt] is None:
                         entries[attempt] = {
-                            "request": _encode_request(request),
-                            "materials": dict(built),
+                            "request": encoded_request,
+                            "materials": fixed_materials,
                         }
                         record = transaction.save(
                             prep_key, {**value, "attempts": entries},
@@ -756,11 +763,13 @@ async def react(
                         entries = list(cast(Sequence[Mapping[str, object]], value["attempts"]))
                     return cast(Mapping[str, object], entries[attempt])
 
-                entry = state.transact(open_prep)
+                entry = await state.transact_async(open_prep)
                 return _decode_request(entry["request"]), cast(Materials, entry["materials"])
 
-            def claim_attempt(attempt: int) -> tuple[str, str | None]:
+            async def claim_attempt(attempt: int) -> tuple[str, str | None]:
                 def advance(transaction: OwnerTransaction) -> tuple[str, str]:
+                    if check_start is not None:
+                        check_start(transaction)
                     record = transaction.read(prep_key)
                     if record is None:
                         raise RuntimeError("生成准备记录缺失")
@@ -768,15 +777,18 @@ async def react(
                     keys = list(cast(Sequence[str], value["request_keys"]))
                     while len(keys) <= attempt:
                         keys.append(uuid4().hex)
-                    if keys != value["request_keys"]:
+                    started = list(cast(Sequence[int], value.get("started_attempts", ())))
+                    if attempt not in started:
+                        started.append(attempt)
+                    if keys != value["request_keys"] or started != value.get("started_attempts", ()):
                         record = transaction.save(
-                            prep_key, {**value, "request_keys": keys},
+                            prep_key, {**value, "request_keys": keys, "started_attempts": started},
                             expected_version=record.version,
                         )
                         value = record.value
                     return cast(str, value["output_id"]), keys[attempt]
 
-                return state.transact(advance)
+                return await state.transact_async(advance)
 
             freeze = freeze_request
             claim = claim_attempt
@@ -843,9 +855,14 @@ async def react(
 
 
 async def apply(ctx: Context) -> None:
-    async def owned_react(*args: Any, **kwargs: Any) -> Message:
-        """Keep the React owner permit through settlement and child capture."""
+    async def owned_react(
+        *args: Any, check_start: StartCheck, state: OwnerStore, **kwargs: Any,
+    ) -> Message:
+        """来源前提和首次生成 intent 共同提交，再交给 Models 的固定 key。"""
         async with ctx.runtime_scope():
-            return await react(*args, capture_scope=ctx.capture_runtime_scope, **kwargs)
+            return await react(
+                *args, check_start=check_start, state=state,
+                capture_scope=ctx.capture_runtime_scope, **kwargs,
+            )
 
     _ = await ctx.provide(REACT, owned_react)

@@ -9,7 +9,7 @@ from typing import cast
 from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
 from .api import Denied, MessageReply, Result, durable_call_key
 from .execution import _fingerprint, finish
-from agent.plugin_composition.messages import MessageCatalog, MessageReader, OwnerStore
+from agent.plugin_composition.messages import MessageCatalog, MessageReader, OwnerStore, OwnerTransaction
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
@@ -176,5 +176,5 @@ def abandoned_calls(messages: tuple[Message, ...], control: Message) -> tuple[Ca
     return tuple(calls)
 
 
-def reject_start() -> None:
+def reject_start(_transaction: OwnerTransaction) -> None:
     raise Denied("放弃消费者没有启动工具的权限")

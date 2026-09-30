@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, Generator, Awaitable, Callable, Hash
 from contextlib import AbstractAsyncContextManager, AbstractContextManager, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, TypeVar, Protocol
+from typing import Any, TypeVar, Protocol, cast
 
 from agent.restart import (
     ExternalRootPermit as ExternalRootPermit, RestartGate as RestartGate,
@@ -244,6 +244,8 @@ class TaskSlot:
         child_permit: Callable[[], ExternalRootPermit] | None = None,
     ) -> Task:
         self._check_active()
+        if self._owner._closed:
+            raise TaskServiceClosed("Task 服务已关闭")
         current = self.current
         if current is not None:
             if not current.superseded:
@@ -266,6 +268,7 @@ class TaskSlot:
 @dataclass
 class _Group:
     changed: asyncio.Event = field(default_factory=asyncio.Event)
+    admission: asyncio.Lock = field(default_factory=asyncio.Lock)
     references: int = 0
     activity: int = 0
     exclusive: bool = False
@@ -315,18 +318,47 @@ class Tasks:
 
     async def admit(self, key: Hashable, callback: Callable[[TaskSlot], _T]) -> _T:
         """回调只做同步准入；长操作在 Task 中运行，不能持锁跨 I/O。"""
-        # 成功准入和回调不跨 await；拒绝只在回调退出后等待自己的清理。
-        if self._closed:
-            raise TaskServiceClosed("Task 服务已关闭")
+        return await self._admit(key, callback, asynchronous=False)
+
+    async def admit_async(
+        self, key: Hashable, callback: Callable[[TaskSlot], Awaitable[_T]],
+    ) -> _T:
+        """同 key 的持久接纳保持串行；关闭等待已接纳操作完成并排空。"""
+        return await self._admit(key, callback, asynchronous=True)
+
+    async def _admit(
+        self, key: Hashable,
+        callback: Callable[[TaskSlot], _T | Awaitable[_T]], *, asynchronous: bool,
+    ) -> _T:
+        """共享准入与拒绝清理；只有声明的异步接纳可跨 await。"""
+        group = self._group(key)
+        try:
+            async with group.admission:
+                if self._closed:
+                    raise TaskServiceClosed("Task 服务已关闭")
+                return await self._invoke_admission(key, callback, asynchronous=asynchronous)
+        finally:
+            self._release_group(key, group)
+
+    async def _invoke_admission(
+        self, key: Hashable,
+        callback: Callable[[TaskSlot], _T | Awaitable[_T]], *, asynchronous: bool,
+    ) -> _T:
+        """成功后才放行新 Task；失败保持原取消、物理排空与异常语义。"""
+        # 同步准入仍拒绝 await；持久接纳独占同 key，成功后才放行新 Task。
         slot = TaskSlot(self, key)
         try:
             result = callback(slot)
             if inspect.isawaitable(result):
-                if inspect.iscoroutine(result):
-                    result.close()
-                raise TypeError("Task 准入回调必须同步")
+                if not asynchronous:
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise TypeError("Task 准入回调必须同步")
+                result = await result
+            elif asynchronous:
+                raise TypeError("异步 Task 准入回调必须返回 awaitable")
             slot._admitted.set()
-            return result
+            return cast(_T, result)
         except BaseException as failure:
             if slot._started is not None:
                 # 拒绝在回调退出后排空；调用方收到错误时不会留下占 key 的幽灵任务。
@@ -455,6 +487,10 @@ class Tasks:
 
 class TaskAdmission(Protocol):
     async def admit(self, key: Hashable, callback: Callable[[TaskSlot], _T]) -> _T: ...
+
+    async def admit_async(
+        self, key: Hashable, callback: Callable[[TaskSlot], Awaitable[_T]],
+    ) -> _T: ...
 
     def activity(self, key: Hashable) -> AbstractContextManager[None]: ...
 

@@ -17,7 +17,7 @@ from plugins.react.plugin import react
 from plugins.tools.execution import ToolExecution, MessageReply, Result
 from plugins.tools.abandon import follow_abandon, reject_start
 from plugins.tools.menu import NativePresentation, ToolMenu, ToolCallDecode
-from session.log import MessageLog
+from session.log import MessageLog, OwnerTransaction
 from session.message import CallRef, Control, Input, Output, ToolCall, ToolResult
 
 @asynccontextmanager
@@ -112,8 +112,10 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             finally:
                 reply.writer.expire()
 
-        def check_start(self) -> None:
-            if not self.task.active:
+        def check_start(self, transaction: OwnerTransaction) -> None:
+            if not self.task.active or transaction.source_changed(
+                log.reader("s"), "conversation", self.task.boundary_hint,
+            ):
                 raise asyncio.CancelledError
 
         def check_call(self, call: ToolCall) -> None:
@@ -149,12 +151,13 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             read_call=store.read_call,
             keep_input_ids=() if current_input is None else (current_input,),
         )
+        menu = Menu(task)
         with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
             return await react(reader, output, model=model, context=ContextBuilder(),
-                               projection=projection, materials=materials, content=Content(), tools=Menu(task),
+                               projection=projection, materials=materials, content=Content(), tools=menu,
                                max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools,
                                state=None if state_owner is None else log.owner(state_owner),
-                               max_parallel_calls=max_parallel_calls)
+                               max_parallel_calls=max_parallel_calls, check_start=menu.check_start)
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
     @asynccontextmanager

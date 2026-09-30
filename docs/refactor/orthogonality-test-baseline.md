@@ -210,3 +210,5 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 - O: `test_due_alert_bypasses_running_content_score` runs real EventMail/Wake state under a Root, holds Content scoring, and verifies the due Alert is admitted with its original durable mail identity before scoring finishes.
 
 - O / C1: `test_slow_ui_owner_leaves_capacity_and_queued_timeout_never_runs` uses real Root/UI registrations and physical worker threads. It proves another owner can query, a queued timeout never invokes its handler, and shutdown waits for running work even after caller cancellation.
+
+- `test_source_commit_drains_before_cancel_and_rejects_late_start`: C3/C4/C5，真实 SourceSession、Tasks、MessageLog 和 owner transaction 上，Input 已提交但 loop 通知仍被 worker 屏障暂停时，旧 Task 仍 active。取消必须排空并通知一次、撤权；晚到首次 intent 必须回滚。关闭变体还守护已接纳操作排空和后来启动拒绝。`32b0aaf2` 在真实通知边界因同步 I/O 占用 loop 失败，候选两变体通过；原中断测试没有跨 await 的提交窗口，无法守住该边界。短读改用 private RO 后，关闭回归改以真实 writer 拒绝追加证明物理连接已关闭，并以 read admission 拒绝证明后来读者不能进入，保留原 C4 概念。

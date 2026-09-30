@@ -2,12 +2,12 @@
 
 Related issues: #827 (stack), #828 (storage), #829 (interest), #836 (materials).
 
-Long history reads use a private read-only SQLite transaction and connection. Nested readers of the same MessageLog in that synchronous call share its read snapshot; they do not acquire the writer's connection or decoded-message cache. Reads inside an existing write transaction still see that transaction's uncommitted rows. Owner transactions remain synchronous and atomic, and listeners wake only after commit.
+Long history reads use a private read-only SQLite transaction and connection. Nested readers of the same MessageLog in that synchronous call share its read snapshot; they do not acquire the writer's connection or decoded-message cache. Reads inside an existing write transaction still see that transaction's uncommitted rows. Owner transaction callbacks remain synchronous and atomic, including when pure SQL runs in a drained worker. Listeners wake only after commit.
 
 普通 `MessageReader.snapshot_async` 与 `OwnerStore.snapshot` 的只读准入不等待另一个线程
 持有的 writer 锁。当前线程能重入的写事务仍使用原连接，读取自己的未提交行；其他读取
 直接打开独立只读事务。准入与 close 使用短锁：close 拒绝后来读者，已取得的只读连接
-仍由原同步读取关闭。没有改变写入、取消、来源撤权或效果启动的顺序。
+仍由原同步读取关闭。来源提交和首次效果的异步顺序见下面的 #879 说明；权威消息仍只追加。
 
 ```text
 ┌───────────────────────┐       ┌────────────────────────┐
@@ -16,8 +16,9 @@ Long history reads use a private read-only SQLite transaction and connection. Ne
 └───────────────────────┘       └────────────────────────┘
 ```
 
-同步 head、writer expire/close 以及增量 reader 的同步 snapshot 仍有各自的同步锁路径。
-这里修复普通和增量异步前缀、只读快照的准入及增量缓存 SQL，不代表 Source 或全部 Core 写入已异步化。
+短 Reader/OwnerStore/Catalog/binding 读取使用同一 private RO 准入，自己的写事务内读取仍重入原连接。
+listener 登记和释放只持有其现有注册表的短锁，不等待 writer 的磁盘工作。
+增量 reader 的同步 snapshot、剩余 Core 写入和关闭仍有各自的同步路径；不能据此声称全部 I/O 已异步化。
 
 MessageLog uses file-backed WAL mode so a pinned read does not delay a writer's commit. This changes the runtime journal mode, not the schema. Backups must use SQLite backup or include the SQLite sidecars; copying only the live main database file is not a snapshot. Existing databases keep their schema and data; an unsupported journal mode is rejected explicitly. Short synchronous writes can still wait on SQLite file-level contention; this change does not claim that all storage I/O is asynchronous.
 
@@ -72,7 +73,7 @@ Core 不增加子任务状态或来源专属查询。
 
 ## 显式重试的读取范围（#869）
 
-SourceSession 仍在同步 Tasks.admit 内接纳 resume；它只查询固定前缀的最后同来源
+SourceSession 在同 key 的异步准入内接纳 resume；loop 上的只读检查仍只查询固定前缀的最后同来源
 Input、Control，并扫描该 Input 后的同来源消息。已提交 resume 的同 ID 重放，只
 核对原 through_seq 内最后 Input，不解码更早的关闭正文。最新输入、已有控制、
 完成/abandon 拒绝与条件追加规则保持；没有把存储事务跨 await，也不删改历史。
@@ -197,3 +198,52 @@ Message ID 唯一性由消息库主键拥有，投影不再另建全历史 seen 
 CPU/I/O 代价；完整请求快照与恢复快照通过有界 I/O worker 解码，取消后排空。
 后续若改为数据库支持的上下文窗口，应另验摘要和任意材料插件合同。
 docker/debug/reply_memory.py 验证小前缀复用、大正文同步/异步释放和固定范围读取。
+
+
+## Source 提交与首次效果（#879）
+
+Source 的 Input/Control 接纳使用 `Tasks.admit_async`：同 key 的接纳、启动与控制不能插队，
+SQL transaction 本身仍是同步回调。关闭拒绝后来操作，等待已接纳操作及实际 worker 排空。
+既有 `Tasks.admit` 仍拒绝异步回调；活动句柄和长任务不占接纳锁。
+
+```text
+┌──────────────────────────────────────────┐
+│ loop：同 ID 收据重放，或当前 owner 内容校验 │
+│ 固定内容引用、授权 metadata 和纯投影      │
+└───────────────────┬──────────────────────┘
+                    ▼
+┌──────────────────────────────────────────┐
+│ worker：Core SQL 重新核对身份、grant、head │
+│ 引用与 CAS，原子追加，不调用 Context       │
+└───────────────────┬──────────────────────┘
+                    ▼
+┌──────────────────────────────────────────┐
+│ loop：通知一次，再撤权；取消也先交付收据   │
+│ caller/Scope 在物理排空后才退出            │
+└──────────────────────────────────────────┘
+```
+
+Tool started、command intent 和 generation claim 把 Source 前提检查放进原 Core owner transaction。
+判断来自该 Task 已接纳的输入边界或冻结读取前缀，不能在等待后用最新 head 替换原前提。
+若新 Input/Control 先提交，旧首次 intent 回滚；若 started 先提交，原 owner 如实结算已开始效果，
+取消不伪称效果回滚。ToolResult 与 done 仍在原事务共同提交。
+
+生成请求继续使用既有准备记录和稳定 request key。`started_attempts` 只记录该准备已通过首次启动检查，
+不复制 Models 的调用事实。Models 仍拥有独立数据库和发送状态，按同 key 前向恢复；
+Core claim 不能证明远端有或没有效果。旧 v2/v3 准备和消息表示保留，不做 schema 迁移或历史改写。
+准备的纯 SQL 也离开 loop；Context 和模型句柄的读取保持在原 scope。
+
+能力必须按完整组选择：`sources.v3`、`source.session.v2`、`source.check.v2`、
+`source.changed.v2`、`channel.input.v2`、`source.interrupt.v2`、`tools.program.v2`、
+`react.ordered-start.v1`。旧公共常量保持旧值，新 provider 不提供旧 alias。
+ReplyExecute 的原公共合同已要求 Source 接纳的 Task/Input；其签名保持不变，内部迁移到新首次启动能力。
+旧 actor 与新 provider、或新 actor 与旧 provider 不能静默混用。
+
+Manager 的逐插件局部更新不能跨越整组能力版本：它会明确拒绝旧依赖 PENDING，并恢复旧组。
+跨版本启用应在新 Root 中选择完整组；正式选择、安装和启用验收属于发布流程。
+完整旧组仍可恢复。保持同一能力版本的局部替换仍在同 Root 完成，并先等待已接纳 Source worker 排空。
+本地 scenario 已分别验证上述拒绝、恢复和同版本替换；没有正式 workspace、账户或付费 provider 写入。
+
+回归 `test_source_commit_drains_before_cancel_and_rejects_late_start` 在 `32b0aaf2` 的真实通知边界失败，
+候选的普通取消及服务关闭场景均通过。它守护 C3/C4/C5 的收据、终态和效果顺序，不改变既有消息正文。
+剩余同步消息/owner 写入，以及 EventMail/Drift/Alert 的多库顺序继续独立处理。

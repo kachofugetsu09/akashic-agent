@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
-from agent.plugin_composition.messages import MessageReader
+from agent.plugin_composition.messages import MessageReader, OwnerTransaction
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugin_composition.tasks import ExternalRootPermit, Task
@@ -289,6 +289,31 @@ class ToolProgram(Protocol):
     ) -> ToolMenu: ...
 
 
+class StartCheck(Protocol):
+    def __call__(self, transaction: OwnerTransaction, /) -> None:
+        """检查与首次 started intent 在同一 Core SQL 事务内提交。"""
+        ...
+
+
+class OrderedToolProgram(Protocol):
+    async def create_menu(
+        self,
+        reader: MessageReader,
+        source: str,
+        *,
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
+        check_start: StartCheck,
+        authorize: Callable[
+            [str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]
+        ],
+        view: ToolView | None = None,
+        fixed_bindings: Mapping[str, str] | None = None,
+        limit: int | None = None,
+        presentation: ToolPresentation | None = None,
+        child_permit: Callable[[], ExternalRootPermit] | None = None,
+    ) -> ToolMenu: ...
+
+
 class ToolCleanup(Protocol):
     """程序消费者提供本次工具 owner 的真实收尾边界。"""
 
@@ -314,5 +339,6 @@ class BindSavedTool(Protocol):
 
 
 TOOL_PROGRAM = ServiceKey[ToolProgram]("tools.program.v1")
+TOOL_PROGRAM_V2 = ServiceKey[OrderedToolProgram]("tools.program.v2")
 TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
 TOOL_BIND_SAVED = ServiceKey[BindSavedTool]("tools.bind-saved.v1")

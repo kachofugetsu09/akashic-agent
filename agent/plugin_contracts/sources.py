@@ -7,7 +7,7 @@ from typing import Protocol
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.events import EmitEventKey
-from agent.plugin_composition.messages import MessageReader, MessageWriter
+from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerTransaction
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission
 from agent.plugin_contracts import (
     ContentPart,
@@ -25,6 +25,7 @@ class SourceChanged:
 
 
 SOURCE_CHANGED = EmitEventKey[SourceChanged]("source.changed.v1")
+SOURCE_CHANGED_V2 = EmitEventKey[SourceChanged]("source.changed.v2")
 
 
 class SourceSession(Protocol):
@@ -111,6 +112,24 @@ SOURCE_SESSION = ServiceKey[SessionFactory]("source.session.v1")
 SOURCE_CHECK = ServiceKey[Callable[[Task, MessageReader, str, int], None]](
     "source.check.v1"
 )
+
+class SourceCheck(Protocol):
+    def __call__(
+        self, task: Task, reader: MessageReader, source: str, through_seq: int, *,
+        transaction: OwnerTransaction | None = None,
+    ) -> None:
+        """首次效果把检查放在同一 Core transaction；其它阶段只读已提交前提。"""
+        ...
+
+
+# 旧常量保持原值；旧归档不会因导入当前 Core 而隐式升级合同。
+SOURCES_V3 = ServiceKey[Sources]("sources.v3")
+SOURCE_SESSION_V2 = ServiceKey[SessionFactory]("source.session.v2")
+SOURCE_CHECK_V2 = ServiceKey[SourceCheck]("source.check.v2")
+SOURCE_INTERRUPT_V2 = ServiceKey[
+    Callable[[MessageReader, str, str], Awaitable[bool]]
+]("source.interrupt.v2")
+
 CONVERSATION_COMPLETE = ServiceKey[ConversationComplete]("conversation.complete.v1")
 CONVERSATION_COMMANDS = ServiceKey[
     Callable[[Task, MessageReader, str], Awaitable[Message | None]]

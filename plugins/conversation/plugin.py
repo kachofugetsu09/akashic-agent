@@ -37,9 +37,9 @@ from agent.plugin_contracts.models import (
 from agent.plugin_contracts.sources import (
     CHECK_ORIGIN as CHECK_ORIGIN,
     CONVERSATION_COMPLETE as CONVERSATION_COMPLETE,
-    SOURCE_CHANGED,
-    SOURCE_SESSION as SOURCE_SESSION,
-    SOURCES as SOURCES,
+    SOURCE_CHANGED_V2 as SOURCE_CHANGED,
+    SOURCE_SESSION_V2 as SOURCE_SESSION,
+    SOURCES_V3 as SOURCES,
     ConversationComplete as ConversationComplete,
     SessionFactory as SessionFactory,
     SourceChanged,
