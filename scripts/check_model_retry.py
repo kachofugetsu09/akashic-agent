@@ -275,17 +275,18 @@ async def run(args: argparse.Namespace) -> dict:
             store.initialize()
             request = ModelRequest([{"role": "user", "content": "scenario"}], request_key="cancel")
             bound = _BoundChat(descriptor, physical, store, max_attempts=_retry_budget({}))
-            finished = asyncio.Event()
-            original = store.finish_call
+            backoff = asyncio.Event()
+            original_sleep = asyncio.sleep
 
-            def recorded(*positional, **named):
-                original(*positional, **named)
-                finished.set()
+            async def wait_backoff(delay):
+                if delay > 3000:
+                    backoff.set()
+                await original_sleep(delay)
 
             try:
-                with patch.object(store, "finish_call", recorded):
+                with patch("plugins.models.state.asyncio.sleep", wait_backoff):
                     task = asyncio.create_task(bound.complete(request))
-                    await asyncio.wait_for(finished.wait(), 5)
+                    await asyncio.wait_for(backoff.wait(), 5)
                     record = store.calls_for_key("cancel")[0]
                     assert record["next_attempt_at"] is not None and record["state"] == "error"
                     assert len(server.received) == 1

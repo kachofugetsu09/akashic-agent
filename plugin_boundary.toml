@@ -401,3 +401,7 @@ note = "材料声明用途；选择不依赖 provider 名称"
 [capabilities."reply.execute.v2"]
 role = "seam"
 note = "来源传入材料用途选择；旧入口保留归档调用恢复"
+
+[capabilities."models.content-views.v1"]
+role = "seam"
+note = "模型内容纯投影贡献；不授予消息写入或执行权"
