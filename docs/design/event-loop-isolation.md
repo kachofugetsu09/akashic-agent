@@ -73,15 +73,25 @@ Core 不增加子任务状态或来源专属查询。
 
 ## 显式重试的读取范围（#869）
 
-SourceSession 在同 key 的异步准入内接纳 resume；loop 上的只读检查仍只查询固定前缀的最后同来源
-Input、Control，并扫描该 Input 后的同来源消息。已提交 resume 的同 ID 重放，只
-核对原 through_seq 内最后 Input，不解码更早的关闭正文。最新输入、已有控制、
-完成/abandon 拒绝与条件追加规则保持；没有把存储事务跨 await，也不删改历史。
+SourceSession 在同 key 的异步准入内接纳 resume 与显式 abandon。纯历史判定通过
+`run_file_io` 在独立只读快照中完成；resume 只查最后同来源 Input、Control，并分页
+扫描该 Input 后的同来源消息，abandon 分页核对同来源终态。worker 只返回小判定或
+Control/head，不把历史正文带回 loop。已提交 resume 的同 ID 重放只核对原 through_seq
+内最后 Input，不解码更早的关闭正文，也不改用当前 head、活动 handle 或重启状态。
+
+Task、handle、重启闸门和提交通知留在 loop；同 key 准入一直持有到物理读取与原提交结束。
+读取期间的新 Output 要么已在固定快照中参与判定，要么使原来源 head CAS 失败；显式
+head 不重试、不重选。取消先排空读取再释放准入，服务关闭仍等待排空。最新输入、已有
+控制、完成/abandon 拒绝与条件追加规则保持；没有把存储事务跨 await，也不删改历史。
 
 `docker/debug/resume_history.py` 在一次性 SQLite 上量测大闭合历史的首次重试与
 同 ID 重放，并核对关闭、活动任务和来源边界。它也量测已异步化的子任务 outcome，
 把解码时间与事件循环回调延迟分开；本机样本不代表生产 p99。
-当前未闭合 Input 后仍可能有大正文；其他同步历史消费者继续独立追踪。
+`docker/debug/source_control_read_isolation.py` 通过真实 MessageLog、Tasks 和大尾部
+解码屏障核对对等来源可提交、同 key Input 不能插队、读取中完成触发 CAS 冲突、重复
+取消与服务关闭排空、同 ID 重放及来源身份验证；逐页正文可释放，原历史摘要和数据库
+完整性不变。它不启动真实 provider 或投递。needs_reply、start、complete、
+_boundary_committed 与通知回调的同步读取继续独立追踪。
 
 ## EventMail / Drift 的读写事务（#879）
 

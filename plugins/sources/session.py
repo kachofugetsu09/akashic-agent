@@ -17,6 +17,7 @@ from agent.plugin_composition.messages import (
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts import Control, Input, Message, Output
 from agent.plugin_contracts.sources import CompletionProgram
+from core.common.file_io import run_file_io
 
 logger = logging.getLogger(__name__)
 Changed = Callable[[MessageReader, str], None]
@@ -33,6 +34,68 @@ def check_source(
     )
     if not task.active or changed:
         raise asyncio.CancelledError
+
+
+def _check_control_prefix(reader: MessageReader, source: str, body: Control) -> None:
+    """只读判定在一个固定快照内完成，不把历史正文带回 loop。"""
+    with reader.read_snapshot():
+        target = reader.read(
+            after_seq=body.through_seq - 1, through_seq=body.through_seq, limit=1
+        )
+        if not target or target[0].source != source:
+            raise MessageConflict("控制前缀必须指向已接纳的同来源消息")
+        if body.action == "abandon" and reader.scan(
+            lambda messages: any(
+                isinstance(item.body, Output)
+                and item.body.finish != "continue"
+                and item.seq >= body.through_seq
+                or isinstance(item.body, Control)
+                and item.body.action == "abandon"
+                and item.body.through_seq >= body.through_seq
+                for item in messages
+            ),
+            source=source,
+        ):
+            raise MessageConflict("不能放弃已经关闭的前缀")
+
+
+def _resume_control(
+    reader: MessageReader, source: str, message_id: str, input_id: str,
+) -> tuple[Control, int | None]:
+    """固定前缀的纯读取；None head 表示先重放原收据，不重选恢复边界。"""
+    with reader.read_snapshot():
+        target = reader.get(input_id)
+        if target is None or target.source != source or not isinstance(target.body, Input):
+            raise MessageConflict("重试目标不是当前来源的 Input")
+        existing = reader.get(message_id)
+        if existing is not None:
+            if not isinstance(existing.body, Control) or existing.body.action != "resume":
+                raise MessageConflict("重试身份已被其他消息使用")
+            latest = reader.latest_input(source, through_seq=existing.body.through_seq)
+            if latest is None or latest.message_id != input_id:
+                raise MessageConflict("重试身份已用于另一条输入")
+            return existing.body, None
+
+        through = reader.head()
+        latest = reader.latest_input(source, through_seq=through)
+        if latest is None or latest.message_id != input_id:
+            raise MessageConflict("只能重试本来源的最新输入")
+        if reader.scan(
+            lambda messages: any(
+                isinstance(m.body, Output) and m.body.finish != "continue"
+                or isinstance(m.body, Control) and m.body.action == "abandon"
+                and m.body.through_seq >= target.seq
+                for m in messages
+            ),
+            after_seq=target.seq, through_seq=through, source=source,
+        ):
+            raise MessageConflict("已关闭的输入不能重试")
+        control = reader.latest_control(source, through_seq=through)
+        if control is None or cast(Control, control.body).action not in {"failure", "pause"}:
+            raise MessageConflict("输入没有等待恢复的失败或暂停")
+        # 与扫描同一快照的来源 head；未知效果仍由 Tool owner 拒绝重跑。
+        expected_head = reader.head(source=source)
+        return Control("resume", expected_head), expected_head
 
 
 class SourceSession:
@@ -144,30 +207,16 @@ class SourceSession:
                 current = slot.current
                 pending = current if current is not None and not current.active else None
                 return message, pending if body.action != "resume" else None
-            with self._reader.read_snapshot():
-                target = self._reader.read(
-                    after_seq=body.through_seq - 1, through_seq=body.through_seq, limit=1
-                )
-                if not target or target[0].source != self._source:
-                    raise MessageConflict("控制前缀必须指向已接纳的同来源消息")
-                if body.action == "abandon" and any(
-                    item.source == self._source
-                    and (
-                        isinstance(item.body, Output)
-                        and item.body.finish != "continue"
-                        and item.seq >= body.through_seq
-                        or isinstance(item.body, Control)
-                        and item.body.action == "abandon"
-                        and item.body.through_seq >= body.through_seq
-                    )
-                    for item in self._reader.snapshot()
-                ):
-                    raise MessageConflict("不能放弃已经关闭的前缀")
-                current = slot.current
-                if handle is not None:
-                    current = slot.require(handle)
-                elif current is not None and current.active:
-                    raise MessageConflict("控制活动来源需要当前 handle")
+            check_prefix = partial(_check_control_prefix, self._reader, self._source, body)
+            if body.action == "abandon":
+                await run_file_io(check_prefix)
+            else:
+                check_prefix()
+            current = slot.current
+            if handle is not None:
+                current = slot.require(handle)
+            elif current is not None and current.active:
+                raise MessageConflict("控制活动来源需要当前 handle")
             message = await self._controls.append_async(
                 message_id, body, expected_source_head=expected_head,
                 on_commit=lambda message, created: self._committed(slot, message, created),
@@ -226,45 +275,15 @@ class SourceSession:
     async def resume(self, message_id: str, input_id: str) -> Message:
         """显式重试恢复原输入，不追加副本；只能恢复最新的失败或暂停前缀。"""
         async def admit(slot: TaskSlot) -> Message:
-            with self._reader.read_snapshot():
-                target = self._reader.get(input_id)
-                if target is None or target.source != self._source or not isinstance(target.body, Input):
-                    raise MessageConflict("重试目标不是当前来源的 Input")
-                existing = self._reader.get(message_id)
-                if existing is not None:
-                    if not isinstance(existing.body, Control) or existing.body.action != "resume":
-                        raise MessageConflict("重试身份已被其他消息使用")
-                    latest = self._reader.latest_input(self._source, through_seq=existing.body.through_seq)
-                    if latest is None or latest.message_id != input_id:
-                        raise MessageConflict("重试身份已用于另一条输入")
-                    body = existing.body
-                    expected_head = None
-                else:
-                    # 1. 准入回调内核对当前日志与活动 handle，不存在检查后的写入窗口。
-                    through = self._reader.head()
-                    latest = self._reader.latest_input(self._source, through_seq=through)
-                    if latest is None or latest.message_id != input_id:
-                        raise MessageConflict("只能重试本来源的最新输入")
-                    messages = self._reader.scan(tuple, after_seq=target.seq, through_seq=through, source=self._source)
-                    if any(
-                        isinstance(m.body, Output) and m.body.finish != "continue"
-                        or isinstance(m.body, Control) and m.body.action == "abandon"
-                        and m.body.through_seq >= target.seq
-                        for m in messages
-                    ):
-                        raise MessageConflict("已关闭的输入不能重试")
-                    control = self._reader.latest_control(self._source, through_seq=through)
-                    if control is None or cast(Control, control.body).action not in {"failure", "pause"}:
-                        raise MessageConflict("输入没有等待恢复的失败或暂停")
-                    if slot.current is not None and slot.current.active:
-                        raise MessageConflict("不能重试仍在运行的来源")
-
-                    if self._restart_gate is not None:
-                        self._restart_gate.check_open()
-
-                    # resume 只记录恢复意图；未知效果仍由 Tool owner 拒绝重跑。
-                    expected_head = messages[-1].seq if messages else target.seq
-                    body = Control("resume", expected_head)
+            body, expected_head = await run_file_io(
+                partial(_resume_control, self._reader, self._source, message_id, input_id)
+            )
+            if expected_head is not None:
+                if slot.current is not None and slot.current.active:
+                    raise MessageConflict("不能重试仍在运行的来源")
+                if self._restart_gate is not None:
+                    self._restart_gate.check_open()
+            # 同 key 准入仍持有；读取期间的新 Output 由原来源 head CAS 拒绝。
             return await self._controls.append_async(
                 message_id, body, expected_source_head=expected_head,
                 on_commit=lambda message, created: self._committed(slot, message, created),
