@@ -54,12 +54,15 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       if (current) {
         track.style.setProperty("--band-indicator-x", `${current.offsetLeft + 12}px`);
         track.style.setProperty("--band-indicator-w", `${Math.max(0, current.offsetWidth - 24)}px`);
+      } else {
+        track.style.setProperty("--band-indicator-w", "0px");
       }
       requestAnimationFrame(() => { track.dataset.ready = "true"; });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(track);
+    track.querySelectorAll<HTMLElement>("[data-band-item]").forEach((item) => observer.observe(item));
     return () => observer.disconnect();
   }, [activeId, entries]);
 
