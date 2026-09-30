@@ -480,37 +480,6 @@ class EventRegistry:
             for owner in owners
         )
 
-    def registration_event_groups(
-        self,
-        *,
-        plugin_ids: Collection[str] | None = None,
-    ) -> tuple[tuple[EventKey, tuple[str, ...]], ...]:
-        """按 Root 注册顺序返回事件键和插件 owner。"""
-
-        return tuple(
-            (
-                key,
-                tuple(
-                    listener.owner.runtime.plugin_id
-                    for listener in listeners
-                    if listener.owner.runtime is not None
-                    and (
-                        plugin_ids is None
-                        or listener.owner.runtime.plugin_id in plugin_ids
-                    )
-                ),
-            )
-            for key, listeners in self._listeners.items()
-            if any(
-                listener.owner.runtime is not None
-                and (
-                    plugin_ids is None
-                    or listener.owner.runtime.plugin_id in plugin_ids
-                )
-                for listener in listeners
-            )
-        )
-
     def registration_groups(
         self,
         *,
