@@ -127,11 +127,18 @@ def _create_context(
     core = report.get("core")
     if not isinstance(core, dict):
         raise RuntimeError("distribution report 缺少 Core identity")
+    dependencies = cast(dict[str, Any], report["runtime_dependencies"])
+    lock_sha256 = next(
+        row["sha256"]
+        for row in dependencies["python"]["files"]
+        if row["path"] == "docker/host-runtime/requirements.lock"
+    )
     return {
         "schemaVersion": 2,
         "sourceCommit": commit,
         "sourceTree": tree,
         "coreSha256": str(core["sha256"]),
+        "requirementsLockSha256": lock_sha256,
         "distributionReportSha256": _sha256(target / "distribution.json"),
         "distribution": report,
     }
@@ -161,6 +168,7 @@ def build_distribution_release(
             "AKASHIC_BASE_IMAGE": base_image,
             "AKASHIC_ARCH_SNAPSHOT": arch_snapshot,
             "AKASHIC_PYPI_INDEX_URL": pypi_index_url,
+            "AKASHIC_REQUIREMENTS_SHA256": str(source["requirementsLockSha256"]),
             "AKASHIC_SOURCE_COMMIT": commit,
             "AKASHIC_SOURCE_TREE": tree,
             "AKASHIC_CORE_SHA256": core_sha256,

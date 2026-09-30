@@ -200,9 +200,13 @@ def _build_web_assets(
     env = {
         **os.environ,
         "CI": "1",
-        # npm must never populate a shared checkout or shared cache as part of
-        # an artifact build.
-        "npm_config_cache": str(temporary / "npm-cache"),
+        # 只共享包下载；源码、node_modules 和生成资产仍属于本次固定提交。
+        "npm_config_cache": os.environ.get("npm_config_cache")
+        or str(
+            Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+            / "akashic-build"
+            / "npm"
+        ),
     }
     _run_web_command(["npm", "ci", "--ignore-scripts"], cwd=source, env=env)
     _run_web_command(["npm", "run", "build:dashboard"], cwd=source, env=env)
@@ -497,6 +501,9 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         ]
 
     (output / "core.tar").write_bytes(core)
+    (output / "requirements.lock").write_bytes(
+        git(repository, "show", f"{commit}:docker/host-runtime/requirements.lock")
+    )
     report: dict[str, object] = {
         "schema_version": 2,
         "source_commit": commit,
