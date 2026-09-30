@@ -87,6 +87,8 @@ export function activate(ctx) {
       let catalog = null;
       let query = "";
       let disposeDialog = () => {};
+      let closed = false;
+      let bindingSave = null;
 
       const request = async (path, init) => {
         const response = await ctx.http.request(path, init);
@@ -95,15 +97,22 @@ export function activate(ctx) {
       const reads = createLatestCatalogRead(
         (signal) => request("/api/dashboard/models/catalog", {signal}),
         (nextCatalog) => {
+          if (bindingSave?.saving) return;
+          const settledBinding = bindingSave;
+          bindingSave = null;
           catalog = nextCatalog;
           clearError();
           renderCatalog();
+          if (settledBinding) {
+            if (settledBinding.error) showError(`保存请求未成功确认，当前显示重新核对的实际设置。${settledBinding.error}`);
+            else showNotice(`${settledBinding.label}保存请求已完成，当前显示最新设置；会话固定模型不受影响。`);
+          }
           props.changed?.();
         },
       );
       const load = () => reads.run();
       // 返回设置只读核对目录；弹窗开启后，迟到的后台结果不能替换其依据。
-      const canRefresh = () => !page.querySelector("dialog[open]");
+      const canRefresh = () => !bindingSave?.saving && !page.querySelector("dialog[open]");
       const refreshVisible = () => {
         if (page.getClientRects().length && canRefresh()) report(reads.run(canRefresh));
       };
@@ -113,12 +122,13 @@ export function activate(ctx) {
       visibility.observe(page);
       window.addEventListener("focus", refreshVisible);
       page.addEventListener("close", refreshVisible, true);
+      const sendCommand = (payload) => request("/api/dashboard/models/command", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
       const command = async (payload) => {
-        const receipt = await request("/api/dashboard/models/command", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(payload),
-        });
+        const receipt = await sendCommand(payload);
         try {
           await load();
         } catch (error) {
@@ -134,8 +144,17 @@ export function activate(ctx) {
       }
 
       function showError(reason) {
+        if (closed) return;
         errorMessage.hidden = false;
         errorMessage.textContent = reason instanceof Error ? reason.message : String(reason);
+        if (bindingSave && !bindingSave.saving) {
+          errorMessage.prepend("保存后的设置尚未核对，当前选择暂时保留。 ");
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.textContent = "重新核对";
+          retry.addEventListener("click", () => report(load()));
+          errorMessage.append(" ", retry);
+        }
       }
 
       function showNotice(message) {
@@ -218,6 +237,8 @@ export function activate(ctx) {
       }
 
       function renderBindings(chatModels) {
+        // 搜索或目录刷新不能撤销保存锁，也不能换掉尚未核对的选择。
+        if (bindingSave) return;
         bindings.replaceChildren();
         for (const [role, label, detail] of ROLE_LABELS) {
           const availableModels = modelsForRole(chatModels, role);
@@ -227,7 +248,7 @@ export function activate(ctx) {
             models: availableModels,
             value: catalog.roleBindings[role] ?? "",
             change(modelId) {
-              return command({type: "set_default", expected_revision: catalog.revision, role, model_id: modelId});
+              return sendCommand({type: "set_default", expected_revision: catalog.revision, role, model_id: modelId});
             },
           }));
         }
@@ -238,7 +259,7 @@ export function activate(ctx) {
           models: embeddingModels,
           value: catalog.defaultEmbeddingModelId ?? "",
           change(modelId) {
-            return command({type: "set_default", expected_revision: catalog.revision, role: null, model_id: modelId});
+            return sendCommand({type: "set_default", expected_revision: catalog.revision, role: null, model_id: modelId});
           },
         }));
         const addEmbedding = document.createElement("button");
@@ -250,6 +271,7 @@ export function activate(ctx) {
       }
 
       function openEmbedding(trigger) {
+        if (bindingSave) { showNotice("请先等待模型选择保存或核对完成，再添加向量模型。"); return; }
         disposeDialog();
         const dialog = document.createElement("dialog");
         dialog.className = "settings-scrim";
@@ -413,21 +435,26 @@ export function activate(ctx) {
         feedback.setAttribute("role", "status");
         feedback.setAttribute("aria-live", "polite");
         select.addEventListener("change", async () => {
+          if (bindingSave || closed) return;
           const selected = select.value;
+          const operation = {saving: true, label, error: ""};
+          bindingSave = operation;
+          reads.cancel();
+          clearError();
+          toastRegion.replaceChildren();
           const controls = [...bindings.querySelectorAll("select")];
           controls.forEach((control) => { control.disabled = true; });
           feedback.textContent = "正在保存…";
           try {
             await change(selected);
-            value = selected;
-            feedback.textContent = "已保存";
-            showNotice(`${label}已保存，下次使用系统绑定时生效；会话固定模型不受影响。`);
           } catch (error) {
-            select.value = value;
-            feedback.textContent = `未保存，已恢复原选择。${error instanceof Error ? error.message : String(error)} 请重新选择后重试。`;
-          } finally {
-            controls.forEach((control) => { control.disabled = false; });
+            operation.error = error instanceof Error ? error.message : String(error);
           }
+          if (closed || bindingSave !== operation) return;
+          operation.saving = false;
+          feedback.textContent = "正在核对保存结果…";
+          // 即使 POST 响应丢失，也只读回实际状态，不重发、不宣称已恢复旧选择。
+          await report(load());
         });
         copy.append(feedback);
         row.append(copy, select);
@@ -464,6 +491,7 @@ export function activate(ctx) {
       }
 
       function openProvider(entry, trigger, connection = null, template = null) {
+        if (bindingSave) { showNotice("请先等待模型选择保存或核对完成，再修改连接。"); return; }
         disposeDialog();
         const connectionId = connection?.id ?? `${entry.id}-${randomToken()}`;
         const auth = createDialogAuthOwner((attemptId) => request(
@@ -720,6 +748,7 @@ export function activate(ctx) {
       report(load());
 
       return () => {
+        closed = true;
         visibility.disconnect();
         window.removeEventListener("focus", refreshVisible);
         page.removeEventListener("close", refreshVisible, true);
@@ -796,6 +825,10 @@ export function createLatestCatalogRead(read, apply) {
     close() {
       closed = true;
       active?.abort();
+    },
+    cancel() {
+      active?.abort();
+      active = null;
     },
   };
 }
