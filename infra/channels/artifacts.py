@@ -195,63 +195,6 @@ class ChannelAttachmentArtifactStore:
                 kind,
                 filename,
                 media_type,
-                None,
-                None,
-            )
-        )
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
-
-    async def adopt_file_with_artifact_id(
-        self,
-        source: Path,
-        *,
-        allowed_root: Path,
-        expected_ref: AttachmentRef,
-    ) -> AttachmentRef:
-        """仅在 finalized file 仍等于 durable expected ref 时发布。"""
-
-        if not isinstance(expected_ref, AttachmentRef):
-            raise TypeError("expected_ref 必须是 AttachmentRef")
-
-        result, cancelled = await _complete_critical(
-            asyncio.to_thread(
-                self._adopt_file,
-                source,
-                allowed_root,
-                expected_ref.kind,
-                expected_ref.filename,
-                expected_ref.media_type,
-                expected_ref.artifact_id,
-                expected_ref,
-            )
-        )
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
-
-    async def inspect_file_with_artifact_id(
-        self,
-        source: Path,
-        *,
-        allowed_root: Path,
-        artifact_id: str,
-        kind: AttachmentKind,
-        filename: str | None,
-        media_type: str | None,
-    ) -> AttachmentRef:
-        """在 durable handoff 前冻结将要发布的 exact ref，不写入状态。"""
-
-        result, cancelled = await _complete_critical(
-            asyncio.to_thread(
-                self._inspect_file_ref,
-                source,
-                allowed_root,
-                artifact_id,
-                kind,
-                filename,
-                media_type,
             )
         )
         if cancelled:
@@ -360,23 +303,17 @@ class ChannelAttachmentArtifactStore:
         kind: AttachmentKind,
         filename: str | None,
         media_type: str | None,
-        artifact_id: str | None,
-        expected_ref: AttachmentRef | None,
     ) -> AttachmentRef:
         """两次核对 source identity，并把内容复制进 Core artifact root。"""
 
         source_path, fingerprint = self._inspect_source(source, allowed_root)
         ref = self._ref_from_fingerprint(
             fingerprint,
-            artifact_id=uuid4().hex if artifact_id is None else artifact_id,
+            artifact_id=uuid4().hex,
             kind=kind,
             filename=filename,
             media_type=media_type,
         )
-        if expected_ref is not None and ref != expected_ref:
-            raise ValueError(
-                f"attachment source 与 durable ref 不一致: {expected_ref.artifact_id}"
-            )
 
         def copy_source(target_fd: int) -> None:
             source_fd = os.open(
@@ -405,26 +342,6 @@ class ChannelAttachmentArtifactStore:
                 os.close(source_fd)
 
         return self._publish_content(ref, copy_source)
-
-    def _inspect_file_ref(
-        self,
-        source: Path,
-        allowed_root: Path,
-        artifact_id: str,
-        kind: AttachmentKind,
-        filename: str | None,
-        media_type: str | None,
-    ) -> AttachmentRef:
-        """核对来源文件并构造发布时应保持不变的 ref。"""
-
-        _source_path, fingerprint = self._inspect_source(source, allowed_root)
-        return self._ref_from_fingerprint(
-            fingerprint,
-            artifact_id=artifact_id,
-            kind=kind,
-            filename=filename,
-            media_type=media_type,
-        )
 
     @staticmethod
     def _ref_from_fingerprint(
