@@ -346,6 +346,14 @@ MEMORY/SELF。插件失败不回滚 ledger；重放相同 receipt 必须幂等�
 通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt
 orphan recovery 可以清除 prepare。
 
+### CTX-008 长结果折叠保留原文与首次判断机会
+
+长工具结果的折叠由普通插件管理，只改变模型视图。原始结果必须完整保留，模型先完整收到该内容，
+有效响应提交后才允许收起；失败、估算和未提交响应不算完整展示。回读可以取全文或准确范围，
+回读结果同样遵守先展示后折叠，短内容无需收起。折叠前必须具有当前会话可用的回读工具，
+不得重跑原工具来恢复证据、跨会话读取或把部分结果声称为全文。首次全文超出容量时明确失败，
+不伪造已读回执。详见 [0081](decisions/0081-content-views-keep-original-messages.md)。
+
 ### SES-001 Message 追加按事实原子提交
 
 每次 Message 追加必须在一个事务中完成身份、schema、幂等核对、序号分配和 INSERT。Input 在接纳时提交；Output、ToolCall、ToolResult 和 Control 在各自事实成立时追加，不等待一个最终 transcript 批次。跨 Message 的业务 receipt 可以与其 owner 状态按已声明的事务边界提交，但不能用批量提交掩盖已接纳 Input 的缺失。
