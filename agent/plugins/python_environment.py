@@ -152,6 +152,16 @@ class PythonEnvironments:
             raise FileNotFoundError("Python 环境归档缺失")
         return PluginArchive(self._archive_path, create=False)
 
+    def prepared(self, code_id: str, runtime: StaticPythonRuntime, *, wheel_digest: str = "") -> str:
+        """Read an already prepared distribution environment; never install at load."""
+        value = _environment_input(code_id, runtime, wheel_digest)
+        pointer = self.path / (hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest() + ".ref")
+        if pointer.is_symlink():
+            raise ValueError("Python 环境引用不能是符号链接")
+        ref = pointer.read_text()
+        self.open(ref)
+        return ref
+
     def prepare(
         self, code: Path, runtime: StaticPythonRuntime, *,
         offline_wheels: OfflineWheels | None = None,
@@ -176,13 +186,7 @@ class PythonEnvironments:
         if offline_wheels is not None:
             _check_offline_requirements(source / runtime.requirements)
             _ = _verify_offline_wheels(offline_wheels)
-        input_value: dict[str, object] = {
-            "code": code_id,
-            "base": {"executable": str(executable)},
-            "runtime_root": runtime.runtime_root,
-        }
-        if wheel_digest is not None:
-            input_value["wheel_tree_sha256"] = wheel_digest
+        input_value = _environment_input(code_id, runtime, wheel_digest or "")
         input_id = hashlib.sha256(
             json.dumps(input_value, sort_keys=True).encode()
         ).hexdigest()
@@ -296,6 +300,17 @@ class PythonEnvironments:
         if root.is_symlink() or not root.is_dir():
             raise FileNotFoundError(f"Python 环境目录缺失或是符号链接: {root}")
         return root
+
+
+def _environment_input(code_id: str, runtime: StaticPythonRuntime, wheel_digest: str) -> dict[str, object]:
+    value: dict[str, object] = {
+        "code": code_id,
+        "base": {"executable": str((Path(sys.base_prefix) / "bin" / f"python{sys.version_info.major}.{sys.version_info.minor}").resolve(strict=True))},
+        "runtime_root": runtime.runtime_root,
+    }
+    if wheel_digest:
+        value["wheel_tree_sha256"] = wheel_digest
+    return value
 
 
 def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[str, str]:

@@ -90,6 +90,8 @@ Host Bridge 的 Shell 会提供固定版本启动器 `AKASHIC_RUNTIME_CLI`，并
 3. 收到 `accepted` 后结束本次管理调用，再用 `plugin-status` 观察。宿主先从选择中移除目标，再排空该 Fiber、硬依赖消费者及旧的 draining owner，最后移除安装代码和 manifest 条目。不要在同一调用里反复卸载或忙等自身排空。
 4. 确认最终状态：目标不在 selection，`installed=false`、`cache_exists=false`、无 active generation、`draining_generations=[]`、无 cleanup pending。若状态列表已无目标，也要核对安装记录/cache 缺席、无相关进行中或失败 operation，以及原 plugin-data 仍在。仅 `enabled=false`、命令 exit 0 或 `accepted` 均不是完成。
 
+内置分发代码（status 的 `selected_distribution_source` 有值）执行卸载时只停用：最终核对 `enabled=false`、不在 selection、无 active/draining owner；镜像、历史 cache 和数据保留，不要求 `cache_exists=false`。`distribution_available` 只表示镜像提供该 ID，不证明当前选中来源；同 ID 外置覆盖仍按外置流程删除 cache，但保留 false，避免重新启用镜像默认。普通外置插件仍按上面的完整卸载判据核对。
+
 保留 `<workspace>/plugin-data/<plugin>-<marketplace>/`、消息、附件、凭据及历史归档/回执；正常卸载不删除这些数据。需要删除数据必须另有明确授权、恢复点和该数据 owner 的入口。
 
 如果 operation 报错、截止时间到期、连接丢失或 cache 仍在，报告实际残留和原错误。查询不是重试；只有原因已处理且明确授权后才重新提交。进程重启不自动续跑未完成的卸载，不用手动删目录或修改 manifest/selection 掩盖失败。

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -414,6 +415,10 @@ def _bundle_plugin(
         identity = git(package, "rev-parse", "HEAD").decode().strip()
         bundle = output / f"{manifest.name}.bundle"
         git(package, "bundle", "create", str(bundle.resolve()), "HEAD", "source")
+        # The distribution supplies ordinary immutable sources as well as the
+        # standalone Git bundles. Deployments need not reinstall them into cache.
+        source = output / "sources" / manifest.name
+        shutil.copytree(package, source, ignore=shutil.ignore_patterns(".git"))
         return {
             "name": manifest.name,
             "source_commit": commit,

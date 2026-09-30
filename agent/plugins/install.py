@@ -101,6 +101,7 @@ def finalize_uninstall_plugin(
     *,
     workspace: Path,
     plugins_home: Path | None = None,
+    keep_disabled_choice: bool = False,
 ) -> tuple[Path, Path]:
     """删除已禁用插件的代码和清单，并保留 workspace plugin-data。"""
 
@@ -110,7 +111,8 @@ def finalize_uninstall_plugin(
     data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
     if cache_path.exists():
         shutil.rmtree(cache_path)
-    _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
+    if not keep_disabled_choice:
+        _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
     return cache_path, data_path
 
 

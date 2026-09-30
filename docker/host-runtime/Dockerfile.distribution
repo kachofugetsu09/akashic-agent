@@ -45,6 +45,7 @@ WORKDIR /opt/akashic
 COPY core.tar /opt/akashic/distribution/core.tar
 COPY distribution.json /opt/akashic/distribution/distribution.json
 COPY profiles /opt/akashic/distribution/profiles
+COPY sources /opt/akashic/distribution/sources
 COPY *.bundle /opt/akashic/distribution/
 COPY Dockerfile.distribution /opt/akashic/distribution/Dockerfile.distribution
 COPY distribution-entrypoint.sh /opt/akashic/distribution/distribution-entrypoint.sh
@@ -69,6 +70,8 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/python -c "import akashic_sdk; assert akashic_sdk.__file__.startswith('/opt/akashic/source/sdk/python/src/')"
 
 RUN mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
+    && /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py prepare-wheels \
+        --distribution /opt/akashic/distribution \
     && /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
         --distribution /opt/akashic/distribution \
         --profile /opt/akashic/distribution/profiles/default.json \
@@ -92,5 +95,6 @@ RUN mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugi
 LABEL org.opencontainers.image.revision="${AKASHIC_SOURCE_COMMIT}"
 
 USER huashen:huashen
+ENV AKASHIC_PLUGIN_DISTRIBUTION=/opt/akashic/distribution
 ENTRYPOINT ["/opt/akashic/distribution-entrypoint.sh"]
 CMD ["supervise"]

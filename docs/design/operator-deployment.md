@@ -28,8 +28,8 @@
 备份、迁移和插件更新是三个独立选择：
 
 - 无 `--backup`：不创建部署备份。既有备份和历史记录保留。
-- 无 `--plan`：只换 Core/Bridge，保留所有插件输入；发现待迁移则在预检中失败。
-- 清单 `targets: []`：不更新插件。初装 profile 只用于首次安装，不是升级范围。
+- 无 `--plan`：更新 Core/Bridge 与 distribution 拥有的内置代码，保留外置插件的原选择；发现待迁移则在预检中失败。
+- 清单 `targets: []`：不额外更新外置插件；内置组合按 [0082](../decisions/0082-distribution-owned-plugin-composition.md) 跟随新 distribution，保留用户选择。
 - 清单 `migrations: []`：不允许执行待迁移。批准列表必须覆盖全部实际 pending ID；已成功 ID 不重跑，未知 ID 拒绝。
 - `--backup` 不批准迁移；批准迁移也不隐式开启全状态备份。
 
@@ -45,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/s
   | sh -s -- --yes
 ```
 
-这是 Core/Bridge 更新，不做部署备份、不自动更新插件。需要固定版本或备份时：
+这会更新 Core/Bridge 和内置代码，保留外置版本，不自动备份或执行数据迁移。需要固定版本或备份时：
 
 ```bash
 sh scripts/install-akashic.sh --commit <40位SHA> --backup --yes
@@ -89,8 +89,8 @@ cat /srv/data/services/akashic/state/workspace/runtime/plugin-stable.json
 ```
 
 例中的插件 ID 必须换成当前已选择且启用的真实 ID。`bundled: true` 从**目标镜像的 distribution**
-按插件名取固定 bundle；外部 bundle 必须含指定 commit。没有列出的插件连同顺序、配置输入保持原选择。
-这个发布入口不负责添加、删除或重命名插件；这些操作仍由现有插件控制面负责。
+按插件名取固定 bundle；外部 bundle 必须含指定 commit。没有列出的外置插件连同顺序、配置输入保持原选择；内置代码自动采用目标分发。显式 bundled target 可让已批准迁移产生的配置进入新 descriptor。
+内置分发缺少的代码退出加载，数据与历史材料保留；新默认项得到一次初始选择。外置插件的添加、删除和重命名仍由插件控制面负责。
 
 准备外部 bundle 后核对哈希：
 

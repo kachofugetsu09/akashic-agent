@@ -165,6 +165,10 @@ class JournalPreflight:
         """Read one exact row from the checked, read-only journal snapshot."""
         return update_rollback.read(self._copy, update_id)
 
+    def has_pending_config_updates(self) -> bool:
+        """A selected config must be recovered before an offline code publication."""
+        return self._copy.execute("SELECT 1 FROM config_updates WHERE state='accepted' LIMIT 1").fetchone() is not None
+
     def backup_to(self, path: Path) -> None:
         """Save the checked snapshot without opening the live journal in SQLite."""
         saved = sqlite3.connect(path)

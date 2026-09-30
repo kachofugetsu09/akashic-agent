@@ -9,6 +9,33 @@ import json
 from pathlib import Path
 import platform
 import re
+import subprocess
+import sys
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+
+def prepare_wheels(distribution: Path) -> None:
+    """Resolve dependency wheels with the target Python while building the image."""
+    from agent.plugins.python_environment import wheel_tree_sha256
+    from agent.plugins.static_manifest import load_static_plugin_manifest
+
+    report = _report(distribution / "distribution.json")
+    for row in report["plugins"]:
+        source = distribution / "sources" / row["name"]
+        manifest = load_static_plugin_manifest(source)
+        requirements = [source / runtime.requirements for runtime in manifest.python
+                        if (source / runtime.requirements).read_text().strip()]
+        if not requirements:
+            continue
+        wheels = distribution / "wheels" / row["name"]
+        wheels.mkdir(parents=True, exist_ok=True)
+        for requirement in requirements:
+            subprocess.run([sys.executable, "-m", "pip", "download", "--only-binary=:all:",
+                            "--dest", str(wheels), "-r", str(requirement)], check=True)
+        (wheels.parent / f'{row["name"]}.sha256').write_text(wheel_tree_sha256(wheels) + "\n")
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -99,6 +126,8 @@ def check_runtime_info(path: Path, *, source_commit: str, source_tree: str) -> N
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    wheels = subparsers.add_parser("prepare-wheels")
+    wheels.add_argument("--distribution", type=Path, required=True)
     write = subparsers.add_parser("write")
     write.add_argument("--distribution", type=Path, required=True)
     write.add_argument("--output", type=Path, required=True)
@@ -113,7 +142,9 @@ def main() -> None:
     check.add_argument("--expected-commit", required=True)
     check.add_argument("--expected-tree", required=True)
     args = parser.parse_args()
-    if args.command == "write":
+    if args.command == "prepare-wheels":
+        prepare_wheels(args.distribution.resolve())
+    elif args.command == "write":
         write_runtime_info(
             distribution=args.distribution,
             output=args.output,
