@@ -123,9 +123,12 @@ class Subagents:
             if await self.outcome(reader) is None:
                 async with self.ctx.require(BINDINGS).open(request.program_binding, SUBAGENT_PROGRAM) as (program, _):
                     _ = await program(task, reader, request)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
             if await self.outcome(reader) is None:
-                raise
+                if not task.active:
+                    raise
+                # 程序自行取消没有撤销 Task，不能伪造用户 pause 或取消父等待者。
+                self._control(request, "failure", "子任务程序意外取消：" + (str(error) or type(error).__name__))
         except Exception as error:
             if task.active:
                 self._control(request, "failure", str(error) or type(error).__name__)
