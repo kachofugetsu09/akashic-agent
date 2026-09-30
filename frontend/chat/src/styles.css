@@ -2503,7 +2503,9 @@ form.composer:focus-within [data-slot="input-group"] {
 /* shadcn overlay 进出动画（tailwindcss-animate）在 reduced-motion 下归零。 */
 @media (prefers-reduced-motion: reduce) {
   .animate-in,
-  .animate-out {
+  .animate-out,
+  [class~="data-[state=open]:animate-in"],
+  [class~="data-[state=closed]:animate-out"] {
     animation-duration: 0ms !important;
     animation-delay: 0ms !important;
   }
