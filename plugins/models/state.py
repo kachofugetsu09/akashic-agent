@@ -2106,7 +2106,8 @@ def _driver_connection_descriptor(
 
 def _retry_budget(config: Mapping[str, Any]) -> int:
     """连接配置中的 Models 重试预算：max_attempts 显式优先，旧 max_retries
-    迁移为 N+1 次 attempt（N 次重试 = 首次 + N 次重试）；非法值直接报错。"""
+    迁移为 N+1 次 attempt（N 次重试 = 首次 + N 次重试）；
+    未配置时最多 3 次尝试，非法值直接报错。"""
     configured = config.get("max_attempts")
     if configured is not None:
         if not isinstance(configured, int) or isinstance(configured, bool) or configured < 1:
@@ -2114,7 +2115,7 @@ def _retry_budget(config: Mapping[str, Any]) -> int:
         return configured
     legacy = config.get("max_retries")
     if legacy is None:
-        return 1
+        return 3
     if not isinstance(legacy, int) or isinstance(legacy, bool) or legacy < 0:
         raise ValueError("max_retries must be a non-negative integer")
     return legacy + 1

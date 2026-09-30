@@ -52,11 +52,15 @@ def active_scope() -> Any | None:
     return bound[0]
 
 
-def _require_active_scope(capability: str) -> Any:
+@asynccontextmanager
+async def _request_scope(opener: RequestScopeOpener) -> AsyncIterator[Any]:
+    """复用本 task 的请求 scope；缺席时只为本次调用取得 scope。"""
     scope = active_scope()
-    if scope is None:
-        raise RuntimeError(f"akashic {capability} 必须在 request scope 内读取")
-    return scope
+    if scope is not None:
+        yield scope
+    else:
+        async with open_request_scope(opener) as scope:
+            yield scope
 
 
 class ScopedMessageDisplay:
@@ -66,11 +70,7 @@ class ScopedMessageDisplay:
         self._opener = opener
 
     async def __call__(self, page: Any, *, display_only: bool) -> list[dict[str, object]]:
-        scope = active_scope()
-        if scope is not None:
-            reader = cast(MessageDisplayReader, scope.require(MESSAGE_DISPLAY))
-            return await reader(page, display_only=display_only)
-        async with open_request_scope(self._opener) as scope:
+        async with _request_scope(self._opener) as scope:
             reader = cast(MessageDisplayReader, scope.require(MESSAGE_DISPLAY))
             return await reader(page, display_only=display_only)
 
@@ -84,10 +84,7 @@ class ScopedPluginUiProvider:
     async def catalog(self) -> dict[str, object]:
         """Read the provider while holding the current client request scope."""
 
-        scope = active_scope()
-        if scope is not None:
-            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).catalog()
-        async with open_request_scope(self._opener) as scope:
+        async with _request_scope(self._opener) as scope:
             return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).catalog()
 
     async def asset(
@@ -97,12 +94,7 @@ class ScopedPluginUiProvider:
         kind: str,
         sha256: str,
     ) -> dict[str, object]:
-        scope = active_scope()
-        if scope is not None:
-            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).asset(
-                plugin_id, plugin_revision, kind, sha256,
-            )
-        async with open_request_scope(self._opener) as scope:
+        async with _request_scope(self._opener) as scope:
             return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).asset(
                 plugin_id, plugin_revision, kind, sha256,
             )
@@ -117,18 +109,7 @@ class ScopedPluginUiProvider:
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
-        scope = active_scope()
-        if scope is not None:
-            provider = cast(PluginUiProvider, scope.require(PLUGIN_UI))
-            return await provider.query(
-                plugin_id,
-                plugin_revision,
-                method,
-                payload,
-                session_id=session_id,
-                turn_id=turn_id,
-            )
-        async with open_request_scope(self._opener) as scope:
+        async with _request_scope(self._opener) as scope:
             provider = cast(PluginUiProvider, scope.require(PLUGIN_UI))
             return await provider.query(
                 plugin_id,
@@ -147,17 +128,11 @@ class ScopedWebUiProvider:
         self._opener = opener
 
     async def bootstrap(self) -> bytes:
-        scope = active_scope()
-        if scope is not None:
-            return await cast(WebUiProvider, scope.require(WEB_UI)).bootstrap()
-        async with open_request_scope(self._opener) as scope:
+        async with _request_scope(self._opener) as scope:
             return await cast(WebUiProvider, scope.require(WEB_UI)).bootstrap()
 
     async def state(self) -> dict[str, str | bool]:
-        scope = active_scope()
-        if scope is not None:
-            return await cast(WebUiProvider, scope.require(WEB_UI)).state()
-        async with open_request_scope(self._opener) as scope:
+        async with _request_scope(self._opener) as scope:
             return await cast(WebUiProvider, scope.require(WEB_UI)).state()
 
 
