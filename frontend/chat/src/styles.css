@@ -372,6 +372,20 @@ input {
   border-block-start: 1px solid var(--chat-line);
 }
 
+/* 侧栏只有一条左竖线：rail-inline + 10px。分组标题、目的地、底部动作都落到它。 */
+.chat-sidebar--entry .conversation-navigation__heading--section {
+  padding-inline: calc(var(--chat-rail-inline) + 10px);
+}
+
+.chat-sidebar--entry .conversation-destinations,
+.chat-sidebar--entry .conversation-destinations.featured {
+  padding-inline: var(--chat-rail-inline);
+}
+
+.chat-sidebar--entry .conversation-navigation__action {
+  padding-inline: 10px;
+}
+
 .chat-sidebar--entry .conversation-session {
   min-height: 34px;
   border-radius: 7px;
@@ -785,6 +799,7 @@ input {
   grid-template-columns: 24px minmax(0, 1fr) 20px;
   gap: 10px;
   padding-block: 6px;
+  padding-inline: 10px;
 }
 
 .chat-sidebar--entry .conversation-destination small {
@@ -817,6 +832,7 @@ input {
 .chat-sidebar .conversation-navigation__header {
   min-height: auto;
   padding-top: 14px;
+  padding-inline-start: calc(var(--chat-rail-inline) + 10px);
 }
 
 .chat-sidebar > .conversation-navigation {
@@ -993,9 +1009,12 @@ input {
   min-height: 0;
   flex-direction: column;
   background: transparent;
-  /* 正文与输入框共用阅读边界，宽屏保留约 48 个汉字的行长。 */
+  /* 阅读列与输入卡的共同几何，唯一 owner 在这里；frontend/design.md §布局与对齐。 */
   --chat-column: 52rem;
   --chat-dock-inset: 0.75rem;
+  --chat-bubble-max: 34rem;
+  /* 输入卡边框外缘到输入文字的距离：1px 边框 + 15px padding。 */
+  --composer-text-inset: 16px;
   --composer-compact-h: 44px;
   --composer-compact-radius: calc(var(--composer-compact-h) / 2);
   --composer-expanded-radius: 14px;
@@ -1038,7 +1057,7 @@ input {
   align-items: center;
   gap: 2px;
   padding-block: 6px;
-  padding-inline: 24px;
+  padding-inline: max(24px, env(safe-area-inset-left, 0px)) max(24px, env(safe-area-inset-right, 0px));
   border-block-end: 1px solid var(--chat-line);
 }
 
@@ -1094,6 +1113,13 @@ input {
   padding-bottom: 0;
 }
 
+/* use-stick-to-bottom 给滚动区写了内联 scrollbar-gutter: stable both-edges，
+   会把消息列的百分比基准弄得比 composer 窄两条滚动条宽，两侧竖线因此错位。
+   回到默认 gutter，列几何只由 --chat-column 与 --chat-dock-inset 决定。 */
+.conversation-scroll {
+  scrollbar-gutter: auto !important;
+}
+
 .conversation-content {
   width: min(100%, var(--chat-column));
   margin: 0;
@@ -1133,6 +1159,9 @@ input {
 }
 
 .desktop-scroll-return {
+  /* 对阅读列居中，而不是对整个 chat-main 几何居中。 */
+  left: calc(max(0px, (100% - var(--chat-column)) / 4) + min(100%, var(--chat-column)) / 2);
+  translate: -50% 0;
   bottom: calc(
     var(--composer-compact-h)
     + var(--composer-dock-gap)
@@ -1294,7 +1323,8 @@ input {
   overflow: hidden;
   border: 1px solid var(--ak-rule-default);
   border-radius: var(--composer-compact-radius);
-  padding: 4px 4px 4px 14px;
+  /* 左侧 15px + 1px 边框 = --composer-text-inset，输入文字落在阅读竖线上。 */
+  padding: 4px 4px 4px 15px;
   background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: none;
   /* Focus only changes border-color — never padding/radius/height. */
@@ -1308,16 +1338,16 @@ input {
   min-height: var(--composer-compact-h);
   max-height: var(--composer-compact-h);
   border-radius: var(--composer-compact-radius);
-  padding: 4px 4px 4px 14px;
+  padding: 4px 4px 4px 15px;
 }
 
 .composer.is-expanded {
   height: auto;
   min-height: var(--composer-compact-h);
   max-height: none;
-  /* 稳定的编辑表面，文字与操作分行。 */
+  /* 稳定的编辑表面，文字与操作分行；13px + 1px 边框 + textarea 2px 同样落到 text-inset。 */
   border-radius: var(--composer-expanded-radius);
-  padding: 12px;
+  padding: 12px 12px 12px 13px;
 }
 
 .composer:focus-within {
@@ -1575,9 +1605,9 @@ form.composer:focus-within [data-slot="input-group"] {
   justify-content: flex-start;
   gap: 0.25rem;
   min-height: 0;
-  /* 与编辑区文字对齐。 */
+  /* 与编辑区文字对齐：wrap 左缘 + --composer-text-inset。 */
   margin: 0;
-  padding-inline-start: 16px;
+  padding-inline-start: var(--composer-text-inset, 16px);
   color: color-mix(in oklch, var(--chat-faint, var(--ak-ink-muted)) 78%, transparent);
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.625rem;
@@ -1637,7 +1667,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
   .conversation-heading {
     gap: 2px;
-    padding-inline: 8px 16px;
+    padding-inline: max(8px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
   }
 
   .compact-navigation-trigger {
@@ -1690,6 +1720,7 @@ form.composer:focus-within [data-slot="input-group"] {
     border-inline-end: 1px solid var(--chat-line);
     border-radius: 0 16px 16px 0;
     padding: 0;
+    padding-inline-start: env(safe-area-inset-left, 0px);
     --chat-ink: var(--ak-ink-primary);
     --chat-muted: var(--ak-ink-secondary);
     --chat-faint: var(--ak-ink-muted);
@@ -1716,16 +1747,12 @@ form.composer:focus-within [data-slot="input-group"] {
     border: 0;
   }
 
+  .chat-main {
+    --chat-dock-inset: 1.125rem;
+  }
+
   .chat-main .agent-content {
     font-size: var(--chat-type-body);
-  }
-
-  .conversation-content {
-    padding-inline: 1.125rem;
-  }
-
-  .composer-wrap {
-    inset-inline: 1.125rem;
   }
 
   .user-bubble {
@@ -2438,15 +2465,28 @@ form.composer:focus-within [data-slot="input-group"] {
 .chat-main .agent-content h3 { font-size: 1.025rem; }
 .chat-main .agent-content h4 { font-size: 0.875rem; }
 .chat-main .composer-wrap {
-  inset-inline-start: max(var(--chat-dock-inset), calc((100% - var(--chat-column)) / 4 + var(--chat-dock-inset)));
+  /* 宽屏：输入卡以阅读列为中心、两侧各宽出 text-inset，输入文字与消息正文共用一条左竖线。 */
+  inset-inline-start: max(
+    6px,
+    calc(max(0px, (100% - var(--chat-column)) / 4) + var(--chat-dock-inset) - var(--composer-text-inset))
+  );
   inset-inline-end: auto;
-  inline-size: min(calc(100% - 2 * var(--chat-dock-inset)), calc(var(--chat-column) - 2 * var(--chat-dock-inset)));
+  inline-size: min(
+    calc(100% - 12px),
+    calc(var(--chat-column) - 2 * var(--chat-dock-inset) + 2 * var(--composer-text-inset))
+  );
 }
 @media (max-width: 820px) {
   .chat-sidebar__search input { font-size: 1rem; }
   .chat-main { --composer-compact-h: 56px; }
   .chat-main .composer { --composer-control-size: 44px; }
   .chat-main .composer textarea { font-size: 1rem; }
+  /* 窄屏：输入卡左右缘即阅读边界，卡内文字有自己的 inset。
+     本条必须位于上方 .chat-main .composer-wrap 宽屏规则之后，同特异性靠顺序生效。 */
+  .chat-main .composer-wrap {
+    inset-inline: var(--chat-dock-inset);
+    inline-size: auto;
+  }
 }
 
 /* 手机宽度上的输入卡。几何来自 DeepSeek 输入卡（22px 圆角、文字在上、工具行在下、
@@ -2464,7 +2504,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
   .conversation-heading {
     min-block-size: 52px;
-    padding-inline: 6px 16px;
+    padding-inline: max(6px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
   }
 
   .compact-navigation-trigger {
@@ -2472,17 +2512,8 @@ form.composer:focus-within [data-slot="input-group"] {
     height: 40px;
   }
 
-  .conversation-content {
-    padding-inline: 16px;
-  }
-
   .home-state {
     padding: 24px 16px calc(11rem + env(safe-area-inset-bottom, 0px));
-  }
-
-  .chat-main .composer-wrap {
-    inset-inline: 16px;
-    inline-size: auto;
   }
 
   .chat-main .composer.is-compact,
@@ -2650,7 +2681,7 @@ form.composer:focus-within [data-slot="input-group"] {
   :root[data-embedded-shell="true"] .chat-main { overflow-y: auto; }
   .chat-main .conversation { flex: none; block-size: max(120px, 60dvh); }
   .chat-main .composer-wrap,
-  .chat-main .composer-wrap.home { position: relative; inset: auto; inline-size: auto; flex: none; margin: 8px 16px; }
+  .chat-main .composer-wrap.home { position: relative; inset: auto; inline-size: auto; flex: none; margin: 8px var(--chat-dock-inset); }
   .chat-main .composer-wrap::before { display: none; }
   .chat-main .home-state { padding: 16px; }
   .model-capsule--compact .model-capsule__panel {

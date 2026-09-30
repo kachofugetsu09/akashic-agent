@@ -54,6 +54,7 @@ interface SessionTail {
 }
 
 const SESSION_TAIL_CACHE_LIMIT = 8;
+const RECONNECT_MAX_DELAY_MS = 30_000;
 // 新鲜快照激活时不再重复拉尾页；超过窗口或实时跟随断档仍回到权威分页。
 const SESSION_TAIL_FRESH_MS = 30_000;
 
@@ -93,6 +94,7 @@ export function useDesktopChatController() {
     },
   );
   const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
+  const [timelineRefresh, setTimelineRefresh] = useState(0);
   const [timelineMessages, setTimelineState] = useState<TimelineMessage[]>([]);
   const timelineRef = useRef<TimelineMessage[]>([]);
   const setTimelineMessages = useCallback((next: TimelineMessage[]) => {
@@ -161,7 +163,7 @@ export function useDesktopChatController() {
   const connectionTaskRef = useRef<Fiber.RuntimeFiber<void> | null>(null);
   const connectRef = useRef<(() => WebSocket) | null>(null);
   const [reconnect] = useState(() => Effect.runSync(Schedule.driver(Schedule.exponential("1 second").pipe(
-    Schedule.modifyDelay((_, delay) => Math.min(Duration.toMillis(delay), 30_000)),
+    Schedule.modifyDelay((_, delay) => Math.min(Duration.toMillis(delay), RECONNECT_MAX_DELAY_MS)),
     Schedule.jitteredWith({ min: 0, max: 1 }),
     Schedule.intersect(Schedule.recurs(12)),
   ))));
@@ -286,6 +288,7 @@ export function useDesktopChatController() {
       streamStore.clear();
       setMessages([]);
       setTimelineMessages(page.items);
+      setTimelineRefresh((revision) => revision + 1);
       setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length,
         page.items, replyAvailableRef.current));
       followAfterRef.current = page.throughSeq;
@@ -424,6 +427,7 @@ export function useDesktopChatController() {
   const connect = useCallback(() => {
     if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) return socketRef.current;
     closeConnection();
+    Effect.runSync(reconnect.reset);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const url = `${protocol}://${window.location.host}/ws`;
     const first = new WebSocket(url);
@@ -432,6 +436,7 @@ export function useDesktopChatController() {
       let socket = first;
       while (true) {
         const current = socket;
+        let openedAt: number | null = null;
         const event = yield* Effect.async<CloseEvent>((resume) => {
           current.onmessage = (event) => {
             if (socketRef.current !== current) return;
@@ -441,7 +446,9 @@ export function useDesktopChatController() {
               const frame = readMessageLogFrame(value);
               if (frame) {
                 if (frame.session_id !== activeSessionRef.current) return;
-                if (frame.type === "messages.appended") {
+                if (frame.type === "session.following") {
+                  setTimelineRefresh((revision) => revision + 1);
+                } else if (frame.type === "messages.appended") {
                   if (frame.after_seq !== followAfterRef.current) throw new Error("实时消息游标不连续，请重新连接");
                   const merged = mergeTimelineMessages(timelineRef.current, frame.items);
                   setTimelineMessages(merged);
@@ -471,7 +478,7 @@ export function useDesktopChatController() {
           };
           current.onopen = () => {
             if (socketRef.current !== current) return;
-            Effect.runSync(reconnect.reset);
+            openedAt = performance.now();
             setConnectionError("");
             console.info("[chat-ui] ws connected", current.url);
             const sessionId = activeSessionRef.current;
@@ -481,7 +488,13 @@ export function useDesktopChatController() {
             }
           };
           current.onerror = () => current.close();
-          current.onclose = (event) => resume(Effect.succeed(event));
+          current.onclose = (event) => {
+            // 短连仍属于同一次中断，不能凭握手成功刷新退避和预算。
+            if (openedAt !== null && performance.now() - openedAt >= RECONNECT_MAX_DELAY_MS) {
+              Effect.runSync(reconnect.reset);
+            }
+            resume(Effect.succeed(event));
+          };
         }).pipe(Effect.ensuring(Effect.sync(() => {
           current.onmessage = current.onopen = current.onerror = current.onclose = null;
           if (socketRef.current === current) socketRef.current = null;
@@ -872,7 +885,7 @@ export function useDesktopChatController() {
   }, [closeConnection, connect, loadMessagesSafely, loadModels, loadSessionsSafely, reportError, setReplyAvailable, shellState?.chatReady]);
 
   return {
-    surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
+    surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     canSend, modelProblem, modelsPhase, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,

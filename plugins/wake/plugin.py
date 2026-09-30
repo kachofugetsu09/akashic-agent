@@ -188,8 +188,9 @@ async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     from .state import WakeState
     from .source import Source
+    from core.common.file_io import run_file_io
     state = WakeState(ctx.data_root / "wake.sqlite3")
-    state.initialize()
+    await run_file_io(state.initialize)
     catalog = ctx.require(MESSAGE_CATALOG)
     source = Source(ctx, state)
     history: list[Callable[[str, str], Mapping[str, object] | None] | None] = [None]

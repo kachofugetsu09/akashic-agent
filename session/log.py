@@ -806,6 +806,16 @@ class MessageReader:
             ).fetchone()
         return None if row is None else self._log._decode(row)
 
+    def latest_control(self, source: str, *, through_seq: int) -> Message | None:
+        """读取固定前缀内最后一条同来源 Control，不解码较早的正文。"""
+        with self._log._lock:
+            row = self._log._connection.execute(
+                "SELECT * FROM messages WHERE session_key=? AND source=? AND seq<=? "
+                "AND json_extract(body,'$.kind')='control' ORDER BY seq DESC LIMIT 1",
+                (self._session_id, source, through_seq),
+            ).fetchone()
+        return None if row is None else self._log._decode(row)
+
     def scan(
         self, consume: Callable[[Iterable[Message]], _T], *, after_seq: int = -1,
         through_seq: int | None = None, source: str | None = None,

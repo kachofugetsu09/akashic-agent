@@ -4,8 +4,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
-import hashlib
-import json
 from typing import cast
 
 from agent.plugin_composition.bindings import Bindings
@@ -17,7 +15,7 @@ from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .application.cycle import MemoryCycle
 from .infrastructure.consumption import Consumption
 from .projection import input_features
-from .recalls import ContextSource, RecallRecords, query_memory, render_materials
+from .recalls import ContextSource, RecallRecords, context_identity, query_memory, render_materials
 from .recall_tool import tool_references
 
 MaterialData = Mapping[str, object]
@@ -136,9 +134,7 @@ async def prepare_materials(
     material: MaterialData = {}
     if any(learning.text(message).strip() for message in inputs):
         # 同一真实输入使用稳定身份；工具续步、Reminder 和重启只读原记录。
-        identity = "context:" + hashlib.sha256(json.dumps(
-            [session_id, source, inputs[-1].message_id], ensure_ascii=False,
-        ).encode()).hexdigest()
+        identity = context_identity(session_id, source, inputs[-1].message_id)
         recall = await run_memory_job(lambda: records.read(identity))
         if recall is None:
             # 升级前的随机身份仍是实际查询证据；复用同一用户输入后的首次记录。

@@ -767,7 +767,9 @@ async def _consume_stream(
                     )
                     if ready and not tool_seen:
                         await _emit_delta(on_delta, {"content_delta": ready})
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as error:
+        if response_delta_seen:
+            setattr(error, "response_delta_seen", True)
         raise
     except _CallbackError:
         raise
@@ -1031,6 +1033,9 @@ def _usage(raw: Mapping[str, Any]) -> ModelUsage:
             input_tokens = (cache_hit or 0) + (cache_miss or 0)
         if cached is None:
             cached = cache_hit or 0
+    if cached is None:
+        # Kimi 使用顶层命中字段；不覆盖既有字段中的明确零值。
+        cached = _optional_int(raw.get("cached_tokens"))
     cache_write = (
         _optional_int(prompt_details.get("cache_write_tokens"))
         if isinstance(prompt_details, Mapping)

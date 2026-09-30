@@ -47,11 +47,6 @@ from agent.plugin_composition.message_view import MessageDisplayReader, follow_m
 from .services import (
     MessageCatalogPort as MessageCatalog,
     MessageConflict,
-    StreamDeltaReadyEvent as StreamDeltaReady,
-    ToolCallCompletedEvent as ToolCallCompleted,
-    ToolCallStartedEvent as ToolCallStarted,
-    TurnOutputCompletedEvent as TurnOutputCompleted,
-    TurnStartedEvent as TurnStarted,
 )
 
 logger = logging.getLogger(__name__)
@@ -281,9 +276,6 @@ class WebChatChannel:
     @staticmethod
     def _socket_id(websocket: WebSocket) -> str:
         return f"ws-{id(websocket):x}"
-
-    def _connection_count(self, session_key: str) -> int:
-        return len(self._connections.get(session_key, set()))
 
     async def start(self) -> None:
         """Start Web transport state without subscribing to a global event bus.
@@ -1185,76 +1177,6 @@ class WebChatChannel:
             adapter._finish_inbound()
         return session_key
 
-    async def _on_turn_started(self, event: TurnStarted) -> None:
-        if event.channel != self.name:
-            return
-        if not event.turn_id:
-            raise RuntimeError("Web TurnStarted 缺少 Server 权威 turn_id")
-        turn_id = event.turn_id
-        await self._broadcast(event.session_key, {
-            "type": "turn.started",
-            "session_id": event.session_key,
-            "turn_id": turn_id,
-            "control_turn_id": event.control_turn_id or turn_id,
-            "client_message_id": event.client_message_id,
-            "content": event.content,
-        })
-
-    async def _on_stream_delta(self, event: StreamDeltaReady) -> None:
-        if event.channel != self.name:
-            return
-        turn_id = self._event_turn_id(event.turn_id)
-        if event.thinking_delta:
-            await self._broadcast(event.session_key, {
-                "type": "react.thinking.delta",
-                "session_id": event.session_key,
-                "turn_id": turn_id,
-                "delta": event.thinking_delta,
-            })
-        if event.content_delta:
-            await self._broadcast(event.session_key, {
-                "type": "answer.delta",
-                "session_id": event.session_key,
-                "turn_id": turn_id,
-                "delta": event.content_delta,
-            })
-
-    async def _on_tool_call_started(self, event: ToolCallStarted) -> None:
-        if event.channel != self.name:
-            return
-        await self._broadcast(event.session_key, {
-            "type": "react.tool.started",
-            "session_id": event.session_key,
-            "turn_id": self._event_turn_id(event.turn_id),
-            "call_id": event.call_id,
-            "tool_name": event.tool_name,
-            "arguments": event.arguments,
-        })
-
-    async def _on_tool_call_completed(self, event: ToolCallCompleted) -> None:
-        if event.channel != self.name:
-            return
-        await self._broadcast(event.session_key, {
-            "type": "react.tool.completed",
-            "session_id": event.session_key,
-            "turn_id": self._event_turn_id(event.turn_id),
-            "call_id": event.call_id,
-            "tool_name": event.tool_name,
-            "status": event.status,
-            "result_preview": event.result_preview,
-        })
-
-    async def _on_output_completed(self, event: TurnOutputCompleted) -> None:
-        if event.channel != self.name:
-            return
-        turn_id = self._event_turn_id(event.turn_id)
-        await self._broadcast(event.session_key, {
-            "type": "turn.output.completed",
-            "session_id": event.session_key,
-            "turn_id": turn_id,
-            "client_message_id": event.client_message_id,
-        })
-
     async def _add_connection(self, session_key: str, websocket: WebSocket) -> bool:
         """把一个 Web socket 投影到唯一的当前 Session。"""
 
@@ -1385,25 +1307,6 @@ class WebChatChannel:
 
     def _chat_id(self, session_key: str) -> str:
         return session_key[len(self.name) + 1:]
-
-    def _turn_id(self, session_key: str, seed: float) -> str:
-        return f"{session_key}:{seed:.6f}"
-
-    @staticmethod
-    def _event_turn_id(attempt_turn_id: str) -> str:
-        if not attempt_turn_id:
-            raise RuntimeError("Web lifecycle event 缺少 turn_id")
-        return attempt_turn_id
-
-def _reply_source_text(target: dict[str, Any]) -> str:
-    content = str(target["content"])
-    if content.strip():
-        return content
-    media = target.get("media")
-    if isinstance(media, list) and media:
-        return "[附件]"
-    return "[无文字消息]"
-
 
 def _normalize_v3_content(value: str) -> str:
     """把 Web 文本归一化为 Core inbound 允许的无控制字符正文。"""

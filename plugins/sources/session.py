@@ -209,26 +209,26 @@ class SourceSession:
             if existing is not None:
                 if not isinstance(existing.body, Control) or existing.body.action != "resume":
                     raise MessageConflict("重试身份已被其他消息使用")
-                prefix = self._reader.snapshot(through_seq=existing.body.through_seq)
-                inputs = [m for m in prefix if m.source == self._source and isinstance(m.body, Input)]
-                if not inputs or inputs[-1].message_id != input_id:
+                latest = self._reader.latest_input(self._source, through_seq=existing.body.through_seq)
+                if latest is None or latest.message_id != input_id:
                     raise MessageConflict("重试身份已用于另一条输入")
                 return self._controls.append(message_id, existing.body)
 
             # 1. 准入回调内核对当前日志与活动 handle，不存在检查后的写入窗口。
-            messages = [m for m in self._reader.snapshot() if m.source == self._source]
-            inputs = [m for m in messages if isinstance(m.body, Input)]
-            if inputs[-1].message_id != input_id:
+            through = self._reader.head()
+            latest = self._reader.latest_input(self._source, through_seq=through)
+            if latest is None or latest.message_id != input_id:
                 raise MessageConflict("只能重试本来源的最新输入")
+            messages = self._reader.scan(tuple, after_seq=target.seq, through_seq=through, source=self._source)
             if any(
                 isinstance(m.body, Output) and m.body.finish != "continue"
                 or isinstance(m.body, Control) and m.body.action == "abandon"
                 and m.body.through_seq >= target.seq
-                for m in messages if m.seq > target.seq
+                for m in messages
             ):
                 raise MessageConflict("已关闭的输入不能重试")
-            controls = [m.body for m in messages if isinstance(m.body, Control)]
-            if not controls or controls[-1].action not in {"failure", "pause"}:
+            control = self._reader.latest_control(self._source, through_seq=through)
+            if control is None or cast(Control, control.body).action not in {"failure", "pause"}:
                 raise MessageConflict("输入没有等待恢复的失败或暂停")
             if slot.current is not None and slot.current.active:
                 raise MessageConflict("不能重试仍在运行的来源")
@@ -237,7 +237,7 @@ class SourceSession:
                 self._restart_gate.check_open()
 
             # 2. resume 只记录恢复意图；未知外部效果仍由 Tool owner 拒绝自动重跑。
-            head = messages[-1].seq
+            head = messages[-1].seq if messages else target.seq
             return self._changed(self._controls.append(
                 message_id, Control("resume", head), expected_source_head=head,
             ))

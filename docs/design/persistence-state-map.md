@@ -24,6 +24,18 @@ Skill 消费者按当前快照取得该代资产；持久工具绑定另存不�
 没有新增自动 GC、消息修改或 plugin-data 减少协议。历史源码和本次修改前的
 Git archive 是源码恢复点，不代表正式 workspace 已迁移；本任务未操作正式数据。
 
+## 2026-09-30：旧执行与摘要写入源码退役
+
+当前普通执行使用 MessageLog 和 Message/Turn 投影；旧 SessionStore 的 Turn 写入、
+attempt 重放、Session 模型历史投影及 compaction prepare/persist 链已无运行入口，
+本次只删除这些源码。新摘要由 compaction 插件的 `owner_records` 保存。
+
+旧 `turns`、compaction、prepare、消息和附件的 schema 与既有数据全部保留；
+旧摘要读取、来源审计、pending prepare 删除屏障和明确的 orphan release 恢复路径
+仍然保留。下表中的旧写入协议仅描述历史事实，不授权恢复普通写入或清理旧数据。
+本次没有迁移或操作正式 workspace；源码恢复使用修改前 Git 备份，正式数据恢复
+仍需对应 workspace 的一致备份，不能以源码回退代替。
+
 ## 1. 这份地图怎样使用
 
 这份文件不只回答“落了哪些文件”，还回答每类数据怎样增加、怎样原位更新、怎样逻辑失效、什么条件才允许物理减少。它先陈述代码事实，再提出设计意图推断。两者不能混用：
@@ -72,6 +84,13 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 
 代码里存在 `DELETE` 方法，只证明存储层具备能力，不证明普通运行、重构或后台清理拥有调用授权。没有写明物理减少协议的对象，默认不得自动减少。
 
+### 长结果折叠与回读
+
+`content_view` 不增加归档库或 seen 状态。Tools 追加原文或回读位置范围；ReAct 冻结请求的
+来源位置，Models 的成功响应与 Output 一起追加首次展示证据。旧消息、原文、附件和回执不改写，
+无新增物理减少协议。恢复依赖原 sessions.db；具体 owner 与增改减见
+[0081](../decisions/0081-content-views-keep-original-messages.md#持久化失败与恢复)。
+
 ### 3.1 对话与附件
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
@@ -90,7 +109,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | 候选旧执行迁移 `history.record`、`history.turn_input` 与 migration manifest | 迁移 owner 只增完整 raw turns 归档、明确映射的未落 Input、pause 和同事务 receipt | 旧 messages 的身份/正文/source 不变，旧 turns 停写但整表保留；无独立渠道 receipt 的 open 记录不升级来源。已停止的 failed/interrupted/cancelled 旧工具链无领域 receipt 时按 [0061](../decisions/0061-archive-stopped-legacy-executions.md) 完整归档并记录不续跑原因；queued/in_progress 仍停止迁移 | 不减少 messages、turns、附件或向量。原生备份、原行 digest、映射与提交前后完整性检查提供恢复证据；正式 workspace 尚未执行 |
 | 候选新链 `owner_records` 的 compaction `summary:*` 与 `head:*` | compaction 创建只读摘要记录，包含完整消息来源、parent/generation、正文与模型调用出处；摘要与 head 同事务提交 | 只有该 owner 可按 parent CAS 推进 head；摘要只允许完全相同的幂等重放，不覆盖旧 generation | 无自动减少协议；旧 ledger/prepare/receipt 保留。恢复读取原生 SQLite 备份；发布失败整笔回滚。第 08 层候选已接入生成、原始归档读取与 Output 使用引用；旧摘要由 `20260908_01_legacy_summaries` 只增转换当前有效祖先链；version 0 保存完整原行与 digest，不补造模型调用或输出上限。失效旧分支和 prepare/receipt 保留；非空 prepare 拒绝转换。迁移回执 `migration:legacy-summary-v1` 与记录/head 同事务增加且不自动减少；删除失效与正式 workspace 切换仍待验收 |
 | `sessions.db/messages.metadata` | Message writer 随新消息一次 INSERT 普通 JSON 附加信息；Core 检查大小和插件写入归属 | 随正文不可变；同 ID 重放核对完整 metadata，不更新。插件卸载或版本不支持只使解释不可用，字段仍保留；反馈与消费进度归插件自己的记录 | 无自动减少协议，物理减少只随已批准消息管理操作。加列迁移先保存 SQLite 一致备份，核对完整旧行、rowid、外键与 integrity_check；不改旧 body、不搬旧内容块。未接纳新消息时可在维护窗口恢复迁前全库；已经接纳新消息时须保留新库，不能用旧备份覆盖新增事实 |
-| `sessions.db/turns` | 新 turn 先 INSERT 为 queued | 按状态机更新 items、usage、error、final response 和终态；这是同一 turn 的进展，不是改写对话正文 | 当前只有显式 thread/session 删除路径可以减少；是否另设 retention 仍待确认 |
+| 旧 `sessions.db/turns` | 当前普通执行不再写入；Turn 从 Message 投影得到，旧表与数据保留 | 旧状态和 items、usage、error、final response 保留，当前执行不再推进旧状态机 | 当前只有显式 thread/session 删除路径可以减少；是否另设 retention 仍待确认 |
 | FTS 与 `message_embeddings` | 由新消息触发建索引或计算向量 | FTS 可以从正文重建；embedding 迁移属于独立流程。Akasha 确定性重建必须复用 sessions 中已存向量 | 用户撤销/删除原始消息时同步减少，或由独立索引维护流程重建；上下文裁切无权删除 |
 | `uploads/` | 每个新附件写入新的 UUID 文件 | 当前没有生产代码原位改写附件；消息引用决定附件仍然有效 | 消息仍引用时必须保留；当前没有引用计数、级联删除或 GC 协议，因此不得按年龄、当前 prompt 是否使用或代码清理自动删除 |
 | `uploads/artifacts/` | Core Channel import 以固定 artifact ID 创建不可覆盖 regular file，并 fsync 文件与目录 | 已发布文件不可原位覆盖；SessionDB ready row 是可见性 owner，orphan 只由 audit 报告 | 当前没有普通自动删除协议；candidate discard、Turn 失败、Session 删除、插件卸载均无权删除；未来 GC 需单独合同、完整引用扫描与可恢复备份 |
@@ -99,7 +118,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `sessions.db/session_admissions` 与 `inbound_handoffs` | MessageBus 在暴露输入或发布附件前，固定完整 handoff 与 Session ID 租约；新 Session 的租约不创建 Session 行 | 失败或取消只释放执行 binding，保留耐久恢复 owner。首条 Input writer 提交时才创建 Session；旧客户端 claim 已停止新增 | 正常成功提交或明确失败结算后，Bus 才消费 handoff 并释放租约；旧未结算 handoff 不因入口退役而删除。不减少 Message、上传、artifact 或映射 |
 | `backups/interaction-deletions/sessions-<uuid>.db` | 每次 interaction 撤销前通过 SQLite online backup 创建完整 SessionDB 快照，并以 `integrity_check` 验证 | 已发布快照不可原位更新；路径随删除响应与审计日志返回 | 当前没有自动 retention；只有名称明确、目标精确的备份管理操作可以删除，不能由普通清理或下一次撤销覆盖 |
 
-这里所说的“`sessions.db` 默认 append-only”，精确含义是：**数据库中的完整对话正文 `messages` 在正常运行中只追加，只有用户主动撤销消息或删除会话才允许减少。** SQLite 文件整体并非字面只追加，因为 `sessions` 元数据、`turns` 状态和派生索引都有受约束的 UPDATE/重建路径。当前 dashboard 已暴露旧消息编辑接口；是否保留这项 UPDATE 例外，是需要维护者明确回答的实现与意图差异。
+这里所说的“`sessions.db` 默认 append-only”，精确含义是：**数据库中的完整对话正文 `messages` 在正常运行中只追加，只有用户主动撤销消息或删除会话才允许减少。** SQLite 文件整体并非字面只追加，因为 `sessions` 元数据和派生索引都有受约束的 UPDATE/重建路径。当前 dashboard 已暴露旧消息编辑接口；是否保留这项 UPDATE 例外，是需要维护者明确回答的实现与意图差异。
 
 只读 `MessageCatalog.sessions` 与 `MessageReader.read_page/read_tail` 在固定读事务内返回目录、消息和资源引用；不增加、更新、逻辑失效或减少任何持久事实。统计来自真实行，历史空洞不填补。UI 展示只消费这一页事实，不能持有日志 writer、任意 SQL 或绑定打开能力；查询前后整库一致性与另一连接追加期间的固定前缀测试为证。
 
