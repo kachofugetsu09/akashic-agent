@@ -48,14 +48,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.server.posts += 1
-        if request.get('stream'):
+        rejected = request.get('messages') == [{'role': 'user', 'content': 'fixture-rejected'}]
+        if rejected:
+            body = json.dumps({'error': {'message': 'fixture provider rejection', 'type': 'invalid_request_error'}}).encode()
+            kind = 'application/json'
+        elif request.get('stream'):
             body = ('data: ' + json.dumps({'choices': [{'delta': {'content': 'local-result'}}]}) + '\n\n'
                     + 'data: [DONE]\n\n').encode()
             kind = 'text/event-stream'
         else:
-            body = json.dumps({'choices': [{'message': {'content': 'local-result'}, 'finish_reason': 'stop'}]}).encode()
+            body = json.dumps({'choices': [{'message': {'content': 'local-result'}, 'finish_reason': 'stop'}],
+                               'usage': {'prompt_tokens': 7, 'completion_tokens': 3, 'total_tokens': 10}}).encode()
             kind = 'application/json'
-        self.send_response(200)
+        self.send_response(400 if rejected else 200)
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
@@ -366,10 +371,11 @@ async def cross_store_checks(directory, server, descriptor, physical):
     return observations
 
 
-async def queued_settlement_check(directory, server, descriptor, physical, *, reject=False):
-    """已提交开始记录后的取消结算，即使排队并再次取消也不能被遗弃。"""
-    name = 'queued-settlement-rejected' if reject else 'queued-settlement'
-    store = BarrierStore(directory / (name + '.db'), directory / 'backups', 'begin-after')
+async def queued_settlement_check(directory, server, descriptor, physical, *, phase='begin', reject=False):
+    """未发送、真实成功和拒绝的结算，排队时重复取消仍保留实际回执。"""
+    name = 'queued-settlement-' + phase + ('-rejected' if reject else '')
+    store = BarrierStore(directory / (name + '.db'), directory / 'backups',
+                         'begin-after' if phase == 'begin' else 'disabled')
     store.initialize()
     if reject:
         with sqlite3.connect(store.path) as connection:
@@ -386,17 +392,32 @@ async def queued_settlement_check(directory, server, descriptor, physical, *, re
                 loop.call_soon_threadsafe(occupied.set)
         assert release.wait(5)
 
-    before = server.posts
-    caller = asyncio.create_task(_BoundChat(descriptor, physical, store).complete(
-        ModelRequest([], request_key=name)))
     workers = []
+
+    class QueuedDriver:
+        async def complete(self, request):
+            try:
+                return await physical.complete(request)
+            finally:
+                workers.extend(asyncio.create_task(run_file_io(occupy)) for _ in range(4))
+                await occupied.wait()
+
+    before = server.posts
+    bound = _BoundChat(descriptor, physical if phase == 'begin' else QueuedDriver(), store)
+    request = ModelRequest([{'role': 'user', 'content': 'fixture-rejected'}] if phase == 'failure' else [],
+                           request_key=name)
+    caller = asyncio.create_task(bound.complete(request))
     try:
-        await store.entered.wait()
-        workers = [asyncio.create_task(run_file_io(occupy)) for _ in range(4)]
-        caller.cancel()
-        await checkpoint()
-        store.release.set()
+        if phase == 'begin':
+            await store.entered.wait()
+            workers.extend(asyncio.create_task(run_file_io(occupy)) for _ in range(4))
+            caller.cancel()
+            await checkpoint()
+            store.release.set()
         await occupied.wait()
+        await checkpoint()
+        await checkpoint()
+        caller.cancel()
         await checkpoint()
         caller.cancel()
         await checkpoint()
@@ -417,10 +438,24 @@ async def queued_settlement_check(directory, server, descriptor, physical, *, re
         else:
             raise AssertionError('caller cancellation was lost')
         record = store.calls_for_key(name)[0]
-        assert record['state'] == ('started' if reject else 'error')
-        assert record['send_evidence'] == (None if reject else 'unsent')
-        assert server.posts == before
-        return {'case': name, 'occupied_slots': count, 'posts': 0,
+        expected = 'success' if phase == 'success' else 'error'
+        evidence = {'begin': 'unsent', 'failure': 'rejected', 'success': None}[phase]
+        assert record['state'] == ('started' if reject else expected)
+        assert record['send_evidence'] == (None if reject else evidence)
+        if not reject:
+            assert record['failure'] == {'begin': 'CancelledError', 'failure': 'InvalidRequestError', 'success': None}[phase]
+            try:
+                replayed = await bound.complete(request)
+            except ModelUnavailableError:
+                assert expected == 'error'
+            else:
+                assert expected == 'success' and replayed.content == 'local-result'
+                assert replayed.call_record_id == record['id']
+                assert record['usage']['input_tokens'] == replayed.usage.input_tokens == 7
+                assert record['usage']['output_tokens'] == replayed.usage.output_tokens == 3
+        posts = 0 if phase == 'begin' else 1
+        assert server.posts == before + posts
+        return {'case': name, 'occupied_slots': count, 'posts': posts,
                 'state': record['state'], 'send_evidence': record['send_evidence'],
                 'settlement_failure_reported': reject}
     finally:
@@ -605,8 +640,10 @@ async def check(directory, server, endpoint):
         observations += await cancellation_checks(directory, server, descriptor, physical)
         observations += await shared_checks(directory, server, descriptor, physical)
         observations += await cross_store_checks(directory, server, descriptor, physical)
-        observations.append(await queued_settlement_check(directory, server, descriptor, physical))
-        observations.append(await queued_settlement_check(directory, server, descriptor, physical, reject=True))
+        for phase in ['begin', 'success', 'failure']:
+            for reject in [False, True]:
+                observations.append(await queued_settlement_check(
+                    directory, server, descriptor, physical, phase=phase, reject=reject))
         observations.append(await queue_check(directory, server, descriptor, physical))
         observations += await failure_checks(directory, server, descriptor, physical)
         observations += await scope_checks(directory, server, endpoint)
