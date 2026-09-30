@@ -3,6 +3,8 @@
  * Uses no real browser, accounts, credentials, backend, or workspace data.
  */
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import postcss from "postcss";
 import { JSDOM } from "jsdom";
 import { activate } from "../frontend/plugins/models/src/module.js";
 import { activate as activateCodex } from "../plugins/codex/web_module.js";
@@ -66,6 +68,11 @@ async function mount(provider, initialCatalog = null) {
         } else if (payload.type === "set_default") {
           catalog.roleBindings[payload.role] = payload.model_id;
           result = {revision: ++catalog.revision, status: "committed"};
+        } else if (payload.type === "set_model_enabled") {
+          catalog.models.find(model => model.id === payload.model_id).availability = payload.enabled ? "available" : "disabled";
+          result = {revision: ++catalog.revision, status: "committed"};
+        } else if (payload.type === "verify_model") {
+          result = {revision: catalog.revision, status: "verified"};
         } else if (payload.type === "cancel_auth") {
           result = {revision: catalog.revision, status: "cancelled"};
         } else throw new Error(`Unexpected command ${payload.type}`);
@@ -125,6 +132,23 @@ try {
   assert.equal(document.querySelector("dialog[open]"), null, "retained inactive pages must not own a modal");
   assert.deepEqual(roleFixture.commands, [], "abandoning the chooser never saves a selection");
   checks.push("Role chooser preserves cancelled navigation and releases accepted navigation without writing a binding");
+  document.querySelector("[data-connections] button").click();
+  await settle();
+  const toggleTarget = document.querySelector(".settings-model-toggle");
+  const toggle = toggleTarget.querySelector("input");
+  assert.equal(toggle.labels[0], toggleTarget, "the full target labels only its checkbox");
+  assert.equal(toggle.getAttribute("aria-label"), "开放 saved-chat");
+  const verify = document.querySelector(".settings-model-row button");
+  assert.equal(toggleTarget.contains(verify), false);
+  verify.click();
+  await settle();
+  assert.equal(toggle.checked, true, "verification must not toggle availability");
+  assert.deepEqual(roleFixture.commands.map(command => command.type), ["verify_model"]);
+  toggleTarget.click();
+  await settle();
+  assert.deepEqual(roleFixture.commands.map(command => command.type), ["verify_model", "set_model_enabled"]);
+  assert.equal(roleFixture.commands.at(-1).enabled, false);
+  checks.push("Model toggle has a dedicated associated label; verification stays separate and label activation toggles once");
 } finally {
   await roleFixture.close();
 }
@@ -194,4 +218,27 @@ try {
   await externalFixture.close();
 }
 
-console.log(JSON.stringify({passed: checks.length, boundary: "Actual UI modules, synthetic HTTP and JSDOM; no browser/backend validation", checks}, null, 2));
+const stylesheet = postcss.parse(await readFile(new URL("../frontend/plugins/models/src/style.css", import.meta.url), "utf8"));
+const selectorStyle = selector => {
+  const declarations = {};
+  stylesheet.walkRules(rule => {
+    if (rule.selector === selector) rule.walkDecls(declaration => { declarations[declaration.prop] = declaration.value; });
+  });
+  return declarations;
+};
+assert.equal(selectorStyle(".settings-page")["--models-hit-target"], "44px");
+for (const [selector, properties] of [
+  [".settings-model-toggle", ["min-width", "min-height"]],
+  [".settings-sheet-row", ["min-height"]],
+]) {
+  for (const property of properties) assert.equal(selectorStyle(selector)[property], "var(--models-hit-target)");
+}
+for (const selector of [".settings-role-pick", ".settings-sheet", ".settings-model-manual input", ".settings-sheet-main strong", ".settings-model-main strong"]) {
+  for (const [property, value] of Object.entries(selectorStyle(selector))) {
+    assert.ok(!value.includes("--md-sys-"), `${selector} ${property} uses the paper contract`);
+    if (["font-size", "box-shadow"].includes(property)) assert.ok(value.startsWith("var("));
+  }
+}
+checks.push("Static CSS contract: model toggle and picker rows declare 44px minimum targets and new surfaces use semantic tokens (geometry not browser-measured)");
+
+console.log(JSON.stringify({passed: checks.length, boundary: "Actual UI modules, synthetic HTTP and JSDOM; static CSS only, no browser/backend validation", checks}, null, 2));

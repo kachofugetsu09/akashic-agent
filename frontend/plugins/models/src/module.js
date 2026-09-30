@@ -722,6 +722,8 @@ export function activate(ctx) {
         function modelRow(model, inUse) {
           const row = document.createElement("div");
           row.className = `settings-model-row${model.availability === "disabled" ? " is-disabled" : ""}`;
+          const toggleTarget = document.createElement("label");
+          toggleTarget.className = "settings-model-toggle";
           const toggle = document.createElement("input");
           toggle.type = "checkbox";
           toggle.checked = model.availability !== "disabled";
@@ -761,7 +763,8 @@ export function activate(ctx) {
           const use = document.createElement("span");
           use.className = "settings-model-use";
           use.textContent = inUse ? `在用 · ${inUse}` : "";
-          row.append(toggle, main, use);
+          toggleTarget.append(toggle);
+          row.append(toggleTarget, main, use);
           if (model.availability !== "disabled") {
             const verify = document.createElement("button");
             verify.type = "button";
