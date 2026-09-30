@@ -94,6 +94,22 @@ class LLMResponse:
 StreamCallback: TypeAlias = Callable[[dict[str, str]], Awaitable[None]]
 
 
+def read_content_refs(value: object) -> tuple[tuple[str, int], ...]:
+    """在请求与持久记录边界校验同一种消息内容位置编码。"""
+    if not isinstance(value, (tuple, list)):
+        raise ValueError("内容位置必须是数组")
+    refs: list[tuple[str, int]] = []
+    for ref in value:
+        if (not isinstance(ref, (tuple, list)) or len(ref) != 2
+                or not isinstance(ref[0], str) or not ref[0]
+                or type(ref[1]) is not int or ref[1] < 0):
+            raise ValueError("内容位置需要消息 ID 和非负整数索引")
+        refs.append((ref[0], ref[1]))
+    if len(set(refs)) != len(refs):
+        raise ValueError("请求内容位置不能重复")
+    return tuple(refs)
+
+
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
     messages: Sequence[Mapping[str, Any]]
@@ -106,6 +122,9 @@ class ModelRequest:
     continuation: ModelContinuation | None = None
     disable_reasoning: bool = False
     request_key: str | None = None
+    # 本次完整展示、尚无成功展示回执的消息内容位置；不发送给 provider。
+    content_refs: tuple[tuple[str, int], ...] = ()
+    content_transformed: bool = False
 
     def __post_init__(self) -> None:
         """在唯一调用边界冻结请求，adapter 和并行调用不能改写彼此输入。"""
@@ -115,6 +134,9 @@ class ModelRequest:
         object.__setattr__(
             self, "tools", tuple(_freeze_json_mapping(row) for row in self.tools)
         )
+        object.__setattr__(self, "content_refs", read_content_refs(self.content_refs))
+        if type(self.content_transformed) is not bool:
+            raise ValueError("内容投影标记必须是 bool")
         if isinstance(self.tool_choice, Mapping):
             object.__setattr__(
                 self, "tool_choice", _freeze_json_mapping(self.tool_choice)

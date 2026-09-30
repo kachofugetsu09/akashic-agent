@@ -2038,17 +2038,6 @@ class PluginManager:
                 self._building_roots[root] = tuple(generations.values())
         return generations
 
-    async def _close_root_scope(self, scope: PluginScope, module_path: str) -> None:
-        """Root 只在 Scope 关闭成功后释放句柄，失败时继续持有依赖。"""
-        failures = await scope.aclose()
-        self._cleanup_failures.extend(failures)
-        if failures:
-            raise RuntimeError(
-                f"Root scope cleanup 未完成，必须显式 retry: {module_path}: "
-                + "; ".join(f"{item.resource}: {item.error}" for item in failures)
-            )
-
-
     @staticmethod
     def _generation_archive_ref(generation: PluginGeneration) -> str:
         if generation.archive_ref is None:

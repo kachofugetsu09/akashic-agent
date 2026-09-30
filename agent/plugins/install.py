@@ -18,7 +18,6 @@ from agent.plugin_composition.archive import sync_directory
 from agent.plugins.artifacts import (
     ArtifactPointer,
     ArtifactPointers,
-    pointer_state_path,
     read_pointers,
     relative_artifact_pointer,
     resolve_pointer,
@@ -471,22 +470,6 @@ def _remove_created_data_dir(path: Path) -> None:
         raise RuntimeError(
             f"安装回滚无法删除新建 plugin-data 空目录: {path}"
         ) from error
-
-
-def _restore_pointers(
-    plugin_base: Path,
-    pointers: ArtifactPointers | None,
-) -> None:
-    path = pointer_state_path(plugin_base)
-    if pointers is None:
-        if path.exists() or path.is_symlink():
-            path.unlink()
-        return
-    _ = write_pointers(
-        plugin_base,
-        stable=pointers.stable,
-        latest=pointers.latest,
-    )
 
 
 def _cache_version_dirs(plugin_base: Path) -> list[Path]:

@@ -43,6 +43,21 @@ class Stream(httpx.AsyncByteStream):
         self.closed = True
 
 
+class HeldStream(Stream):
+    """首个增量已由 parser 消费后才通知取消，不依赖 sleep。"""
+
+    def __init__(self, prefix: str) -> None:
+        super().__init__([])
+        self.prefix = prefix
+        self.consumed = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield (self.prefix + "\n\n").encode()
+        self.consumed.set()
+        await self.release.wait()
+
+
 def data(value: object) -> str:
     return "data: " + json.dumps(value)
 
@@ -228,6 +243,24 @@ async def main() -> None:
         checked += 1
     await check_codex_receipt()
     checked += 1
+    # 5. 取消保留实际进展，纯心跳取消不能伪造已收到部分响应。
+    for driver in ("compatible", "opencode", "codex"):
+        for kind in ("content", "reasoning_content", "arguments", None):
+            prefix = ": heartbeat" if kind is None else delta(driver, kind, "x")
+            stream = HeldStream(prefix)
+            task = asyncio.create_task(consume(driver, stream))
+            await asyncio.wait_for(stream.consumed.wait(), 1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError as error:
+                assert bool(getattr(error, "response_delta_seen", False)) == (kind is not None), (
+                    driver, kind, "取消丢失或伪造已接收响应的事实"
+                )
+            else:
+                raise AssertionError("caller cancellation was swallowed")
+            assert stream.closed
+            checked += 1
     print(f"passed: {checked} driver scenarios; no live provider or workspace access")
 
 
