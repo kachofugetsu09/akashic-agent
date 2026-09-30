@@ -12,7 +12,7 @@ from typing import Protocol, runtime_checkable
 
 from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.message_view import MessageDisplayReader
-from agent.plugin_composition.messages import InvalidPage, MessageConflict
+from agent.plugin_composition.messages import InvalidPage, MessageConflict, SessionAttributes
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from agent.plugin_composition.models import (
     ChatModelSelection,
@@ -92,6 +92,8 @@ class ArtifactStorePort(Protocol):
 
 
 class MessageReaderPort(Protocol):
+    @property
+    def attributes(self) -> SessionAttributes: ...
     @property
     def session_id(self) -> str: ...
     def head(self) -> int: ...

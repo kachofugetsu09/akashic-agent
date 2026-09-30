@@ -69,3 +69,26 @@ Akasha 按图身份记录并汇总到健康视图；实际召回只报告目标�
 - “isolated 但也读全局”“isolated 且同时贡献全局”这两种读写集合分离的组合没有进入首版。
 - 前端宿主侧栏按插件 ID 组合 `projects` 与 `akasha` 的查询；将来可以用专门的
   `project.settings` 插件槽位替代宿主对插件 ID 的认识。
+
+## 聊天导航偏好（2026-09-30）
+
+按 WEBUI-009，置顶是现有 `akashic_clients` 的私有导航偏好，不属于 Projects、Session 或 Akasha。
+现有 `OWNER_STATE` 的 `navigation:pins` 只保存一份有序 `{kind, id}` 列表；项目 ID 和完整 Session key
+来自各自 owner。按目标幂等修改使用既有 OwnerStore 事务，避免两台客户端更新不同目标时相互覆盖。
+没有新插件、通用 sidebar framework、用户账户或 Session metadata 字段。
+
+```text
+Projects / Session 事实 ──▶ 侧栏投影 ◀── 服务端有序置顶引用
+                                  ▲
+                       当前浏览器的手动展开状态
+```
+
+会话资格由后端实际 scope 检查；Projects 只通过其当前 `project.list` 查询校验新项目置顶，不读取
+它的 owner storage。已提交引用的读取与取消置顶不依赖 Projects 在线；旧会话通过原 Message reader
+点读首条消息与 scope，不以近期目录首页是否命中决定存在性。界面继续从 Projects 目录读取名称，
+目标暂不可用时显示可取消的入口；不复制项目名称或建立成员表。
+
+新增/取消置顶只原位更新这一偏好记录；不减少 Session、Message、Project 或 Akasha 事实，不新增
+schema 或迁移。插件停止/卸载不清除该记录；代码回滚保留引用，恢复同版本代码后可重读。浏览器
+展开状态独立保存在本地，搜索临时展开不写回。服务端失败保留原偏好并报告；响应丢失可重读或按
+同一目标重试，不能把未确认写入当成已取消。

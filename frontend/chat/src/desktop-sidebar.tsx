@@ -2,16 +2,21 @@ import {
   Check,
   MessageSquarePlus,
   Search,
+  Pin,
+  PinOff,
 } from "lucide-react";
 import { memo, useMemo, useState } from "react";
-import { ConversationNavigation, type ConversationSession } from "./conversation-navigation";
+import { ConversationNavigation, ConversationSessionRow, type ConversationSession } from "./conversation-navigation";
 import { PluginUiSlot } from "./plugin-ui-runtime";
-import { ProjectNavigation, type ProjectSessionItem } from "./project-navigation";
+import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
+import { formatNavigationTime, sessionLabel } from "./web-chat-message-data";
+import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
 import type { PendingProjectRow, ProjectMemory, ProjectRow } from "./web-projects";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
   active: boolean;
   projectId?: string;
+  projectScoped?: boolean;
 }
 
 export interface DesktopSidebarProjects {
@@ -36,6 +41,7 @@ export interface DesktopSidebarProps {
   chatReady: boolean;
   themeLabel: string;
   projects?: DesktopSidebarProjects;
+  navigationPins: NavigationPinsState;
   onSelectSession: (sessionId: string) => void;
   onPrefetchSession?: (sessionId: string) => void;
   onCycleTheme: () => void;
@@ -49,18 +55,29 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   activeSessionId,
   pendingSessionId,
   projects,
+  navigationPins,
   onSelectSession,
   onPrefetchSession,
   onNewChat,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
-  const filteredSessions = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return sessions;
-    return sessions.filter((session) => `${session.title} ${session.preview}`.toLowerCase().includes(needle));
-  }, [query, sessions]);
-  // 1. 已知项目的对话进入项目分组；未知或已归档项目的对话仍留在最近会话里。
-  const knownProjects = useMemo(() => new Set(projects?.items.map((project) => project.id)), [projects?.items]);
+  const needle = query.trim().toLowerCase();
+  const searching = Boolean(needle);
+  const allSessions = useMemo(() => {
+    const rows = new Map<string, DesktopSidebarSession>(navigationPins.sessions.map((session) => [session.key, {
+      id: session.key, title: sessionLabel(session), preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
+      updatedLabel: formatNavigationTime(session.updated_at), active: activeSessionId === session.key,
+      projectId: session.scope?.project, projectScoped: Object.hasOwn(session.scope ?? {}, "project"),
+    }]));
+    // 目录里的新鲜 metadata 优先；置顶解析补齐不在最近分页内的会话。
+    for (const session of sessions) rows.set(session.id, session);
+    return [...rows.values()];
+  }, [navigationPins.sessions, sessions, activeSessionId]);
+  const filteredSessions = useMemo(() => needle
+    ? allSessions.filter((session) => `${session.title} ${session.preview}`.toLowerCase().includes(needle))
+    : allSessions, [allSessions, needle]);
+  // 目录未解析/归档不改变 Session.scope；回退到最近会话也不获得置顶资格。
+  const knownProjects = useMemo(() => new Map(projects?.items.map((project) => [project.id, project])), [projects?.items]);
   const sessionsByProject = useMemo(() => {
     const groups = new Map<string, ProjectSessionItem[]>();
     for (const session of filteredSessions) {
@@ -74,10 +91,36 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     }
     return groups;
   }, [filteredSessions, knownProjects, surface]);
-  const recentSessions = useMemo(
-    () => filteredSessions.filter((session) => !session.projectId || !knownProjects.has(session.projectId)),
-    [filteredSessions, knownProjects],
-  );
+  const pinnedProjects = new Set(navigationPins.pins.filter((pin) => pin.kind === "project").map((pin) => pin.id));
+  const pinnedSessions = new Set(navigationPins.pins.filter((pin) => pin.kind === "session").map((pin) => pin.id));
+  const recentSessions = filteredSessions.filter((session) => !pinnedSessions.has(session.id)
+    && (!session.projectId || !knownProjects.has(session.projectId)));
+  const visibleProject = (project: ProjectRow) => !needle || project.name.toLowerCase().includes(needle)
+    || Boolean(sessionsByProject.get(project.id)?.length);
+  const otherProjects = projects?.items.filter((project) => !pinnedProjects.has(project.id) && visibleProject(project)) ?? [];
+  const hasMatches = recentSessions.length > 0 || otherProjects.length > 0 || navigationPins.pins.some((pin) => {
+    if (pin.kind === "project") {
+      const project = knownProjects.get(pin.id);
+      if (project) return visibleProject(project);
+    } else {
+      const session = allSessions.find((item) => item.id === pin.id);
+      if (session && !session.projectId && !session.projectScoped) {
+        return `${session.title} ${session.preview}`.toLowerCase().includes(needle);
+      }
+    }
+    return pin.id.toLowerCase().includes(needle);
+  });
+  const pinAction = (pin: NavigationPin, title: string, pinned: boolean) => <button
+    type="button" className="project-navigation__icon navigation-pin-action"
+    aria-label={`${pinned ? "取消置顶" : "置顶"} ${title}`} title={pinned ? "取消置顶" : "置顶"}
+    disabled={!navigationPins.ready || navigationPins.pending}
+    onClick={() => { void navigationPins.setPinned(pin, !pinned); }}>
+    {pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
+  </button>;
+  const sessionView = (session: DesktopSidebarSession): ConversationSession => ({
+    ...session, active: surface === "chat" && session.active,
+    state: surface === "chat" && session.active ? <Check size={18} /> : null,
+  });
 
   return (
     <aside className="chat-sidebar chat-sidebar--entry">
@@ -97,35 +140,76 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         </label>
       </div>
 
-      {projects ? (
-        <ProjectNavigation
-          projects={projects.items}
-          pending={projects.pending}
-          pendingError={projects.pendingError}
-          sessionsByProject={sessionsByProject}
-          activeProjectId={projects.activeProjectId}
-          pendingSessionId={pendingSessionId}
-          memoryInstalled={projects.memoryInstalled}
-          onSelectSession={onSelectSession}
-          onPrefetchSession={onPrefetchSession}
-          onNewProjectChat={projects.onNewChat}
-          onCreateProject={projects.onCreate}
-          onContinueProject={projects.onContinue}
-          onStopProject={projects.onStop}
-          onOpenCreateProject={projects.onOpenCreate}
-        />
-      ) : null}
+      <div className="chat-sidebar__navigation">
+      {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或项目</p> : null}
+      {navigationPins.error ? <div className="navigation-pins-error" role="alert">
+        <span>{navigationPins.error}</span>
+        <button type="button" disabled={navigationPins.pending} onClick={() => { void navigationPins.reload(); }}>刷新置顶列表</button>
+      </div> : null}
+      {navigationPins.pins.length ? <section className="pinned-navigation" aria-label="置顶">
+        <header className="project-navigation__header"><span>置顶</span></header>
+        {navigationPins.pins.map((pin) => {
+          if (pin.kind === "project") {
+            const project = knownProjects.get(pin.id);
+            if (project && projects) return visibleProject(project) ? <ProjectNavigationRow
+              key={`project:${pin.id}`} project={project}
+              items={sessionsByProject.get(pin.id) ?? []}
+              open={searching || navigationPins.expandedProjects.has(pin.id)}
+              active={projects.activeProjectId === pin.id} pendingSessionId={pendingSessionId}
+              onToggle={() => navigationPins.toggleProject(pin.id)}
+              onNewChat={() => projects.onNewChat(pin.id)}
+              onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
+              actions={pinAction(pin, project.name, true)} searching={searching}
+            /> : null;
+          } else {
+            const session = allSessions.find((item) => item.id === pin.id);
+            if (session && !session.projectId && !session.projectScoped) return !needle
+              || `${session.title} ${session.preview}`.toLowerCase().includes(needle) ? <ConversationSessionRow
+                key={`session:${pin.id}`} session={sessionView(session)} pendingSessionId={pendingSessionId}
+                onActivate={onSelectSession} onPrefetch={onPrefetchSession}
+                actions={pinAction(pin, session.title, true)}
+              /> : null;
+          }
+          if (needle && !pin.id.toLowerCase().includes(needle)) return null;
+          const title = pin.kind === "project" ? "项目暂不可用" : "会话暂不可用";
+          return <ConversationSessionRow key={`${pin.kind}:${pin.id}`}
+            session={{ id: pin.id, title, preview: pin.id, active: false, unavailable: true }}
+            onActivate={onSelectSession} actions={pinAction(pin, title, true)} />;
+        })}
+      </section> : null}
+      {projects ? <ProjectNavigation
+        projects={otherProjects}
+        pending={projects.pending}
+        pendingError={projects.pendingError}
+        sessionsByProject={sessionsByProject}
+        activeProjectId={projects.activeProjectId}
+        pendingSessionId={pendingSessionId}
+        memoryInstalled={projects.memoryInstalled}
+        onSelectSession={onSelectSession}
+        onPrefetchSession={onPrefetchSession}
+        onNewProjectChat={projects.onNewChat}
+        onCreateProject={projects.onCreate}
+        onContinueProject={projects.onContinue}
+        onStopProject={projects.onStop}
+        onOpenCreateProject={projects.onOpenCreate}
+        expandedProjects={navigationPins.expandedProjects}
+        onToggleProject={navigationPins.toggleProject}
+        projectActions={(project) => pinAction({ kind: "project", id: project.id }, project.name, false)}
+        searching={searching}
+        heading={pinnedProjects.size ? "其他项目" : "项目"}
+      /> : null}
 
       <ConversationNavigation
         destinationHeading={false}
         sessionHeading="最近会话"
         destinations={[]}
         actions={[]}
-        sessions={recentSessions.map((session) => ({
-          ...session,
-          active: surface === "chat" && session.active,
-          state: surface === "chat" && session.active ? <Check size={18} /> : null,
-        }))}
+        sessions={recentSessions.map(sessionView)}
+        sessionActions={(session) => {
+          const row = allSessions.find((item) => item.id === session.id);
+          return row && !row.projectId && !row.projectScoped
+            ? pinAction({ kind: "session", id: row.id }, row.title, false) : null;
+        }}
         onSessionActivate={onSelectSession}
         onSessionPrefetch={onPrefetchSession}
         pendingSessionId={pendingSessionId}
@@ -133,6 +217,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} />
         ) : undefined}
       />
+      </div>
     </aside>
   );
 });

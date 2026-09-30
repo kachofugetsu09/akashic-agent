@@ -36,6 +36,7 @@ from .capabilities import (
     WEB_UI,
 )
 from .config import AkashicClientsConfig
+from .navigation import NavigationPreferences
 from .attachments import AttachmentStore
 from .web_chat import WebChatChannel
 from .chat_api import build_chat_server
@@ -185,16 +186,18 @@ class _ClientGeneration:
     workspace: Any
     # 固定输入与实际 adapter 只属于本次 apply。
     adapters: dict[str, "_GenerationAkashicAdapter"]
+    navigation: NavigationPreferences | None
 
-    def __init__(self, config: AkashicClientsConfig, workspace: Any) -> None:
+    def __init__(self, config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None) -> None:
+        self.navigation = navigation
         self.config = config
         self.workspace = workspace
         self.adapters = {}
 
 
-def build_akashic_channel_factory(config: AkashicClientsConfig, workspace: Any):
+def build_akashic_channel_factory(config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None = None):
     """为本次 apply 保留固定输入，实际 binding 由贡献 Scope 关闭。"""
-    state = _ClientGeneration(config, workspace)
+    state = _ClientGeneration(config, workspace, navigation)
 
     def build(context: ChannelFactoryContext) -> _GenerationAkashicAdapter:
         if state.adapters:
@@ -398,6 +401,7 @@ class _GenerationAkashicAdapter:
             raise RuntimeError("akashic Web 缺少 artifact store")
         server = build_chat_server(
             workspace=self._workspace,
+            navigation=self._state.navigation,
             channel=self._web,
             runtime_inspection=self._runtime_inspection,
             model_catalog_reader=self._model_catalog_reader,

@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, Folder, FolderPlus, Lightbulb, Plus } from "lucide-react";
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   Dialog,
   DialogContent,
@@ -44,6 +44,11 @@ export function ProjectNavigation({
   onContinueProject,
   onStopProject,
   onOpenCreateProject,
+  expandedProjects,
+  onToggleProject,
+  projectActions,
+  searching = false,
+  heading = "项目",
 }: {
   projects: ProjectRow[];
   pending: PendingProjectRow[];
@@ -59,19 +64,17 @@ export function ProjectNavigation({
   onContinueProject: (key: string) => Promise<void>;
   onStopProject: (key: string) => void;
   onOpenCreateProject?: () => void;
+  expandedProjects: ReadonlySet<string>;
+  onToggleProject: (projectId: string) => void;
+  projectActions?: (project: ProjectRow) => ReactNode;
+  searching?: boolean;
+  heading?: string;
 }) {
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [dialogOpen, setDialogOpen] = useState(false);
   const [busyKey, setBusyKey] = useState("");
   const [actionError, setActionError] = useState("");
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const openCreate = onOpenCreateProject ?? (() => setDialogOpen(true));
-  const toggle = (projectId: string) => setCollapsed((current) => {
-    const next = new Set(current);
-    if (next.has(projectId)) next.delete(projectId);
-    else next.add(projectId);
-    return next;
-  });
   const continuePending = async (key: string) => {
     setBusyKey(key);
     setActionError("");
@@ -97,7 +100,7 @@ export function ProjectNavigation({
   return (
     <section className="project-navigation" aria-label="项目">
       <header className="project-navigation__header">
-        <span>项目</span>
+        <span>{heading}</span>
         <button ref={createButtonRef} type="button" className="project-navigation__icon" aria-label="新建项目" title="新建项目"
           onClick={openCreate}>
           <Plus size={15} aria-hidden="true" />
@@ -120,55 +123,26 @@ export function ProjectNavigation({
         </div>)}
         {actionError ? <p className="project-pending__error" role="alert">{actionError}</p> : null}
       </div> : null}
-      {projects.length === 0 ? (
+      {projects.length === 0 && !searching && heading === "项目" ? (
         <button type="button" className="project-navigation__empty" onClick={openCreate}>
           <FolderPlus size={16} aria-hidden="true" />
           <span>新建项目</span>
         </button>
       ) : null}
-      {projects.map((project) => {
-        const open = !collapsed.has(project.id);
-        const items = sessionsByProject.get(project.id) ?? [];
-        return (
-          <div key={project.id} className={`project-group ${activeProjectId === project.id ? "active" : ""}`}>
-            <div className="project-group__row">
-              <button type="button" className="project-group__toggle" aria-label={`${open ? "收起" : "展开"} ${project.name} 的对话`} aria-expanded={open} onClick={() => toggle(project.id)}>
-                <ChevronRight size={14} aria-hidden="true" className="project-group__chevron" />
-              </button>
-              <button type="button" className="project-group__open" onClick={() => onNewProjectChat(project.id)}
-                aria-current={activeProjectId === project.id ? "page" : undefined} title={`打开 ${project.name}`}>
-                <Folder size={18} strokeWidth={1.75} aria-hidden="true" />
-                <span className="project-group__name">{project.name}</span>
-                {project.memory && project.memory !== "global" ? (
-                  <small className="project-group__memory">{projectMemoryLabel(project.memory)}</small>
-                ) : project.memoryUnreadable ? <small className="project-group__memory">当前策略未能读取</small> : null}
-              </button>
-              <button type="button" className="project-navigation__icon" aria-label={`在 ${project.name} 中新建对话`}
-                title="新建对话" onClick={() => onNewProjectChat(project.id)}>
-                <Plus size={14} aria-hidden="true" />
-              </button>
-            </div>
-            {open ? (
-              <nav className="project-group__sessions" aria-label={`${project.name} 的对话`}>
-                {items.length === 0 ? <small className="project-group__hint">还没有对话</small> : null}
-                {items.map((session) => (
-                  <button key={session.id} type="button"
-                    className={`project-session ${session.active ? "active" : ""}`}
-                    aria-current={session.active ? "true" : undefined}
-                    aria-busy={pendingSessionId === session.id || undefined}
-                    title={session.title}
-                    onClick={() => onSelectSession(session.id)}
-                    onPointerEnter={() => onPrefetchSession?.(session.id)}
-                    onFocus={() => onPrefetchSession?.(session.id)}>
-                    <span>{session.title}</span>
-                    {session.updatedLabel ? <time>{session.updatedLabel}</time> : null}
-                  </button>
-                ))}
-              </nav>
-            ) : null}
-          </div>
-        );
-      })}
+      {projects.map((project) => <ProjectNavigationRow
+        key={project.id}
+        project={project}
+        items={sessionsByProject.get(project.id) ?? []}
+        open={searching || expandedProjects.has(project.id)}
+        active={activeProjectId === project.id}
+        pendingSessionId={pendingSessionId}
+        onToggle={() => onToggleProject(project.id)}
+        onNewChat={() => onNewProjectChat(project.id)}
+        onSelectSession={onSelectSession}
+        onPrefetchSession={onPrefetchSession}
+        actions={projectActions?.(project)}
+        searching={searching}
+      />)}
       {!onOpenCreateProject ? <NewProjectDialog
         open={dialogOpen}
         memoryInstalled={memoryInstalled}
@@ -177,6 +151,61 @@ export function ProjectNavigation({
       /> : null}
     </section>
   );
+}
+
+/** 同一个项目行用于置顶和其他项目区，展开状态由导航层按稳定 ID 持有。 */
+export function ProjectNavigationRow({
+  project, items, open, active, pendingSessionId, onToggle, onNewChat,
+  onSelectSession, onPrefetchSession, actions, searching = false,
+}: {
+  project: ProjectRow;
+  items: ProjectSessionItem[];
+  open: boolean;
+  active: boolean;
+  pendingSessionId: string;
+  onToggle: () => void;
+  onNewChat: () => void;
+  onSelectSession: (sessionId: string) => void;
+  onPrefetchSession?: (sessionId: string) => void;
+  actions?: ReactNode;
+  searching?: boolean;
+}) {
+  return <div className={`project-group ${active ? "active" : ""}`}>
+    <div className="project-group__row">
+      <button type="button" className="project-group__toggle"
+        aria-label={`${open ? "收起" : "展开"} ${project.name} 的对话`} aria-expanded={open}
+        onClick={onToggle} disabled={searching}>
+        <ChevronRight size={14} aria-hidden="true" className="project-group__chevron" />
+      </button>
+      <button type="button" className="project-group__open" onClick={onToggle}
+        aria-expanded={open} disabled={searching} title={`${open ? "收起" : "展开"} ${project.name}`}>
+        <Folder size={18} strokeWidth={1.75} aria-hidden="true" />
+        <span className="project-group__name">{project.name}</span>
+        {project.memory && project.memory !== "global" ? (
+          <small className="project-group__memory">{projectMemoryLabel(project.memory)}</small>
+        ) : project.memoryUnreadable ? <small className="project-group__memory">当前策略未能读取</small> : null}
+      </button>
+      <button type="button" className="project-navigation__icon" aria-label={`在 ${project.name} 中新建对话`}
+        title="新建对话" onClick={onNewChat}>
+        <Plus size={14} aria-hidden="true" />
+      </button>
+      {actions}
+    </div>
+    {open ? <nav className="project-group__sessions" aria-label={`${project.name} 的对话`}>
+      {items.length === 0 ? <small className="project-group__hint">{searching ? "没有匹配的对话" : "还没有对话"}</small> : null}
+      {items.map((session) => <button key={session.id} type="button"
+        className={`project-session ${session.active ? "active" : ""}`}
+        aria-current={session.active ? "true" : undefined}
+        aria-busy={pendingSessionId === session.id || undefined}
+        title={session.title}
+        onClick={() => onSelectSession(session.id)}
+        onPointerEnter={() => onPrefetchSession?.(session.id)}
+        onFocus={() => onPrefetchSession?.(session.id)}>
+        <span>{session.title}</span>
+        {session.updatedLabel ? <time>{session.updatedLabel}</time> : null}
+      </button>)}
+    </nav> : null}
+  </div>;
 }
 
 /** 记忆策略在项目还没有对话时一次选定；之后改变需要显式重建学习图。 */

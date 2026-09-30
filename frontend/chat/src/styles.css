@@ -430,10 +430,55 @@ input {
   background: var(--chat-chip);
 }
 
+/* One scroll surface keeps pins, project trees and recent sessions reachable together. */
+.chat-sidebar__navigation {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-sidebar__navigation .conversation-navigation {
+  height: auto;
+  overflow: visible;
+}
+
+.chat-sidebar__navigation .conversation-navigation__sessions,
+.chat-sidebar__navigation .conversation-session-list {
+  overflow: visible;
+}
+
+.conversation-session-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.conversation-session-row > .conversation-session {
+  min-width: 0;
+  flex: 1;
+}
+
+.pinned-navigation {
+  display: grid;
+  gap: 2px;
+  padding-inline: var(--chat-rail-inline);
+}
+
+.navigation-search-empty { margin: 8px 16px; color: var(--chat-muted); font-size: 0.8125rem; }
+.navigation-pin-action:disabled { opacity: 0.4; cursor: default; }
+.navigation-pins-error { display: grid; gap: 5px; padding: 8px 16px; font-size: 0.75rem; color: var(--ak-color-status-error); }
+.navigation-pins-error button { justify-self: start; border: 0; background: transparent; color: var(--chat-ink); text-decoration: underline; cursor: pointer; }
+
+@media (hover: hover) and (pointer: fine) {
+  .conversation-session-row .navigation-pin-action { opacity: 0; }
+  .conversation-session-row:hover .navigation-pin-action,
+  .conversation-session-row:focus-within .navigation-pin-action { opacity: 1; }
+}
+
 .project-navigation {
   display: grid;
-  flex: 0 1 auto;
-  max-height: 45%;
+  flex: 0 0 auto;
   align-content: start;
   gap: 2px;
   overflow-y: auto;
@@ -470,6 +515,12 @@ input {
 .project-navigation__icon:focus-visible {
   color: var(--chat-ink);
   background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+}
+
+/* Size overrides follow the base icon rule because both classes apply to pins. */
+.navigation-pin-action { width: 40px; height: 40px; }
+@media (max-width: 820px), (hover: none) {
+  .navigation-pin-action { width: 44px; height: 44px; }
 }
 
 .project-pending {
@@ -557,6 +608,9 @@ input {
   flex: 1;
   padding-inline: 4px;
 }
+
+.project-group__open:disabled,
+.project-group__toggle:disabled { cursor: default; }
 
 .project-group__open svg { flex: 0 0 auto; }
 .project-group.active > .project-group__row { background: var(--chat-chip); border-radius: 7px; }
