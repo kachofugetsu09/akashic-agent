@@ -328,7 +328,9 @@ async def _consume_stream(
                     else response_payload
                 )
                 _raise_stream_error(error)
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as error:
+        if delta_seen:
+            setattr(error, "response_delta_seen", True)
         raise
     except _CallbackError:
         raise
@@ -496,9 +498,9 @@ def _responses_tools(tools: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
                 "type": "function",
                 "name": function["name"],
                 "description": function.get("description", ""),
-                "parameters": function.get(
+                "parameters": _thaw(function.get(
                     "parameters", {"type": "object", "properties": {}}
-                ),
+                )),
                 "strict": bool(function.get("strict", False)),
             }
         )

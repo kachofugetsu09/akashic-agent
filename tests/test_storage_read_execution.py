@@ -220,3 +220,42 @@ async def test_subagent_cancel_rechecks_completion_committed_during_read(tmp_pat
         await asyncio.gather(job, return_exceptions=True)
         await root.dispose()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_reads_only_current_source_work_and_replays_fixed_prefix(tmp_path, monkeypatch):
+    """O/C3/C4：重试不读取关闭正文，重放仍归属原来的 Input 前缀。"""
+    import session.log as storage
+    from session.message import ContentPart, Control, Output
+    from tests.test_conversation_source import source
+
+    async def unused(*_):
+        raise AssertionError("重试接纳不得自行运行程序")
+
+    async with source(tmp_path, unused) as (conversation, log, make_writer, _):
+        inputs, outputs = make_writer(Input), make_writer(Output)
+        for index in range(5):
+            inputs.append(f"old-input-{index}", Input(()))
+            outputs.append(f"old-output-{index}", Output((ContentPart("text", "x" * 8192),), "complete"))
+        target = inputs.append("current", Input(()))
+        make_writer(Control).append("failed", Control("failure", target.seq, "provider failed"))
+        make_writer(Input, source="peer").append("peer", Input(()))
+        original = storage._message
+
+        def decode(row):
+            if row["id"].startswith("old-") or row["id"] == "peer":
+                raise AssertionError("重试不应解码关闭历史或其他来源正文")
+            return original(row)
+
+        monkeypatch.setattr(storage, "_message", decode)
+        resumed = await conversation.resume("retry", "current")
+        assert resumed.body == Control("resume", target.seq + 1)
+        # 后来的同来源 Input 不改变已接纳重试的 through_seq 和身份归属。
+        inputs.append("next", Input(()))
+        assert await conversation.resume("retry", "current") == resumed
+        with pytest.raises(storage.MessageConflict, match="另一条输入"):
+            await conversation.resume("retry", "next")
+        with pytest.raises(storage.MessageConflict, match="最新输入"):
+            await conversation.resume("new-retry", "current")
+        monkeypatch.setattr(storage, "_message", original)
+        assert sum(item.message_id == "retry" for item in log.reader("s").snapshot()) == 1
