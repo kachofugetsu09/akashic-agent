@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Akashic · 模型连接 showcase</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="demo-band">
+  <div class="demo-band-inner">
+    <div class="demo-brand"><strong>akashic</strong><small>模型连接 · 交互原型</small></div>
+    <nav class="demo-views" aria-label="原型视图">
+      <button type="button" data-view="connections" aria-pressed="true">连接页</button>
+      <button type="button" data-view="composer" aria-pressed="false">对话选择器</button>
+      <button type="button" data-view="notes" aria-pressed="false">设计说明</button>
+    </nav>
+    <span class="grow"></span>
+    <button type="button" class="demo-toggle" id="firstRunToggle" aria-pressed="false" title="切换首跑态：没有任何连接时页面的样子">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.4l2.2 1.4"/></svg>
+      首跑态
+    </button>
+    <button type="button" class="demo-toggle" id="themeToggle" aria-pressed="false" title="切换暗色纸面">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M13.5 9.5A5.8 5.8 0 0 1 6.5 2.5 5.8 5.8 0 1 0 13.5 9.5z"/></svg>
+      暗色
+    </button>
+  </div>
+</header>
+
+<main id="app"></main>
+<div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
