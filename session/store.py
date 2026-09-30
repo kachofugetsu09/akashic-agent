@@ -1284,7 +1284,7 @@ class SessionStore:
         source_from_seq: int,
         consolidated_through_seq: int,
     ) -> None:
-        """Fail early on missing provenance; persist_compaction repeats it atomically."""
+        """在旧摘要缺少来源证据时明确失败。"""
 
         with self._lock:
             self._validate_compaction_provenance_locked(
