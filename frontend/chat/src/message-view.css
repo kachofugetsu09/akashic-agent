@@ -8,7 +8,7 @@
 }
 
 .user-bubble {
-  max-width: min(88%, 34rem);
+  max-width: min(88%, var(--chat-bubble-max, 34rem));
   border-radius: 12px;
   padding: 8px 12px;
   color: var(--chat-ink, var(--ak-ink-primary));
@@ -23,7 +23,8 @@
 }
 
 .agent-content {
-  width: min(100%, 52rem);
+  /* 阅读列宽度由宿主的 --chat-column 拥有；缺省值供未定义它的宿主。 */
+  width: min(100%, var(--chat-column, 52rem));
   color: var(--md-sys-color-on-surface);
   font-size: var(--md-sys-typescale-body-large-size);
   line-height: 1.62;
@@ -94,7 +95,8 @@
 }
 
 .agent-content pre {
-  max-width: min(100%, calc(100vw - 40px));
+  /* 容器已经限宽，vw 假设在宽屏与窄屏都不成立。 */
+  max-width: 100%;
   overflow-x: auto;
 }
 
@@ -259,7 +261,8 @@
 
 .agent-content .code-block-header,
 .process-markdown .code-block-header {
-  padding: 6px 12px !important;
+  /* 与代码正文同一左缘（pre padding-inline 14px）。 */
+  padding: 6px 14px !important;
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 4%, transparent) !important;
   border-block-end: none;
 }
@@ -572,7 +575,8 @@ button.tool-step-summary:active {
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   min-height: 22px;
   align-items: center;
-  gap: 7px;
+  /* icon 13px + gap 6px = 19px，与展开详情的缩进一致。 */
+  gap: 6px;
 }
 
 .tool-step-icon {
