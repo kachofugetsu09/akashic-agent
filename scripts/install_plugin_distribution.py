@@ -911,6 +911,7 @@ def _current_artifact(
 def _distribution_candidate(
     *, distribution: Path, workspace: Path, plugins_home: Path,
     selected: dict[str, tuple[str, Mapping[str, object], Path]],
+    replacement_ids: frozenset[str] = frozenset(),
 ) -> tuple[DistributionSources, dict[str, ResolvedPluginSource]]:
     """Overlay fixed distribution sources while retaining exact external selections."""
     available = distribution_sources(workspace, plugins_home, distribution)
@@ -937,11 +938,15 @@ def _distribution_candidate(
                     raise SelectionConflictError(f"legacy distribution selection/cache drift: {plugin_id}")
             # No source in the current artifact means retirement, never data deletion.
             continue
-        if descriptor["source_type"] == "installed":
+        # Explicit targets get their own original-or-exact-target cache proof in
+        # _stage_deployment_targets before any persistent mutation. They are not
+        # preserved inputs: their old interpreter/code may be what is replaced.
+        if descriptor["source_type"] == "installed" and plugin_id not in replacement_ids:
             _, current_code, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
             if current_code != descriptor["code"]:
                 raise SelectionConflictError(f"external selection/cache drift: {plugin_id}")
-        if descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API}:
+        if (plugin_id not in replacement_ids and
+            descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API}):
             raise RuntimeError(f"preserved plugin runtime is incompatible with this Core: {plugin_id}; explicit reinstall required")
         if choices.get(plugin_id, True):
             candidate[plugin_id] = ResolvedPluginSource(code, descriptor["source_type"], marketplace, name,
@@ -1086,6 +1091,7 @@ def publish_distribution(
                 components, selected = _selected_components(selection, expected_root)
                 available, candidate = _distribution_candidate(
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
+                    replacement_ids=frozenset(item["plugin_id"] for item in requested),
                 )
                 _preflight_distribution_environments(available, distribution, staged)
                 external_requests = [item for item in requested if not (
