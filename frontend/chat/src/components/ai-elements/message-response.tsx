@@ -1,6 +1,6 @@
 "use client";
 
-import { alignNumericTableTokens } from "@/markdown-reading";
+import { configureReadingMarkdown } from "@/markdown-reading";
 import { configureKaomojiMarkdown } from "@/kaomoji-markdown";
 import { cn } from "@/lib/utils";
 import { canBatchStreamingMarkdown } from "@/message-rendering-policy";
@@ -14,6 +14,11 @@ import MarkdownRender, {
 import "markstream-react/index.px.css";
 import { useReducedMotion } from "motion/react";
 import { CODE_BLOCK_PROPS, ReadingCode, ReadingList, ReadingParagraph, ReadingTable } from "@/markdown-reading-nodes";
+import type { MarkdownIt } from "stream-markdown-parser";
+
+function configureMessageMarkdown(markdown: MarkdownIt) {
+  return configureReadingMarkdown(configureKaomojiMarkdown(markdown));
+}
 
 export interface MessageResponseProps {
   children: string;
@@ -101,8 +106,8 @@ export const MessageResponse = memo(function MessageResponse({
         codeBlockProps={CODE_BLOCK_PROPS}
         codeBlockLightTheme="vitesse-light"
         codeBlockDarkTheme="vitesse-dark"
-        parseOptions={{ reuseStableTopLevelNodes: true, postTransformTokens: alignNumericTableTokens }}
-        customMarkdownIt={configureKaomojiMarkdown}
+        parseOptions={{ reuseStableTopLevelNodes: true }}
+        customMarkdownIt={configureMessageMarkdown}
       />
     </div>
   );

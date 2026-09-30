@@ -1,3 +1,5 @@
+import type { MarkdownIt, MarkdownToken } from "stream-markdown-parser";
+
 /** 只识别显式的纯文本语言，不把未知代码语言降为说明文字。 */
 export function isPlainTextLanguage(language: string) {
   return /^(?:text|txt|plaintext)?$/iu.test(language.trim());
@@ -15,8 +17,19 @@ export function isConceptLabel(label: string, description: string) {
   return label.trim().length > 0 && [...label.trim()].length <= 40 && description.trim().length > 0;
 }
 
+/**
+ * 表格对齐在 MarkdownIt 的局部 token 阶段补齐。不要使用 postTransformTokens：
+ * 它会禁用稳定节点复用，并在每次追加时克隆全部 token、重复转换整个正文。
+ */
+export function configureReadingMarkdown(markdown: MarkdownIt): MarkdownIt {
+  markdown.core.ruler.push("akashic_numeric_tables", (state: { tokens: MarkdownToken[] }) => {
+    state.tokens = alignNumericTableTokens(state.tokens);
+  });
+  return markdown;
+}
+
 /** parser 会把未指定的表格对齐转成 left，因此在 token 阶段补齐数值列对齐。 */
-export function alignNumericTableTokens(tokens: import("stream-markdown-parser").MarkdownToken[]) {
+function alignNumericTableTokens(tokens: MarkdownToken[]) {
   const result = [...tokens];
   let columns: number[][] = [];
   let column = 0;
