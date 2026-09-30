@@ -48,7 +48,7 @@
 
 | 阶段 | 必须完成的动作 | 退出证据 |
 |---|---|---|
-| Read | 每个新会话先读 [`INDEX.md`](INDEX.md)，再按索引读相关需求、NOW、决策、设计和真实实现 | 已确认事实、未知项和文档冲突已经列出 |
+| Read | 每个新会话先读 [`INDEX.md`](INDEX.md)，再按索引读相关需求、NOW、决策、设计和真实实现；修改 `frontend/**/src` 或插件 web UI 时另读 [`frontend/design.md`](../frontend/design.md) | 已确认事实、未知项和文档冲突已经列出 |
 | Ownership | 对跨仓库、客户端、插件和协议任务声明 `capability_owner`、`consumer_scope`、`runtime_patch`、`runtime_patch_reason`、`authoritative_state_owner` 与 `client_only_alternative` | 核心改动能引用已批准语义；“未来可能复用”没有被当作 owner 证据 |
 | Isolate | 核对目标分支、base commit、worktree、唯一 writer、用户未提交改动、恢复点、worktree 本地 CodeGraph 索引和 Python 环境 | 改动不会写进用户当前 checkout、其他 agent 的 worktree 或正式 Akashic workspace；CodeGraph 指向当前 worktree，Python 使用已核对的 venv |
 | Contract | 声明目标、成功标准、`change_type`、`semantic_delta`、受保护状态、允许副作用、验证和回滚 | 高风险歧义已获确认，或任务停止等待确认 |
@@ -122,6 +122,8 @@ python scripts/check_yoyo_migrations.py --base origin/main
 python scripts/generate_host_bridge_protocol.py --check
 npm run typecheck
 ```
+
+前端布局、断点或 token 变化另按 [`frontend/design.md`](../frontend/design.md) §7 验收：固定 Chromium 截图前后对比；窄屏行为变化运行 `npm run check:narrow-ui`（需要可读取的服务，截图留在私有目录）。
 
 普通 Pull Request 只跑概念基线 pytest 与上述静态检查。正式发布所需的真实 workspace 演练由拥有部署输入的发布流程负责，仓库 CI 不伪造该证据。change-impact Gate 已退役；历史清理范围见[测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)（已被基线文档取代）。
 

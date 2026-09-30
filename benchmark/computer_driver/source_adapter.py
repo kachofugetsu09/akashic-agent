@@ -23,20 +23,42 @@ class SourceSession(GatewaySession):
             "timeoutMs": 30000,
         }
         started = perf_counter()
+        self.last_call_id = payload["context"]["call_id"]
+        record = {"driver_input": payload, "outcome": "pending"}
+        self.actions.append(record)
+        try:
+            async with self.http.post(
+                self.gateway + "/driver/run", json=payload
+            ) as response:
+                result = await response.json()
+                record.update(
+                    output=result, http_status=response.status, outcome="response"
+                )
+                response.raise_for_status()
+                return result
+        except asyncio.CancelledError:
+            record["outcome"] = "caller_cancelled"
+            raise
+        finally:
+            record["seconds"] = perf_counter() - started
+
+    async def cancel_call(self):
+        """取消本 Session 最近一次调用，等待正式 driver 的结算回执。"""
+        payload = {"call_id": self.last_call_id}
         async with self.http.post(
-            self.gateway + "/driver/run", json=payload
+            self.gateway + "/driver/cancel", json=payload
         ) as response:
             result = await response.json()
             self.actions.append(
                 {
-                    "driver_input": payload,
+                    "cancel_input": payload,
                     "output": result,
                     "http_status": response.status,
-                    "seconds": perf_counter() - started,
                 }
             )
             response.raise_for_status()
-            return result
+            if result != {"released": True}:
+                raise RuntimeError(f"Unexpected cancel receipt: {result}")
 
     async def start(self, config=None, headless=None):
         await super().start(config, headless)

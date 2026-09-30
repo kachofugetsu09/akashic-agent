@@ -1,5 +1,5 @@
 import { focusMessagePart } from "./message-actions";
-import { timelineVisibleMessages, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, type ReplyActivity } from "./message-timeline";
+import { timelineVisibleMessages, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, type ReplyActivity } from "./message-timeline";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -264,9 +264,10 @@ function formatMessageTime(value: string) {
 }
 
 /** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
-export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
+export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
   messages: TimelineMessage[];
   activities: ReplyActivity[];
+  refresh?: number;
   status: ChatStatus;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   copiedMessageId: string;
@@ -279,6 +280,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
   const toolResults = useMemo(() => timelineToolResults(messages), [messages]);
   const groups = useMemo(() => timelineReplyGroups(messages, activities), [messages, activities]);
+  const inputStarts = useMemo(() => timelineInputStarts(messages), [messages]);
+  const refreshTokens = useMemo(() => timelineSourceRefreshTokens(messages, activities, refresh), [messages, activities, refresh]);
   const visibleMessages = useMemo(() => timelineVisibleMessages(messages, groups), [messages, groups]);
   const anchorIndexes = useMemo(() => timelineAnchorIndexes(messages, groups), [messages, groups]);
   const onNavigate = useCallback((id: string, partIndex?: number) => {
@@ -298,10 +301,9 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     }}>
     <TimelineMessageView message={message} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)}
       hideProcess={groups.moved.has(message.id)} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
-      beforeReasoning={(origin) => origin.body.kind === "output" ? <PluginUiSlot name="turn.before_reasoning"
-        sessionId={origin.session_id} messageId={origin.id} /> : null}
-      prefetchReasoning={(origin) => origin.body.kind === "output" ? <PluginUiSlot name="turn.before_reasoning"
-        sessionId={origin.session_id} messageId={origin.id} prefetch /> : null}
+      beforeReasoning={(origin) => needsBeforeReasoningFallback(origin, inputStarts) ? <PluginUiSlot name="turn.before_reasoning"
+        sessionId={origin.session_id} messageId={origin.id} block={{ source: origin.source }}
+        refreshToken={refreshTokens.get(timelineSourceKey(origin))} /> : null}
       beforePart={(part, index, origin) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
         name="turn.before_tool" sessionId={origin.session_id} messageId={origin.id} block={{ ...part, message_id: origin.id, part_index: index }} /> : null}
       afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
@@ -314,11 +316,17 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         onReply={() => onReply(timelineReply(message))}
         onCopy={() => { void navigator.clipboard.writeText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }} />
     </div> : null}
+    {message.body.kind === "input" && message.author === "user" ? <div className="message-row agent-row">
+      <div className="agent-content"><PluginUiSlot name="turn.before_reasoning"
+        sessionId={message.session_id} messageId={message.id} block={{ source: message.source }}
+        refreshToken={refreshTokens.get(timelineSourceKey(message))} /></div>
+    </div> : null}
   </div>)}</>;
 }, (previous, next) => {
-  // 历史分组和引用导航只读取活动的身份、来源和顺序；草稿正文由活动行展示。
+  // 草稿正文只更新活动行；身份/活动阶段变化才让稳定输入槽位重新读取事实。
   return previous.messages === next.messages
     && previous.status === next.status
+    && previous.refresh === next.refresh
     && previous.messageElementsRef === next.messageElementsRef
     && previous.copiedMessageId === next.copiedMessageId
     && previous.onReply === next.onReply
@@ -329,6 +337,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
       const other = next.activities[index];
       return activity.handle === other.handle
         && activity.session_id === other.session_id
-        && activity.source === other.source;
+        && activity.source === other.source
+        && activity.active === other.active
+        && activity.preview?.message_id === other.preview?.message_id;
     });
 });

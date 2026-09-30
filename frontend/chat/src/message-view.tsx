@@ -46,7 +46,7 @@ import type {
   ToolBlock,
 } from "./chat-message";
 import type { ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
-import { timelineReply, timelineText, historyTranscript, isTimelinePartVisible } from "./message-timeline";
+import { timelineReply, timelineText, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
 
@@ -87,8 +87,10 @@ const MessageBody = memo(function MessageBody({
 });
 
 /** 草稿复用聊天的等待和思考组件，提交后由相同样式的历史行接替。 */
-export function ReplyActivityView({ activity, committed, onError, processMessages = [], toolResults = new Map() }: {
+export function ReplyActivityView({ activity, committed, onError, processMessages = [], toolResults = new Map(), inputStarts = new Map(), refreshToken }: {
   activity: ReplyActivity;
+  inputStarts?: ReadonlyMap<string, number>;
+  refreshToken?: string;
   committed: ReadonlySet<string>;
   processMessages?: TimelineMessage[];
   toolResults?: ReadonlyMap<string, TimelineMessage>;
@@ -102,16 +104,14 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
   if (preview && !draft && !processMessages.length) return null;
   const flow = timelineFlow(processMessages, undefined, toolResults);
   const text = draft?.text ?? "";
-  const beforeReasoning = (message: TimelineMessage, prefetch = false) => <PluginUiSlot name="turn.before_reasoning"
-    sessionId={message.session_id} messageId={message.id} prefetch={prefetch} />;
+  const beforeReasoning = (message: TimelineMessage) => needsBeforeReasoningFallback(message, inputStarts)
+    ? <PluginUiSlot name="turn.before_reasoning" sessionId={message.session_id} messageId={message.id}
+      block={{ source: message.source }} refreshToken={refreshToken} /> : null;
   return <div className="message-row agent-row reply-activity" data-reply-handle={activity.handle}
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
     <div className="agent-content">
-      <TimelineProcess flow={flow} draftThinking={draft?.thinking} streaming={activity.active}
+      <TimelineProcess flow={flow} draftThinking={draft?.thinking}
         beforeReasoning={beforeReasoning}
-        prefetchReasoning={(message) => beforeReasoning(message, true)}
-        draftSlot={draft ? <PluginUiSlot name="turn.before_reasoning" sessionId={activity.session_id}
-          messageId={draft.message_id} block={{ source: activity.source }} /> : undefined}
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
@@ -273,13 +273,10 @@ function FlowItemView({ item, beforePart, onCopyToolDetail, partView }: {
 }
 
 /** 历史与实时回复共用一条流，过程项继续引用原消息和 part。 */
-function TimelineProcess({ flow, streaming = false, draftThinking = "", draftSlot, beforeReasoning, prefetchReasoning, beforePart, onCopyToolDetail, partView }: {
+function TimelineProcess({ flow, draftThinking = "", beforeReasoning, beforePart, onCopyToolDetail, partView }: {
   flow: FlowItem[];
-  streaming?: boolean;
   draftThinking?: string;
-  draftSlot?: ReactNode;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
-  prefetchReasoning?: (message: TimelineMessage) => ReactNode;
   beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
   onCopyToolDetail?: (text: string) => void;
   partView?: FlowPartViewProps;
@@ -287,10 +284,8 @@ function TimelineProcess({ flow, streaming = false, draftThinking = "", draftSlo
   // 槽位锚在首个过程项之前；纯文本输出没有过程项时退到流开头，仍由提交消息提供上下文。
   const slotIndex = flow.findIndex((item) => item.kind === "thinking" || item.kind === "tool");
   const slotAt = slotIndex >= 0 ? slotIndex : (flow.length ? 0 : -1);
-  const slotOrigin = slotAt >= 0 ? flow[slotAt]?.origin : undefined;
-  if (!flow.length && !draftThinking && !draftSlot) return null;
+  if (!flow.length && !draftThinking) return null;
   return <>
-    {!streaming && slotOrigin ? prefetchReasoning?.(slotOrigin) : null}
     <div className="process-trace">
       {flow.map((item, index) => (
         <Fragment key={item.key}>
@@ -298,21 +293,19 @@ function TimelineProcess({ flow, streaming = false, draftThinking = "", draftSlo
           <FlowItemView item={item} beforePart={beforePart} onCopyToolDetail={onCopyToolDetail} partView={partView} />
         </Fragment>
       ))}
-      {slotAt < 0 ? draftSlot : null}
       {draftThinking ? <ThinkingRow content={draftThinking} streaming /> : null}
     </div>
   </>;
 }
 
 /** 保留消息引用与 part 位置，复用原聊天的过程和正文组件。 */
-export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, prefetchReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, canLoadReferences = false }: {
+export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, canLoadReferences = false }: {
   message: TimelineMessage;
   hideBody?: boolean;
   canLoadReferences?: boolean;
   toolResults: ReadonlyMap<string, TimelineMessage>;
   renderAttachment?: (attachment: TimelineAttachment) => ReactNode;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
-  prefetchReasoning?: (message: TimelineMessage) => ReactNode;
   processMessages?: TimelineMessage[];
   hideProcess?: boolean;
   beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
@@ -338,7 +331,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
     <div className={body.kind === "input" ? "user-bubble" : "agent-content"}>
       {leadingContent}
       {hasFlow ? <TimelineProcess flow={flow}
-        beforeReasoning={beforeReasoning} prefetchReasoning={prefetchReasoning} beforePart={beforePart}
+        beforeReasoning={beforeReasoning} beforePart={beforePart}
         partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
       {body.kind === "control" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>

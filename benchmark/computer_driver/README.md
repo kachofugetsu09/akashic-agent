@@ -20,7 +20,7 @@
        独立 Computer 容器与空 profile
 ```
 
-此阶段不启动模型或 Akashic Core，不加载 SessionDB、记忆、调度、插件管理器或正式 workspace。
+参考解法阶段不启动模型或 Akashic Core，不加载 SessionDB、记忆、调度、插件管理器或正式 workspace。
 这份报告衡量的是上游参考步骤经过当前 driver 的表现，不是 Agent 成功率，也不是上游原生环境排行榜成绩。
 
 ## 安装
@@ -102,3 +102,82 @@ python benchmark/computer_driver/run.py --driver source \
 
 `--suppress-actions` 是负对照，保留观察但不发送 solver 动作。每次创建独立容器、tmpfs profile
 和随机 loopback 端口。manifest 保存镜像 ID、源码快照、依赖、成绩和 cleanup 状态。
+
+## 原版 Agent 接线（#549）
+
+`--agent --driver source` 使用固定 `cua-agent==0.8.4` 的 `ComputerAgent.run`、
+工具历史和 callbacks；原题 setup/evaluate 保持不变，`solve` 不会执行。
+固定 SDK 的 `custom_loop` 缺少 `run` 所需配置，通用视觉 loop 又将 schema 放入提示文本。
+因此 `agent_adapter.py` 使用上游 `register_agent` 注册一个 provider 步骤，
+将原 SDK Responses items 转成 LiteLLM 原生 `tools/tool_calls`，保留 call ID。
+`computer_action` 避开 SDK 对名为 `computer` 的另一套协议转换；异步 callable 直接等待真实 driver。
+此接线没有带入 Akashic Core、插件管理器或正式运行数据。
+
+```text
+┌──────────────────────────────┐
+│ 原 Cua Agent 循环 / 历史       │
+└──────────────┬───────────────┘
+               ▼
+    provider 步骤（native tools）
+       │                   │
+ computer_action       browser_run（可选）
+       └─────────┬─────────┘
+                 ▼
+       每题独立 Computer 容器
+                 │
+        原 Environment / grader
+        （只由 benchmark host 使用）
+```
+
+在独立 benchmark 环境安装 `agent-requirements.lock`；它保留原 90 个锁定版本，
+只补齐 SDK callable schema 使用的 `numpydoc` 及其固定依赖。
+
+```sh
+uv pip install --no-sources --python benchmark/data/venv/bin/python \
+  -r benchmark/computer_driver/agent-requirements.lock ./benchmark/data/cua/libs/cua-bench
+# 将凭据放入 BENCHMARK_API_KEY，避免写在命令或结果中。
+benchmark/data/venv/bin/python benchmark/computer_driver/run.py --driver source --agent \
+  --model openai/<vision-model> --api-base <provider-endpoint> \
+  --image <existing-computer-image> --output /tmp/cua-agent-desktop
+# Browser + Desktop 条件另用新 output，并添加 --agent-browser。
+```
+
+每个原题变体使用自己的容器、空 tmpfs profile 和随机 loopback 端口。
+工具只有原生 Sky 动作；Browser 条件额外注册正式 `browser_run`。
+不按任务选择 typed-input helper，不给模型参考步骤、grader JS 或答案。
+通用指导取自本次源码的 Computer SKILL，并记录原文摘要和证据副本。
+镜像 ID、实际容器内 gateway/driver 摘要与源码快照匹配情况分别记录；
+`--source` 不会替换 source 模式镜像内的驱动，候选必须先构建自己的镜像。
+
+默认每题最多 12 次 provider 步骤、180 秒；单请求 30 秒、输出 1024 tokens、temperature=0。
+SDK 与 LiteLLM 重试均为 0；预算耗尽、超时和 provider 错误分别记录。
+初始截图转为原尺寸 PNG；每次后续请求带初始图、最新桌面图及本步 driver 返回的图片。
+不裁切原题、不缩放模型坐标。截图不是 base64 文本工具结果。
+`agent.json` 保留真实 request/response、SDK yields、原生 usage；`results.json` 保留动作、
+原 reward、实际容器与清理结果。失败或超时的 reward 只是清理前快照，不能算完成。
+模拟 provider 必须标为 `--provider-kind simulated`，其结果始终排除于模型成绩。
+证据会包含页面内容；不要将正式帐号或私有 workspace 接入此基准。
+
+Browser 的通用 JS **没有形成可信观察隔离**。提示要求只能约束行为意图；
+它不能证明轨迹没有读取页面脚本或私有状态；现有 evaluate 的只读 scope 也不替代观察有效性审查。Browser 默认 `requires_manual_review`，
+未审核轨迹不能进入成功率。审核完整 `agent.json` 和实际动作后，可写独立 ledger：
+
+```json
+{
+  "reviewer": "reviewer-name",
+  "cases": {
+    "click-button-0": {
+      "agent_sha256": "<sha256 of this episode agent.json>",
+      "validity": "invalid",
+      "reason": "The action accessed a private grader variable."
+    }
+  }
+}
+```
+
+`python benchmark/computer_driver/score_agent.py /tmp/cua-agent-browser --review /tmp/review.json`
+只读原始结果，拒绝过期摘要或未知题目；无效/待审轨迹、模拟 provider、未完成或清理失败均排除。
+原始 reward 不删改。该程序不自动判断代码有没有读答案。
+
+本次交付是可复跑的 Agent 接线。真实模型的六个失败样本、全部 68 个原题、
+配对重复、真实账单与产品端验收仍需另跑；本地 HTTP 模拟 provider 只证明接线，不能冒充模型成绩。

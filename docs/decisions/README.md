@@ -84,6 +84,8 @@
 
 | [0080](0080-retire-qq-runtime-support.md) | accepted | 退役全部 QQ 运行支持，保留旧数据与历史证据 | ONB-001、PLG-003、STA-001～STA-003、SEC-001、SEC-002 |
 
+| [0081](0081-content-views-keep-original-messages.md) | accepted | 长结果折叠复用原消息与实际展示回执 | CTX-008、STA-001、CAP-001 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。
