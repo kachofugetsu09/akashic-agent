@@ -355,6 +355,9 @@ class HostBridgeShellProcessManager:
         self, operation: str, *, allowed_dir: Path | None, arguments: dict[str, Any]
     ) -> str | ToolResult:
         """把已有四种文件工具参数转换为明确的 oneof。"""
+        # Protobuf 会把 Python bool 转成整数；在丢失类型前拒绝错误参数。
+        if operation == "list_dir" and isinstance(arguments.get("limit"), bool):
+            raise ValueError("Host Bridge list_dir.limit 必须是整数，不能是布尔值")
         request = pb.FileRequest(
             context=self._request_context(),
             allowed_dir=None if allowed_dir is None else str(allowed_dir),
