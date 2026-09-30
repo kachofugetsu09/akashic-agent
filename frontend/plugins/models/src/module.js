@@ -931,7 +931,7 @@ export function activate(ctx) {
           if (modelId) await command({type: "set_default", expected_revision: revision, role: "default", model_id: modelId});
         };
         let dirty = false, busy = false;
-        // 本面板内 createManual 成功后连接已真实存在，后续可继续探测与添加模型。
+        // 手动创建或认证提交成功后，连接已真实存在，可继续探测、同步与添加模型。
         let created = false;
         const operations = {
           async discover(input, signal) {
@@ -1025,7 +1025,10 @@ export function activate(ctx) {
           async finishAuth(attemptId) {
             auth.checkFinish(attemptId);
             const receipt = await command({type: "finish_auth", expected_revision: catalog.revision, attempt_id: attemptId});
-            if (receipt.status !== "pending") auth.complete(attemptId);
+            if (receipt.status !== "pending") {
+              auth.complete(attemptId);
+              if (receipt.status === "committed") created = true;
+            }
             return receipt;
           },
           async cancelAuth(attemptId) {
