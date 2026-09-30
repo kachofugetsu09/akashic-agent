@@ -623,6 +623,7 @@ export function activate(ctx) {
           const close = () => {
             openOverlays.delete(release);
             scrim.removeEventListener("cancel", onCancel);
+            window.removeEventListener("akashic:before-navigate", onNavigate);
             scrim.close();
             scrim.remove();
           };
@@ -633,8 +634,14 @@ export function activate(ctx) {
             resolve(value);
           };
           const onCancel = (event) => { event.preventDefault(); settle(null); };
+          // Shell keeps inactive pages mounted. Wait for every leave guard before
+          // releasing a sheet; a cancelled navigation must preserve the selection.
+          const onNavigate = (event) => {
+            queueMicrotask(() => { if (!event.defaultPrevented) settle(null); });
+          };
           closeButton.addEventListener("click", () => settle(null));
           scrim.addEventListener("cancel", onCancel);
+          window.addEventListener("akashic:before-navigate", onNavigate);
           scrim.append(sheet);
           openOverlays.add(release);
           page.appendChild(scrim);

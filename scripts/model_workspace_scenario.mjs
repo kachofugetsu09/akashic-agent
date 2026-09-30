@@ -22,7 +22,7 @@ function providerEntry(activateProvider) {
   return entry;
 }
 
-async function mount(provider) {
+async function mount(provider, initialCatalog = null) {
   const dom = new JSDOM('<main id="host"></main>', {url: "http://model-workspace.local"});
   for (const name of ["window", "document", "Option", "Event", "HTMLElement", "FormData"]) {
     globalThis[name] = dom.window[name];
@@ -40,7 +40,7 @@ async function mount(provider) {
   dom.window.setTimeout = callback => { timers.push(callback); return timers.length; };
   dom.window.clearTimeout = () => {};
   dom.window.confirm = () => true;
-  const catalog = {revision: 1, connections: [], models: [], roleBindings: {}, defaultEmbeddingModelId: null};
+  const catalog = initialCatalog ?? {revision: 1, connections: [], models: [], roleBindings: {}, defaultEmbeddingModelId: null};
   const commands = [];
   let entry, connectionId;
   activate({
@@ -50,6 +50,9 @@ async function mount(provider) {
       if (init?.method === "POST") {
         const payload = JSON.parse(init.body);
         commands.push(payload);
+        if (!["start_auth", "cancel_auth"].includes(payload.type)) {
+          assert.equal(payload.expected_revision, catalog.revision, "writes use the last committed catalog revision");
+        }
         if (payload.type === "start_auth") {
           connectionId = payload.connection_id;
           result = {revision: catalog.revision, status: "pending", attemptId: "fixture-attempt", challenge: {interval: 5}};
@@ -58,7 +61,7 @@ async function mount(provider) {
           result = {revision: ++catalog.revision, status: "committed"};
         } else if (payload.type === "sync_models") {
           assert.equal(catalog.connections.length, 1, "sync follows committed authentication");
-          catalog.models.push({id: "fixture-model", connectionId, kind: "chat", model: "fixture-chat", availability: "available", capabilities: {inputModalities: ["text"]}});
+          catalog.models.push({id: "fixture-model", connectionId, kind: "chat", model: "fixture-chat", availability: "available", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}});
           result = {revision: ++catalog.revision, status: "committed"};
         } else if (payload.type === "set_default") {
           catalog.roleBindings[payload.role] = payload.model_id;
@@ -99,6 +102,31 @@ for (const activateProvider of [activateOpenCode, activateCodex]) {
   } finally {
     await fixture.close();
   }
+}
+
+const roleFixture = await mount(providerEntry(activateCodex), {
+  revision: 1,
+  connections: [{id: "saved", name: "Saved", driverId: "codex", availability: "available"}],
+  models: [{id: "saved-model", connectionId: "saved", kind: "chat", model: "saved-chat", availability: "available", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}}],
+  roleBindings: {default: "saved-model"}, defaultEmbeddingModelId: null,
+});
+try {
+  document.querySelector(".settings-role-pick").click();
+  await settle();
+  assert.ok(document.querySelector(".settings-sheet-scrim[open]"));
+  window.addEventListener("akashic:before-navigate", event => event.preventDefault(), {once: true});
+  window.dispatchEvent(new Event("akashic:before-navigate", {cancelable: true}));
+  await settle();
+  assert.ok(document.querySelector(".settings-sheet-scrim[open]"), "a later leave guard may cancel navigation");
+  const navigation = new Event("akashic:before-navigate", {cancelable: true});
+  window.dispatchEvent(navigation);
+  await settle();
+  assert.equal(navigation.defaultPrevented, false);
+  assert.equal(document.querySelector("dialog[open]"), null, "retained inactive pages must not own a modal");
+  assert.deepEqual(roleFixture.commands, [], "abandoning the chooser never saves a selection");
+  checks.push("Role chooser preserves cancelled navigation and releases accepted navigation without writing a binding");
+} finally {
+  await roleFixture.close();
 }
 
 console.log(JSON.stringify({passed: checks.length, boundary: "Actual UI modules, synthetic HTTP and JSDOM; no browser/backend validation", checks}, null, 2));
