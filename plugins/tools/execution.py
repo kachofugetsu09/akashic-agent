@@ -66,38 +66,6 @@ class ToolExecution:
             key, call.binding_id, call.arguments, reply, commit_after,
         ))
 
-    async def deny_call(self, reply: MessageReply, reason: str) -> Result:
-        """结算不再获准启动的调用；已有执行先排空，崩溃后的 start 不能伪称未发生。"""
-        self._state.check_access(reply.reader, reply.writer)
-        call = reply.request()
-        key = durable_call_key(reply.call_ref)
-        fingerprint = _fingerprint(call.binding_id, call.arguments, reply)
-
-        async def deny(task: Task) -> Result:
-            record = self._record(key, fingerprint)
-            if record is not None:
-                if record.value["phase"] == "done":
-                    return reply.read(record.value["result"])
-            reply.check(self._state)
-            if record is None:
-                record = self._save(key, None, {
-                    "version": 1, "request": fingerprint, "binding": call.binding_id,
-                    "reply_id": reply.message_id,
-                    "phase": "prepared", "arguments": call.arguments,
-                })
-            outcome: Outcome = "interrupted" if record.value["phase"] == "started" else "denied"
-            return finish(self._state, key, record, Result(outcome, (ContentPart("text", reason),)), reply)
-
-        def admit(slot: TaskSlot) -> Task:
-            return slot.current if slot.current is not None else slot.start(deny)
-
-        task = await self._tasks.admit((self._task_key, key), admit)
-        # 普通拒绝仍等待已跨过 start 的 owner；明确放弃使用独立的控制消费者。
-        result = coerce_result(await task.join())
-        if self._record(key, fingerprint) is None:
-            raise RuntimeError("工具结算缺少回执")
-        return result
-
     async def _execute(
         self,
         key: str,
