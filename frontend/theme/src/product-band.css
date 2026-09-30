@@ -1,0 +1,204 @@
+/*
+ * 产品顶栏：工作台（shell_ui）与对话页（chat）共用的一条导航带。
+ *
+ * 本文件是顶栏几何与视觉的唯一 owner；两个入口只保留各自的行为
+ * （shell 做 hash 页切换并滑动指示器，chat 是普通链接导航）。
+ * 纸感表达：底色融入连续纸面，结构只靠底边 1px 规则线；
+ * 当前位置用一条贴合内容宽度的 2px 规则线表达，恰好压在底边发丝线上。
+ */
+
+:root {
+  --band-height: 48px;
+}
+
+.product-band {
+  --band-inline: 16px;
+  --band-gap: 8px;
+  --band-nav-gap: 6px;
+  --band-group-gap: 16px;
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+  gap: var(--band-gap);
+  padding-block: env(safe-area-inset-top, 0px) 0;
+  padding-inline: max(var(--band-inline), env(safe-area-inset-left, 0px))
+    max(var(--band-inline), env(safe-area-inset-right, 0px));
+  border-block-end: 1px solid var(--ak-rule-subtle);
+}
+
+.product-band__brand {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--band-gap);
+  margin-inline-end: var(--band-group-gap);
+  color: var(--md-sys-color-primary);
+}
+
+.product-band__brand img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  filter: var(--ak-ink-image-filter);
+}
+
+.product-band__mark {
+  display: block;
+  width: 22px;
+  height: 22px;
+  background: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
+.product-band__brand strong {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.product-band__nav {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+
+.product-band__nav::-webkit-scrollbar {
+  display: none;
+}
+
+.product-band__track {
+  position: relative;
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  align-items: stretch;
+  gap: var(--band-nav-gap);
+}
+
+.product-band__item {
+  position: relative;
+  display: inline-flex;
+  min-width: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.4rem;
+  border: 0;
+  border-radius: 8px;
+  padding-block: 0;
+  padding-inline: 12px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.product-band__item:hover {
+  color: var(--ak-ink-primary);
+}
+
+.product-band__item:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}
+
+.product-band__item[aria-current="page"] {
+  color: var(--ak-ink-primary);
+  font-weight: 650;
+}
+
+.product-band__item.is-disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.product-band__item svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  stroke-width: 1.75;
+}
+
+/* 静态激活规则线：宽度跟随内容（扣除 item 的 12px padding），压在底边发丝线上。 */
+.product-band__item[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 12px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px 1px 0 0;
+  background: var(--ak-rule-focus);
+}
+
+/* 滑动指示器：宿主在 track 上写 --band-indicator-x/-w；存在时取代逐项 ::after。 */
+.product-band__indicator {
+  position: absolute;
+  inset-inline-start: 0;
+  bottom: 0;
+  width: var(--band-indicator-w, 0);
+  height: 2px;
+  border-radius: 1px 1px 0 0;
+  background: var(--ak-rule-focus);
+  transform: translateX(var(--band-indicator-x, 0));
+  transition:
+    transform var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized),
+    width var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized);
+  pointer-events: none;
+}
+
+.product-band__track:not([data-ready]) .product-band__indicator {
+  transition: none;
+}
+
+.product-band__track:has(.product-band__indicator) .product-band__item[aria-current="page"]::after {
+  content: none;
+}
+
+.product-band__footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--band-nav-gap);
+  margin-inline-start: auto;
+  padding-inline-start: var(--band-group-gap);
+}
+
+.product-band__action {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 0.4rem;
+  border: 0;
+  border-radius: 8px;
+  padding-block: 0;
+  padding-inline: 12px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.product-band__action:hover {
+  color: var(--ak-ink-primary);
+}
+
+.product-band__action:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}

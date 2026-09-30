@@ -217,6 +217,18 @@ function applySelection(next: ThemeSelection): void {
   window.dispatchEvent(new CustomEvent(THEME_EVENT));
 }
 
+/** 用户主动切换主题时整页淡交；reduced-motion 或不支持 View Transitions 时瞬时切换。 */
+function applySelectionWithCrossfade(next: ThemeSelection): void {
+  const startViewTransition = (document as Document & {
+    startViewTransition?: (update: () => void) => unknown;
+  }).startViewTransition;
+  if (!startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    applySelection(next);
+    return;
+  }
+  startViewTransition.call(document, () => applySelection(next));
+}
+
 export function initializeTheme(): ThemeSelection {
   installThemeCss();
   applySelection(resolveSelection(readCookieTheme() ?? CATALOG.defaultThemeId));
@@ -226,7 +238,7 @@ export function initializeTheme(): ThemeSelection {
 export function setTheme(requestedThemeId: string, persist = true): ThemeSelection {
   if (!THEME_ID_PATTERN.test(requestedThemeId)) throw new Error(`Theme id 无效: ${requestedThemeId}`);
   const next = resolveSelection(requestedThemeId);
-  applySelection(next);
+  applySelectionWithCrossfade(next);
   if (persist) {
     document.cookie = `${THEME_COOKIE}=${encodeURIComponent(requestedThemeId)}; Path=/; Max-Age=31536000; SameSite=Lax`;
   }
