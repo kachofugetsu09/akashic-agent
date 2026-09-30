@@ -289,6 +289,10 @@ class MessageConflict(ValueError):
     """消息身份、引用或来源前缀发生冲突。"""
 
 
+class SourceHeadConflict(MessageConflict):
+    """来源 head 的 CAS 失败，事务未提交；调用者可重新选择前缀。"""
+
+
 class WriterExpired(RuntimeError):
     """任务已释放写入权，不能再提交新的输出。"""
 
@@ -1309,7 +1313,7 @@ class MessageWriter:
             (self._session_id, self._source),
         ).fetchone()[0]
         if expected_source_head is not None and head != expected_source_head:
-            raise MessageConflict(f"来源 head 已变化: {head} != {expected_source_head}")
+            raise SourceHeadConflict(f"来源 head 已变化: {head} != {expected_source_head}")
         binding_ids, artifacts = prepared.bindings, prepared.artifacts
         self._check_artifacts(artifacts)
         if isinstance(body, ToolResult):

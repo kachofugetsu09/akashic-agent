@@ -163,3 +163,58 @@ async def test_source_commit_drains_before_cancel_and_rejects_late_start(tmp_pat
         finally:
             gate.release.set()
             await asyncio.gather(*(cast(Awaitable[object], item) for item in (job, effect, queued, close_job) if item is not None), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_stop_waiting_for_storage_preserves_reply_and_explicit_head(tmp_path, monkeypatch, automatic):
+    """C3/C4：内部停止重选前缀，显式 head 不得被自动放宽，原回复保持完整。"""
+    from session.log import MessageWriter, SourceHeadConflict
+    waiting = asyncio.Event()
+    release = asyncio.Event()
+    answer_ready = asyncio.Event()
+    finish = asyncio.Event()
+    original = MessageWriter.append_async
+
+    async def append(writer, message_id, body, **kwargs):
+        if message_id == "stop":
+            waiting.set()
+            await release.wait()
+        return await original(writer, message_id, body, **kwargs)
+
+    async def run(task, reader, writer):
+        answer_ready.set()
+        await finish.wait()
+        return writer.append("answer", Output((), "complete"),
+                             expected_source_head=reader.head(source="conversation"))
+
+    monkeypatch.setattr(MessageWriter, "append_async", append)
+    async with source(tmp_path, run) as (conversation, log, _writer, program):
+        first = await conversation.accept("input", Input(()))
+        task = await conversation.start(program)
+        assert task is not None
+        await answer_ready.wait()
+        operation = conversation.pause("stop") if automatic else conversation.control(
+            "stop", Control("pause", first.seq), expected_head=first.seq, handle=task.handle,
+        )
+        job = asyncio.create_task(operation)
+        try:
+            await waiting.wait()
+            finish.set()
+            answer = await task.join()
+            release.set()
+            if automatic:
+                stop = await job
+                assert isinstance(stop.body, Control) and stop.body.through_seq == answer.seq
+                assert [m.message_id for m in log.reader("s").snapshot()] == ["input", "answer", "stop"]
+                assert await conversation.pause("stop") == stop
+            else:
+                with pytest.raises(SourceHeadConflict):
+                    await job
+                assert [m.message_id for m in log.reader("s").snapshot()] == ["input", "answer"]
+            assert log.reader("s").get("input") == first
+            assert log.reader("s").get("answer") == answer
+        finally:
+            finish.set()
+            release.set()
+            await asyncio.gather(job, return_exceptions=True)

@@ -212,3 +212,5 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 - O / C1: `test_slow_ui_owner_leaves_capacity_and_queued_timeout_never_runs` uses real Root/UI registrations and physical worker threads. It proves another owner can query, a queued timeout never invokes its handler, and shutdown waits for running work even after caller cancellation.
 
 - `test_source_commit_drains_before_cancel_and_rejects_late_start`: C3/C4/C5，真实 SourceSession、Tasks、MessageLog 和 owner transaction 上，Input 已提交但 loop 通知仍被 worker 屏障暂停时，旧 Task 仍 active。取消必须排空并通知一次、撤权；晚到首次 intent 必须回滚。关闭变体还守护已接纳操作排空和后来启动拒绝。`32b0aaf2` 在真实通知边界因同步 I/O 占用 loop 失败，候选两变体通过；原中断测试没有跨 await 的提交窗口，无法守住该边界。短读改用 private RO 后，关闭回归改以真实 writer 拒绝追加证明物理连接已关闭，并以 read admission 拒绝证明后来读者不能进入，保留原 C4 概念。
+
+`test_stop_waiting_for_storage_preserves_reply_and_explicit_head` 守护 §1 C3/C4：等待提交时原回复可先落盘，内部停止仍能完成，显式 head 冲突仍暴露。旧同步路径没有这个 await 窗口；既有取消测试在提交之后截断，不能覆盖提交之前的前缀变化。

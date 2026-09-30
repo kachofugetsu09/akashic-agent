@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from agent.plugin_composition.messages import (
     MessageConflict,
+    SourceHeadConflict,
     MessageReader,
     MessageWriter,
     OwnerTransaction,
@@ -185,28 +186,32 @@ class SourceSession:
     async def pause(self, message_id: str) -> Message:
         """停止当前来源；目标选择、pause 提交和撤权在同一准入回调内排序。"""
         async def admit(slot: TaskSlot) -> tuple[Message, Task | None]:
-            with self._reader.read_snapshot():
-                existing = self._reader.get(message_id)
-                head = self._reader.head(source=self._source)
-            current = slot.current
-            if existing is not None:
-                if not isinstance(existing.body, Control) or existing.body.action != "pause":
-                    raise MessageConflict("停止身份已被其他消息使用")
-                message = await self._controls.append_async(
-                    message_id, existing.body,
-                    on_commit=lambda message, created: self._committed(slot, message, created),
-                )
-                return message, current if current is not None and not current.active else None
-            if head < 0:
-                raise MessageConflict("当前来源没有可暂停的消息")
-            if current is not None and current.active:
-                _ = slot.require(current.handle)
-            message = await self._controls.append_async(
-                message_id, Control("pause", head), expected_source_head=head,
-                on_commit=lambda message, created: self._committed(slot, message, created),
-            )
-            return message, current
-
+            while True:
+                with self._reader.read_snapshot():
+                    existing = self._reader.get(message_id)
+                    head = self._reader.head(source=self._source)
+                current = slot.current
+                if existing is not None:
+                    if not isinstance(existing.body, Control) or existing.body.action != "pause":
+                        raise MessageConflict("停止身份已被其他消息使用")
+                    message = await self._controls.append_async(
+                        message_id, existing.body,
+                        on_commit=lambda message, created: self._committed(slot, message, created),
+                    )
+                    return message, current if current is not None and not current.active else None
+                if head < 0:
+                    raise MessageConflict("当前来源没有可暂停的消息")
+                if current is not None and current.active:
+                    _ = slot.require(current.handle)
+                try:
+                    message = await self._controls.append_async(
+                        message_id, Control("pause", head), expected_source_head=head,
+                        on_commit=lambda message, created: self._committed(slot, message, created),
+                    )
+                except SourceHeadConflict:
+                    # 等待磁盘时旧回复可追加消息；失败事务没有事实，重选当前前缀。
+                    continue
+                return message, current
         message, pending = await self._tasks.admit_async(self._key, admit)
         if pending is not None:
             try:

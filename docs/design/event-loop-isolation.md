@@ -247,3 +247,7 @@ Manager 的逐插件局部更新不能跨越整组能力版本：它会明确拒
 回归 `test_source_commit_drains_before_cancel_and_rejects_late_start` 在 `32b0aaf2` 的真实通知边界失败，
 候选的普通取消及服务关闭场景均通过。它守护 C3/C4/C5 的收据、终态和效果顺序，不改变既有消息正文。
 剩余同步消息/owner 写入，以及 EventMail/Drift/Alert 的多库顺序继续独立处理。
+
+内部 pause 等待磁盘时，活动回复仍可能追加 Output。来源 head 的 CAS 失败不提交任何事实；
+内部 pause 重新读取前缀再尝试。显式 control 的 expected head 不重试，身份、权限或引用错误也不重试。
+停止完成前后已提交的 Input/Output 都保留，不能用撤销正文消除这类竞态。

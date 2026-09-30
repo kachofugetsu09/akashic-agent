@@ -23,6 +23,7 @@ from session.log import (
     SessionAttributes as SessionAttributes,
     WriterExpired as WriterExpired,
     MessageConflict as MessageConflict,
+    SourceHeadConflict as SourceHeadConflict,
     InvalidPage as InvalidPage,
 )
 from session.message import Body, CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
