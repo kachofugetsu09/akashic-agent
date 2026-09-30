@@ -409,6 +409,21 @@ def migration_boundary_scenario(root: Path) -> None:
             "REFERENCES model_connections(id) ON DELETE RESTRICT", ""
         ),
         "missing-unique": schema.replace("UNIQUE(connection_id, model)", "CHECK (1)"),
+        "unknown-conflict-policy": schema.replace(
+            "revision INTEGER NOT NULL CHECK",
+            "revision INTEGER NOT NULL ON CONFLICT IGNORE CHECK",
+        ),
+        "unknown-collation-policy": schema.replace(
+            "name TEXT NOT NULL", "name TEXT COLLATE NOCASE NOT NULL"
+        ),
+        "unknown-deferral-policy": schema.replace(
+            "REFERENCES model_connections(id) ON DELETE RESTRICT",
+            "REFERENCES model_connections(id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED",
+        ),
+        "unknown-autoincrement-policy": schema.replace(
+            "singleton INTEGER PRIMARY KEY CHECK",
+            "singleton INTEGER PRIMARY KEY AUTOINCREMENT CHECK",
+        ),
         "unknown-trigger": schema
         + "; CREATE TRIGGER unexpected_model_write AFTER INSERT ON model_definitions BEGIN UPDATE model_registry_meta SET revision=revision+1; END",
     }
@@ -429,7 +444,7 @@ def migration_boundary_scenario(root: Path) -> None:
         assert path.read_bytes() == before
         assert sorted(entry.name for entry in workspace.iterdir()) == [path.name]
     CHECKS.append(
-        "Unknown registry types, metadata, CHECK/FK/UNIQUE constraints and triggers fail before any registry or backup writes"
+        "Unknown registry types, metadata, CHECK/FK/UNIQUE constraints, unexposed constraint policies and triggers fail before any registry or backup writes"
     )
 
     additions = {

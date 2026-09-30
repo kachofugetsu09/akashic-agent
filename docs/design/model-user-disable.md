@@ -46,6 +46,9 @@ The migration freezes the five registry table definitions from the pre-expansion
 Models owner. SQLite column, foreign-key, index and table metadata plus normalized
 CHECK expressions validate types, defaults, keys and constraints independently of
 DDL whitespace, identifier quoting or appended-column order. The existing owner
+does not use conflict/deferral/collation/autoincrement clauses; those policies
+are explicitly rejected because PRAGMA metadata does not fully describe them.
+The existing owner
 already permits absent `driver_config_json`, `default_embedding_model_id`,
 `capabilities_json` and `host_epoch`; those exact additive variants remain
 supported, including the historical epoch default 0 and fresh-registry default 1.

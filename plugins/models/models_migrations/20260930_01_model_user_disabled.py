@@ -177,6 +177,13 @@ def _require_registry_lineage(connection: sqlite3.Connection) -> list[bool]:
             ).fetchone()
             if row is None:
                 raise RuntimeError("model registry schema lineage is incomplete")
+            # PRAGMA does not expose every conflict, deferral or column-collation
+            # policy. None of these clauses exists in the approved owner schema;
+            # reject them instead of silently treating altered policies as equal.
+            if {"conflict", "deferrable", "collate", "autoincrement"}.intersection(
+                _sql_tokens(row[0])
+            ):
+                raise RuntimeError(f"{table} schema lineage has unsupported policies")
             actual_columns = _columns(connection, table)
             expected_columns = _columns(expected, table)
             expected_sql = expected.execute(

@@ -6,7 +6,7 @@ package_name = "models_migrations"
 
 [[files]]
 path = "20260930_01_model_user_disabled.py"
-sha256 = "748746c265314ae4469868a72eb4f95785440900c4589350b95cc009b71694cc"
+sha256 = "066ef1cc9fa04ef7befc87c451572dce5ae7e10e22e2dc72febfb6eb18efc4c3"
 
 [[files]]
 path = "__init__.py"
@@ -17,4 +17,4 @@ id = "20260930_01_model_user_disabled"
 path = "20260930_01_model_user_disabled.py"
 depends = []
 transactional = false
-sha256 = "748746c265314ae4469868a72eb4f95785440900c4589350b95cc009b71694cc"
+sha256 = "066ef1cc9fa04ef7befc87c451572dce5ae7e10e22e2dc72febfb6eb18efc4c3"
