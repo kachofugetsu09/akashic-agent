@@ -39,7 +39,7 @@ from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
 from agent.plugins.input_preparation import prepare_plugin_input, _source_revision, PLUGIN_ARCHIVE_BINDING_API
-from agent.plugins.reload_journal import ReloadJournal, check_pending_publication
+from agent.plugins.reload_journal import ReloadJournal, PendingPublicationError, check_pending_publication
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
 
@@ -1010,6 +1010,24 @@ def _prepare_distribution_inputs(
     return tuple(ordered + [prepared[plugin_id] for plugin_id in sorted(prepared)])
 
 
+def _same_selected_sources(
+    selected: dict[str, tuple[str, Mapping[str, object], Path]],
+    candidate: dict[str, ResolvedPluginSource],
+) -> bool:
+    """Recovery may start exact existing inputs, never substitute new code or choices."""
+    if selected.keys() != candidate.keys():
+        return False
+    for plugin_id, source in candidate.items():
+        descriptor = selected[plugin_id][1]
+        if (descriptor["source_type"] != source.source_type
+            or descriptor.get("distribution_source", "") != source.distribution_source
+            or descriptor["code"] != _code_identity(source.plugin_root)
+            or descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag,
+                                         "binding_api": PLUGIN_ARCHIVE_BINDING_API}):
+            return False
+    return True
+
+
 def _check_distribution_sources(distribution: Path, report: dict[str, Any]) -> None:
     """Check unpacked code against its bundle at preparation, not on runtime reads."""
     for row in report["plugins"]:
@@ -1204,9 +1222,18 @@ def ensure_profile(
             )
             runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path, workspace=workspace,
                                      fixed_sources=distribution_migration_sources(workspace, plugins_home, distribution))
-            runner.check()
+            pending = runner.check()
             runner.run_under_maintenance(maintenance, core_only=True)
-            check_pending_publication(workspace)
+            try:
+                check_pending_publication(workspace)
+            except PendingPublicationError:
+                # The normal entrypoint must let the original runtime repair its
+                # committed config projection. Do not prepare from stale files or
+                # publish anything while that recovery owner is unsettled.
+                if pending or expected is None or not _same_selected_sources(selected, candidate):
+                    raise
+                return {**receipt, "status": "existing", "new_root_ref": expected,
+                        "recovery_pending": True}
             runner.run_under_maintenance(maintenance)
             new_components = _prepare_distribution_inputs(
                 available=available, candidate=candidate, selected=selected,

@@ -1296,6 +1296,10 @@ def _recovery_action(
     return None
 
 
+class PendingPublicationError(RuntimeError):
+    """An existing runtime owner must settle before inputs can be republished."""
+
+
 def check_pending_publication(workspace: Path) -> None:
     """迁移与离线发布不得覆盖安装或配置 owner 尚未结算的事实。"""
     selection = PluginSelection(workspace)
@@ -1303,6 +1307,6 @@ def check_pending_publication(workspace: Path) -> None:
     components = () if root is None else cast(tuple[str, ...], selection.archive.read_descriptor(root)["components"])
     with ReloadJournal.inspect_existing(workspace) as journal:
         if journal.pending_recovery or journal.armed_updates:
-            raise RuntimeError("reload/install owner 尚未结算；不得覆盖未决事实")
+            raise PendingPublicationError("reload/install owner 尚未结算；不得覆盖未决事实")
         if journal.has_pending_config_updates(components):
-            raise RuntimeError("配置提交尚待原 runtime 恢复；不会从过期配置文件重新生成选择")
+            raise PendingPublicationError("配置提交尚待原 runtime 恢复；不会从过期配置文件重新生成选择")

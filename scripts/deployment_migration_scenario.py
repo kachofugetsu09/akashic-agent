@@ -102,15 +102,37 @@ async def main():
     await m.terminate_all()
     assert decode_config(selected(work)['alpha@release'][1]['config']) == {'user': 'committed-new'}
     before = PluginSelection(work).read()
+    before_data = snapshot(work / 'plugin-data')
+    # Every product launcher uses this installer before starting the recovery owner.
+    restarted = subprocess.run([
+        sys.executable, str(ROOT / 'scripts/install_plugin_distribution.py'),
+        '--distribution', str(old), '--profile', str(old / 'profiles/default.json'),
+        '--workspace', str(work), '--plugins-home', str(home), '--config', str(config),
+        '--ensure-profile', '--receipt', str(receipt),
+    ], check=True, capture_output=True, text=True)
+    assert json.loads(restarted.stdout)['recovery_pending'] is True
+    assert PluginSelection(work).read() == before
+    assert snapshot(work / 'plugin-data') == before_data
+    plugin(repo, 'alpha', '2')
+    changed = distribution(repo, root / 'changed-without-migrations', ['alpha'], ['alpha'])
     try:
-        ensure_profile(old, old / 'profiles/default.json', workspace=work, plugins_home=home, config_path=config, receipt_path=receipt)
+        ensure_profile(changed, changed / 'profiles/default.json', workspace=work, plugins_home=home,
+                       config_path=config, receipt_path=receipt)
     except RuntimeError as error:
         assert '配置提交尚待原 runtime 恢复' in str(error), error
     else:
-        raise AssertionError('unsettled configuration accepted')
+        raise AssertionError('changed code published before config recovery')
     assert PluginSelection(work).read() == before
+    assert snapshot(work / 'plugin-data') == before_data
     migration(repo, 'alpha', 'review_config_upgrade', 'step("CREATE TABLE review_config_done (value INTEGER)")\n')
     new = distribution(repo, root / 'new', ['alpha'], ['alpha'])
+    try:
+        ensure_profile(new, new / 'profiles/default.json', workspace=work, plugins_home=home,
+                       config_path=config, receipt_path=receipt)
+    except RuntimeError as error:
+        assert '配置提交尚待原 runtime 恢复' in str(error), error
+    else:
+        raise AssertionError('new distribution published before config recovery')
     os.environ['AKASHIC_PLUGIN_DISTRIBUTION'] = str(new)
     try:
         MigrationRunner(repo_root=ROOT, config_path=config, workspace=work, startup_selection=True).run()
