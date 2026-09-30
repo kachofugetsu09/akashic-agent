@@ -1,4 +1,4 @@
-import { timelineReplyGroups, timelineToolResults } from "./message-timeline";
+import { timelineReplyGroups, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
 import React, { useMemo } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
@@ -29,6 +29,8 @@ interface DesktopChatViewProps {
 export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewProps) {
   const theme = useTheme();
   const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
+  const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
+  const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);
   const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
@@ -97,7 +99,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
                   loading={historyLoadingOlder}
                   onLoadOlder={() => loadOlderMessages().catch(reportError)}
                 />
-                <DesktopTimelineMessages messages={timelineMessages} activities={replyActivities} status={status}
+                <DesktopTimelineMessages messages={timelineMessages} activities={replyActivities} refresh={controller.timelineRefresh} status={status}
                   messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
                   onReply={handleReplyMessage} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages
@@ -107,7 +109,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
                   onCopied={handleCopiedMessage} onError={reportError}
                 />
                 {replyActivities.map((activity) => <ReplyActivityView key={activity.handle}
-                  activity={activity} committed={committed} processMessages={replyGroups.active.get(activity.handle)} toolResults={toolResults} onError={reportError} />)}
+                  activity={activity} committed={committed} inputStarts={inputStarts} refreshToken={refreshTokens.get(timelineSourceKey(activity))} processMessages={replyGroups.active.get(activity.handle)} toolResults={toolResults} onError={reportError} />)}
               </MessageRendererErrorBoundary>
             )}
             {status === "submitted" && !replyActivities.some((activity) => activity.active) ? <ThinkingPlaceholder /> : null}

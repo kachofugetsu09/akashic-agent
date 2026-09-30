@@ -92,6 +92,7 @@ export function useDesktopChatController() {
     },
   );
   const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
+  const [timelineRefresh, setTimelineRefresh] = useState(0);
   const [timelineMessages, setTimelineState] = useState<TimelineMessage[]>([]);
   const timelineRef = useRef<TimelineMessage[]>([]);
   const setTimelineMessages = useCallback((next: TimelineMessage[]) => {
@@ -284,6 +285,7 @@ export function useDesktopChatController() {
       streamStore.clear();
       setMessages([]);
       setTimelineMessages(page.items);
+      setTimelineRefresh((revision) => revision + 1);
       setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length,
         page.items, replyAvailableRef.current));
       followAfterRef.current = page.throughSeq;
@@ -439,7 +441,9 @@ export function useDesktopChatController() {
               const frame = readMessageLogFrame(value);
               if (frame) {
                 if (frame.session_id !== activeSessionRef.current) return;
-                if (frame.type === "messages.appended") {
+                if (frame.type === "session.following") {
+                  setTimelineRefresh((revision) => revision + 1);
+                } else if (frame.type === "messages.appended") {
                   if (frame.after_seq !== followAfterRef.current) throw new Error("实时消息游标不连续，请重新连接");
                   const merged = mergeTimelineMessages(timelineRef.current, frame.items);
                   setTimelineMessages(merged);
@@ -858,7 +862,7 @@ export function useDesktopChatController() {
   }, [closeConnection, connect, loadMessagesSafely, loadModels, loadSessionsSafely, reportError, setReplyAvailable, shellState?.chatReady]);
 
   return {
-    surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
+    surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     canSend, modelProblem, modelsPhase, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,

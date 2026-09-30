@@ -702,6 +702,7 @@ async def run(ctx: Context, interest: Interest) -> None:
             # Inspector 只读已保存查询和 Message；它不需要 embedding 或学习 writer。
             runtime_records = records()
             inspector = RecallInspector(read=runtime_records.read, list_records=runtime_records.list,
+                                        legacy_page=runtime_records.legacy_page,
                                         catalog=ctx.require(MESSAGE_CATALOG))
             await run_pending_rebuild()
         watcher = await ctx.spawn(follow(), name="akasha-messages")
