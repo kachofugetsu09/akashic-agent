@@ -1,6 +1,7 @@
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 import "./conversation-navigation.css";
+import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 
 export interface ConversationDestination {
   id: string;
@@ -64,7 +65,7 @@ export function ConversationNavigation({
   destinationHeading?: string | false;
   sessionHeading?: string;
   className?: string;
-  sessionActions?: (session: ConversationSession) => ReactNode;
+  sessionActions?: (session: ConversationSession) => NavigationRowAction[];
 }) {
   const featuredDestinations = destinations.filter((destination) => destination.featured);
   const standardDestinations = destinations.filter((destination) => !destination.featured);
@@ -135,9 +136,10 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
   pendingSessionId?: string;
   onActivate: (sessionId: string) => void;
   onPrefetch?: (sessionId: string) => void;
-  actions?: ReactNode;
+  actions?: NavigationRowAction[];
 }) {
-  return <div className={`conversation-session-row ${session.active ? "active" : ""}`}>
+  return <NavigationRowMenu title={session.title} actions={actions}
+    className={`conversation-session-row ${session.active ? "active" : ""}`}>
     <button
       className={`conversation-session ${session.active ? "active" : ""} ${session.unavailable ? "unavailable" : ""}`}
       type="button"
@@ -151,14 +153,12 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
       <span className="conversation-session__copy">
         <span className="conversation-session__title">
           <strong>{session.title}</strong>
-          {session.updatedLabel ? <time>{session.updatedLabel}</time> : null}
         </span>
         <small>{session.preview}</small>
       </span>
       {session.state ? <span className="conversation-session__state">{session.state}</span> : null}
     </button>
-    {actions}
-  </div>;
+  </NavigationRowMenu>;
 }
 
 function DestinationList({ destinations, featured = false }: { destinations: ConversationDestination[]; featured?: boolean }) {
