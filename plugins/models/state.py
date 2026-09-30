@@ -409,6 +409,7 @@ class _BoundChat:
                     return replayed
                 raise
             assert call_id is not None
+            started_call_id = call_id
             _LIVE_CALLS.add(call_id)
             started: int | None = None
             first_token = False
@@ -420,7 +421,7 @@ class _BoundChat:
                     value.get("content_delta") or value.get("thinking_delta")
                 ):
                     await run_file_io(partial(self._store.record_first_token,
-                        call_id, (monotonic_ns() - started) / 1_000_000
+                        started_call_id, (monotonic_ns() - started) / 1_000_000
                     ))
                     first_token = True
                 if request.on_delta is not None:
@@ -467,6 +468,13 @@ class _BoundChat:
                             partial_response=partial_response,
                             send_evidence=evidence,
                         ), failure if isinstance(failure, asyncio.CancelledError) else None)
+                    except (asyncio.CancelledError, BaseExceptionGroup) as record_failure:
+                        if isinstance(failure, asyncio.CancelledError):
+                            raise
+                        # 真实 provider 错误不能被后来的取消或回执拒写覆盖。
+                        raise BaseExceptionGroup(
+                            "模型请求失败且回执结算被取消", [failure, record_failure]
+                        ) from None
                     except Exception as record_failure:
                         raise failure from record_failure
                     if retry_at is None:

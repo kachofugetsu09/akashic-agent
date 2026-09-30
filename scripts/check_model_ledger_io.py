@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+from typing import Any
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[1])
@@ -27,7 +30,8 @@ from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.openai_compatible import driver
 from core.common.file_io import run_file_io
-from agent.plugin_composition import ModelUnavailableError
+from agent.plugin_composition import InvalidRequestError, ModelUnavailableError
+from agent.plugin_composition.models import DriverChatModel, LLMResponse
 from agent.plugin_composition import CHAT_MODELS, MODEL_DRIVERS, CompositionRoot, ModelKind
 from plugins.models.settings import MODEL_SETTINGS, AddConnection, AddModel, CreateConnectionWithModel, SetDefaultModel
 from plugins.models.state import ModelsState
@@ -73,8 +77,20 @@ class Handler(BaseHTTPRequestHandler):
 class Credential:
     connection_id = auth_identity = 'scenario'
 
-    async def read(self):
-        return {'api_key': 'local-fixture'}
+    def __init__(self):
+        self._payload = {'api_key': 'local-fixture'}
+        self._lock = asyncio.Lock()
+
+    async def read(self) -> Mapping[str, str]:
+        return dict(self._payload)
+
+    async def refresh(self, payload: Mapping[str, str]) -> None:
+        self._payload = dict(payload)
+
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        async with self._lock:
+            yield
 
 
 class LockedStore(ModelsStore):
@@ -371,7 +387,7 @@ async def cross_store_checks(directory, server, descriptor, physical):
     return observations
 
 
-async def queued_settlement_check(directory, server, descriptor, physical, *, phase='begin', reject=False):
+async def queued_settlement_check(directory, server, descriptor, physical: DriverChatModel, *, phase='begin', reject=False):
     """未发送、真实成功和拒绝的结算，排队时重复取消仍保留实际回执。"""
     name = 'queued-settlement-' + phase + ('-rejected' if reject else '')
     store = BarrierStore(directory / (name + '.db'), directory / 'backups',
@@ -395,7 +411,22 @@ async def queued_settlement_check(directory, server, descriptor, physical, *, ph
     workers = []
 
     class QueuedDriver:
-        async def complete(self, request):
+        def estimate_context_tokens(
+            self, messages: Sequence[Mapping[str, Any]],
+            tools: Sequence[Mapping[str, Any]] = (),
+        ) -> int:
+            return physical.estimate_context_tokens(messages, tools)
+
+        def estimate_appended_message_tokens(
+            self, messages: Sequence[Mapping[str, Any]],
+        ) -> int:
+            return physical.estimate_appended_message_tokens(messages)
+
+        @property
+        def max_tool_schemas(self) -> int | None:
+            return physical.max_tool_schemas
+
+        async def complete(self, request: ModelRequest) -> LLMResponse:
             try:
                 return await physical.complete(request)
             finally:
@@ -431,10 +462,22 @@ async def queued_settlement_check(directory, server, descriptor, physical, *, ph
         except asyncio.CancelledError:
             assert not reject
         except BaseExceptionGroup as failures:
-            assert reject
-            assert {type(error).__name__ for error in failures.exceptions} == {'CancelledError', 'RuntimeError'}
-            error = next(error for error in failures.exceptions if isinstance(error, RuntimeError))
-            assert isinstance(error.__cause__, sqlite3.IntegrityError)
+            assert reject or phase == 'failure'
+            settlement = failures
+            if phase == 'failure':
+                provider_error, settlement_error = failures.exceptions
+                assert isinstance(provider_error, InvalidRequestError)
+                assert provider_error.send_evidence == 'rejected'
+                assert 'fixture provider rejection' in str(provider_error)
+                if not reject:
+                    assert isinstance(settlement_error, asyncio.CancelledError)
+                else:
+                    assert isinstance(settlement_error, BaseExceptionGroup)
+                    settlement = settlement_error
+            if reject:
+                assert {type(error).__name__ for error in settlement.exceptions} == {'CancelledError', 'RuntimeError'}
+                error = next(error for error in settlement.exceptions if isinstance(error, RuntimeError))
+                assert isinstance(error.__cause__, sqlite3.IntegrityError)
         else:
             raise AssertionError('caller cancellation was lost')
         record = store.calls_for_key(name)[0]
@@ -457,6 +500,7 @@ async def queued_settlement_check(directory, server, descriptor, physical, *, ph
         assert server.posts == before + posts
         return {'case': name, 'occupied_slots': count, 'posts': posts,
                 'state': record['state'], 'send_evidence': record['send_evidence'],
+                'provider_failure_reported': phase == 'failure',
                 'settlement_failure_reported': reject}
     finally:
         store.release.set()
