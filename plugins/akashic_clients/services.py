@@ -64,60 +64,6 @@ class SessionPagePort(Protocol):
     next_cursor: tuple[str, str] | None
 
 
-class TurnStartedEvent(Protocol):
-    session_key: str
-    channel: str
-    chat_id: str
-    content: str
-    timestamp: object
-    turn_id: str
-    control_turn_id: str
-    client_message_id: str
-
-
-class StreamDeltaReadyEvent(Protocol):
-    session_key: str
-    channel: str
-    chat_id: str
-    turn_id: str
-    content_delta: str
-    thinking_delta: str
-
-
-class TurnOutputCompletedEvent(Protocol):
-    session_key: str
-    channel: str
-    chat_id: str
-    turn_id: str
-    client_message_id: str
-
-
-class ToolCallStartedEvent(Protocol):
-    session_key: str
-    channel: str
-    chat_id: str
-    iteration: int
-    call_id: str
-    tool_name: str
-    arguments: dict[str, object]
-    turn_id: str
-
-
-class ToolCallCompletedEvent(Protocol):
-    session_key: str
-    channel: str
-    chat_id: str
-    iteration: int
-    call_id: str
-    tool_name: str
-    arguments: dict[str, object]
-    final_arguments: dict[str, object]
-    status: str
-    result_preview: str
-    runtime_provenance: dict[str, str]
-    turn_id: str
-
-
 class AttachmentStorePort(Protocol):
     """客户端临时上传与 旧上传分片共享的文件 owner。"""
 
@@ -246,8 +192,6 @@ __all__ = [
     "ArtifactReadLeasePort", "ArtifactStorePort", "AttachmentStorePort",
     "InvalidPage", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
     "MessagePagePort", "MessageReaderPort", "SessionEntryPort", "SessionPagePort", "Message",
-    "StreamDeltaReadyEvent", "ToolCallCompletedEvent", "ToolCallStartedEvent", "TurnOutputCompletedEvent",
-    "TurnStartedEvent",
     "ModelCatalogReader", "ModelCatalogSnapshot", "ModelControlUnavailable",
     "ModelSelectionReader", "RuntimeInspectionError", "RuntimeInspectionService",
     "default_chat_model_id", "project_chat_runtimes",

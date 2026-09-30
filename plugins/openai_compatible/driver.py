@@ -767,7 +767,9 @@ async def _consume_stream(
                     )
                     if ready and not tool_seen:
                         await _emit_delta(on_delta, {"content_delta": ready})
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as error:
+        if response_delta_seen:
+            setattr(error, "response_delta_seen", True)
         raise
     except _CallbackError:
         raise
