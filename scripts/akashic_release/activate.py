@@ -347,7 +347,7 @@ def activate_release(
     else:
         if plan is None:
             write_json(fixed_plan, {"schema_version": 1, "expected_root_ref": root_ref,
-                                    "targets": [], "migrations": []})
+                                    "targets": []})
         else:
             if plan.is_symlink() or not plan.is_file():
                 raise ValueError("部署清单必须是普通文件")

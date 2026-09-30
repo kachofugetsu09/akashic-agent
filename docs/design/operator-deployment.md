@@ -1,12 +1,12 @@
 # 部署操作手册
 
 状态：实现已完成，本地验证通过。下文验证记录来自部署前；正式部署以目标机 release/active 回执为准。
-依据：[0074](../decisions/0074-deployment-policy-belongs-to-operator.md)。
+依据：[0082](../decisions/0082-distribution-owned-plugin-composition.md)；备份与失败恢复沿用 [0074](../decisions/0074-deployment-policy-belongs-to-operator.md)。
 
 ## 职责与主流程
 
-部署者决定目标 Core commit、插件映射、数据兼容性、批准哪些迁移，以及是否备份。
-发布工具固定输入、阻止未批准的迁移、串行发布并核对实际运行身份。它不能从代码差异推断业务数据可降级。
+部署者决定目标 Core commit、插件映射、外置数据兼容性，以及是否备份；选择发行版即接受其 Core/内置迁移。
+发布工具固定输入、先完成 Core/内置 Yoyo、串行发布并核对实际运行身份。它不能从代码差异推断业务数据可降级。
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -18,23 +18,23 @@
                       ▼
         停 Core/Bridge → 取得写入锁
                       ▼
-        可选备份 → 已批准迁移 → 显式插件安装
+        可选备份 → Core/内置迁移 → 显式外置安装
                       ▼
         必要时一次完整 Root CAS → 启动 → 实际身份/选中 Fiber 验收
                       ▼
                   active.json
 ```
 
-备份、迁移和插件更新是三个独立选择：
+内置组合及必要迁移随发行版更新；备份和外置目标仍显式选择：
 
 - 无 `--backup`：不创建部署备份。既有备份和历史记录保留。
-- 无 `--plan`：更新 Core/Bridge 与 distribution 拥有的内置代码，保留外置插件的原选择；发现待迁移则在预检中失败。
+- 无 `--plan`：更新 Core/Bridge 与 distribution 拥有的内置代码，保留外置插件的原选择；预检列出待迁移，停止期自动执行。
 - 清单 `targets: []`：不额外更新外置插件；内置组合按 [0082](../decisions/0082-distribution-owned-plugin-composition.md) 跟随新 distribution，保留用户选择。
-- 清单 `migrations: []`：不允许执行待迁移。批准列表必须覆盖全部实际 pending ID；已成功 ID 不重跑，未知 ID 拒绝。
-- `--backup` 不批准迁移；批准迁移也不隐式开启全状态备份。
+- 清单不再包含 `migrations`；旧版计划须删除此字段。Yoyo 从目标发行版发现 Core 和全部内置 step，已成功 ID 不重跑；外置迁移格式不参与解析。同 ID 外置输入会与内置共用数据目录，因此新安装和部署拒绝这类接管；已有冲突先核对数据归属，改用独立插件身份。历史曾混用后又卸载的目录也需人工核验，不能从当前 cache 缺失推断数据安全。
+- 必要内置迁移不隐式开启全状态备份，step 自身的恢复合同仍有效。
 
 `--no-activate` 仅准备 source、image、Bridge venv 和 manifest，不改运行单元、CLI 或正式 state。
-已有 selected Root 的普通启动只检查迁移，不再偷偷执行新 step；首次显式初始化仍允许建库流程。
+已有 selected Root 的新版启动也必须先完成 Core/内置迁移；失败就停止启动。外置插件自己负责其数据兼容与迁移。
 
 ## 日常更新
 
@@ -45,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/s
   | sh -s -- --yes
 ```
 
-这会更新 Core/Bridge 和内置代码，保留外置版本，不自动备份或执行数据迁移。需要固定版本或备份时：
+这会更新 Core/Bridge 和内置代码，保留外置版本，自动执行必要 Core/内置迁移，不自动创建全状态备份。需要固定版本或备份时：
 
 ```bash
 sh scripts/install-akashic.sh --commit <40位SHA> --backup --yes
@@ -61,7 +61,7 @@ python3 scripts/akashic_release/cli.py install \
 必须使用目标版本脚本。已安装的 `akashic-release` 从当前 `runtime.env` 加载当前版本发布器；
 从旧版首次切到此实现时，使用上面的 bootstrap 或目标 checkout，旧 CLI 不认识新选项。
 
-## 更新指定插件或执行迁移
+## 更新指定外置插件
 
 先读取实际基线：
 
@@ -83,13 +83,12 @@ cat /srv/data/services/akashic/state/workspace/runtime/plugin-stable.json
       "bundle_sha256": "<bundle文件的SHA256>",
       "target_commit": "<外部插件40位commit>"
     }
-  ],
-  "migrations": []
+  ]
 }
 ```
 
 例中的插件 ID 必须换成当前已选择且启用的真实 ID。`bundled: true` 从**目标镜像的 distribution**
-按插件名取固定 bundle；外部 bundle 必须含指定 commit。没有列出的外置插件连同顺序、配置输入保持原选择；内置代码自动采用目标分发。显式 bundled target 可让已批准迁移产生的配置进入新 descriptor。
+按插件名取固定 bundle；外部 bundle 必须含指定 commit。没有列出的外置插件连同顺序、配置输入保持原选择；内置代码自动采用目标分发。内置迁移后的配置自动进入新 descriptor，无需额外 bundled target。
 内置分发缺少的代码退出加载，数据与历史材料保留；新默认项得到一次初始选择。外置插件的添加、删除和重命名仍由插件控制面负责。
 
 准备外部 bundle 后核对哈希：
@@ -120,9 +119,9 @@ sh scripts/install-akashic.sh --commit <Core的40位SHA> \
 ```
 
 需要备份时追加 `--backup`。输入文件由部署者管理；发布器保存清单副本，每次 publish 将 bundle/wheels 复制到临时目录并复核摘要。
-仅更新 bundled 插件时可省略 `--inputs`。未批准迁移时，错误会列出缺少的 ID；部署者阅读对应
-Core/插件 step 的写入范围和重试合同后，再将 ID 加入 `migrations`。框架不会自动替你批准。
-迁移若修改插件配置，该插件也应明确列入 targets，使安装后的新配置重新归档到本次 Root。
+仅更新 bundled 插件时可省略 `--inputs`。Core 与全部内置插件的必要迁移在停止期自动执行；停用内置插件的保留数据也在其迁移范围内。外置插件的迁移由自身操作流程负责，发布器不执行其 bundle。
+
+Core 先升级自己拥有的账本结构；在内置业务 step 与组合发布前检查配置 owner。未结算时先用原 runtime 恢复原事务，文件投影与实际实例 ready 后才能继续。内置迁移成功后读取持久配置进入新归档，随后发布失败再重试也保留已迁移配置。迁移失败不提交新 Root，但已完成 step 的数据写入和成功账本不会因此撤销。
 
 ## 备份范围
 

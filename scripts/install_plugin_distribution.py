@@ -29,8 +29,8 @@ from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.source_resolver import scan_plugin_sources
-from agent.plugins.distribution_sources import distribution_sources, DistributionSources, is_distribution_input
-from agent.plugin_composition.archive import decode_config, encode_tree, sync_directory, tree_entries
+from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input
+from agent.plugin_composition.archive import encode_tree, sync_directory, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
@@ -39,9 +39,8 @@ from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
 from agent.plugins.input_preparation import prepare_plugin_input, _source_revision, PLUGIN_ARCHIVE_BINDING_API
-from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.reload_journal import ReloadJournal, check_pending_publication
 from agent.plugins.selection import PluginSelection, SelectionConflictError
-from agent.migrations.bundles import validate_migration_artifact
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -74,8 +73,8 @@ def _external_path(root: Path, relative: object, *, directory: bool) -> Path:
     return current
 
 
-def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], tuple[str, ...]]:
-    """校验部署者指定的精确目标与迁移清单。"""
+def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]]]:
+    """校验部署者指定的精确外置目标。"""
     def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -88,18 +87,13 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], tu
         raise ValueError("部署清单必须是普通文件")
     raw = path.read_bytes()
     document = json.loads(raw, object_pairs_hook=unique_pairs)
-    if not isinstance(document, dict) or set(document) != {"schema_version", "expected_root_ref", "targets", "migrations"}:
-        raise ValueError("部署清单需要 schema_version、expected_root_ref、targets、migrations")
+    if not isinstance(document, dict) or set(document) != {"schema_version", "expected_root_ref", "targets"}:
+        raise ValueError("部署清单需要 schema_version、expected_root_ref、targets")
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise ValueError("部署清单 schema_version 错误")
     root_ref = document["expected_root_ref"]
     if not isinstance(root_ref, str) or _SHA256.fullmatch(root_ref) is None:
         raise ValueError("expected_root_ref 必须是完整 Root SHA-256")
-    migrations = document["migrations"]
-    if (not isinstance(migrations, list)
-        or any(not isinstance(item, str) or not item or item.strip() != item for item in migrations)
-        or len(set(migrations)) != len(migrations)):
-        raise ValueError("migrations 必须是无重复的 migration ID 数组")
     targets = document["targets"]
     if not isinstance(targets, list):
         raise ValueError("targets 必须是数组；空数组保留全部插件")
@@ -132,7 +126,7 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], tu
                 or _SHA256.fullmatch(wheels["tree_sha256"]) is None):
                 raise ValueError(f"offline_wheels 无效: {plugin_id}")
             _external_path_syntax(wheels["relative_path"])
-    return hashlib.sha256(raw).hexdigest(), root_ref, targets, tuple(migrations)
+    return hashlib.sha256(raw).hexdigest(), root_ref, targets
 
 
 def _external_path_syntax(relative: object) -> str:
@@ -199,7 +193,6 @@ def _stage_deployment_targets(
         identity = load_static_plugin_manifest(code)
         if identity.name != name:
             raise ValueError(f"external target 静态身份不一致: {plugin_id}")
-        _ = validate_migration_artifact(code, static_manifest=identity)
         required = any((code / runtime.requirements).read_text(encoding="utf-8").strip() for runtime in identity.python)
         wheels_spec = target.get("offline_wheels")
         if required != (wheels_spec is not None):
@@ -968,7 +961,6 @@ def _prepare_distribution_inputs(
     *, available: DistributionSources, candidate: dict[str, ResolvedPluginSource],
     selected: dict[str, tuple[str, Mapping[str, object], Path]],
     distribution: Path, workspace: Path, plugins_home: Path, selection: PluginSelection,
-    refresh_config: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
     """Prepare immutable inputs, then let the caller publish one complete selection."""
     choices = load_plugin_manifest(plugins_home)
@@ -998,22 +990,15 @@ def _prepare_distribution_inputs(
         ensure_workspace_plugin_data_dir(data_dir, workspace)
         identity = source.static_manifest
         assert identity is not None
-        config_input = None
-        if old is not None:
-            descriptor = old[1]
-            if descriptor["data_dir"] != data_dir.relative_to(workspace).as_posix():
-                raise SelectionConflictError(f"distribution data identity changed: {plugin_id}")
-            config = decode_config(descriptor["config"])
-            if not isinstance(config, dict) or not isinstance(descriptor["config_revision"], str):
-                raise ValueError(f"invalid selected config: {plugin_id}")
-            if plugin_id not in refresh_config:
-                config_input = config, descriptor["config_revision"]
+        if old is not None and old[1]["data_dir"] != data_dir.relative_to(workspace).as_posix():
+            raise SelectionConflictError(f"distribution data identity changed: {plugin_id}")
+        # 停止期已结算配置 owner；读取迁移后的持久输入，也支持迁移成功后的发布重试。
         result = prepare_plugin_input(
             {"name": source.plugin_name, "marketplace": source.marketplace,
              "plugin_root": str(source.plugin_root), "module_path": str(source.plugin_root / "plugin.py"),
              "manifest_digest": identity.identity_digest, "source_type": "builtin",
              "distribution_source": source.distribution_source, "wheel_tree_sha256": source.wheel_tree_sha256},
-            workspace=workspace, archive=selection.archive, initial=old is None, config_input=config_input,
+            workspace=workspace, archive=selection.archive, initial=old is None,
         )
         prepared[plugin_id] = result.archive_ref
     # This is a user choice ledger, not another version pointer. Existing values never change.
@@ -1054,21 +1039,13 @@ def _preflight_distribution_environments(available: DistributionSources, distrib
             preflight_offline_runtime(source.plugin_root, runtime, wheels, destination)
 
 
-def _check_pending_publication(workspace: Path) -> None:
-    with ReloadJournal.inspect_existing(workspace) as journal:
-        if journal.pending_recovery or journal.armed_updates:
-            raise RuntimeError("reload/install owner 尚未结算；不得覆盖未决事实")
-        if journal.has_pending_config_updates():
-            raise RuntimeError("配置提交尚待原 runtime 恢复；不会从过期配置文件重新生成选择")
-
-
 def publish_distribution(
     *, distribution: Path, workspace: Path, plugins_home: Path,
     config_path: Path, plan: Path, inputs: Path,
     backup_dir: Path | None = None, preflight_only: bool = False,
 ) -> dict[str, Any]:
-    """只发布清单内的输入；备份可选，迁移由清单授权。"""
-    digest, expected_root, requested, migrations = load_deployment_plan(plan)
+    """更新内置 preset 和指定外置输入；先完成 Core 与内置迁移。"""
+    digest, expected_root, requested = load_deployment_plan(plan)
     workspace, plugins_home = workspace.resolve(strict=True), plugins_home.resolve(strict=True)
     selection = PluginSelection(workspace)
     if selection.read() != expected_root:
@@ -1102,13 +1079,17 @@ def publish_distribution(
                     workspace=workspace, plugins_home=plugins_home,
                 )
                 replacements = {item["plugin_id"]: item["code"] for item in targets}
+                migration_sources = distribution_migration_sources(workspace, plugins_home, distribution)
+                reserved_ids = {f"{item.plugin_name}@{item.marketplace}" for item in migration_sources}
+                if reserved_ids.intersection(replacements):
+                    raise SelectionConflictError("外置部署目标不能接管内置数据身份；替代插件须使用独立身份")
                 for plugin_id, code in replacements.items():
                     name, marketplace = plugin_id.rsplit("@", 1)
                     candidate[plugin_id] = ResolvedPluginSource(code, "installed", marketplace, name,
                                                                load_static_plugin_manifest(code))
                 runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
-                                         workspace=workspace, fixed_sources=list(candidate.values()))
-                pending = runner.check(migrations)
+                                         workspace=workspace, fixed_sources=migration_sources)
+                pending = runner.check()
                 result: dict[str, Any] = {
                     "status": "preflight_ok", "plan_sha256": digest,
                     "old_root_ref": expected_root, "migration_ids": list(pending),
@@ -1125,9 +1106,9 @@ def publish_distribution(
                     backup_release_state(state, backup_dir)
                     result["backup_dir"] = str(backup_dir)
                 # Core 先更新自己的账本结构，业务 step 只由相应插件执行。
-                runner.run_under_maintenance(maintenance, core_only=True, approved_migrations=migrations)
-                _check_pending_publication(workspace)
-                runner.run_under_maintenance(maintenance, approved_migrations=migrations)
+                runner.run_under_maintenance(maintenance, core_only=True)
+                check_pending_publication(workspace)
+                runner.run_under_maintenance(maintenance)
                 prepared_selected = dict(selected)
                 for target in targets:
                     plugin_id = target["plugin_id"]
@@ -1158,7 +1139,6 @@ def publish_distribution(
                 new_components = _prepare_distribution_inputs(
                     available=available, candidate=candidate, selected=prepared_selected,
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
-                    refresh_config=frozenset(item["plugin_id"] for item in requested),
                 )
                 new_root = (selection.commit(new_components, expected_ref=expected_root)
                             if new_components != components else expected_root)
@@ -1222,10 +1202,12 @@ def ensure_profile(
             available, candidate = _distribution_candidate(
                 distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
             )
-            if expected is not None:
-                MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path, workspace=workspace,
-                                fixed_sources=list(candidate.values())).check()
-                _check_pending_publication(workspace)
+            runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path, workspace=workspace,
+                                     fixed_sources=distribution_migration_sources(workspace, plugins_home, distribution))
+            runner.check()
+            runner.run_under_maintenance(maintenance, core_only=True)
+            check_pending_publication(workspace)
+            runner.run_under_maintenance(maintenance)
             new_components = _prepare_distribution_inputs(
                 available=available, candidate=candidate, selected=selected,
                 distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,

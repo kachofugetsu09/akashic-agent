@@ -16,6 +16,7 @@ from typing import Literal, cast
 
 from agent.plugins import update_rollback, config_updates
 from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers
+from agent.plugins.selection import PluginSelection
 
 ReloadPhase = Literal[
     "preparing",
@@ -165,9 +166,10 @@ class JournalPreflight:
         """Read one exact row from the checked, read-only journal snapshot."""
         return update_rollback.read(self._copy, update_id)
 
-    def has_pending_config_updates(self) -> bool:
+    def has_pending_config_updates(self, components: tuple[str, ...]) -> bool:
         """A selected config must be recovered before an offline code publication."""
-        return self._copy.execute("SELECT 1 FROM config_updates WHERE state='accepted' LIMIT 1").fetchone() is not None
+        return any(state == "accepted" or input_ref in components for state, input_ref in
+                   self._copy.execute("SELECT state,input_ref FROM config_updates WHERE state != 'active'"))
 
     def backup_to(self, path: Path) -> None:
         """Save the checked snapshot without opening the live journal in SQLite."""
@@ -1292,3 +1294,15 @@ def _recovery_action(
     if phase == "degraded":
         return "retry_runtime_recovery"
     return None
+
+
+def check_pending_publication(workspace: Path) -> None:
+    """迁移与离线发布不得覆盖安装或配置 owner 尚未结算的事实。"""
+    selection = PluginSelection(workspace)
+    root = selection.read()
+    components = () if root is None else cast(tuple[str, ...], selection.archive.read_descriptor(root)["components"])
+    with ReloadJournal.inspect_existing(workspace) as journal:
+        if journal.pending_recovery or journal.armed_updates:
+            raise RuntimeError("reload/install owner 尚未结算；不得覆盖未决事实")
+        if journal.has_pending_config_updates(components):
+            raise RuntimeError("配置提交尚待原 runtime 恢复；不会从过期配置文件重新生成选择")

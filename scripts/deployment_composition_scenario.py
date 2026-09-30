@@ -12,10 +12,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--output", type=Path)
-parser.add_argument("--with-wheels", action="store_true")
-args = parser.parse_args()
 
 from scripts.build_plugin_distribution import _bundle_plugin
 from scripts.distribution_runtime import prepare_wheels
@@ -76,6 +72,30 @@ def plugin(repo, name, version="1"):
     if name == "alpha":
         (d / "requirements.txt").write_text("")
     return d
+
+
+def migration(repo, name, migration_id, body):
+    """为真实插件制品写入一个有摘要的 Yoyo bundle。"""
+    plugin_root = repo / "plugins" / name
+    package_name = f"scenario_{name}_migrations"
+    package = plugin_root / package_name
+    package.mkdir(exist_ok=True)
+    (package / "__init__.py").write_text("")
+    code = "from yoyo import step\n" + body
+    (package / f"{migration_id}.py").write_text(code)
+    files = sorted(package.glob("*.py"))
+    catalog = (f'schema_version = 1\nbundle_id = "{name}"\nversion = "1"\n'
+               f'migration_root = "{package_name}"\npackage_name = "{package_name}"\n')
+    for file in files:
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        catalog += f'\n[[files]]\npath = "{file.name}"\nsha256 = "{digest}"\n'
+    for file in files:
+        if file.name == "__init__.py":
+            continue
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        catalog += (f'\n[[migrations]]\nid = "{file.stem}"\npath = "{file.name}"\n'
+                    f'depends = []\ntransactional = true\nsha256 = "{digest}"\n')
+    (plugin_root / "migration.catalog.toml").write_text(catalog)
 
 
 def distribution(repo, out, names, defaults):
@@ -151,7 +171,7 @@ async def manager(workspace, home, dist=None):
     return m
 
 
-async def run():
+async def run(args):
     if args.output is None:
         root = Path(tempfile.mkdtemp(prefix="akashic-builtin-transitions-"))
     else:
@@ -176,6 +196,10 @@ async def run():
     home = state / "plugin-home"
     config = state / "config.toml"
     receipt = work / "runtime/distribution-install.json"
+    (root / "home-config").mkdir()
+    os.environ["HOME"] = str(root / "home-config")
+    os.environ["AKASHIC_PLUGIN_HOME"] = str(home)
+    os.environ.pop("AKASHIC_PLUGIN_DISTRIBUTION", None)
     subprocess.run(
         [
             sys.executable,
@@ -201,7 +225,6 @@ async def run():
         repo_root=ROOT,
         config_path=config,
         workspace=work,
-        installed_cache_root=home / "cache",
     ).run()
     # Real legacy Manager creates the durable old selection.
     m = await manager(work, home)
@@ -244,6 +267,7 @@ async def run():
     (ext / "plugin.py").write_text(
         "api_version=3\nname='outside'\nversion='1'\nasync def apply(ctx):\n    pass\n"
     )
+    (ext / "migration.catalog.toml").write_text("external format: not an Akashic Yoyo catalog")
     commit(ext)
     m = await manager(work, home)
     await m.install(
@@ -396,7 +420,6 @@ async def run():
                 "schema_version": 1,
                 "expected_root_ref": PluginSelection(work).read(),
                 "targets": [],
-                "migrations": [],
             }
         )
     )
@@ -446,8 +469,98 @@ async def run():
     assert (
         work / "opaque-business.db"
     ).read_bytes() == b"not-a-database: do not inspect or rewrite"
+    # 新发行版自动先迁移；显式停用不影响内置数据升级。
+    set_plugin_enabled("disabled@release", enabled=False, plugins_home=home)
+    expected_bytes = PluginSelection(work).path.read_bytes()
+    migration(repo, "alpha", "scenario_alpha_upgrade", f"""
+import json
+from agent.migrations.context import current_migration_context
+def upgrade(connection):
+    context = current_migration_context()
+    assert (context.workspace / "runtime/plugin-stable.json").read_bytes() == {expected_bytes!r}
+    path = context.bundle_data_roots["alpha"] / "config.input.json"
+    value = json.loads(path.read_text())
+    value["config"][1]["upgraded"] = True
+    path.write_text(json.dumps(value))
+    connection.execute("CREATE TABLE scenario_alpha_done (value INTEGER)")
+    connection.execute("INSERT INTO scenario_alpha_done VALUES (1)")
+step(upgrade)
+""")
+    migration(repo, "disabled", "scenario_disabled_upgrade",
+              'step("CREATE TABLE scenario_disabled_done (value INTEGER)")\n')
+    migrated = distribution(repo, root / "migrated", ["alpha", "disabled", "optional", "newcomer"],
+                            ["alpha", "disabled", "newcomer"])
+    if args.with_wheels:
+        prepare_wheels(migrated)
+    ensure_profile(migrated, migrated / "profiles/default.json", workspace=work, plugins_home=home,
+                   config_path=config, receipt_path=receipt)
+    assert "disabled@release" not in selected(work)
+    assert selected(work)["outside@thirdparty"][0] == external_before
+    from agent.plugin_composition.archive import decode_config
+    assert decode_config(selected(work)["alpha@release"][1]["config"])["upgraded"] is True
+    with sqlite3.connect(work / "migrations.sqlite3") as ledger:
+        assert ledger.execute("SELECT COUNT(*) FROM scenario_alpha_done").fetchone() == (1,)
+        assert ledger.execute("SELECT COUNT(*) FROM scenario_disabled_done").fetchone() == (0,)
+    # 模拟迁移已成功而组合尚未提交；重试仍收录已迁移配置，不重跑 step。
+    PluginSelection(work).path.write_bytes(expected_bytes)
+    ensure_profile(migrated, migrated / "profiles/default.json", workspace=work, plugins_home=home,
+                   config_path=config, receipt_path=receipt)
+    assert decode_config(selected(work)["alpha@release"][1]["config"])["upgraded"] is True
+    # 正常 runtime 启动也只检查当前发行版，不解析外置 catalog。
+    previous_distribution = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+    os.environ["AKASHIC_PLUGIN_DISTRIBUTION"] = str(migrated)
+    try:
+        assert MigrationRunner(repo_root=ROOT, config_path=config, workspace=work,
+                               startup_selection=True).run().state == "current"
+    finally:
+        if previous_distribution is None:
+            os.environ.pop("AKASHIC_PLUGIN_DISTRIBUTION")
+        else:
+            os.environ["AKASHIC_PLUGIN_DISTRIBUTION"] = previous_distribution
+    # 发布入口的只读预检列出待迁移，执行时自动迁移；失败不改变 selection。
+    migration(repo, "optional", "scenario_publish_upgrade",
+              'step("CREATE TABLE scenario_publish_done (value INTEGER)")\n')
+    published = distribution(repo, root / "published", ["alpha", "disabled", "optional", "newcomer"],
+                             ["alpha", "disabled", "newcomer"])
+    if args.with_wheels:
+        prepare_wheels(published)
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": PluginSelection(work).read(),
+                                "targets": []}))
+    before_preflight = snapshot(state)
+    preflight = publish_distribution(distribution=published, workspace=work, plugins_home=home,
+                                    config_path=config, plan=plan, inputs=root, preflight_only=True)
+    assert preflight["migration_ids"] == ["scenario_publish_upgrade"]
+    assert snapshot(state) == before_preflight
+    publish_distribution(distribution=published, workspace=work, plugins_home=home,
+                         config_path=config, plan=plan, inputs=root)
+    migration(repo, "optional", "scenario_failed_upgrade",
+              'def fail(connection):\n    raise RuntimeError("expected migration failure")\nstep(fail)\n')
+    failed = distribution(repo, root / "failed", ["alpha", "disabled", "optional", "newcomer"],
+                          ["alpha", "disabled", "newcomer"])
+    if args.with_wheels:
+        prepare_wheels(failed)
+    before_failure = PluginSelection(work).read()
+    try:
+        ensure_profile(failed, failed / "profiles/default.json", workspace=work, plugins_home=home,
+                       config_path=config, receipt_path=receipt)
+    except RuntimeError as error:
+        assert "expected migration failure" in str(error)
+    else:
+        raise AssertionError("failed migration accepted")
+    assert PluginSelection(work).read() == before_failure
+    assert (work / "sessions.db").read_bytes() == messages_bytes
+    # Core 同样无需逐 ID 审批，真实 Yoyo 成功账本保证二次启动不重跑。
+    core_source = root / "core-fixture"
+    core_migrations = core_source / "migrations/core"
+    core_migrations.mkdir(parents=True)
+    (core_migrations / "scenario_core_upgrade.py").write_text(
+        'from yoyo import step\nstep("CREATE TABLE scenario_core_done (value INTEGER)")\n')
+    runner = MigrationRunner(repo_root=core_source, workspace=work, config_path=config)
+    assert runner.check() == ("scenario_core_upgrade",)
+    assert runner.run().migrations == ("scenario_core_upgrade",)
+    assert runner.run().state == "current"
     print(
-        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure",
+        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry",
         flush=True,
     )
     (root / "result.json").write_text(
@@ -457,7 +570,7 @@ async def run():
                 "candidate_checkout": str(ROOT),
                 "source_identity": identity,
                 "with_wheels": args.with_wheels,
-                "scenarios": 16,
+                "scenarios": 24,
             },
             indent=2,
         )
@@ -465,4 +578,8 @@ async def run():
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--with-wheels", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(run(args))

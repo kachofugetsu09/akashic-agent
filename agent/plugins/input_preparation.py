@@ -46,7 +46,6 @@ class PreparedPluginInput:
 
 def prepare_plugin_input(
     mod: Mapping[str, str], *, workspace: Path, archive: PluginArchive, initial: bool = False,
-    config_input: tuple[dict[str, object], str] | None = None,
 ) -> PreparedPluginInput:
     """Check, compile, and archive one source without loading its module."""
 
@@ -64,9 +63,9 @@ def prepare_plugin_input(
     revision = _source_revision(plugin_dir)
     data_dir = _resolve_plugin_data_dir(mod["name"], mod, workspace)
     validate_workspace_plugin_data_path(data_dir, workspace)
-    config, config_revision = load_config(data_dir) if config_input is None else config_input
+    config, config_revision = load_config(data_dir)
     defaults = plugin_dir / "initial_config.json"
-    if config_input is None and initial and not (data_dir / CONFIG_INPUT).exists() and defaults.exists():
+    if initial and not (data_dir / CONFIG_INPUT).exists() and defaults.exists():
         if defaults.is_symlink():
             raise ValueError("初始配置不能是符号链接")
         config = json.loads(defaults.read_bytes())

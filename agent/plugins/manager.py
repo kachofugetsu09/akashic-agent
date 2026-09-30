@@ -763,6 +763,7 @@ class PluginManager:
             # Receipt readiness is diagnostic; each Fiber owns its local failure state.
             for generation in runnable:
                 generation.state = "active"
+            self._finish_recovered_config_updates()
             self._building_roots.pop(root, None)
         except BaseException:
             cleanup_errors: list[BaseException] = []
@@ -1185,6 +1186,17 @@ class PluginManager:
             elif row["state"] != "failed":
                 self._reload_journal.finish_config_update(request_id, "failed", "配置应用中断，正式选择未采用；请重新提交")
 
+    def _finish_recovered_config_updates(self) -> None:
+        """配置投影已恢复且实际选中实例 ready 后，才结算原请求。"""
+        selection_ref = self._selection.read()
+        components = () if selection_ref is None else self._selection_components(selection_ref)
+        for row in self._reload_journal.pending_config_updates():
+            generation = self._active_generations.get(cast(str, row["plugin_id"]))
+            if (generation is not None and row["input_ref"] in components
+                and generation.archive_ref == row["input_ref"]
+                and generation.state == "active" and self._generation_is_locally_ready(generation)):
+                self._reload_journal.finish_config_update(cast(str, row["request_id"]), "active")
+
     async def install(
         self, *, source: str, marketplace: str, ref_name: str,
         sparse_paths: list[str], update_id: str,
@@ -1309,6 +1321,8 @@ class PluginManager:
                     sparse_paths=sparse_paths,
                     plugins_home=self.installed_plugins_home,
                     update_id=update_id,
+                    reserved_ids=frozenset(f"{item.plugin_name}@{item.marketplace}"
+                                           for item in self._distribution_sources),
                 )
             )
             if install_cancelled:

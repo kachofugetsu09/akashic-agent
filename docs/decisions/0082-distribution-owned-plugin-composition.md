@@ -1,9 +1,9 @@
 # 0082 · 内置代码随部署，外置输入保留
 
 - 状态：accepted
-- 日期：2026-09-30
-- 关联条款：ONB-002、PLG-003、PLG-007、PLG-013、PLG-016、MIG-001、STA-001～STA-003
-- supersedes：0074 第 1 项中内置代码不随部署更新的策略；0080 中源码退役不会改变下一次部署组合的限制
+- 日期：2026-09-30；2026-10-01 按维护者澄清修订
+- 关联条款：ONB-002、PLG-003、PLG-007、PLG-013、PLG-016、PLG-019、MIG-001、STA-001～STA-003
+- supersedes：0074 第 1、3 项的内置组合与逐 ID 迁移审批策略；0080 中源码退役不会改变下一次部署组合的限制
 
 ## 决定与理由
 
@@ -14,7 +14,7 @@
 │ distribution 固定代码 │   │ 外置插件原 selection   │
 └───────────┬───────────┘   └────────────┬───────────┘
             └───────────┬───────────────┘
-              原配置 / 原启用选择 / 显式迁移预检
+              原配置 / 原启用选择 / Core 与内置 Yoyo
                         │
                 一次完整 PluginSelection CAS
                         │
@@ -24,6 +24,16 @@
 内置/外置只说明代码来源，不授予插件额外 API、能力或生命周期。原 `name@marketplace` 和 plugin-data 路径不变。已有用户配置和启用选择保留；新默认项建立一次普通 manifest 选择，旧 receipt 中已被用户卸载的项不重新加入。内置卸载表达为停用并保留 manifest=false；外置同 ID 覆盖被卸载时，照常移除外置 cache，但保留已经写入的 false，防止底层内置默认复活。其它外置卸载不变。
 
 不增加部署 journal、批次状态机或第二张运行选择。首次安装仍复用原 installer 和 receipt；以后直接准备 image source 的普通不可变 descriptor，不改写首次 cache。Python requirements 仍由 PythonEnvironments 拥有；镜像构建用目标 Python 下载 wheels，停止期准备固定环境，运行期只读取准备好的引用。
+
+## 维护者确认的意图与范围
+
+- 内置本体是 preset：选择新版包含新增默认功能和内置退役，已有显式停用保留。默认加载、代码版本和数据迁移各有 owner。
+- Yoyo 先于新版激活，范围仅是 Core 和当前发行版的内置插件。内置 migration 来源读取全部随包源码，不受默认 profile 或启用状态裁剪。外置插件自己负责兼容与迁移，其安装、部署和启动不解析 `migration.catalog.toml`。
+- 采用 DSH 的“当前内置组合加用户选择”思路，不移植额外的来源优先级、配置层级或自动 provider 求解器。
+- 替换依据已有 ServiceKey 或独占 claim，用户明确停用 A、启用 B。inject 表示消费依赖，不是独占证明。同名或安装先后不能证明行为互斥。重复独占提供者继续报错；本次不新增自动替换、卸载后自动恢复默认或失败回退。
+- 既有同名 cache 优先规则属于来源兼容，不升级为上述替换协议。若外置与当前内置占用同 ID，二者共用 data root，发布/启动在任何 Yoyo 前拒绝该 owner 冲突，即使外置已经停用也不能绕过；替代实现须使用独立名称和插件 ID。新的外置安装在写入 cache/data 前拒绝占用内置 ID，部署清单也拒绝这种目标。本次不猜测或迁移已有外置数据。历史曾混用同 ID 后又卸载的目录，不能只凭当前 cache/selection 证明归属；这类旧安装须先做明确的数据归属核验，不宣称已覆盖全部历史路径。
+
+Yoyo 是顺序与成功账本，不是任意脚本的数据安全证明。每个 step 仍须声明写入、事务、恢复和重试合同。失败后不启动新版，不把恢复旧选择等同于恢复数据。本次不增加自动数据清理或强制全量备份。
 
 ## 已有安装与来源证明
 
@@ -35,21 +45,22 @@
 
 ## 状态、失败与恢复
 
-- 唯一运行选择仍是 `plugin-stable.json`。准备失败或迁移未获批准时不提交新 Root；归档、环境和新默认 choice 可能已准备，不能因此声称它们已运行。
+- 唯一运行选择仍是 `plugin-stable.json`。准备或迁移失败时不提交新 Root；归档、环境和新默认 choice 可能已准备，不能因此声称它们已运行。
 - 新 Root CAS 是完整组合提交。后续 import/apply/readiness 失败保留真实结果，不声称业务数据回滚。旧完整 Root 与全部代码归档保留；恢复必须使用兼容 Core 并核对实际选择，不能仅改启动标记或删除 cache。
-- `manifest.toml` 仍拥有启用选择；已有值不被 profile 覆盖。原配置的选中投影优先于过期文件；未结算配置事务必须先由原 owner 恢复。显式 target 可采用被批准迁移产生的新配置。
+- `manifest.toml` 仍拥有启用选择；已有值不被 profile 覆盖。当前选择引用的 accepted/selected/failed 配置请求必须先由原 owner 恢复；文件投影成功且实际实例 ready 后才结算为 active。停止期内置配置从迁移后的持久输入归档，发布重试仍保留迁移结果；外置继续保留原选中配置。
 - Session、Message、凭据、附件和 plugin-data 不被复制、删除或重建。首次 receipt、旧代码 cache、历史 Root/descriptor、环境引用不自动减少。
-- 0074 的显式 migration ID、可选备份、停止期双锁和实际运行验收继续有效。新版本启动不批准任何 Core 或业务数据迁移；不兼容的外置 runtime 明确失败，不自动重装。
+- 选择发行版即接受必要的 Core 与内置 Yoyo，执行完成后才提交并启动新组合。删除部署清单的 `migrations` ID 列表；旧清单需移除此字段。可选备份、停止期双锁和实际运行验收继续有效；不兼容的外置 runtime 明确失败，不自动重装。
 
 ## 验收
 
-复用概念基线与静态检查，不新增单元测试。隔离的真实 Git bundle、installer、Manager 和 selection 场景核对升级、退役、profile 可选项、停用/卸载、同名外置覆盖、脏旧源码、失败重试、迁移拒绝、配置与环境引用、第二次启动和受保护文件字节。容器构建、生产发布与运行验收分别报告；本 PR 不部署生产。
+复用概念基线与静态检查，不新增单元测试。隔离的真实 Git bundle、installer、Manager 和 selection 场景核对升级、退役、profile 可选项、停用/卸载、同名外置覆盖、脏旧源码、失败重试、内置自动迁移、外置迁移排除、配置与环境引用、第二次启动和受保护文件字节。容器构建、生产发布与运行验收分别报告；本 PR 不部署生产。
 
 可重跑的手工场景（不加入 `tests/`）：
 
 ```bash
 .venv/bin/python scripts/deployment_composition_scenario.py
 .venv/bin/python scripts/deployment_composition_scenario.py --with-wheels
+.venv/bin/python scripts/deployment_migration_scenario.py
 ```
 
 默认只使用本地临时 Git 源和空 requirements；`--with-wheels` 额外下载一个公开测试依赖并在固定插件解释器中执行。脚本创建独立目录、记录当前 commit/tree/dirty 状态并留下 `result.json`、bundle、数据库和 receipt；从不连接已有安装或 provider。`--output` 只接受尚不存在的目录。Session/Message 同时核对完整 SQL dump 与数据库字节，配置、plugin-data、旧 cache 和 receipt 核对完整文件内容。

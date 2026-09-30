@@ -12,10 +12,12 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import load_plugin_manifest
 from agent.plugins.source_resolver import ResolvedPluginSource
+from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugin_composition.archive import encode_tree, tree_entries
 from agent.plugins.python_environment import ENVIRONMENT_FILE
@@ -66,7 +68,6 @@ def distribution_sources(
             return DistributionSources()
         distribution = Path(configured)
     distribution = distribution.resolve(strict=True)
-    report = json.loads((distribution / "distribution.json").read_text())
     profile = json.loads((distribution / "profiles/default.json").read_text())
     marketplace = profile["marketplace"]
     defaults = {row["name"] for row in profile["plugins"]}
@@ -103,13 +104,21 @@ def distribution_sources(
             and _matches_receipt_tree(artifact, revision)):
             ignored.add(artifact)
             legacy.add(plugin_id)
+    sources = tuple(source for source in distribution_plugin_sources(distribution)
+                    if (f"{source.plugin_name}@{marketplace}" in choices
+                        or (source.plugin_name in defaults
+                            and f"{source.plugin_name}@{marketplace}" not in historical)))
+    return DistributionSources(sources, frozenset(ignored), frozenset(legacy))
+
+
+def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSource, ...]:
+    """读取发行版全部内置来源；迁移范围不受启停选择影响。"""
+    report = json.loads((distribution / "distribution.json").read_text())
+    profile = json.loads((distribution / "profiles/default.json").read_text())
+    marketplace = profile["marketplace"]
     sources = []
     for row in report["plugins"]:
         name = row["name"]
-        plugin_id = f"{name}@{marketplace}"
-        # Old opt-outs stay absent; new defaults get their first choice at deploy.
-        if plugin_id not in choices and (name not in defaults or plugin_id in historical):
-            continue
         root = distribution / "sources" / name
         identity = load_static_plugin_manifest(root)
         if identity.name != name:
@@ -121,4 +130,46 @@ def distribution_sources(
             wheel_tree_sha256=digest.read_text().strip() if digest.exists() else "",
             distribution_source=report["source_commit"],
         ))
-    return DistributionSources(tuple(sources), frozenset(ignored), frozenset(legacy))
+    return tuple(sources)
+
+
+def distribution_migration_sources(
+    workspace: Path, plugins_home: Path, distribution: Path | None = None,
+) -> tuple[ResolvedPluginSource, ...]:
+    """只把归属明确的内置数据目录交给当前发行版的 Yoyo。"""
+    if distribution is None:
+        configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+        if not configured:
+            return ()
+        distribution = Path(configured)
+    available = distribution_sources(workspace, plugins_home, distribution)
+    sources = distribution_plugin_sources(distribution)
+    by_id = {f"{source.plugin_name}@{source.marketplace}": source for source in sources}
+    legacy_codes: dict[str, str] = {}
+    # 1. 同 ID 外置安装与内置共用 data root，停用也不能证明其数据归内置。
+    for plugin_id, source in by_id.items():
+        base = plugins_home / "cache" / source.marketplace / source.plugin_name
+        pointers = read_pointers(base)
+        if pointers is None or pointers.stable.path is None:
+            continue
+        artifact = resolve_pointer(base, pointers.stable)
+        if artifact not in available.ignored_installed_roots:
+            raise SelectionConflictError(f"内置与外置共用数据身份，停止迁移: {plugin_id}; 替代插件须使用独立身份")
+        assert artifact is not None
+        legacy_codes[plugin_id] = hashlib.sha256(encode_tree(tree_entries(
+            artifact, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
+        ))).hexdigest()
+    # 2. cache 丢失也不抹掉已选外置归档的身份，旧内置只按精确来源证据接管。
+    selection = PluginSelection(workspace)
+    root = selection.read() if selection.path.exists() else None
+    if root is not None:
+        for ref in cast(tuple[str, ...], selection.archive.read_descriptor(root)["components"]):
+            record = selection.archive.read_descriptor(ref)
+            plugin_id = cast(str, record["plugin_id"])
+            if plugin_id not in by_id:
+                continue
+            if (is_distribution_input(record, selection.archive.open(cast(str, record["code"])))
+                or (plugin_id in available.legacy_ids and record["code"] == legacy_codes.get(plugin_id))):
+                continue
+            raise SelectionConflictError(f"已选外置输入占用内置数据身份，停止迁移: {plugin_id}")
+    return sources

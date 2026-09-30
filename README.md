@@ -39,7 +39,7 @@ git pull --ff-only
 AKASHIC_REVISION="$(git rev-parse HEAD)" docker compose up -d --build
 ```
 
-新镜像的内置代码会替换旧版本，已退役内置停止加载；外置版本、停用选择、配置和运行数据保留。仅重启原镜像不会取得新代码。若预检报告待迁移，先按[部署手册](docs/design/operator-deployment.md)批准明确的 migration ID；不要删除卷、cache 或改启动标记来绕过。
+新镜像的内置代码会替换旧版本，已退役内置停止加载；外置版本、停用选择、配置和运行数据保留。仅重启原镜像不会取得新代码。新版启动前会先执行必要的 Core/内置 Yoyo；外置插件自行负责数据迁移。迁移失败则停止发布与启动，按[部署手册](docs/design/operator-deployment.md)检查实际状态，不要删除卷、cache 或改启动标记来绕过。
 
 数据保存在此 Compose project 的 `data` 卷。独立实例使用不同的 `docker compose -p <名称>`；同一项目名称表示管理同一个实例。用 Docker Desktop 的启动、停止和日志操作管理服务，或运行 `docker compose stop` / `docker compose up -d`。`docker compose down` 保留数据；**不要加 `-v`，它会删除数据卷**。默认仅向本机开放网页，文件和 Shell 工具在容器内部运行。
 
