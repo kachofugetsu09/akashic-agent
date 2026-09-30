@@ -326,11 +326,169 @@ def migration_scenario(workspace: Path) -> None:
     )
 
 
+def migration_boundary_scenario(root: Path) -> None:
+    migration = read_migrations(
+        str(Path(__file__).resolve().parents[1] / "plugins/models/models_migrations")
+    )[0]
+    migration.load()
+    callback = migration.module.add_user_disabled
+
+    def prior_registry(workspace: Path) -> Path:
+        workspace.mkdir()
+        path = workspace / "model-registry.sqlite3"
+        store = ModelsStore(path, workspace / "unused-backups")
+        store.initialize()
+        store.close()
+        with closing(sqlite3.connect(path)) as connection:
+            for table in ("model_definitions", "embedding_models"):
+                connection.execute(f"ALTER TABLE {table} DROP COLUMN user_disabled")
+            connection.commit()
+        return path
+
+    def run(workspace: Path) -> None:
+        with bind_migration_context(
+            workspace=workspace, config_path=workspace / "config.toml"
+        ):
+            callback(None)
+
+    for relative, destination_kind in [
+        ("runtime", "outside"),
+        ("runtime/model-backups", "outside"),
+        ("runtime", "dangling"),
+        ("runtime", "inside"),
+    ]:
+        case = root / f"symlink-{relative.replace('/', '-')}-{destination_kind}"
+        case.mkdir()
+        workspace = case / "workspace"
+        path = prior_registry(workspace)
+        before = path.read_bytes()
+        destination = (
+            workspace / "redirect" if destination_kind == "inside" else case / "outside"
+        )
+        if destination_kind != "dangling":
+            destination.mkdir()
+        link = workspace / relative
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(destination, target_is_directory=True)
+        before_entries = sorted(
+            str(entry.relative_to(case)) for entry in case.rglob("*")
+        )
+        try:
+            run(workspace)
+        except ValueError as error:
+            assert "symbolic-link" in str(error)
+        else:
+            raise AssertionError(f"migration followed {relative} -> {destination_kind}")
+        assert path.read_bytes() == before
+        assert (
+            sorted(str(entry.relative_to(case)) for entry in case.rglob("*"))
+            == before_entries
+        )
+    CHECKS.append(
+        "Migration rejects runtime/backup-parent symlinks, including internal and dangling links, with unchanged registry and no new files inside or outside the workspace"
+    )
+
+    template = root / "schema-template"
+    path = prior_registry(template)
+    with closing(sqlite3.connect(path)) as connection:
+        schema = ";\n".join(
+            row[0]
+            for row in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+            )
+        )
+    malformed = {
+        "wrong-types": schema.replace(
+            "id TEXT PRIMARY KEY", "id BLOB PRIMARY KEY"
+        ).replace("enabled INTEGER", "enabled TEXT"),
+        "wrong-meta": schema.replace(
+            "revision INTEGER NOT NULL CHECK (revision >= 0)", "revision TEXT"
+        ),
+        "missing-check": schema.replace("CHECK (enabled IN (0, 1))", ""),
+        "missing-foreign-key": schema.replace(
+            "REFERENCES model_connections(id) ON DELETE RESTRICT", ""
+        ),
+        "missing-unique": schema.replace("UNIQUE(connection_id, model)", "CHECK (1)"),
+        "unknown-trigger": schema
+        + "; CREATE TRIGGER unexpected_model_write AFTER INSERT ON model_definitions BEGIN UPDATE model_registry_meta SET revision=revision+1; END",
+    }
+    for name, definition in malformed.items():
+        assert definition != schema
+        workspace = root / name
+        workspace.mkdir()
+        path = workspace / "model-registry.sqlite3"
+        with closing(sqlite3.connect(path)) as connection:
+            connection.executescript(definition)
+        before = path.read_bytes()
+        try:
+            run(workspace)
+        except RuntimeError as error:
+            assert "schema lineage" in str(error)
+        else:
+            raise AssertionError(f"migration accepted {name}")
+        assert path.read_bytes() == before
+        assert sorted(entry.name for entry in workspace.iterdir()) == [path.name]
+    CHECKS.append(
+        "Unknown registry types, metadata, CHECK/FK/UNIQUE constraints and triggers fail before any registry or backup writes"
+    )
+
+    additions = {
+        "model_connections": ["driver_config_json TEXT NOT NULL DEFAULT '{}'"],
+        "model_registry_meta": [
+            "default_embedding_model_id TEXT DEFAULT NULL",
+            "host_epoch INTEGER NOT NULL DEFAULT 0",
+        ],
+        "model_definitions": ["capabilities_json TEXT"],
+        "embedding_models": ["capabilities_json TEXT"],
+    }
+    for append in (False, True):
+        workspace = root / f"known-additive-{append}"
+        path = prior_registry(workspace)
+        with closing(sqlite3.connect(path)) as connection:
+            for table, columns in additions.items():
+                for definition in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table} DROP COLUMN {definition.split()[0]}"
+                    )
+                    if append:
+                        connection.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {definition}"
+                        )
+            connection.commit()
+        run(workspace)
+        with closing(sqlite3.connect(path)) as connection:
+            for table in ("model_definitions", "embedding_models"):
+                assert "user_disabled" in {
+                    row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+                }
+        run(workspace)
+        assert len(list((workspace / "runtime/model-backups").iterdir())) == 1
+    CHECKS.append(
+        "Both known pre-additive and appended legacy schemas migrate and replay, including historical host_epoch default 0"
+    )
+
+    workspace = root / "equivalent-ddl"
+    workspace.mkdir()
+    with closing(sqlite3.connect(workspace / "model-registry.sqlite3")) as connection:
+        connection.executescript(
+            schema.replace(
+                "CREATE TABLE model_definitions", 'create table "model_definitions"'
+            )
+            .replace("id TEXT PRIMARY KEY", '"id" text primary key')
+            .replace("CHECK (", "check (  ")
+        )
+    run(workspace)
+    CHECKS.append(
+        "Equivalent DDL quoting, keyword case and whitespace preserve the recognized SQLite schema identity"
+    )
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="models-opt-out-scenario-") as temporary:
         workspace = Path(temporary)
         asyncio.run(model_scenario(workspace))
         migration_scenario(workspace)
+        migration_boundary_scenario(workspace)
     print(
         json.dumps(
             {

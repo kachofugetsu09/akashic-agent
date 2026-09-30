@@ -74,6 +74,7 @@
 | 文件或目录 | 回答的问题 | 读取策略 |
 |---|---|---|
 | [长工具结果投影与回读](decisions/0081-content-views-keep-original-messages.md) | 首次完整展示、普通插件折叠与原文范围回读 | 修改长结果模型视图时读取 |
+| [模型显式停用与目录可用性](design/model-user-disable.md) | 用户 opt-out、provider 目录恢复、Models 迁移与备份边界 | 修改逐模型开放/停用或目录同步时读取 |
 | [Event-loop execution boundaries](design/event-loop-isolation.md) | 历史读取、计算隔离与因果顺序 | 排查跨 owner 阻塞和执行资源时读取 |
 | [能力依赖与执行归属](design/issue-766-orthogonal-capabilities.md) | Issue 766 的职责、取舍与实施边界 | 插件正交化实施入口 |
 | [插件 Onboarding 投影设计](design/plugin-onboarding-projection.md) | 模型、渠道、Akasha、Wake 的配置归属、拓扑排序与旧入口退役（内置实现与验收） | 修改 setup、首次配置或插件配置声明时读取 |

@@ -35,8 +35,24 @@ false, while a partially installed expansion is rejected.
 The migration follows the existing plugin SQLite-backup pattern before an atomic
 pair of ALTERs; it does not import a private Core helper. The private backup
 directory contains a 0600 database and digest/integrity
-manifest. Repeating the migration checks the completed column definitions and
-does not rewrite data. Unknown/partial definitions fail before migration writes.
+manifest. Existing symlink ancestors (including internal or dangling links) are
+rejected before creating directories; no-follow directory/file creation and
+fsync through the workspace make the private recovery point explicit. This uses
+the deployment runner's offline workspace lock to serialize approved writers;
+it does not claim protection from a hostile same-user process replacing parent
+directories concurrently. It requires no Linux-only `/proc` path.
+
+The migration freezes the five registry table definitions from the pre-expansion
+Models owner. SQLite column, foreign-key, index and table metadata plus normalized
+CHECK expressions validate types, defaults, keys and constraints independently of
+DDL whitespace, identifier quoting or appended-column order. The existing owner
+already permits absent `driver_config_json`, `default_embedding_model_id`,
+`capabilities_json` and `host_epoch`; those exact additive variants remain
+supported, including the historical epoch default 0 and fresh-registry default 1.
+The independent model-call ledger is outside this migration's write set.
+Repeating the migration checks the completed schema and does not rewrite data.
+Unknown tables of the same names, constraints, triggers or partial definitions
+fail before registry or backup writes.
 It does not infer user intent from old disabled rows or rewrite their existing
 availability, credentials, IDs, bindings or model revision.
 
