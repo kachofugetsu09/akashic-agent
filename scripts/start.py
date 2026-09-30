@@ -83,7 +83,8 @@ def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, P
     preparation.step("安装运行依赖 · 首次启动可能需要几分钟")
     uv = shutil.which("uv")
     if uv:
-        preparation.run([uv, "venv", "--python", sys.executable, str(stage / "env")])
+        # Wheel preparation runs through this interpreter's pip, including with uv.
+        preparation.run([uv, "venv", "--seed", "--python", sys.executable, str(stage / "env")])
         preparation.run([uv, "pip", "install", "--python", str(python),
                          "-r", str(ROOT / "requirements.txt"), str(ROOT / "sdk/python")])
     else:
