@@ -95,14 +95,14 @@ try {
   assert.equal(requests.length, 0);
   await settle(() => shellResolve());
   assert.equal(requests.length, 1);
-  assert.equal(controller.canSend, false);
-  assert.match(controller.modelProblem, /正在核对/);
+  assert.equal(controller.canSend, true);
+  assert.equal(controller.modelProblem, "");
   await settle(() => { focus(); visible(); });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].signal.aborted, false);
   await settle(() => requests[0].resolve());
   assert.equal(controller.canSend, true);
-  checks.push("Cold startup waits for readiness and issues one read; first unresolved snapshot blocks sending; simultaneous reads join without abort");
+  checks.push("Cold startup waits only for chat readiness; unresolved model catalog causes no notice or send gate; simultaneous reads join");
 
   const draftKey = controller.draftKey;
   sessionStorage.setItem("akashic.chat.draft:" + draftKey, "unsent draft");
@@ -136,16 +136,18 @@ try {
   for (const status of [401, 403, 503]) {
     await settle(focus);
     await settle(() => requests.at(-1).resolve({ detail: "fixture" }, status));
-    assert.equal(controller.canSend, false);
+    assert.equal(controller.canSend, true);
     assert.equal(controller.modelsPhase, "error");
-    const problem = controller.modelProblem;
+    assert.equal(controller.modelProblem, "");
+    assert.match(controller.modelsError, /列表加载失败/);
+    const problem = controller.modelsError;
     await settle(() => { controller.retryModels(); focus(); visible(); });
     assert.equal(controller.modelsPhase, "error");
-    assert.equal(controller.modelProblem, problem);
+    assert.equal(controller.modelsError, problem);
     await settle(() => requests.at(-1).resolve());
     assert.equal(controller.canSend, true);
   }
-  checks.push("401/403/503 remain blocking and retain their reason through retry; successful revalidation restores sending");
+  checks.push("401/403/503 are visible read failures, never mistaken for unusable model config; retries do not gate sending");
 
   await settle(focus);
   await settle(() => requests.at(-1).resolve(models({ runtimes: [], unavailableRuntimes: [{
@@ -161,22 +163,26 @@ try {
 
   await settle(() => controller.activateSession("akashic:A"));
   assert.equal(controller.modelState, null);
-  assert.equal(controller.canSend, false);
+  assert.equal(controller.canSend, true);
+  assert.equal(controller.modelProblem, "");
+  assert.equal(controller.pendingSessionId, "");
   const a = requests.at(-1);
   await settle(() => controller.activateSession("akashic:B"));
   const b = requests.at(-1);
   assert.equal(a.signal.aborted, true);
   await settle(() => a.resolve(models({ sessionOverride: "perf/runtime-1" })));
   assert.equal(controller.modelState, null);
-  assert.equal(controller.canSend, false);
+  assert.equal(controller.canSend, true);
+  assert.equal(controller.modelProblem, "");
   await settle(() => b.resolve(models({ sessionOverride: "perf/runtime" })));
   assert.equal(controller.canSend, true);
   assert.equal(controller.selectedRuntimeId, "perf/runtime");
   await settle(() => controller.startNewChat());
   assert.equal(controller.modelState, null);
-  assert.equal(controller.canSend, false);
+  assert.equal(controller.canSend, true);
+  assert.equal(controller.modelProblem, "");
   await settle(() => requests.at(-1).resolve());
-  checks.push("A→B and existing→new chat clear prior snapshot; delayed A cannot unblock B or replace its selection");
+  checks.push("A→B and existing→new chat clear stale choices without notices or send gates; delayed A cannot change B; sidebar settles before model read");
 
   await settle(() => controller.handleModelChange("perf/runtime-1", "high"));
   await settle(focus);
@@ -206,10 +212,15 @@ try {
   await settle(() => shellResolve());
   assert.equal(requests.length, 1);
   assert.equal(requests[0].session, "akashic:restored");
-  assert.equal(controller.canSend, false);
+  assert.equal(controller.canSend, true);
+  assert.equal(controller.modelProblem, "");
+  await act(async () => { await controller.sendMessage("before model read", []); });
+  assert.equal(frames.at(-1).session_id, "akashic:restored");
+  assert.equal("model_runtime_id" in frames.at(-1), false);
+  assert.equal("model_reasoning_effort" in frames.at(-1), false);
   await settle(() => requests[0].resolve(models({ defaultRuntime: "", sessionOverride: "perf/runtime-1" })));
   assert.equal(controller.canSend, true);
-  checks.push("StrictMode restored session reads only its session snapshot once; valid session override works without system default");
+  checks.push("StrictMode restored session can send before model read with no override; saved session model remains authoritative even without default");
   await settle(focus);
   const stuck = requests.at(-1);
   await settle(() => controller.retryModels());

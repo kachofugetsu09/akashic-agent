@@ -1,9 +1,9 @@
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
 
-export type ChatStatus = "idle" | "submitted" | "streaming" | "finalizing" | "error";
+export type ChatStatus = "idle" | "uploading" | "submitted" | "streaming" | "finalizing" | "error";
 
 export function isGeneratingChatStatus(status: ChatStatus): boolean {
-  return status === "submitted" || status === "streaming";
+  return status === "uploading" || status === "submitted" || status === "streaming";
 }
 
 /** 从消息事实衔接接纳与回复活动；保存输入不代表回复结束。 */

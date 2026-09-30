@@ -36,7 +36,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   replyTarget: TimelineReply | null;
   onModelChange: (runtimeId: string, effort: string) => void;
   onCancelReply: () => void;
-  onSend: (text: string, files: ComposerFile[]) => Promise<void>;
+  onSend: (text: string, files: ComposerFile[]) => Promise<string | undefined>;
   onStop: () => void;
 }) {
   // 标签页文本草稿是展示状态，既不上传，也不创建 Message。
@@ -82,7 +82,13 @@ export const DesktopComposer = memo(function DesktopComposer({
     setInput("");
     setExpanded(false);
     try {
-      await onSend(text, files);
+      const sessionId = await onSend(text, files);
+      // 首次接纳只是给同一编辑位置确定会话身份，后写的草稿随它保留。
+      if (sessionId && draftKey.startsWith("new:")) {
+        const next = drafts.current.get(draftKey) || "";
+        setDraft(sessionId, next);
+        setDraft(draftKey, "");
+      }
     } catch (error) {
       setDraft(draftKey, drafts.current.get(draftKey) || text);
       setExpanded(wasExpanded);
@@ -191,9 +197,13 @@ function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { inpu
   const generating = isGeneratingChatStatus(status);
   return <ComposerActionButton
     mode={generating ? "stop" : "send"}
-    label={stopPending ? "正在停止" : generating ? "中止回答" : "发送消息"}
+    label={stopPending ? "正在停止" : status === "uploading" ? "取消上传" : generating ? "中止回答" : "发送消息"}
     type={generating ? "button" : "submit"}
-    onClick={generating ? onStop : undefined}
+    onClick={generating ? (event) => {
+      // 取消会把同一按钮变回 submit；先阻断这次点击的默认提交。
+      event.preventDefault();
+      onStop();
+    } : undefined}
     disabled={stopPending || (!generating && (disabled || (!input.trim() && attachments.files.length === 0)))}
   />;
 }
