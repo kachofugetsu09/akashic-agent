@@ -3,19 +3,99 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import hashlib
 import json
 from pathlib import Path
 import sys
+import subprocess
 from unittest.mock import patch
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.deployment_migration_scenario import setup
 from scripts.deployment_composition_scenario import manager, commit, git, selected, snapshot
-from scripts.install_plugin_distribution import publish_distribution
+from scripts.install_plugin_distribution import publish_distribution, _current_artifact
 from agent.plugins.selection import PluginSelection
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
+from agent.plugins.static_manifest import load_static_plugin_manifest
+
+
+async def same_commit_environment(previous_python: Path | None) -> None:
+    root, _, distribution, workspace, home, config, receipt = await setup('deployment-same-commit-')
+    runtime = await manager(workspace, home, distribution)
+    external = root / 'external'
+    external.mkdir()
+    git(external, 'init', '-q')
+    (external / 'plugin.py').write_text("api_version=3\nname='outside'\nversion='1'\nasync def apply(ctx): pass\n")
+    (external / 'requirements.txt').write_text('')
+    revision = commit(external)
+    await runtime.install(source=str(external), marketplace='thirdparty', ref_name='',
+                          sparse_paths=[], update_id='outside-v1')
+    await runtime._operation.task
+    await runtime.terminate_all()
+    selection = PluginSelection(workspace)
+    original = selection.read()
+    original_input, descriptor = selected(workspace)['outside@thirdparty']
+    artifact, _, _ = _current_artifact(workspace=workspace, plugins_home=home, plugin_id='outside@thirdparty')
+    identity = load_static_plugin_manifest(artifact)
+    current_refs = read_environment_refs(artifact, identity)
+    assert current_refs
+    old_refs = {}
+    old_tag = 'cpython-311'
+    if previous_python is not None:
+        old_tag = subprocess.check_output([
+            str(previous_python), '-c', 'import sys; print(sys.implementation.cache_tag)',
+        ], text=True).strip()
+        assert old_tag != sys.implementation.cache_tag, 'Use a different Python minor'
+    # Without --previous-python this models only the old environment identity.
+    # With it, create and later compare real interpreters from two Python minors.
+    for name, ref in current_refs.items():
+        record = dict(selection.archive.read_descriptor(ref))
+        if previous_python is not None:
+            location = uuid4().hex
+            environment = PythonEnvironments(workspace).path / location / name / '.venv'
+            subprocess.run([str(previous_python), '-m', 'venv', '--without-pip', '--copies', str(environment)],
+                           check=True)
+            record['location'] = location
+        record['input'] = {**record['input'], 'base': {'executable': str(previous_python or '/previous/python3.11')}}
+        old_refs[name] = selection.archive.save_descriptor(record)
+    old_environment_bytes = json.dumps(old_refs).encode()
+    (artifact / ENVIRONMENT_FILE).write_bytes(old_environment_bytes)
+    old_descriptor = dict(descriptor)
+    old_descriptor['python_environments'] = old_refs
+    old_descriptor['runtime'] = {**descriptor['runtime'], 'python_tag': old_tag}
+    old_input = selection.archive.save_descriptor(old_descriptor)
+    components = selection.archive.read_descriptor(original)['components']
+    baseline = selection.commit(tuple(old_input if ref == original_input else ref for ref in components),
+                                expected_ref=original)
+    bundle = root / 'external.bundle'
+    git(external, 'bundle', 'create', str(bundle), 'HEAD')
+    plan = root / 'plan.json'
+    plan.write_text(json.dumps({'schema_version': 1, 'expected_root_ref': baseline, 'targets': [{
+        'plugin_id': 'outside@thirdparty', 'bundle_relative_path': bundle.name,
+        'bundle_sha256': hashlib.sha256(bundle.read_bytes()).hexdigest(), 'target_commit': revision,
+    }]}))
+    result = publish_distribution(distribution=distribution, workspace=workspace, plugins_home=home,
+                                  config_path=config, plan=plan, inputs=root)
+    assert result['status'] == 'selected_not_started'
+    new_input = selected(workspace)['outside@thirdparty'][1]
+    assert dict(new_input['python_environments']) == current_refs
+    for name, ref in current_refs.items():
+        interpreter = PythonEnvironments(workspace).open(ref) / name / '.venv/bin/python'
+        actual_tag = subprocess.check_output([
+            str(interpreter), '-c', 'import sys; print(sys.implementation.cache_tag)',
+        ], text=True).strip()
+        assert actual_tag == new_input['runtime']['python_tag']
+    assert (artifact / ENVIRONMENT_FILE).read_bytes() == old_environment_bytes
+    new_artifact, _, _ = _current_artifact(workspace=workspace, plugins_home=home, plugin_id='outside@thirdparty')
+    assert new_artifact != artifact
+    runtime = await manager(workspace, home, distribution)
+    assert runtime.generation('outside@thirdparty').instance.version == '1'
+    await runtime.terminate_all()
+    print('PASS same-commit reinstall replaces stale environment refs and retains old artifact', flush=True)
 
 
 async def main() -> None:
@@ -90,4 +170,8 @@ async def main() -> None:
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--previous-python', type=Path, help='Optional installed interpreter from a different Python minor')
+    arguments = parser.parse_args()
     asyncio.run(main())
+    asyncio.run(same_commit_environment(arguments.previous_python))

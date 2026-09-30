@@ -217,7 +217,7 @@ def _stage_deployment_targets(
                 destination.mkdir()
                 preflight_offline_runtime(code, runtime, wheels, destination)
         result.append({"plugin_id": plugin_id, "old_ref": old_ref, "bundle": local,
-                       "commit": commit, "code": code, "installed_target": installed_target,
+                       "commit": commit, "code": code,
                        "wheels": wheels, "bundle_sha256": bundle_digest})
     return result
 
@@ -1137,16 +1137,15 @@ def publish_distribution(
                 for target in targets:
                     plugin_id = target["plugin_id"]
                     name, marketplace = plugin_id.split("@")
-                    if target["installed_target"]:
-                        artifact, _, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
-                        update_id = None
-                    else:
-                        installed = install_git_plugin(
-                            workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
-                            ref_name=target["commit"], plugins_home=plugins_home,
-                            refresh_existing_artifact=False, offline_wheels=target["wheels"],
-                        )
-                        artifact, update_id = installed.installed_path, installed.update_id
+                    # Matching code does not prove an existing Python environment
+                    # belongs to this interpreter. The idempotent installer owns
+                    # both inputs, including explicit same-commit reinstalls.
+                    installed = install_git_plugin(
+                        workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
+                        ref_name=target["commit"], plugins_home=plugins_home,
+                        refresh_existing_artifact=False, offline_wheels=target["wheels"],
+                    )
+                    artifact, update_id = installed.installed_path, installed.update_id
                     identity = load_static_plugin_manifest(artifact)
                     prepared = prepare_plugin_input(
                         {"name": name, "plugin_root": str(artifact), "module_path": str(artifact / "plugin.py"),
@@ -1155,8 +1154,7 @@ def publish_distribution(
                     )
                     if prepared.plugin_id != plugin_id:
                         raise RuntimeError(f"安装输入身份不符: {plugin_id}")
-                    if update_id is not None:
-                        ReloadJournal(workspace).set_input_ref(update_id, prepared.archive_ref)
+                    ReloadJournal(workspace).set_input_ref(update_id, prepared.archive_ref)
                     prepared_selected[plugin_id] = (
                         prepared.archive_ref, selection.archive.read_descriptor(prepared.archive_ref), prepared.code_dir,
                     )
