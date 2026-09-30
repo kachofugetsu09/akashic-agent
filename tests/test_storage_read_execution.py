@@ -262,7 +262,7 @@ async def test_resume_reads_only_current_source_work_and_replays_fixed_prefix(tm
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("read_kind", ["async-prefix", "owner-snapshot"])
+@pytest.mark.parametrize("read_kind", ["async-prefix", "owner-snapshot", "incremental-prefix"])
 async def test_committed_read_does_not_wait_for_another_threads_write(tmp_path, read_kind):
     """O/C4：已提交快照不等待另一个线程的写事务，正文前缀保持不变。"""
     from session.message import ContentPart, ContentReferences
@@ -285,7 +285,9 @@ async def test_committed_read_does_not_wait_for_another_threads_write(tmp_path, 
     try:
         # 1. 真实 append 已进入写事务；内容 owner 仅用屏障延迟本次提交。
         await gate.wait(job)
-        if read_kind == "async-prefix":
+        if read_kind != "owner-snapshot":
+            if read_kind == "incremental-prefix":
+                reader = reader.incremental()
             snapshot = await reader.snapshot_async(through_seq=original.seq)
         else:
             snapshot = owner.snapshot(reader.snapshot)
