@@ -222,10 +222,14 @@ class EditFile(_message.Message):
     def __init__(self, path: _Optional[str] = ..., old_text: _Optional[str] = ..., new_text: _Optional[str] = ..., replace_all: bool = ...) -> None: ...
 
 class ListDir(_message.Message):
-    __slots__ = ("path",)
+    __slots__ = ("path", "limit", "after")
     PATH_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    AFTER_FIELD_NUMBER: _ClassVar[int]
     path: str
-    def __init__(self, path: _Optional[str] = ...) -> None: ...
+    limit: int
+    after: str
+    def __init__(self, path: _Optional[str] = ..., limit: _Optional[int] = ..., after: _Optional[str] = ...) -> None: ...
 
 class FileReply(_message.Message):
     __slots__ = ("text", "image", "error")

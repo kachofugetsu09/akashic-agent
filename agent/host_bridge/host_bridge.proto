@@ -122,7 +122,11 @@ message EditFile {
   optional string new_text = 3;
   optional bool replace_all = 4;
 }
-message ListDir { optional string path = 1; }
+message ListDir {
+  optional string path = 1;
+  optional int32 limit = 2;
+  optional string after = 3;
+}
 message FileReply {
   oneof result {
     string text = 1;
