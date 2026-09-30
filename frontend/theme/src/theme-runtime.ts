@@ -220,13 +220,20 @@ function applySelection(next: ThemeSelection): void {
 /** 用户主动切换主题时整页淡交；reduced-motion 或不支持 View Transitions 时瞬时切换。 */
 function applySelectionWithCrossfade(next: ThemeSelection): void {
   const startViewTransition = (document as Document & {
-    startViewTransition?: (update: () => void) => unknown;
+    startViewTransition?: (update: () => void) => { ready: Promise<void> };
   }).startViewTransition;
   if (!startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     applySelection(next);
     return;
   }
-  startViewTransition.call(document, () => applySelection(next));
+  // View Transition callbacks are deferred. Keep repeated clicks based on the
+  // latest choice, and do not let a superseded callback restore an older theme.
+  selection = next;
+  const transition = startViewTransition.call(document, () => {
+    if (selection === next) applySelection(next);
+  });
+  // Starting another transition or hiding the document can skip the animation.
+  void transition.ready.catch(() => {});
 }
 
 export function initializeTheme(): ThemeSelection {
