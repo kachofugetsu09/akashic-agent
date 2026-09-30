@@ -11,6 +11,7 @@ import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
 import { formatNavigationTime, sessionLabel } from "./web-chat-message-data";
 import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
+import type { NavigationRowAction } from "./navigation-row-menu";
 import type { PendingProjectRow, ProjectMemory, ProjectRow } from "./web-projects";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
@@ -110,13 +111,12 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     }
     return pin.id.toLowerCase().includes(needle);
   });
-  const pinAction = (pin: NavigationPin, title: string, pinned: boolean) => <button
-    type="button" className="project-navigation__icon navigation-pin-action"
-    aria-label={`${pinned ? "取消置顶" : "置顶"} ${title}`} title={pinned ? "取消置顶" : "置顶"}
-    disabled={!navigationPins.ready || navigationPins.pending}
-    onClick={() => { void navigationPins.setPinned(pin, !pinned); }}>
-    {pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
-  </button>;
+  const pinAction = (pin: NavigationPin, pinned: boolean): NavigationRowAction[] => [{
+    label: pinned ? "取消置顶" : "置顶",
+    icon: pinned ? <PinOff size={18} aria-hidden="true" /> : <Pin size={18} aria-hidden="true" />,
+    disabled: !navigationPins.ready || navigationPins.pending,
+    onSelect: () => { void navigationPins.setPinned(pin, !pinned); },
+  }];
   const sessionView = (session: DesktopSidebarSession): ConversationSession => ({
     ...session, active: surface === "chat" && session.active,
     state: surface === "chat" && session.active ? <Check size={18} /> : null,
@@ -159,7 +159,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               onToggle={() => navigationPins.toggleProject(pin.id)}
               onNewChat={() => projects.onNewChat(pin.id)}
               onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
-              actions={pinAction(pin, project.name, true)} searching={searching}
+              actions={pinAction(pin, true)} searching={searching}
             /> : null;
           } else {
             const session = allSessions.find((item) => item.id === pin.id);
@@ -167,14 +167,14 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               || `${session.title} ${session.preview}`.toLowerCase().includes(needle) ? <ConversationSessionRow
                 key={`session:${pin.id}`} session={sessionView(session)} pendingSessionId={pendingSessionId}
                 onActivate={onSelectSession} onPrefetch={onPrefetchSession}
-                actions={pinAction(pin, session.title, true)}
+                actions={pinAction(pin, true)}
               /> : null;
           }
           if (needle && !pin.id.toLowerCase().includes(needle)) return null;
           const title = pin.kind === "project" ? "项目暂不可用" : "会话暂不可用";
           return <ConversationSessionRow key={`${pin.kind}:${pin.id}`}
             session={{ id: pin.id, title, preview: pin.id, active: false, unavailable: true }}
-            onActivate={onSelectSession} actions={pinAction(pin, title, true)} />;
+            onActivate={onSelectSession} actions={pinAction(pin, true)} />;
         })}
       </section> : null}
       {projects ? <ProjectNavigation
@@ -194,7 +194,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onOpenCreateProject={projects.onOpenCreate}
         expandedProjects={navigationPins.expandedProjects}
         onToggleProject={navigationPins.toggleProject}
-        projectActions={(project) => pinAction({ kind: "project", id: project.id }, project.name, false)}
+        projectActions={(project) => pinAction({ kind: "project", id: project.id }, false)}
         searching={searching}
         heading={pinnedProjects.size ? "其他项目" : "项目"}
       /> : null}
@@ -208,7 +208,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         sessionActions={(session) => {
           const row = allSessions.find((item) => item.id === session.id);
           return row && !row.projectId && !row.projectScoped
-            ? pinAction({ kind: "session", id: row.id }, row.title, false) : null;
+            ? pinAction({ kind: "session", id: row.id }, false) : [];
         }}
         onSessionActivate={onSelectSession}
         onSessionPrefetch={onPrefetchSession}
