@@ -199,6 +199,19 @@ class NativeCompletion:
         if _on_usage is not None:
             await _on_usage(usage)
         message = raw["choices"][0]["message"]
+        # 固定 SDK 不捕获工具参数的 JSON 解码错误；只在模型响应边界分类。
+        for call in message.get("tool_calls") or []:
+            function = call["function"]
+            try:
+                arguments = json.loads(function["arguments"])
+            except json.JSONDecodeError as error:
+                raise ToolError(
+                    f"Invalid arguments for {function['name']}: {error}"
+                ) from error
+            if not isinstance(arguments, dict):
+                raise ToolError(
+                    f"Arguments for {function['name']} must be a JSON object"
+                )
         return {
             "output": convert_completion_messages_to_responses_items([message]),
             "usage": usage,
@@ -261,7 +274,7 @@ async def run_agent(args, env, description, case_dir, guidance):
     except TimeoutError:
         status = "timed_out"
         await env.session.cancel_call()
-    except litellm.APIError as error:
+    except (litellm.APIError, ToolError) as error:
         evidence["error"] = {"type": type(error).__name__, "message": str(error)}
     finally:
         # 3. 保存实际 wire/历史；取消后的 driver 排空由外层 episode owner 负责。
