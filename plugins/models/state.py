@@ -11,6 +11,7 @@ import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
+from functools import partial
 from time import monotonic_ns
 from types import MappingProxyType
 from typing import (
@@ -18,6 +19,7 @@ from typing import (
     AsyncContextManager,
     AsyncGenerator,
     AsyncIterator,
+    Callable,
     Mapping,
     Protocol,
     Sequence,
@@ -63,6 +65,7 @@ from agent.plugin_composition import (
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import ModelContinuation, ModelUsage, ToolCall
 from agent.plugin_composition.tasks import register_task_bound_context
+from core.common.file_io import run_file_io
 
 from .settings import (
     MODEL_SETTINGS,
@@ -182,7 +185,7 @@ class _BoundChat:
                 request, f"anonymous:{secrets.token_hex(8)}", digest, budget=1
             )
         request_key = request.request_key
-        # 活 run 合并只发生在同一权威账本内；不同 store 的同 key 是独立调用。
+        # 同一 Store 合并活等待者；不同 Store 仍由共同账本的事务核对准入。
         live_runs = cast(
             "dict[tuple[str, str], tuple[asyncio.Future[LLMResponse], str]]",
             self._store.live_runs,
@@ -197,9 +200,6 @@ class _BoundChat:
                     raise ValueError("同一模型请求 key 的请求内容不一致")
                 shared = entry[0]
             else:
-                replayed = self._scan(request_key, digest)
-                if replayed is not None:
-                    return replayed
                 # attempt owner 内联执行 provider 调用，取消如实送达当前 await；
                 # 并发同 key 等待者只分享同一个记账结果，不杀死真实 attempt。
                 shared = asyncio.get_running_loop().create_future()
@@ -257,9 +257,9 @@ class _BoundChat:
             return "answered"
         return "uncertain"
 
-    def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
+    async def _scan(self, request_key: str, digest: str) -> LLMResponse | None:
         """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
-        records = self._store.calls_for_key(request_key)
+        records = await run_file_io(partial(self._store.calls_for_key, request_key))
         orphan_found = False
         for record in records:
             if record["request_digest"] != digest:
@@ -284,10 +284,10 @@ class _BoundChat:
             if not self._owner_dead(record):
                 raise ModelUnavailableError("无法确认先前调用的执行 owner 已死亡，结果不确定")
             try:
-                self._store.finish_call(
+                await run_file_io(partial(self._store.finish_call,
                     call_id, usage=None,
                     failure="orphaned: 原执行 owner 已退出，真实结果不确定",
-                )
+                ))
             except Exception:
                 logger.warning("孤儿 Model 调用结算失败 call_id=%s", call_id, exc_info=True)
             orphan_found = True
@@ -320,6 +320,30 @@ class _BoundChat:
             return self._store.holds_host_lock
         return False
 
+    async def _finish_call(
+        self, finish: Callable[[], None],
+        cancelled: asyncio.CancelledError | None = None,
+    ) -> None:
+        """保留真实终态；重复取消不能放弃仍在排队的结算回执。"""
+        # 1. 结算独立等待磁盘名额；当前 caller 的 scope 保留到它实际结束。
+        settlement = asyncio.create_task(run_file_io(finish))
+        while not settlement.done():
+            try:
+                await asyncio.shield(settlement)
+            except asyncio.CancelledError as error:
+                cancelled = error
+            except Exception:
+                break
+        # 2. 取消和真实写入失败均向上报告，不能把未结算事实当作成功。
+        try:
+            settlement.result()
+        except Exception as error:
+            if cancelled is not None:
+                raise BaseExceptionGroup("模型调用取消且回执结算失败", [cancelled, error]) from None
+            raise
+        if cancelled is not None:
+            raise cancelled
+
     async def _attempts(
         self, request: ModelRequest, request_key: str, digest: str, *,
         budget: int | None = None,
@@ -328,10 +352,10 @@ class _BoundChat:
         先记账再结算，失败写耐久 next_attempt_at，重试前重新核对准入与孤儿。"""
         budget = self._max_attempts if budget is None else max(1, budget)
         while True:
-            replayed = self._scan(request_key, digest)
+            replayed = await self._scan(request_key, digest)
             if replayed is not None:
                 return replayed
-            records = self._store.calls_for_key(request_key)
+            records = await run_file_io(partial(self._store.calls_for_key, request_key))
             # 预算是耐久事实：连续 complete、关闭重开、进程重启都不刷新；
             # 显式恢复只能以新准备身份（新 key）进入，同 key 重入不重新付费。
             if len(records) >= budget:
@@ -354,14 +378,38 @@ class _BoundChat:
                 if delay > 0:
                     # 退避可取消；取消后 attempt 记录保持 started，结果不确定。
                     await asyncio.sleep(delay)
-            call_id = self._store.resume_call(
-                self._descriptor, request,
-                request_key=request_key,
-                owner_id=(
-                    f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
-                    f":{self._root_instance}:{secrets.token_hex(8)}"
-                ),
+            owner_id = (
+                f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
+                f":{self._root_instance}:{secrets.token_hex(8)}"
             )
+            store, descriptor = self._store, self._descriptor
+            call_id: str | None = None
+
+            def start_call() -> None:
+                nonlocal call_id
+                call_id = store.resume_call(
+                    descriptor, request, request_key=request_key,
+                    owner_id=owner_id, max_attempts=budget,
+                )
+
+            try:
+                await run_file_io(start_call)
+            except asyncio.CancelledError as cancelled:
+                # 线程已排空；已提交的 ID 必须结算，provider 此时尚未调用。
+                if call_id is not None:
+                    await self._finish_call(partial(
+                        self._store.finish_call, call_id, usage=None,
+                        failure="CancelledError", send_evidence="unsent",
+                    ), cancelled)
+                raise
+            except ModelUnavailableError:
+                # 写事务发现读取后已完成的调用时，只回放原成功，不新开 attempt。
+                replayed = await self._scan(request_key, digest)
+                if replayed is not None:
+                    return replayed
+                raise
+            assert call_id is not None
+            started_call_id = call_id
             _LIVE_CALLS.add(call_id)
             started: int | None = None
             first_token = False
@@ -372,9 +420,9 @@ class _BoundChat:
                 if not first_token and (
                     value.get("content_delta") or value.get("thinking_delta")
                 ):
-                    self._store.record_first_token(
-                        call_id, (monotonic_ns() - started) / 1_000_000
-                    )
+                    await run_file_io(partial(self._store.record_first_token,
+                        started_call_id, (monotonic_ns() - started) / 1_000_000
+                    ))
                     first_token = True
                 if request.on_delta is not None:
                     await request.on_delta(value)
@@ -397,7 +445,7 @@ class _BoundChat:
                     # "unsent"（连接未建立/发送前校验失败）才可进入自动重试；
                     # HTTP 200 流内失败、读/写错误、超时、取消一律无证据，
                     # 无论是否观察到 delta 都不得重发同一请求。
-                    partial = bool(getattr(failure, "response_delta_seen", False))
+                    partial_response = bool(getattr(failure, "response_delta_seen", False))
                     evidence = getattr(failure, "send_evidence", None)
                     retryable = evidence in ("rejected", "unsent") and bool(
                         getattr(failure, "retry_safe", False)
@@ -413,23 +461,30 @@ class _BoundChat:
                             else min(8.0, 0.5 * (2 ** (len(records) + 1)))
                         )
                     try:
-                        self._store.finish_call(
+                        await self._finish_call(partial(self._store.finish_call,
                             call_id, usage=None, failure=type(failure).__name__,
                             duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
                             next_attempt_at=retry_at,
-                            partial_response=partial,
+                            partial_response=partial_response,
                             send_evidence=evidence,
-                        )
+                        ), failure if isinstance(failure, asyncio.CancelledError) else None)
+                    except (asyncio.CancelledError, BaseExceptionGroup) as record_failure:
+                        if isinstance(failure, asyncio.CancelledError):
+                            raise
+                        # 真实 provider 错误不能被后来的取消或回执拒写覆盖。
+                        raise BaseExceptionGroup(
+                            "模型请求失败且回执结算被取消", [failure, record_failure]
+                        ) from None
                     except Exception as record_failure:
                         raise failure from record_failure
                     if retry_at is None:
                         raise
                     continue
-                self._store.finish_call(
+                await self._finish_call(partial(self._store.finish_call,
                     call_id, usage=response.usage, failure=None,
                     duration_ms=(monotonic_ns() - started) / 1_000_000,
                     response=response,
-                )
+                ))
                 response.call_record_id = call_id
                 return response
             finally:
