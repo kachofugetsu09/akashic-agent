@@ -478,3 +478,14 @@ factory 合同；Channel host 不再提取配置字段或维护第二份凭据�
 SDK 导入路径静态链路：向导从自身 `__file__` 定位宿主源码根，将该根及父进程依赖路径作为
 参数传给安装解释器；`-I -B -c` 启动代码显式加入这些路径，先导入共享 writer，再执行制品内
 配置程序。该链路不依赖 `PYTHONPATH` 或空的 `sys.path` 项；依赖版本的实际导入仍未运行验证。
+
+## 模型内容投影
+
+`CONTENT_VIEWS`（`models.content-views.v1`）由普通 Models provider 提供。注册纯
+`prepare(messages, source, tools, seen)`，返回按 `(Message, part_index)` 取 `RenderedContent | None`
+的函数；None 表示交给基础 renderer，同一位置两个贡献者处理时拒绝。`complete=True` 只用于
+完整表达该内容块，节选和脱敏视图必须为 False。`seen` 来自同 source 已提交的真实模型响应，
+不是调用次数或最近消息推断。注册返回 owner Effect，bind 固定活贡献者并持有 scope。
+
+能力没有消息 writer、模型调用或工具执行口。`content_view` 是其普通消费者，仅另依赖 CONTENT
+与 TOOLS。完整行为、范围和恢复约束见 [0081](../decisions/0081-content-views-keep-original-messages.md)。
