@@ -7,8 +7,8 @@ import { readFile } from "node:fs/promises";
 import postcss from "postcss";
 import { JSDOM } from "jsdom";
 import { activate } from "../frontend/plugins/models/src/module.js";
-import { activate as activateCodex } from "../plugins/codex/web_module.js";
-import { activate as activateOpenCode } from "../plugins/opencode_go/web_module.js";
+import { activate as activateCodex } from "../frontend/plugins/codex/src/module.js";
+import { activate as activateOpenCode } from "../frontend/plugins/opencode_go/src/module.js";
 
 const settle = async () => {
   for (let i = 0; i < 5; i += 1) await new Promise(resolve => setTimeout(resolve, 0));
@@ -49,7 +49,9 @@ async function mount(provider, initialCatalog = null) {
     ui: {inject: (_id, mount) => mount({register(value) { entry = value; return () => {}; }})},
     http: {async request(_url, init) {
       let result = catalog;
-      if (init?.method === "POST") {
+      if (_url.endsWith("/discover_saved")) {
+        result = {models: [{kind: "chat", model: "fixture-chat", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}}]};
+      } else if (init?.method === "POST") {
         const payload = JSON.parse(init.body);
         commands.push(payload);
         if (!["start_auth", "cancel_auth"].includes(payload.type)) {
@@ -63,13 +65,17 @@ async function mount(provider, initialCatalog = null) {
           result = {revision: ++catalog.revision, status: "committed"};
         } else if (payload.type === "sync_models") {
           assert.equal(catalog.connections.length, 1, "sync follows committed authentication");
-          if (!initialCatalog) catalog.models.push({id: "fixture-model", connectionId, kind: "chat", model: "fixture-chat", availability: "available", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}});
+
           result = {revision: ++catalog.revision, status: "committed"};
         } else if (payload.type === "set_default") {
           catalog.roleBindings[payload.role] = payload.model_id;
           result = {revision: ++catalog.revision, status: "committed"};
-        } else if (payload.type === "set_model_enabled") {
-          catalog.models.find(model => model.id === payload.model_id).availability = payload.enabled ? "available" : "disabled";
+        } else if (payload.type === "add_model") {
+          catalog.models.push({id: payload.model_id, connectionId: payload.connection_id, kind: payload.kind, model: payload.model, availability: "available", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}});
+          result = {revision: ++catalog.revision, status: "committed"};
+        } else if (payload.type === "remove_model") {
+          catalog.models = catalog.models.filter(model => model.id !== payload.model_id);
+          for (const role of Object.keys(catalog.roleBindings)) if (catalog.roleBindings[role] === payload.model_id) delete catalog.roleBindings[role];
           result = {revision: ++catalog.revision, status: "committed"};
         } else if (payload.type === "verify_model") {
           result = {revision: catalog.revision, status: "verified"};
@@ -102,10 +108,18 @@ for (const activateProvider of [activateOpenCode, activateCodex]) {
       document.querySelector(".settings-dialog-form").dispatchEvent(new Event("submit", {cancelable: true}));
     }
     await settle();
-    assert.deepEqual(fixture.commands.map(command => command.type), ["start_auth", "finish_auth", "sync_models", "set_default"]);
-    assert.equal(fixture.catalog.roleBindings.default, "fixture-model");
+    assert.deepEqual(fixture.commands.map(command => command.type), ["start_auth", "finish_auth"]);
+    assert.equal(fixture.catalog.models.length, 0, "authentication and discovery never adopt candidates");
+    const choice = document.querySelector(".settings-sheet-row input");
+    assert.equal(choice.checked, false);
+    choice.click();
+    document.querySelector(".settings-sheet-foot .settings-primary-button").click();
+    await settle();
+    assert.deepEqual(fixture.commands.map(command => command.type), ["start_auth", "finish_auth", "add_model", "set_default"]);
+    assert.equal(fixture.commands[2].discovery_owned, true);
+    assert.equal(fixture.catalog.roleBindings.default, fixture.catalog.models[0].id);
     assert.equal(document.querySelector("dialog[open]"), null);
-    checks.push(`${provider.id}: first authentication commits, synchronizes models and sets the missing default`);
+    checks.push(`${provider.id}: authentication opens unchecked candidates; explicit choice saves and sets the missing default`);
   } finally {
     await fixture.close();
   }
@@ -137,7 +151,7 @@ try {
   const toggleTarget = document.querySelector(".settings-model-toggle");
   const toggle = toggleTarget.querySelector("input");
   assert.equal(toggle.labels[0], toggleTarget, "the full target labels only its checkbox");
-  assert.equal(toggle.getAttribute("aria-label"), "开放 saved-chat");
+  assert.equal(toggle.getAttribute("aria-label"), "选择 saved-chat");
   const verify = document.querySelector(".settings-model-row button");
   assert.equal(toggleTarget.contains(verify), false);
   verify.click();
@@ -146,9 +160,9 @@ try {
   assert.deepEqual(roleFixture.commands.map(command => command.type), ["verify_model"]);
   toggleTarget.click();
   await settle();
-  assert.deepEqual(roleFixture.commands.map(command => command.type), ["verify_model", "set_model_enabled"]);
-  assert.equal(roleFixture.commands.at(-1).enabled, false);
-  checks.push("Model toggle has a dedicated associated label; verification stays separate and label activation toggles once");
+  assert.deepEqual(roleFixture.commands.map(command => command.type), ["verify_model", "remove_model"]);
+  assert.equal(roleFixture.catalog.models.length, 0);
+  checks.push("Model toggle has a dedicated associated label; verification stays separate and label activation removes the bound model once");
 } finally {
   await roleFixture.close();
 }
@@ -168,10 +182,42 @@ for (const hasAvailable of [true, false]) {
     await settle();
     const bindings = fixture.commands.filter(command => command.type === "set_default");
     assert.deepEqual(bindings.map(command => command.model_id), hasAvailable ? ["available-second"] : []);
-    checks.push(hasAvailable ? "Sync bootstraps a missing default from an available model, skipping opted-out rows" : "Sync leaves the default unset when every saved model is disabled");
+    checks.push(hasAvailable ? "Sync bootstraps a missing default from an available model, skipping unavailable rows" : "Sync leaves the default unset when every saved model is disabled");
   } finally {
     await fixture.close();
   }
+}
+
+// Selection changes operate only on the discovered scope and reject stale dialogs.
+for (const action of ["cancel", "clear", "stale"]) {
+  const fixture = await mount(providerEntry(activateCodex), {
+    revision: 1, connections: [{id: "saved", name: "Saved", driverId: "codex", availability: "available"}],
+    models: ["fixture-chat", "manual-chat"].map(model => ({id: model, connectionId: "saved", kind: "chat", model, availability: "available", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}})),
+    roleBindings: {default: "fixture-chat"}, defaultEmbeddingModelId: null,
+  });
+  try {
+    document.querySelector("[data-connections] button").click();
+    await settle();
+    document.querySelector("[data-probe]").click();
+    await settle();
+    const checkbox = document.querySelector(".settings-sheet-row input");
+    assert.equal(checkbox.checked, true);
+    assert.equal(checkbox.disabled, false, "default references do not lock selection");
+    checkbox.click();
+    if (action === "stale") fixture.catalog.revision += 1;
+    document.querySelector(`.settings-sheet-foot .settings-${action === "cancel" ? "secondary" : "primary"}-button`).click();
+    await settle();
+    assert.deepEqual(fixture.commands.map(command => command.type), action === "cancel" ? [] : ["remove_model"]);
+    assert.equal(fixture.catalog.models.length, action === "clear" ? 1 : 2, "stale CAS and cancel preserve saved models");
+    assert.ok(fixture.catalog.models.some(model => model.model === "manual-chat"), "unlisted manual models stay selected");
+    if (action === "clear") {
+      document.querySelector("[data-probe]").click();
+      await settle();
+      assert.equal(document.querySelector(".settings-sheet-row input").checked, false, "removed candidates stay unchecked on rediscovery");
+      document.querySelector(".settings-sheet-foot .settings-secondary-button").click();
+    }
+    checks.push(`Model selection ${action}: explicit scope, default references and revision checks`);
+  } finally { await fixture.close(); }
 }
 
 // Ordinary external providers receive this public API through the same mount

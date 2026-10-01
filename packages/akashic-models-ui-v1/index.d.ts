@@ -51,12 +51,16 @@ export interface ProviderActions {
   discoverSaved(signal?: AbortSignal): Promise<readonly Record<string, unknown>[]>;
   addModel(input: Record<string, unknown>): Promise<void>;
   verifyModel(modelId: string): Promise<void>;
+  removeModel(modelId: string): Promise<void>;
+  /** Discover, choose and save models; false means cancelled before saving; failed or interrupted saves reject. */
+  selectModels(): Promise<boolean>;
   disableConnection(): Promise<void>;
   createManual(input: ManualConnectionInput): Promise<void>;
   update(input: ConnectionUpdateInput): Promise<void>;
   startAuth(input: Record<string, string>): Promise<Record<string, unknown>>;
   finishAuth(attemptId: string): Promise<Record<string, unknown>>;
   cancelAuth(attemptId: string): Promise<void>;
+  /** Refresh capabilities of selected models; never adopt unseen candidates. */
   sync(): Promise<void>;
 }
 
@@ -102,7 +106,7 @@ export type ModelProviderEntry = Omit<WebEntry, "render"> & {
   templates?: readonly ModelProviderTemplate[];
   /** Direct API-key connection with an actual embedding dimension probe. */
   embeddingApiKey?: boolean;
-  /** Driver discovery returns verified model purposes; the host offers whole-catalog sync. */
+  /** Driver discovery returns verified model purposes; the host can refresh selected models from the catalog. */
   catalogSync?: boolean;
   /** Build the dialog with the public settings-dialog-* form classes. */
   render(host: HTMLElement, view: WebEntryView, props: ProviderProps): WebUiDisposer;

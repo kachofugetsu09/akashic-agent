@@ -105,6 +105,6 @@ async def _register_ui(ctx: Context) -> None:
         requires=("shell.pages.v1",),
         provides=("models.connection-types.v1",),
         contract_digests={
-            "models.connection-types.v1": "73646ccaaf44dd490b15181fca2cf344bf5bddcb8e54e1d171b314eac41e11d7",
+            "models.connection-types.v1": "3c8b5b3f073422345a6d799fb09ce1f9e86b4f99b35ae1207bed075db645b5d2",
         },
     )

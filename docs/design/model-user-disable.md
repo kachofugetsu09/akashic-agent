@@ -1,80 +1,38 @@
-# Explicit model opt-outs and catalog availability
+# 模型选择、删除与目录刷新
 
-The Models registry owns two distinct facts in its existing chat/embedding rows:
+状态：PR #929；2026-10-01 按维护者确认的选择语义替换原 opt-out 方案。
 
-- `enabled` is the existing effective catalog availability
-- `user_disabled` records an explicit user opt-out, defaulting to false
+## Owner 与主链
 
-A single `enabled` bit cannot distinguish a model temporarily missing from the
-provider catalog from one the user deliberately switched off. Sync must keep
-refreshing discovery-owned capabilities, and a disappeared model must still
-return automatically when the provider lists it again, unless the user opted out.
-Changing capability ownership to `manual` would incorrectly stop those updates.
+Models 注册库只保存用户选中的模型。行存在表示选择，既有 `enabled` 表示 provider 可用性；不增加 opt-out 字段或墓碑。Provider 拥有凭据、认证与目录协议；Models 宿主拥有通用选择弹层、配置命令和默认回退。Core 无新增模型策略。
 
-`set_model_enabled` changes both facts in one existing revision CAS. Disabling
-still refuses role/default-embedding references. Explicit reopening verifies the
-current credentials and model before clearing the opt-out. Failed verification
-or a stale revision preserves the opt-out. Repeating the same choice is a no-op.
-Choosing off for an already provider-unavailable model records a new opt-out.
+```text
+┌───────────────┐     ┌────────────────┐     ┌─────────────────┐
+│ 探测临时候选   │ ──► │ 用户勾选并确认 │ ──► │ 校验并保存配置  │
+└───────────────┘     └────────────────┘     └─────────────────┘
+        取消：不写入          取消勾选：remove_model
+                                     │
+                                     ▼
+                           已有聊天引用 → default
+```
 
-Sync preserves `user_disabled`, refreshes discovery-owned capabilities, and
-enables returned models only when they are not opted out. Missing discovery rows
-remain disabled without creating an opt-out. Manual model ownership, model IDs,
-credentials, roles and the public catalog schema are unchanged. The private
-snapshot also honors the opt-out if older code has set `enabled` back to true.
+`discover_saved` 只返回候选。首次认证先保存连接，然后选择模型；取消选择不删除已完成认证的连接。`selectModels` 返回是否确认，空选择与取消不同。逐项保存失败时报告部分完成，不能声称整体成功。选择期间 revision 变化要求重新探测；关闭窗口停止后续提交，已经提交的操作以真实回执为准。
 
-## Migration and recovery
+`SyncModels` 只刷新已选且由目录维护的模型，不增加新行。成功目录暂时不含某个已选型号时只标记不可用，重新出现恢复可用；空目录仍作为 provider 异常拒绝。手工能力覆盖保持原 owner。取消勾选物理删除配置，之后同步不能重新添加；需要再次探测并显式勾选，重新添加生成新 ID。
 
-The Models-owned append-only migration `20260930_01_model_user_disabled` adds
-one constrained boolean column to each existing model table. Fresh registries
-are created with the current schema. Existing writable registries require this
-explicit installation migration; ordinary startup does not apply the expansion.
-Read-only inspection of a pre-migration registry treats the missing opt-out as
-false, while a partially installed expansion is rejected.
+## 删除和回退
 
-The migration follows the existing plugin SQLite-backup pattern before an atomic
-pair of ALTERs; it does not import a private Core helper. The private backup
-directory contains a 0600 database and digest/integrity
-manifest. Existing symlink ancestors (including internal or dangling links) are
-rejected before creating directories; no-follow directory/file creation and
-fsync through the workspace make the private recovery point explicit. This uses
-the deployment runner's offline workspace lock to serialize approved writers;
-it does not claim protection from a hostile same-user process replacing parent
-directories concurrently. It requires no Linux-only `/proc` path.
+`remove_model` 使用既有 revision CAS 与提交前 SQLite 备份。写集仅为指定聊天/向量配置行、引用它的角色绑定、默认指针和 revision；连接、凭据、Message、Session metadata、向量数据和调用账本不减少。
 
-The migration freezes the five registry table definitions from the pre-expansion
-Models owner. SQLite column, foreign-key, index and table metadata plus normalized
-CHECK expressions validate types, defaults, keys and constraints independently of
-DDL whitespace, identifier quoting or appended-column order. The existing owner
-does not use conflict/deferral/collation/autoincrement clauses; those policies
-are explicitly rejected because PRAGMA metadata does not fully describe them.
-The existing owner
-already permits absent `driver_config_json`, `default_embedding_model_id`,
-`capabilities_json` and `host_epoch`; those exact additive variants remain
-supported, including the historical epoch default 0 and fresh-registry default 1.
-The independent model-call ledger is outside this migration's write set.
-Repeating the migration checks the completed schema and does not rewrite data.
-Unknown tables of the same names, constraints, triggers or partial definitions
-fail before registry or backup writes.
-It does not infer user intent from old disabled rows or rewrite their existing
-availability, credentials, IDs, bindings or model revision.
+- 移除聊天模型：同一事务清除引用它的角色特选。旧消息或会话 model ID 在下一次解析时回到当前 `default`，丢弃旧型号的显式 effort；不改写历史消息或会话偏好。
+- 移除 `default`：按 model ID 排序，选一个仍启用且连接/driver 可用的已选聊天模型，并清空旧默认 effort；没有候选就清除默认，后续调用明确报未配置。
+- 已开始的 `ModelExecution` 保持原绑定与 credential handle，删除只影响后续执行；调用账通过自己的 binding 快照继续读写。
+- 移除向量模型：清除相应默认向量指针，不替换已有向量空间；保存的旧 binding 明确失败，等待用户重新配置对应任务。
 
-For an existing installation, stage the Models artifact and use the explicit
-[operator deployment plan](operator-deployment.md): include Models in the target
-set and approve `20260930_01_model_user_disabled` in the plan's `migrations` list
-before activating this artifact. Review the backup/ALTER scope first. The normal
-migration-bundle loader discovers it from `plugins/models/migration.catalog.toml`
-and checks its file digests. This change does not depend on PR #918 or assume
-that ordinary plugin updates automatically run migrations. An installation that
-has not applied the approved migration must keep the prior artifact active;
-starting the new Models writer directly fails with the required migration ID.
+## Schema、恢复和验证
 
-Code rollback alone does not preserve the new opt-out behavior: old sync code
-does not consult the flag. Keep the additive columns and apply the fixed Models
-artifact, or perform a separately authorized offline restore from the verified
-backup. Do not restore a pre-migration database over later model or credential
-changes without reconciling those changes first.
+本 PR 尚未发布的 opt-out 扩列与迁移已撤去，当前方案没有 schema delta，也不修改正式 workspace。已运行过旧草稿迁移的测试库不属于正式迁移输入，应恢复当时的隔离备份或重建测试库，不能猜测用户意图自动删列。
 
-Validation is provided by `scripts/model_enabled_sync_scenario.py` with a real
-Models composition and SQLite registry, controlled provider I/O, and temporary
-data. This is not evidence of real-provider or production deployment success.
+删除前恢复点由 Models 的既有 `remove-model` 备份生成，含完整注册库且权限为 0600。恢复必须另行授权并核对后续设置与调用账，不能用旧库覆盖后来写入的事实。仅回滚代码不会撤销已经提交的删除。
+
+`scripts/model_enabled_sync_scenario.py` 使用真实 Models owner、SQLite 与受控 driver，验证选择、能力刷新、删除 CAS/备份、在途执行、账本、默认回退与向量空间边界。`scripts/model_workspace_scenario.mjs` 验证真实 UI 模块的选择/取消/删除流程，HTTP 与 DOM 为隔离替身；不代表浏览器布局、真实 provider 或生产验收。

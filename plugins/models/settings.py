@@ -57,6 +57,7 @@ class AddModel:
     default_reasoning_effort: str | None = None
     driver_config: Mapping[str, Any] = field(default_factory=dict)
     make_default_embedding: bool = False
+    discovery_owned: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,12 +67,11 @@ class VerifyModel:
 
 
 @dataclass(frozen=True, slots=True)
-class SetModelEnabled:
-    """Flip one model's catalog exposure while keeping its durable row."""
+class RemoveModel:
+    """移除模型选择，后续聊天引用跟随默认模型；历史事实不变。"""
 
     expected_revision: int
     model_id: str
-    enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +120,7 @@ ModelChange: TypeAlias = (
     | DisableConnection
     | AddModel
     | VerifyModel
-    | SetModelEnabled
+    | RemoveModel
     | SetDefaultModel
     | SyncModels
     | StartConnectionAuth
@@ -171,7 +171,7 @@ __all__ = [
     "ModelChange",
     "ModelSettings",
     "SetDefaultModel",
-    "SetModelEnabled",
+    "RemoveModel",
     "SettingsReceipt",
     "StartConnectionAuth",
     "SyncModels",

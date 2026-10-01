@@ -33,7 +33,7 @@ from .settings import (
     CreateConnectionWithModel,
     DisableConnection,
     SetDefaultModel,
-    SetModelEnabled,
+    RemoveModel,
     UpdateConnection,
 )
 from agent.plugin_composition.models import (
@@ -79,7 +79,6 @@ class StoredModel:
     driver_config: Mapping[str, Any]
     discovery_owned: bool
     enabled: bool
-    user_disabled: bool = False
 
     @classmethod
     def from_command(cls, command: AddModel) -> StoredModel:
@@ -98,7 +97,7 @@ class StoredModel:
             capabilities=command.capabilities,
             capability_sources=command.capability_sources,
             driver_config=_freeze_json(command.driver_config),
-            discovery_owned=False,
+            discovery_owned=command.discovery_owned,
             enabled=True,
         )
 
@@ -220,7 +219,7 @@ class ModelsStore:
         return self._host_epoch
 
     def initialize(self) -> None:
-        """Create the current schema; retain only previously approved expansions."""
+        """Create a new registry or expand the two approved additive columns."""
 
         if not self.writable:
             if not self.path.is_file():
@@ -240,7 +239,6 @@ class ModelsStore:
                 else:
                     connection.execute("BEGIN IMMEDIATE")
                     _require_base_schema(connection)
-                    _require_user_disabled_schema(connection)
                     additions = _missing_additive_columns(connection)
                     legacy_driver_ids = _legacy_openai_driver_ids(connection)
                     if additions or legacy_driver_ids:
@@ -287,12 +285,6 @@ class ModelsStore:
             connection_columns = _columns(connection, "model_connections")
             model_columns = _columns(connection, "model_definitions")
             embedding_columns = _columns(connection, "embedding_models")
-            opt_out_columns = (
-                "user_disabled" in model_columns,
-                "user_disabled" in embedding_columns,
-            )
-            if any(opt_out_columns) and not all(opt_out_columns):
-                raise RuntimeError("model user-disabled schema is incomplete")
             default_column = (
                 ", default_embedding_model_id"
                 if "default_embedding_model_id" in meta_columns
@@ -319,8 +311,7 @@ class ModelsStore:
                         "capabilities_json"
                         if "capabilities_json" in model_columns
                         else "NULL"
-                    ),
-                    user_disabled="user_disabled" if all(opt_out_columns) else "0",
+                    )
                 )
             ).fetchall()
             embedding_rows = connection.execute(
@@ -329,8 +320,7 @@ class ModelsStore:
                         "capabilities_json"
                         if "capabilities_json" in embedding_columns
                         else "NULL"
-                    ),
-                    user_disabled="user_disabled" if all(opt_out_columns) else "0",
+                    )
                 )
             ).fetchall()
             role_rows = connection.execute(
@@ -708,63 +698,42 @@ class ModelsStore:
 
         return self._domain_write(command.expected_revision, "add-model", write)
 
-    def set_model_enabled(self, command: SetModelEnabled) -> int:
-        """Flip one model's catalog exposure as one revision CAS.
-
-        Disabling refuses while a chat role or the default embedding still
-        references the row; durable data is never deleted here.
-        """
-
+    def remove_model(self, command: RemoveModel, *, fallback_model_id: str | None) -> int:
+        """删除用户选中的配置，并在同一事务中清除引用和替换默认聊天模型。"""
         model_id = _required(command.model_id, "model_id")
-        enabled = bool(command.enabled)
 
         def write(connection: sqlite3.Connection) -> bool:
+            # 1. 只减少模型配置；连接、调用账本和会话消息不在此写入范围。
             row = connection.execute(
-                "SELECT kind, enabled, user_disabled FROM ("
-                "SELECT id, 'chat' AS kind, enabled, user_disabled FROM model_definitions "
-                "UNION ALL "
-                "SELECT id, 'embedding' AS kind, enabled, user_disabled FROM embedding_models"
-                ") WHERE id = ?",
-                (model_id,),
+                "SELECT 'chat' FROM model_definitions WHERE id = ? "
+                "UNION ALL SELECT 'embedding' FROM embedding_models WHERE id = ?",
+                (model_id, model_id),
             ).fetchone()
             if row is None:
-                raise ValueError(f"model does not exist: {model_id}")
-            if bool(row[1]) == enabled and bool(row[2]) == (not enabled):
                 return False
-            if not enabled:
-                roles = [
-                    str(item[0])
-                    for item in connection.execute(
-                        "SELECT role FROM model_role_bindings WHERE model_id = ?",
-                        (model_id,),
-                    ).fetchall()
-                ]
-                default_embedding = connection.execute(
-                    "SELECT 1 FROM model_registry_meta "
-                    "WHERE singleton = 1 AND default_embedding_model_id = ?",
-                    (model_id,),
-                ).fetchone()
-                reasons = sorted(roles)
-                if default_embedding is not None:
-                    reasons.append("default-embedding")
-                if reasons:
-                    raise ValueError(
-                        f"model is still in use; rebind before disabling: "
-                        f"{', '.join(reasons)}"
-                    )
-            table = (
-                "model_definitions" if str(row[0]) == "chat" else "embedding_models"
-            )
-            connection.execute(
-                f"UPDATE {table} SET enabled = ?, user_disabled = ?, updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = ?",
-                (int(enabled), int(not enabled), model_id),
-            )
+            if row[0] == "embedding":
+                connection.execute(
+                    "UPDATE model_registry_meta SET default_embedding_model_id = NULL "
+                    "WHERE default_embedding_model_id = ?", (model_id,),
+                )
+                connection.execute("DELETE FROM embedding_models WHERE id = ?", (model_id,))
+                return True
+
+            # 2. 取消角色特选后自然跟随 default；默认被移除才选定替代者。
+            was_default = connection.execute(
+                "SELECT 1 FROM model_role_bindings WHERE role = 'default' AND model_id = ?",
+                (model_id,),
+            ).fetchone() is not None
+            connection.execute("DELETE FROM model_role_bindings WHERE model_id = ?", (model_id,))
+            connection.execute("DELETE FROM model_definitions WHERE id = ?", (model_id,))
+            if was_default and fallback_model_id is not None:
+                connection.execute(
+                    "INSERT INTO model_role_bindings(role, model_id, reasoning_effort) "
+                    "VALUES ('default', ?, '')", (fallback_model_id,),
+                )
             return True
 
-        return self._domain_write(
-            command.expected_revision, "set-model-enabled", write
-        )
+        return self._domain_write(command.expected_revision, "remove-model", write)
 
     def set_default(self, command: SetDefaultModel) -> int:
         """Set one chat role or the workspace default embedding model."""
@@ -781,7 +750,7 @@ class ModelsStore:
                     """
                     SELECT 1 FROM embedding_models AS m
                     JOIN model_connections AS c ON c.id = m.connection_id
-                    WHERE m.id = ? AND m.enabled = 1 AND m.user_disabled = 0 AND c.enabled = 1
+                    WHERE m.id = ? AND m.enabled = 1 AND c.enabled = 1
                     """,
                     (model_id,),
                 ).fetchone()
@@ -800,7 +769,7 @@ class ModelsStore:
                 SELECT m.input_modalities, m.capabilities_json
                 FROM model_definitions AS m
                 JOIN model_connections AS c ON c.id = m.connection_id
-                WHERE m.id = ? AND m.enabled = 1 AND m.user_disabled = 0 AND c.enabled = 1
+                WHERE m.id = ? AND m.enabled = 1 AND c.enabled = 1
                 """,
                 (model_id,),
             ).fetchone()
@@ -840,7 +809,7 @@ class ModelsStore:
         connection_id: str,
         discovered: tuple[DiscoveredModel, ...],
     ) -> int:
-        """Persist one driver's normalized discovery evidence as one revision."""
+        """只刷新用户已选择模型的目录证据，不自动采纳新型号。"""
 
         target_connection = _required(connection_id, "connection_id")
         items = tuple(discovered)
@@ -891,7 +860,6 @@ class ModelsStore:
                 legacy_keys=legacy_keys,
             ):
                 return False
-            used = _all_model_ids(connection)
             desired = {(item.kind, item.model) for item in items}
             for key, (model_id, discovery_owned, _) in existing.items():
                 if discovery_owned and key not in desired:
@@ -908,22 +876,9 @@ class ModelsStore:
             for item in items:
                 key = (cast(ModelKind, item.kind), item.model)
                 stored = existing.get(key)
-                if stored is not None and not stored[1] and not stored[2]:
+                if stored is None or (not stored[1] and not stored[2]):
                     continue
-                model_id = (
-                    stored[0]
-                    if stored is not None
-                    else _discovered_model_id(target_connection, cast(ModelKind, item.kind), item.model)
-                )
-                owner = used.get(model_id)
-                if owner is not None and owner != (
-                    target_connection,
-                    cast(ModelKind, item.kind),
-                    item.model,
-                ):
-                    raise ValueError(
-                        f"discovered model id conflicts with existing model: {model_id}"
-                    )
+                model_id = stored[0]
                 command = AddModel(
                     expected_revision=expected_revision,
                     model_id=model_id,
@@ -957,7 +912,6 @@ class ModelsStore:
                             _model_payload(command, source="discovery"),
                         ),
                     )
-                used[model_id] = (target_connection, cast(ModelKind, item.kind), item.model)
             return True
 
         return self._domain_write(expected_revision, "sync-models", write)
@@ -1176,32 +1130,6 @@ def _existing_model_ids(
     return result
 
 
-def _all_model_ids(
-    connection: sqlite3.Connection,
-) -> dict[str, tuple[str, ModelKind, str]]:
-    result: dict[str, tuple[str, ModelKind, str]] = {}
-    for table, kind in (
-        ("model_definitions", ModelKind.CHAT),
-        ("embedding_models", ModelKind.EMBEDDING),
-    ):
-        rows = connection.execute(
-            f"SELECT id, connection_id, model FROM {table}"
-        ).fetchall()
-        for row in rows:
-            model_id = str(row[0])
-            if model_id in result:
-                raise RuntimeError(f"duplicate model id across kinds: {model_id}")
-            result[model_id] = (str(row[1]), kind, str(row[2]))
-    return result
-
-
-def _discovered_model_id(connection_id: str, kind: ModelKind, model: str) -> str:
-    """Build one deterministic store-owned ID for newly discovered evidence."""
-
-    parts = (connection_id, kind.value, model)
-    return "discovered:" + "".join(f"{len(part)}:{part}" for part in parts)
-
-
 def _sync_would_change(
     snapshot: StoredSnapshot,
     connection_id: str,
@@ -1222,18 +1150,12 @@ def _sync_would_change(
         return True
     for item in items:
         stored = current.get((cast(ModelKind, item.kind), item.model))
-        if (
-            stored is not None
-            and not stored.discovery_owned
-            and (item.kind, item.model) not in legacy_keys
+        if stored is None or (
+            not stored.discovery_owned and (item.kind, item.model) not in legacy_keys
         ):
             continue
         desired = StoredModel(
-            model_id=(
-                stored.model_id
-                if stored is not None
-                else _discovered_model_id(connection_id, cast(ModelKind, item.kind), item.model)
-            ),
+            model_id=stored.model_id,
             connection_id=connection_id,
             kind=cast(ModelKind, item.kind),
             model=item.model,
@@ -1246,8 +1168,7 @@ def _sync_would_change(
             capability_sources=item.capability_sources,
             driver_config=item.driver_config,
             discovery_owned=True,
-            enabled=not stored.user_disabled if stored else True,
-            user_disabled=stored.user_disabled if stored else False,
+            enabled=True,
         )
         if stored != desired:
             return True
@@ -1309,27 +1230,6 @@ def _missing_additive_columns(connection: sqlite3.Connection) -> tuple[str, ...]
             if name not in call_columns
         )
     return tuple(statements)
-
-
-def _require_user_disabled_schema(connection: sqlite3.Connection) -> None:
-    """The user-choice expansion requires an explicitly installed migration."""
-
-    for table in ("model_definitions", "embedding_models"):
-        columns = {row[1]: row for row in connection.execute(f"PRAGMA table_info({table})")}
-        column = columns.get("user_disabled")
-        if column is None:
-            raise RuntimeError(
-                "model registry requires migration 20260930_01_model_user_disabled; "
-                "install the Models migration before starting this version"
-            )
-        if (str(column[2]).upper(), column[3], column[4], column[5]) != ("INTEGER", 1, "0", 0):
-            raise RuntimeError(f"{table}.user_disabled has an incompatible definition")
-
-
-def _user_disabled(value: object) -> bool:
-    if type(value) is not int or value not in (0, 1):
-        raise RuntimeError("model user_disabled must be a stored boolean")
-    return value == 1
 
 
 def _legacy_openai_driver_ids(connection: sqlite3.Connection) -> tuple[str, ...]:
@@ -1405,8 +1305,7 @@ def _chat_model_from_row(row: sqlite3.Row) -> StoredModel:
         capability_sources=sources,
         driver_config=driver_config,
         discovery_owned=source == "discovery",
-        enabled=bool(row[3]) and not _user_disabled(row[17]),
-        user_disabled=_user_disabled(row[17]),
+        enabled=bool(row[3]),
     )
 
 
@@ -1436,8 +1335,7 @@ def _embedding_model_from_row(row: sqlite3.Row) -> StoredModel:
         capability_sources=sources,
         driver_config=driver_config,
         discovery_owned=("manual" if payload is None else source) == "discovery",
-        enabled=bool(row[3]) and not _user_disabled(row[6]),
-        user_disabled=_user_disabled(row[6]),
+        enabled=bool(row[3]),
     )
 
 
@@ -1504,10 +1402,11 @@ def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
     ).fetchone()
     if active is None or not bool(active[0]):
         raise ValueError(f"connection does not exist or is disabled: {connection_id}")
+    source = "discovery" if command.discovery_owned else "manual"
     if kind == "chat":
         connection.execute(
             _INSERT_CHAT_MODEL,
-            _chat_model_values(command, model_id, connection_id, model),
+            _chat_model_values(command, model_id, connection_id, model, source=source),
         )
         return
     dimensions = command.capabilities.embedding_dimensions
@@ -1525,7 +1424,7 @@ def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
             connection_id,
             model,
             int(dimensions),
-            _model_payload(command),
+            _model_payload(command, source=source),
         ),
     )
 
@@ -1805,14 +1704,14 @@ SELECT
     input_modalities, capability_source, context_window_source,
     max_output_tokens_source, input_modalities_source,
     supports_parallel_tool_calls, use_responses_lite, reasoning_summary,
-    {capabilities_json}, {user_disabled}
+    {capabilities_json}
 FROM model_definitions
 ORDER BY created_at, id
 """
 
 
 _SELECT_EMBEDDING_MODELS = """
-SELECT id, connection_id, model, enabled, dimensions, {capabilities_json}, {user_disabled}
+SELECT id, connection_id, model, enabled, dimensions, {capabilities_json}
 FROM embedding_models
 ORDER BY created_at, id
 """
@@ -1832,7 +1731,7 @@ INSERT INTO model_definitions(
 _UPSERT_CHAT_MODEL = _INSERT_CHAT_MODEL.rstrip() + """
 ON CONFLICT(id) DO UPDATE SET
     model = excluded.model,
-    enabled = CASE WHEN model_definitions.user_disabled = 1 THEN 0 ELSE 1 END,
+    enabled = 1,
     reasoning_effort = excluded.reasoning_effort,
     supported_reasoning_efforts = excluded.supported_reasoning_efforts,
     context_window = excluded.context_window,
@@ -1855,7 +1754,7 @@ INSERT INTO embedding_models(id, connection_id, model, dimensions, capabilities_
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     model = excluded.model,
-    enabled = CASE WHEN embedding_models.user_disabled = 1 THEN 0 ELSE 1 END,
+    enabled = 1,
     dimensions = excluded.dimensions,
     capabilities_json = excluded.capabilities_json,
     updated_at = CURRENT_TIMESTAMP
@@ -1973,7 +1872,6 @@ CREATE TABLE model_definitions (
     connection_id TEXT NOT NULL REFERENCES model_connections(id) ON DELETE RESTRICT,
     model TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-    user_disabled INTEGER NOT NULL DEFAULT 0 CHECK (user_disabled IN (0, 1)),
     reasoning_effort TEXT NOT NULL DEFAULT '',
     supported_reasoning_efforts TEXT NOT NULL DEFAULT '[]',
     context_window INTEGER NOT NULL DEFAULT 0 CHECK (context_window >= 0),
@@ -2000,7 +1898,6 @@ CREATE TABLE embedding_models (
     model TEXT NOT NULL,
     dimensions INTEGER NOT NULL CHECK (dimensions > 0),
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-    user_disabled INTEGER NOT NULL DEFAULT 0 CHECK (user_disabled IN (0, 1)),
     capabilities_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

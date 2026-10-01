@@ -63,7 +63,7 @@ export function activate(ctx) {
           <div class="settings-gallery" data-providers></div>
         </section>
         <section class="settings-section settings-roles" data-roles>
-          <header><div><h2>系统模型</h2><p>修改后无需重启；固定模型的会话保持原选择。</p></div></header>
+          <header><div><h2>系统模型</h2><p>修改后无需重启；移除的模型引用自动跟随默认模型。</p></div></header>
           <div class="settings-role-grid" data-bindings></div>
         </section>
       </div>
@@ -677,14 +677,14 @@ export function activate(ctx) {
         return map;
       }
 
-      // 连接对话框内的模型管理面：逐模型开放/停用、验证、探测差异采纳、手动添加、停用连接。
-      function buildModelManager({connection, entry, actions, setEnabled, dialogClosed, finishDisable}) {
+      // 配置行表示已选择；目录候选只在用户确认后保存。
+      function buildModelManager({connection, entry, actions, dialogClosed, finishDisable}) {
         const section = document.createElement("section");
         section.className = "settings-model-manage";
         section.innerHTML = `<header class="settings-model-manage-head"><div><h3>模型</h3><p data-manage-status role="status"></p></div>
           <div class="settings-model-manage-actions">
             <button type="button" class="settings-secondary-button" data-probe>探测目录</button>
-            ${entry.catalogSync ? '<button type="button" class="settings-secondary-button" data-sync>同步目录</button>' : ""}
+            ${entry.catalogSync ? '<button type="button" class="settings-secondary-button" data-sync>刷新已选能力</button>' : ""}
             <button type="button" class="settings-text-button" data-manual-toggle>手动添加</button>
           </div></header>
           <div class="settings-model-manual" data-manual hidden><input aria-label="模型型号" maxlength="256" placeholder="型号，例如 gpt-5"><button type="button" class="settings-primary-button" data-manual-add>验证并添加</button></div>
@@ -715,7 +715,7 @@ export function activate(ctx) {
           const used = usedByMap();
           const models = connectionModels();
           const open = models.filter((model) => model.availability !== "disabled").length;
-          status.textContent = `${open}/${models.length} 开放`;
+          status.textContent = `${models.length} 个已选，${open} 个可用`;
           rowsElement.replaceChildren(...models.map((model) => modelRow(model, used.get(model.id) ?? "")));
         };
 
@@ -726,16 +726,15 @@ export function activate(ctx) {
           toggleTarget.className = "settings-model-toggle";
           const toggle = document.createElement("input");
           toggle.type = "checkbox";
-          toggle.checked = model.availability !== "disabled";
-          toggle.setAttribute("aria-label", `开放 ${model.model}`);
+          toggle.checked = true;
+          toggle.setAttribute("aria-label", `选择 ${model.model}`);
           toggle.addEventListener("change", () => {
-            const target = toggle.checked;
             toggle.disabled = true;
             clearManageError();
-            setEnabled(model.id, target).then(() => {
+            actions.removeModel(model.id).then(() => {
               if (dialogClosed()) return;
-              status.textContent = target ? `${model.model} 已验证并开放` : `${model.model} 已停用，历史数据保留`;
               refreshRows();
+              status.textContent = `${model.model} 已移除；聊天引用将跟随默认模型，历史记录保留。`;
             }).catch((reason) => {
               if (dialogClosed()) return;
               showManageError(reason);
@@ -762,7 +761,7 @@ export function activate(ctx) {
           main.append(modelId, flags);
           const use = document.createElement("span");
           use.className = "settings-model-use";
-          use.textContent = inUse ? `在用 · ${inUse}` : "";
+          use.textContent = [inUse ? `在用 · ${inUse}` : "", model.availability !== "available" ? "暂不可用" : ""].filter(Boolean).join(" · ");
           toggleTarget.append(toggle);
           row.append(toggleTarget, main, use);
           if (model.availability !== "disabled") {
@@ -788,53 +787,10 @@ export function activate(ctx) {
           probe.disabled = true;
           clearManageError();
           status.textContent = "正在读取服务目录…";
-          actions.discoverSaved().then(async (discovered) => {
+          actions.selectModels().then((selected) => {
             if (dialogClosed()) return;
-            const candidates = discovered.filter((item) => item.kind === null || item.kind === "chat");
-            if (!candidates.length) throw new Error("目录没有可开放的对话模型。");
-            const used = usedByMap();
-            const saved = connectionModels().filter((model) => model.kind === "chat");
-            const picked = await candidateSheet({
-              title: `目录 · ${connection.name}`,
-              hint: "勾选的型号逐个验证后开放；取消勾选的开放型号会停用但保留数据。",
-              confirmLabel: "开放所选",
-              candidates,
-              checked: new Set(saved.filter((model) => model.availability !== "disabled").map((model) => model.model)),
-              present: new Set(saved.map((model) => model.model)),
-              locked: new Set(saved.filter((model) => model.availability !== "disabled" && used.has(model.id)).map((model) => model.model)),
-            });
-            if (dialogClosed()) return;
-            if (!picked) { status.textContent = "未改动。"; return; }
-            // 勾选期间目录可能已变化，按最新状态重新计算差异。
-            const chosen = new Set(picked.map((candidate) => candidate.model));
-            const freshSaved = connectionModels().filter((model) => model.kind === "chat");
-            const freshUsed = usedByMap();
-            const failures = [];
-            status.textContent = "正在按选择更新…";
-            for (const candidate of picked) {
-              const existing = freshSaved.find((model) => model.model === candidate.model);
-              try {
-                if (!existing) await actions.addModel(candidateModelInput(candidate));
-                else if (existing.availability === "disabled") await setEnabled(existing.id, true);
-              } catch (reason) {
-                failures.push(`${candidate.model}：${reason instanceof Error ? reason.message : String(reason)}`);
-              }
-              if (dialogClosed()) return;
-            }
-            // 只停用本次目录实际返回却被取消勾选的型号；目录未覆盖的手动行保持原状。
-            const discoveredNames = new Set(candidates.map((candidate) => candidate.model));
-            for (const model of freshSaved.filter((item) => item.availability !== "disabled" && discoveredNames.has(item.model) && !chosen.has(item.model) && !freshUsed.has(item.id))) {
-              try {
-                await setEnabled(model.id, false);
-              } catch (reason) {
-                failures.push(`${model.model}：${reason instanceof Error ? reason.message : String(reason)}`);
-              }
-              if (dialogClosed()) return;
-            }
             refreshRows();
-            status.textContent = failures.length
-              ? `部分完成；${failures.length} 项失败：${failures.join("；")}`
-              : "已按选择更新开放状态。";
+            status.textContent = selected ? "模型选择已保存。" : "未改动模型选择。";
           }).catch((reason) => {
             if (dialogClosed()) return;
             showManageError(reason);
@@ -847,7 +803,7 @@ export function activate(ctx) {
           clearManageError();
           actions.sync().then(() => {
             if (dialogClosed()) return;
-            status.textContent = "目录已同步。";
+            status.textContent = "已选模型的能力已刷新。";
             refreshRows();
           }).catch((reason) => {
             if (!dialogClosed()) showManageError(reason);
@@ -979,6 +935,47 @@ export function activate(ctx) {
             if ((!connection && !created) || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
             await request("/api/dashboard/models/command", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({type:"verify_model", expected_revision:catalog.revision, model_id:modelId})});
           },
+          async removeModel(modelId) {
+            if ((!connection && !created) || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
+            await command({type: "remove_model", expected_revision: catalog.revision, model_id: modelId});
+          },
+          async selectModels() {
+            const revision = catalog.revision;
+            const discovered = await operations.discoverSaved();
+            if (auth.closed) return false;
+            const candidates = discovered.filter((item) => item.kind === null || item.kind === "chat");
+            if (!candidates.length) throw new Error("目录没有可选择的对话模型。");
+            const saved = catalog.models.filter((model) => model.connectionId === connectionId && model.kind === "chat");
+            const picked = await candidateSheet({
+              title: `选择模型 · ${connection?.name ?? entry.label}`,
+              hint: "只保存勾选的模型；取消勾选会移除配置，聊天引用自动跟随默认模型。",
+              confirmLabel: "保存选择", candidates,
+              checked: new Set(saved.map((model) => model.model)),
+              present: new Set(saved.map((model) => model.model)),
+              locked: new Set(),
+            });
+            if (picked === null || auth.closed) return false;
+            if (catalog.revision !== revision) throw new Error("设置已变化，请重新探测并选择模型。");
+            const chosen = new Set(picked.map((candidate) => candidate.model));
+            const listed = new Set(candidates.map((candidate) => candidate.model));
+            // 先添加再移除，让默认回退可以选择本次新采纳的模型。
+            const failures = [];
+            for (const candidate of picked) {
+              if (!saved.some((model) => model.model === candidate.model)) {
+                try { await operations.addModel(candidateModelInput(candidate)); }
+                catch (reason) { failures.push(`${candidate.model}：${reason instanceof Error ? reason.message : String(reason)}`); }
+              }
+              if (auth.closed) throw new Error("窗口已关闭；已提交的选择以实际结果为准。");
+            }
+            // 本次目录未覆盖的手工配置不在取消选择范围内。
+            for (const model of saved.filter((item) => listed.has(item.model) && !chosen.has(item.model))) {
+              try { await operations.removeModel(model.id); }
+              catch (reason) { failures.push(`${model.model}：${reason instanceof Error ? reason.message : String(reason)}`); }
+              if (auth.closed) throw new Error("窗口已关闭；已提交的选择以实际结果为准。");
+            }
+            if (failures.length) throw new Error(`部分完成；${failures.join("；")}`);
+            return true;
+          },
           async addModel(input) {
             if (!connection && !created) throw new Error("请先保存连接");
             const existing = catalog.models.find((model) => model.connectionId === connectionId && model.kind === input.kind && model.model === input.model);
@@ -986,7 +983,7 @@ export function activate(ctx) {
             const receipt = existing
               ? await request("/api/dashboard/models/command", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({type:"verify_model", expected_revision:catalog.revision, model_id:modelId})})
               : await command({...input, type: "add_model", expected_revision: catalog.revision, model_id: modelId, connection_id: connectionId});
-            await setDefaultIfMissing(receipt.revision, modelId);
+            if (input.kind === "chat") await setDefaultIfMissing(receipt.revision, modelId);
           },
           async createManual(input) {
             if (connection || created) throw new Error("已有连接不能重复创建");
@@ -1006,7 +1003,7 @@ export function activate(ctx) {
               model: {...input.model, expected_revision: catalog.revision, model_id: modelId, connection_id: connectionId},
             });
             created = true;
-            await setDefaultIfMissing(receipt.revision, modelId);
+            if (input.model.kind === "chat") await setDefaultIfMissing(receipt.revision, modelId);
           },
           async update(input) {
             if (!connection) throw new Error("新连接不能执行更新");
@@ -1051,25 +1048,11 @@ export function activate(ctx) {
             await setDefaultIfMissing(receipt.revision);
           },
         };
-        // 模型管理面的非 actions 操作（set_model_enabled）复用同一串行守卫。
-        const runManaged = async (work) => {
-          if (auth.closed) throw new Error("窗口已关闭；已提交请求以实际结果为准。");
-          if (busy) throw new Error("请求仍在执行，请等待结果后再操作。");
-          busy = true;
-          try { return await work(); }
-          finally { busy = false; }
-        };
-        const setEnabled = (modelId, enabled) => runManaged(() => command({
-          type: "set_model_enabled",
-          expected_revision: catalog.revision,
-          model_id: modelId,
-          enabled,
-        }));
         const ui = Object.freeze({
           pickModels: (candidates, options = {}) => candidateSheet({
             title: options.title ?? "目录候选",
             hint: options.hint,
-            confirmLabel: options.confirmLabel ?? "开放所选",
+            confirmLabel: options.confirmLabel ?? "添加所选",
             candidates,
             checked: new Set(options.checked ?? []),
             present: new Set(options.present ?? []),
@@ -1130,7 +1113,6 @@ export function activate(ctx) {
             connection,
             entry,
             actions,
-            setEnabled,
             dialogClosed: () => auth.closed,
             finishDisable: () => {
               dirty = false;
@@ -1354,6 +1336,7 @@ export function candidateModelInput(candidate) {
   return {
     kind: candidate.kind === "embedding" ? "embedding" : "chat",
     model: candidate.model,
+    discovery_owned: candidate.kind === "chat" || candidate.kind === "embedding",
     capabilities: {
       context_window: caps.contextWindow ?? null,
       max_output_tokens: caps.maxOutputTokens ?? null,

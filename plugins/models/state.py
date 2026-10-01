@@ -77,7 +77,7 @@ from .settings import (
     FinishConnectionAuth,
     ModelChange,
     SetDefaultModel,
-    SetModelEnabled,
+    RemoveModel,
     SettingsReceipt,
     StartConnectionAuth,
     SyncModels,
@@ -1024,7 +1024,10 @@ class ModelsState:
             return ChatModelSelection()
         snapshot = self._snapshot_required()
         model = snapshot.models.get(selection.model_id)
-        if model is None or model.kind is not ModelKind.CHAT or not model.enabled:
+        if model is None:
+            # 已移除的会话偏好跟随 default，旧型号的推理强度不能带到替代模型。
+            return ChatModelSelection(snapshot.role_bindings.get(_DEFAULT_ROLE), None)
+        if model.kind is not ModelKind.CHAT or not model.enabled:
             raise ModelUnavailableError(f"聊天模型不可用: {selection.model_id}")
         connection = snapshot.connections[model.connection_id]
         if self._availability(connection) is not ModelAvailability.AVAILABLE:
@@ -1469,25 +1472,17 @@ class ModelsState:
             if self._snapshot_required().revision != command.expected_revision:
                 raise RevisionConflictError("配置已改变，请重新验证当前模型。")
             return SettingsReceipt(revision=command.expected_revision, status="verified")
-        elif isinstance(command, SetModelEnabled):
+        elif isinstance(command, RemoveModel):
             snapshot = self._snapshot_required()
-            model = snapshot.models.get(command.model_id)
-            if model is None:
-                raise ModelUnavailableError(f"模型不存在: {command.model_id}")
-            if command.enabled and not model.enabled:
-                # 重新开放前按当前凭据实际验证，不把停用期间的失效静默带回来。
-                await self._check_model(AddModel(
-                    expected_revision=command.expected_revision,
-                    model_id=model.model_id,
-                    connection_id=model.connection_id,
-                    kind=model.kind,
-                    model=model.model,
-                    default_reasoning_effort=model.default_reasoning_effort,
-                    capabilities=model.capabilities,
-                    capability_sources=model.capability_sources,
-                    driver_config=model.driver_config,
-                ))
-            revision = self.store.set_model_enabled(command)
+            candidates = sorted(
+                model.model_id for model in snapshot.models.values()
+                if model.model_id != command.model_id and model.kind is ModelKind.CHAT
+                and model.enabled and self._availability(snapshot.connections[model.connection_id])
+                is ModelAvailability.AVAILABLE
+            )
+            revision = self.store.remove_model(
+                command, fallback_model_id=next(iter(candidates), None),
+            )
         elif isinstance(command, SetDefaultModel):
             if command.verify_embedding:
                 if command.role is not None:
