@@ -46,7 +46,7 @@ from plugins.reply import plugin as reply_plugin
 from plugins.reply_program import plugin as program_plugin
 from plugins.reply_program import inputs as program_inputs
 from plugins.sources import plugin as sources_plugin
-from agent.plugin_contracts.sources import CHECK_ORIGIN, CONVERSATION_COMPLETE_V2, SOURCES_V4
+from agent.plugin_contracts.sources import CHECK_ORIGIN, CONVERSATION_COMPLETE_V2, SOURCES_V5
 from plugins.sources.session import SourceSession
 from plugins.subagent.request import PROFILE_TOOLS, Request
 from plugins.subagent.runtime import Subagents
@@ -215,7 +215,7 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
         runtime=PluginRuntime("subagent", "subagent", directory, directory, directory, {},
                              workspace_roots=("subagent-runs",), workspace_files=("memory/spawn_trace.jsonl",)))
     assert contexts["reply"].require(REPLY_EXECUTE_V4) is contexts["reply_program"].require(REPLY_EXECUTE_V4)
-    sources = contexts["conversation"].require(SOURCES_V4)
+    sources = contexts["conversation"].require(SOURCES_V5)
 
     def writer(kind, source_name="conversation", session="parent"):
         return log.writer(session, author=source_name, source=source_name,

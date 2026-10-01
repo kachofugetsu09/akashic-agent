@@ -764,6 +764,22 @@ class MessageReader:
         """异步读取不得离开调用线程自己的未提交事务。"""
         self._log._check_async_operation()
 
+    async def read_async(self, consume: Callable[[MessageReader], _T]) -> _T:
+        """在固定只读快照内执行纯读取，取消先排空连接再返回。"""
+        self._check_async_snapshot()
+
+        def read() -> _T:
+            reader = MessageReader(self._log, self._session_id)
+            with reader.read_snapshot():
+                result = consume(reader)
+                if inspect.isawaitable(result):
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise TypeError("异步读取的 worker 回调必须同步，不能跨 await")
+                return result
+
+        return await run_file_io(read)
+
     async def snapshot_async(self, *, through_seq: int) -> tuple[Message, ...]:
         """Read a fixed prefix off-loop and drain its connection before cancellation."""
         self._check_async_snapshot()
@@ -980,6 +996,29 @@ class MessageReader:
             values.append(source)
         with self._log._read():
             return self._log._connection.execute(sql, values).fetchone()[0]
+
+    async def follow_heads(self) -> AsyncGenerator[int, None]:
+        """只订阅本 Session 的提交序号；通知不要求解码或保留正文。"""
+        event = asyncio.Event()
+        with self._log._listener_lock:
+            if self._log._closed:
+                return
+            self._log._listeners[event] = asyncio.get_running_loop()
+        previous = -1
+        try:
+            while True:
+                event.clear()
+                if self._log._closed:
+                    return
+                head = await self.read_async(lambda reader: reader.head())
+                if head > previous:
+                    previous = head
+                    yield head
+                else:
+                    await event.wait()
+        finally:
+            with self._log._listener_lock:
+                self._log._listeners.pop(event, None)
 
     async def follow(
         self, *, after_seq: int = -1, poll_interval: float | None = None
@@ -1263,8 +1302,12 @@ class MessageWriter:
         self._log._check_async_operation()
         message_metadata = self._metadata(body, metadata)
         # 1. 重放必须先于当前 owner 校验，读取不等待另一个 writer 的磁盘工作。
+        def replay() -> Message | None:
+            with self._log._read():
+                return self._replay(message_id, body, message_metadata)
+
+        existing = await run_file_io(replay)
         with self._log._read():
-            existing = self._replay(message_id, body, message_metadata)
             if existing is None and not self._active:
                 raise WriterExpired("writer 已失效")
             prepared = None if existing is not None else self._prepare(body, message_metadata)

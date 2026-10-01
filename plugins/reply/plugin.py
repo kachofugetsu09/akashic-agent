@@ -26,7 +26,7 @@ from agent.plugin_contracts import Message
 from agent.plugin_contracts.reply import REPLY_EXECUTE_V4 as REPLY_EXECUTE
 from agent.plugin_contracts.sources import (
     CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
-    SOURCES_V4 as SOURCES,
+    SOURCES_V5 as SOURCES,
     SOURCE_CHECK_V2 as SOURCE_CHECK,
     SourceGuard,
 )
@@ -40,7 +40,7 @@ from .status import REPLY_STATUS, ReplyState
 Reminder = Mapping[str, object]
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
 
-from agent.plugin_contracts.sources import SOURCE_CHANGED_V2 as SOURCE_CHANGED
+from agent.plugin_contracts.sources import SOURCE_CHANGED_V3 as SOURCE_CHANGED
 
 api_version = 3
 name = "reply"
@@ -78,11 +78,11 @@ async def apply(ctx: Context) -> None:
         if hold is not None:
             _ = hold.__exit__(None, None, None)
 
-    def changed(reader: MessageReader, source: str) -> None:
+    def changed(reader: MessageReader, source: str, needs_reply: bool) -> None:
         """输入提交时同步占活动；暂停和失败只释放尚未开始的回复。"""
         if not running:
             return
-        if not ctx.require(SOURCES).needs_reply(reader, source):
+        if not needs_reply:
             release(reader, source)
             return
         key = (reader.session_id, source)
@@ -103,7 +103,7 @@ async def apply(ctx: Context) -> None:
         pending.clear()
 
     _ = await ctx.effect(lambda: close_pending, label="pending-replies")
-    _ = await ctx.on(SOURCE_CHANGED, lambda event: changed(event.reader, event.source))
+    _ = await ctx.on(SOURCE_CHANGED, lambda event: changed(event.reader, event.source, event.pending))
 
     async def program(task: Task, reader: MessageReader, source: str) -> Message:
         check_admission = partial(ctx.require(SOURCE_CHECK), task, reader, source, task.boundary_hint)
@@ -164,13 +164,21 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.provide(REPLY_PROGRAM, report)
 
-    def prepare(_event: object) -> None:
+    async def prepare(_event: object) -> None:
         nonlocal running
         running = True
         catalog = ctx.require(MESSAGE_CATALOG)
         for session_id in catalog.snapshot_heads():
             for source in ctx.require(SOURCES).entries():
-                changed(catalog.reader(session_id), source.name)
+                reader = catalog.reader(session_id)
+                while True:
+                    head = reader.head(source=source.name)
+                    pending_reply = await source.needs_reply(reader)
+                    if not any(current is source for current in ctx.require(SOURCES).entries()):
+                        break
+                    if reader.head(source=source.name) == head:
+                        changed(reader, source.name, pending_reply)
+                        break
 
     async def start(_event: object) -> None:
         nonlocal watcher

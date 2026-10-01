@@ -430,6 +430,14 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
 
+[capabilities."source.session.v4"]
+role = "seam"
+note = "Source 拥有异步只读判定和同步提交通知；Core 只承载公共合同"
+
+[capabilities."sources.v5"]
+role = "seam"
+note = "异步待回复读取由来源提供，注册与路由生命周期由 Sources 拥有"
+
 [capabilities."tools.program.v2"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"

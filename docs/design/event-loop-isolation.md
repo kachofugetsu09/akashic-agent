@@ -208,12 +208,12 @@ SQL transaction 本身仍是同步回调。关闭拒绝后来操作，等待已�
 
 ```text
 ┌──────────────────────────────────────────┐
-│ loop：同 ID 收据重放，或当前 owner 内容校验 │
+│ loop：固定当前 owner 的内容校验与 metadata │
 │ 固定内容引用、授权 metadata 和纯投影      │
 └───────────────────┬──────────────────────┘
                     ▼
 ┌──────────────────────────────────────────┐
-│ worker：Core SQL 重新核对身份、grant、head │
+│ worker：先读取同 ID 收据，再核对 grant/head │
 │ 引用与 CAS，原子追加，不调用 Context       │
 └───────────────────┬──────────────────────┘
                     ▼
@@ -233,8 +233,8 @@ Tool started、command intent 和 generation claim 把 Source 前提检查放进
 Core claim 不能证明远端有或没有效果。旧 v2/v3 准备和消息表示保留，不做 schema 迁移或历史改写。
 准备的纯 SQL 也离开 loop；Context 和模型句柄的读取保持在原 scope。
 
-能力必须按完整组选择：`sources.v4`、`source.session.v3`、`source.check.v2`、
-`source.changed.v2`、`channel.input.v2`、`source.interrupt.v2`、`tools.program.v2`、
+能力必须按完整组选择：`sources.v5`、`source.session.v4`、`source.check.v2`、
+`source.changed.v3`、`channel.input.v2`、`source.interrupt.v2`、`tools.program.v2`、
 `react.ordered-start.v2`、`conversation.complete.v2`、`reply.program.v3`、`reply.execute.v4`。
 旧公共常量及旧二参数完成回调的结构合同保持原值，新 provider 不提供旧 alias。
 来源注册表也换 key，因为其 open 返回的 session 带新的完成回调合同。旧 actor 与新 provider、
@@ -288,6 +288,65 @@ Task 来源字段或全局查找表。改变输出来源不改变这份控制前
 入口、生成 claim、工具 started、实际本地 fsync 效果后及模型成功后的 Output 前设置屏障，
 核对 Input/Control 两种替代、成功路径、原历史和完整性。脚本使用本地 model driver 与发送端；
 不是正式安装、跨进程恢复、远端 provider、真实发送或生产延迟证据。
+
+## Source 的开放尾部读取（#869）
+
+已闭合历史跳过后，最新 Input 或工具结果仍可很大。Source 的待回复、恢复、停止、控制、
+启动、材料完成与失败判定使用 `MessageReader.read_async`：同一个 worker 私有只读快照
+完成 SQL、正文解码和规则归约，只返回短命判定或调用者确需的材料。该回调必须同步；
+不能传入 Context、Task、SQL transaction 或写入能力。原四个 worker 名额及取消排空保持。
+
+```text
+┌─────────────────────────────────────────┐
+│ loop：同来源准入锁，固定 Task/hint        │
+└────────────────────┬────────────────────┘
+                     ▼
+┌─────────────────────────────────────────┐
+│ worker：私有只读快照，归约 head/pending   │
+└────────────────────┬────────────────────┘
+                     ▼
+┌─────────────────────────────────────────┐
+│ loop：重查 Task/head；原 writer 条件提交   │
+│ 同步通知 pending、活动占位和撤权          │
+└─────────────────────────────────────────┘
+```
+
+待回复规则仍由 Source 拥有，判定结果不形成缓存、cursor 或另一份持久事实。显式 control/resume
+绑定读取的来源 head；后来输入导致 CAS 冲突，不把旧前提换成新 head。start/complete 在等待后
+重查 Task 与 head，原首次效果 fence 保持。材料等待通过 `follow_heads` 订阅提交序号，
+不先解码全部历史；订阅退出立即释放 listener。同 ID Input/Control 的早期收据读取也离开 loop。
+
+提交回调向 `source.changed.v3` 传入该提交前缀的 pending，Reply 同步占用或释放原活动计数。
+启动恢复等待读取后重查 head 和来源身份，避免旧读取释放新输入的占位。Sources 的异步
+needs_reply 属于 `sources.v5`，工厂属于 `source.session.v4`；旧公共类型和键保留归档含义，
+当前 provider 不提供旧 alias。ChannelInput、SourceCheck 和 SourceInterrupt 的已有签名保持。
+完整旧归档使用旧组，新旧半组保持 PENDING；正式跨版本启用仍走新 Root 的完整选择。
+
+Conversation 命令材料、Programmatic 结果读取与提交帧结算也使用纯读取 worker，Context、
+命令首次效果和连接帧状态留在原 loop。同步 transport frame resolver 及其他 owner 写入仍属
+#879 的独立范围；本层不宣称全部 CPU/I/O 或生产延迟已经解决。
+
+Programmatic 的结果查询只返回带 `through_seq` 的快照，不回收连接。后台提交订阅是终态
+通道清理的唯一发起方；异步判定返回后重查来源 head，前缀改变就等待订阅重新读取，
+不能用旧 pause/failure 结果释放同一 Input 恢复后的通道。FrameBook 仍拥有连接、claim 和
+writer drain。连接 reservation 早于 Input 的实际提交，后台只处理快照中已经存在的
+programmatic Input；暂时没有正文时等待原提交，不把合法准入窗口解释为损坏。
+
+`source_read_cohort.py` 使用实际安装的 Programmatic、Source 和 FrameBook，确定性延迟
+结算与结果查询的旧快照，再从真实 resume 入口恢复到新连接。场景验证两条路径都保留新
+通道、最终 Output 对应的受控 writer future 完成、稳定终态仍回收通道；同时核对 reservation
+先于 Input 的窗口、原消息不变与 SQLite 完整性。传输 future 是本地受控边界，不是实际网络送达。
+
+`docker/debug/source_read_isolation.py` 使用原 writer 创建 1 MiB Input 与 12 MiB ToolResult，
+记录解码线程、首次 peer callback 和读取全程的最大 loop 心跳间隔；首次让出不代表持续响应
+上界，线程中的 CPU/GIL 竞争仍可能造成停顿。另以确定性解码屏障验证其他来源 append/pause、同来源新输入
+冲突、取消及 Tasks.close 的物理排空。原行逐字段相等，integrity/FK 检查保持；未运行付费
+provider、正式 workspace 或生产 p99。只追加原协议允许的 Input/Control，不迁移或减少历史。
+
+`docker/debug/source_read_cohort.py --previous-source <旧源码>` 使用仍提供 v4/v3 的完整旧源码，
+经临时 Manager 验证旧归档执行、半组拒绝和失败局部更新后的恢复；当前安装的 Reply 在真实
+Input ACK 前取得活动占位，同 ID 重放不重复通知或执行。启动慢读后的 head/来源重查属于本层
+实现，独立概念 Gate 和正式启动验收仍需分别记录，不能由这些安装夹具代替。
 
 ## 回复入口统一执行前提（#925 追加修复）
 
