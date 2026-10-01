@@ -74,7 +74,6 @@ runtime_patch: required_only_for_proven_generic_delivery_settlement
 runtime_patch_reason: provider delivered and Session projection are not currently one recoverable logical delivery
 authoritative_state_owner: Content owns inbox; each source owns upstream cursor and ACK; Core delivery owns provider receipt and projection settlement
 client_only_alternative: not_applicable
-concept_gate: required_per_pr_and_cumulative
 invariants:
   - one fact has one owner
   - source submit commits before cursor advances
@@ -101,12 +100,13 @@ rollback: close the affected stacked PR and return to its parent commit; formal 
 
 ## 3. 工作纪律
 
+继续实施时按 [WORKFLOW](../WORKFLOW.md) 执行，原评审、备份和单测要求由 [0083](../decisions/0083-short-workflow-preserves-design-intent.md) 替代；下列已完成项只作历史证据。
+
 - [x] 进入仓库先读 `INDEX`、`WORKFLOW`、持久化地图、相关需求、决策和真实实现。
 - [x] 使用独立 Git worktree，核对 dirty state，并在首次写入前建立可恢复 bundle。
 - [x] 用 hua-home 只读日志确认旧 island、Wake phase、来源插件与真实 ACK 历史。
 - [x] 用 ADHD 发散后收敛到 source-owned Timer、durable fact + lossy hint、source-owned ACK。
 - [x] 用两名只读 agent 分别证明 lifecycle/abort 语义与现有 fixture 复用入口。
-- [ ] 每张架构 PR 写入前和最终 HEAD 都由独立 Terra xhigh 检查正交性与 Conceptual Integrity。
 - [ ] 每张 PR 只改变一根设计轴；相邻 diff 验收后才进入下一层。
 - [ ] 每个已知缺口使用固定 oracle 先红后绿，不使用 `xfail`、skip 或 mock success。
 - [ ] 每次持久文件写入都有 Git commit 或外部 repo 自己的备份/commit 可恢复。

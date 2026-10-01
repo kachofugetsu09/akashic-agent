@@ -65,8 +65,6 @@ authoritative_state_owner: >-
 client_only_alternative: >-
   Chat-only implementation cannot start or stop the Computer, bind it to plugin generation, or protect
   the single writable profile.
-concept_gate: required
-concept_gate_reason: new public plugin atom, privileged controller boundary, lifecycle and Web mount
 invariants:
   - builtin and external plugins use the same public API
   - Core never receives the Docker socket
@@ -530,7 +528,9 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 6. 禁用插件，证明现有 RFB/WebSocket 被关闭，容器、Tool、Skill 和 UI 消失而 data checksum 不变。
 7. 清理仅带本次 run label 的容器、网络、临时数据和进程。
 
-## 12. 分批交付与停止条件
+## 12. 当时的分批交付与停止条件
+
+以下保留历史执行顺序；评审模型、Gate 与验证流程已由 [0083](../decisions/0083-short-workflow-preserves-design-intent.md) 和 [WORKFLOW](../WORKFLOW.md) 替代，不作为新任务门槛。
 
 1. 本合同与 0052 经两个独立 Terra High 只读评审，must-fix 清零。
 2. Core Workload 原子先通过硬 Gate：一个主仓库不认识名字的外置 fixture，仅通过静态 manifest

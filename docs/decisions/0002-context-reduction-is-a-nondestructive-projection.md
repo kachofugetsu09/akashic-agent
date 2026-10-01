@@ -1,6 +1,7 @@
 # 0002 · 上下文缩减是非破坏性投影
 
 - 状态：accepted
+- 部分 superseded by：[0083](0083-short-workflow-preserves-design-intent.md) 仅替代下文 semantic test、mutant 与 Gate 的实施要求；非破坏性投影、窄接口和完整历史验收合同不变。
 - 日期：2026-07-16
 - 关联条款：CTX-001～CTX-005、SES-002、SES-003、SES-005、CAP-001
 

@@ -2,6 +2,7 @@
 
 > 后续勘误：[0082](0082-distribution-owned-plugin-composition.md) 修改内置代码随部署和迁移策略：选择版本即接受 Core/内置 Yoyo，外置迁移自理，不再逐 ID 审批。数据保留、显式外置版本目标和可选备份不变。以下保留原决策历史。
 - 状态：accepted
+- 备份范围补充：[0083](0083-short-workflow-preserves-design-intent.md) 按实际不可重建数据风险备份，不因源码或前端更新默认全状态备份。
 - 日期：2026-09-25
 - 关联条款：MIG-001、MIG-002、BAK-001、PLG-013、WSP-003
 - supersedes：0038 中每次离线发布必须创建恢复点的策略；0021/0066 中既有 selected Root 启动时自动执行缺失迁移的行为。Yoyo 账本与 step 不可变合同保留。
