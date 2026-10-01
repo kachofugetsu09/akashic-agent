@@ -52,11 +52,11 @@ async def check_semantics(directory):
                 await tasks.admit(("s", "conversation"), lambda slot: slot.start(work))
                 await entered.wait()
             if case == "new_input_before_commit":
-                append = controls.append
-                def interleaved(identity, body, **kwargs):
+                append = controls.append_async
+                async def interleaved(identity, body, **kwargs):
                     inputs.append("newer", Input(()))
-                    return append(identity, body, **kwargs)
-                controls.append = interleaved
+                    return await append(identity, body, **kwargs)
+                controls.append_async = interleaved
             # 2. 拒绝不得落 resume；允许只落同一事实并可重放。
             try:
                 result = await source.resume("retry", "current")
@@ -102,7 +102,7 @@ async def run(directory):
             return original(row)
         storage._message = decode
         try:
-            # 2. 准入自身没有等待；已排队的无关回调给出实际事件循环延迟。
+            # 2. 已排队的无关回调给出实际延迟；纯提交会等待文件 worker。
             for label in ("first_resume", "same_identity_replay", "subagent_outcome"):
                 decoded.clear()
                 event = asyncio.Event()

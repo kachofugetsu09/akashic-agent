@@ -251,6 +251,12 @@ Manager 发布/旧组恢复仍需独立验收。没有正式 workspace、账户�
 候选的普通取消及服务关闭场景均通过。它守护 C3/C4/C5 的收据、终态和效果顺序，不改变既有消息正文。
 剩余同步消息/owner 写入，以及 EventMail/Drift/Alert 的多库顺序继续独立处理。
 
+现行源码的回复、图片、费用、Source 控制及性能场景显式使用 `channel.input.v2`，不会向当前
+provider 请求已退役的旧键。`content_view_scenario.py` 另核对全新进程中的完成/失败同 ID 重放；
+`--directory-page` 使用实际目录页验证完整显示与回读。`scripts/check_list_dir.py` 在真实目录
+handler 完成后丢一次 RPC 响应，核对无自动重发、断连重接后的显式读取及全部 manager 排空。
+这些是临时状态和受控 provider 的验收，不是生产性能或模型推理质量证据。
+
 内部 pause 等待磁盘时，活动回复仍可能追加 Output。来源 head 的 CAS 失败不提交任何事实；
 内部 pause 重新读取前缀再尝试。显式 control 的 expected head 不重试，身份、权限或引用错误也不重试。
 停止完成前后已提交的 Input/Output 都保留，不能用撤销正文消除这类竞态。

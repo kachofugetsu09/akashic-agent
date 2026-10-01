@@ -92,3 +92,9 @@ PluginManager、Tools、Models 调用账和 MessageLog，只在 provider 边界�
 
 本地实现不改变正式安装选择，也不部署。该插件与 Models/Reply Program/ReAct 的新源码组合交付；
 旧 model.facts 和旧冻结请求可读，降级旧代码之前应停止新执行，不能让旧严格校验器读取新 facts。
+
+场景使用当前 `channel.input.v2`；完成和失败状态分别在全新进程重开，同 ID 输入返回原 Message，
+模型调用数为零，原消息逐字段、实际工具效果及 SQLite 完整性保持。场景 provider 的模型账本
+随其 scope 关闭，避免父进程残留文件锁阻止恢复进程加载。
+`PYTHONPATH=. .venv/bin/python docker/debug/content_view_scenario.py --directory-page` 将真实
+`list_dir` 页及其续读提示送入同一闭环；回读只恢复该页原文，后续目录条目仍按生产者游标读取。

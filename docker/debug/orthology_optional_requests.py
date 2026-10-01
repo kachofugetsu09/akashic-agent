@@ -14,8 +14,9 @@ from agent.plugin_composition.channel_io import (
     ChannelAttachmentImport, ChannelAttachmentRead, ChannelIdentity,
     unavailable, unavailable_input_custody,
 )
-from agent.plugin_composition.channels import CHANNEL_INPUT, CHANNELS
+from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS
 from agent.plugin_composition.host import HOST_INFO, HostInfo
+from agent.plugin_composition.messages import OWNER_STATE, OwnerState
 from agent.plugin_composition.model import FiberState, PluginRuntime, ServiceKey
 from agent.plugin_composition.rpc import RpcMethod
 from plugins.akashic_clients import plugin as clients
@@ -24,6 +25,7 @@ from plugins.akashic_clients.capabilities import (
 )
 from plugins.channels import plugin as channels
 from plugins.runtime_inspection import plugin as inspection
+from session.log import MessageLog
 
 
 class EmptyParams(BaseModel):
@@ -43,6 +45,10 @@ async def install_ports(root: CompositionRoot, workspace: Path):
     await root.context.provide(CHANNEL_ATTACHMENT_IMPORT, ChannelAttachmentImport(unavailable))
     await root.context.provide(CHANNEL_ATTACHMENT_READ, ChannelAttachmentRead(unavailable, unavailable))
     await root.context.provide(CHANNEL_INPUT, unavailable)
+    # 导航状态仍使用真实窄 owner；未查询它时不伪造保存成功。
+    log = MessageLog(workspace / 'sessions.db')
+    await root.context.effect(lambda: log.close, label='scenario-state')
+    await root.context.provide(OWNER_STATE, OwnerState(log))
     for key in CLIENT_CAPABILITIES:
         await root.context.provide(key, unavailable)
     return runtime
