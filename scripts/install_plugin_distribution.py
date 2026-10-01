@@ -29,7 +29,7 @@ from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.source_resolver import scan_plugin_sources
-from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input
+from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input, check_distribution_adoption_format
 from agent.plugin_composition.archive import encode_tree, sync_directory, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
@@ -73,7 +73,7 @@ def _external_path(root: Path, relative: object, *, directory: bool) -> Path:
     return current
 
 
-def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]]]:
+def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
     """校验部署者指定的精确外置目标。"""
     def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
@@ -87,7 +87,7 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]]]:
         raise ValueError("部署清单必须是普通文件")
     raw = path.read_bytes()
     document = json.loads(raw, object_pairs_hook=unique_pairs)
-    if not isinstance(document, dict) or set(document) != {"schema_version", "expected_root_ref", "targets"}:
+    if not isinstance(document, dict) or set(document) - {"distribution_adoption"} != {"schema_version", "expected_root_ref", "targets"}:
         raise ValueError("部署清单需要 schema_version、expected_root_ref、targets")
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise ValueError("部署清单 schema_version 错误")
@@ -126,7 +126,15 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]]]:
                 or _SHA256.fullmatch(wheels["tree_sha256"]) is None):
                 raise ValueError(f"offline_wheels 无效: {plugin_id}")
             _external_path_syntax(wheels["relative_path"])
-    return hashlib.sha256(raw).hexdigest(), root_ref, targets
+    digest = hashlib.sha256(raw).hexdigest()
+    adoption = None
+    if "distribution_adoption" in document:
+        value = document["distribution_adoption"]
+        if not isinstance(value, dict) or set(value) != {"distribution_source_commit", "entries"}:
+            raise ValueError("distribution_adoption 需要目标发行版和已批准的精确条目")
+        adoption = {"schema_version": 1, "base_root_ref": root_ref, "plan_sha256": digest, **value}
+        check_distribution_adoption_format(adoption)
+    return digest, root_ref, targets, adoption
 
 
 def _external_path_syntax(relative: object) -> str:
@@ -855,7 +863,7 @@ def _selected_components(selection: PluginSelection, root_ref: str) -> tuple[tup
     """Check every selected code closure before changing an install pointer."""
     root = selection.archive.read_descriptor(root_ref)
     components = root["components"]
-    if root["version"] != 1 or not isinstance(components, tuple):
+    if not isinstance(components, tuple):
         raise ValueError("stable 完整记录格式无效")
     found: dict[str, tuple[str, Mapping[str, object], Path]] = {}
     checked_refs: list[str] = []
@@ -912,9 +920,10 @@ def _distribution_candidate(
     *, distribution: Path, workspace: Path, plugins_home: Path,
     selected: dict[str, tuple[str, Mapping[str, object], Path]],
     replacement_ids: frozenset[str] = frozenset(),
+    adoption: Mapping[str, object] | None = None,
 ) -> tuple[DistributionSources, dict[str, ResolvedPluginSource]]:
     """Overlay fixed distribution sources while retaining exact external selections."""
-    available = distribution_sources(workspace, plugins_home, distribution)
+    available = distribution_sources(workspace, plugins_home, distribution, adoption=adoption)
     scan = scan_plugin_sources(installed_cache_root=plugins_home / "cache",
                                ignored_installed_roots=available.ignored_installed_roots)
     if scan.failures:
@@ -1068,7 +1077,7 @@ def publish_distribution(
     backup_dir: Path | None = None, preflight_only: bool = False,
 ) -> dict[str, Any]:
     """更新内置 preset 和指定外置输入；先完成 Core 与内置迁移。"""
-    digest, expected_root, requested = load_deployment_plan(plan)
+    digest, expected_root, requested, adoption = load_deployment_plan(plan)
     workspace, plugins_home = workspace.resolve(strict=True), plugins_home.resolve(strict=True)
     selection = PluginSelection(workspace)
     if selection.read() != expected_root:
@@ -1088,10 +1097,13 @@ def publish_distribution(
                 staged = Path(temporary)
                 report = verify_distribution(distribution)
                 _check_distribution_sources(distribution, report)
+                if adoption is not None and adoption["distribution_source_commit"] != report["source_commit"]:
+                    raise SelectionConflictError("历史归属转换的目标发行版不符")
                 components, selected = _selected_components(selection, expected_root)
                 available, candidate = _distribution_candidate(
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
                     replacement_ids=frozenset(item["plugin_id"] for item in requested),
+                    adoption=adoption,
                 )
                 _preflight_distribution_environments(available, distribution, staged)
                 external_requests = [item for item in requested if not (
@@ -1103,8 +1115,9 @@ def publish_distribution(
                     workspace=workspace, plugins_home=plugins_home,
                 )
                 replacements = {item["plugin_id"]: item["code"] for item in targets}
-                migration_sources = distribution_migration_sources(workspace, plugins_home, distribution)
+                migration_sources = distribution_migration_sources(workspace, plugins_home, distribution, adoption=adoption)
                 reserved_ids = {f"{item.plugin_name}@{item.marketplace}" for item in migration_sources}
+                reserved_ids.update(available.legacy_ids)
                 if reserved_ids.intersection(replacements):
                     raise SelectionConflictError("外置部署目标不能接管内置数据身份；替代插件须使用独立身份")
                 for plugin_id, code in replacements.items():
@@ -1162,8 +1175,10 @@ def publish_distribution(
                     available=available, candidate=candidate, selected=prepared_selected,
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
                 )
-                new_root = (selection.commit(new_components, expected_ref=expected_root)
-                            if new_components != components else expected_root)
+                adoption_ref = selection.archive.save_descriptor(adoption) if adoption is not None else None
+                new_root = (selection.commit(new_components, expected_ref=expected_root,
+                                             distribution_adoption_ref=adoption_ref)
+                            if new_components != components or adoption_ref is not None else expected_root)
                 return {**result, "status": "selected_not_started", "new_root_ref": new_root,
                         "ordered_components": list(new_components)}
         finally:

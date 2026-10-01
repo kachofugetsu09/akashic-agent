@@ -76,7 +76,7 @@ def _selected_code(selection: PluginSelection, root_ref: str | None, plugin_id: 
         return None
     root = selection.archive.read_descriptor(root_ref)
     components = root.get("components")
-    if root.get("version") != 1 or not isinstance(components, tuple):
+    if not isinstance(components, tuple):
         raise ValueError("stable 完整记录无效")
     found: set[str] = set()
     selected = None

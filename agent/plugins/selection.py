@@ -69,7 +69,10 @@ class PluginSelection:
             self._read_record(ref)
         return ref
 
-    def commit(self, components: tuple[str, ...], *, expected_ref: str | None) -> str:
+    def commit(
+        self, components: tuple[str, ...], *, expected_ref: str | None,
+        distribution_adoption_ref: str | None = None,
+    ) -> str:
         """提交构造方保证完整的正式输入；不接受任意 binding 子集充当完整组合。"""
         # 1. 基线是前次提交记录，而不是可重复出现的组件集合。
         expected_ref = _reference(expected_ref, nullable=True)
@@ -83,12 +86,26 @@ class PluginSelection:
         if len(set(components)) != len(components):
             raise SelectionFormatError("完整选择不能重复包含组件引用")
 
+        # 历史归属凭证随选择保留；配置或启停提交不产生另一份来源事实。
+        previous_adoption = (self.archive.read_descriptor(expected_ref).get("distribution_adoption_ref")
+                             if expected_ref is not None else None)
+        if distribution_adoption_ref is None:
+            distribution_adoption_ref = _reference(previous_adoption, nullable=True)
+        else:
+            _reference(distribution_adoption_ref)
+            self.archive.read_descriptor(distribution_adoption_ref)
+            if previous_adoption is not None and previous_adoption != distribution_adoption_ref:
+                raise SelectionConflictError("历史归属已经转换，不能覆盖凭证")
+
         # 2. 只保存引用和前驱，不复制身份、配置或环境路径。
         try:
             self.archive = PluginArchive(self.archive.path)
-            ref = self.archive.save_descriptor({
+            record: dict[str, object] = {
                 "version": 1, "components": list(components), "previous": expected_ref,
-            })
+            }
+            if distribution_adoption_ref is not None:
+                record.update(version=2, distribution_adoption_ref=distribution_adoption_ref)
+            ref = self.archive.save_descriptor(record)
         except BaseException as error:
             raise self._write_error("commit", None, replacing=False) from error
         if self.read() != expected_ref:
@@ -102,9 +119,14 @@ class PluginSelection:
             record = self.archive.read_descriptor(ref)
         except (ValueError, RuntimeError, FileNotFoundError) as error:
             raise SelectionFormatError("stable 完整记录缺失或损坏") from error
-        if set(record) != {"version", "components", "previous"}:
+        fields = {"version", "components", "previous"}
+        version = record.get("version")
+        if version == 2:
+            fields.add("distribution_adoption_ref")
+            _reference(record.get("distribution_adoption_ref"))
+        if set(record) != fields:
             raise SelectionFormatError("stable 不是完整选择记录")
-        if type(record["version"]) is not int or record["version"] != 1:
+        if type(version) is not int or version not in {1, 2}:
             raise SelectionFormatError("stable 记录版本不支持")
         components = record["components"]
         if not isinstance(components, tuple):
