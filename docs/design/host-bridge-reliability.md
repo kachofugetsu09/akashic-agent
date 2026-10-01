@@ -12,7 +12,6 @@
 - authoritative_state_owner：会话仍属 MessageLog；宿主 execution 仍属 ShellProcessManager；
   Bridge 独占 boot admission 与 manager lease；本次不迁移持久状态。
 - client_only_alternative：不可行，浏览器重连不能阻止 Core 因 Probe 超时退出。
-- concept_gate：required；最终 head 由独立 terra/xhigh 审查。
 - 允许：源码、手册、本地临时 UDS、临时文件和受控子进程；不写正式 workspace，不调用生产控制面。
 - 恢复点：Git base 与 /tmp/host-bridge-reliability-backup-20260926/baseline.tar。
 

@@ -1,383 +1,70 @@
 # Akashic Agent 项目阅读索引
 
-这份文件是每个新会话进入仓库后的第一站。它只回答三件事：先读什么、什么情况下继续读哪份文件、读完后去哪里核对真实实现。
+每个新会话先读本文件，再沿相关入口核对需求、决定和真实实现。索引只负责路由；执行步骤见 [WORKFLOW.md](WORKFLOW.md)。
 
-它不是需求规范，也不保存临时进度。修改仓库文件时按 [`WORKFLOW.md`](WORKFLOW.md) 执行；长期语义以 [`projectneed.md`](projectneed.md) 为准，当前接手点以 [`NOW.md`](NOW.md) 为准，决策理由以 [`decisions/`](decisions/README.md) 为准。
+## 1. 固定入口
 
-## 1. 先分清 Git worktree 与 Akashic workspace
+1. 每个任务必读 [设计原则](projectneed.md#设计原则每个任务必读)，先理解项目允许改变什么。
+2. 修改任务读 [WORKFLOW.md](WORKFLOW.md)；非简单任务读 [NOW.md](NOW.md)，只带入相关未完成事项。
+3. 按下表选择相关需求与设计，并在 [决策索引](decisions/README.md) 按行为、数据对象和 owner 查找决定。读取命中的记录，跟随勘误和替代关系；不能只按准备修改的文件名选择材料。
+4. 核对真实调用路径、状态读写和消费者。改动跨 owner 时展开所有受影响边界；不因命中多行而机械读取全部历史。
 
-本项目同时使用两个容易混淆的“工作区”，它们不是一回事：
+例如“缩小模型窗口”必须读 CTX-001、SES-005 和 [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md)，即使任务没有出现“数据库”一词。删除源码也要查持久数据、动态入口和插件消费者，不能由“没有静态调用”推出可删除。
 
-```text
-┌──────────────────────────────┐
-│ Git repository / worktree    │  源码、测试、项目工作手册、Git diff
-└──────────────────────────────┘
+用户当前明确指令决定本次授权范围；`projectneed.md` 定义长期语义，accepted 决策说明理由，后续勘误优先于被替代记录。代码证明现状，不能反推用户意图。发现冲突先说明当前行为、既定要求与影响，不自行挑选或改写规格。proposed 设计、历史会话与 `_handbook/` 只提供线索。
 
-┌──────────────────────────────┐
-│ Akashic <workspace>          │  会话、记忆、附件、调度、主动流程、
-│                              │  plugin-data、能力投影和运行状态
-└──────────────────────────────┘
-```
+历史设计中的评审模型、Gate、单测和任务表格不再定义开发流程；按 [0083](decisions/0083-short-workflow-preserves-design-intent.md) 使用当前 WORKFLOW。历史产品约束仍须按其有效决策核对。
 
-文档中的裸词 `workspace` 一律指第二种：由 `--workspace`、`AKASHIC_WORKSPACE` 或 `config.toml` 选中的 Akashic 运行数据根。要表达代码副本时必须写 `Git worktree`、`repository` 或 `checkout`。代码 worktree 可以随时重建；正式 Akashic workspace 含用户和 agent 的持续数据，不能随代码清理、切分支或重构一起变化。
+## 2. 文档各自回答什么
 
-## 2. 新会话固定入口
+| 入口 | 用途 |
+|---|---|
+| [projectneed.md](projectneed.md) | 设计原则、长期需求和禁止事项 |
+| [WORKFLOW.md](WORKFLOW.md) | 怎样理解边界、实现验证和交付 PR |
+| [NOW.md](NOW.md) | 尚未完成的工作与接手限制 |
+| [decisions/README.md](decisions/README.md) | 为什么这样做、为什么不选另一方案 |
+| [design/](design/) | 问题级调用链、迁移、失败与验收；先看状态和勘误 |
+| [writing-rules.md](writing-rules.md) | 文档如何维护；改文档时读取 |
+| [templates/](templates/) | 复杂任务与交接按需使用，不是每次必填表 |
 
-无论任务看起来多简单，进入仓库后的第一个主动读取动作都是本文件。本地 `AGENTS.md` 与 `CLAUDE.md` 由 coding agent 运行环境提供，不属于版本化项目文档；本索引负责把会话带到任务需要的项目事实。
+## 3. 按行为选择阅读路径
 
-按下面的顺序读取：
+下表给出当前入口；继续沿需求和决定中的相关链接展开，不把所有旧任务合同当作开工清单。
 
-1. **先读本索引全文。** 确认任务类型、状态 owner、必读材料和停止条件。
-2. **确认执行顺序。** 会修改仓库文件时读取 [`WORKFLOW.md`](WORKFLOW.md)；只读问答和调查按用户授权停在对应阶段。
-3. **建立公共理解。** 非简单任务读取 [`projectneed.md`](projectneed.md) 第 1～6 节；简单、纯局部任务至少核对与改动直接相关的条款。
-4. **确认当前接手点。** 读取 [`NOW.md`](NOW.md)，只把仍未完成的事项带入当前任务。
-5. **按任务路由展开。** 使用第 4 节的表，只读相关领域、决策和设计，不批量装填全部历史。
-6. **最后检查真实证据。** 读取当前分支上的代码、配置、日志、数据库 schema 和测试。文档说明目标与理由，代码证明当前实际行为；两者冲突时先报告，不自行改写其中一方。
-
-不要用下面几种方式开工：
-
-- 从旧会话摘要、自动记忆或某个搜索命中直接推导项目意图。
-- 为了“上下文完整”一次读入全部 `_handbook/`、全部决策和全部历史设计。
-- 只看代码能做什么，就反推用户原本想要什么。
-- 只看文档目标，不检查当前实现、当前分支和真实数据路径。
-
-## 3. 文档骨架与权威边界
-
-```text
-┌─────────────────────┐
-│ docs/INDEX.md       │  新会话入口，只负责阅读路由
-└──────────┬──────────┘
-           ▼
-┌─────────────────────┐
-│ docs/projectneed.md │  长期需求、禁止事项、语义不变量
-└──────┬────────┬─────┘
-       │        │
-       ▼        ▼
-┌────────────┐  ┌──────────────────┐
-│ NOW.md     │  │ decisions/       │
-│ 当前未完成 │  │ 决策理由与勘误   │
-└──────┬─────┘  └────────┬─────────┘
-       │                 │
-       └────────┬────────┘
-                ▼
-       ┌──────────────────┐
-       │ design/          │  问题级调用链、状态地图、迁移与验收
-       └────────┬─────────┘
-                ▼
-       ┌──────────────────┐
-       │ 代码/配置/数据/测试│  当前实现证据
-       └──────────────────┘
-```
-
-文件职责如下：
-
-| 文件或目录 | 回答的问题 | 读取策略 |
+| 涉及的行为或状态 | 需求与设计入口 | 真实实现入口 |
 |---|---|---|
-| [长工具结果投影与回读](decisions/0081-content-views-keep-original-messages.md) | 首次完整展示、普通插件折叠与原文范围回读 | 修改长结果模型视图时读取 |
-| [模型选择、删除与目录刷新](design/model-user-disable.md) | 显式选择、删除回退、provider 可用性与备份边界 | 修改模型选择、删除或目录同步时读取 |
-| [Event-loop execution boundaries](design/event-loop-isolation.md) | 历史读取、计算隔离与因果顺序 | 排查跨 owner 阻塞和执行资源时读取 |
-| [能力依赖与执行归属](design/issue-766-orthogonal-capabilities.md) | Issue 766 的职责、取舍与实施边界 | 插件正交化实施入口 |
-| [插件 Onboarding 投影设计](design/plugin-onboarding-projection.md) | 模型、渠道、Akasha、Wake 的配置归属、拓扑排序与旧入口退役（内置实现与验收） | 修改 setup、首次配置或插件配置声明时读取 |
-| [内置引导验收](design/plugin-onboarding-validation.md) | 正式安装、CDP 用户场景与独立评审证据 | 核对本次引导交付边界时读取 |
-| [单图插件系统与局部换代](design/issue-750-plugin-publication-simplification.md) | 0072 的目标、取舍、T01～T07 任务拆分与验收 | 插件简化的固定入口 |
-| [插件整体换代重构](design/plugin-whole-runtime-simplification.md) | 0071 的入口、归属、整体组合与 stacked PR 实施 | 旧实现与迁移对照，不再是新目标入口 |
-| [普通资源 provider](design/plugin-resource-providers.md) | MCP、Workload、进程的实际资源归属与宿主授权 | 使用或修改外部资源 provider 时读取 |
-| [内置代码随部署](decisions/0082-distribution-owned-plugin-composition.md) | 分发来源、旧 receipt 采用、启用选择与外置版本保留 | 修改启动或部署组合时读取 |
-| [信任已安装的运行材料](decisions/0077-trust-installed-runtime-inputs.md) | 安装准备与运行时读取分开，不重复计算内容摘要 | 修改插件归档或 Python 环境读取时读取 |
-| [插件运行目录收敛](design/plugin-active-projections.md) | 当前 snapshot 查询投影与实际 Root 清理 owner | 修改 generation 查询或清理路径时读取 |
-| [latest 普通调用](design/plugin-latest-programmatic.md) | 候选调用、结果可见性、撤销与默认晋升 | 旧候选机制对照；新语义见 0072 与单图设计 |
-| [候选丢弃与安装结算](design/plugin-drop-update-settlement.md) | 同一更新的资源关闭与安装恢复责任 | 旧候选机制对照；清理责任按 PLG-006 |
-| [完整 Root 卸载排空](design/plugin-uninstall-root-drain.md) | 卸载与唯一 snapshot 租约计数的责任 | 旧整图 lease 对照；局部排空见单图设计 |
-| [完整 Root 发布路径](design/plugin-single-publication.md) | 新正式 Root 与真实发布租约边界 | 旧整图发布对照，不再是新目标入口 |
-| [Channel 资源归属](design/channel-resource-ownership.md) | 接纳许可、adapter、凭据和输入回执 owner | 修改 Channel provider 或客户端时读取 |
-| [插件 V3 能力手册](design/plugin-v3-capabilities.md) | V3 当前有哪些原子能力、插件怎样使用 | 开发或审查 V3 插件时读取 |
-| [hua-home 插件运行事实](design/hua-home-plugin-runtime-source-of-truth.md) | 线上权威路径、固定查找方法、本地镜像边界和 exact fleet snapshot | 审计、同步或部署插件时先读取 |
-| [`WORKFLOW.md`](WORKFLOW.md) | 修改仓库文件时怎样从接手任务走到提交评审 | 每个修改任务读取 |
-| [`../frontend/design.md`](../frontend/design.md) | 前端视觉、布局与对齐的唯一设计合同 | 修改 `frontend/**/src` 或插件 web UI 前必读 |
-| [`projectneed.md`](projectneed.md) | 系统必须保持什么 | 公共章节先读，再按领域展开 |
-| [`NOW.md`](NOW.md) | 当前还有什么没做 | 每个非简单任务读取；完成项不应存在 |
-| [`decisions/README.md`](decisions/README.md) | 哪些重要选择已经作出 | 先查索引，只展开相关记录 |
-| [`design/`](design/) | 某个问题的真实链路、方案和验收 | 任务命中时读取，不把 proposed 设计当已实现事实 |
-| [`writing-rules.md`](writing-rules.md) | 文档应该写到哪里、怎样避免漂移 | 新增或修改文档时读取 |
-| [`templates/`](templates/) | 怎样写任务合同、变更声明和交接 | 复杂或高风险任务按需复制 |
-| `_handbook/` | 历史专题说明和操作材料 | 只作线索；必须用当前代码和本索引复核 |
+| 窗口、摘要、裁切、历史加载、重试 | CTX、SES-005 → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md)、[上下文设计](design/session-context-compaction-ledger.md) | `plugins/context/`、`plugins/compaction/`、`session/` |
+| Prompt 人格与主动消息上下文 | CTX、PRM → [人格设计](design/veda-persona.md)、[Wake 最近送达](design/wake-recent-delivery-context.md) | `agent/prompting/`、`plugins/wake/` |
+| 长工具结果折叠、原文回读 | CTX-008 → [0081](decisions/0081-content-views-keep-original-messages.md) | `plugins/content/`、`plugins/context/` |
+| Message、Turn、来源、回复和送达 | SES、OUT → [消息设计](design/0902-reviewed-v4.md)、[故障恢复](design/interrupt-and-fault-model.md) | `session/`、`plugins/sources/`、`plugins/reply/`、`plugins/delivery/` |
+| 同 Turn 输入、打断、撤销 | SES、CTRL → [0025](decisions/0025-codex-style-same-turn-input.md)、[同 Turn 设计](design/codex-style-same-turn-input.md) | `plugins/conversation/`、`plugins/turn_projection/` |
+| 元数据与旧执行恢复 | SES-009 → [0060](decisions/0060-message-plugin-metadata.md)、[0061](decisions/0061-archive-stopped-legacy-executions.md) | `session/message.py`、`agent/migrations/` |
+| Akasha、Project scope、学习与重建 | MEM、SES-010 → [0073](decisions/0073-session-scope-routes-akasha-graphs.md)、[在线与重放](design/akasha-v2-runtime-migration.md)、[成本优化](design/akasha-memory-cost.md) | `plugins/akasha/`、`plugins/projects/` |
+| Markdown 记忆与 consolidation | MEM → [0052](decisions/0052-compaction-and-markdown-memory-are-ordinary-plugins.md)、[插件化设计](design/compaction-markdown-memory-plugin-task-contract.md) | `plugins/markdown_memory/`、`plugins/compaction/` |
+| 插件安装、卸载、热更新、generation | PLG → [0072](decisions/0072-single-graph-local-plugin-updates.md)、[单图设计](design/issue-750-plugin-publication-simplification.md) | `agent/plugins/`、`agent/plugin_composition/` |
+| 能力、owner、Core 与插件边界 | PLG、CAP → [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md)、[能力手册](design/plugin-v3-capabilities.md)、[Issue 766](design/issue-766-orthogonal-capabilities.md) | `agent/plugin_contracts/`、`agent/plugin_composition/`、`plugin_boundary.toml` |
+| Skill、Drift skill、MCP、进程和 Workload | PLG-017 → [普通资源 provider](design/plugin-resource-providers.md)、[0053](decisions/0053-plugins-declare-managed-workloads.md) | 插件源码与正式安装链；`agent/plugin_composition/` |
+| Wake、Drift、Scheduler、Subagent | PRO、SCH、SES → [0039](decisions/0039-react-core-atoms-keep-sources-unprivileged.md)、[React Core 设计](design/react-core-scheduler-subagent.md)、[Content/Wake](design/content-wake-existing-atoms-first-stage.md) | `plugins/wake/`、`plugins/drift/`、`plugins/scheduler/`、`plugins/subagent/` |
+| EventMail、alert、内容消费 | PRO → [0048](decisions/0048-eventmail-keeps-three-mail-lifecycles.md)、[分层合同](design/content-wake-proactive-migration-task-contract.md) | `plugins/eventmail/`、`plugins/wake/` |
+| Channel、持久接纳、Host boot 身份 | RUN-003、AKC → [Channel 归属](design/channel-resource-ownership.md)、[durable inbound](design/plugin-v3-durable-inbound-host-contract.md) | `bus/`、`infra/channels/`、`plugins/channels/` |
+| 模型配置、选择、凭据、onboarding | RUN-005～RUN-012、ONB → [0078](decisions/0078-plugin-config-and-onboarding-ownership.md)、[引导设计](design/plugin-onboarding-projection.md)、[模型选择](design/model-user-disable.md) | `plugins/models/`、Provider 插件、`bootstrap/settings_api.py` |
+| Web 或插件 UI、Android Shell | WEBUI、MOB、AKC → [frontend/design.md](../frontend/design.md)（修改前必读）、[0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md)、[Shell 合同](design/android-shell-experiment.md) | `frontend/**/src`、`plugins/akashic_clients/`；不编辑生成 bundle |
+| Web 窄屏、布局、导航和插件组合 | WEBUI → [窄屏设计](design/web-narrow-reading.md)、[Web 组合](design/web-ui-plugin-composition.md)、[纸张品牌](design/akashic-paper-brand-system.md) | `frontend/**/src`、`plugins/conversation_ui/` |
+| 启动、停止、自重启 | RUN-001～RUN-004 → [Supervisor 设计](design/linux-supervisor-safe-self-restart.md)、[产品启动](design/product-startup.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py` |
+| Shell、PTY、进程续接 | SH → [0014](decisions/0014-shell-uses-unified-execution.md)、[Shell 设计](design/unified-shell-execution.md) | `plugins/standard_tools/`、`agent/tools/unified_exec.py` |
+| 容器、Host Bridge、Computer | RUN-013～RUN-016 → [0075](decisions/0075-host-bridge-runtime-recovery.md)、[Bridge 协议](design/host-bridge-protocol-v2.md)、[Computer 合同](design/computer-plugin-workload-task-contract.md) | `docker/`、`agent/plugin_composition/`、正式 Controller |
+| 部署、升级、备份、恢复 | MIG、BAK → [0082](decisions/0082-distribution-owned-plugin-composition.md)、[部署手册](design/operator-deployment.md)、[hua-home 事实入口](design/hua-home-plugin-runtime-source-of-truth.md) | `scripts/install-akashic.sh`、`scripts/akashic_release/` |
+| Workspace、配置、迁移与数据清理 | STA、WSP、MIG → [状态地图](design/persistence-state-map.md)、[0066](decisions/0066-yoyo-current-baseline.md)、[Yoyo 手册](design/git-migration-authoring.md) | 相应状态 owner、`migrations/`、`bootstrap/init_workspace.py` |
+| 事件循环、执行资源与阻塞 | ERR、RUN → [执行边界](design/event-loop-isolation.md) | 实际 owner 的调用路径与运行证据 |
+| 安全边界、benchmark | SEC、TST → [安全设计](design/security-scan-edge-cases.md)、[benchmark 诊断](spark/2026-07-30-agent-benchmark-diagnostic-loop-design.md) | 对应真实边界与隔离场景 |
+| 新产品方向 | [路线草案](design/akashic-future-roadmap-issue-drafts.md) → 对应现行需求；草案不是实现授权 | 按已批准范围定位 |
 
-冲突时按下面的顺序处理：
+## 4. 数据任务的额外入口
 
-1. 用户当前明确指令拥有本次任务最高优先级，但不能被扩大解释。
-2. `projectneed.md` 规定长期目标和不变量。
-3. accepted 决策记录解释当前选择；后续勘误优先于被取代记录。
-4. `NOW.md` 说明当前未完成工作，不能重定义长期语义。
-5. 代码、配置、数据库和测试证明“现在是什么”，不自动证明“本来就应该这样”。
-6. 旧 handbook、旧会话和历史记忆只提供调查线索。
+涉及消息、记忆、附件、配置、凭据、调度、plugin-data，或裁切、压缩、重建、同步、迁移、覆盖、卸载、删除时，先读 [持久化状态地图](design/persistence-state-map.md) 的相关对象及其勘误，再按 STA-003 核对本次增、改、减与恢复方式。地图中的推断和未知不能充当删除依据。
 
-如果第 2～5 项互相冲突，先写明冲突对象、当前行为、目标行为和可能影响，再向维护者核对。不得挑一个最方便实现的版本继续。
+Git worktree 保存源码、测试和项目文档；Akashic `<workspace>` 保存运行数据。切分支、删源码或清理 worktree 不授权改变后者。插件 cache 和 workspace 软链接不是源码编辑入口；外置插件须回到其源码仓库，再通过正式安装链验证。
 
-## 4. 按任务选择阅读路径
+## 5. 维护本索引
 
-插件重构先读 [0072](decisions/0072-single-graph-local-plugin-updates.md) 与[单图插件系统设计](design/issue-750-plugin-publication-simplification.md)；表中旧插件决策（含 0071 的整图换代部分）用于理解迁移前代码，不覆盖单图局部换代目标。
-
-| 任务 | 必读顺序 | 随后检查的真实入口 |
-|---|---|---|
-| Message 日志、无状态 Turn 投影、完整回复链插件化 | [已批准设计与分层实施合同](design/0902-reviewed-v4.md) → 本文对应持久化、插件和会话路由 | `session/`、`plugins/sources/`、`plugins/conversation/`、`plugins/reply/`、`plugins/react/`、`plugins/tools/`、`plugins/delivery/`、`plugins/turn_projection/`；第 15 节保留插件功能，第 16 节给出 PR 与 yoyo 归属 |
-| 任何会修改仓库文件的任务 | 本索引 → [`WORKFLOW.md`](WORKFLOW.md) → 下方对应领域 | 当前分支、目标分支、完整 diff、验证报告 |
-| Web Chat 与 Android Shell 的 Session/Channel | `projectneed` MOB-001、AKC-001～AKC-002 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Android Shell 合同](design/android-shell-experiment.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/akashic_clients/`、`frontend/chat/src/`、`session/` |
-| V3 durable inbound 与 host boot identity | `projectneed` RUN-003 → [V3 durable inbound 与 host boot identity 合同](design/plugin-v3-durable-inbound-host-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugin_composition/channels.py`、`plugins/channels/provider.py`、`bus/queue.py`、`session/inbound_store.py`、Web 客户端与通知 consumer |
-| Project、Session scope 宽键、Akasha 独立图与记忆策略 | `projectneed` SES-010、MEM-009、MEM-013 → [0073](decisions/0073-session-scope-routes-akasha-graphs.md) → [持久化状态地图](design/persistence-state-map.md) | `session/log.py`、`agent/plugin_composition/messages.py`、`plugins/projects/`、`plugins/conversation/`、`plugins/akasha/scopes.py`、`plugins/akasha/plugin.py`、`frontend/chat/src` |
-| 其他 Akashic 产品路线、Project working root / coding context 或大型 tool result | [未来方向与 Issue 拆分草案](design/akashic-future-roadmap-issue-drafts.md) → 草案中对应领域的现行条款、决策与设计 | `session/`、`plugins/eventmail/`、`plugins/wake/`、`plugins/drift/`、`plugins/scheduler/`、`plugins/subagent/`、`plugins/akasha/`、`plugins/message_push/`；草案未提升为现行合同前不得直接实现 |
-| Prompt、人格、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [Veda 人格设计](design/veda-persona.md) → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [Session compaction ledger](design/session-context-compaction-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/prompting/`、`session/`、`plugins/turn_projection/` |
-| 旧工具效果缺少恢复回执 | [0061](decisions/0061-archive-stopped-legacy-executions.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/migrations/turn_messages.py` |
-| 插件 Message metadata、Citation/Meme 附加信息 | `projectneed` SES-009 → [0060](decisions/0060-message-plugin-metadata.md) → [Message metadata 合同](design/0902-reviewed-v4.md#34-message-metadata-的实现与迁移) → [持久化状态地图](design/persistence-state-map.md) | `session/message.py`、`session/log.py`、`plugins/content/`、`plugins/react/`、`infra/channels/message_view.py` |
-| 会话、消息、turn、同 Turn 输入、打断、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [0025](decisions/0025-codex-style-same-turn-input.md) → [执行进展、中断与故障恢复设计](design/interrupt-and-fault-model.md) | `session/`、`plugins/sources/`、`plugins/conversation/`、`plugins/reply/`、`plugins/turn_projection/`、`bootstrap/chat_api.py` |
-| Akasha 内存、检索与学习成本优化 | [机制、文献与实验边界](design/akasha-memory-cost.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/akasha/`、`scripts/akasha_cost_scenario.py` |
-| Markdown 记忆、退役 Memory2 归档、Akasha | `projectneed` 第 6、8、11～13 节 → [0041](decisions/0041-turn-effects-and-memory-plugins-are-orthogonal.md) → [0052](decisions/0052-compaction-and-markdown-memory-are-ordinary-plugins.md) → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/markdown_memory/`、`plugins/compaction/`、`plugins/akasha/` |
-| Compaction 与 Markdown 记忆普通插件化 | `projectneed` CTX-007、MEM-001～MEM-011 → [0052](decisions/0052-compaction-and-markdown-memory-are-ordinary-plugins.md) → [插件化任务合同](design/compaction-markdown-memory-plugin-task-contract.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/plugin_composition/`、`session/` 与任务合同 P01～P09 |
-| 主动流程、Wake、Drift、调度 | `projectneed` 第 6、9、12～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) → [Content / Wake 现有原子能力与第一阶段](design/content-wake-existing-atoms-first-stage.md) → [Content / Wake / Proactive 分层任务合同](design/content-wake-proactive-migration-task-contract.md) → [0040](decisions/0040-wake-duty-gate-lives-in-scoped-react.md) → [0048](decisions/0048-eventmail-keeps-three-mail-lifecycles.md) | `plugins/eventmail/`、`plugins/wake/`、`plugins/drift/`、`plugins/scheduler/`、`plugins/subagent/`、`agent/plugin_composition/timers.py`、`agent/plugin_composition/tasks.py` |
-| React Core 原子能力、Scheduler/Subagent 非特权插件 | `projectneed` 第 6、9～13 节 → [0034](decisions/0034-turn-is-the-logical-work-unit.md) → [0039](decisions/0039-react-core-atoms-keep-sources-unprivileged.md) → [React Core 与 Scheduler/Subagent 设计](design/react-core-scheduler-subagent.md) → [分阶段任务合同](design/react-core-scheduler-subagent-task-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/react/`、`plugins/scheduler/`、`plugins/subagent/`、`plugins/wake/`、`plugins/turn_projection/`、`agent/plugin_composition/`、`agent/plugins/manager.py` |
-| 正式启动、Supervisor、自重启、停止信号 | `projectneed` RUN-001～RUN-004 → [Linux Supervisor 安全自重启提议](design/linux-supervisor-safe-self-restart.md) → [`docker/debug/README.md`](../docker/debug/README.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py`、`plugins/message_push/restart.py`、`scripts/stop-runtime.sh`、restart Gate 报告 |
-| 容器、云主机运行适配、Host Bridge、插件 Workload、hua-home迁移 | `projectneed` RUN-013～RUN-016、PLG-017、WSP-005～WSP-006 → [0032](decisions/0032-host-bridge-preserves-host-equivalent-execution.md) → [0055](decisions/0055-host-bridge-uses-typed-protobuf.md) → [0075](decisions/0075-host-bridge-runtime-recovery.md) → [运行期可靠性](design/host-bridge-reliability.md) → [Host Bridge Protocol V2](design/host-bridge-protocol-v2.md) → [0053](decisions/0053-plugins-declare-managed-workloads.md) → [Computer 插件与 Workload 合同](design/computer-plugin-workload-task-contract.md) → [容器与 Linux 主机运行适配设计](design/akashic-container-cloud-runtime-adaptation.md) → [Core 与 Host Bridge 安装设计](design/akashic-core-bridge-installer.md) → [非迁移实验合同](design/akashic-container-host-bridge-experiment-contract.md) → [Unified Shell Execution 设计](design/unified-shell-execution.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugin_composition/`、`agent/plugins/`、Workload Controller、exact-commit 安装、runtime identity、Supervisor 与隔离实验；正式 profile 迁移前先运行 plan-only 清单并取得独立批准 |
-| Computer 驱动源码迁移 | [源码迁移合同](design/computer-driver-source-migration.md) → [Computer 插件与 Workload 合同](design/computer-plugin-workload-task-contract.md) | `docker/computer/`、`plugins/computer/`、固定 Cua 夹具与原版驱动对照 |
-| Provider、模型角色、运行时切换、usage、首次配置、模型普通插件化 | `projectneed` RUN-005～RUN-012、ONB-001、CTX-001 → [0050](decisions/0050-model-revision-lives-in-ordinary-plugin.md) → [0054](decisions/0054-model-sync-refreshes-public-capabilities.md) → [模型普通插件与 Provider 组合规格](design/model-plugin-ordinary-capability-spec.md) → [0027](decisions/0027-runtime-models-use-generation-leases.md) → [0028](decisions/0028-model-credentials-live-with-workspace-connections.md) → [现行实现与历史验收基线](design/runtime-model-registry-and-onboarding.md) → [0078](decisions/0078-plugin-config-and-onboarding-ownership.md) → [插件 Onboarding 投影设计](design/plugin-onboarding-projection.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/models/`、`plugins/opencode_go/`、`agent/plugin_composition/models.py`、`agent/model_runtime/`、`bootstrap/settings_api.py`、`frontend/chat/src` |
-| 插件安装、热重载、自验证、Cordis 迁移、plugin-data、Skill、Drift skill、MCP | `projectneed` 第 6、9～13 节 → [0072](decisions/0072-single-graph-local-plugin-updates.md) → [单图插件系统设计](design/issue-750-plugin-publication-simplification.md) → [0008](decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) → [0024](decisions/0024-plugin-self-validation-uses-stable-and-latest.md) → [0026](decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md) → [插件自更新复杂度审查](design/plugin-update-entropy-audit.md) → [0036](decisions/0036-plugin-composition-keeps-promotion-owner.md) → [0038](decisions/0038-operator-trust-can-publish-offline-plugin-batches.md) → [0042](decisions/0042-plugin-diagnostics-preserve-domain-owners.md) → [0046](decisions/0046-plugin-candidate-validation-is-incremental.md) → [插件 install/uninstall/revert turn 边界发布合同](design/plugin-install-uninstall-turn-boundary-rollout.md) → [插件递归自验证运行时设计](design/recursive-plugin-self-validation.md) → [Cordis 插件迁移能力等价验收](design/cordis-plugin-capability-parity.md) → [插件 v3 最终迁移地图（历史）](design/plugin-v3-final-migration-map.md) → [插件 v3 生产替代清单（历史）](design/plugin-v3-production-readiness-checklist.md) → [插件 v3 admission/lifecycle 收口合同](design/plugin-v3-admission-lifecycle-closeout-task-contract.md) → [插件 v3 generation metadata 收口合同](design/plugin-v3-generation-metadata-task-contract.md) → [插件 v3 Runtime Inspection 合同](design/plugin-v3-runtime-inspection-task-contract.md) → [插件 v3 committed command catalog 合同](design/plugin-v3-command-catalog-task-contract.md) → [插件组合内核第一阶段任务合同](design/plugin-composition-kernel-task-contract.md) → [插件事件与同步执行能力任务合同](design/plugin-event-executor-task-contract.md) → [插件 TopologyView 任务合同](design/plugin-topology-view-task-contract.md) → [插件 lifecycle 接入点任务合同](design/plugin-lifecycle-seam-task-contract.md) → [Turn committed typed event 合同](design/plugin-turn-committed-event-task-contract.md) → [插件 v3 generation loader 任务合同](design/plugin-v3-loader-task-contract.md) → [插件 stable 原子组装任务合同](design/plugin-stable-atomic-assembly-task-contract.md) → [插件 candidate Root 隔离任务合同](design/plugin-candidate-root-isolation-task-contract.md) → [插件组合结构身份与 revision 任务合同](design/plugin-composition-revision-task-contract.md) → [插件组合 Health/Incident/Validation 任务合同](design/plugin-composition-health-incident-task-contract.md) → [插件 Transform/Observe 事件任务合同](design/plugin-transform-observe-task-contract.md) → [插件 generation 数据根任务合同](design/plugin-data-root-task-contract.md) → [插件 Tool 组合事件任务合同](design/plugin-tool-composition-events-task-contract.md) → [插件 Tool v3 迁移组合 Gate 任务合同](design/plugin-tool-v3-migration-gate-task-contract.md) → [Citation + Meme 纯 v3 组合 Gate（历史）](design/plugin-passive-composition-v3-gate-task-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugins/composable.py`、`agent/plugins/install.py`、`agent/plugins/manager.py`、`agent/plugin_composition/runtime_catalog.py`、`agent/plugins/reload_journal.py`、`agent/plugins/selection.py`、`agent/plugins/generation.py`、`agent/mcp/client.py`、`agent/plugin_composition/context.py`、`agent/plugin_composition/effect.py`、`plugins/plugin_update/`、`plugins/models/`、`bootstrap/app.py`、`utils/process_group.py` |
-| Core 领域消息与来源变更信号 | [已批准设计与分层实施合同](design/0902-reviewed-v4.md) → [插件 V3 能力手册](design/plugin-v3-capabilities.md) | `plugins/sources/`、`plugins/eventmail/`、`plugins/drift/`、`plugins/turn_projection/`、`agent/plugin_composition/events.py` |
-| 插件 v3 包级 Skill/Drift skill/Dashboard 声明 | [插件 v3 generation loader 任务合同](design/plugin-v3-loader-task-contract.md) → [插件 v3 包级 contribution 任务合同](design/plugin-v3-package-contributions-task-contract.md) | `agent/plugins/composable.py`、`agent/plugins/manager.py`、`agent/plugins/generation.py` |
-| 插件只读 Message 与 Turn 投影 | [持久化状态地图](design/persistence-state-map.md) → [插件 V3 能力手册](design/plugin-v3-capabilities.md) → [旧 Session Read 合同（历史）](design/plugin-session-read-service-task-contract.md) | `agent/plugin_composition/messages.py`、`session/log.py`、`plugins/turn_projection/` |
-| 插件 v3 Dashboard 注册与数据边界 | [插件 v3 包级 contribution 任务合同](design/plugin-v3-package-contributions-task-contract.md) → [v3 DashboardContext 任务合同](design/plugin-v3-dashboard-context-task-contract.md) | `agent/plugin_composition/dashboard.py`、`agent/plugins/dashboard_host.py` |
-| 插件 v3 静态投影与 exact Root runtime | [v3 DashboardContext 任务合同](design/plugin-v3-dashboard-context-task-contract.md) → [静态投影与 exact runtime 任务合同](design/plugin-v3-static-projection-runtime-task-contract.md) | `agent/plugin_composition/model.py`、`agent/plugins/composable.py`、`agent/plugin_composition/runtime_catalog.py`、`agent/plugins/dashboard_host.py` |
-| 插件边界、能力角色、import 约束或正交性审查 | `projectneed` 第 6、9～13 节 → [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) → [插件边界地基](design/plugin-boundary-foundation.md) → [插件 V3 能力手册](design/plugin-v3-capabilities.md) | `plugin_boundary.toml`、`plugin_boundary_baseline.toml`、`scripts/plugin_boundary.py`、`agent/plugin_contracts/`、`agent/plugin_composition/` |
-| Akasha v3、feedback、Inspector 与 Web 插件卡片 | [持久化状态地图](design/persistence-state-map.md) → [Akasha 在线与重放](design/akasha-v2-runtime-migration.md) → [Akasha v3 迁移任务合同](design/akasha-plugin-v3-migration-task-contract.md) | `plugins/akasha/`、`core/memory/plugin.py`、`agent/plugin_composition/models.py`、`agent/plugin_composition/messages.py`、`agent/plugins/manager.py` |
-| Citation/Meme v3 回复组合接入点 | [持久化状态地图](design/persistence-state-map.md) → [candidate Root 隔离任务合同](design/plugin-candidate-root-isolation-task-contract.md) → [v3 回复组合接入点任务合同](design/plugin-v3-passive-response-seams-task-contract.md) → [纯 v3 组合 Gate（历史）](design/plugin-passive-composition-v3-gate-task-contract.md) → [WebUI E2E Gate](design/plugin-passive-webui-v3-e2e-task-contract.md) | `plugins/reply/`、`plugins/react/`、`plugins/content/`、`plugins/models/`、`plugins/tools/`、`agent/plugin_composition/`、`agent/plugins/manager.py`、`bootstrap/chat_api.py` |
-| 插件 v3 context、只读 Memory runtime 与显式消息撤销 | [context-prepared 与 Memory capability 任务合同](design/plugin-context-prepared-memory-capability-task-contract.md) → [Plugin Undo v3 与 interaction 撤销协调合同](design/plugin-v3-interaction-undo-task-contract.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/plugin_composition/interaction_undo.py`、`agent/plugins/manager.py`、`session/` |
-| 插件 v3 background job、Agent Work 与 LLM capability | [插件 v3 Proactive / background job 历史合同](design/plugin-v3-proactive-jobs-task-contract.md) → [插件 v3 Agent Work 能力合同](design/plugin-v3-agent-work-capability-task-contract.md) → [插件 v3 MCP/managed process 合同](design/plugin-v3-mcp-managed-process-task-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/scheduler/`、`plugins/subagent/`、`plugins/models/`、`agent/plugin_composition/tasks.py`、`agent/plugin_composition/mcp_slots.py`、`agent/plugin_composition/process_slots.py`、`agent/plugins/manager.py` |
-| 执行失败、丢唤醒、中断、清理与恢复 | [0063](decisions/0063-execution-failures-have-terminal-results.md) → [持久化状态地图](design/persistence-state-map.md) → [执行进展、中断与故障恢复设计](design/interrupt-and-fault-model.md) | `session/log.py`、`plugins/sources/`、`plugins/reply/`、`plugins/react/`、`plugins/models/`、`plugins/tools/`、`plugins/delivery/`、`agent/plugin_composition/tasks.py` |
-| 工具引用、工具组、按插件加载与来源工具范围 | [0062](decisions/0062-tools-flow-through-provider-views.md) → [插件工具引用与模型展示设计](design/plugin-tool-view.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/tools/`、`plugins/tool_search/`、`plugins/conversation/`、`plugins/reply/`、`plugins/react/`、`plugins/wake/`、`plugins/scheduler/`、`plugins/subagent/`、`agent/plugin_composition/mcp_slots.py` |
-| 插件 v3 inbound/outbound channel capability | [插件 v3 Channel capability 合同](design/plugin-v3-channel-capability-task-contract.md) → [插件 v3 Channel 附件持久化合同](design/plugin-v3-channel-attachment-task-contract.md) → [插件 v3 committed command catalog 合同](design/plugin-v3-command-catalog-task-contract.md) | `agent/plugin_composition/channels.py`、`agent/plugins/manager.py`、`infra/channels/`、`plugins/akashic_clients/`、`plugins/sources/`、`plugins/delivery/`、`plugins/delivery_policy/`、`bootstrap/chat_api.py`、`bootstrap/app.py`、`session/` |
-| Android Shell 观看聊天与插件 UI | `projectneed` WEBUI-001～WEBUI-004 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Android Shell 合同](design/android-shell-experiment.md) | `frontend/chat/src/`、`plugins/akashic_clients/chat_api.py`、`plugins/akashic_clients/notifications.py` |
-| 部署、升级、可选备份、失败重试 | [0074](decisions/0074-deployment-policy-belongs-to-operator.md) → [部署操作手册](design/operator-deployment.md) → [Core/Bridge 安装设计](design/akashic-core-bridge-installer.md) | `scripts/install-akashic.sh`、`scripts/akashic_release/`、`scripts/install_plugin_distribution.py` |
-| Workspace、配置、凭据、迁移、备份 | `projectneed` 第 6、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [0066](decisions/0066-yoyo-current-baseline.md) → [Yoyo 迁移维护手册](design/git-migration-authoring.md) | `main.py`、`bootstrap/init_workspace.py`、`agent/config.py`、`agent/migrations/`、`migrations/core/`、`agent/model_runtime/auth/store.py`、`scripts/rolling_backup.py` |
-| 高风险 refactor、语义不变重构、CI oracle | `projectneed` 第 4～6、13、15 节 → [正交化测试基线](refactor/orthogonality-test-baseline.md) → [综合重构账本](refactor/clean-code-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → 相关决策 | 改动前后的完整 diff、概念基线 pytest、write set |
-| 正交化测试基线、跨仓库插件契约 | `projectneed` 第 10、13、15 节 → [正交化测试基线](refactor/orthogonality-test-baseline.md) → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [持久化状态地图](design/persistence-state-map.md) | `tests/`、`private_runtime/` |
-| Companion 安全、容量和长时运行 Edge Case | `projectneed` SEC-001～SEC-010 → [0017](decisions/0017-one-person-companion-security-boundary.md) → [Companion 安全边界与 Edge Case 实施设计](design/security-scan-edge-cases.md) → [持久化状态地图](design/persistence-state-map.md) | 相关 D1～D9 owner；change-impact Gate 已退役 |
-| Harness benchmark、独立 runtime trial、证据驱动优化 | `projectneed` 第 8～13、15 节 → [V4 Flash Harness Benchmark 设计](spark/2026-07-30-v4flash-harness-benchmark-design.md) → [Benchmark 诊断循环设计](spark/2026-07-30-agent-benchmark-diagnostic-loop-design.md) → [0010](decisions/0010-provider-default-output-and-benchmark-diagnostics.md) → [0011](decisions/0011-benchmark-concurrency-six.md) → [实验 ledger](benchmark/v4flash-harness-experiment-ledger.md) → [运行审计](benchmark/terminalbench-2.1-run-audit-2026-08-05.md) → [逐题 CSV](benchmark/terminalbench-2.1-case-results-2026-08-05.csv) → [持久化状态地图](design/persistence-state-map.md) | `benchmark/harbor_v4flash/`、`agent/control/`、`bootstrap/`、`docker/debug/`、独立 artifact store 与 experiment ledger |
-| Shell、长任务、PTY、进程续接或轮询 | `projectneed` SH-001、RUN-002～RUN-003、ERR-001 → [0014](decisions/0014-shell-uses-unified-execution.md) → [Unified Shell Execution 设计](design/unified-shell-execution.md) | `plugins/standard_tools/shell.py`、`plugins/standard_tools/shell_backend.py`、`agent/tools/unified_exec.py`、`plugins/subagent/plugin.py`、`bootstrap/tools.py` |
-| Android Shell 或客户端边界评审 | `projectneed` MOB-001、WEBUI-001～WEBUI-004 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Android Shell 合同](design/android-shell-experiment.md) | Web 页面、通知 SSE、Shell 实际消费者与隔离设备证据 |
-| 新增或修改项目文档 | 本索引 → [`writing-rules.md`](writing-rules.md) → 目标文档的权威上游 | 所有相对链接、重复规则、过时入口和 Git diff |
-| Android Shell 页面与通知 | [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [Shell 合同](design/android-shell-experiment.md) | `plugins/akashic_clients/notifications.py`、`docker/debug/notification_feed.py`、独立 Android Shell 仓库 |
-| Dashboard、Chat UI | [`frontend/design.md`](../frontend/design.md) → `projectneed` WEBUI-001～WEBUI-004 → [0076](decisions/0076-android-shell-retires-legacy-mobile-stack.md) → [0043](decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md) → [Android Shell 与 Web 聊天](design/android-shell-experiment.md) → [WebUI 交互性能](design/webui-interaction-optimization.md) | `frontend/**/src`、`plugins/conversation_ui/`、真实构建和渲染结果 |
-| Web 窄屏布局与电脑验收 | [`frontend/design.md`](../frontend/design.md) → WEBUI-001～WEBUI-004 → [共享 Web 窄屏阅读设计](design/web-narrow-reading.md) → [纸张品牌](design/akashic-paper-brand-system.md) | `frontend/**/src`、`scripts/check_narrow_ui.mjs`、实际启用的外部插件源码 |
-| 2236 顶层页面、导航与递归插件 UI | [`frontend/design.md`](../frontend/design.md) → `projectneed` WEBUI-001～WEBUI-004、PLG-001～PLG-017 → [0051](decisions/0051-web-ui-composes-ordinary-plugin-modules.md) → [0053](decisions/0053-plugins-declare-managed-workloads.md) → [2236 WebUI 插件组合设计](design/web-ui-plugin-composition.md) | `frontend/dashboard/src`、`frontend/chat/src`、`plugins/conversation_ui/` |
-
-任务同时命中两行以上、会修改持久数据或会产生外部不可逆效果时，读取 `projectneed.md` 全文。执行阶段可以收窄材料，评审阶段必须展开所有相关 diff、状态变化和证据。
-
-Skill/MCP 任务固定从插件安装链进入：插件 source → 固定制品与运行环境 → 插件代码向 provider 注册 → 有作用域的消费者。插件 TOML 和静态贡献正按 0071 删除，旧能力手册描述迁移前实现，不覆盖该目标。Core 不自动创建 workspace Skill 软链接；独立 workspace MCP 声明、watcher/admin 和手工 MCP 目录不是运行时入口。
-
-## 5. 持久化任务的强制前置读取
-
-只要任务中出现下列任一对象或动作，先读 [`design/persistence-state-map.md`](design/persistence-state-map.md)：
-
-- `sessions.db`、`memory2.db`、`akasha.db`、`proactive.db`、`wake_proactive.db`、`drift.db`。
-- `MEMORY.md`、`SELF.md`、升级遗留的 `PENDING.md`、`PROACTIVE_CONTEXT.md`。
-- 附件、plugin-data、插件 Skill/MCP、旧 workspace MCP/skill 兼容路径、调度、quota、凭据或 workspace 迁移。
-- 裁切、压缩、清理、归档、替换、重建、同步、恢复、删除、卸载或备份。
-
-读取后先回答六个问题。答案必须描述数据怎样变化，不能只列文件路径：
-
-1. 被操作的是权威事实、运行连续性、派生索引、诊断证据，还是临时控制文件？
-2. 正常运行通过什么事件增加哪些行、记录或文件？
-3. 哪些字段可以原位更新，哪些变化只是 supersede、消费或终态等逻辑变化？
-4. 什么用户动作、提交协议或进程生命周期事件才允许物理删除、覆盖或 cascade；当前调用者为什么拥有该权限？
-5. 这次允许改变哪些行、文件和外部效果，哪些必须保持逐项相同？
-6. 失败、取消或进程重启后，哪个恢复点能证明数据仍然存在？
-
-会话任务还要先使用一个固定判断：`sessions.db/messages` 在正常运行中只 INSERT 新消息。只有用户主动撤销消息或删除会话，独立的数据管理命令才可以减少既有正文。当前代码虽然存在 `update_message`，但旧消息编辑是否允许原位 UPDATE 仍要按状态地图向维护者核对。`sessions` 元数据、`turns` 状态和派生索引有各自的更新协议，不能用它们可更新这一事实推翻消息正文的只追加合同。
-
-状态地图中的“代码事实”可以直接用于定位。“意图推断”和“待确认问题”必须由维护者确认后，才能写入 `projectneed.md`、删除策略、迁移脚本或备份排除规则。
-
-## 6. 开工时要形成的最小任务合同
-
-普通局部任务只需在脑内或一段简短说明中回答；复杂任务使用 [`templates/agent-task-contract.md`](templates/agent-task-contract.md)：
-
-- 目标：用户最终能观察到什么结果。
-- 完成标准：什么证据出现后可以停止。
-- `change_type` 与 `semantic_delta`。
-- 允许变化：本次明确授权改变的行为和状态。
-- 受保护状态：即使实现更方便也不能改变的对象。
-- 允许副作用：文件、数据库、进程、网络和消息发送范围。
-- 关键未知：哪些歧义会改变持久化结果、权限或兼容性。
-- 验证与回滚：怎样独立判断成功，失败后恢复到哪里。
-
-这一结构来自 [OpenAI · Prompting guidance for GPT-5.6](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6) 的结果优先、完成标准、批准边界、工具前置条件和停止规则，并按本项目的持久化风险收窄。不要把指南全文复制进任务 prompt；只保留会改变当前任务行为的约束。
-
-## 7. 调查、设计、实现和验收不能自动跨层
-
-先判断用户授权的是哪一层：
-
-| 当前层 | 默认可做 | 不自动做 |
-|---|---|---|
-| 调查 | 读代码、配置、日志、schema、Git 和只读数据 | 改实现、改数据库、发布或发送 |
-| 设计 | 写问题定义、owner、数据流、方案、风险和验收 | 把 proposed 方案当已批准语义 |
-| 实现 | 修改已授权范围内的本地文件并做非破坏性验证 | 外部发布、破坏性迁移、显著扩展范围 |
-| 评审 | 检查 diff、测试、write set、权限和副作用 | 顺手重构被评审代码 |
-| 外部协调 | 按明确授权提交、推送、发消息或部署 | 替用户作未授权决定 |
-
-长任务只在主要阶段变化时汇报。上下文压缩只在调查完成、设计确定、实现完成或验证完成等里程碑进行，并使用 [`templates/context-handoff.yaml`](templates/context-handoff.yaml) 保留已核对事实和引用。压缩摘要是任务状态，不是新的需求来源。
-
-## 8. 当前工作手册文件树
-
-```text
-docs/
-├── INDEX.md
-├── WORKFLOW.md
-├── projectneed.md
-├── NOW.md
-├── writing-rules.md
-├── decisions/
-│   ├── README.md
-│   ├── 0001-project-workbook-is-shared-reality.md
-│   ├── 0002-context-reduction-is-a-nondestructive-projection.md
-│   ├── 0003-core-capability-ownership-is-semantic.md
-│   ├── 0004-cross-repository-evidence-is-an-immutable-combination.md
-│   ├── 0005-git-cursor-drives-one-shot-migrations.md
-│   ├── 0006-akasha-v2-is-the-canonical-explicit-memory-engine.md
-│   ├── 0008-plugin-runtime-publishes-only-committed-snapshots.md
-│   ├── 0010-provider-default-output-and-benchmark-diagnostics.md
-│   ├── 0011-benchmark-concurrency-six.md
-│   ├── 0012-query-local-compaction-is-a-persisted-projection.md
-│   ├── 0013-linux-supervisor-uses-one-boot-guardian.md
-│   ├── 0014-shell-uses-unified-execution.md
-│   ├── 0015-cleanup-does-not-own-turn-or-restart-finality.md
-│   ├── 0016-channel-delivery-uses-complete-logical-messages.md
-│   ├── 0017-one-person-companion-security-boundary.md
-│   ├── 0021-yoyo-workspace-ledger-defines-migration-origin.md
-│   ├── 0023-akashic-tokens-own-material-3-semantics.md
-│   ├── 0024-plugin-self-validation-uses-stable-and-latest.md
-│   ├── 0025-codex-style-same-turn-input.md
-│   ├── 0026-plugin-rollout-is-owned-by-the-parent-turn.md
-│   ├── 0027-runtime-models-use-generation-leases.md
-│   ├── 0028-model-credentials-live-with-workspace-connections.md
-│   ├── 0030-session-context-compaction-ledger.md
-│   ├── 0032-host-bridge-preserves-host-equivalent-execution.md
-│   ├── 0033-local-agent-instructions-are-not-project-documents.md
-│   ├── 0034-turn-is-the-logical-work-unit.md
-│   ├── 0036-plugin-composition-keeps-promotion-owner.md
-│   ├── 0037-plugin-runtime-is-pure-v3.md
-│   ├── 0038-operator-trust-can-publish-offline-plugin-batches.md
-│   ├── 0039-react-core-atoms-keep-sources-unprivileged.md
-│   ├── 0040-wake-duty-gate-lives-in-scoped-react.md
-│   ├── 0041-turn-effects-and-memory-plugins-are-orthogonal.md
-│   ├── 0042-plugin-diagnostics-preserve-domain-owners.md
-│   ├── 0043-paper-brand-tokens-replace-material-visual-semantics.md
-│   ├── 0045-akashic-direct-messages-commit-before-notify.md
-│   ├── 0046-plugin-candidate-validation-is-incremental.md
-│   ├── 0047-provides-may-bind-one-tool.md
-│   ├── 0048-eventmail-keeps-three-mail-lifecycles.md
-│   ├── 0049-wake-content-is-a-decaying-eventmail-pool.md
-│   ├── 0050-model-revision-lives-in-ordinary-plugin.md
-│   ├── 0051-web-ui-composes-ordinary-plugin-modules.md
-│   ├── 0052-compaction-and-markdown-memory-are-ordinary-plugins.md
-│   ├── 0053-plugins-declare-managed-workloads.md
-│   ├── 0054-model-sync-refreshes-public-capabilities.md
-│   ├── 0055-host-bridge-uses-typed-protobuf.md
-│   ├── 0056-plugin-update-crashes-return-to-stable.md
-│   ├── 0057-internal-source-messages.md
-│   ├── 0058-scheduler-keeps-internal-messages.md
-│   ├── 0059-abandon-settles-tool-calls.md
-│   ├── 0060-message-plugin-metadata.md
-│   ├── 0061-archive-stopped-legacy-executions.md
-│   ├── 0062-tools-flow-through-provider-views.md
-│   ├── 0063-execution-failures-have-terminal-results.md
-│   ├── 0064-plugin-boundary-is-machine-enforced.md
-│   ├── 0065-plugin-boundary-checks-do-not-grant-core-ownership.md
-│   ├── 0066-yoyo-current-baseline.md
-│   ├── 0067-clients-are-ordinary-plugin.md
-│   ├── 0068-compaction-uses-one-recent-window.md
-│   ├── 0069-bindings-follow-selected-runtime-scope.md
-│   ├── 0070-plugins-own-persisted-data.md
-│   ├── 0071-plugin-composition-and-whole-runtime-updates.md
-│   ├── 0072-single-graph-local-plugin-updates.md
-│   ├── 0073-session-scope-routes-akasha-graphs.md
-│   ├── 0074-deployment-policy-belongs-to-operator.md
-│   ├── 0075-host-bridge-runtime-recovery.md
-│   └── 0079-parallel-tool-calls-commit-in-model-order.md
-├── design/
-│   ├── akasha-v2-runtime-migration.md
-│   ├── akashic-paper-brand-system.md
-│   ├── akashic-future-roadmap-issue-drafts.md
-│   ├── akashic-container-cloud-runtime-adaptation.md
-│   ├── akashic-container-host-bridge-experiment-contract.md
-│   ├── linux-supervisor-safe-self-restart.md
-│   ├── codex-style-same-turn-input-requirements.md
-│   ├── codex-style-same-turn-input.md
-│   ├── cordis-plugin-capability-parity.md
-│   ├── plugin-composition-kernel-task-contract.md
-│   ├── plugin-boundary-foundation.md
-│   ├── plugin-event-executor-task-contract.md
-│   ├── plugin-topology-view-task-contract.md
-│   ├── plugin-lifecycle-seam-task-contract.md
-│   ├── plugin-onboarding-projection.md
-│   ├── plugin-onboarding-validation.md
-│   ├── plugin-update-entropy-audit.md
-│   ├── plugin-v3-loader-task-contract.md
-│   ├── project-workbook-and-semantic-safety.md
-│   ├── query-local-react-compaction.md
-│   ├── runtime-model-registry-and-onboarding.md
-│   ├── host-bridge-reliability.md
-│   ├── host-bridge-protocol-v2.md
-│   ├── unified-shell-execution.md
-│   ├── veda-persona.md
-│   ├── web-narrow-reading.md
-│   ├── web-ui-plugin-composition.md
-│   ├── computer-driver-source-migration.md
-│   ├── computer-plugin-workload-task-contract.md
-│   ├── webui-interaction-optimization.md
-│   ├── persistence-state-map.md
-│   ├── programmatic-session-memory-exclusion.md
-│   ├── recursive-plugin-self-validation.md
-│   ├── react-core-scheduler-subagent.md
-│   ├── react-core-scheduler-subagent-task-contract.md
-│   └── wake-recent-delivery-context.md
-├── spark/
-│   ├── 2026-07-16-change-impact-contract-gate.md
-│   ├── 2026-07-21-web-settings-provider-switching-design.md
-│   ├── 2026-07-21-git-backed-one-shot-migrations-design.md
-│   ├── 2026-07-30-v4flash-harness-benchmark-design.md
-│   └── 2026-07-30-agent-benchmark-diagnostic-loop-design.md
-├── refactor/
-│   ├── orthogonality-test-baseline.md
-│   ├── clean-code-ledger.md
-│   └── 20260808-context-compaction-fixes.md
-└── templates/
-    ├── agent-task-contract.md
-    ├── change-intent.yaml
-    ├── context-handoff.yaml
-    ├── decision-record.md
-    ├── review-contract.md
-    └── semantic-oracle-checklist.md
-```
-
-新增文件前先判断现有文件能否承担该职责。必须新增时，把它放进上面的骨架，更新本索引和所有入站链接；不要再创建第二个“总说明”“最新状态”或“完整需求”。
-
-## 9. 索引维护验收
-
-修改项目工作手册后至少检查：
-
-1. 所有索引路径存在，相对链接可以解析。
-2. 新会话能从本文件找到执行工作流、需求、当前事项、决策、相关设计和代码入口。
-3. 索引没有复制需求正文，也没有出现与 `projectneed.md` 竞争的规则版本。
-4. `NOW.md` 没有已完成流水账。
-5. proposed 设计、代码事实和维护者已确认意图有明确标签。
-6. 历史 handbook 如果与当前实现冲突，入口处有醒目提示或已经完成勘误。
-
-- [0057 · Subagent 与 Wake 保留完整内部消息](decisions/0057-internal-source-messages.md)：独立内部 Session 的保存、展示、投递和学习边界。
-
-- [0066 · Yoyo 当前基线](decisions/0066-yoyo-current-baseline.md)：保留未来迁移能力，退役历史兼容脚本。
-
-- [0067 · 客户端属于普通插件](decisions/0067-clients-are-ordinary-plugin.md)：Web Chat 与中立渠道宿主的归属边界。
-
-插件旧数据处理责任见 [0070](decisions/0070-plugins-own-persisted-data.md)。
-
-插件简化与整体换代见 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md)。
-
-- [0080 · 退役 QQ 运行支持](decisions/0080-retire-qq-runtime-support.md)：QQ 插件、默认安装与旧数据保留边界。
-
-- [Product startup](design/product-startup.md): ordinary launcher, standalone Compose, first-install state and local acceptance.
+新增、移动或删除工作手册文件时更新相关入口和入站链接；检查相对链接、决策状态和路由是否仍能带到真实实现。无需维护第二份完整文件树。历史事故分析保留在 [语义安全设计](design/project-workbook-and-semantic-safety.md)，不能用已退役的流程覆盖当前工作手册。

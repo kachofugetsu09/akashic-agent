@@ -1,5 +1,7 @@
 # 正交化测试基线：保留清单、补充清单与 Gate 削减
 
+> 2026-10-01：本文件保留既有检查的历史依据；新增规则由 [0083](../decisions/0083-short-workflow-preserves-design-intent.md) 与 TST-001～TST-006 替代。不得因下文补充清单编写单测或恢复概念 Gate，也不据此再次清理现有检查。
+
 - 基线：`main@c1eb108`
 - 范围：`tests/`（232 个文件、1941 个测试函数、约 9.9 万行）、`tests/semantic/`、`tests_scenarios/contracts/`、`docker/debug/gate.py`、`.github/workflows/`
 - 用途：按本清单保留，清理其余全部测试与 Gate 项。本清单是 `tests/` 与 CI 的权威保留依据。
@@ -170,22 +172,9 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 
 `computer-image.yml` 是镜像发布流程，不是 Gate，不在本清单范围内。
 
-### 4.3 清理后需要同步修改的文档与规格
+## 5. 后续验证
 
-这些文档把现行 Gate 写成了硬性要求，不同步修改就会和新基线矛盾：
-
-- `docs/WORKFLOW.md` §5 Gate、Verify 行（第 56 行）、Deliver 行（第 59 行）和第 162 行：把"change-impact Gate"改为"概念基线 pytest + 静态检查"，删除 `gate.py` 命令与报告摘要要求。§6 Review 模式里的"只读概念 Gate"（架构 PR 的独立审查）是人工评审，不是自动化测试，保留。
-- `docs/projectneed.md`：TST-003（用已知错误验证验收器）、TST-006（变更影响由版本化 Gate 决定）与新基线直接冲突，需要维护者改写或废止。TST-001（oracle 独立于实现）仍然成立，本清单的第 2 条选择标准就是按它执行的。
-- `docs/refactor/test-gate-cleanup-ledger.md`：标记为已被本文件取代。
-
-## 5. 以后的新增规则
-
-1. 默认不写单元测试。功能是否正确，靠真实运行和 scenario 验证。
-2. 只有两种测试可以进入 `tests/`：
-   - 某条概念不变量的回归复现：先在出错的提交上失败，再在修复后通过。
-   - §3 清单里的补充项。
-3. 新增测试的 PR 必须写明守护的是 §1 里的哪一条概念，并说明为什么现有 41 项守不住。说不清就不收。
-4. 重构改变了某个保留测试的**实现假设**（例如第 11、12 条），按新语义重写，不删除它守护的概念。
+现行验证规则见 [WORKFLOW](../WORKFLOW.md) 与 `projectneed.md` TST-001～TST-006。本清单不再授权新增或改写单测；已有检查及下方历史验证记录保留。新增功能证据使用真实行为验证，不重建 change-impact Gate 或 agent 概念评审流程。
 
 ## Event-loop isolation regressions
 

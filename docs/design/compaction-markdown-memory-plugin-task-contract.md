@@ -15,8 +15,7 @@ Core 不再构造或持有 compaction/Markdown 私有 runtime。两个能力由�
 代表发行方式。`PENDING.md` 与 optimizer 删除，committed included checkpoint 直接、幂等地
 更新 `MEMORY.md` 和 `SELF.md`。依赖清单逐项对比后，除已批准语义差异外无能力退化。
 
-完成需要：相关测试、差分 E2E、change Gate、三次独立 Terra xhigh 概念 Review 全部没有
-must-fix，并提交 draft PR。
+后续修改按 [WORKFLOW](../WORKFLOW.md) 与 [0083](../decisions/0083-short-workflow-preserves-design-intent.md) 验证并交付；原强制概念评审与 change Gate 不再作为完成条件。
 
 ## 2. 状态合同
 
