@@ -678,7 +678,7 @@ export function activate(ctx) {
       }
 
       // 配置行表示已选择；目录候选只在用户确认后保存。
-      function buildModelManager({connection, entry, actions, dialogClosed, finishDisable}) {
+      function buildModelManager({connection, entry, actions, dialogClosed, dirty, finishDisable}) {
         const section = document.createElement("section");
         section.className = "settings-model-manage";
         section.innerHTML = `<header class="settings-model-manage-head"><div><h3>模型</h3><p data-manage-status role="status"></p></div>
@@ -710,18 +710,41 @@ export function activate(ctx) {
         const clearManageError = () => { error.hidden = true; error.textContent = ""; };
         const connectionModels = () => catalog.models.filter((model) => model.connectionId === connection.id);
 
+        const rows = new Map();
+        const reportDirty = () => dirty(!!manualInput.value || [...rows.values()].some((row) => row.isDirty()));
+        // 宿主字段不冒充 provider 表单草稿；两者通过 dirty 回调独立汇总。
+        for (const type of ["input", "change"]) section.addEventListener(type, (event) => {
+          event.stopPropagation();
+          reportDirty();
+        });
+
+        // 保留现有行和编辑节点；目录刷新只更新已保存事实。
         const refreshRows = () => {
           if (dialogClosed()) return;
           const used = usedByMap();
           const models = connectionModels();
           const open = models.filter((model) => model.availability !== "disabled").length;
           status.textContent = `${models.length} 个已选，${open} 个可用`;
-          rowsElement.replaceChildren(...models.map((model) => modelRow(model, used.get(model.id) ?? "")));
+          const selected = new Set(models.map((model) => model.id));
+          for (const [id, row] of rows) {
+            if (selected.has(id)) continue;
+            row.element.remove();
+            rows.delete(id);
+          }
+          let next = rowsElement.firstChild;
+          for (const model of models) {
+            if (!rows.has(model.id)) rows.set(model.id, modelRow(model));
+            const row = rows.get(model.id);
+            row.update(model, used.get(model.id) ?? "");
+            if (row.element !== next) rowsElement.insertBefore(row.element, next);
+            next = row.element.nextSibling;
+          }
+          reportDirty();
         };
 
-        function modelRow(model, inUse) {
+        function modelRow(model) {
           const row = document.createElement("div");
-          row.className = `settings-model-row${model.availability === "disabled" ? " is-disabled" : ""}`;
+          row.className = "settings-model-row";
           const toggleTarget = document.createElement("label");
           toggleTarget.className = "settings-model-toggle";
           const toggle = document.createElement("input");
@@ -729,6 +752,10 @@ export function activate(ctx) {
           toggle.checked = true;
           toggle.setAttribute("aria-label", `选择 ${model.model}`);
           toggle.addEventListener("change", () => {
+            if (editor?.isDirty() && !window.confirm(`移除 ${model.model} 并放弃该行尚未保存的参数？`)) {
+              toggle.checked = true;
+              return;
+            }
             toggle.disabled = true;
             clearManageError();
             actions.removeModel(model.id).then(() => {
@@ -749,59 +776,65 @@ export function activate(ctx) {
           modelId.textContent = model.model;
           const flags = document.createElement("span");
           flags.className = "settings-sheet-flags";
-          if (model.kind === "embedding") {
-            const chip = document.createElement("i");
-            chip.className = "is-mark";
-            chip.textContent = "向量";
-            flags.append(chip);
-          }
-          for (const badge of capabilityBadges(model.capabilities)) {
-            const chip = document.createElement("i");
-            chip.textContent = badge;
-            flags.append(chip);
-          }
           main.append(modelId, flags);
           const use = document.createElement("span");
           use.className = "settings-model-use";
-          use.textContent = [inUse ? `在用 · ${inUse}` : "", model.availability !== "available" ? "暂不可用" : ""].filter(Boolean).join(" · ");
           toggleTarget.append(toggle);
           row.append(toggleTarget, main, use);
-          if (model.availability !== "disabled") {
-            const verify = document.createElement("button");
-            verify.type = "button";
-            verify.className = "settings-text-button";
-            verify.textContent = "验证";
-            verify.addEventListener("click", () => {
-              verify.disabled = true;
-              clearManageError();
-              actions.verifyModel(model.id).then(() => {
-                if (!dialogClosed()) status.textContent = `${model.model} 验证通过`;
-              }).catch((reason) => {
-                if (!dialogClosed()) showManageError(reason);
-              }).finally(() => { verify.disabled = false; });
-            });
-            row.append(verify);
-          }
-          if (model.kind !== "chat") return row;
-          // 对话模型允许手动声明参数：探测、同步或手动添加的模型都可再编辑。
-          const entry = document.createElement("div");
-          entry.className = "settings-model-entry";
-          const expand = document.createElement("button");
-          expand.type = "button";
-          expand.className = "settings-icon-button settings-model-expand";
-          expand.setAttribute("aria-label", `编辑 ${model.model} 参数`);
-          expand.setAttribute("aria-expanded", "false");
-          expand.innerHTML = CHEVRON_ICON;
-          row.append(expand);
-          const detail = buildModelDetail(model);
-          expand.addEventListener("click", () => {
-            const open = detail.hidden;
-            detail.hidden = !open;
-            expand.setAttribute("aria-expanded", String(open));
-            expand.classList.toggle("is-open", open);
+          const verify = document.createElement("button");
+          verify.type = "button";
+          verify.className = "settings-text-button";
+          verify.textContent = "验证";
+          verify.addEventListener("click", () => {
+            verify.disabled = true;
+            clearManageError();
+            actions.verifyModel(model.id).then(() => {
+              if (!dialogClosed()) status.textContent = `${model.model} 验证通过`;
+            }).catch((reason) => {
+              if (!dialogClosed()) showManageError(reason);
+            }).finally(() => { verify.disabled = false; });
           });
-          entry.append(row, detail);
-          return entry;
+          row.append(verify);
+          const editor = model.kind === "chat" ? buildModelDetail(model) : null;
+          let element = row;
+          if (editor) {
+            element = document.createElement("div");
+            element.className = "settings-model-entry";
+            const expand = document.createElement("button");
+            expand.type = "button";
+            expand.className = "settings-icon-button settings-model-expand";
+            expand.setAttribute("aria-label", `编辑 ${model.model} 参数`);
+            expand.setAttribute("aria-expanded", "false");
+            expand.innerHTML = CHEVRON_ICON;
+            row.append(expand);
+            expand.addEventListener("click", () => {
+              const open = editor.element.hidden;
+              editor.element.hidden = !open;
+              expand.setAttribute("aria-expanded", String(open));
+              expand.classList.toggle("is-open", open);
+            });
+            element.append(row, editor.element);
+          }
+          return {
+            element,
+            isDirty: () => editor?.isDirty() ?? false,
+            update(next, inUse) {
+              model = next;
+              toggle.checked = true;
+              toggle.disabled = false;
+              row.classList.toggle("is-disabled", model.availability === "disabled");
+              verify.hidden = model.availability === "disabled";
+              use.textContent = [inUse ? `在用 · ${inUse}` : "", model.availability !== "available" ? "暂不可用" : ""].filter(Boolean).join(" · ");
+              flags.replaceChildren();
+              for (const badge of [model.kind === "embedding" ? "向量" : "", ...capabilityBadges(model.capabilities)].filter(Boolean)) {
+                const chip = document.createElement("i");
+                chip.textContent = badge;
+                if (badge === "向量") chip.className = "is-mark";
+                flags.append(chip);
+              }
+              editor?.update(model.capabilities ?? {});
+            },
+          };
         }
 
         // 三个可声明能力：上下文窗口、最大输出、图像输入；空值 = 未知。
@@ -809,12 +842,12 @@ export function activate(ctx) {
           const detail = document.createElement("div");
           detail.className = "settings-model-detail";
           detail.hidden = true;
-          const caps = model.capabilities ?? {};
           detail.innerHTML = `<div class="settings-form-grid">
-            <label><span>上下文窗口</span><input name="contextWindow" inputmode="numeric" placeholder="未知，例如 200K"></label>
-            <label><span>最大输出 token</span><input name="maxOutput" inputmode="numeric" placeholder="未知，例如 32K"></label>
+            <label><span>上下文窗口</span><input name="contextWindow" placeholder="未知，例如 200K" autocomplete="off" spellcheck="false"></label>
+            <label><span>最大输出 token</span><input name="maxOutput" placeholder="未知，例如 32K" autocomplete="off" spellcheck="false"></label>
             <label class="is-wide settings-model-image"><input type="checkbox" name="imageInput"><span>可看图（多模态输入）</span></label>
           </div>
+          <p class="settings-model-hint">留空表示未知；K = 1,000，M = 1,000,000。保存的参数不会被目录刷新覆盖。</p>
           <div class="settings-model-detail-actions">
             <span role="status" data-detail-status></span>
             <button type="button" class="settings-secondary-button" data-detail-save>保存参数</button>
@@ -824,34 +857,75 @@ export function activate(ctx) {
           const imageInput = detail.querySelector('[name="imageInput"]');
           const detailStatus = detail.querySelector("[data-detail-status]");
           const save = detail.querySelector("[data-detail-save]");
-          contextInput.value = formatTokenCount(caps.contextWindow);
-          outputInput.value = formatTokenCount(caps.maxOutputTokens);
-          imageInput.checked = (caps.inputModalities ?? []).includes("image");
+          const values = () => [contextInput.value, outputInput.value, imageInput.checked];
+          let saved, saving = false;
+          const isDirty = () => values().some((value, index) => value !== saved[index]);
+          const setSaved = (caps) => {
+            contextInput.value = formatTokenCount(caps.contextWindow);
+            outputInput.value = formatTokenCount(caps.maxOutputTokens);
+            imageInput.checked = (caps.inputModalities ?? []).includes("image");
+            saved = values();
+          };
+          const updateControls = () => {
+            for (const input of [contextInput, outputInput, imageInput]) input.disabled = saving;
+            save.disabled = saving || !isDirty();
+            save.textContent = saving ? "正在保存…" : "保存参数";
+            reportDirty();
+          };
+          setSaved(model.capabilities ?? {});
+          save.disabled = true;
+          detail.addEventListener("input", () => {
+            contextInput.removeAttribute("aria-invalid");
+            outputInput.removeAttribute("aria-invalid");
+            detailStatus.textContent = isDirty() ? "尚未保存" : "";
+            updateControls();
+          });
+          detail.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" || ![contextInput, outputInput].includes(event.target)) return;
+            event.preventDefault();
+            if (!save.disabled) save.click();
+          });
           save.addEventListener("click", () => {
             clearManageError();
-            detailStatus.textContent = "";
             const contextWindow = parseTokenCount(contextInput.value);
             const maxOutputTokens = parseTokenCount(outputInput.value);
             if (contextWindow === false || maxOutputTokens === false) {
-              detailStatus.textContent = "参数需为数字，可带 K/M 后缀；留空表示未知。";
+              const invalid = contextWindow === false ? contextInput : outputInput;
+              invalid.setAttribute("aria-invalid", "true");
+              invalid.focus();
+              detailStatus.textContent = "请输入正整数或带 K/M 后缀的数值；留空表示未知。";
               return;
             }
-            save.disabled = true;
+            saving = true;
+            detailStatus.textContent = "正在保存…";
+            updateControls();
             actions.updateModel(model.id, {
               context_window: contextWindow,
               max_output_tokens: maxOutputTokens,
               image_input: imageInput.checked,
             }).then(() => {
               if (dialogClosed()) return;
+              setSaved(catalog.models.find((item) => item.id === model.id).capabilities);
               refreshRows();
-              status.textContent = `${model.model} 参数已保存。`;
+              detailStatus.textContent = "参数已保存";
             }).catch((reason) => {
               if (dialogClosed()) return;
-              showManageError(reason);
-              detailStatus.textContent = "";
-            }).finally(() => { save.disabled = false; });
+              detailStatus.textContent = reason instanceof Error ? reason.message : String(reason);
+            }).finally(() => {
+              saving = false;
+              updateControls();
+              // 禁用按钮期间浏览器可能丢失焦点；只在没有转去其他控件时归还。
+              if (!dialogClosed() && (document.activeElement === document.body || document.activeElement === save)) contextInput.focus();
+            });
           });
-          return detail;
+          return {
+            element: detail,
+            isDirty,
+            update(caps) {
+              if (!saving && !isDirty()) setSaved(caps);
+              updateControls();
+            },
+          };
         }
 
         probe.addEventListener("click", () => {
@@ -915,7 +989,7 @@ export function activate(ctx) {
         });
 
         refreshRows();
-        return section;
+        return {element: section, refresh: refreshRows};
       }
 
       function restoreFocus(trigger) {
@@ -967,7 +1041,8 @@ export function activate(ctx) {
           )?.id;
           if (modelId) await command({type: "set_default", expected_revision: revision, role: "default", model_id: modelId});
         };
-        let dirty = false, busy = false;
+        let providerDirty = false, modelsDirty = false, busy = false;
+        const reportDirty = () => props.dirty?.(providerDirty || modelsDirty);
         // 手动创建或认证提交成功后，连接已真实存在，可继续探测、同步与添加模型。
         let created = false;
         const operations = {
@@ -1012,7 +1087,12 @@ export function activate(ctx) {
           },
           async updateModel(modelId, patch) {
             if ((!connection && !created) || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
-            await command({type: "update_model", expected_revision: catalog.revision, model_id: modelId, ...patch});
+            await sendCommand({type: "update_model", expected_revision: catalog.revision, model_id: modelId, ...patch});
+            try {
+              await load();
+            } catch (reason) {
+              throw new Error(`参数已提交，但读取最新状态失败。请关闭窗口后核对设置再操作。${reason instanceof Error ? reason.message : String(reason)}`);
+            }
           },
           async selectModels() {
             const revision = catalog.revision;
@@ -1154,8 +1234,8 @@ export function activate(ctx) {
         dialogHost.className = "settings-dialog";
         scrim.appendChild(dialogHost);
         page.appendChild(scrim);
-        const stopGuard = guardDialog(scrim, () => ({dirty, busy}));
-        let disposeEntry;
+        const stopGuard = guardDialog(scrim, () => ({dirty: providerDirty || modelsDirty, busy}));
+        let disposeEntry, modelManager;
         try {
           disposeEntry = connectionTypes.render(entry.id, dialogHost, {
             get state() {
@@ -1167,13 +1247,15 @@ export function activate(ctx) {
             },
             actions,
             ui,
-            dirty(value) { if (!auth.closed) { dirty = value; props.dirty?.(value); } },
+            dirty(value) { if (!auth.closed) { providerDirty = value; reportDirty(); } },
             close() { scrim.dispatchEvent(new Event("cancel", {cancelable:true})); },
             changed(message) {
               if (auth.closed) return;
-              dirty = false; props.dirty?.(false);
+              providerDirty = false;
+              modelManager?.refresh();
+              reportDirty();
               showNotice(message);
-              scrim.close();
+              scrim.dispatchEvent(new Event("cancel", {cancelable: true}));
             },
           });
         } catch (error) {
@@ -1184,18 +1266,20 @@ export function activate(ctx) {
         }
         if (connection) {
           const dialogBody = dialogHost.querySelector(".settings-dialog-body") ?? dialogHost;
-          dialogBody.appendChild(buildModelManager({
+          modelManager = buildModelManager({
             connection,
             entry,
             actions,
             dialogClosed: () => auth.closed,
+            dirty(value) { if (!auth.closed) { modelsDirty = value; reportDirty(); } },
             finishDisable: () => {
-              dirty = false;
+              providerDirty = false; modelsDirty = false;
               props.dirty?.(false);
               showNotice("连接已停用，历史数据保留。请添加正确用途的新连接。");
               scrim.close();
             },
-          }));
+          });
+          dialogBody.appendChild(modelManager.element);
         }
         const leaveDocument = event => { if (!event.persisted) report(auth.close()); };
         window.addEventListener("pagehide", leaveDocument);
@@ -1437,14 +1521,14 @@ export function candidateModelInput(candidate) {
   };
 }
 
-// 接受裸数字与 K/M 后缀（1024 = 1K）；空串视为未知，非法输入返回 false。
+// 接受裸数字与十进制 K/M 后缀；空串视为未知，非法输入返回 false。
 export function parseTokenCount(text) {
   const raw = String(text ?? "").trim();
   if (!raw) return null;
   const match = /^(\d+(?:\.\d+)?)\s*([kKmM])?$/.exec(raw);
   if (!match) return false;
   const value = Number(match[1]) * (match[2] ? (match[2].toLowerCase() === "k" ? 1000 : 1_000_000) : 1);
-  if (!Number.isInteger(value) || value <= 0) return false;
+  if (!Number.isSafeInteger(value) || value <= 0) return false;
   return value;
 }
 

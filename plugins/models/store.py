@@ -966,6 +966,11 @@ class ModelsStore:
                         item, kind=model.kind, default_reasoning_effort=model.default_reasoning_effort,
                         driver_config=model.driver_config,
                     )
+            # 用户字段覆盖目录证据，其余能力和可用性继续由目录刷新。
+            for key, item in known.items():
+                stored = existing.get(key)
+                if item.kind is ModelKind.CHAT and stored is not None:
+                    known[key] = _keep_user_capabilities(item, current.models[stored[0]])
             items = tuple(known.values())
             # 2. 可用性和能力只更新已选行，仍保护手工配置。
             legacy_keys = frozenset(
@@ -1237,6 +1242,23 @@ def _existing_model_ids(
                 raw_payload is None or not str(raw_payload),
             )
     return result
+
+
+def _keep_user_capabilities(item: DiscoveredModel, stored: StoredModel) -> DiscoveredModel:
+    """目录同步保留逐字段的用户声明，包括明确声明为未知的值。"""
+    caps = item.capabilities
+    sources = item.capability_sources
+    # 三项覆盖独立保留，不把整行变成手工模型而停掉其余目录更新。
+    if stored.capability_sources.context_window == "user":
+        caps = replace(caps, context_window=stored.capabilities.context_window)
+        sources = replace(sources, context_window="user")
+    if stored.capability_sources.max_output_tokens == "user":
+        caps = replace(caps, max_output_tokens=stored.capabilities.max_output_tokens)
+        sources = replace(sources, max_output_tokens="user")
+    if stored.capability_sources.input_modalities == "user":
+        caps = replace(caps, input_modalities=stored.capabilities.input_modalities)
+        sources = replace(sources, input_modalities="user")
+    return replace(item, capabilities=caps, capability_sources=sources)
 
 
 def _sync_would_change(

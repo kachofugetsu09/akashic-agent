@@ -17,6 +17,7 @@ const { values } = parseArgs({
     },
     widths: { type: "string", default: "320,360,390,412,448,760,1024,1365" },
     height: { type: "string", default: "914" },
+    page: { type: "string", default: "all" },
     large: { type: "boolean", default: false },
     rtl: { type: "boolean", default: false },
     candidate: { type: "boolean", default: false },
@@ -28,6 +29,7 @@ const { values } = parseArgs({
   },
 });
 assert(values.url, "请显式提供 --url，选择本次验收的服务");
+assert(["all", "models"].includes(values.page), "page 只接受 all 或 models");
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(values.output);
 const bundles = new Map(
@@ -578,6 +580,12 @@ async function models(page, prefix) {
       await summaries.nth(j).click();
       await measure(page, `${prefix}-connection-${i}-section-${j}`);
     }
+    const editors = dialog.locator(".settings-model-expand");
+    for (let j = 0; j < (await editors.count()); j++) {
+      await editors.nth(j).click();
+      await dialog.locator(".settings-model-detail").nth(j).scrollIntoViewIfNeeded();
+      await measure(page, `${prefix}-connection-${i}-model-${j}`);
+    }
     const manual = dialog.locator("[data-manual-toggle]");
     if (await manual.count()) {
       await manual.click();
@@ -715,10 +723,12 @@ try {
           },
           { large: values.large, rtl: values.rtl },
         );
-      await workbench(page, String(width), width <= 760);
-      await settings(page, String(width));
+      if (values.page === "all") {
+        await workbench(page, String(width), width <= 760);
+        await settings(page, String(width));
+      }
       await models(page, String(width));
-      await chat(page, String(width), width <= 820);
+      if (values.page === "all") await chat(page, String(width), width <= 820);
     } catch (error) {
       report.failures.push({ width, error: String(error) });
       await page.screenshot({ path: resolve(output, `${width}-failure.png`) });
