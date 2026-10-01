@@ -75,7 +75,7 @@ class Fixture:
         return self.log.writer("session", author=source, source=source,
             body_types=(kind,), content={"text": content})
 
-    def changed(self, _reader, source):
+    def changed(self, _reader, source, _pending):
         on_loop()
         self.notified.append(source)
 

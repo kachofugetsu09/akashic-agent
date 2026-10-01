@@ -2,20 +2,28 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import json
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 import shutil
+import sqlite3
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from agent.plugin_composition import CompositionRoot, ServiceKey
 from agent.plugin_composition.model import PluginRuntime
-from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolResult
 from agent.plugin_contracts.models import CONTENT_VIEWS, MODEL_CALLS, RenderedContent
 from agent.plugin_contracts.tools import CallSource
+from agent.host_bridge.filesystem import ListDirOperation
+from agent.plugins.manager import PluginManager
+from bus.event_bus import EventBus
+from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.content_view.plugin import ReadContent, prepare_view
 from plugins.models.content import render_content
 from plugins.models.projection import MessageProjection
@@ -23,6 +31,7 @@ from plugins.models.store import ModelsStore
 from plugins.models.views import ContentViews
 from plugins.react.plugin import _decode_request, _encode_request
 from session.log import MessageLog
+from session.artifact_store import ArtifactStore
 from tests.test_default_reply import application, live_root
 
 LONG = '完整结果🙂汉字\n' * 3000 + 'END_OF_RESULT'
@@ -79,6 +88,9 @@ def sources(directory: Path) -> None:
     text = text.replace('return Result("success", (ContentPart("text", "written"),))',
                         'return Result("success", (ContentPart("text", "small"),)) if args.get("short") else '
                         'Result("success", (ContentPart("text", LONG), ContentPart("text", "short result")))')
+    # 场景 provider 也要关闭真实模型账本，不能让父进程锁阻止恢复进程加载。
+    text = text.replace('    store.initialize()',
+                        '    store.initialize()\n    _ = await ctx.effect(lambda: store.close, label="fixture-model-store")')
     # 原测试的固定工具 schema 只接受空参数；该场景显式增加 short。
     text = text.replace('parameters={"type":"object"}',
                         'parameters={"type":"object", "properties":{"short":{"type":"boolean"}}}')
@@ -273,9 +285,101 @@ async def run(directory: Path) -> dict[str, object]:
     await check_failure(directory / 'failure')
     await check_lifecycle(directory / 'lifecycle')
     result['checks'] += ['failed provider is not exposure', 'contributor drain', 'closed view', 'conflicting views']
+    # 三个 runtime 均已结束；全新进程只加载原事实，不重建场景或重跑工具。
+    for failed, name in ((False, 'normal'), (True, 'failure')):
+        command = [sys.executable, str(Path(__file__).resolve()), '--restart', str(directory / name)]
+        if failed:
+            command.append('--failed')
+        restarted = await asyncio.to_thread(subprocess.run, command, capture_output=True, text=True, timeout=60)
+        if restarted.returncode:
+            raise RuntimeError(f'恢复进程失败 {name}: {restarted.stderr}')
+        result['restart_failed' if failed else 'restart_complete'] = json.loads(restarted.stdout)
     return result
 
 
-if __name__ == '__main__':
+async def restart(directory: Path, *, failed: bool) -> dict[str, object]:
+    """重开原场景并重放同 ID；完成和失败都不能自动重跑已结算工具。"""
+    # 1. 只重开 run 创建的场景，绝不初始化一套替代消息或手工修复旧正文。
+    if not (directory / 'sessions.db').is_file() or not (directory / 'effect.txt').is_file():
+        raise ValueError('缺少已完成的场景状态')
+    with sqlite3.connect(directory / 'sessions.db') as connection:
+        before = connection.execute('SELECT * FROM messages ORDER BY session_key, seq').fetchall()
+    effect = (directory / 'effect.txt').read_bytes()
+    log = MessageLog(directory / 'sessions.db')
+    artifacts = ArtifactStore(directory / 'sessions.db')
+    bus = EventBus()
+    host = PluginManager([directory / 'plugins'], event_bus=bus, workspace=directory / 'workspace',
+                         installed_cache_root=directory / 'home/cache', message_log=log,
+                         channel_attachment_store=ChannelAttachmentArtifactStore(
+                             workspace=directory / 'workspace', metadata_store=artifacts))
+    try:
+        await host.load_all()
+        await host.start_runtime()
+        root = host.live_root
+        assert root is not None
+        calls = root.context.require(ServiceKey('fixture.calls'))
+        original = log.reader('test:room').get('u1')
+        assert original is not None
+        repeated = await root.context.require(CHANNEL_INPUT)(
+            'test:room', 'u1', ChannelInboundMessage('test', 'user', 'room',
+                'failure scenario' if failed else 'read then read again',
+                datetime(2026, 9, 5, tzinfo=UTC), {}))
+        assert repeated == original
+        # 2. 终止会排空已接纳任务；最后核对真实效果、消息和数据库完整性。
+        await host.terminate_all()
+        assert calls == []
+        assert (directory / 'effect.txt').read_bytes() == effect
+        with sqlite3.connect(directory / 'sessions.db') as connection:
+            assert connection.execute('SELECT * FROM messages ORDER BY session_key, seq').fetchall() == before
+            assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+            assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
+        return {'messages': len(before), 'same_id_receipt': True, 'model_calls': 0,
+                'original_rows_equal': True, 'tool_effect_equal': True,
+                'failed': failed, 'fresh_process': True, 'integrity': 'ok', 'foreign_keys': []}
+    finally:
+        try:
+            await host.terminate_all()
+        finally:
+            try:
+                log.close()
+            finally:
+                try:
+                    artifacts.close()
+                finally:
+                    await bus.aclose()
+
+
+async def check_directory(directory: Path) -> dict[str, object]:
+    """用真实目录工具返回页跑同一个完整显示与回读闭环。"""
+    global LONG
+    producer = directory / 'directory'
+    producer.mkdir()
+    for index in range(220):
+        (producer / (f'{index:06d}-' + 'x' * 150)).touch()
+    page = await ListDirOperation(enable_bridge=False).execute(str(producer))
+    assert isinstance(page, str) and 8192 < len(page) and len(page.encode()) <= 10000
+    assert 'after=' in page and '还有条目' in page
+    LONG = page
+    result = await run(directory / 'consumer')
+    result['directory_page'] = {'bytes': len(page.encode()), 'characters': len(page),
+                                'continuation_preserved': True, 'producer_calls': 1}
+    return result
+
+
+def main() -> None:
+    """默认跑原文场景；可选目录页，恢复模式只供已创建场景的子进程。"""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--directory-page', action='store_true')
+    parser.add_argument('--restart', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument('--failed', action='store_true', help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.restart is not None:
+        print(json.dumps(asyncio.run(restart(args.restart, failed=args.failed)), ensure_ascii=False))
+        return
     with TemporaryDirectory(prefix='akashic-content-view-') as temporary:
-        print(json.dumps(asyncio.run(run(Path(temporary))), ensure_ascii=False, indent=2))
+        check = check_directory if args.directory_page else run
+        print(json.dumps(asyncio.run(check(Path(temporary))), ensure_ascii=False, indent=2))
+
+
+if __name__ == '__main__':
+    main()

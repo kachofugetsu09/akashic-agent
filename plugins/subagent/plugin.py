@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 import asyncio
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
@@ -22,7 +24,8 @@ from agent.plugin_composition.messages import (
 )
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_contracts import Message
-from agent.plugin_contracts.reply import REPLY_EXECUTE_V3 as REPLY_EXECUTE
+from agent.plugin_contracts.sources import SOURCE_CHECK_V2 as SOURCE_CHECK
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V4 as REPLY_EXECUTE
 
 from .inputs import (
     ALL_TOOLS,
@@ -62,7 +65,7 @@ inject = (
     DELIVERY,
     DELIVERY_SENDERS,
     REPLY_PROGRAM,
-    REPLY_EXECUTE,
+    REPLY_EXECUTE, SOURCE_CHECK,
 )
 workspace_roots = ("subagent-runs",)
 workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
@@ -143,6 +146,7 @@ async def apply(ctx: Context) -> None:
 
         return await ctx.require(REPLY_EXECUTE)(
                          ctx, task, reader, 'subagent',
+                         check_admission=partial(ctx.require(SOURCE_CHECK), task, reader, "subagent", task.boundary_hint),
                          authorize=authorize,
                          tool_view=None,
                          fixed_bindings=request.tools,

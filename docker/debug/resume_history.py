@@ -102,7 +102,7 @@ async def run(directory):
             return original(row)
         storage._message = decode
         try:
-            # 2. 准入自身没有等待；已排队的无关回调给出实际事件循环延迟。
+            # 2. 已排队的无关回调给出实际延迟；纯提交会等待文件 worker。
             for label in ("first_resume", "same_identity_replay", "subagent_outcome"):
                 decoded.clear()
                 event = asyncio.Event()

@@ -28,6 +28,17 @@ SOURCE_CHANGED = EmitEventKey[SourceChanged]("source.changed.v1")
 SOURCE_CHANGED_V2 = EmitEventKey[SourceChanged]("source.changed.v2")
 
 
+@dataclass(frozen=True)
+class SourceChangedV3:
+    """来源提交点的待回复判定；监听者同步占位，不重读历史。"""
+    reader: MessageReader
+    source: str
+    pending: bool
+
+
+SOURCE_CHANGED_V3 = EmitEventKey[SourceChangedV3]("source.changed.v3")
+
+
 class SourceGuard(Protocol):
     """来源固定的执行前提；输出可以属于另一来源，但不能转移控制权。"""
 
@@ -199,6 +210,43 @@ SOURCE_CHECK_V2 = ServiceKey[SourceCheck]("source.check.v2")
 SOURCE_INTERRUPT_V2 = ServiceKey[
     Callable[[MessageReader, str, str], Awaitable[bool]]
 ]("source.interrupt.v2")
+
+class SessionFactoryV4(Protocol):
+    """当前来源读取可等待；通知携带同一提交点的待回复事实。"""
+    def __call__(
+        self, *, reader: MessageReader, inputs: MessageWriter, controls: MessageWriter,
+        tasks: TaskAdmission,
+        changed: Callable[[MessageReader, str, bool], None] | None = None,
+        restart_gate: RestartGate | None = None,
+    ) -> GuardedSourceSession: ...
+    @staticmethod
+    async def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool: ...
+
+
+@dataclass(frozen=True)
+class AsyncSource:
+    context: Context
+    name: str
+    open: Callable[[str], GuardedSourceSession]
+    needs_reply: Callable[[MessageReader], Awaitable[bool]]
+    accept: Accept | None = None
+    channels: tuple[str, ...] | None = ()
+
+
+class SourcesV5(Protocol):
+    async def register(
+        self, ctx: Context, *, name: str, open: Callable[[str], GuardedSourceSession],
+        needs_reply: Callable[[MessageReader], Awaitable[bool]], accept: Accept | None = None,
+        channels: tuple[str, ...] | None = (),
+    ) -> Effect: ...
+    async def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
+    def entries(self) -> tuple[AsyncSource, ...]: ...
+    def changes(self) -> AsyncGenerator[tuple[AsyncSource, ...], None]: ...
+    async def accept(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> Message: ...
+
+
+SOURCES_V5 = ServiceKey[SourcesV5]("sources.v5")
+SOURCE_SESSION_V4 = ServiceKey[SessionFactoryV4]("source.session.v4")
 
 CONVERSATION_COMPLETE = ServiceKey[ConversationComplete]("conversation.complete.v1")
 CONVERSATION_COMPLETE_V2 = ServiceKey[ConversationCompleteV2]("conversation.complete.v2")

@@ -22,7 +22,7 @@ sys.path[:0] = [str(args.source), str(args.source / 'sdk/python/src')]
 import httpx
 import tiktoken
 from agent.plugin_composition import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ServiceKey
-from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from core.net.http import HttpClient
 from plugins.codex.responses import CodexResponses
 from plugins.models.state import _BoundChat

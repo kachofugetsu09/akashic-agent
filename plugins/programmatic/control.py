@@ -97,26 +97,38 @@ class Programmatic:
         projection = self.ctx.require(TURN_PROJECTION)
         return lambda: resolve_completed_output(reader, projection, input_id)
 
-    def settle_changed(self, reader: MessageReader, source: str) -> None:
+    async def settle_changed(self, reader: MessageReader, source: str) -> None:
         """随来源终态回收无 claim route，避免长连接积累已结束输入。"""
         if source != "programmatic":
             return
         input_ids = self._frames.active_input_ids(reader.session_id)
         if not input_ids:
             return
-        messages = reader.snapshot()
         projection = self.ctx.require(TURN_PROJECTION)
-        turns = projection.project(messages, source)
-        for input_id in input_ids:
-            result = read_result_snapshot(reader, input_id, projection, messages, turns)
-            if result["status"] == "open":
-                continue
-            status = result["status"]
-            if not isinstance(status, str):
-                raise TypeError("programmatic result status 必须是字符串")
-            error = None if status == "complete" else RuntimeError(
-                f"programmatic input 已结束: {status}",
-            )
+        # 1. 纯只读快照只解释已经提交的 Input，不消费连接状态。
+        def read(reader: MessageReader) -> tuple[int, tuple[tuple[str, str], ...]]:
+            messages = reader.snapshot()
+            turns = projection.project(messages, source)
+            # 连接先登记 reservation，再提交 Input；这段等待不代表消息损坏。
+            committed_inputs = {message.message_id for message in messages
+                                if message.source == source and isinstance(message.body, Input)}
+            ended: list[tuple[str, str]] = []
+            for input_id in input_ids:
+                if input_id not in committed_inputs:
+                    continue
+                result = read_result_snapshot(reader, input_id, projection, messages, turns)
+                status = result["status"]
+                if not isinstance(status, str):
+                    raise TypeError("programmatic result status 必须是字符串")
+                if status != "open":
+                    ended.append((input_id, status))
+            return reader.head(source=source), tuple(ended)
+        # 2. 读取期间可能恢复同一 Input；旧前缀不能结束后来建立的回传通道。
+        head, ended = await reader.read_async(read)
+        if reader.head(source=source) != head:
+            return
+        for input_id, status in ended:
+            error = None if status == "complete" else RuntimeError(f"programmatic input 已结束: {status}")
             self._frames.settle_input(reader.session_id, input_id, error)
 
     def _reserve_before_accept(
@@ -146,14 +158,13 @@ class Programmatic:
         ending = turn.ending_message_id
         if ending is None:
             raise ValueError("programmatic delivery 缺少 Session 或最终 Output")
-        input_id: str | None = None
-        for identity in reversed(turn.message_ids):
-            message = reader.get(identity)
-            if message is not None and isinstance(message.body, Input):
-                input_id = identity
-                break
-        if input_id is None:
+        def read(snapshot: MessageReader) -> str:
+            for identity in reversed(turn.message_ids):
+                message = snapshot.get(identity)
+                if message is not None and isinstance(message.body, Input):
+                    return identity
             raise ValueError("程序最终 Output 没有同连接 Input reservation")
+        input_id = await reader.read_async(read)
         await self._frames.wait_input(reader.session_id, input_id, ending)
 
     async def call(
@@ -187,12 +198,9 @@ class Programmatic:
             reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
             if reader.attributes.visibility != "internal":
                 raise ValueError("程序调用 Session 尚未通过内部来源准入")
-            result = read_result(reader,
-                cast(ResultParams, params).input_id, ctx.require(TURN_PROJECTION))
-            if result["status"] != "open":
-                input_id = cast(ResultParams, params).input_id
-                self._frames.release_input(session_id, input_id)
-            return result
+            input_id = cast(ResultParams, params).input_id
+            projection = ctx.require(TURN_PROJECTION)
+            return await reader.read_async(lambda snapshot: read_result(snapshot, input_id, projection))
         source = open_source(ctx, session_id)
         if method == "programmatic/message/send":
             send = cast(SendParams, params)

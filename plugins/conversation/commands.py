@@ -81,9 +81,9 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
     bindings = ctx.require(BINDINGS)
     state = ctx.require(OWNER_STATE).open(ctx)
     registry = ctx.require(COMMANDS).freeze()
-    with reader.read_snapshot():
-        check_source(task, reader, source, task.boundary_hint)
-        snapshot = reader.snapshot()
+    check_source(task, reader, source, task.boundary_hint)
+    snapshot = await reader.read_async(lambda snapshot: snapshot.snapshot())
+    check_source(task, reader, source, task.boundary_hint)
     source_head = max((message.seq for message in snapshot if message.source == source), default=-1)
     inputs = [m for m in snapshot if m.source == source and isinstance(m.body, Input)]
     abandoned_through = max((m.body.through_seq for m in snapshot
@@ -116,7 +116,8 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
             selected = CommandIntent(session_id=reader.session_id, source=source,
                                      input_id=latest.message_id, binding_id=identity)
             value = cast(Mapping[str, object], selected.model_dump())
-            _ = _input(reader, latest.message_id, source)
+            _ = await reader.read_async(lambda snapshot: _input(snapshot, latest.message_id, source))
+            check_source(task, reader, source, source_head)
             intent_key = selected.output_id
 
             def start(transaction: OwnerTransaction):
@@ -128,7 +129,10 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
 
     if not intents:
         return None if selected is None else reader.get(selected.output_id)
-    positions = {message.message_id: message.seq for message in reader.snapshot()}
+    positions = await reader.read_async(lambda snapshot: snapshot.scan(
+        lambda rows: {message.message_id: message.seq for message in rows},
+    ))
+    check_source(task, reader, source, source_head)
     intents.sort(key=lambda item: positions[item[0].input_id])
 
     # 2. handler 执行前后核对来源权限；中断后的副作用只能由领域回执确认。
@@ -142,7 +146,8 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
         for intent, recovering in intents:
             head = reader.head(source=source)
             check_source(task, reader, source, source_head)
-            line, origin = _input(reader, intent.input_id, source)
+            line, origin = await reader.read_async(lambda snapshot: _input(snapshot, intent.input_id, source))
+            check_source(task, reader, source, source_head)
             async def execute(commands: CommandCatalog) -> CommandExecution:
                 value = await commands.execute(
                     line, session_key=reader.session_id, channel=origin["channel"],
