@@ -54,6 +54,7 @@ from .settings import (
     StartConnectionAuth,
     SyncModels,
     UpdateConnection,
+    UpdateModel,
     VerifyModel,
 )
 from .selection import MODEL_SELECTION
@@ -242,6 +243,15 @@ class RemoveModelPayload(_Payload):
     model_id: str = Field(min_length=1, max_length=128)
 
 
+class UpdateModelPayload(_Payload):
+    type: Literal["update_model"]
+    expected_revision: int = Field(ge=0)
+    model_id: str = Field(min_length=1, max_length=128)
+    context_window: int | None = Field(default=None, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    image_input: bool
+
+
 class SyncModelsPayload(_Payload):
     type: Literal["sync_models"]
     expected_revision: int = Field(ge=0)
@@ -279,6 +289,7 @@ CommandPayload = Annotated[
     | AddModelPayload
     | VerifyModelPayload
     | RemoveModelPayload
+    | UpdateModelPayload
     | SetDefaultPayload
     | SyncModelsPayload
     | StartAuthPayload
@@ -574,6 +585,14 @@ def _command(payload: CommandPayload) -> ModelChange:
         return VerifyModel(expected_revision=payload.expected_revision, model_id=payload.model_id)
     if isinstance(payload, RemoveModelPayload):
         return RemoveModel(payload.expected_revision, payload.model_id)
+    if isinstance(payload, UpdateModelPayload):
+        return UpdateModel(
+            expected_revision=payload.expected_revision,
+            model_id=payload.model_id,
+            context_window=payload.context_window,
+            max_output_tokens=payload.max_output_tokens,
+            image_input=payload.image_input,
+        )
     if isinstance(payload, SetDefaultPayload):
         return SetDefaultModel(
             payload.expected_revision,

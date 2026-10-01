@@ -35,6 +35,7 @@ from .settings import (
     SetDefaultModel,
     RemoveModel,
     UpdateConnection,
+    UpdateModel,
 )
 from agent.plugin_composition.models import (
     BoundModelDescriptor,
@@ -734,6 +735,105 @@ class ModelsStore:
             return True
 
         return self._domain_write(command.expected_revision, "remove-model", write)
+
+    def update_model(self, command: UpdateModel) -> int:
+        """Rewrite the user-declared chat capabilities in one revision CAS.
+
+        The three fields carry their full target state: null clears a token
+        limit to unknown, and image_input toggles the image modality while
+        preserving the rest. Sources of the touched fields become "user".
+        """
+        model_id = _required(command.model_id, "model_id")
+        for name, value in (
+            ("context window", command.context_window),
+            ("max output tokens", command.max_output_tokens),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"model {name} must be positive")
+
+        def write(connection: sqlite3.Connection) -> bool:
+            row = connection.execute(
+                "SELECT supported_reasoning_efforts, context_window, "
+                "max_output_tokens, input_modalities, capability_source, "
+                "context_window_source, max_output_tokens_source, "
+                "input_modalities_source, supports_parallel_tool_calls, "
+                "use_responses_lite, reasoning_summary, capabilities_json "
+                "FROM model_definitions WHERE id = ?",
+                (model_id,),
+            ).fetchone()
+            if row is None:
+                if connection.execute(
+                    "SELECT 1 FROM embedding_models WHERE id = ?", (model_id,)
+                ).fetchone():
+                    raise ValueError(
+                        f"embedding model does not take chat capabilities: {model_id}"
+                    )
+                raise ValueError(f"model does not exist: {model_id}")
+
+            modalities = list(_decode_string_list(str(row[3]), "model modalities"))
+            if command.image_input and "image" not in modalities:
+                modalities.append("image")
+            if not command.image_input:
+                modalities = [item for item in modalities if item != "image"]
+            if not modalities:
+                modalities = ["text"]
+
+            # capabilities_json 是权威载荷；旧行按一等列先合成等价载荷再补写。
+            raw = row[11]
+            if raw is not None and str(raw):
+                payload: dict[str, Any] = json.loads(str(raw))
+            else:
+                payload = {
+                    "capabilities": {
+                        "context_window": int(row[1]) or None,
+                        "max_output_tokens": int(row[2]) or None,
+                        "input_modalities": modalities,
+                        "supports_tool_calls": True,
+                        "supports_parallel_tool_calls": bool(row[8]),
+                        "supported_reasoning_efforts": list(
+                            _decode_string_list(str(row[0]), "model reasoning efforts")
+                        ),
+                    },
+                    "capability_sources": {
+                        "context_window": str(row[5]),
+                        "max_output_tokens": str(row[6]),
+                        "input_modalities": str(row[7]),
+                        "tool_calls": str(row[4]),
+                        "parallel_tool_calls": str(row[4]),
+                        "reasoning_efforts": str(row[4]),
+                    },
+                    "driver_config": {
+                        "use_responses_lite": bool(row[9]),
+                        "reasoning_summary": str(row[10]),
+                    },
+                    "source": "manual",
+                }
+            capabilities = payload["capabilities"]
+            capabilities["context_window"] = command.context_window
+            capabilities["max_output_tokens"] = command.max_output_tokens
+            capabilities["input_modalities"] = modalities
+            sources = payload["capability_sources"]
+            sources["context_window"] = "user"
+            sources["max_output_tokens"] = "user"
+            sources["input_modalities"] = "user"
+
+            connection.execute(
+                "UPDATE model_definitions SET "
+                "context_window = ?, max_output_tokens = ?, input_modalities = ?, "
+                "context_window_source = 'user', max_output_tokens_source = 'user', "
+                "input_modalities_source = 'user', capabilities_json = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (
+                    int(command.context_window or 0),
+                    int(command.max_output_tokens or 0),
+                    json.dumps(modalities, ensure_ascii=False, separators=(",", ":")),
+                    _strict_json(payload, "model capabilities"),
+                    model_id,
+                ),
+            )
+            return True
+
+        return self._domain_write(command.expected_revision, "update-model", write)
 
     def set_default(self, command: SetDefaultModel) -> int:
         """Set one chat role or the workspace default embedding model."""

@@ -514,6 +514,24 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-model-row .settings-text-button { min-height: var(--models-hit-target); font-size: var(--models-type-caption); }
 .settings-model-manage > .settings-text-button { margin-block-start: 0.5rem; }
 
+/* 模型参数展开区：行内 chevron + 跟随的字段组。 */
+.settings-model-entry { display: grid; }
+.settings-model-expand { flex: none; width: var(--models-hit-target); min-height: var(--models-hit-target); color: var(--ak-ink-secondary); }
+.settings-model-expand > svg { width: 1.1rem; height: 1.1rem; transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.settings-model-expand.is-open > svg { transform: rotate(90deg); }
+.settings-model-detail { margin: 0.125rem 0.5rem 0.5rem calc(var(--models-hit-target) + 0.4rem); border: 1px solid var(--ak-rule-subtle); border-radius: var(--models-radius-row); padding: 0.75rem 0.875rem; }
+.settings-model-detail .settings-form-grid { gap: 0.625rem 0.75rem; }
+.settings-model-detail label { position: relative; display: grid; gap: 0.3rem; }
+.settings-model-detail label > span { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 650; }
+.settings-model-detail input:not([type="checkbox"]) { width: 100%; min-height: 2.5rem; border: 1px solid var(--ak-rule-default); border-radius: var(--models-radius-field); padding-inline: 0.625rem; color: var(--ak-ink-primary); background: var(--ak-paper-editing); font: inherit; font-size: var(--models-type-body); font-variant-numeric: tabular-nums; }
+.settings-model-detail input:not([type="checkbox"]):focus-visible { outline: 2px solid var(--ak-color-action-primary); outline-offset: 1px; }
+.settings-model-image { display: flex; flex-direction: row; align-items: center; gap: 0.5rem; min-height: var(--models-hit-target); }
+.settings-model-image input[type="checkbox"] { width: 1.15rem; height: 1.15rem; flex: none; margin: 0; accent-color: var(--ak-color-action-primary); cursor: pointer; }
+.settings-model-image span { color: var(--ak-ink-primary); font-size: var(--models-type-body); font-weight: 500; }
+.settings-model-detail-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-block-start: 0.625rem; }
+.settings-model-detail-actions [role="status"] { min-width: 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
+.settings-model-detail-actions .settings-secondary-button { min-height: 2.5rem; padding-inline: 0.9rem; }
+
 /* 统一浮层：候选勾选（复选）与模型挑选（单选）。 */
 .settings-sheet {
   z-index: 82;

@@ -782,7 +782,76 @@ export function activate(ctx) {
             });
             row.append(verify);
           }
-          return row;
+          if (model.kind !== "chat") return row;
+          // 对话模型允许手动声明参数：探测、同步或手动添加的模型都可再编辑。
+          const entry = document.createElement("div");
+          entry.className = "settings-model-entry";
+          const expand = document.createElement("button");
+          expand.type = "button";
+          expand.className = "settings-icon-button settings-model-expand";
+          expand.setAttribute("aria-label", `编辑 ${model.model} 参数`);
+          expand.setAttribute("aria-expanded", "false");
+          expand.innerHTML = CHEVRON_ICON;
+          row.append(expand);
+          const detail = buildModelDetail(model);
+          expand.addEventListener("click", () => {
+            const open = detail.hidden;
+            detail.hidden = !open;
+            expand.setAttribute("aria-expanded", String(open));
+            expand.classList.toggle("is-open", open);
+          });
+          entry.append(row, detail);
+          return entry;
+        }
+
+        // 三个可声明能力：上下文窗口、最大输出、图像输入；空值 = 未知。
+        function buildModelDetail(model) {
+          const detail = document.createElement("div");
+          detail.className = "settings-model-detail";
+          detail.hidden = true;
+          const caps = model.capabilities ?? {};
+          detail.innerHTML = `<div class="settings-form-grid">
+            <label><span>上下文窗口</span><input name="contextWindow" inputmode="numeric" placeholder="未知，例如 200K"></label>
+            <label><span>最大输出 token</span><input name="maxOutput" inputmode="numeric" placeholder="未知，例如 32K"></label>
+            <label class="is-wide settings-model-image"><input type="checkbox" name="imageInput"><span>可看图（多模态输入）</span></label>
+          </div>
+          <div class="settings-model-detail-actions">
+            <span role="status" data-detail-status></span>
+            <button type="button" class="settings-secondary-button" data-detail-save>保存参数</button>
+          </div>`;
+          const contextInput = detail.querySelector('[name="contextWindow"]');
+          const outputInput = detail.querySelector('[name="maxOutput"]');
+          const imageInput = detail.querySelector('[name="imageInput"]');
+          const detailStatus = detail.querySelector("[data-detail-status]");
+          const save = detail.querySelector("[data-detail-save]");
+          contextInput.value = formatTokenCount(caps.contextWindow);
+          outputInput.value = formatTokenCount(caps.maxOutputTokens);
+          imageInput.checked = (caps.inputModalities ?? []).includes("image");
+          save.addEventListener("click", () => {
+            clearManageError();
+            detailStatus.textContent = "";
+            const contextWindow = parseTokenCount(contextInput.value);
+            const maxOutputTokens = parseTokenCount(outputInput.value);
+            if (contextWindow === false || maxOutputTokens === false) {
+              detailStatus.textContent = "参数需为数字，可带 K/M 后缀；留空表示未知。";
+              return;
+            }
+            save.disabled = true;
+            actions.updateModel(model.id, {
+              context_window: contextWindow,
+              max_output_tokens: maxOutputTokens,
+              image_input: imageInput.checked,
+            }).then(() => {
+              if (dialogClosed()) return;
+              refreshRows();
+              status.textContent = `${model.model} 参数已保存。`;
+            }).catch((reason) => {
+              if (dialogClosed()) return;
+              showManageError(reason);
+              detailStatus.textContent = "";
+            }).finally(() => { save.disabled = false; });
+          });
+          return detail;
         }
 
         probe.addEventListener("click", () => {
@@ -940,6 +1009,10 @@ export function activate(ctx) {
           async removeModel(modelId) {
             if ((!connection && !created) || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
             await command({type: "remove_model", expected_revision: catalog.revision, model_id: modelId});
+          },
+          async updateModel(modelId, patch) {
+            if ((!connection && !created) || !catalog.models.some((model) => model.id === modelId && model.connectionId === connectionId)) throw new Error("请选择此连接的现有模型");
+            await command({type: "update_model", expected_revision: catalog.revision, model_id: modelId, ...patch});
           },
           async selectModels() {
             const revision = catalog.revision;
@@ -1362,6 +1435,26 @@ export function candidateModelInput(candidate) {
     default_reasoning_effort: candidate.defaultReasoningEffort ?? null,
     driver_config: candidate.driverConfig ?? {},
   };
+}
+
+// 接受裸数字与 K/M 后缀（1024 = 1K）；空串视为未知，非法输入返回 false。
+export function parseTokenCount(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) return null;
+  const match = /^(\d+(?:\.\d+)?)\s*([kKmM])?$/.exec(raw);
+  if (!match) return false;
+  const value = Number(match[1]) * (match[2] ? (match[2].toLowerCase() === "k" ? 1000 : 1_000_000) : 1);
+  if (!Number.isInteger(value) || value <= 0) return false;
+  return value;
+}
+
+// 整千/整兆缩写成 K/M 便于阅读，其余保留原始数字。
+export function formatTokenCount(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  if (number % 1_000_000 === 0) return `${number / 1_000_000}M`;
+  if (number % 1000 === 0) return `${number / 1000}K`;
+  return String(number);
 }
 
 function randomToken() {

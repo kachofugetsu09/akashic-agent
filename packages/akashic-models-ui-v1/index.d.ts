@@ -51,6 +51,16 @@ export interface ProviderActions {
   discoverSaved(signal?: AbortSignal): Promise<readonly Record<string, unknown>[]>;
   addModel(input: Record<string, unknown>): Promise<void>;
   verifyModel(modelId: string): Promise<void>;
+  /**
+   * Write user-declared chat capabilities for a saved model.
+   * The patch carries the full target state of the three fields;
+   * null clears a token limit to unknown. Embedding models reject it.
+   */
+  updateModel(modelId: string, patch: {
+    context_window: number | null;
+    max_output_tokens: number | null;
+    image_input: boolean;
+  }): Promise<void>;
   removeModel(modelId: string): Promise<void>;
   /** Discover, choose and save models; false means cancelled before saving; failed or interrupted saves reject. */
   selectModels(): Promise<boolean>;

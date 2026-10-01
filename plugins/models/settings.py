@@ -67,6 +67,17 @@ class VerifyModel:
 
 
 @dataclass(frozen=True, slots=True)
+class UpdateModel:
+    """写入一个对话模型的用户声明能力参数（上下文窗口/最大输出/图像输入）。"""
+
+    expected_revision: int
+    model_id: str
+    context_window: int | None
+    max_output_tokens: int | None
+    image_input: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RemoveModel:
     """移除模型选择，后续聊天引用跟随默认模型；历史事实不变。"""
 
@@ -120,6 +131,7 @@ ModelChange: TypeAlias = (
     | DisableConnection
     | AddModel
     | VerifyModel
+    | UpdateModel
     | RemoveModel
     | SetDefaultModel
     | SyncModels
@@ -176,4 +188,5 @@ __all__ = [
     "StartConnectionAuth",
     "SyncModels",
     "UpdateConnection",
+    "UpdateModel",
 ]
