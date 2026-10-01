@@ -42,7 +42,29 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const settingsDialog = useRef<HTMLDialogElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
+  const bandTrack = useRef<HTMLDivElement>(null);
   const focusAfterNavigation = useRef(false);
+
+  // 激活指示器：量当前按钮的内容区（扣除 12px padding），写入 track 的 CSS 变量滑动过去。
+  useLayoutEffect(() => {
+    const track = bandTrack.current;
+    if (!track) return;
+    const measure = () => {
+      const current = track.querySelector<HTMLElement>('[aria-current="page"]');
+      if (current) {
+        track.style.setProperty("--band-indicator-x", `${current.offsetLeft + 12}px`);
+        track.style.setProperty("--band-indicator-w", `${Math.max(0, current.offsetWidth - 24)}px`);
+      } else {
+        track.style.setProperty("--band-indicator-w", "0px");
+      }
+      requestAnimationFrame(() => { track.dataset.ready = "true"; });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(track);
+    track.querySelectorAll<HTMLElement>("[data-band-item]").forEach((item) => observer.observe(item));
+    return () => observer.disconnect();
+  }, [activeId, entries]);
 
   const openPage = useCallback((entry: ShellPage): void => {
     if (entry.id === activeId) { setWithdrawn(false); settingsDialog.current?.close(); return; }
@@ -68,7 +90,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
     if (!focusAfterNavigation.current) return;
     focusAfterNavigation.current = false;
     // 页面可见性已提交；弹窗不能在旧页面上猜测导航后的焦点。
-    const current = document.querySelector<HTMLButtonElement>('.primary-band-track button[aria-current="page"]');
+    const current = document.querySelector<HTMLButtonElement>('.product-band__track button[aria-current="page"]');
     (current ?? settingsTrigger.current)?.focus();
   }, [activeId]);
 
@@ -82,6 +104,22 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
       for (const dispose of disposers.reverse()) dispose();
     };
   }, [entries, pages]);
+
+  // 页面切换的进入感：150ms 淡入并上浮 4px。插件样式不得声明全局 @keyframes，
+  // 用 WAAPI 表达；时长与曲线仍读 motion token，reduced-motion 下 token 归零即瞬时。
+  useLayoutEffect(() => {
+    const target = activeId ? pageHosts.current.get(activeId) : undefined;
+    if (!target) return;
+    const styles = getComputedStyle(target);
+    const duration = Number.parseFloat(styles.getPropertyValue("--ak-sys-duration-short"));
+    const easing = styles.getPropertyValue("--ak-sys-motion-standard").trim();
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    const animation = target.animate(
+      [{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }],
+      { duration, easing: easing || "ease-out" },
+    );
+    return () => animation.cancel();
+  }, [activeId]);
 
   useEffect(() => {
     const syncLocation = (): void => {
@@ -124,23 +162,23 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
 
   return <div className="unified-shell">
     {withdrawn && <p role="status" className="config-hint">原页面已撤回或暂不可用，已打开当前可用页面。可以从功能设置查看已安装功能。</p>}
-    <header className="primary-band" aria-label="Akashic 主导航">
-      <div className="primary-band-brand" title="Akashic">
+    <header className="product-band" aria-label="Akashic 主导航">
+      <div className="product-band__brand" title="Akashic">
         <img src={akashicBrandIcon} alt="" />
         <strong>Akashic</strong>
       </div>
       <nav
-        className="primary-band-nav"
+        className="product-band__nav"
         aria-label="主要功能"
         onKeyDown={onBandKeyDown}
       >
-        <div className="primary-band-track">
+        <div className="product-band__track" ref={bandTrack}>
           {bandEntries.map((entry) => <button
             key={entry.id}
             type="button"
             data-band-item=""
             data-band-id={entry.id}
-            className="primary-rail-button"
+            className="product-band__item"
             aria-label={entry.label}
             title={entry.label}
             aria-current={activeId === entry.id ? "page" : undefined}
@@ -149,9 +187,10 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
             <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
             <span>{entry.label}</span>
           </button>)}
+          <div className="product-band__indicator" aria-hidden="true" />
         </div>
       </nav>
-      <div className="primary-band-footer">
+      <div className="product-band__footer">
         <button ref={settingsTrigger} type="button" className="theme-cycle-button" onClick={() => settingsDialog.current?.showModal()}>功能设置</button>
         <dialog ref={settingsDialog} className="shell-settings-dialog" aria-label="功能设置">
           <header><h2>功能设置</h2><button type="button" onClick={() => settingsDialog.current?.close()} aria-label="关闭设置目录">关闭</button></header>
