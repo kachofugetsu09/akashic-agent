@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import postcss from "postcss";
 import { JSDOM } from "jsdom";
 import { activate } from "../frontend/plugins/models/src/module.js";
+import { activate as activateOpenAI } from "../frontend/plugins/openai_compatible/src/module.js";
 import { activate as activateCodex } from "../frontend/plugins/codex/src/module.js";
 import { activate as activateOpenCode } from "../frontend/plugins/opencode_go/src/module.js";
 
@@ -49,15 +50,22 @@ async function mount(provider, initialCatalog = null) {
     ui: {inject: (_id, mount) => mount({register(value) { entry = value; return () => {}; }})},
     http: {async request(_url, init) {
       let result = catalog;
-      if (_url.endsWith("/discover_saved")) {
+      if (_url.endsWith("/discover_saved") || _url.endsWith("/discover")) {
         result = {models: [{kind: "chat", model: "fixture-chat", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}}]};
       } else if (init?.method === "POST") {
         const payload = JSON.parse(init.body);
         commands.push(payload);
         if (!["start_auth", "cancel_auth"].includes(payload.type)) {
-          assert.equal(payload.expected_revision, catalog.revision, "writes use the last committed catalog revision");
+          assert.equal((payload.connection?.expected_revision ?? payload.expected_revision), catalog.revision, "writes use the last committed catalog revision");
         }
-        if (payload.type === "start_auth") {
+        if (payload.type === "create_connection_with_model") {
+          const connection = payload.connection;
+          const model = payload.model;
+          connectionId = connection.connection_id;
+          catalog.connections.push({id: connectionId, name: connection.name, driverId: provider.id, availability: "available"});
+          catalog.models.push({id: model.model_id, connectionId, kind: model.kind, model: model.model, availability: "available", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}});
+          result = {revision: ++catalog.revision, status: "committed"};
+        } else if (payload.type === "start_auth") {
           connectionId = payload.connection_id;
           result = {revision: catalog.revision, status: "pending", attemptId: "fixture-attempt", challenge: {interval: 5}};
         } else if (payload.type === "finish_auth") {
@@ -123,6 +131,35 @@ for (const activateProvider of [activateOpenCode, activateCodex]) {
   } finally {
     await fixture.close();
   }
+}
+
+for (const manual of [false, true]) {
+  const fixture = await mount(providerEntry(activateOpenAI));
+  try {
+    document.querySelector("[data-providers] button").click();
+    await settle();
+    const form = document.querySelector(".settings-dialog-form");
+    form.elements.name.value = "Fixture";
+    form.elements.endpoint.value = "https://fixture.invalid/v1";
+    form.elements.apiKey.value = "fixture-key";
+    if (manual) {
+      document.querySelector("[data-manual]").click();
+      form.elements.manualModel.value = "fixture-chat";
+      form.elements.manualConfirm.checked = true;
+    } else {
+      document.querySelector("[data-discover]").click();
+      await settle();
+      document.querySelector(".settings-sheet-row input").click();
+      document.querySelector(".settings-sheet-foot .settings-primary-button").click();
+      await settle();
+    }
+    form.dispatchEvent(new Event("submit", {cancelable: true}));
+    await settle();
+    const saved = fixture.commands.find(command => command.type === "create_connection_with_model");
+    assert.ok(saved);
+    assert.equal(saved.model.discovery_owned, !manual, "known directory choices retain discovery ownership; manual choices do not");
+    checks.push(`OpenAI-compatible first selection: ${manual ? "manual" : "discovered"} capability ownership`);
+  } finally { await fixture.close(); }
 }
 
 const roleFixture = await mount(providerEntry(activateCodex), {

@@ -734,7 +734,9 @@ export function activate(ctx) {
             actions.removeModel(model.id).then(() => {
               if (dialogClosed()) return;
               refreshRows();
-              status.textContent = `${model.model} 已移除；聊天引用将跟随默认模型，历史记录保留。`;
+              status.textContent = model.kind === "embedding"
+                ? `${model.model} 已移除；使用此向量空间的任务需要重新配置。`
+                : `${model.model} 已移除；聊天引用将跟随默认模型，历史记录保留。`;
             }).catch((reason) => {
               if (dialogClosed()) return;
               showManageError(reason);
