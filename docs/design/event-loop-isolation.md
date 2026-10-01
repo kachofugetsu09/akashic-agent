@@ -326,8 +326,20 @@ Conversation 命令材料、Programmatic 结果读取与提交帧结算也使用
 命令首次效果和连接帧状态留在原 loop。同步 transport frame resolver 及其他 owner 写入仍属
 #879 的独立范围；本层不宣称全部 CPU/I/O 或生产延迟已经解决。
 
+Programmatic 的结果查询只返回带 `through_seq` 的快照，不回收连接。后台提交订阅是终态
+通道清理的唯一发起方；异步判定返回后重查来源 head，前缀改变就等待订阅重新读取，
+不能用旧 pause/failure 结果释放同一 Input 恢复后的通道。FrameBook 仍拥有连接、claim 和
+writer drain。连接 reservation 早于 Input 的实际提交，后台只处理快照中已经存在的
+programmatic Input；暂时没有正文时等待原提交，不把合法准入窗口解释为损坏。
+
+`source_read_cohort.py` 使用实际安装的 Programmatic、Source 和 FrameBook，确定性延迟
+结算与结果查询的旧快照，再从真实 resume 入口恢复到新连接。场景验证两条路径都保留新
+通道、最终 Output 对应的受控 writer future 完成、稳定终态仍回收通道；同时核对 reservation
+先于 Input 的窗口、原消息不变与 SQLite 完整性。传输 future 是本地受控边界，不是实际网络送达。
+
 `docker/debug/source_read_isolation.py` 使用原 writer 创建 1 MiB Input 与 12 MiB ToolResult，
-记录解码线程和 peer callback；另以确定性解码屏障验证其他来源 append/pause、同来源新输入
+记录解码线程、首次 peer callback 和读取全程的最大 loop 心跳间隔；首次让出不代表持续响应
+上界，线程中的 CPU/GIL 竞争仍可能造成停顿。另以确定性解码屏障验证其他来源 append/pause、同来源新输入
 冲突、取消及 Tasks.close 的物理排空。原行逐字段相等，integrity/FK 检查保持；未运行付费
 provider、正式 workspace 或生产 p99。只追加原协议允许的 Input/Control，不迁移或减少历史。
 

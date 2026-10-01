@@ -46,17 +46,35 @@ async def run(directory: Path) -> dict:
         tick = asyncio.Event()
         delay = []
         began = time.perf_counter()
+        last_tick = began
+        gaps = []
+        heartbeat = None
+        loop = asyncio.get_running_loop()
+
+        def sample_gap():
+            nonlocal last_tick, heartbeat
+            now = time.perf_counter()
+            gaps.append(now - last_tick)
+            last_tick = now
+            heartbeat = loop.call_later(0.001, sample_gap)
+
         def peer():
             delay.append(time.perf_counter() - began)
             tick.set()
-        asyncio.get_running_loop().call_soon(peer)
-        value = await operation()
-        elapsed = time.perf_counter() - began
-        await tick.wait()
+        loop.call_soon(peer)
+        heartbeat = loop.call_later(0.001, sample_gap)
+        try:
+            value = await operation()
+            elapsed = time.perf_counter() - began
+            await tick.wait()
+        finally:
+            heartbeat.cancel()
+            gaps.append(time.perf_counter() - last_tick)
         on_loop = sum(thread == loop_thread for _, thread in decoded)
         old_on_loop = sum(thread == loop_thread and identity in before for identity, thread in decoded)
         measurements.append({"case": case, "seconds": elapsed,
                              "peer_callback_delay_seconds": delay[0],
+                             "max_loop_gap_seconds": max(gaps),
                              "decoded_rows": len(decoded), "loop_decoded_rows": on_loop,
                              "loop_decoded_original_rows": old_on_loop})
         if not args.baseline:

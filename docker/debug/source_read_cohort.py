@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from types import SimpleNamespace
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--previous-source", type=Path, required=True,
@@ -20,8 +21,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from agent.plugin_composition import CompositionError, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.model import FiberState
+from agent.plugin_composition.control_frames import CONTROL_FRAMES
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts.reply import REPLY_COMPLETION
 from agent.plugin_contracts.sources import SOURCES_V4, SOURCE_SESSION_V3, SOURCES_V5, SOURCE_CHANGED_V3
+from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams
+from plugins.programmatic.result import TURN_PROJECTION, read_result
 from session.message import Input, Output, ToolResult
 from tests.test_default_reply import application
 
@@ -150,9 +155,131 @@ async def notifications(path):
             release.set()
 
 
+async def programmatic_routes(path):
+    """真实 Programmatic 的旧读取不清理恢复通道，也不误判尚未提交的 Input。"""
+    def add_programmatic(destination):
+        shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/programmatic",
+                        destination / "programmatic", ignore=shutil.ignore_patterns("__pycache__"))
+
+    results = []
+    for mode in ("uncommitted", "settlement", "result"):
+        entered, release, watcher_release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        read_async = MessageReader.read_async
+        operation = None
+        waiter = None
+
+        async def blocked_read(self, consume):
+            if asyncio.current_task().get_name() == "plugin-task:programmatic-frame-settlement":
+                await watcher_release.wait()
+            value = await read_async(self, consume)
+            if asyncio.current_task() is operation:
+                entered.set()
+                await release.wait()
+            return value
+
+        @asynccontextmanager
+        async def release_reads():
+            try:
+                yield
+            finally:
+                release.set()
+                watcher_release.set()
+                if operation is not None:
+                    await asyncio.gather(operation, return_exceptions=True)
+                if waiter is not None:
+                    if not waiter.done():
+                        waiter.cancel()
+                    await asyncio.gather(waiter, return_exceptions=True)
+
+        # 1. 安装真实服务；只延迟后台读取，手动调用同一结算方法固定交错。
+        MessageReader.read_async = blocked_read
+        try:
+            async with application(path / mode, replying=False,
+                                   extra_sources=add_programmatic) as (log, host), release_reads():
+                root = host.live_root
+                service = root.context.require(PROGRAMMATIC)
+                frames = root.context.require(CONTROL_FRAMES)
+                projection = root.context.require(TURN_PROJECTION)
+                session_id = "programmatic:" + mode
+                await service.call("programmatic/session/admit", AdmitParams(session_id=session_id))
+                reader = log.reader(session_id)
+
+                async def settle():
+                    async with service.ctx.runtime_scope():
+                        await service.settle_changed(reader, "programmatic")
+
+                send = SendParams(session_id=session_id, message_id="input", text="work")
+                if mode == "uncommitted":
+                    operation = asyncio.create_task(service.call("programmatic/message/send", send,
+                                                    SimpleNamespace(connection_id="new")))
+                    await asyncio.wait_for(entered.wait(), 5)
+                    assert reader.get("input") is None
+                    assert frames.active_input_ids(session_id) == ("input",)
+                    await settle()
+                    assert frames.active_input_ids(session_id) == ("input",)
+                    release.set()
+                    await operation
+                    before = reader.snapshot()
+                else:
+                    await service.call("programmatic/message/send", send, SimpleNamespace(connection_id="old"))
+                    await service.call("programmatic/message/pause", PauseParams(
+                        session_id=session_id, message_id="pause"))
+                    before = reader.snapshot()
+                    assert read_result(reader, "input", projection)["status"] == "pause"
+                    operation = asyncio.create_task(settle() if mode == "settlement" else service.call(
+                        "programmatic/message/result", ResultParams(session_id=session_id, input_id="input")))
+                    await asyncio.wait_for(entered.wait(), 5)
+                    # 2. 真实 resume 提交 Control 并切换连接；旧读取仍停在屏障。
+                    await service.call("programmatic/message/resume", ResumeParams(
+                        session_id=session_id, message_id="resume", input_id="input"),
+                        SimpleNamespace(connection_id="new"))
+                    release.set()
+                    result = await operation
+                    if mode == "result":
+                        assert result["status"] == "pause" and result["through_seq"] == before[-1].seq
+                assert read_result(reader, "input", projection)["status"] == "open"
+                assert frames.active_input_ids(session_id) == ("input",), mode
+                await settle()
+                assert frames.active_input_ids(session_id) == ("input",)
+
+                # 3. 新通道绑定真实最终 Output，且等待受控 writer future 完成。
+                output = log.writer(session_id, author="fixture", source="programmatic",
+                                    body_types=(Output,), content={}).append("output", Output((), "complete"))
+                waiter = asyncio.create_task(frames.wait_input(session_id, "input", output.message_id))
+                ready = asyncio.get_running_loop().create_future()
+                asyncio.get_running_loop().call_soon(ready.set_result, None)
+                await ready
+                assert not waiter.done()
+                tracked = frames.resolve_page("new", {"items": [{"id": output.message_id,
+                    "session_id": session_id, "body": {"kind": "output", "finish": "complete", "parts": []}}]})
+                assert len(tracked) == 1
+                written = asyncio.get_running_loop().create_future()
+                frames.attach_page(tracked, written)
+                assert not waiter.done()
+                written.set_result(None)
+                await asyncio.wait_for(waiter, 5)
+                assert frames.active_input_ids(session_id) == ()
+
+                # 4. 稳定终态仍回收通道，原消息保持；没有请求真实模型或传输。
+                frames.route_input(session_id, "input", "late", lambda: output.message_id)
+                await settle()
+                assert frames.active_input_ids(session_id) == ()
+                assert reader.snapshot()[:len(before)] == before
+                assert root.context.require(ServiceKey("fixture.calls")) == []
+                assert log._connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                assert not log._connection.execute("PRAGMA foreign_key_check").fetchall()
+                results.append({"case": mode, "current_route": "preserved",
+                                "final_output_frame": "writer future completed", "stable_cleanup": "passed"})
+                watcher_release.set()
+        finally:
+            MessageReader.read_async = read_async
+    return results
+
+
 async def main(path):
     return {"previous_source": str(args.previous_source.resolve()),
-            "versions": await versions(path), "notifications": await notifications(path / "notifications")}
+            "versions": await versions(path), "notifications": await notifications(path / "notifications"),
+            "programmatic_routes": await programmatic_routes(path / "programmatic")}
 
 
 with tempfile.TemporaryDirectory(prefix="source-read-cohort-") as temporary:
