@@ -102,7 +102,7 @@ head 不重试、不重选。取消先排空读取再释放准入，服务关闭
 
 这保留了 SQLite 的单写者约束，释放了读者不必要占用的写锁，符合
 [SQLite WAL](https://www.sqlite.org/wal.html) 的读写并行模型。
-快照仍是同步 API；较大的读取及运行期写入隔离是后续工作，不宣称全部 I/O 已异步化。
+EventMail 快照与写入仍是同步 API；Drift 的 Wake 消费路径使用下面的 v2 异步能力。
 建库与 schema 迁移只能由已有写路径执行；只读入口不再隐式创建或升级数据库。
 现有 EventMail v0/v1/v2/current 与 Drift v0/v1/current 迁移和 schema identity 校验不变。
 消息正文、mail envelopes、提案和回执的增加、更新及删除权限均不变。
@@ -110,6 +110,40 @@ head 不重试、不重选。取消先排空读取再释放准入，服务关闭
 `PYTHONPATH=. .venv/bin/python docker/debug/store_read_isolation.py` 使用临时数据库，
 持有未提交写事务时验证已提交快照可读，提交后新快照可见，并检查数据库完整性。
 旧代码在读取时报告 database is locked；无需靠 sleep 调度。
+
+## Drift 的 Wake 存储调用（#879）
+
+Wake 使用 `drift.wake.v2` 和 `drift.delivery.v2` 等待快照、领取、状态流转和送达结算。
+Drift provider 把完整同步操作交给已有四名额 `run_file_io`；连接、事务与关闭在同一
+worker 完成，调用方取消仍等待物理退出。Context、Task、程序执行、Message、通知与
+最终 flow pointer 继续由 Wake 在原 Task 操作。没有新增队列、表、状态副本或 executor。
+
+```text
+┌─────────────────────────────┐    ┌────────────────────────────────┐
+│ Wake：固定请求与原领取身份     │───▶│ Drift：worker 内读快照或完整事务 │
+│ await 回执，再继续原流程      │◀───│ 原 state_version / token 校验   │
+└─────────────────────────────┘    └────────────────────────────────┘
+```
+
+同版本竞争仍由原 SQL CAS 决定；取消不能撤销已提交的领取或结算。Wake 恢复读取原
+accepted Input 与 selection token：准备完成后才发送，真实 Delivery 回执后才结算，
+结算提交后才关闭 flow。提交后响应丢失使用原领取/settlement 重放，不创建第二份提案。
+
+v1 同步能力保留给已发布的旧 Wake 和其他既有消费者；v1/v2 都访问同一 DriftStore。
+新 Wake 明确依赖 v2，旧 provider 缺少 v2 时由既有依赖解析阻止激活，不猜测或降级。
+这次没有改 `drift.proposals.v1` 的来源上报；它及旧 v1 消费者仍可能同步等待数据库。
+EventMail/Alert 的同步状态操作和发送前检查也继续作为 #879 后续范围，尤其不能把
+Alert 换版直接放入线程，破坏“核对原版本 → Delivery started”的现有排序。
+
+持久化 schema 不变：来源仍按原身份增加 proposal；领取、流转与结算只更新同一行的
+状态、版本和原回执字段；终态是逻辑变化，没有新增物理减少权限。恢复点是原数据库
+备份与原 proposal/selection/settlement，代码回滚不改写这些事实。
+
+`docker/debug/drift_io_isolation.py` 用真实临时 Root、SQLite 写锁、提交屏障和 Wake
+任务验证计时器推进、同版本竞争、失败回滚、重复/冲突结算、取消后 owner 排空及重开。
+`--baseline` 实测仍保留的 v1 同步能力；它与异步路径使用同一 store 和锁等待场景。
+Wake 的来源拒绝分支保留原 Input 并完成唯一 flow；未使用的 binding 仅作持久引用夹具，
+不代表真实模型、发送、正式插件换代或生产延迟验收。正式 workspace 未写入。
 
 ## 插件源码准备（#879）
 
