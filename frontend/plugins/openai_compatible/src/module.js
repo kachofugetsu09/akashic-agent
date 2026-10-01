@@ -12,6 +12,7 @@ export function activate(ctx) {
     detail: "API Key 与任意 OpenAI 格式服务",
     order: 30,
     embeddingApiKey: true,
+    catalogSync: true,
     editTemplateId: "custom-api",
     templates: [
       {
@@ -322,7 +323,7 @@ function modelInput(model, manual = false) {
   const sources = model.capabilitySources ?? {};
   return {
     kind: "chat",
-    discovery_owned: !manual && model.kind === "chat",
+    discovery_owned: !manual,
     model: model.model,
     capabilities: {
       context_window: capabilities.contextWindow ?? null,

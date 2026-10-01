@@ -106,7 +106,7 @@ export type ModelProviderEntry = Omit<WebEntry, "render"> & {
   templates?: readonly ModelProviderTemplate[];
   /** Direct API-key connection with an actual embedding dimension probe. */
   embeddingApiKey?: boolean;
-  /** Driver discovery returns verified model purposes; the host can refresh selected models from the catalog. */
+  /** Driver supports catalog refresh for selected models; saved configuration owns verified purposes. */
   catalogSync?: boolean;
   /** Build the dialog with the public settings-dialog-* form classes. */
   render(host: HTMLElement, view: WebEntryView, props: ProviderProps): WebUiDisposer;

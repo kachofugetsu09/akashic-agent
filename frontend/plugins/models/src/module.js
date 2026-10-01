@@ -1338,7 +1338,7 @@ export function candidateModelInput(candidate) {
   return {
     kind: candidate.kind === "embedding" ? "embedding" : "chat",
     model: candidate.model,
-    discovery_owned: candidate.kind === "chat" || candidate.kind === "embedding",
+    discovery_owned: true,
     capabilities: {
       context_window: caps.contextWindow ?? null,
       max_output_tokens: caps.maxOutputTokens ?? null,

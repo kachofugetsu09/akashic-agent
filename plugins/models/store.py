@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -812,13 +812,13 @@ class ModelsStore:
         """只刷新用户已选择模型的目录证据，不自动采纳新型号。"""
 
         target_connection = _required(connection_id, "connection_id")
-        items = tuple(discovered)
-        if not items:
+        catalog = tuple(discovered)
+        if not catalog:
             raise ValueError("driver returned an empty model catalog")
-        keys: set[tuple[ModelKind, str]] = set()
-        for item in items:
-            if item.kind not in {ModelKind.CHAT, ModelKind.EMBEDDING}:
-                raise ValueError("服务目录没有用途验证；请逐个选择模型并验证后保存，现有模型保持不变。")
+        keys: set[tuple[ModelKind | None, str]] = set()
+        for item in catalog:
+            if item.kind not in {None, ModelKind.CHAT, ModelKind.EMBEDDING}:
+                raise ValueError("driver returned invalid model kind")
             if not isinstance(item.capabilities, ModelCapabilities):
                 raise TypeError("driver returned invalid model capabilities")
             if not isinstance(item.capability_sources, CapabilitySources):
@@ -826,10 +826,10 @@ class ModelsStore:
             model = _required(item.model, "discovered model")
             if model != item.model:
                 raise ValueError("discovered model must not contain outer whitespace")
-            key = (cast(ModelKind, item.kind), model)
+            key = (item.kind, model)
             if key in keys:
                 raise ValueError(
-                    f"driver returned duplicate model: {item.kind.value}/{model}"
+                    f"driver returned duplicate model: {model}"
                 )
             keys.add(key)
             if item.kind is ModelKind.EMBEDDING:
@@ -849,7 +849,27 @@ class ModelsStore:
             current = self.read_snapshot()
             if current is None:
                 raise RuntimeError("model registry disappeared during catalog sync")
+            # 1. 目录未声明用途时，只借用已选配置的验证事实；不推断新型号。
             existing = _existing_model_ids(connection, target_connection)
+            known = {(item.kind, item.model): item for item in catalog if item.kind is not None}
+            for item in catalog:
+                if item.kind is not None:
+                    continue
+                for kind in (ModelKind.CHAT, ModelKind.EMBEDDING):
+                    key = (kind, item.model)
+                    stored = existing.get(key)
+                    if stored is None or key in known:
+                        continue
+                    model = current.models[stored[0]]
+                    # 无用途的型号清单不能改写已验证的向量空间和调用配置。
+                    known[key] = replace(
+                        item, kind=model.kind, default_reasoning_effort=model.default_reasoning_effort,
+                        driver_config=model.driver_config,
+                        capabilities=model.capabilities if kind is ModelKind.EMBEDDING else item.capabilities,
+                        capability_sources=model.capability_sources if kind is ModelKind.EMBEDDING else item.capability_sources,
+                    )
+            items = tuple(known.values())
+            # 2. 可用性和能力只更新已选行，仍保护手工配置。
             legacy_keys = frozenset(
                 key for key, (_, _, legacy) in existing.items() if legacy
             )

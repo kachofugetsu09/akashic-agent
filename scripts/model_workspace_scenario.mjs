@@ -51,7 +51,7 @@ async function mount(provider, initialCatalog = null) {
     http: {async request(_url, init) {
       let result = catalog;
       if (_url.endsWith("/discover_saved") || _url.endsWith("/discover")) {
-        result = {models: [{kind: "chat", model: "fixture-chat", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}}]};
+        result = {models: [{kind: provider.id === "openai-compatible" ? null : "chat", model: "fixture-chat", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}}]};
       } else if (init?.method === "POST") {
         const payload = JSON.parse(init.body);
         commands.push(payload);
@@ -158,6 +158,19 @@ for (const manual of [false, true]) {
     const saved = fixture.commands.find(command => command.type === "create_connection_with_model");
     assert.ok(saved);
     assert.equal(saved.model.discovery_owned, !manual, "known directory choices retain discovery ownership; manual choices do not");
+    if (!manual) {
+      document.querySelector("[data-connections] button").click();
+      await settle();
+      assert.ok(document.querySelector("[data-sync]"), "selected unknown-purpose directory entries support refresh");
+      document.querySelector(".settings-model-toggle").click();
+      await settle();
+      document.querySelector("[data-probe]").click();
+      await settle();
+      document.querySelector(".settings-sheet-row input").click();
+      document.querySelector(".settings-sheet-foot .settings-primary-button").click();
+      await settle();
+      assert.equal(fixture.commands.find(command => command.type === "add_model").discovery_owned, true);
+    }
     checks.push(`OpenAI-compatible first selection: ${manual ? "manual" : "discovered"} capability ownership`);
   } finally { await fixture.close(); }
 }

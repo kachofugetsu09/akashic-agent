@@ -33,14 +33,19 @@ async def scenario(workspace: Path) -> None:
         capabilities=ModelCapabilities(context_window=8192),
         capability_sources=CapabilitySources(context_window="fixture"),
     )
-    returned = [candidate]
+    returned = [replace(candidate, kind=None)]
     original = MaterialModelDriver.definition
 
     async def discover(*_args):
         return tuple(returned)
 
     def definition(driver):
-        return replace(original(driver), discover=discover)
+        base = original(driver)
+        async def probe_embedding(descriptor, credential, model):
+            result = await driver.probe_embedding(descriptor, credential,
+                "fixture-embedding" if model == "extra-embedding" else model)
+            return replace(result, model=model)
+        return replace(base, discover=discover, probe_embedding=probe_embedding)
 
     with patch.object(MaterialModelDriver, "definition", definition):
         async with material_models(workspace) as models:
@@ -66,16 +71,33 @@ async def scenario(workspace: Path) -> None:
             await sync()
             assert snapshot() == before
             await add("extra")
-            returned[0] = replace(candidate, capabilities=ModelCapabilities(context_window=16384))
+            returned[0] = replace(candidate, kind=None, capabilities=ModelCapabilities(context_window=16384))
             await sync()
             assert snapshot().models["extra"].capabilities.context_window == 16384
-            returned[:] = [replace(candidate, model="unselected-chat")]
+            returned[:] = [replace(candidate, kind=None, model="unselected-chat")]
             await sync()
             assert "extra" in snapshot().models and not snapshot().models["extra"].enabled
-            returned[:] = [candidate]
+            returned[:] = [replace(candidate, kind=None)]
             await sync()
             assert snapshot().models["extra"].enabled
-            print("PASS selected capabilities refresh; absent catalog entries stay selected but unavailable")
+            # 未声明用途的目录只刷新已验证的选择，不重建向量空间。
+            embedding = snapshot().models[EMBEDDING]
+            await models.settings.apply(AddModel(
+                expected_revision=snapshot().revision, model_id="extra-space",
+                connection_id=CONNECTION, kind=ModelKind.EMBEDDING, model="extra-embedding",
+                capabilities=embedding.capabilities, capability_sources=embedding.capability_sources,
+                discovery_owned=True,
+            ))
+            space = models.embeddings.describe(model_id="extra-space")
+            returned.append(DiscoveredModel(kind=None, model="extra-embedding",
+                capabilities=ModelCapabilities(), capability_sources=CapabilitySources()))
+            await sync()
+            refreshed = models.embeddings.describe(model_id="extra-space")
+            assert (refreshed.identity, refreshed.dimensions) == (space.identity, space.dimensions)
+            assert snapshot().models[EMBEDDING] == embedding, "manual definitions stay unchanged"
+            await remove("extra-space")
+            returned.pop()
+            print("PASS untyped catalog refreshes selected capabilities and availability, preserves verified spaces/manual definitions, and never adopts new models")
 
             # 2. 删除有 CAS、真实备份；在途绑定及调用账不依赖被删配置行。
             async with models.chat_models.execution(model_id="extra") as execution:
