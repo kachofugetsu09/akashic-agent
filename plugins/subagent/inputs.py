@@ -20,12 +20,12 @@ from agent.plugin_contracts.delivery import (
     Senders as Senders,
 )
 from agent.plugin_contracts.reply import (
-    REPLY_PROGRAM as REPLY_PROGRAM,
+    REPLY_PROGRAM_V3 as REPLY_PROGRAM,
 )
 from agent.plugin_contracts.sources import (
     CHECK_ORIGIN as CHECK_ORIGIN,
-    CONVERSATION_COMPLETE as CONVERSATION_COMPLETE,
-    ConversationComplete as ConversationComplete,
+    CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
+    ConversationCompleteV2 as ConversationComplete,
 )
 from agent.plugin_contracts.tools import (
     ALL_TOOLS as ALL_TOOLS,

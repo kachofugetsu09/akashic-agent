@@ -12,9 +12,9 @@ from agent.plugin_composition.model import CompositionError
 from agent.plugin_composition.tasks import RestartGate, Task, TaskServiceClosed
 from agent.plugin_contracts import Control, Input, Output
 from agent.plugin_contracts.sources import (
-    Source as Source,
-    Sources as Sources,
-    SourceSession as SourceSession,
+    GuardedSource as Source,
+    GuardedSources as Sources,
+    GuardedSourceSession as SourceSession,
 )
 
 logger = logging.getLogger(__name__)

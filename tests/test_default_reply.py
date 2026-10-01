@@ -6,7 +6,7 @@ import shutil
 import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.config_input import save_config
-from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from session.log import MessageLog

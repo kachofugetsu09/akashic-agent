@@ -15,7 +15,8 @@ from agent.plugin_composition.messages import (
 from agent.plugin_composition.tasks import ExternalRootPermit
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult
 from agent.plugin_contracts.tools import (
-    TOOL_PROGRAM as TOOL_PROGRAM,
+    TOOL_PROGRAM_V2 as TOOL_PROGRAM,
+    StartCheck,
 )
 
 from .api import Authorize, MessageReply, result_message_id
@@ -41,7 +42,7 @@ class ToolProgramFactory:
         source: str,
         *,
         content: Mapping[str, ContentCheck],
-        check_start: Callable[[], None],
+        check_start: StartCheck,
     ) -> Callable[[CallRef], Awaitable[MessageReply]]:
         """Open each tool writer under the Tools owner's actual call scope."""
 
@@ -68,7 +69,7 @@ class ToolProgramFactory:
         source: str,
         *,
         content: Mapping[str, ContentCheck],
-        check_start: Callable[[], None],
+        check_start: StartCheck,
         authorize: Authorize,
         view: ToolView | None = None,
         fixed_bindings: Mapping[str, str] | None = None,

@@ -242,8 +242,6 @@ class ToolExecution:
                         return await commit(record, Result(
                             "interrupted" if started else "denied",
                             (ContentPart("text", permission),)))
-                    if reply is not None:
-                        reply.check_start()
                 except Denied as error:
                     return await commit(
                         record,
@@ -255,12 +253,30 @@ class ToolExecution:
                 if not task.active:
                     raise asyncio.CancelledError
                 if reply is not None:
-                    reply.check(self._state)
-                record = self._save(
-                    key,
-                    record,
-                    {**record.value, "phase": "started", "permission": permission},
-                )
+                    with reply.reader.read_snapshot():
+                        reply.check(self._state)
+                previous = record
+
+                def start(transaction: OwnerTransaction) -> OwnerRecord:
+                    if reply is not None:
+                        reply.check_start(transaction)
+                    return transaction.save(
+                        key, {**previous.value, "phase": "started", "permission": permission},
+                        expected_version=previous.version,
+                    )
+
+                def committed(value: OwnerRecord) -> None:
+                    nonlocal record
+                    record = value
+
+                # Source 前提和 started 共同提交；取消也先取回已提交版本。
+                try:
+                    record = await self._state.transact_async(start, on_commit=committed)
+                except Denied as error:
+                    return await commit(record, Result(
+                        "interrupted" if started else "denied",
+                        (ContentPart("text", str(error)),),
+                    ))
                 try:
                     result = await tool.invoke(key, final_arguments)
                 except BaseException as failure:

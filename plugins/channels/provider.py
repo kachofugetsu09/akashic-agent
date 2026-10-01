@@ -20,7 +20,7 @@ from agent.plugin_composition.channel_io import (
     InputCustody,
 )
 from agent.plugin_composition.channels import (
-    CHANNEL_INPUT,
+    CHANNEL_INPUT_V2 as CHANNEL_INPUT,
     CHANNELS,
     DURABLE_HANDOFF_ID,
     DURABLE_INBOUND_MARKER,

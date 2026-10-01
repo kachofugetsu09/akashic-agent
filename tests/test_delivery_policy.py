@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 import shutil
 import pytest
-from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.delivery.records import DeliveryRecords
 from session.log import OwnerTransaction
 from session.message import Output

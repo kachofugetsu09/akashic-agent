@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 import asyncio
 from collections.abc import Mapping
 
@@ -12,7 +14,8 @@ from agent.plugin_contracts.models import (
     MODEL_CONTENT as MODEL_CONTENT,
     ModelContent as ModelContent,
 )
-from agent.plugin_contracts.reply import REPLY_EXECUTE_V2 as REPLY_EXECUTE
+from agent.plugin_contracts.sources import SOURCE_CHECK_V2 as SOURCE_CHECK
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V4 as REPLY_EXECUTE
 
 from .messages import HINTS, render
 from .request import STAGE_TOOLS, Request, WakeFailure, read_phase
@@ -41,6 +44,7 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
                 part,
                 fallback=lambda item: ctx.require(MODEL_CONTENT).render(item, artifacts={}),
             ),
+            check_admission=partial(ctx.require(SOURCE_CHECK), task, reader, "wake", task.boundary_hint),
             authorize=authorize,
             tool_view=None,
             fixed_bindings=fixed,

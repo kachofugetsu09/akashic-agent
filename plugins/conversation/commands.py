@@ -14,6 +14,7 @@ from agent.plugin_composition.messages import (
     MESSAGE_WRITERS,
     OWNER_STATE,
     MessageReader,
+    OwnerTransaction,
 )
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import (
@@ -30,7 +31,7 @@ from agent.plugin_contracts.content import (
 )
 from agent.plugin_contracts.sources import (
     CONVERSATION_COMMANDS as CONVERSATION_COMMANDS,
-    SOURCE_CHECK as SOURCE_CHECK,
+    SOURCE_CHECK_V2 as SOURCE_CHECK,
 )
 
 Text = Annotated[str, Field(min_length=1)]
@@ -80,7 +81,10 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
     bindings = ctx.require(BINDINGS)
     state = ctx.require(OWNER_STATE).open(ctx)
     registry = ctx.require(COMMANDS).freeze()
-    snapshot = reader.snapshot()
+    with reader.read_snapshot():
+        check_source(task, reader, source, task.boundary_hint)
+        snapshot = reader.snapshot()
+    source_head = max((message.seq for message in snapshot if message.source == source), default=-1)
     inputs = [m for m in snapshot if m.source == source and isinstance(m.body, Input)]
     abandoned_through = max((m.body.through_seq for m in snapshot
                              if m.source == source and isinstance(m.body, Control)
@@ -113,9 +117,13 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
                                      input_id=latest.message_id, binding_id=identity)
             value = cast(Mapping[str, object], selected.model_dump())
             _ = _input(reader, latest.message_id, source)
-            check_source(task, reader, source, reader.head(source=source))
             intent_key = selected.output_id
-            _ = state.transact(lambda tx: tx.save(intent_key, value, expected_version=None))
+
+            def start(transaction: OwnerTransaction):
+                check_source(task, reader, source, source_head, transaction=transaction)
+                return transaction.save(intent_key, value, expected_version=None)
+
+            _ = await state.transact_async(start)
             intents.append((selected, False))
 
     if not intents:
@@ -133,7 +141,7 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
     try:
         for intent, recovering in intents:
             head = reader.head(source=source)
-            check_source(task, reader, source, head)
+            check_source(task, reader, source, source_head)
             line, origin = _input(reader, intent.input_id, source)
             async def execute(commands: CommandCatalog) -> CommandExecution:
                 value = await commands.execute(
@@ -149,7 +157,7 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
                     result = await execute(archived.freeze())
             else:
                 result = await execute(registry)
-            check_source(task, reader, source, head)
+            check_source(task, reader, source, source_head)
             fact = CommandFact(input_id=intent.input_id, binding_id=intent.binding_id,
                                name=result.name, kind=result.result.kind)
             parts = (ContentPart("command.result", fact.model_dump()),)

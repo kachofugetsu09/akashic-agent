@@ -5,16 +5,16 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 
 from agent.plugin_composition import Context, Effect
-from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.sources import (
-    SOURCE_CHECK as SOURCE_CHECK,
-    SOURCE_INTERRUPT,
-    SOURCE_SESSION as SOURCE_SESSION,
-    SOURCES as SOURCES,
-    Source as Source,
-    SourceSession as SourceSession,
+    SOURCE_CHECK_V2 as SOURCE_CHECK,
+    SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
+    SOURCE_SESSION_V3 as SOURCE_SESSION,
+    SOURCES_V4 as SOURCES,
+    GuardedSource as Source,
+    GuardedSourceSession as SourceSession,
 )
 
 api_version = 3
@@ -171,9 +171,10 @@ class Sources:
         async with self._context.runtime_scope():
             selected = self._route(channel)
             async with selected.context.runtime_scope():
-                if reader.head(source=selected.name) < 0:
-                    return False
-                pending = selected.needs_reply(reader)
+                with reader.read_snapshot():
+                    if reader.head(source=selected.name) < 0:
+                        return False
+                    pending = selected.needs_reply(reader)
                 await selected.open(reader.session_id).pause(message_id)
                 return pending
 

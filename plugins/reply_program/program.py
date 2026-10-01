@@ -7,12 +7,14 @@ from contextlib import AbstractAsyncContextManager
 from core.common.file_io import run_file_io
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ArtifactRead
-from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState
+from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState, OwnerTransaction
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts.context import MaterialView
 from agent.plugin_contracts.models import PrepareContent
 from agent.plugin_contracts import ContentPart, Input, Message, Output
+
+from agent.plugin_contracts.sources import SourceGuard
 
 from .inputs import (
     Authorize,
@@ -42,7 +44,7 @@ async def run_reply(
     ctx: Context, task: Task, reader: MessageReader, source: str, *,
     models: ChatModels, content: Content, context: ContextBuilder, tools: ToolCatalog,
     cleanup: ToolCleanup,
-    check_source: Callable[[Task, MessageReader, str, int], None],
+    check_admission: SourceGuard,
     selection: ModelSelection, tool_program: ToolProgram,
     model_checks: ModelChecks, model_content: ModelContent, model_projection: ModelProjections,
     writers: MessageWriters, owner_state: OwnerState, artifact_reader: ArtifactRead,
@@ -76,9 +78,14 @@ async def run_reply(
     # 1. 内容检查器与模型绑定覆盖整个程序，取消时先排空已开始的工具。
     prompt_hints = tuple(prompt_hints)
     reader = reader.incremental()
-    source_head = reader.head(source=source)
-    through_seq = reader.head()
-    saved_selection = reader.metadata()
+    with reader.read_snapshot():
+        check_admission()
+        source_head = reader.head(source=source)
+        through_seq = reader.head()
+        saved_selection = reader.metadata()
+    def check(transaction: OwnerTransaction | None = None) -> None:
+        check_admission(transaction=transaction)
+
     def read_open(messages: Iterable[Message]) -> tuple[Message, ...]:
         """同一短快照内只取未闭合 Turn 正文，历史分段只保留引用。"""
         turns = turn_projection.project(messages, source, include_closed=False)
@@ -108,7 +115,7 @@ async def run_reply(
         model = execution.chat("agent")
         menu = await tool_program.create_menu(
             reader, source, content=view.checks,
-            check_start=lambda: check_source(task, reader, source, source_head),
+            check_start=check,
             authorize=authorize, view=tool_view, limit=model.max_tool_schemas,
             fixed_bindings=fixed_bindings, presentation=presentation,
             child_permit=task.child_permit if task.has_external_permit else None,
@@ -151,7 +158,7 @@ async def run_reply(
                             ref.artifact_id for ref in reader.attachments_for(keep_input_ids)
                         ),
                     )
-            check_source(task, reader, source, source_head)
+            check()
             return {**result, "system_prompt": "\n\n".join(
                 part for part in (cast(str, result["system_prompt"]), *view.prompts, *prompt_hints, menu.system_prompt) if part
             )}
@@ -162,7 +169,7 @@ async def run_reply(
         ) -> Summary | None:
             result = await material_view.reduce(snapshot, prepared, request, model, projection,
                                                 source=source, force=force)
-            check_source(task, reader, source, source_head)
+            check()
             return result
 
         try:
@@ -173,6 +180,7 @@ async def run_reply(
                 reduce=reduce, preview=preview, terminal_tools=terminal_tools,
                 max_parallel_calls=max_parallel_calls,
                 state=owner_state.open_scoped(ctx, "generation"),
+                check_start=check,
             )
         finally:
             output.expire()

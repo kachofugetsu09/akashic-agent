@@ -33,20 +33,17 @@ from agent.plugin_contracts.models import (
     ModelSelection as ModelSelection,
 )
 from agent.plugin_contracts.react import (
-    REACT as REACT,
-)
-from agent.plugin_contracts.sources import (
-    SOURCE_CHECK as SOURCE_CHECK,
+    REACT_ORDERED_V2 as REACT,
 )
 from agent.plugin_contracts.tools import (
     TOOL_CLEANUP as TOOL_CLEANUP,
-    TOOL_PROGRAM as TOOL_PROGRAM,
+    TOOL_PROGRAM_V2 as TOOL_PROGRAM,
     TOOLS as TOOLS,
     ToolCatalog as ToolCatalog,
     ToolCleanup as ToolCleanup,
     ToolMenu as ToolMenu,
     ToolPresentation as ToolPresentation,
-    ToolProgram as ToolProgram,
+    OrderedToolProgram as ToolProgram,
     ToolView as ToolView,
 )
 from agent.plugin_contracts.turns import (

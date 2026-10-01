@@ -157,6 +157,10 @@ CHANNEL_INPUT = ServiceKey[
     Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
 ]("channel.input.v1")
 
+CHANNEL_INPUT_V2 = ServiceKey[
+    Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
+]("channel.input.v2")
+
 
 class InboundOwner(StrEnum):
     INGRESS = "ingress"

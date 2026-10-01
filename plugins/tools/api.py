@@ -20,6 +20,7 @@ from agent.plugin_contracts.tools import (
     Result as Result,
     ResultLike as ResultLike,
     durable_call_key as durable_call_key,
+    StartCheck,
 )
 
 Outcome = Literal["success", "denied", "error", "interrupted"]
@@ -47,7 +48,7 @@ class MessageReply:
     call_ref: CallRef
     reader: MessageReader
     writer: MessageWriter
-    check_start: Callable[[], None]
+    check_start: StartCheck
 
     def __post_init__(self) -> None:
         if not isinstance(self.message_id, str) or not self.message_id:
