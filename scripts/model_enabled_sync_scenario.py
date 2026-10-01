@@ -95,9 +95,29 @@ async def scenario(workspace: Path) -> None:
             refreshed = models.embeddings.describe(model_id="extra-space")
             assert (refreshed.identity, refreshed.dimensions) == (space.identity, space.dimensions)
             assert snapshot().models[EMBEDDING] == embedding, "manual definitions stay unchanged"
+            # 显式 embedding 目录也只能改变可用性，不能替代已验证的空间。
+            verified = snapshot().models["extra-space"]
+            changed_space = DiscoveredModel(
+                kind=ModelKind.EMBEDDING, model="extra-embedding",
+                capabilities=replace(verified.capabilities,
+                    embedding_dimensions=space.dimensions + 1, embedding_normalization="none"),
+                capability_sources=CapabilitySources(embedding_dimensions="catalog", embedding_normalization="catalog"),
+                driver_config={"catalog_changed": True},
+            )
+            returned[-1] = changed_space
+            before = snapshot()
+            await sync()
+            assert snapshot() == before, "typed refresh changed a verified embedding definition"
+            returned.pop()
+            await sync()
+            assert snapshot().models["extra-space"] == replace(verified, enabled=False)
+            returned.append(changed_space)
+            await sync()
+            assert snapshot().models["extra-space"] == verified
+            assert models.embeddings.describe(model_id="extra-space").identity == space.identity
             await remove("extra-space")
             returned.pop()
-            print("PASS untyped catalog refreshes selected capabilities and availability, preserves verified spaces/manual definitions, and never adopts new models")
+            print("PASS typed/untyped catalog preserves verified embedding spaces through disappearance and return; chat capabilities refresh without adopting new models")
 
             # 2. 删除有 CAS、真实备份；在途绑定及调用账不依赖被删配置行。
             async with models.chat_models.execution(model_id="extra") as execution:

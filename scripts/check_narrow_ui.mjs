@@ -572,7 +572,7 @@ async function models(page, prefix) {
       await summaries.nth(j).click();
       await measure(page, `${prefix}-connection-${i}-section-${j}`);
     }
-    const manual = dialog.locator("[data-manual]");
+    const manual = dialog.locator("[data-manual-toggle]");
     if (await manual.count()) {
       await manual.click();
       await measure(page, `${prefix}-connection-${i}-manual`);

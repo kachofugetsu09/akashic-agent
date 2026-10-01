@@ -861,12 +861,10 @@ class ModelsStore:
                     if stored is None or key in known:
                         continue
                     model = current.models[stored[0]]
-                    # 无用途的型号清单不能改写已验证的向量空间和调用配置。
+                    # 无用途的型号清单不能改写已验证的调用配置。
                     known[key] = replace(
                         item, kind=model.kind, default_reasoning_effort=model.default_reasoning_effort,
                         driver_config=model.driver_config,
-                        capabilities=model.capabilities if kind is ModelKind.EMBEDDING else item.capabilities,
-                        capability_sources=model.capability_sources if kind is ModelKind.EMBEDDING else item.capability_sources,
                     )
             items = tuple(known.values())
             # 2. 可用性和能力只更新已选行，仍保护手工配置。
@@ -899,6 +897,13 @@ class ModelsStore:
                 if stored is None or (not stored[1] and not stored[2]):
                     continue
                 model_id = stored[0]
+                # 向量空间由显式探测确认；目录同步只改变其可用性。
+                if item.kind is ModelKind.EMBEDDING:
+                    connection.execute(
+                        "UPDATE embedding_models SET enabled = 1, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ? AND enabled = 0", (model_id,),
+                    )
+                    continue
                 command = AddModel(
                     expected_revision=expected_revision,
                     model_id=model_id,
@@ -910,28 +915,12 @@ class ModelsStore:
                     default_reasoning_effort=item.default_reasoning_effort,
                     driver_config=item.driver_config,
                 )
-                if item.kind is ModelKind.CHAT:
-                    connection.execute(
-                        _UPSERT_CHAT_MODEL,
-                        _chat_model_values(
-                            command,
-                            model_id,
-                            target_connection,
-                            item.model,
-                            source="discovery",
-                        ),
-                    )
-                else:
-                    connection.execute(
-                        _UPSERT_EMBEDDING_MODEL,
-                        (
-                            model_id,
-                            target_connection,
-                            item.model,
-                            int(item.capabilities.embedding_dimensions or 0),
-                            _model_payload(command, source="discovery"),
-                        ),
-                    )
+                connection.execute(
+                    _UPSERT_CHAT_MODEL,
+                    _chat_model_values(
+                        command, model_id, target_connection, item.model, source="discovery",
+                    ),
+                )
             return True
 
         return self._domain_write(expected_revision, "sync-models", write)
@@ -1173,6 +1162,10 @@ def _sync_would_change(
         if stored is None or (
             not stored.discovery_owned and (item.kind, item.model) not in legacy_keys
         ):
+            continue
+        if item.kind is ModelKind.EMBEDDING:
+            if not stored.enabled:
+                return True
             continue
         desired = StoredModel(
             model_id=stored.model_id,
