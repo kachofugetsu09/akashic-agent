@@ -25,29 +25,30 @@
 .agent-content {
   /* 阅读列宽度由宿主的 --chat-column 拥有；缺省值供未定义它的宿主。 */
   width: min(100%, var(--chat-column, 52rem));
-  color: var(--md-sys-color-on-surface);
-  font-size: var(--md-sys-typescale-body-large-size);
-  line-height: 1.62;
+  color: var(--ak-ink-primary);
+  font-size: max(1rem, var(--chat-type-body, 1rem));
+  line-height: 1.75;
   overflow-wrap: break-word;
   user-select: text;
 }
 
 .agent-content :where(h1, h2, h3, h4) {
   margin-block: 1.35em 0.58em;
-  color: var(--ak-color-text-primary);
+  color: var(--ak-ink-primary);
   font-weight: 650;
-  line-height: 1.15;
+  line-height: 1.4;
   text-wrap: balance;
 }
 
-.agent-content h1 { font-size: 1.5rem; }
+.agent-content h1 { font-size: 1.375em; }
 .agent-content h2 {
-  font-size: 1.3rem;
+  font-size: 1.175em;
   border-bottom: 1px solid var(--ak-rule-subtle);
   padding-bottom: 0.3em;
+  border-bottom-style: dashed;
 }
-.agent-content h3 { font-size: 1.15rem; }
-.agent-content h4 { font-size: 1rem; }
+.agent-content h3 { font-size: 1.025em; }
+.agent-content h4 { font-size: 1em; }
 
 .agent-content p {
   margin-block: 0 0.9em;
@@ -248,70 +249,265 @@
   border-block-start: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 12%, transparent);
 }
 
-/* markstream 代码块按 dsh 式阅读面收束：填充底色、无框线、无行号，
-   头部只留语言名与文字复制钮（其余控件经 codeBlockProps 关闭）。 */
-.agent-content .code-block-container,
-.process-markdown .code-block-container {
-  margin-block: 0.5rem;
-  border: none !important;
-  border-radius: var(--md-sys-shape-corner-medium) !important;
+/* 语言代码块保留现有高亮与复制，控件只占一行。 */
+:where(.agent-content, .process-markdown) .code-block-container {
+  margin-block: 0.85rem;
+  border: 1px dashed var(--ak-rule-default) !important;
+  border-radius: 0 !important;
   box-shadow: none !important;
   background: var(--ak-paper-quiet) !important;
 }
 
-.agent-content .code-block-header,
-.process-markdown .code-block-header {
-  /* 与代码正文同一左缘（pre padding-inline 14px）。 */
-  padding: 6px 14px !important;
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 4%, transparent) !important;
-  border-block-end: none;
+:where(.agent-content, .process-markdown) .code-block-header {
+  padding: 0.2rem 1rem !important;
+  background: var(--ak-paper-sheet) !important;
+  border-block-end: 1px solid var(--ak-rule-subtle);
 }
 
-.agent-content .code-block-header .icon-slot,
-.process-markdown .code-block-header .icon-slot {
+:where(.agent-content, .process-markdown) .code-block-header .icon-slot {
   display: none;
 }
 
-.agent-content .code-header-title,
-.process-markdown .code-header-title {
-  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 0.6875rem;
+:where(.agent-content, .process-markdown) .code-header-title {
+  font-family: var(--ak-type-technical);
+  font-size: var(--chat-type-caption, 0.75rem);
   color: var(--ak-ink-secondary);
 }
 
-.agent-content .code-header-actions .code-action-btn:not([aria-label="Copy"]):not([aria-label="Copied"]),
-.process-markdown .code-header-actions .code-action-btn:not([aria-label="Copy"]):not([aria-label="Copied"]) {
-  display: none;
-}
-
-/* 图标复制钮换成 dsh 式文字钮。 */
-.agent-content .code-action-btn[aria-label="Copy"] svg,
-.agent-content .code-action-btn[aria-label="Copied"] svg,
-.process-markdown .code-action-btn[aria-label="Copy"] svg,
-.process-markdown .code-action-btn[aria-label="Copied"] svg {
-  display: none;
-}
-
-.agent-content .code-action-btn[aria-label="Copy"]::after,
-.process-markdown .code-action-btn[aria-label="Copy"]::after {
-  content: "复制";
-  font-size: 0.6875rem;
+:where(.agent-content, .process-markdown) .code-header-actions .code-action-btn {
+  min-width: 44px;
+  min-height: 44px;
   color: var(--ak-ink-secondary);
 }
 
-.agent-content .code-action-btn[aria-label="Copied"]::after,
-.process-markdown .code-action-btn[aria-label="Copied"]::after {
-  content: "已复制";
-  font-size: 0.6875rem;
-  color: var(--ak-ink-secondary);
-}
-
-.agent-content .code-block-container pre,
-.process-markdown .code-block-container pre {
+:where(.agent-content, .process-markdown) .code-block-container pre {
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
-  padding: 10px 14px !important;
+  padding: 0.8rem 1rem !important;
+}
+
+/* 两条渲染路径共用阅读结构，源 Markdown 与 DOM 中的文字保持原样。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(h1, h2, h3, h4):first-child {
+  margin-block-start: 0;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-emphasis:not(li p) {
+  padding-inline-start: 0.85rem;
+  border-inline-start: 2px solid var(--ak-rule-default);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-topic:not(li p) {
+  margin-block: 1rem 0.45rem;
+  color: var(--ak-ink-primary);
+  font-size: 1.025em;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concepts {
+  margin-block: 0.85rem;
+  padding: 0;
+  border: 1px dashed var(--ak-rule-default);
+  list-style: none;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concepts > li {
+  display: grid;
+  grid-template-columns: var(--chat-concept-columns, repeat(auto-fit, minmax(min(100%, 12rem), 1fr)));
+  gap: 0.25rem 1rem;
+  margin: 0;
+  padding: 0.65rem 1rem;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concepts > li + li {
+  border-block-start: 1px solid var(--ak-rule-subtle);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .reading-concept-description .text-node {
+  white-space: normal;
+}
+
+.reading-concept-label,
+.reading-concept-description {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concept-description > p {
+  margin-block: 0 0.25rem;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concept-description > p:empty {
+  display: none;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concept-description > :last-child {
+  margin-block-end: 0;
+}
+
+/* 用原生 list-item counter 保留 start/value、嵌套与辅助阅读的序号。 */
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) {
+  margin-block: 0.75rem 1rem;
+  padding-inline-start: 2.65rem;
+  list-style-type: decimal-leading-zero;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li {
+  margin: 0;
+  padding: 0.1rem 0 0.65rem 0.4rem;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li + li {
+  padding-block-start: 0.65rem;
+  border-block-start: 1px dashed var(--ak-rule-subtle);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading ol > li::marker {
+  color: var(--ak-ink-secondary);
+  font-family: var(--ak-type-technical);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading li > p + p {
+  margin-block-start: 0.2rem;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading li :where(ul, ol) {
+  border-inline-start: 1px solid var(--ak-rule-default);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading input[type="checkbox"] {
+  accent-color: var(--ak-rule-focus);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading blockquote {
+  padding: 0.7rem 1rem;
+  margin-block: 1rem;
+  border-inline-start: 2px solid var(--ak-rule-default);
+  background: var(--ak-paper-quiet);
+  color: var(--ak-ink-secondary);
+}
+
+.reading-table {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-block: 1rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px dashed var(--ak-rule-default);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading table {
+  margin-block: 0;
+  font-size: 0.9375em;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td) {
+  padding: 0.55rem 0.6rem;
+  max-width: 20rem;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading th {
+  color: var(--ak-ink-secondary);
+  white-space: nowrap;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td)[align="right"],
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-number:not([align]) {
+  text-align: right;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td)[align="center"] {
+  text-align: center;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(th, td)[align="left"] {
+  text-align: left;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-number {
+  font-family: var(--ak-type-technical);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading tbody tr:nth-child(even) {
+  background: var(--ak-paper-quiet);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .math-block-node {
+  margin-block: 0.85rem;
+  padding: 0.35rem 0.6rem;
+  max-width: 100%;
+  overflow-x: auto;
+  border-block: 1px dashed var(--ak-rule-default);
+  background: var(--ak-paper-quiet);
+}
+
+/* 无标题文本块：技术字符等宽，中文沿用阅读字体。 */
+.static-code-block,
+.reading-plain-text {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  margin-block: 0.85rem;
+  border-inline-start: 1px dashed var(--ak-rule-default);
+  background: var(--ak-paper-quiet);
+}
+
+.static-code-block > pre,
+.reading-plain-text > pre {
+  margin: 0;
+  max-width: 100%;
+  padding: 0.8rem 3.4rem 0.8rem 1rem;
+  overflow-x: auto;
+  color: var(--ak-ink-primary);
+  background: transparent;
+  font-family: var(--ak-type-technical), var(--ak-type-reading);
+  font-size: 0.9375em;
+  line-height: 1.75;
+  white-space: pre;
+}
+
+:where(.static-code-block, .reading-plain-text) > pre > code {
+  font: inherit;
+  background: transparent;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-code-copy {
+  position: absolute;
+  inset-block-start: 0.2rem;
+  inset-inline-end: 0.2rem;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  color: var(--ak-ink-muted);
+  background: var(--ak-paper-quiet);
+  cursor: pointer;
+}
+
+.reading-code-copy svg {
+  width: 16px;
+  height: 16px;
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-code-copy:hover,
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-code-copy[data-copied="true"] {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-code-copy:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
 }
 
 .message-reply-reference {

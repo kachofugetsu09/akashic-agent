@@ -1,4 +1,5 @@
 import { memo, useCallback, useMemo } from "react";
+import { copyReadingCode } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
 
 export const StaticMessageResponse = memo(function StaticMessageResponse({
@@ -19,12 +20,20 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
       ?.querySelector("code")
       ?.textContent;
     if (code === null || code === undefined) return;
-    void navigator.clipboard.writeText(code).then(() => {
-      button.textContent = "已复制";
+    void copyReadingCode(code).then(() => {
+      button.dataset.copied = "true";
+      button.setAttribute("aria-label", "已复制");
+      button.title = "已复制";
       window.setTimeout(() => {
-        if (button.isConnected) button.textContent = "复制";
+        if (button.isConnected) {
+          delete button.dataset.copied;
+          button.setAttribute("aria-label", "复制代码");
+          button.title = "复制代码";
+        }
       }, 1500);
     }).catch((error: unknown) => {
+      button.setAttribute("aria-label", "复制失败，点击重试");
+      button.title = "复制失败，点击重试";
       if (onError) onError(error);
       else console.error("复制代码失败", error);
     });
@@ -32,7 +41,7 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
 
   return (
     <div
-      className="static-message-response"
+      className="static-message-response markdown-reading"
       onClick={copyCode}
       dangerouslySetInnerHTML={{ __html: html }}
     />
