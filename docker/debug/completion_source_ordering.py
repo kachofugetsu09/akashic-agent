@@ -168,7 +168,7 @@ async def check(directory: Path, stage: str, control: bool):
                 return await fixture.run_reply(
                     contexts["reply"], task, reader, output_source,
                     models=Models(), content=Content(), context=fixture.ContextBuilder(),
-                    tools=fixture.EmptyTools(), cleanup=fixture.cleanup, check_source=check_source,
+                    tools=fixture.EmptyTools(), cleanup=fixture.cleanup,
                     check_admission=check_admission, selection=fixture.SelectionOwner(),
                     tool_program=Menu() if stage in {"tool", "tool-success", "tool-finished"} else fixture.EmptyTools(), model_checks=fixture.MessageChecksOwner(),
                     model_content=fixture.ContentOwner(), model_projection=fixture.ProjectionOwner(),

@@ -14,7 +14,7 @@ from agent.plugin_contracts.context import MaterialView
 from agent.plugin_contracts.models import PrepareContent
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
-from agent.plugin_contracts.sources import SourceCheck, SourceGuard
+from agent.plugin_contracts.sources import SourceGuard
 
 from .inputs import (
     Authorize,
@@ -44,7 +44,7 @@ async def run_reply(
     ctx: Context, task: Task, reader: MessageReader, source: str, *,
     models: ChatModels, content: Content, context: ContextBuilder, tools: ToolCatalog,
     cleanup: ToolCleanup,
-    check_source: SourceCheck,
+    check_admission: SourceGuard,
     selection: ModelSelection, tool_program: ToolProgram,
     model_checks: ModelChecks, model_content: ModelContent, model_projection: ModelProjections,
     writers: MessageWriters, owner_state: OwnerState, artifact_reader: ArtifactRead,
@@ -66,7 +66,6 @@ async def run_reply(
     reminders: Sequence[Reminder] = (),
     terminal_tools: frozenset[str] = frozenset(),
     presentation: ToolPresentation | None = None,
-    check_admission: SourceGuard | None = None,
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     if tool_names is not None:
@@ -80,17 +79,12 @@ async def run_reply(
     prompt_hints = tuple(prompt_hints)
     reader = reader.incremental()
     with reader.read_snapshot():
-        if check_admission is None:
-            check_source(task, reader, source, task.boundary_hint)
-        else:
-            check_admission()
+        check_admission()
         source_head = reader.head(source=source)
         through_seq = reader.head()
         saved_selection = reader.metadata()
     def check(transaction: OwnerTransaction | None = None) -> None:
-        if check_admission is not None:
-            check_admission(transaction=transaction)
-        check_source(task, reader, source, source_head, transaction=transaction)
+        check_admission(transaction=transaction)
 
     def read_open(messages: Iterable[Message]) -> tuple[Message, ...]:
         """同一短快照内只取未闭合 Turn 正文，历史分段只保留引用。"""

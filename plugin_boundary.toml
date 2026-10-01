@@ -457,3 +457,7 @@ note = "首次效果和新 Output 在各自原事务核对同一来源控制前�
 [capabilities."sources.v4"]
 role = "seam"
 note = "注册表 open 返回带显式完成控制前提的来源；旧 session 形状不静默升级"
+
+[capabilities."reply.execute.v4"]
+role = "seam"
+note = "来源入口提供必填执行前提；回复程序不重建或推断来源权限"

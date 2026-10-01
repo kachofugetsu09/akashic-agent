@@ -44,7 +44,7 @@ from .api import (
     EVENTMAIL_WAKE,
     Config,
 )
-from .program import REPLY_EXECUTE, run
+from .program import REPLY_EXECUTE, SOURCE_CHECK, run
 from .request import WAKE_PROGRAM, WAKE_TOOLS_VIEW, check_phase, check_request
 from .runtime import DashboardView, Runtime
 from .tools import SCHEMAS, DecisionTool
@@ -55,7 +55,7 @@ version = "4.0.0"
 desc = "内部消息完成初筛、调查与告警，真实送达后确认原职责"
 function_inject = (
     MODEL_SELECTION, MODEL_CONTENT, MODEL_CATALOG,
-    REPLY_EXECUTE,
+    REPLY_EXECUTE, SOURCE_CHECK,
     BINDINGS,
     TASKS,
     MESSAGE_CATALOG,
