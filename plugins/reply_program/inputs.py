@@ -35,9 +35,6 @@ from agent.plugin_contracts.models import (
 from agent.plugin_contracts.react import (
     REACT_ORDERED_V2 as REACT,
 )
-from agent.plugin_contracts.sources import (
-    SOURCE_CHECK_V2 as SOURCE_CHECK,
-)
 from agent.plugin_contracts.tools import (
     TOOL_CLEANUP as TOOL_CLEANUP,
     TOOL_PROGRAM_V2 as TOOL_PROGRAM,

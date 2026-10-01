@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+from functools import partial
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -198,7 +199,8 @@ async def check(directory: Path, kind: str, mode: str):
         result = await run_reply(
             contexts[kind], task, reader, source,
             models=Models(), content=TextContent(), context=ContextBuilder(),
-            tools=EmptyTools(), cleanup=cleanup, check_source=check_source,
+            tools=EmptyTools(), cleanup=cleanup,
+            check_admission=partial(check_source, task, reader, source, task.boundary_hint),
             selection=SelectionOwner(), tool_program=EmptyTools(),
             model_checks=MessageChecksOwner(), model_content=ContentOwner(),
             model_projection=ProjectionOwner(), writers=writers, owner_state=state,
