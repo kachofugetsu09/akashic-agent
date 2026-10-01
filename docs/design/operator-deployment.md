@@ -131,7 +131,7 @@ Core 先升级自己拥有的账本结构；在内置业务 step 与组合发布
 
 历史多次升级不能靠改写 `distribution-install.json` 伪装成首次安装。先逐项核验正式发布回执或历史镜像与实际代码树，核对当前 Root/cache、真实数据目录及历史混用风险，并取得维护者对数据归属的批准。
 
-显式清单可增加一次性的 `distribution_adoption`，包含目标 `distribution_source_commit` 和 `entries`。每项需提供 `plugin_id`、原 `component_ref`、相对 `artifact_pointer`（`.artifacts/<id>`）、`source_revision`、`code_sha256`、`manifest_digest`、`data_dir`、原 `source_commit` 和审核材料的 `evidence_sha256`。摘要固定已审核材料，不替代来源/数据审核。当前 Root 仍由顶层 `expected_root_ref` 绑定。
+显式清单可增加一次性的 `distribution_adoption`，包含目标 `distribution_source_commit` 和 `entries`。每项需提供 `plugin_id`、原 `component_ref`、相对 `artifact_pointer`（`.artifacts/<id>`）、`source_revision`、`code_sha256`、`manifest_digest`、`data_dir`、原 `source_commit`、实际 `source_path` 和审核材料的 `evidence_sha256`。源码目录名不必等于插件名。摘要固定已审核材料，不替代来源/数据审核。当前 Root 仍由顶层 `expected_root_ref` 绑定。
 
 在线预检和停止期均重新核对本机输入。通过后，转换凭证与新版组件由一个 Root CAS 发布；原 cache、首次回执、外置选择和数据保留。第二次启动无需再次提供转换清单。带凭证的 Root 为 v2，旧 Core 恢复必须同时采用受支持的旧 Root；参考 [0082](../decisions/0082-distribution-owned-plugin-composition.md)。
 

@@ -86,7 +86,7 @@ def check_distribution_adoption_format(record: Mapping[str, object]) -> None:
         raise ValueError("历史归属转换必须列出精确输入")
     seen: set[str] = set()
     fields = {"plugin_id", "component_ref", "artifact_pointer", "source_revision", "code_sha256",
-              "manifest_digest", "data_dir", "source_commit", "evidence_sha256"}
+              "manifest_digest", "data_dir", "source_commit", "source_path", "evidence_sha256"}
     for entry in entries:
         if not isinstance(entry, Mapping) or set(entry) != fields:
             raise ValueError("历史归属转换条目格式无效")
@@ -95,7 +95,7 @@ def check_distribution_adoption_format(record: Mapping[str, object]) -> None:
             or plugin_id in seen):
             raise ValueError("历史归属转换插件身份重复或无效")
         seen.add(plugin_id)
-        for key in fields - {"plugin_id", "artifact_pointer", "data_dir"}:
+        for key in fields - {"plugin_id", "artifact_pointer", "data_dir", "source_path"}:
             value = entry[key]
             length = 40 if key in {"source_revision", "source_commit"} else 64
             if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{%d}" % length, value) is None:
@@ -105,6 +105,11 @@ def check_distribution_adoption_format(record: Mapping[str, object]) -> None:
             raise ValueError(f"历史归属 artifact pointer 无效: {plugin_id}")
         if not isinstance(entry["data_dir"], str):
             raise ValueError(f"历史归属 data_dir 无效: {plugin_id}")
+        source_path = entry["source_path"]
+        if (not isinstance(source_path, str) or not source_path.startswith("plugins/")
+            or "\\" in source_path or "\x00" in source_path
+            or any(part in {"", ".", ".."} for part in source_path.split("/"))):
+            raise ValueError(f"历史归属 source_path 无效: {plugin_id}")
 
 
 def _adopted_distribution_roots(
@@ -157,7 +162,7 @@ def _adopted_distribution_roots(
         provenance = json.loads((artifact / ".akashic-source.json").read_text())
         if (identity.name != name or identity.identity_digest != row["manifest_digest"]
             or revision != row["source_revision"] or code != row["code_sha256"]
-            or provenance != {"commit": row["source_commit"], "path": f"plugins/{name}"}):
+            or provenance != {"commit": row["source_commit"], "path": row["source_path"]}):
             raise SelectionConflictError(f"历史归属 cache 内容已变化: {plugin_id}")
         # 2. 提交后只能是普通发行版输入或未加载；退役/停用也不释放原数据身份。
         active = selected.get(plugin_id)

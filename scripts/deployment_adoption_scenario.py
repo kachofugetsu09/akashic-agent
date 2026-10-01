@@ -54,7 +54,9 @@ async def run():
     # 1. 建立旧安装器允许的多次正式 bundle 升级；最后恢复真实首次回执。
     for name in names:
         plugin(repo, name, "2")
-    historical = distribution(repo, root / "historical", names, names)
+    (repo / "plugins/alpha").rename(repo / "plugins/alpha_legacy")
+    (repo / "plugins/retired").rename(repo / "plugins/retired_source")
+    historical = distribution(repo, root / "historical", ["alpha_legacy", "retired_source", "disabled"], names)
     install_profile(historical, historical / "profiles/default.json", workspace=work,
                     plugins_home=home, config_path=config)
     selection = PluginSelection(work)
@@ -107,6 +109,7 @@ async def run():
             "manifest_digest": load_static_plugin_manifest(artifact).identity_digest,
             "data_dir": descriptor["data_dir"],
             "source_commit": json.loads(evidence.read_text())["source_commit"],
+            "source_path": json.loads((artifact / ".akashic-source.json").read_text())["path"],
             "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
         })
     plan = root / "plan.json"
