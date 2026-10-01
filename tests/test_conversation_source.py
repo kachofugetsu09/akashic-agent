@@ -84,7 +84,7 @@ async def test_source_commit_drains_before_cancel_and_rejects_late_start(tmp_pat
     started = asyncio.Event()
     outputs = []
 
-    def record(reader, name):
+    def record(reader, name, pending):
         asyncio.get_running_loop()
         changed.append((name, reader.head()))
 

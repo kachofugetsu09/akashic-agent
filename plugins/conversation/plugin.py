@@ -37,12 +37,12 @@ from agent.plugin_contracts.models import (
 from agent.plugin_contracts.sources import (
     CHECK_ORIGIN as CHECK_ORIGIN,
     CONVERSATION_COMPLETE as CONVERSATION_COMPLETE,
-    SOURCE_CHANGED_V2 as SOURCE_CHANGED,
-    SOURCE_SESSION_V2 as SOURCE_SESSION,
-    SOURCES_V3 as SOURCES,
+    SOURCE_CHANGED_V3 as SOURCE_CHANGED,
+    SOURCE_SESSION_V3 as SOURCE_SESSION,
+    SOURCES_V4 as SOURCES,
     ConversationComplete as ConversationComplete,
-    SessionFactory as SessionFactory,
-    SourceChanged,
+    SessionFactoryV3 as SessionFactory,
+    SourceChangedV3 as SourceChanged,
     SourceSession as SourceSession,
 )
 
@@ -70,8 +70,8 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.require(MESSAGE_WRITERS).register_metadata(
         ctx, keys=frozenset({"model_selection", "model_runtime_override"}), update=update_metadata,
     )
-    def changed(reader: MessageReader, source: str) -> None:
-        ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source))
+    def changed(reader: MessageReader, source: str, pending: bool) -> None:
+        ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source, pending))
 
     def open(session_id: str) -> SourceSession:
         def check_model(part: ContentPart) -> ContentReferences:

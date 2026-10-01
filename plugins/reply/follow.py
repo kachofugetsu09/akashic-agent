@@ -12,8 +12,8 @@ from agent.plugin_composition.model import CompositionError
 from agent.plugin_composition.tasks import RestartGate, Task, TaskServiceClosed
 from agent.plugin_contracts import Control, Input, Output
 from agent.plugin_contracts.sources import (
-    Source as Source,
-    Sources as Sources,
+    SourceV2 as Source,
+    SourcesV4 as Sources,
     SourceSession as SourceSession,
 )
 
@@ -222,19 +222,22 @@ async def follow(
                 session: SourceSession | None = None
                 admission_boundary = catalog.reader(session_id).head(source=source.name)
 
-                def terminal_committed() -> bool:
-                    """A later Input may use a saved terminal while old cleanup runs."""
-                    terminal = False
-                    for message in catalog.reader(session_id).snapshot(after_seq=admission_boundary):
-                        if message.source != source.name:
-                            continue
-                        if isinstance(message.body, Output) and message.body.finish != "continue":
-                            terminal = True
-                        if isinstance(message.body, Control):
-                            terminal = True
-                        if terminal and isinstance(message.body, Input):
-                            return True
-                    return False
+                async def terminal_committed() -> bool:
+                    """大尾部的终态/后续输入在同一只读 worker 中判定。"""
+                    reader = catalog.reader(session_id)
+                    name = source.name
+                    def read(reader: MessageReader) -> bool:
+                        terminal = False
+                        def consume(rows) -> bool:
+                            nonlocal terminal
+                            for message in rows:
+                                if isinstance(message.body, Output) and message.body.finish != "continue" or isinstance(message.body, Control):
+                                    terminal = True
+                                if terminal and isinstance(message.body, Input):
+                                    return True
+                            return False
+                        return reader.scan(consume, after_seq=admission_boundary, source=name)
+                    return await reader.read_async(read)
                 restart_after_cleanup = False
                 current_drive = asyncio.current_task()
                 if current_drive is None:
@@ -331,7 +334,11 @@ async def follow(
                             )
                             if joined in done:
                                 await joined
-                            elif wake.source is source and current_source(source.name) is source and terminal_committed():
+                            elif (
+                                wake.source is source and current_source(source.name) is source
+                                and await terminal_committed()
+                                and wake.source is source and current_source(source.name) is source
+                            ):
                                 state.detached = True
                                 state.task.cancel()
                             else:

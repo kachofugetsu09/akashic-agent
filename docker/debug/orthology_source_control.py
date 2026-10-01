@@ -12,7 +12,7 @@ from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from agent.plugin_composition.tasks import Tasks
-from agent.plugin_contracts.sources import SOURCES as LEGACY_SOURCES, SOURCES_V3 as SOURCES
+from agent.plugin_contracts.sources import SOURCES as LEGACY_SOURCES, SOURCES_V4 as SOURCES
 from plugins.sources import plugin as sources
 from plugins.sources.session import SourceSession
 from plugins.telegram_channel import plugin as telegram

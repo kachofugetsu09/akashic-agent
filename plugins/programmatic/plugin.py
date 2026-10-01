@@ -34,11 +34,11 @@ from agent.plugin_contracts.delivery import (
 )
 from agent.plugin_contracts.sources import (
     CHECK_ORIGIN as CHECK_ORIGIN,
-    SOURCE_CHANGED_V2 as SOURCE_CHANGED,
-    SOURCE_SESSION_V2 as SOURCE_SESSION,
-    SOURCES_V3 as SOURCES,
-    SessionFactory as SessionFactory,
-    SourceChanged,
+    SOURCE_CHANGED_V3 as SOURCE_CHANGED,
+    SOURCE_SESSION_V3 as SOURCE_SESSION,
+    SOURCES_V4 as SOURCES,
+    SessionFactoryV3 as SessionFactory,
+    SourceChangedV3 as SourceChanged,
     SourceSession as SourceSession,
 )
 
@@ -64,11 +64,8 @@ def open_source(ctx: Context, session_id: str) -> SourceSession:
     if reader.attributes.visibility != "internal":
         raise ValueError("程序调用 Session 尚未通过内部来源准入")
 
-    def changed(reader: MessageReader, source: str) -> None:
-        ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source))
-        programmatic = ctx.get(PROGRAMMATIC)
-        if programmatic is not None:
-            programmatic.settle_changed(reader, source)
+    def changed(reader: MessageReader, source: str, pending: bool) -> None:
+        ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source, pending))
 
     writers = ctx.require(MESSAGE_WRITERS)
     return ctx.require(SOURCE_SESSION)(reader=reader,
@@ -95,7 +92,7 @@ async def apply(ctx: Context) -> None:
         async with aclosing(stream):
             async for heads in stream:
                 for session_id in heads:
-                    programmatic.settle_changed(catalog.reader(session_id), "programmatic")
+                    await programmatic.settle_changed(catalog.reader(session_id), "programmatic")
 
     async def start(_event: object) -> None:
         nonlocal watcher

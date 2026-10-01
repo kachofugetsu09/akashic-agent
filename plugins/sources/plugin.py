@@ -11,9 +11,9 @@ from agent.plugin_contracts import Message
 from agent.plugin_contracts.sources import (
     SOURCE_CHECK_V2 as SOURCE_CHECK,
     SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
-    SOURCE_SESSION_V2 as SOURCE_SESSION,
-    SOURCES_V3 as SOURCES,
-    Source as Source,
+    SOURCE_SESSION_V3 as SOURCE_SESSION,
+    SOURCES_V4 as SOURCES,
+    SourceV2 as Source,
     SourceSession as SourceSession,
 )
 
@@ -51,7 +51,7 @@ class Sources:
 
     async def register(
         self, ctx: Context, *, name: str, open: Callable[[str], SourceSession],
-        needs_reply: Callable[[MessageReader], bool], accept: Accept | None = None,
+        needs_reply: Callable[[MessageReader], Awaitable[bool]], accept: Accept | None = None,
         channels: tuple[str, ...] | None = (),
     ) -> Effect:
         """来源注册随插件 effect 生灭；None channels 表示唯一默认输入来源。"""
@@ -115,9 +115,9 @@ class Sources:
             raise
         return effect
 
-    def needs_reply(self, reader: MessageReader, source: str) -> bool:
+    async def needs_reply(self, reader: MessageReader, source: str) -> bool:
         """来源自己解释是否待回复；注册表不猜来源的完成规则。"""
-        return self._items[source].source.needs_reply(reader)
+        return await self._items[source].source.needs_reply(reader)
 
     def entries(self) -> tuple[Source, ...]:
         return tuple(
@@ -174,7 +174,7 @@ class Sources:
                 with reader.read_snapshot():
                     if reader.head(source=selected.name) < 0:
                         return False
-                    pending = selected.needs_reply(reader)
+                pending = await selected.needs_reply(reader)
                 await selected.open(reader.session_id).pause(message_id)
                 return pending
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import aclosing
+from dataclasses import dataclass
+from core.common.file_io import run_file_io
 from typing import cast
 from uuid import uuid4
 
@@ -17,7 +20,7 @@ from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission, Tas
 from agent.plugin_contracts import Control, Input, Message, Output
 
 logger = logging.getLogger(__name__)
-Changed = Callable[[MessageReader, str], None]
+Changed = Callable[[MessageReader, str, bool], None]
 
 
 def check_source(
@@ -33,39 +36,78 @@ def check_source(
         raise asyncio.CancelledError
 
 
+@dataclass(slots=True)
+class _ReplyState:
+    """本次只读前缀的来源判定；提交后即释放，不保存第二份业务事实。"""
+    head: int = -1
+    latest_input: int = -1
+    boundary: int = -1
+    paused_through: int = -1
+
+    @property
+    def pending(self) -> bool:
+        return self.latest_input > max(self.boundary, self.paused_through)
+
+    def add(self, message: Message) -> None:
+        self.head = message.seq
+        body = message.body
+        if isinstance(body, Input):
+            self.latest_input = message.seq
+        elif isinstance(body, Output) and body.finish != "continue":
+            self.boundary = message.seq
+        elif isinstance(body, Control):
+            if body.action == "abandon":
+                self.boundary = max(self.boundary, body.through_seq)
+            elif body.action in {"pause", "failure"}:
+                self.paused_through = max(self.paused_through, body.through_seq)
+            elif body.action == "resume" and body.through_seq >= self.paused_through:
+                self.paused_through = -1
+
+
+def _read_state(messages: Sequence[Message] | MessageReader, source: str) -> _ReplyState:
+    """来源规则在固定只读前缀内归约，只把少量判定数据带回 loop。"""
+    state = _ReplyState()
+    if isinstance(messages, MessageReader):
+        state.head = messages.head(source=source)
+        latest = messages.latest_input(source, through_seq=state.head)
+        if latest is None:
+            return state
+        through = state.head
+        state.add(latest)
+        def consume(rows):
+            for message in rows:
+                state.add(message)
+        messages.scan(consume, after_seq=latest.seq, through_seq=through, source=source)
+    else:
+        for message in messages:
+            if message.source == source:
+                state.add(message)
+    return state
+
+
+def _read_boundary(reader: MessageReader, source: str, hint: object) -> bool:
+    """边界只来自 hint 后的持久终态或 Control，与当前待回复判定共用快照。"""
+    if not isinstance(hint, int) or hint < 0:
+        return False
+    return reader.scan(lambda rows: any(
+        isinstance(message.body, Output) and message.body.finish != "continue"
+        or isinstance(message.body, Control)
+        for message in rows
+    ), after_seq=hint, source=source)
+
+
 class SourceSession:
     """一个已获授权来源的接纳与控制；活动任务短命，重启只重读日志。"""
 
     @staticmethod
-    def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool:
-        """来源从输入和控制事实决定是否唤醒；不依赖逻辑 Turn 或消费 cursor。"""
-        # 最近 Input 之前的控制和终结只能覆盖更早的 seq，不影响本次唤醒。
-        if isinstance(messages, MessageReader):
-            with messages.read_snapshot():
-                head = messages.head()
-                latest = messages.latest_input(source, through_seq=head)
-                if latest is None:
-                    return False
-                messages = (latest, *messages.snapshot(after_seq=latest.seq, through_seq=head))
-        boundary = -1
-        latest_input = -1
-        paused_through = -1
-        for message in messages:
-            if message.source != source:
-                continue
-            body = message.body
-            if isinstance(body, Input):
-                latest_input = message.seq
-            elif isinstance(body, Output) and body.finish != "continue":
-                boundary = message.seq
-            elif isinstance(body, Control):
-                if body.action == "abandon":
-                    boundary = max(boundary, body.through_seq)
-                elif body.action in {"pause", "failure"}:
-                    paused_through = max(paused_through, body.through_seq)
-                elif body.action == "resume" and body.through_seq >= paused_through:
-                    paused_through = -1
-        return latest_input > max(boundary, paused_through)
+    async def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool:
+        """异步读取来源规则；worker 不借 Context、Task 或任何写入能力。"""
+        state = (
+            await messages.read_async(lambda reader: _read_state(reader, source))
+            if isinstance(messages, MessageReader)
+            else await run_file_io(lambda: _read_state(messages, source))
+        )
+        return state.pending
 
     def __init__(
         self,
@@ -90,19 +132,18 @@ class SourceSession:
         self._restart_gate = restart_gate
         self._key = (reader.session_id, self._source)
 
-    def _changed(self, message: Message) -> Message:
-        """提交后仍在同步准入段通知可选回复消费者，后续发送不能抢过已接纳输入。"""
+    def _changed(self, message: Message, pending: bool) -> Message:
+        """提交收据在原 loop 同步通知，监听者无需重新扫描正文才能占位。"""
         if self._on_changed is not None:
-            with self._reader.read_snapshot():
-                self._on_changed(self._reader, self._source)
+            self._on_changed(self._reader, self._source, pending)
         return message
 
-    def _committed(self, slot: TaskSlot, message: Message, created: bool) -> None:
+    def _committed(self, slot: TaskSlot, message: Message, created: bool, pending: bool) -> None:
         """提交通知失败也必须撤权；重放不重复通知或取消。"""
         if not created:
             return
         try:
-            _ = self._changed(message)
+            _ = self._changed(message, pending)
         finally:
             current = slot.current
             if current is not None and current.active:
@@ -114,62 +155,58 @@ class SourceSession:
     async def accept(self, message_id: str, body: Input) -> Message:
         """先持久接纳，再使旧回复失效；ACK 不等待回复或旧工具排空。"""
         async def admit(slot: TaskSlot) -> Message:
-            with self._reader.read_snapshot():
-                existing = self._reader.get(message_id)
-            if existing is None and self._restart_gate is not None:
+            existing = await self._reader.read_async(lambda reader: reader.get(message_id) is not None)
+            if not existing and self._restart_gate is not None:
                 self._restart_gate.check_open()
             return await self._inputs.append_async(
-                message_id, body, on_commit=lambda message, created: self._committed(slot, message, created),
+                message_id, body,
+                on_commit=lambda message, created: self._committed(slot, message, created, True),
             )
-
         return await self._tasks.admit_async(self._key, admit)
 
     async def control(
-        self,
-        message_id: str,
-        body: Control,
-        *,
-        expected_head: int,
-        handle: str | None,
+        self, message_id: str, body: Control, *, expected_head: int, handle: str | None,
     ) -> Message:
         """原子接纳控制并撤权；abandon 不等待物理清理，其余停止仍排空。"""
+        def read(reader: MessageReader) -> _ReplyState | None:
+            if reader.get(message_id) is not None:
+                return None
+            target = reader.read(after_seq=body.through_seq - 1, through_seq=body.through_seq, limit=1)
+            if not target or target[0].source != self._source:
+                raise MessageConflict("控制前缀必须指向已接纳的同来源消息")
+            if body.action == "abandon" and reader.scan(
+                lambda rows: any(
+                    isinstance(item.body, Output) and item.body.finish != "continue" and item.seq >= body.through_seq
+                    or isinstance(item.body, Control) and item.body.action == "abandon" and item.body.through_seq >= body.through_seq
+                    for item in rows
+                ), source=self._source,
+            ):
+                raise MessageConflict("不能放弃已经关闭的前缀")
+            return _read_state(reader, self._source)
+
         async def admit(slot: TaskSlot) -> tuple[Message, Task | None]:
-            with self._reader.read_snapshot():
-                existing = self._reader.get(message_id)
-            if existing is not None:
+            state = await self._reader.read_async(read)
+            if state is None:
                 message = await self._controls.append_async(
-                    message_id, body, on_commit=lambda message, created: self._committed(slot, message, created),
+                    message_id, body, on_commit=lambda message, created: self._committed(slot, message, created, False),
                 )
                 current = slot.current
                 pending = current if current is not None and not current.active else None
                 return message, pending if body.action != "resume" else None
-            with self._reader.read_snapshot():
-                target = self._reader.read(
-                    after_seq=body.through_seq - 1, through_seq=body.through_seq, limit=1
-                )
-                if not target or target[0].source != self._source:
-                    raise MessageConflict("控制前缀必须指向已接纳的同来源消息")
-                if body.action == "abandon" and any(
-                    item.source == self._source
-                    and (
-                        isinstance(item.body, Output)
-                        and item.body.finish != "continue"
-                        and item.seq >= body.through_seq
-                        or isinstance(item.body, Control)
-                        and item.body.action == "abandon"
-                        and item.body.through_seq >= body.through_seq
-                    )
-                    for item in self._reader.snapshot()
-                ):
-                    raise MessageConflict("不能放弃已经关闭的前缀")
-                current = slot.current
-                if handle is not None:
-                    current = slot.require(handle)
-                elif current is not None and current.active:
-                    raise MessageConflict("控制活动来源需要当前 handle")
+            if state.head != expected_head:
+                raise SourceHeadConflict("控制判定的来源前缀与显式 head 不同")
+            current = slot.current
+            if handle is not None:
+                current = slot.require(handle)
+            elif current is not None and current.active:
+                raise MessageConflict("控制活动来源需要当前 handle")
+
+            def committed(message: Message, created: bool) -> None:
+                if created:
+                    state.add(message)
+                self._committed(slot, message, created, state.pending)
             message = await self._controls.append_async(
-                message_id, body, expected_source_head=expected_head,
-                on_commit=lambda message, created: self._committed(slot, message, created),
+                message_id, body, expected_source_head=expected_head, on_commit=committed,
             )
             return message, current if body.action != "resume" else None
 
@@ -184,19 +221,22 @@ class SourceSession:
         return message
 
     async def pause(self, message_id: str) -> Message:
-        """停止当前来源；目标选择、pause 提交和撤权在同一准入回调内排序。"""
+        """停止当前来源；只读判定与条件提交沿同一准入排序。"""
+        def read(reader: MessageReader) -> tuple[Control | None, int]:
+            existing = reader.get(message_id)
+            if existing is not None:
+                if not isinstance(existing.body, Control) or existing.body.action != "pause":
+                    raise MessageConflict("停止身份已被其他消息使用")
+                return existing.body, reader.head(source=self._source)
+            return None, reader.head(source=self._source)
+
         async def admit(slot: TaskSlot) -> tuple[Message, Task | None]:
             while True:
-                with self._reader.read_snapshot():
-                    existing = self._reader.get(message_id)
-                    head = self._reader.head(source=self._source)
+                existing, head = await self._reader.read_async(read)
                 current = slot.current
                 if existing is not None:
-                    if not isinstance(existing.body, Control) or existing.body.action != "pause":
-                        raise MessageConflict("停止身份已被其他消息使用")
                     message = await self._controls.append_async(
-                        message_id, existing.body,
-                        on_commit=lambda message, created: self._committed(slot, message, created),
+                        message_id, existing, on_commit=lambda message, created: self._committed(slot, message, created, False),
                     )
                     return message, current if current is not None and not current.active else None
                 if head < 0:
@@ -206,10 +246,9 @@ class SourceSession:
                 try:
                     message = await self._controls.append_async(
                         message_id, Control("pause", head), expected_source_head=head,
-                        on_commit=lambda message, created: self._committed(slot, message, created),
+                        on_commit=lambda message, created: self._committed(slot, message, created, False),
                     )
                 except SourceHeadConflict:
-                    # 等待磁盘时旧回复可追加消息；失败事务没有事实，重选当前前缀。
                     continue
                 return message, current
         message, pending = await self._tasks.admit_async(self._key, admit)
@@ -223,108 +262,102 @@ class SourceSession:
         return message
 
     async def resume(self, message_id: str, input_id: str) -> Message:
-        """显式重试恢复原输入，不追加副本；只能恢复最新的失败或暂停前缀。"""
-        async def admit(slot: TaskSlot) -> Message:
-            with self._reader.read_snapshot():
-                target = self._reader.get(input_id)
-                if target is None or target.source != self._source or not isinstance(target.body, Input):
-                    raise MessageConflict("重试目标不是当前来源的 Input")
-                existing = self._reader.get(message_id)
-                if existing is not None:
-                    if not isinstance(existing.body, Control) or existing.body.action != "resume":
-                        raise MessageConflict("重试身份已被其他消息使用")
-                    latest = self._reader.latest_input(self._source, through_seq=existing.body.through_seq)
-                    if latest is None or latest.message_id != input_id:
-                        raise MessageConflict("重试身份已用于另一条输入")
-                    body = existing.body
-                    expected_head = None
-                else:
-                    # 1. 准入回调内核对当前日志与活动 handle，不存在检查后的写入窗口。
-                    through = self._reader.head()
-                    latest = self._reader.latest_input(self._source, through_seq=through)
-                    if latest is None or latest.message_id != input_id:
-                        raise MessageConflict("只能重试本来源的最新输入")
-                    messages = self._reader.scan(tuple, after_seq=target.seq, through_seq=through, source=self._source)
-                    if any(
-                        isinstance(m.body, Output) and m.body.finish != "continue"
-                        or isinstance(m.body, Control) and m.body.action == "abandon"
-                        and m.body.through_seq >= target.seq
-                        for m in messages
-                    ):
-                        raise MessageConflict("已关闭的输入不能重试")
-                    control = self._reader.latest_control(self._source, through_seq=through)
-                    if control is None or cast(Control, control.body).action not in {"failure", "pause"}:
-                        raise MessageConflict("输入没有等待恢复的失败或暂停")
-                    if slot.current is not None and slot.current.active:
-                        raise MessageConflict("不能重试仍在运行的来源")
-
-                    if self._restart_gate is not None:
-                        self._restart_gate.check_open()
-
-                    # resume 只记录恢复意图；未知效果仍由 Tool owner 拒绝重跑。
-                    expected_head = messages[-1].seq if messages else target.seq
-                    body = Control("resume", expected_head)
-            return await self._controls.append_async(
-                message_id, body, expected_source_head=expected_head,
-                on_commit=lambda message, created: self._committed(slot, message, created),
+        """显式重试恢复原输入；只读 worker 不改变最新输入、控制与 CAS 规则。"""
+        def read(reader: MessageReader) -> tuple[Control, int | None]:
+            target = reader.get(input_id)
+            if target is None or target.source != self._source or not isinstance(target.body, Input):
+                raise MessageConflict("重试目标不是当前来源的 Input")
+            existing = reader.get(message_id)
+            if existing is not None:
+                if not isinstance(existing.body, Control) or existing.body.action != "resume":
+                    raise MessageConflict("重试身份已被其他消息使用")
+                latest = reader.latest_input(self._source, through_seq=existing.body.through_seq)
+                if latest is None or latest.message_id != input_id:
+                    raise MessageConflict("重试身份已用于另一条输入")
+                return existing.body, None
+            through = reader.head()
+            latest = reader.latest_input(self._source, through_seq=through)
+            if latest is None or latest.message_id != input_id:
+                raise MessageConflict("只能重试本来源的最新输入")
+            closed = reader.scan(
+                lambda rows: any(
+                    isinstance(item.body, Output) and item.body.finish != "continue"
+                    or isinstance(item.body, Control) and item.body.action == "abandon" and item.body.through_seq >= target.seq
+                    for item in rows
+                ), after_seq=target.seq, through_seq=through, source=self._source,
             )
+            if closed:
+                raise MessageConflict("已关闭的输入不能重试")
+            control = reader.latest_control(self._source, through_seq=through)
+            if control is None or cast(Control, control.body).action not in {"failure", "pause"}:
+                raise MessageConflict("输入没有等待恢复的失败或暂停")
+            head = reader.head(source=self._source)
+            return Control("resume", head), head
 
+        async def admit(slot: TaskSlot) -> Message:
+            body, head = await self._reader.read_async(read)
+            if head is not None:
+                if slot.current is not None and slot.current.active:
+                    raise MessageConflict("不能重试仍在运行的来源")
+                if self._restart_gate is not None:
+                    self._restart_gate.check_open()
+            return await self._controls.append_async(
+                message_id, body, expected_source_head=head,
+                on_commit=lambda message, created: self._committed(slot, message, created, True),
+            )
         return await self._tasks.admit_async(self._key, admit)
 
     async def complete(self, program: Callable[[Task, MessageReader], Awaitable[Message]]) -> Message:
         """在主回复空闲后处理材料；新输入可以撤权，只重试被抢占的本次程序。"""
         # 1. 用户输入优先；等待旧 Task 不取得其取消权。
-        async for _ in self._reader.follow():
-            while True:
-                def admit(slot: TaskSlot) -> tuple[Task | None, bool]:
-                    if slot.current is not None:
-                        return slot.current, False
-                    if self.needs_reply(self._reader, self._source):
-                        return None, False
-                    task = slot.start(lambda task: program(task, self._reader))
-                    with self._reader.read_snapshot():
-                        task.boundary_hint = self._reader.head(source=self._source)
-                    return task, True
+        async with aclosing(self._reader.follow_heads()) as changes:
+            async for _ in changes:
+                while True:
+                    async def admit(slot: TaskSlot) -> tuple[Task | None, bool]:
+                        while True:
+                            if slot.current is not None:
+                                return slot.current, False
+                            state = await self._reader.read_async(lambda reader: _read_state(reader, self._source))
+                            if self._reader.head(source=self._source) != state.head:
+                                continue
+                            if slot.current is not None:
+                                return slot.current, False
+                            if state.pending:
+                                return None, False
+                            task = slot.start(lambda task: program(task, self._reader))
+                            task.boundary_hint = state.head
+                            return task, True
 
-                task, owned = await self._tasks.admit(self._key, admit)
-                if task is None:
-                    break
-                try:
-                    result = await task.join()
-                except asyncio.CancelledError:
-                    caller = asyncio.current_task()
-                    if caller is not None and caller.cancelling():
+                    task, owned = await self._tasks.admit_async(self._key, admit)
+                    if task is None:
+                        break
+                    try:
+                        result = await task.join()
+                    except asyncio.CancelledError:
+                        caller = asyncio.current_task()
+                        if caller is not None and caller.cancelling():
+                            if owned:
+                                task.cancel()
+                                while not task.done:
+                                    try:
+                                        _ = await task.join()
+                                    except asyncio.CancelledError:
+                                        continue
+                            raise
+                        # 新输入已同步撤权；先让用户回复运行，再从原消息继续。
+                    except Exception:
                         if owned:
-                            task.cancel()
-                            while not task.done:
-                                try:
-                                    _ = await task.join()
-                                except asyncio.CancelledError:
-                                    continue
-                        raise
-                    # 新输入已同步撤权；先让用户回复运行，再从原消息继续。
-                except Exception:
-                    if owned:
-                        raise
-                    logger.warning("等待中的主回复失败，继续核对输入状态", exc_info=True)
-                else:
-                    if owned:
-                        return cast(Message, result)
+                            raise
+                        logger.warning("等待中的主回复失败，继续核对输入状态", exc_info=True)
+                    else:
+                        if owned:
+                            return cast(Message, result)
         raise RuntimeError("Session 订阅在回传完成前结束")
 
-    def _boundary_committed(self, task: Task) -> bool:
-        """残留任务负责的区间是否已有持久终态；只有确认边界才允许 lane 让位。"""
+    async def _boundary_committed(self, task: Task) -> bool:
+        """hint 在原 loop 固定，worker 只读取原消息，不借 Task。"""
         hint = task.boundary_hint
-        if not isinstance(hint, int) or hint < 0:
-            return False
-        with self._reader.read_snapshot():
-            return any(
-                message.source == self._source and (
-                    isinstance(message.body, Output) and message.body.finish != "continue"
-                    or isinstance(message.body, Control)
-                )
-                for message in self._reader.snapshot(after_seq=hint)
-            )
+        return await self._reader.read_async(lambda reader: _read_boundary(reader, self._source, hint))
 
     async def start(
         self,
@@ -338,7 +371,7 @@ class SourceSession:
         if (
             current is not None
             and not current.superseded
-            and not self._boundary_committed(current)
+            and not await self._boundary_committed(current)
         ):
             # 普通 Input/pause 的残留先真实排空再让位；已提交终态的不等待物理清理。
             try:
@@ -350,16 +383,23 @@ class SourceSession:
             except Exception:
                 logger.warning("残留回复任务排空失败", exc_info=True)
 
-        # 2. 日志判定与 Task 创建间没有 await，不增加持久 active/attempt 状态。
-        def admit(slot: TaskSlot) -> Task | None:
-            residual = slot.current
-            if residual is not None and not residual.superseded:
-                if not self._boundary_committed(residual):
-                    return residual
-                # 旧工作负责的区间已提交持久终态；物理清理转入残留集合。
-                residual.supersede()
-            if not self.needs_reply(self._reader, self._source):
-                return None
+        # 2. 读取可以等待；回到 loop 后核对 head 与 exact Task，再同步创建。
+        async def admit(slot: TaskSlot) -> Task | None:
+            while True:
+                residual = slot.current
+                hint = None if residual is None else residual.boundary_hint
+                state, committed = await self._reader.read_async(lambda reader: (
+                    _read_state(reader, self._source), _read_boundary(reader, self._source, hint),
+                ))
+                if slot.current is not residual or self._reader.head(source=self._source) != state.head:
+                    continue
+                if residual is not None and not residual.superseded:
+                    if not committed:
+                        return residual
+                    residual.supersede()
+                if not state.pending:
+                    return None
+                break
 
             if self._restart_gate is not None and not self._restart_gate.accepting:
                 return None
@@ -372,12 +412,13 @@ class SourceSession:
                     # 只有仍持有本来源的任务能记录 failure；旧草稿错误只向上报告。
                     async def failed(slot: TaskSlot) -> None:
                         if slot.current is task and task.active:
-                            with self._reader.read_snapshot():
-                                head = self._reader.head(source=self._source)
+                            head = await self._reader.read_async(lambda reader: reader.head(source=self._source))
+                            if slot.current is not task or not task.active:
+                                return
                             _ = await self._controls.append_async(
                                 uuid4().hex, Control("failure", head, str(error)),
                                 expected_source_head=head,
-                                on_commit=lambda message, created: self._changed(message) if created else None,
+                                on_commit=lambda message, created: self._changed(message, False) if created else None,
                             )
                     await self._tasks.admit_async(self._key, failed)
                     raise
@@ -392,29 +433,30 @@ class SourceSession:
                     permit.release()
                 raise
             # 记录接纳时的来源边界；只有本任务之后的持久终态才允许 lane 让位。
-            with self._reader.read_snapshot():
-                task.boundary_hint = self._reader.head(source=self._source)
+            task.boundary_hint = state.head
             if permit is not None:
                 task.on_done(permit.release)
             return task
 
-        return await self._tasks.admit(self._key, admit)
+        return await self._tasks.admit_async(self._key, admit)
 
     async def record_failure(self, error: BaseException, *, boundary: int | None = None) -> None:
-        """为无持久进展的失败补记 failure Control；只重试保存，不重新执行程序。"""
+        """补记 failure；固定前缀判定后仍由原 source-head 条件提交。"""
         async def admit(slot: TaskSlot) -> None:
-            with self._reader.read_snapshot():
-                if not self.needs_reply(self._reader, self._source):
-                    return
-                head = self._reader.head(source=self._source)
+            state = await self._reader.read_async(lambda reader: _read_state(reader, self._source))
+            if not state.pending:
+                return
             if boundary is not None and boundary < 0:
                 raise ValueError("failure 回执不能绑定伪造的负边界")
-            through = head if boundary is None else min(boundary, head)
+            through = state.head if boundary is None else min(boundary, state.head)
+            def committed(message: Message, created: bool) -> None:
+                if created:
+                    state.add(message)
+                    self._changed(message, state.pending)
             _ = await self._controls.append_async(
-                uuid4().hex, Control("failure", through, str(error)), expected_source_head=head,
-                on_commit=lambda message, created: self._changed(message) if created else None,
+                uuid4().hex, Control("failure", through, str(error)), expected_source_head=state.head,
+                on_commit=committed,
             )
-
         await self._tasks.admit_async(self._key, admit)
 
     async def wait_capacity(self) -> None:
