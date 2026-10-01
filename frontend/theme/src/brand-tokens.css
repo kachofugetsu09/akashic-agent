@@ -38,3 +38,10 @@
     --ak-rule-default: var(--ak-rule-strong);
   }
 }
+
+/* 主题切换的整页淡交：旧纸面淡出、新纸面淡入；reduced-motion 下 theme-runtime 不走 View Transitions。 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--ak-sys-duration-medium);
+  animation-timing-function: var(--ak-sys-motion-standard);
+}

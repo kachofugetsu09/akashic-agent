@@ -21,6 +21,8 @@ class ResolvedPluginSource:
     marketplace: str = ""
     plugin_name: str = ""
     static_manifest: StaticPluginManifest | None = None
+    wheel_tree_sha256: str = ""
+    distribution_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,17 +81,21 @@ def scan_plugin_sources(
     plugin_dirs: Sequence[Path] = (),
     *,
     installed_cache_root: Path | None = None,
+    fixed_sources: Sequence[ResolvedPluginSource] = (),
+    ignored_installed_roots: frozenset[Path] = frozenset(),
 ) -> PluginSourceScan:
     """Scan source content without weakening shared boundary failures."""
 
     raw: list[ResolvedPluginSource] = []
     if installed_cache_root is not None:
         raw.extend(
-            _iter_installed_plugin_roots(
+            source for source in _iter_installed_plugin_roots(
                 installed_cache_root,
                 load_manifests=False,
             )
+            if source.plugin_root not in ignored_installed_roots
         )
+    raw.extend(fixed_sources)
     for root in plugin_dirs:
         raw.extend(
             ResolvedPluginSource(
@@ -145,6 +151,8 @@ def scan_plugin_sources(
                 marketplace=source.marketplace,
                 plugin_name=source.plugin_name or static_manifest.name,
                 static_manifest=static_manifest,
+                wheel_tree_sha256=source.wheel_tree_sha256,
+                distribution_source=source.distribution_source,
             )
         )
     return PluginSourceScan(tuple(sources), tuple(failures))

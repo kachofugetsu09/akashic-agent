@@ -25,8 +25,8 @@ Preparation status is process-local terminal output. The launcher waits for `cha
 ## State and versions
 
 - `--state` contains config.toml, workspace, plugin-home, startup.json and per-launch logs.
-- `startup.json` identifies the launcher-owned first installation and its software commit. It does not hold plugin choices or business progress. A different commit is rejected before initialization; the launcher does not infer upgrade or migration approval.
-- `workspace/runtime/distribution-install.json` remains the formal install receipt. Later starts validate the existing installation and preserve its current composition, including disabled or uninstalled plugins.
+- `startup.json` identifies the launcher-owned first installation and its software commit. It does not hold plugin choices or business progress. It remains the historical first-install marker, not the currently deployed revision; the current distribution/runtime identity is authoritative. A new distribution composes its built-in code before startup; required Core/built-in Yoyo migrations finish before selection publication and runtime startup; external migrations are excluded.
+- `workspace/runtime/distribution-install.json` remains the formal install receipt. Later starts retain this receipt unchanged as legacy source evidence, compose current distribution sources with selected external inputs, and preserve disabled or uninstalled choices. See [0082](../decisions/0082-distribution-owned-plugin-composition.md).
 - A nonempty installation without the launch marker is not adopted automatically. Use its original entry or a separate empty state directory.
 - Native build cache is scoped to the checkout and committed revision. Failed staging directories and logs remain for inspection; completed environments are not moved because virtual environments contain absolute paths.
 - Source builds reject tracked local edits. They do not silently build an older HEAD while claiming to run those edits.
@@ -49,8 +49,12 @@ uv run python main.py init
 uv run python main.py
 ```
 
-The full build/install API is `scripts/build_plugin_distribution.py --help` and `scripts/install_plugin_distribution.py --help`. Use explicit config, workspace and plugins-home paths for development isolation. Existing selected runtime upgrades continue through [operator deployment](operator-deployment.md); startup is not an upgrade transaction.
+The full build/install API is `scripts/build_plugin_distribution.py --help` and `scripts/install_plugin_distribution.py --help`. Use explicit config, workspace and plugins-home paths for development isolation. Product starts and [operator deployment](operator-deployment.md) use the same distribution composition policy. Migration approval, backup and actual runtime readiness remain separate from the complete selection commit.
 
 ## Acceptance
 
 Use isolated HOME, state, plugin home, cache, browser profile and Compose project. Verify the distribution commit, default profile, formal install receipt, selected runtime and actual Web bootstrap modules. Exercise cold start, warm start, failed preparation and rerun, port collision, stop/restart, and persistence. An HTTP 200 or a running container alone does not prove that the plugins loaded.
+
+## Updating standalone Compose
+
+After `git pull --ff-only`, use `AKASHIC_REVISION="$(git rev-parse HEAD)" docker compose up -d --build`. The full commit changes Docker's build argument and binds the fetched source. `main` is a floating input whose fetch layer can be cached; `git pull` plus an unchanged `main` build argument does not prove that a new image was built. Keep the same Compose project and data volume; never use `down -v` for an update.

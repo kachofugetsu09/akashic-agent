@@ -86,6 +86,8 @@
 
 | [0081](0081-content-views-keep-original-messages.md) | accepted | 长结果折叠复用原消息与实际展示回执 | CTX-008、STA-001、CAP-001 |
 
+| [0082](0082-distribution-owned-plugin-composition.md) | accepted | 内置代码随部署、外置选择保留，沿同一普通插件图提交 | ONB-002、PLG-007、PLG-013、PLG-016、MIG-001 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

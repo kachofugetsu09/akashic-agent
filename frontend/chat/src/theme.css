@@ -1,6 +1,7 @@
 @import "../../theme/src/material-tokens.css";
 @import "../../theme/src/brand-tokens.css";
 @import "../../theme/src/paper-surface.css";
+@import "../../theme/src/product-band.css";
 
 :root {
   font-family: var(--ak-type-reading);
@@ -9,12 +10,6 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   --radius: 0.75rem;
-  --m-shape-extra-small: var(--md-sys-shape-corner-extra-small);
-  --m-shape-small: var(--md-sys-shape-corner-small);
-  --m-shape-medium: var(--md-sys-shape-corner-medium);
-  --m-shape-large: var(--md-sys-shape-corner-large);
-  --m-shape-large-increased: var(--md-sys-shape-corner-extra-large);
-  --m-shape-full: var(--md-sys-shape-corner-full);
 }
 
 code, kbd, pre, .mono, .font-mono {

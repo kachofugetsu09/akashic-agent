@@ -57,10 +57,19 @@ class AddModel:
     default_reasoning_effort: str | None = None
     driver_config: Mapping[str, Any] = field(default_factory=dict)
     make_default_embedding: bool = False
+    discovery_owned: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class VerifyModel:
+    expected_revision: int
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveModel:
+    """移除模型选择，后续聊天引用跟随默认模型；历史事实不变。"""
+
     expected_revision: int
     model_id: str
 
@@ -111,6 +120,7 @@ ModelChange: TypeAlias = (
     | DisableConnection
     | AddModel
     | VerifyModel
+    | RemoveModel
     | SetDefaultModel
     | SyncModels
     | StartConnectionAuth
@@ -161,6 +171,7 @@ __all__ = [
     "ModelChange",
     "ModelSettings",
     "SetDefaultModel",
+    "RemoveModel",
     "SettingsReceipt",
     "StartConnectionAuth",
     "SyncModels",

@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from agent.migrations.bundles import validate_migration_artifact
 from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.distribution_sources import distribution_plugin_sources
 from agent.plugin_composition.archive import sync_directory
 
 from agent.plugins.artifacts import (
@@ -101,6 +101,7 @@ def finalize_uninstall_plugin(
     *,
     workspace: Path,
     plugins_home: Path | None = None,
+    keep_disabled_choice: bool = False,
 ) -> tuple[Path, Path]:
     """删除已禁用插件的代码和清单，并保留 workspace plugin-data。"""
 
@@ -110,7 +111,8 @@ def finalize_uninstall_plugin(
     data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
     if cache_path.exists():
         shutil.rmtree(cache_path)
-    _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
+    if not keep_disabled_choice:
+        _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
     return cache_path, data_path
 
 
@@ -138,6 +140,7 @@ def install_git_plugin(
     refresh_existing_artifact: bool = False,
     update_id: str | None = None,
     offline_wheels: OfflineWheels | None = None,
+    reserved_ids: frozenset[str] = frozenset(),
 ) -> PluginInstallResult:
     home = (plugins_home or plugins_root()).resolve(strict=False)
     journal = ReloadJournal(workspace)
@@ -190,10 +193,19 @@ def install_git_plugin(
         if re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
             raise RuntimeError(f"插件 Git HEAD 无效: {source_revision}")
         static_manifest = load_static_plugin_manifest(clone_root)
-        # 迁移 bundle 在 cache/pointer 变化前完成完整性与 import 边界校验；
-        # 其执行仍由 runtime 启动前的 MigrationRunner 负责。
-        _ = validate_migration_artifact(clone_root, static_manifest=static_manifest)
         plugin_name = _validate_path_segment(static_manifest.name, "插件 name")
+        # 默认 preset 的身份不能被外置安装接管；克隆校验后、cache/data 写入前拒绝。
+        reserved = set(reserved_ids)
+        receipt_path = workspace / "runtime/distribution-install.json"
+        if receipt_path.exists():
+            receipt = json.loads(receipt_path.read_text())
+            reserved.update(f'{row["name"]}@{row["marketplace"]}' for row in receipt["installed"])
+            configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+            if configured:
+                reserved.update(f"{item.plugin_name}@{item.marketplace}" for item in
+                                distribution_plugin_sources(Path(configured)))
+        if f"{plugin_name}@{marketplace}" in reserved:
+            raise ValueError(f"外置插件不能接管内置数据身份: {plugin_name}@{marketplace}; 请使用独立身份并显式停用原实现")
         plugin_version = _validate_path_segment(
             static_manifest.version,
             "插件 version",

@@ -102,9 +102,10 @@ try {
   await input.setInputFiles(file);
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await waitFor(() => uploads.length === 2);
+  await editor.fill("上传期间后写的草稿");
   await uploads[1].fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "上传暂不可用" }) });
   await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
-  assert.equal(await editor.inputValue(), "失败后可重试的文字");
+  assert.equal(await editor.inputValue(), "失败后可重试的文字\n\n上传期间后写的草稿");
   assert.equal(await selectedFiles.count(), 1);
   assert.equal(await page.getByText("上传暂不可用", { exact: true }).isVisible(), true);
   assert.equal(await page.locator('.conversation img[src^="blob:"]').count(), 0);
@@ -116,7 +117,7 @@ try {
   await page.getByRole("button", { name: "取消上传", exact: true }).click();
   await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
   assert.equal(await selectedFiles.count(), 1);
-  assert.equal(await editor.inputValue(), "失败后可重试的文字");
+  assert.equal(await editor.inputValue(), "失败后可重试的文字\n\n上传期间后写的草稿");
   assert.equal(uploads.length, 3);
   assert.equal((await received()).filter((item) => item.type === "message.send").length, 1);
   checks.push("取消上传只取消本次发送，原草稿可重试，也不误发 /stop");

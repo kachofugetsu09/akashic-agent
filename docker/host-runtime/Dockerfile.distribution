@@ -5,10 +5,6 @@ ARG AKASHIC_BASE_IMAGE
 ARG AKASHIC_RUNTIME_UID=1000
 ARG AKASHIC_RUNTIME_GID=1000
 ARG AKASHIC_ARCH_SNAPSHOT=2026/08/09
-ARG AKASHIC_PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
-ARG AKASHIC_SOURCE_COMMIT
-ARG AKASHIC_SOURCE_TREE
-ARG AKASHIC_CORE_SHA256
 
 ENV HOME=/home/huashen \
     PATH=/opt/venv/bin:/home/huashen/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin \
@@ -21,8 +17,8 @@ RUN printf '%s\n' \
         'CacheServer = https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch' \
         "Server = https://archive.archlinux.org/repos/${AKASHIC_ARCH_SNAPSHOT}/\$repo/os/\$arch" \
         > /etc/pacman.d/mirrorlist \
-    && pacman --disable-download-timeout -Syyu --noconfirm \
-    && pacman --disable-download-timeout -S --noconfirm --needed \
+    && pacman -Syyu --noconfirm \
+    && pacman -S --noconfirm --needed \
         ca-certificates \
         curl \
         git \
@@ -41,10 +37,27 @@ RUN printf '%s\n' \
 
 WORKDIR /opt/akashic
 
+COPY requirements.lock /opt/akashic/distribution/requirements.lock
+ARG AKASHIC_PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG AKASHIC_REQUIREMENTS_SHA256
+RUN printf '%s  %s\n' "${AKASHIC_REQUIREMENTS_SHA256}" /opt/akashic/distribution/requirements.lock | sha256sum -c - \
+    && python -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install \
+        --index-url "${AKASHIC_PYPI_INDEX_URL}" \
+        --no-cache-dir --require-hashes \
+        -r /opt/akashic/distribution/requirements.lock \
+    && /opt/venv/bin/python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'akashic-sdk.pth').write_text('/opt/akashic/source/sdk/python/src\\n')"
+
+# 源码变化不应使前面的依赖层失效。
+ARG AKASHIC_SOURCE_COMMIT
+ARG AKASHIC_SOURCE_TREE
+ARG AKASHIC_CORE_SHA256
+
 # The only source material copied into this image is the generated Core tar.
 COPY core.tar /opt/akashic/distribution/core.tar
 COPY distribution.json /opt/akashic/distribution/distribution.json
 COPY profiles /opt/akashic/distribution/profiles
+COPY sources /opt/akashic/distribution/sources
 COPY *.bundle /opt/akashic/distribution/
 COPY Dockerfile.distribution /opt/akashic/distribution/Dockerfile.distribution
 COPY distribution-entrypoint.sh /opt/akashic/distribution/distribution-entrypoint.sh
@@ -58,17 +71,12 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && tar -xf /opt/akashic/distribution/core.tar -C /opt/akashic/source \
     && test ! -e /opt/akashic/source/plugins \
     && test -f /opt/akashic/source/config.example.toml \
-    && test -f /opt/akashic/source/docker/host-runtime/requirements.lock
-
-RUN python -m venv /opt/venv \
-    && /opt/venv/bin/python -m pip install \
-        --index-url "${AKASHIC_PYPI_INDEX_URL}" \
-        --no-cache-dir --require-hashes \
-        -r /opt/akashic/source/docker/host-runtime/requirements.lock \
-    && /opt/venv/bin/python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'akashic-sdk.pth').write_text('/opt/akashic/source/sdk/python/src\\n')" \
+    && /opt/venv/bin/python -c "from pathlib import Path; assert Path('/opt/akashic/distribution/requirements.lock').read_bytes() == Path('/opt/akashic/source/docker/host-runtime/requirements.lock').read_bytes(), 'Build lock differs from Core lock'" \
     && /opt/venv/bin/python -c "import akashic_sdk; assert akashic_sdk.__file__.startswith('/opt/akashic/source/sdk/python/src/')"
 
 RUN mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
+    && /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py prepare-wheels \
+        --distribution /opt/akashic/distribution \
     && /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
         --distribution /opt/akashic/distribution \
         --profile /opt/akashic/distribution/profiles/default.json \
@@ -92,5 +100,6 @@ RUN mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugi
 LABEL org.opencontainers.image.revision="${AKASHIC_SOURCE_COMMIT}"
 
 USER huashen:huashen
+ENV AKASHIC_PLUGIN_DISTRIBUTION=/opt/akashic/distribution
 ENTRYPOINT ["/opt/akashic/distribution-entrypoint.sh"]
 CMD ["supervise"]
