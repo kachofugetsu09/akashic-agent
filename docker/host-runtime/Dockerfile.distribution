@@ -94,7 +94,7 @@ RUN mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugi
         --pypi-index-url "${AKASHIC_PYPI_INDEX_URL}" \
     && rm -rf /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
     && chown -R root:root /opt/akashic \
-    && chmod -R a-w /opt/akashic \
+    && chmod -R a=rX /opt/akashic \
     && chmod 0555 /opt/akashic/distribution-entrypoint.sh
 
 LABEL org.opencontainers.image.revision="${AKASHIC_SOURCE_COMMIT}"
