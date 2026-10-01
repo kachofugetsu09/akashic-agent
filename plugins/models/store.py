@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -33,6 +33,7 @@ from .settings import (
     CreateConnectionWithModel,
     DisableConnection,
     SetDefaultModel,
+    RemoveModel,
     UpdateConnection,
 )
 from agent.plugin_composition.models import (
@@ -96,7 +97,7 @@ class StoredModel:
             capabilities=command.capabilities,
             capability_sources=command.capability_sources,
             driver_config=_freeze_json(command.driver_config),
-            discovery_owned=False,
+            discovery_owned=command.discovery_owned,
             enabled=True,
         )
 
@@ -697,6 +698,43 @@ class ModelsStore:
 
         return self._domain_write(command.expected_revision, "add-model", write)
 
+    def remove_model(self, command: RemoveModel, *, fallback_model_id: str | None) -> int:
+        """删除用户选中的配置，并在同一事务中清除引用和替换默认聊天模型。"""
+        model_id = _required(command.model_id, "model_id")
+
+        def write(connection: sqlite3.Connection) -> bool:
+            # 1. 只减少模型配置；连接、调用账本和会话消息不在此写入范围。
+            row = connection.execute(
+                "SELECT 'chat' FROM model_definitions WHERE id = ? "
+                "UNION ALL SELECT 'embedding' FROM embedding_models WHERE id = ?",
+                (model_id, model_id),
+            ).fetchone()
+            if row is None:
+                return False
+            if row[0] == "embedding":
+                connection.execute(
+                    "UPDATE model_registry_meta SET default_embedding_model_id = NULL "
+                    "WHERE default_embedding_model_id = ?", (model_id,),
+                )
+                connection.execute("DELETE FROM embedding_models WHERE id = ?", (model_id,))
+                return True
+
+            # 2. 取消角色特选后自然跟随 default；默认被移除才选定替代者。
+            was_default = connection.execute(
+                "SELECT 1 FROM model_role_bindings WHERE role = 'default' AND model_id = ?",
+                (model_id,),
+            ).fetchone() is not None
+            connection.execute("DELETE FROM model_role_bindings WHERE model_id = ?", (model_id,))
+            connection.execute("DELETE FROM model_definitions WHERE id = ?", (model_id,))
+            if was_default and fallback_model_id is not None:
+                connection.execute(
+                    "INSERT INTO model_role_bindings(role, model_id, reasoning_effort) "
+                    "VALUES ('default', ?, '')", (fallback_model_id,),
+                )
+            return True
+
+        return self._domain_write(command.expected_revision, "remove-model", write)
+
     def set_default(self, command: SetDefaultModel) -> int:
         """Set one chat role or the workspace default embedding model."""
 
@@ -771,16 +809,16 @@ class ModelsStore:
         connection_id: str,
         discovered: tuple[DiscoveredModel, ...],
     ) -> int:
-        """Persist one driver's normalized discovery evidence as one revision."""
+        """只刷新用户已选择模型的目录证据，不自动采纳新型号。"""
 
         target_connection = _required(connection_id, "connection_id")
-        items = tuple(discovered)
-        if not items:
+        catalog = tuple(discovered)
+        if not catalog:
             raise ValueError("driver returned an empty model catalog")
-        keys: set[tuple[ModelKind, str]] = set()
-        for item in items:
-            if item.kind not in {ModelKind.CHAT, ModelKind.EMBEDDING}:
-                raise ValueError("服务目录没有用途验证；请逐个选择模型并验证后保存，现有模型保持不变。")
+        keys: set[tuple[ModelKind | None, str]] = set()
+        for item in catalog:
+            if item.kind not in {None, ModelKind.CHAT, ModelKind.EMBEDDING}:
+                raise ValueError("driver returned invalid model kind")
             if not isinstance(item.capabilities, ModelCapabilities):
                 raise TypeError("driver returned invalid model capabilities")
             if not isinstance(item.capability_sources, CapabilitySources):
@@ -788,10 +826,10 @@ class ModelsStore:
             model = _required(item.model, "discovered model")
             if model != item.model:
                 raise ValueError("discovered model must not contain outer whitespace")
-            key = (cast(ModelKind, item.kind), model)
+            key = (item.kind, model)
             if key in keys:
                 raise ValueError(
-                    f"driver returned duplicate model: {item.kind.value}/{model}"
+                    f"driver returned duplicate model: {model}"
                 )
             keys.add(key)
             if item.kind is ModelKind.EMBEDDING:
@@ -811,7 +849,25 @@ class ModelsStore:
             current = self.read_snapshot()
             if current is None:
                 raise RuntimeError("model registry disappeared during catalog sync")
+            # 1. 目录未声明用途时，只借用已选配置的验证事实；不推断新型号。
             existing = _existing_model_ids(connection, target_connection)
+            known = {(item.kind, item.model): item for item in catalog if item.kind is not None}
+            for item in catalog:
+                if item.kind is not None:
+                    continue
+                for kind in (ModelKind.CHAT, ModelKind.EMBEDDING):
+                    key = (kind, item.model)
+                    stored = existing.get(key)
+                    if stored is None or key in known:
+                        continue
+                    model = current.models[stored[0]]
+                    # 无用途的型号清单不能改写已验证的调用配置。
+                    known[key] = replace(
+                        item, kind=model.kind, default_reasoning_effort=model.default_reasoning_effort,
+                        driver_config=model.driver_config,
+                    )
+            items = tuple(known.values())
+            # 2. 可用性和能力只更新已选行，仍保护手工配置。
             legacy_keys = frozenset(
                 key for key, (_, _, legacy) in existing.items() if legacy
             )
@@ -822,7 +878,6 @@ class ModelsStore:
                 legacy_keys=legacy_keys,
             ):
                 return False
-            used = _all_model_ids(connection)
             desired = {(item.kind, item.model) for item in items}
             for key, (model_id, discovery_owned, _) in existing.items():
                 if discovery_owned and key not in desired:
@@ -839,22 +894,16 @@ class ModelsStore:
             for item in items:
                 key = (cast(ModelKind, item.kind), item.model)
                 stored = existing.get(key)
-                if stored is not None and not stored[1] and not stored[2]:
+                if stored is None or (not stored[1] and not stored[2]):
                     continue
-                model_id = (
-                    stored[0]
-                    if stored is not None
-                    else _discovered_model_id(target_connection, cast(ModelKind, item.kind), item.model)
-                )
-                owner = used.get(model_id)
-                if owner is not None and owner != (
-                    target_connection,
-                    cast(ModelKind, item.kind),
-                    item.model,
-                ):
-                    raise ValueError(
-                        f"discovered model id conflicts with existing model: {model_id}"
+                model_id = stored[0]
+                # 向量空间由显式探测确认；目录同步只改变其可用性。
+                if item.kind is ModelKind.EMBEDDING:
+                    connection.execute(
+                        "UPDATE embedding_models SET enabled = 1, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ? AND enabled = 0", (model_id,),
                     )
+                    continue
                 command = AddModel(
                     expected_revision=expected_revision,
                     model_id=model_id,
@@ -866,29 +915,12 @@ class ModelsStore:
                     default_reasoning_effort=item.default_reasoning_effort,
                     driver_config=item.driver_config,
                 )
-                if item.kind is ModelKind.CHAT:
-                    connection.execute(
-                        _UPSERT_CHAT_MODEL,
-                        _chat_model_values(
-                            command,
-                            model_id,
-                            target_connection,
-                            item.model,
-                            source="discovery",
-                        ),
-                    )
-                else:
-                    connection.execute(
-                        _UPSERT_EMBEDDING_MODEL,
-                        (
-                            model_id,
-                            target_connection,
-                            item.model,
-                            int(item.capabilities.embedding_dimensions or 0),
-                            _model_payload(command, source="discovery"),
-                        ),
-                    )
-                used[model_id] = (target_connection, cast(ModelKind, item.kind), item.model)
+                connection.execute(
+                    _UPSERT_CHAT_MODEL,
+                    _chat_model_values(
+                        command, model_id, target_connection, item.model, source="discovery",
+                    ),
+                )
             return True
 
         return self._domain_write(expected_revision, "sync-models", write)
@@ -1107,32 +1139,6 @@ def _existing_model_ids(
     return result
 
 
-def _all_model_ids(
-    connection: sqlite3.Connection,
-) -> dict[str, tuple[str, ModelKind, str]]:
-    result: dict[str, tuple[str, ModelKind, str]] = {}
-    for table, kind in (
-        ("model_definitions", ModelKind.CHAT),
-        ("embedding_models", ModelKind.EMBEDDING),
-    ):
-        rows = connection.execute(
-            f"SELECT id, connection_id, model FROM {table}"
-        ).fetchall()
-        for row in rows:
-            model_id = str(row[0])
-            if model_id in result:
-                raise RuntimeError(f"duplicate model id across kinds: {model_id}")
-            result[model_id] = (str(row[1]), kind, str(row[2]))
-    return result
-
-
-def _discovered_model_id(connection_id: str, kind: ModelKind, model: str) -> str:
-    """Build one deterministic store-owned ID for newly discovered evidence."""
-
-    parts = (connection_id, kind.value, model)
-    return "discovered:" + "".join(f"{len(part)}:{part}" for part in parts)
-
-
 def _sync_would_change(
     snapshot: StoredSnapshot,
     connection_id: str,
@@ -1153,18 +1159,16 @@ def _sync_would_change(
         return True
     for item in items:
         stored = current.get((cast(ModelKind, item.kind), item.model))
-        if (
-            stored is not None
-            and not stored.discovery_owned
-            and (item.kind, item.model) not in legacy_keys
+        if stored is None or (
+            not stored.discovery_owned and (item.kind, item.model) not in legacy_keys
         ):
             continue
+        if item.kind is ModelKind.EMBEDDING:
+            if not stored.enabled:
+                return True
+            continue
         desired = StoredModel(
-            model_id=(
-                stored.model_id
-                if stored is not None
-                else _discovered_model_id(connection_id, cast(ModelKind, item.kind), item.model)
-            ),
+            model_id=stored.model_id,
             connection_id=connection_id,
             kind=cast(ModelKind, item.kind),
             model=item.model,
@@ -1411,10 +1415,11 @@ def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
     ).fetchone()
     if active is None or not bool(active[0]):
         raise ValueError(f"connection does not exist or is disabled: {connection_id}")
+    source = "discovery" if command.discovery_owned else "manual"
     if kind == "chat":
         connection.execute(
             _INSERT_CHAT_MODEL,
-            _chat_model_values(command, model_id, connection_id, model),
+            _chat_model_values(command, model_id, connection_id, model, source=source),
         )
         return
     dimensions = command.capabilities.embedding_dimensions
@@ -1432,7 +1437,7 @@ def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
             connection_id,
             model,
             int(dimensions),
-            _model_payload(command),
+            _model_payload(command, source=source),
         ),
     )
 

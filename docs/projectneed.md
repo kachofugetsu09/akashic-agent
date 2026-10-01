@@ -570,6 +570,8 @@ Provider connection 的 Base URL、API Key、Codex access/refresh token 与账�
 
 对话模型选择按“本次消息显式 model ref/effort → session selection → 当前 default”解析。Session selection 以版本化对象持久化后跨 Gateway 重启保留；清除后重新跟随动态 default。显式 effort 只属于显式选择的 default/agent 主推理，不传播给 fast、vision 等内部角色；不受支持的值明确失败。实际执行绑定写入 turn 诊断元数据，不得反向改写既有消息。旧字符串 override 只读兼容，并在下一次显式选择时升级。
 
+用户取消模型选择时物理移除该模型配置；既有消息和会话引用在后续执行时回到当前 default，清除旧型号的显式 effort。删除 default 时按 model ID 选择一个仍可用的已选聊天模型；无候选时明确报未配置。在途执行继续使用冻结绑定，历史消息、调用账和凭据不减少。向量模型删除不得替换既有向量空间。目录探测只产生候选，只有用户显式勾选才增加配置；同步只刷新已选模型的可用性与能力。
+
 ### RUN-011 模型能力来自带来源的注册表
 
 Codex、OpenCode 等 Provider 插件的权威目录优先提供模型能力；其余已知模型由 `models` 插件在用户同步时从经过边界校验的公共模型目录派生快照，并保留最近一次可信快照和固定随包目录作为离线降级。公共目录只补全 Provider 未声明的字段，不能增加 Provider 未返回的模型。Core 不保存模型能力对照表。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
