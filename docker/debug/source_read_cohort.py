@@ -13,7 +13,7 @@ import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--previous-source", type=Path, required=True,
-                    help="仍提供 sources.v3/source.session.v2 的完整旧源码")
+                    help="仍提供 sources.v4/source.session.v3 的完整旧源码")
 args = parser.parse_args()
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -21,7 +21,7 @@ from agent.plugin_composition import CompositionError, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.model import FiberState
 from agent.plugin_contracts.reply import REPLY_COMPLETION
-from agent.plugin_contracts.sources import SOURCES_V3, SOURCE_SESSION_V2, SOURCES_V4, SOURCE_CHANGED_V3
+from agent.plugin_contracts.sources import SOURCES_V4, SOURCE_SESSION_V3, SOURCES_V5, SOURCE_CHANGED_V3
 from session.message import Input, Output, ToolResult
 from tests.test_default_reply import application
 
@@ -36,7 +36,7 @@ def copy_previous(destination, names):
 
 async def versions(path):
     """半组不能启用；完整旧组执行后，破坏性局部更新拒绝并恢复旧组。"""
-    old_keys = (SOURCES_V3, SOURCE_SESSION_V2)
+    old_keys = (SOURCES_V4, SOURCE_SESSION_V3)
     async with application(path / "current", replying=True) as (_log, host):
         root = host.live_root
         applied = []
@@ -52,20 +52,20 @@ async def versions(path):
             else:
                 raise AssertionError("当前 provider 发布了旧 alias")
         await actor.dispose()
-        assert root.context.require(SOURCES_V4) is not None
+        assert root.context.require(SOURCES_V5) is not None
 
     async with application(path / "reverse", replying=True,
                            extra_sources=lambda destination: copy_previous(destination, ("sources",))) as (_log, host):
         root = host.live_root
-        assert root.context.require(SOURCES_V3) is not None
+        assert root.context.require(SOURCES_V4) is not None
         try:
-            root.context.require(SOURCES_V4)
+            root.context.require(SOURCES_V5)
         except CompositionError:
             pass
         else:
             raise AssertionError("旧 provider 启用了新 actor 所需的能力")
 
-    names = ("sources", "conversation", "reply")
+    names = ("sources", "conversation", "reply", "react", "reply_program")
     async with application(path / "restore", replying=True,
                            extra_sources=lambda destination: copy_previous(destination, names)) as (log, host):
         root = host.live_root
@@ -93,7 +93,7 @@ async def versions(path):
         assert log.reader("test:room").get("old-input") == accepted
         for key in old_keys:
             assert root.context.require(key) is not None
-    return {"old_actor_with_current_provider": "PENDING", "current_actor_with_old_provider": "missing v4",
+    return {"old_actor_with_current_provider": "PENDING", "current_actor_with_old_provider": "missing v5",
             "complete_old_group": "Input/Output/ToolResult/Output",
             "breaking_partial_update": "rejected; old Root and exact messages restored"}
 

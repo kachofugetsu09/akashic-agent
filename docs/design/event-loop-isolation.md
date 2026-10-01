@@ -233,16 +233,19 @@ Tool started、command intent 和 generation claim 把 Source 前提检查放进
 Core claim 不能证明远端有或没有效果。旧 v2/v3 准备和消息表示保留，不做 schema 迁移或历史改写。
 准备的纯 SQL 也离开 loop；Context 和模型句柄的读取保持在原 scope。
 
-能力必须按完整组选择：`sources.v4`、`source.session.v3`、`source.check.v2`、
+能力必须按完整组选择：`sources.v5`、`source.session.v4`、`source.check.v2`、
 `source.changed.v3`、`channel.input.v2`、`source.interrupt.v2`、`tools.program.v2`、
-`react.ordered-start.v1`。旧公共常量保持旧值，新 provider 不提供旧 alias。
-ReplyExecute 的原公共合同已要求 Source 接纳的 Task/Input；其签名保持不变，内部迁移到新首次启动能力。
-旧 actor 与新 provider、或新 actor 与旧 provider 不能静默混用。
+`react.ordered-start.v2`、`conversation.complete.v2`、`reply.program.v3`、`reply.execute.v3`。
+旧公共常量及旧二参数完成回调的结构合同保持原值，新 provider 不提供旧 alias。
+来源注册表也换 key，因为其 open 返回的 session 带新的完成回调合同。旧 actor 与新 provider、
+或新 actor 与旧 provider 不能静默混用；不能只迁移直接 factory 而漏掉注册表消费者。
 
 Manager 的逐插件局部更新不能跨越整组能力版本：它会明确拒绝旧依赖 PENDING，并恢复旧组。
 跨版本启用应在新 Root 中选择完整组；正式选择、安装和启用验收属于发布流程。
 完整旧组仍可恢复。保持同一能力版本的局部替换仍在同 Root 完成，并先等待已接纳 Source worker 排空。
-本地 scenario 已分别验证上述拒绝、恢复和同版本替换；没有正式 workspace、账户或付费 provider 写入。
+原候选 `bac7877` 的本地 scenario 验证过拒绝、恢复和同版本替换；该证据不自动覆盖后续能力组。
+当前源码的原概念测试、来源路由与材料场景分别核对实际 Root 和当前 key；新的完整跨版本
+Manager 发布/旧组恢复仍需独立验收。没有正式 workspace、账户或付费 provider 写入。
 
 回归 `test_source_commit_drains_before_cancel_and_rejects_late_start` 在 `32b0aaf2` 的真实通知边界失败，
 候选的普通取消及服务关闭场景均通过。它守护 C3/C4/C5 的收据、终态和效果顺序，不改变既有消息正文。
@@ -257,6 +260,34 @@ handler 完成后丢一次 RPC 响应，核对无自动重发、断连重接后�
 内部 pause 等待磁盘时，活动回复仍可能追加 Output。来源 head 的 CAS 失败不提交任何事实；
 内部 pause 重新读取前缀再尝试。显式 control 的 expected head 不重试，身份、权限或引用错误也不重试。
 停止完成前后已提交的 Input/Output 都保留，不能用撤销正文消除这类竞态。
+
+直接调用回复程序的 Scheduler、Subagent 和 Wake 也由各自来源固定实际 Input 的 seq，
+不能依赖只在 SourceSession 设置的默认 Task 边界。Scheduler 使用 append 的原收据，
+Subagent 核对原请求的同来源 Input，Wake 按每个实际阶段 Input 固定边界；重放不吸收
+后来 Input/Control。共享回复程序仍拒绝被替代的边界，不把负边界放宽为当前 head。
+`docker/debug/source_reply_boundaries.py` 在真实来源、Task、MessageLog、回复程序、ReAct
+和 Models 账本上验证首次/恢复调用、后来输入/控制拒绝和 Wake 同 Task 多阶段。
+模型 driver 与发送端为本地夹具，不代表真实 provider 或正式投递验收。
+
+
+### 跨来源完成回传的控制前提
+
+后台 Subagent 回传由父 Conversation 的空闲准入控制，但新 Output 属于该子任务的独立来源。
+只检查输出来源会漏掉父 Conversation 已提交、尚未发送取消通知的新 Input/Control。
+SourceSession.complete 在准入时固定原 reader/source/seq，并以 SourceGuard 闭包交给完成回调；
+它沿 ConversationComplete、ReplyProgram 和 ReplyExecute 的显式新合同传递，没有新 Core 状态表、
+Task 来源字段或全局查找表。改变输出来源不改变这份控制前提。
+
+回复入口先核对原控制前提，材料阶段及 Tool/Models 首次效果再同时核对控制前提与输出前提。
+新 Output 在原 owner transaction 内也执行同一检查，不能把一次 started 许可当作永久提交权。
+已存在 Output 的同 ID 读取仍复用原事实；已开始 Tool 的真实成功 ToolResult 与 done 仍按原协议
+共同提交，已保存 Models response 仍保留，取消不冒充外部效果回滚。
+
+`docker/debug/completion_source_ordering.py` 运行真实 Subagent 回传、SourceSession、Task、
+回复程序、ReAct、ToolExecution、Models/Message 存储。真实 SQL 提交后延迟 loop 撤权，分别在
+入口、生成 claim、工具 started、实际本地 fsync 效果后及模型成功后的 Output 前设置屏障，
+核对 Input/Control 两种替代、成功路径、原历史和完整性。脚本使用本地 model driver 与发送端；
+不是正式安装、跨进程恢复、远端 provider、真实发送或生产延迟证据。
 
 ## Source 的开放尾部读取（#869）
 
@@ -287,7 +318,7 @@ handler 完成后丢一次 RPC 响应，核对无自动重发、断连重接后�
 
 提交回调向 `source.changed.v3` 传入该提交前缀的 pending，Reply 同步占用或释放原活动计数。
 启动恢复等待读取后重查 head 和来源身份，避免旧读取释放新输入的占位。Sources 的异步
-needs_reply 属于 `sources.v4`，工厂属于 `source.session.v3`；旧公共类型和键保留归档含义，
+needs_reply 属于 `sources.v5`，工厂属于 `source.session.v4`；旧公共类型和键保留归档含义，
 当前 provider 不提供旧 alias。ChannelInput、SourceCheck 和 SourceInterrupt 的已有签名保持。
 完整旧归档使用旧组，新旧半组保持 PENDING；正式跨版本启用仍走新 Root 的完整选择。
 
@@ -300,7 +331,7 @@ Conversation 命令材料、Programmatic 结果读取与提交帧结算也使用
 冲突、取消及 Tasks.close 的物理排空。原行逐字段相等，integrity/FK 检查保持；未运行付费
 provider、正式 workspace 或生产 p99。只追加原协议允许的 Input/Control，不迁移或减少历史。
 
-`docker/debug/source_read_cohort.py --previous-source <旧源码>` 使用仍提供 v3/v2 的完整旧源码，
+`docker/debug/source_read_cohort.py --previous-source <旧源码>` 使用仍提供 v4/v3 的完整旧源码，
 经临时 Manager 验证旧归档执行、半组拒绝和失败局部更新后的恢复；当前安装的 Reply 在真实
 Input ACK 前取得活动占位，同 ID 重放不重复通知或执行。启动慢读后的 head/来源重查属于本层
 实现，独立概念 Gate 和正式启动验收仍需分别记录，不能由这些安装夹具代替。

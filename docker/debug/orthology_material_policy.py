@@ -12,7 +12,7 @@ from agent.plugin_contracts.context import MATERIALS, MATERIALS_V4
 from plugins.context import plugin as context
 from plugins.context.materials import ContextMaterials
 from plugins.reply_program import plugin as reply
-from agent.plugin_contracts.reply import REPLY_EXECUTE, REPLY_EXECUTE_V2
+from agent.plugin_contracts.reply import REPLY_EXECUTE, REPLY_EXECUTE_V2, REPLY_EXECUTE_V3
 
 
 async def check(workspace: Path) -> None:
@@ -74,7 +74,8 @@ async def check(workspace: Path) -> None:
                 await isolated.context.provide(key, new_materials if key == MATERIALS_V4 else unavailable)
             mounted = await isolated.mount(reply.apply, name="reply", inject=reply.inject, runtime=runtime("reply"))
             assert mounted.error is None
-            assert isolated.context.get(REPLY_EXECUTE_V2) is not None
+            assert isolated.context.get(REPLY_EXECUTE_V3) is not None
+            assert isolated.context.get(REPLY_EXECUTE_V2) is None
             assert isolated.context.get(REPLY_EXECUTE) is None
         finally:
             await isolated.dispose()

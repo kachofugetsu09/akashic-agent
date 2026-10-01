@@ -106,7 +106,9 @@ async def run(directory: Path) -> dict:
         assert not task.active
         # 3. 已关闭 Turn 的晚到工具结果仍完整保存；材料准入不重新执行原工具。
         output, source = writers["closed"]
-        async def complete_program(_task, reader):
+        async def complete_program(_task, reader, check_control=None):
+            if check_control is not None:
+                check_control()
             return output.append("material-complete", Output((), "complete"),
                                  expected_source_head=reader.head(source="conversation"))
         completion = await measure("complete_with_late_large_tool_result", lambda: source.complete(complete_program))

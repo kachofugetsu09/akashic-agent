@@ -68,3 +68,6 @@ class OrderedReact(Protocol):
 REACT = ServiceKey[React]("react.v2")
 
 REACT_ORDERED = ServiceKey[OrderedReact]("react.ordered-start.v1")
+
+# v2 也在新 Output 的同一事务核对控制前提，不能把首次启动许可当作永久提交权。
+REACT_ORDERED_V2 = ServiceKey[OrderedReact]("react.ordered-start.v2")

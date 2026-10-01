@@ -11,10 +11,10 @@ from agent.plugin_contracts import Message
 from agent.plugin_contracts.sources import (
     SOURCE_CHECK_V2 as SOURCE_CHECK,
     SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
-    SOURCE_SESSION_V3 as SOURCE_SESSION,
-    SOURCES_V4 as SOURCES,
-    SourceV2 as Source,
-    SourceSession as SourceSession,
+    SOURCE_SESSION_V4 as SOURCE_SESSION,
+    SOURCES_V5 as SOURCES,
+    AsyncSource as Source,
+    GuardedSourceSession as SourceSession,
 )
 
 api_version = 3

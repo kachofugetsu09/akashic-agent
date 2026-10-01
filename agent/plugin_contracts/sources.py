@@ -39,16 +39,22 @@ class SourceChangedV3:
 SOURCE_CHANGED_V3 = EmitEventKey[SourceChangedV3]("source.changed.v3")
 
 
-class SourceSession(Protocol):
+class SourceGuard(Protocol):
+    """来源固定的执行前提；输出可以属于另一来源，但不能转移控制权。"""
+
+    def __call__(self, *, transaction: OwnerTransaction | None = None) -> None: ...
+
+
+CompletionProgram = Callable[[Task, MessageReader, SourceGuard], Awaitable[Message]]
+
+
+class SourceSessionBase(Protocol):
     async def accept(self, message_id: str, body: Input) -> Message: ...
     async def control(
         self, message_id: str, body: Control, *, expected_head: int, handle: str | None
     ) -> Message: ...
     async def pause(self, message_id: str) -> Message: ...
     async def resume(self, message_id: str, input_id: str) -> Message: ...
-    async def complete(
-        self, program: Callable[[Task, MessageReader], Awaitable[Message]]
-    ) -> Message: ...
     async def start(
         self, program: Callable[[Task, MessageReader, str], Awaitable[object]]
     ) -> Task | None: ...
@@ -56,6 +62,16 @@ class SourceSession(Protocol):
         self, error: BaseException, *, boundary: int | None = None
     ) -> None: ...
     async def wait_capacity(self) -> None: ...
+
+
+class SourceSession(SourceSessionBase, Protocol):
+    async def complete(
+        self, program: Callable[[Task, MessageReader], Awaitable[Message]]
+    ) -> Message: ...
+
+
+class GuardedSourceSession(SourceSessionBase, Protocol):
+    async def complete(self, program: CompletionProgram) -> Message: ...
 
 
 class SessionFactory(Protocol):
@@ -69,6 +85,23 @@ class SessionFactory(Protocol):
         changed: Callable[[MessageReader, str], None] | None = None,
         restart_gate: RestartGate | None = None,
     ) -> SourceSession: ...
+    @staticmethod
+    def needs_reply(
+        messages: Sequence[Message] | MessageReader, source: str
+    ) -> bool: ...
+
+
+class GuardedSessionFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        reader: MessageReader,
+        inputs: MessageWriter,
+        controls: MessageWriter,
+        tasks: TaskAdmission,
+        changed: Callable[[MessageReader, str], None] | None = None,
+        restart_gate: RestartGate | None = None,
+    ) -> GuardedSourceSession: ...
     @staticmethod
     def needs_reply(
         messages: Sequence[Message] | MessageReader, source: str
@@ -107,11 +140,46 @@ class Sources(Protocol):
     ) -> Message: ...
 
 
+@dataclass(frozen=True)
+class GuardedSource:
+    context: Context
+    name: str
+    open: Callable[[str], GuardedSourceSession]
+    needs_reply: Callable[[MessageReader], bool]
+    accept: Accept | None = None
+    channels: tuple[str, ...] | None = ()
+
+
+class GuardedSources(Protocol):
+    async def register(
+        self,
+        ctx: Context,
+        *,
+        name: str,
+        open: Callable[[str], GuardedSourceSession],
+        needs_reply: Callable[[MessageReader], bool],
+        accept: Accept | None = None,
+        channels: tuple[str, ...] | None = (),
+    ) -> Effect: ...
+    def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
+    def entries(self) -> tuple[GuardedSource, ...]: ...
+    def changes(self) -> AsyncGenerator[tuple[GuardedSource, ...], None]: ...
+    async def accept(
+        self, session_id: str, message_id: str, message: ChannelInboundMessage
+    ) -> Message: ...
+
+
 class ConversationComplete(Protocol):
     async def __call__(
         self,
         session_id: str,
         program: Callable[[Task, MessageReader], Awaitable[Message]],
+    ) -> Message: ...
+
+
+class ConversationCompleteV2(Protocol):
+    async def __call__(
+        self, session_id: str, program: CompletionProgram,
     ) -> Message: ...
 
 
@@ -135,51 +203,53 @@ class SourceCheck(Protocol):
 
 # 旧常量保持原值；旧归档不会因导入当前 Core 而隐式升级合同。
 SOURCES_V3 = ServiceKey[Sources]("sources.v3")
+SOURCES_V4 = ServiceKey[GuardedSources]("sources.v4")
 SOURCE_SESSION_V2 = ServiceKey[SessionFactory]("source.session.v2")
+SOURCE_SESSION_V3 = ServiceKey[GuardedSessionFactory]("source.session.v3")
 SOURCE_CHECK_V2 = ServiceKey[SourceCheck]("source.check.v2")
 SOURCE_INTERRUPT_V2 = ServiceKey[
     Callable[[MessageReader, str, str], Awaitable[bool]]
 ]("source.interrupt.v2")
 
-
-class SessionFactoryV3(Protocol):
+class SessionFactoryV4(Protocol):
     """当前来源读取可等待；通知携带同一提交点的待回复事实。"""
     def __call__(
         self, *, reader: MessageReader, inputs: MessageWriter, controls: MessageWriter,
         tasks: TaskAdmission,
         changed: Callable[[MessageReader, str, bool], None] | None = None,
         restart_gate: RestartGate | None = None,
-    ) -> SourceSession: ...
+    ) -> GuardedSourceSession: ...
     @staticmethod
     async def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool: ...
 
 
 @dataclass(frozen=True)
-class SourceV2:
+class AsyncSource:
     context: Context
     name: str
-    open: Callable[[str], SourceSession]
+    open: Callable[[str], GuardedSourceSession]
     needs_reply: Callable[[MessageReader], Awaitable[bool]]
     accept: Accept | None = None
     channels: tuple[str, ...] | None = ()
 
 
-class SourcesV4(Protocol):
+class SourcesV5(Protocol):
     async def register(
-        self, ctx: Context, *, name: str, open: Callable[[str], SourceSession],
+        self, ctx: Context, *, name: str, open: Callable[[str], GuardedSourceSession],
         needs_reply: Callable[[MessageReader], Awaitable[bool]], accept: Accept | None = None,
         channels: tuple[str, ...] | None = (),
     ) -> Effect: ...
     async def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
-    def entries(self) -> tuple[SourceV2, ...]: ...
-    def changes(self) -> AsyncGenerator[tuple[SourceV2, ...], None]: ...
+    def entries(self) -> tuple[AsyncSource, ...]: ...
+    def changes(self) -> AsyncGenerator[tuple[AsyncSource, ...], None]: ...
     async def accept(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> Message: ...
 
 
-SOURCES_V4 = ServiceKey[SourcesV4]("sources.v4")
-SOURCE_SESSION_V3 = ServiceKey[SessionFactoryV3]("source.session.v3")
+SOURCES_V5 = ServiceKey[SourcesV5]("sources.v5")
+SOURCE_SESSION_V4 = ServiceKey[SessionFactoryV4]("source.session.v4")
 
 CONVERSATION_COMPLETE = ServiceKey[ConversationComplete]("conversation.complete.v1")
+CONVERSATION_COMPLETE_V2 = ServiceKey[ConversationCompleteV2]("conversation.complete.v2")
 CONVERSATION_COMMANDS = ServiceKey[
     Callable[[Task, MessageReader, str], Awaitable[Message | None]]
 ]("conversation.commands.v1")

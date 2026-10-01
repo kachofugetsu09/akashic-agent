@@ -7,6 +7,7 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from core.common.file_io import run_file_io
 from typing import cast
+from functools import partial
 from uuid import uuid4
 
 from agent.plugin_composition.messages import (
@@ -18,6 +19,7 @@ from agent.plugin_composition.messages import (
 )
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts import Control, Input, Message, Output
+from agent.plugin_contracts.sources import CompletionProgram
 
 logger = logging.getLogger(__name__)
 Changed = Callable[[MessageReader, str, bool], None]
@@ -132,11 +134,10 @@ class SourceSession:
         self._restart_gate = restart_gate
         self._key = (reader.session_id, self._source)
 
-    def _changed(self, message: Message, pending: bool) -> Message:
+    def _changed(self, message: Message, pending: bool) -> None:
         """提交收据在原 loop 同步通知，监听者无需重新扫描正文才能占位。"""
         if self._on_changed is not None:
             self._on_changed(self._reader, self._source, pending)
-        return message
 
     def _committed(self, slot: TaskSlot, message: Message, created: bool, pending: bool) -> None:
         """提交通知失败也必须撤权；重放不重复通知或取消。"""
@@ -307,7 +308,7 @@ class SourceSession:
             )
         return await self._tasks.admit_async(self._key, admit)
 
-    async def complete(self, program: Callable[[Task, MessageReader], Awaitable[Message]]) -> Message:
+    async def complete(self, program: CompletionProgram) -> Message:
         """在主回复空闲后处理材料；新输入可以撤权，只重试被抢占的本次程序。"""
         # 1. 用户输入优先；等待旧 Task 不取得其取消权。
         async with aclosing(self._reader.follow_heads()) as changes:
@@ -324,7 +325,10 @@ class SourceSession:
                                 return slot.current, False
                             if state.pending:
                                 return None, False
-                            task = slot.start(lambda task: program(task, self._reader))
+                            task = slot.start(lambda task: program(
+                                task, self._reader,
+                                partial(check_source, task, self._reader, self._source, state.head),
+                            ))
                             task.boundary_hint = state.head
                             return task, True
 
