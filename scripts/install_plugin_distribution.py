@@ -28,18 +28,19 @@ from agent.plugins.install import install_git_plugin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
 from agent.plugins.source_resolver import ResolvedPluginSource
+from agent.plugins.source_resolver import scan_plugin_sources
+from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input
 from agent.plugin_composition.archive import encode_tree, sync_directory, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
-from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
+from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir, upsert_plugin_manifest, ensure_workspace_plugin_data_dir
 from agent.plugins.static_manifest import load_static_plugin_manifest
-from agent.plugins.python_environment import ENVIRONMENT_FILE
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
-from agent.plugins.input_preparation import prepare_plugin_input, _source_revision
-from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.input_preparation import prepare_plugin_input, _source_revision, PLUGIN_ARCHIVE_BINDING_API
+from agent.plugins.reload_journal import ReloadJournal, PendingPublicationError, check_pending_publication
 from agent.plugins.selection import PluginSelection, SelectionConflictError
-from agent.migrations.bundles import validate_migration_artifact
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -72,8 +73,8 @@ def _external_path(root: Path, relative: object, *, directory: bool) -> Path:
     return current
 
 
-def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], tuple[str, ...]]:
-    """校验部署者指定的精确目标与迁移清单。"""
+def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]]]:
+    """校验部署者指定的精确外置目标。"""
     def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -86,18 +87,13 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], tu
         raise ValueError("部署清单必须是普通文件")
     raw = path.read_bytes()
     document = json.loads(raw, object_pairs_hook=unique_pairs)
-    if not isinstance(document, dict) or set(document) != {"schema_version", "expected_root_ref", "targets", "migrations"}:
-        raise ValueError("部署清单需要 schema_version、expected_root_ref、targets、migrations")
+    if not isinstance(document, dict) or set(document) != {"schema_version", "expected_root_ref", "targets"}:
+        raise ValueError("部署清单需要 schema_version、expected_root_ref、targets")
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise ValueError("部署清单 schema_version 错误")
     root_ref = document["expected_root_ref"]
     if not isinstance(root_ref, str) or _SHA256.fullmatch(root_ref) is None:
         raise ValueError("expected_root_ref 必须是完整 Root SHA-256")
-    migrations = document["migrations"]
-    if (not isinstance(migrations, list)
-        or any(not isinstance(item, str) or not item or item.strip() != item for item in migrations)
-        or len(set(migrations)) != len(migrations)):
-        raise ValueError("migrations 必须是无重复的 migration ID 数组")
     targets = document["targets"]
     if not isinstance(targets, list):
         raise ValueError("targets 必须是数组；空数组保留全部插件")
@@ -130,7 +126,7 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], tu
                 or _SHA256.fullmatch(wheels["tree_sha256"]) is None):
                 raise ValueError(f"offline_wheels 无效: {plugin_id}")
             _external_path_syntax(wheels["relative_path"])
-    return hashlib.sha256(raw).hexdigest(), root_ref, targets, tuple(migrations)
+    return hashlib.sha256(raw).hexdigest(), root_ref, targets
 
 
 def _external_path_syntax(relative: object) -> str:
@@ -197,7 +193,6 @@ def _stage_deployment_targets(
         identity = load_static_plugin_manifest(code)
         if identity.name != name:
             raise ValueError(f"external target 静态身份不一致: {plugin_id}")
-        _ = validate_migration_artifact(code, static_manifest=identity)
         required = any((code / runtime.requirements).read_text(encoding="utf-8").strip() for runtime in identity.python)
         wheels_spec = target.get("offline_wheels")
         if required != (wheels_spec is not None):
@@ -222,7 +217,7 @@ def _stage_deployment_targets(
                 destination.mkdir()
                 preflight_offline_runtime(code, runtime, wheels, destination)
         result.append({"plugin_id": plugin_id, "old_ref": old_ref, "bundle": local,
-                       "commit": commit, "code": code, "installed_target": installed_target,
+                       "commit": commit, "code": code,
                        "wheels": wheels, "bundle_sha256": bundle_digest})
     return result
 
@@ -595,6 +590,7 @@ def install_profile(
     workspace: Path,
     plugins_home: Path,
     config_path: Path,
+    initialize_workspace: bool = True,
 ) -> dict[str, Any]:
     """按 profile 顺序调用正式 install_git_plugin，不扫描 checkout。"""
 
@@ -636,11 +632,12 @@ def install_profile(
     if not config_path.is_file():
         raise ValueError(f"runtime config 必须是普通文件: {config_path}")
     workspace.mkdir(parents=True, exist_ok=True)
-    initialize_empty_workspace(
-        repo_root=_SOURCE_ROOT,
-        workspace=workspace,
-        config_path=config_path,
-    )
+    if initialize_workspace:
+        initialize_empty_workspace(
+            repo_root=_SOURCE_ROOT,
+            workspace=workspace,
+            config_path=config_path,
+        )
     plugins_home.mkdir(parents=True, exist_ok=True)
 
     installed: list[dict[str, Any]] = []
@@ -911,13 +908,167 @@ def _current_artifact(
     return artifact, _code_identity(artifact), _provenance(artifact)
 
 
+def _distribution_candidate(
+    *, distribution: Path, workspace: Path, plugins_home: Path,
+    selected: dict[str, tuple[str, Mapping[str, object], Path]],
+    replacement_ids: frozenset[str] = frozenset(),
+) -> tuple[DistributionSources, dict[str, ResolvedPluginSource]]:
+    """Overlay fixed distribution sources while retaining exact external selections."""
+    available = distribution_sources(workspace, plugins_home, distribution)
+    scan = scan_plugin_sources(installed_cache_root=plugins_home / "cache",
+                               ignored_installed_roots=available.ignored_installed_roots)
+    if scan.failures:
+        raise RuntimeError(f"installed source is unavailable: {scan.failures}")
+    installed = {f"{source.plugin_name}@{source.marketplace}": source for source in scan.sources}
+    external_names = {source.plugin_name for source in scan.sources}
+    choices = load_plugin_manifest(plugins_home)
+    candidate: dict[str, ResolvedPluginSource] = {}
+    for plugin_id, (_, descriptor, code) in selected.items():
+        name, separator, marketplace = plugin_id.rpartition("@")
+        if not separator:
+            name, marketplace = plugin_id, ""
+        if is_distribution_input(descriptor, code) or plugin_id in available.legacy_ids:
+            if plugin_id in installed:
+                raise SelectionConflictError(f"distribution/installed selection drift: {plugin_id}")
+            if name in external_names:
+                raise SelectionConflictError(f"ambiguous selected distribution and installed name: {name}")
+            if plugin_id in available.legacy_ids and descriptor["source_type"] == "installed":
+                _, current_code, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
+                if current_code != descriptor["code"]:
+                    raise SelectionConflictError(f"legacy distribution selection/cache drift: {plugin_id}")
+            # No source in the current artifact means retirement, never data deletion.
+            continue
+        # Explicit targets get their own original-or-exact-target cache proof in
+        # _stage_deployment_targets before any persistent mutation. They are not
+        # preserved inputs: their old interpreter/code may be what is replaced.
+        if descriptor["source_type"] == "installed" and plugin_id not in replacement_ids:
+            _, current_code, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
+            if current_code != descriptor["code"]:
+                raise SelectionConflictError(f"external selection/cache drift: {plugin_id}")
+        if (plugin_id not in replacement_ids and
+            descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API}):
+            raise RuntimeError(f"preserved plugin runtime is incompatible with this Core: {plugin_id}; explicit reinstall required")
+        if choices.get(plugin_id, True):
+            candidate[plugin_id] = ResolvedPluginSource(code, descriptor["source_type"], marketplace, name,
+                                                       load_static_plugin_manifest(code))
+    for source in available.sources:
+        plugin_id = f"{source.plugin_name}@{source.marketplace}"
+        # Match existing discovery precedence, including a disabled installed override.
+        if source.plugin_name in external_names or not choices.get(plugin_id, True):
+            continue
+        if plugin_id in candidate:
+            raise SelectionConflictError(f"distribution identity already selected from another source: {plugin_id}")
+        candidate[plugin_id] = source
+    return available, candidate
+
+
+def _prepare_distribution_inputs(
+    *, available: DistributionSources, candidate: dict[str, ResolvedPluginSource],
+    selected: dict[str, tuple[str, Mapping[str, object], Path]],
+    distribution: Path, workspace: Path, plugins_home: Path, selection: PluginSelection,
+) -> tuple[str, ...]:
+    """Prepare immutable inputs, then let the caller publish one complete selection."""
+    choices = load_plugin_manifest(plugins_home)
+    _, marketplace, _, initialization = _load_profile(distribution / "profiles/default.json")
+    _write_plugin_configs(workspace, marketplace=marketplace, declarations=[
+        row for row in initialization["plugin_configs"]
+        if f'{row["owner"]}@{marketplace}' not in choices
+        and f'{row["owner"]}@{marketplace}' in candidate
+    ])
+    owner = PythonEnvironments(workspace)
+    # Disabled image sources are prepared too: later enable must not install dependencies.
+    for source in available.sources:
+        identity = source.static_manifest
+        assert identity is not None
+        for runtime in identity.python:
+            wheels = None
+            if (source.plugin_root / runtime.requirements).read_text().strip():
+                wheels = OfflineWheels(distribution / "wheels" / source.plugin_name, source.wheel_tree_sha256)
+            owner.prepare(source.plugin_root, runtime, offline_wheels=wheels)
+    prepared: dict[str, str] = {}
+    for plugin_id, source in candidate.items():
+        old = selected.get(plugin_id)
+        if not source.distribution_source and old is not None:
+            prepared[plugin_id] = old[0]
+            continue
+        data_dir = workspace_plugin_data_dir(workspace, source.plugin_name, source.marketplace)
+        ensure_workspace_plugin_data_dir(data_dir, workspace)
+        identity = source.static_manifest
+        assert identity is not None
+        if old is not None and old[1]["data_dir"] != data_dir.relative_to(workspace).as_posix():
+            raise SelectionConflictError(f"distribution data identity changed: {plugin_id}")
+        # 停止期已结算配置 owner；读取迁移后的持久输入，也支持迁移成功后的发布重试。
+        result = prepare_plugin_input(
+            {"name": source.plugin_name, "marketplace": source.marketplace,
+             "plugin_root": str(source.plugin_root), "module_path": str(source.plugin_root / "plugin.py"),
+             "manifest_digest": identity.identity_digest, "source_type": "builtin",
+             "distribution_source": source.distribution_source, "wheel_tree_sha256": source.wheel_tree_sha256},
+            workspace=workspace, archive=selection.archive, initial=old is None,
+        )
+        prepared[plugin_id] = result.archive_ref
+    # This is a user choice ledger, not another version pointer. Existing values never change.
+    for source in available.sources:
+        plugin_id = f"{source.plugin_name}@{source.marketplace}"
+        if plugin_id not in choices:
+            upsert_plugin_manifest(plugin_id, enabled=True, plugins_home=plugins_home)
+    ordered = [prepared.pop(plugin_id) for plugin_id in selected if plugin_id in prepared]
+    return tuple(ordered + [prepared[plugin_id] for plugin_id in sorted(prepared)])
+
+
+def _same_selected_sources(
+    selected: dict[str, tuple[str, Mapping[str, object], Path]],
+    candidate: dict[str, ResolvedPluginSource],
+) -> bool:
+    """Recovery may start exact existing inputs, never substitute new code or choices."""
+    if selected.keys() != candidate.keys():
+        return False
+    for plugin_id, source in candidate.items():
+        descriptor = selected[plugin_id][1]
+        if (descriptor["source_type"] != source.source_type
+            or descriptor.get("distribution_source", "") != source.distribution_source
+            or descriptor["code"] != _code_identity(source.plugin_root)
+            or descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag,
+                                         "binding_api": PLUGIN_ARCHIVE_BINDING_API}):
+            return False
+    return True
+
+
+def _check_distribution_sources(distribution: Path, report: dict[str, Any]) -> None:
+    """Check unpacked code against its bundle at preparation, not on runtime reads."""
+    for row in report["plugins"]:
+        source = distribution / "sources" / row["name"]
+        if _provenance(source) != {"commit": report["source_commit"], "path": row["source_path"]}:
+            raise ValueError(f"distribution source provenance mismatch: {row['name']}")
+        with tempfile.TemporaryDirectory(prefix="akashic-source-check-") as temporary:
+            root = Path(temporary) / "source"
+            _git("clone", "--no-local", "--no-checkout", str(distribution / row["file"]), str(root))
+            _git("-C", str(root), "checkout", "--detach", row["source_revision"])
+            if _code_identity(root) != _code_identity(source):
+                raise ValueError(f"distribution source/bundle mismatch: {row['name']}")
+        for entry in source.rglob("*.py"):
+            compile(entry.read_bytes(), str(entry), "exec")
+
+
+def _preflight_distribution_environments(available: DistributionSources, distribution: Path, stage: Path) -> None:
+    for source in available.sources:
+        identity = source.static_manifest
+        assert identity is not None
+        for index, runtime in enumerate(identity.python):
+            if not (source.plugin_root / runtime.requirements).read_text().strip():
+                continue
+            wheels = OfflineWheels(distribution / "wheels" / source.plugin_name, source.wheel_tree_sha256)
+            destination = stage / f"builtin-{source.plugin_name}-{index}"
+            destination.mkdir()
+            preflight_offline_runtime(source.plugin_root, runtime, wheels, destination)
+
+
 def publish_distribution(
     *, distribution: Path, workspace: Path, plugins_home: Path,
     config_path: Path, plan: Path, inputs: Path,
     backup_dir: Path | None = None, preflight_only: bool = False,
 ) -> dict[str, Any]:
-    """只发布清单内的输入；备份可选，迁移由清单授权。"""
-    digest, expected_root, requested, migrations = load_deployment_plan(plan)
+    """更新内置 preset 和指定外置输入；先完成 Core 与内置迁移。"""
+    digest, expected_root, requested = load_deployment_plan(plan)
     workspace, plugins_home = workspace.resolve(strict=True), plugins_home.resolve(strict=True)
     selection = PluginSelection(workspace)
     if selection.read() != expected_root:
@@ -935,35 +1086,40 @@ def publish_distribution(
                 raise SelectionConflictError("取得发布锁期间 Root 改变")
             with tempfile.TemporaryDirectory(prefix="akashic-deploy-") as temporary:
                 staged = Path(temporary)
+                report = verify_distribution(distribution)
+                _check_distribution_sources(distribution, report)
+                components, selected = _selected_components(selection, expected_root)
+                available, candidate = _distribution_candidate(
+                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
+                    replacement_ids=frozenset(item["plugin_id"] for item in requested),
+                )
+                _preflight_distribution_environments(available, distribution, staged)
+                external_requests = [item for item in requested if not (
+                    item.get("bundled") and item["plugin_id"] in candidate
+                    and candidate[item["plugin_id"]].source_type == "builtin")]
                 targets = _stage_deployment_targets(
-                    targets=requested, distribution=distribution, inputs=inputs, staged=staged,
+                    targets=external_requests, distribution=distribution, inputs=inputs, staged=staged,
                     expected_root_ref=expected_root, selection=selection,
                     workspace=workspace, plugins_home=plugins_home,
                 )
-                components, selected = _selected_components(selection, expected_root)
                 replacements = {item["plugin_id"]: item["code"] for item in targets}
-                sources: list[ResolvedPluginSource] = []
-                for plugin_id, (_, descriptor, old_code) in selected.items():
-                    name, marketplace = plugin_id.split("@")
-                    if plugin_id not in replacements and descriptor["source_type"] == "installed":
-                        _, code_hash, provenance = _current_artifact(
-                            workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id,
-                        )
-                        if code_hash != descriptor["code"] or provenance != _provenance(old_code):
-                            raise SelectionConflictError(f"未触及插件 selection/cache 漂移: {plugin_id}")
-                    code = replacements.get(plugin_id, old_code)
-                    sources.append(ResolvedPluginSource(
-                        plugin_root=code, source_type=descriptor["source_type"],
-                        plugin_name=name, marketplace=marketplace,
-                        static_manifest=load_static_plugin_manifest(code),
-                    ))
+                migration_sources = distribution_migration_sources(workspace, plugins_home, distribution)
+                reserved_ids = {f"{item.plugin_name}@{item.marketplace}" for item in migration_sources}
+                if reserved_ids.intersection(replacements):
+                    raise SelectionConflictError("外置部署目标不能接管内置数据身份；替代插件须使用独立身份")
+                for plugin_id, code in replacements.items():
+                    name, marketplace = plugin_id.rsplit("@", 1)
+                    candidate[plugin_id] = ResolvedPluginSource(code, "installed", marketplace, name,
+                                                               load_static_plugin_manifest(code))
                 runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
-                                         workspace=workspace, fixed_sources=sources)
-                pending = runner.check(migrations)
+                                         workspace=workspace, fixed_sources=migration_sources)
+                pending = runner.check()
                 result: dict[str, Any] = {
                     "status": "preflight_ok", "plan_sha256": digest,
                     "old_root_ref": expected_root, "migration_ids": list(pending),
                     "target_ids": list(replacements), "backup_dir": None,
+                    "distribution_source_commit": report["source_commit"],
+                    "distribution_ids": [key for key, source in candidate.items() if source.distribution_source],
                 }
                 if preflight_only:
                     return result
@@ -974,25 +1130,22 @@ def publish_distribution(
                     backup_release_state(state, backup_dir)
                     result["backup_dir"] = str(backup_dir)
                 # Core 先更新自己的账本结构，业务 step 只由相应插件执行。
-                runner.run_under_maintenance(maintenance, core_only=True, approved_migrations=migrations)
-                with ReloadJournal.inspect_existing(workspace) as journal:
-                    if journal.pending_recovery or journal.armed_updates:
-                        raise RuntimeError("reload/install owner 尚未结算；不得覆盖未决事实")
-                runner.run_under_maintenance(maintenance, approved_migrations=migrations)
-                changed: dict[str, str] = {}
+                runner.run_under_maintenance(maintenance, core_only=True)
+                check_pending_publication(workspace)
+                runner.run_under_maintenance(maintenance)
+                prepared_selected = dict(selected)
                 for target in targets:
                     plugin_id = target["plugin_id"]
                     name, marketplace = plugin_id.split("@")
-                    if target["installed_target"]:
-                        artifact, _, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
-                        update_id = None
-                    else:
-                        installed = install_git_plugin(
-                            workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
-                            ref_name=target["commit"], plugins_home=plugins_home,
-                            refresh_existing_artifact=False, offline_wheels=target["wheels"],
-                        )
-                        artifact, update_id = installed.installed_path, installed.update_id
+                    # Matching code does not prove an existing Python environment
+                    # belongs to this interpreter. The idempotent installer owns
+                    # both inputs, including explicit same-commit reinstalls.
+                    installed = install_git_plugin(
+                        workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
+                        ref_name=target["commit"], plugins_home=plugins_home,
+                        refresh_existing_artifact=False, offline_wheels=target["wheels"],
+                    )
+                    artifact, update_id = installed.installed_path, installed.update_id
                     identity = load_static_plugin_manifest(artifact)
                     prepared = prepare_plugin_input(
                         {"name": name, "plugin_root": str(artifact), "module_path": str(artifact / "plugin.py"),
@@ -1001,10 +1154,14 @@ def publish_distribution(
                     )
                     if prepared.plugin_id != plugin_id:
                         raise RuntimeError(f"安装输入身份不符: {plugin_id}")
-                    if update_id is not None:
-                        ReloadJournal(workspace).set_input_ref(update_id, prepared.archive_ref)
-                    changed[selected[plugin_id][0]] = prepared.archive_ref
-                new_components = tuple(changed.get(ref, ref) for ref in components)
+                    ReloadJournal(workspace).set_input_ref(update_id, prepared.archive_ref)
+                    prepared_selected[plugin_id] = (
+                        prepared.archive_ref, selection.archive.read_descriptor(prepared.archive_ref), prepared.code_dir,
+                    )
+                new_components = _prepare_distribution_inputs(
+                    available=available, candidate=candidate, selected=prepared_selected,
+                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
+                )
                 new_root = (selection.commit(new_components, expected_ref=expected_root)
                             if new_components != components else expected_root)
                 return {**result, "status": "selected_not_started", "new_root_ref": new_root,
@@ -1026,42 +1183,75 @@ def ensure_profile(
     config_path: Path,
     receipt_path: Path,
 ) -> dict[str, Any]:
-    """Install once, then validate the durable receipt without changing composition."""
-
+    """First-install defaults, then compose the deployed distribution with external inputs."""
+    workspace = workspace.expanduser().resolve(strict=False)
+    plugins_home = plugins_home.expanduser().resolve(strict=False)
+    distribution = distribution.expanduser().resolve(strict=True)
     receipt_path = receipt_path.expanduser()
     if receipt_path.is_symlink():
         raise ValueError(f"distribution receipt 不能是符号链接: {receipt_path}")
     config_path = config_path.expanduser().resolve(strict=True)
     if not config_path.is_file():
         raise ValueError(f"runtime config 必须是普通文件: {config_path}")
-    if receipt_path.exists():
-        if not receipt_path.is_file():
-            raise ValueError(f"distribution receipt 不是普通文件: {receipt_path}")
-        distribution_root = distribution.expanduser().resolve(strict=True)
-        verify_distribution(distribution_root)
-        # A profile is only the first-install recipe.  Receipt-present
-        # startup must follow the current manifest, even after operator
-        # replacement or removal of an originally selected provider.
-        receipt = _read_json(receipt_path)
-        _validate_receipt_state(
-            receipt,
-            workspace=workspace.expanduser().resolve(strict=False),
-            plugins_home=plugins_home.expanduser().resolve(strict=False),
-        )
-        _validate_current_plugins(
-            workspace=workspace.expanduser().resolve(strict=False),
-            plugins_home=plugins_home.expanduser().resolve(strict=False),
-        )
-        return {**receipt, "status": "existing"}
-
-    result = install_profile(
-        distribution,
-        profile,
-        workspace=workspace,
-        plugins_home=plugins_home,
-        config_path=config_path,
-    )
-    return {**result, "status": "installed"}
+    report = verify_distribution(distribution)
+    _check_distribution_sources(distribution, report)
+    if not receipt_path.exists():
+        selection = PluginSelection(workspace)
+        if selection.path.exists() and selection.read() is not None:
+            raise RuntimeError("既有 selection 缺少首次分发 receipt；不能猜测插件来源或重装默认组合")
+        workspace.mkdir(parents=True, exist_ok=True)
+        initialize_empty_workspace(repo_root=_SOURCE_ROOT, workspace=workspace, config_path=config_path)
+    maintenance = WorkspaceMaintenanceLock(workspace)
+    publication = PluginPublicationLock(plugins_home)
+    maintenance.acquire()
+    try:
+        publication.acquire()
+        try:
+            if not receipt_path.exists():
+                current = PluginSelection(workspace)
+                if current.path.exists() and current.read() is not None:
+                    raise RuntimeError("取得维护锁后 selection 已变化；缺少首次分发 receipt，停止初始化")
+                receipt = install_profile(distribution, profile, workspace=workspace,
+                                          plugins_home=plugins_home, config_path=config_path,
+                                          initialize_workspace=False)
+                # Keep the first receipt unchanged, including retired bootstrap sources.
+                _write_receipt(receipt_path, receipt)
+            receipt = _read_json(receipt_path)
+            _validate_receipt_state(receipt, workspace=workspace, plugins_home=plugins_home)
+            selection = PluginSelection(workspace)
+            expected = selection.read()
+            components, selected = ((), {}) if expected is None else _selected_components(selection, expected)
+            available, candidate = _distribution_candidate(
+                distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
+            )
+            runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path, workspace=workspace,
+                                     fixed_sources=distribution_migration_sources(workspace, plugins_home, distribution))
+            pending = runner.check()
+            runner.run_under_maintenance(maintenance, core_only=True)
+            try:
+                check_pending_publication(workspace)
+            except PendingPublicationError:
+                # The normal entrypoint must let the original runtime repair its
+                # committed config projection. Do not prepare from stale files or
+                # publish anything while that recovery owner is unsettled.
+                if pending or expected is None or not _same_selected_sources(selected, candidate):
+                    raise
+                return {**receipt, "status": "existing", "new_root_ref": expected,
+                        "recovery_pending": True}
+            runner.run_under_maintenance(maintenance)
+            new_components = _prepare_distribution_inputs(
+                available=available, candidate=candidate, selected=selected,
+                distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
+            )
+            # A fresh selection remains the existing explicit first-boot initialization path.
+            new_root = expected
+            if expected is not None and new_components != components:
+                new_root = selection.commit(new_components, expected_ref=expected)
+            return {**receipt, "status": "existing", "new_root_ref": new_root}
+        finally:
+            publication.release()
+    finally:
+        maintenance.release()
 
 
 def _write_receipt(path: Path, result: dict[str, Any]) -> None:

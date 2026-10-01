@@ -9,6 +9,7 @@ RUN git init && git remote add origin https://github.com/kachofugetsu09/akashic-
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt ./sdk/python
 RUN /opt/venv/bin/python scripts/build_plugin_distribution.py --revision HEAD --output /opt/distribution \
+    && /opt/venv/bin/python scripts/distribution_runtime.py prepare-wheels --distribution /opt/distribution \
     && /opt/venv/bin/python -c "from pathlib import Path; from scripts.install_plugin_distribution import extract_core; extract_core(Path('/opt/distribution'), Path('/opt/core'))"
 
 FROM python:3.12-slim-bookworm
@@ -19,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build /opt/distribution /opt/distribution
 COPY --from=build /opt/core /opt/core
-ENV PATH=/opt/venv/bin:$PATH AKASHIC_EXECUTION_MODE=local PYTHONUNBUFFERED=1
+ENV PATH=/opt/venv/bin:$PATH AKASHIC_EXECUTION_MODE=local PYTHONUNBUFFERED=1 AKASHIC_PLUGIN_DISTRIBUTION=/opt/distribution
 USER akashic
 WORKDIR /opt/core
 EXPOSE 2236

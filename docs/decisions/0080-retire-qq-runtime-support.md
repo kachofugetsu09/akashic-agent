@@ -1,5 +1,6 @@
 # 0080 · 退役全部 QQ 运行支持
 
+> 后续勘误：[0082](0082-distribution-owned-plugin-composition.md) 修改内置代码随部署的组合策略；原数据保留、外置目标和显式迁移授权不变。
 - 状态：accepted
 - 日期：2026-09-28
 - 关联条款：ONB-001、PLG-003、STA-001～STA-003、SEC-001、SEC-002

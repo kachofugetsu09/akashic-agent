@@ -78,6 +78,7 @@ scripts/install-akashic.sh
 
 正式 image 的临时 build context
   ├─ core.tar                       Core 源码，不含业务 plugins/
+  ├─ requirements.lock              同一 commit 的锁文件，供独立依赖层构建
   ├─ <plugin>.bundle                每个外部插件独立 Git 制品
   ├─ profiles/default.json          首次安装配方及通用 plugin config
   └─ distribution-entrypoint.sh    receipt-aware install + Core 启动
@@ -85,6 +86,20 @@ scripts/install-akashic.sh
 
 非平凡模块保持单一职责；命令执行和文件持久化复用仓库现有 runner、原子 JSON 与 release identity
 实现，不另造通用 subprocess、锁文件或 JSON storage 框架。
+
+### 构建缓存
+
+系统依赖层只依赖基础镜像、Arch snapshot、系统包和运行用户；Python 依赖层只额外依赖锁文件
+和包源。源码 commit/tree/Core SHA 在这两层之后进入构建。独立锁文件从固定 Git commit
+读取，pip 使用前按固定 Git 输入记录核对摘要，源码解包后与 Core 内锁文件逐字节核对；
+签名、`--require-hashes` 和正式产物校验仍保留。
+普通源码变化只重建源码和制品校验层；依赖变化仍走正常安装。pacman 使用默认下载低速超时。
+
+Web 构建继续使用一次性源码、node_modules 和生成资产。构建进程的第三方 npm 下载缓存默认位于
+`${XDG_CACHE_HOME:-~/.cache}/akashic-build/npm`，也可沿用 `npm_config_cache` 指定目录。
+经 sudo 运行时采用该进程的 HOME/XDG 目录。只有 npm 写入该缓存，`npm ci` 仍按固定 package-lock
+核对包；缓存可由操作者用 npm 工具清理，
+丢失只影响下载时间，不改变构建结果。构建不自动清理该缓存，也不触及正式 workspace。
 
 ```text
 /srv/data/services/akashic/

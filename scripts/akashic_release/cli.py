@@ -132,7 +132,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     install_parser.add_argument("--yes", action="store_true")
     install_parser.add_argument("--no-activate", action="store_true")
-    install_parser.add_argument("--plan", type=Path, help="显式插件目标与 migration ID；省略时只更新 Core/Bridge")
+    install_parser.add_argument("--plan", type=Path, help="显式外置插件目标；省略时更新 Core/Bridge 与内置 preset，并先执行必要内置迁移")
     install_parser.add_argument("--inputs", type=Path, help="清单引用的 bundle/wheels 目录")
     install_parser.add_argument("--backup", action="store_true", help="停止期备份 state 和 runtime.env；默认不备份")
     install_parser.set_defaults(handler=install)

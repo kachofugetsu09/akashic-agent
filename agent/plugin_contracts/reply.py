@@ -109,9 +109,39 @@ class ReplyExecuteV3(Protocol):
     ) -> Message: ...
 
 
+class ReplyExecuteV4(Protocol):
+    """来源入口固定所有执行前提；程序在启动与输出事务中调用同一个检查。"""
+
+    async def __call__(
+        self,
+        ctx: Context,
+        task: Task,
+        reader: MessageReader,
+        source: str,
+        *,
+        check_admission: SourceGuard,
+        authorize: Callable[
+            [str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]
+        ],
+        max_output_tokens: int,
+        max_steps: int,
+        render_content: ContentRenderer | None = None,
+        tool_view: ToolView | None = None,
+        tool_names: Sequence[str] | None = None,
+        exclude_material_kinds: frozenset[MaterialKind] = frozenset(),
+        prompt_hints: Sequence[str] = (),
+        fixed_bindings: Mapping[str, str] | None = None,
+        preview: Callable[[str], AbstractContextManager[StreamCallback]] | None = None,
+        reminders: Sequence[Mapping[str, object]] = (),
+        terminal_tools: frozenset[str] = frozenset(),
+        presentation: ToolPresentation | None = None,
+    ) -> Message: ...
+
+
 REPLY_EXECUTE = ServiceKey[ReplyExecute]("reply.execute.v1")
 REPLY_EXECUTE_V2 = ServiceKey[ReplyExecuteV2]("reply.execute.v2")
 REPLY_EXECUTE_V3 = ServiceKey[ReplyExecuteV3]("reply.execute.v3")
+REPLY_EXECUTE_V4 = ServiceKey[ReplyExecuteV4]("reply.execute.v4")
 
 
 class Completion(Protocol):

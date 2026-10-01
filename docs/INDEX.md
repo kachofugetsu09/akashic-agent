@@ -74,6 +74,7 @@
 | 文件或目录 | 回答的问题 | 读取策略 |
 |---|---|---|
 | [长工具结果投影与回读](decisions/0081-content-views-keep-original-messages.md) | 首次完整展示、普通插件折叠与原文范围回读 | 修改长结果模型视图时读取 |
+| [模型选择、删除与目录刷新](design/model-user-disable.md) | 显式选择、删除回退、provider 可用性与备份边界 | 修改模型选择、删除或目录同步时读取 |
 | [Event-loop execution boundaries](design/event-loop-isolation.md) | 历史读取、计算隔离与因果顺序 | 排查跨 owner 阻塞和执行资源时读取 |
 | [能力依赖与执行归属](design/issue-766-orthogonal-capabilities.md) | Issue 766 的职责、取舍与实施边界 | 插件正交化实施入口 |
 | [插件 Onboarding 投影设计](design/plugin-onboarding-projection.md) | 模型、渠道、Akasha、Wake 的配置归属、拓扑排序与旧入口退役（内置实现与验收） | 修改 setup、首次配置或插件配置声明时读取 |
@@ -81,6 +82,7 @@
 | [单图插件系统与局部换代](design/issue-750-plugin-publication-simplification.md) | 0072 的目标、取舍、T01～T07 任务拆分与验收 | 插件简化的固定入口 |
 | [插件整体换代重构](design/plugin-whole-runtime-simplification.md) | 0071 的入口、归属、整体组合与 stacked PR 实施 | 旧实现与迁移对照，不再是新目标入口 |
 | [普通资源 provider](design/plugin-resource-providers.md) | MCP、Workload、进程的实际资源归属与宿主授权 | 使用或修改外部资源 provider 时读取 |
+| [内置代码随部署](decisions/0082-distribution-owned-plugin-composition.md) | 分发来源、旧 receipt 采用、启用选择与外置版本保留 | 修改启动或部署组合时读取 |
 | [信任已安装的运行材料](decisions/0077-trust-installed-runtime-inputs.md) | 安装准备与运行时读取分开，不重复计算内容摘要 | 修改插件归档或 Python 环境读取时读取 |
 | [插件运行目录收敛](design/plugin-active-projections.md) | 当前 snapshot 查询投影与实际 Root 清理 owner | 修改 generation 查询或清理路径时读取 |
 | [latest 普通调用](design/plugin-latest-programmatic.md) | 候选调用、结果可见性、撤销与默认晋升 | 旧候选机制对照；新语义见 0072 与单图设计 |

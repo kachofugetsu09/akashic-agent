@@ -235,7 +235,7 @@ Core claim 不能证明远端有或没有效果。旧 v2/v3 准备和消息表�
 
 能力必须按完整组选择：`sources.v4`、`source.session.v3`、`source.check.v2`、
 `source.changed.v2`、`channel.input.v2`、`source.interrupt.v2`、`tools.program.v2`、
-`react.ordered-start.v2`、`conversation.complete.v2`、`reply.program.v3`、`reply.execute.v3`。
+`react.ordered-start.v2`、`conversation.complete.v2`、`reply.program.v3`、`reply.execute.v4`。
 旧公共常量及旧二参数完成回调的结构合同保持原值，新 provider 不提供旧 alias。
 来源注册表也换 key，因为其 open 返回的 session 带新的完成回调合同。旧 actor 与新 provider、
 或新 actor 与旧 provider 不能静默混用；不能只迁移直接 factory 而漏掉注册表消费者。
@@ -288,3 +288,24 @@ Task 来源字段或全局查找表。改变输出来源不改变这份控制前
 入口、生成 claim、工具 started、实际本地 fsync 效果后及模型成功后的 Output 前设置屏障，
 核对 Input/Control 两种替代、成功路径、原历史和完整性。脚本使用本地 model driver 与发送端；
 不是正式安装、跨进程恢复、远端 provider、真实发送或生产延迟证据。
+
+## 回复入口统一执行前提（#925 追加修复）
+
+`reply.execute.v4` 要求每次调用显式交入一个固定的 `check_admission`。普通来源在入口
+用原接纳边界构造检查；不能在异步准备之后重读 head 作为新的授权。Scheduler、Subagent
+和 Wake 仍各自固定原 Input 或阶段 Input，回复程序不再读取 Task 的边界来猜测来源权限。
+
+后台结果回传的 Reply 入口一次性组合原 conversation 控制前提和输出来源的固定前提。
+控制来源与输出来源仍是独立事实，但通用回复程序只接收同一个检查，不分普通/回传两条分支。
+`reply_program` 不再依赖 `source.check` provider；来源入口负责构造检查，
+Tool/Command/React 仍在自己的启动事务内核对，Core 只拥有原事务和收据。
+
+本轮不增加持久状态、来源队列或执行框架。原输入接纳、停止、重试、跨来源输出提交与取消
+排空合同不变。旧 `reply.execute.v3` 常量保持原合同，新 provider 只发布 v4；
+外置调用者须在完整新组合里显式传入执行前提。
+
+### 2026-10-01 实际回传适配器验收
+
+`docker/debug/completion_source_ordering.py` 现挂载真实 Sources、Conversation、Reply、ReplyProgram provider，经 Subagents 的回传入口消费 `reply.execute.v4`，不在场景里复写 report 或直接绕过适配器调用 run_reply。16 个受控场景分别令控制来源或输出来源的 Input/Control 先落盘，并延迟 loop 通知，核对入口、generation claim、Tool started、真实本地效果之后与最终 Output 的行为。调用账、原 Message、SQLite 完整性和清理一同核对；模型 driver、材料与投递仍是本地受控边界，不代表正式 provider 或真实送达验收。
+
+命令没有新增第二份 started 状态：原不可变 `CommandIntent` 就是同事务首次准入事实；不能把 durable claim 到 handler 的物理时间间隔解释为缺少另一份准入状态。最终 Output 仍由同来源 head CAS 拒绝过期提交，未知外部效果由固定命令 owner 恢复。

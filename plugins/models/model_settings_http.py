@@ -49,6 +49,7 @@ from .settings import (
     ModelChange,
     MODEL_SETTINGS,
     SetDefaultModel,
+    RemoveModel,
     SettingsReceipt,
     StartConnectionAuth,
     SyncModels,
@@ -197,6 +198,7 @@ class ModelInput(_Payload):
     default_reasoning_effort: str | None = Field(default=None, max_length=32)
     driver_config: dict[str, JsonValue] = Field(default_factory=dict)
     make_default_embedding: bool = False
+    discovery_owned: bool = False
 
     @model_validator(mode="after")
     def check_default_kind(self) -> ModelInput:
@@ -230,6 +232,12 @@ class SavedDiscoveryPayload(_Payload):
 
 class VerifyModelPayload(_Payload):
     type: Literal["verify_model"]
+    expected_revision: int = Field(ge=0)
+    model_id: str = Field(min_length=1, max_length=128)
+
+
+class RemoveModelPayload(_Payload):
+    type: Literal["remove_model"]
     expected_revision: int = Field(ge=0)
     model_id: str = Field(min_length=1, max_length=128)
 
@@ -270,6 +278,7 @@ CommandPayload = Annotated[
     | DisableConnectionPayload
     | AddModelPayload
     | VerifyModelPayload
+    | RemoveModelPayload
     | SetDefaultPayload
     | SyncModelsPayload
     | StartAuthPayload
@@ -563,6 +572,8 @@ def _command(payload: CommandPayload) -> ModelChange:
         return _add_model(payload)
     if isinstance(payload, VerifyModelPayload):
         return VerifyModel(expected_revision=payload.expected_revision, model_id=payload.model_id)
+    if isinstance(payload, RemoveModelPayload):
+        return RemoveModel(payload.expected_revision, payload.model_id)
     if isinstance(payload, SetDefaultPayload):
         return SetDefaultModel(
             payload.expected_revision,
@@ -630,6 +641,7 @@ def _add_model(payload: ModelInput) -> AddModel:
         ),
         capability_sources=CapabilitySources(**payload.capability_sources.model_dump()),
         make_default_embedding=payload.make_default_embedding,
+        discovery_owned=payload.discovery_owned,
         default_reasoning_effort=payload.default_reasoning_effort,
         driver_config=payload.driver_config,
     )

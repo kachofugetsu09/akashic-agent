@@ -90,9 +90,11 @@ from agent.plugins.reload_journal import (
     ReloadRecoveryAction,
 )
 from agent.plugins.scope import CleanupFailure, PluginScope
+from agent.plugins.distribution_sources import is_distribution_input
 from agent.plugins.selection import PluginSelection
 from agent.plugins.source_resolver import (
     PluginSourceFailure,
+    ResolvedPluginSource,
     scan_plugin_sources,
 )
 from agent.plugins.static_manifest import (
@@ -157,11 +159,15 @@ class PluginManager:
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
         source_failures: tuple[PluginSourceFailure, ...] = (),
+        distribution_sources: tuple[ResolvedPluginSource, ...] = (),
+        ignored_installed_roots: frozenset[Path] = frozenset(),
         workload_controller: WorkloadController | None = None,
         restart_gate: RestartGate | None = None,
         control_frames: FrameBook | None = None,
     ) -> None:
         self._dirs = plugin_dirs
+        self._distribution_sources = distribution_sources
+        self._ignored_installed_roots = ignored_installed_roots
         self._workspace = workspace
         self._archive = PluginArchive(workspace / "runtime" / "plugin-archives")
         self._selection = PluginSelection(workspace)
@@ -451,6 +457,8 @@ class PluginManager:
         scan = scan_plugin_sources(
             self._dirs,
             installed_cache_root=self._installed_cache_root,
+            fixed_sources=self._distribution_sources,
+            ignored_installed_roots=self._ignored_installed_roots,
         )
         if record_source_failures:
             self._remember_source_failures(scan.failures)
@@ -482,6 +490,8 @@ class PluginManager:
                     ),
                     "marketplace": source.marketplace,
                     "source_type": source.source_type,
+                    **({"distribution_source": source.distribution_source, "wheel_tree_sha256": source.wheel_tree_sha256}
+                       if source in self._distribution_sources else {}),
                 }
             )
         return mods, scan.failures
@@ -753,6 +763,7 @@ class PluginManager:
             # Receipt readiness is diagnostic; each Fiber owns its local failure state.
             for generation in runnable:
                 generation.state = "active"
+            self._finish_recovered_config_updates()
             self._building_roots.pop(root, None)
         except BaseException:
             cleanup_errors: list[BaseException] = []
@@ -1175,6 +1186,17 @@ class PluginManager:
             elif row["state"] != "failed":
                 self._reload_journal.finish_config_update(request_id, "failed", "配置应用中断，正式选择未采用；请重新提交")
 
+    def _finish_recovered_config_updates(self) -> None:
+        """配置投影已恢复且实际选中实例 ready 后，才结算原请求。"""
+        selection_ref = self._selection.read()
+        components = () if selection_ref is None else self._selection_components(selection_ref)
+        for row in self._reload_journal.pending_config_updates():
+            generation = self._active_generations.get(cast(str, row["plugin_id"]))
+            if (generation is not None and row["input_ref"] in components
+                and generation.archive_ref == row["input_ref"]
+                and generation.state == "active" and self._generation_is_locally_ready(generation)):
+                self._reload_journal.finish_config_update(cast(str, row["request_id"]), "active")
+
     async def install(
         self, *, source: str, marketplace: str, ref_name: str,
         sparse_paths: list[str], update_id: str,
@@ -1225,6 +1247,10 @@ class PluginManager:
         """Disable, CAS-remove, drain the target owners, then finalize its install."""
         self._check_operation_commit()
         self.require_installed_plugin(plugin_id)
+        distribution_owned = any(
+            _resolve_plugin_id(mod) == plugin_id and mod.get("distribution_source")
+            for mod in self.discover()
+        )
         _ = set_installed_plugin_enabled(
             plugin_id,
             enabled=False,
@@ -1239,12 +1265,20 @@ class PluginManager:
         for generation in tuple(self._draining_generations.get(plugin_id, ())):
             await self._dispose_generation(generation, state="retired")
         self._check_operation_commit()
+        if distribution_owned:
+            # Immutable distribution code remains available; false is the same
+            # durable user choice used by disable and future deployments.
+            self._notify_updates()
+            return {"plugin_id": plugin_id, "state": "disabled",
+                    "selection_ref": result["selection_ref"], "distribution_owned": True}
         finalize_result, finalize_cancelled = await _complete_critical(
             asyncio.to_thread(
                 finalize_uninstall_plugin,
                 plugin_id,
                 workspace=self._workspace,
                 plugins_home=self.installed_plugins_home,
+                keep_disabled_choice=any(f"{source.plugin_name}@{source.marketplace}" == plugin_id
+                                         for source in self._distribution_sources),
             )
         )
         if finalize_cancelled:
@@ -1287,6 +1321,8 @@ class PluginManager:
                     sparse_paths=sparse_paths,
                     plugins_home=self.installed_plugins_home,
                     update_id=update_id,
+                    reserved_ids=frozenset(f"{item.plugin_name}@{item.marketplace}"
+                                           for item in self._distribution_sources),
                 )
             )
             if install_cancelled:
@@ -1910,6 +1946,14 @@ class PluginManager:
                 "installed": plugin_id in manifest,
                 "enabled": manifest.get(plugin_id),
                 "selected_ref": selected_refs.get(plugin_id),
+                "selected_distribution_source": (
+                    self._archive.read_descriptor(selected_refs[plugin_id]).get("distribution_source")
+                    if plugin_id in selected_refs else None
+                ),
+                "distribution_available": any(
+                    f"{source.plugin_name}@{source.marketplace}" == plugin_id
+                    for source in self._distribution_sources
+                ),
                 "cache_exists": cache_exists,
                 "draining_generations": [generation_status(item) for item in draining],
                 # Keep the original flat projection for existing status consumers.
@@ -2003,6 +2047,7 @@ class PluginManager:
         namespace = secrets.token_hex(12)
         for index, (ref, record) in enumerate(zip(components, records, strict=True)):
             code_dir = self._archive.open(cast(str, record["code"]))
+            is_distribution_input(record, code_dir)
             revision = cast(str, record["source_revision"])
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id in generations:

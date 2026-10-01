@@ -2,12 +2,12 @@
 
 本手册只描述当前迁移合同。架构取舍见
 [0021 · Yoyo workspace 账本定义迁移原点](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)
-和 [0066 · 当前基线](../decisions/0066-yoyo-current-baseline.md)。部署选择见 [0074](../decisions/0074-deployment-policy-belongs-to-operator.md) 与[操作手册](operator-deployment.md)。
+和 [0066 · 当前基线](../decisions/0066-yoyo-current-baseline.md)。部署选择以 [0082 · 内置代码随部署](../decisions/0082-distribution-owned-plugin-composition.md) 与[操作手册](operator-deployment.md)为准。
 
 ## 1. 目录与所有权
 
 ```text
-Core 自有脚本 / 已安装插件 migration bundle
+Core 自有脚本 / 当前发行版全部内置 migration bundle
           │ read_migrations
           ▼
 ┌──────────────────────┐       成功回执       ┌─────────────────────────────┐
@@ -19,16 +19,17 @@ Core 自有脚本 / 已安装插件 migration bundle
    明确的持久状态变换
 ```
 
-- `migrations/core/` 仅放 Core 自有迁移；业务迁移通过正式安装的插件 bundle 提供。
+- `migrations/core/` 仅放 Core 自有迁移；内置业务迁移从当前固定发行版的插件 bundle 读取，范围不受默认 profile 或启停选择裁剪。外置插件自行负责兼容和迁移，框架不发现、校验或执行其 Yoyo catalog。
 - 当前历史迁移已退役；Core catalog 为空。旧 ledger 记录保留，新脚本不得依赖已退役 ID。
 - 其他 migration 子目录是旧 Git cursor 系统的历史源码，不注册、不执行。
-- `agent/migrations/runner.py` 负责核对待执行 ID 与部署清单、复用写入锁、调用 Yoyo 和报告失败。既有 Root 的普通启动只检查，首次显式初始化允许建库。
+- `agent/migrations/runner.py` 负责核对来源与成功账本、复用写入锁、调用 Yoyo 和报告失败。选择发行版即接受必要的 Core/内置迁移，发布与启动先完成迁移再加载新版组合；部署清单不再接受 `migrations` ID 列表。
+- 内置与外置共用同 ID 的可证 owner 冲突在迁移前拒绝。Core 先升级自身账本结构，再核对安装与配置恢复 owner 已结算；未结算时只能按操作手册恢复原实例，不能发布新输入覆盖未决事实。
 - migration step 拥有自己的变换、校验和恢复边界；它可通过
   `agent.migrations.context.current_migration_context()` 取得 config 与 workspace 路径。
 
 ## 2. 新增迁移
 
-在相应 owner 的 migration bundle 中新增文件，并更新其 catalog/digest；Core 自有中立状态使用 `migrations/core/`。文件名使用日期、同日序号和短职责，例如：
+在内置 owner 的 migration bundle 中新增文件，并更新其 catalog/digest；Core 自有中立状态使用 `migrations/core/`。外置插件的迁移入口与运行方式由插件自己定义。文件名使用日期、同日序号和短职责，例如：
 
 ```text
 20260803_01_add_example_index.py
@@ -66,8 +67,9 @@ steps = [step(apply_change)]
 
 ## 4. 最小验证
 
-按 [WORKFLOW](../WORKFLOW.md) 使用临时真实 workspace 验证：未批准时只读失败、明确批准后执行、
-成功 ID 不重跑、失败不落账且按 step 合同可重试，以及持有 workspace 锁。
+按 [WORKFLOW](../WORKFLOW.md) 使用临时真实 workspace 验证：来源和 owner 冲突在业务写入前拒绝、
+发布与启动自动推进必要 Core/内置迁移、停用内置仍被发现、外置 catalog 不被执行、
+成功 ID 不重跑、失败不落成功账且按 step 合同可重试，以及持有 workspace 锁。
 涉及业务状态时按持久化状态地图核对真实写入范围与完整性，不只检查返回值。
 
 ```bash
