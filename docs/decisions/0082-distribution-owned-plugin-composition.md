@@ -39,7 +39,25 @@ Yoyo 是顺序与成功账本，不是任意脚本的数据安全证明。每个
 
 首次 `distribution-install.json` 永久保留为历史证据。只有 receipt 的完整 plugin ID、artifact 路径、Git revision、distribution commit、源码 provenance 和实际代码树都匹配时，旧 cache 才属于该 distribution。该证明独立于当前 selection 和 profile，退役后的旧 cache 因而不会在第二次启动复活。被替换或修改的同 ID cache 不按名字猜成内置；selection/cache 漂移明确拒绝。
 
-新的 v4 component descriptor 增加可选 `distribution_source` 来源属性，值为构建 commit，读取时核对代码归档中的 `.akashic-source.json`。这是不可变来源声明，不是另一张可修改版本表。没有此属性的旧 descriptor 不改写；首次转换必须使用 receipt 的精确证据。普通 bare builtin 或其他显式 source 不因 source_type=builtin 被接管。配置更新沿用 descriptor 复制，保留该属性和 Python 环境引用。
+新的 v4 component descriptor 增加可选 `distribution_source` 来源属性，值为构建 commit，读取时核对代码归档中的 `.akashic-source.json`。这是不可变来源声明，不是另一张可修改版本表。没有此属性的旧 descriptor 不改写；首次转换必须使用 receipt 的精确证据，或下述维护者显式批准的历史转换。普通 bare builtin 或其他显式 source 不因 source_type=builtin 被接管。配置更新沿用 descriptor 复制，保留该属性和 Python 环境引用。
+
+### 多次历史升级的显式转换
+
+2026-10-01 维护者批准 hua-home 已逐项核验的 52 个旧安装归入发行版：代码由正式发布回执或历史镜像精确证明，当前 cache 与 Root 一致，66 个已选数据目录无冲突。首次 receipt 不覆盖这类后续升级，不能改写它来补齐历史。
+
+部署者先核验正式来源证据和数据归属，再在部署清单的 `distribution_adoption` 中列出精确输入；它不是按名称自动推断来源的开关。清单绑定当前 Root、目标 distribution commit，以及各项原 component、artifact pointer、Git revision、代码与静态 manifest 摘要、data_dir、原源码 commit 和审计证据摘要。发布器重新核对本机输入；正式来源证据及数据归属的人工审核由部署者负责，摘要不能代替审核。
+
+转换凭证追加到现有 `PluginArchive`，由本次完整 Root CAS 同时引用。带凭证的 Root 使用 v2；普通 Root v1 继续可读。后续 Root 提交保留同一凭证引用，避免启动遍历整条历史链；引用不复制代码选择或产生新的可变来源表。未被当前 Root 引用的孤立凭证不生效，首次 receipt、原 cache、旧 Root 和业务数据都不改写、不减少。
+
+```text
+已批准清单 ──核对当前 Root/cache/data──► 不可变归属凭证
+                                           │
+新版普通组件 ──────────────────────────────┼──► 一次完整 Root CAS
+                                           │
+                       后续配置/启停 Root 保留同一凭证引用
+```
+
+普通启动按该凭证核对保留的旧 cache，然后将其排除出 installed 扫描；已加载的转换项必须是有效发行版 descriptor。停用或退役不释放历史数据身份；同 ID 外置安装继续拒绝，复用数据须另有显式恢复/身份转换流程。cache pointer、代码或数据目录漂移明确失败。没有完整发布回执时先核对实际 Root：未提交可重试原清单；已提交则不重放转换，按实际 Root 准备普通清单或使用已有发布回执 resume。恢复旧 Core 须同时恢复其支持的旧 Root，不能让旧读者解析 v2。
 
 保留既有 installed 同名优先规则（包括禁用的外置来源），不从未被选择的 cache 猜测应运行的新外置版本。已有选中内置与另一同名外置 cache 冲突时，预检报告歧义，而不是让两者都从组合消失。
 
@@ -61,6 +79,7 @@ Yoyo 是顺序与成功账本，不是任意脚本的数据安全证明。每个
 .venv/bin/python scripts/deployment_composition_scenario.py
 .venv/bin/python scripts/deployment_composition_scenario.py --with-wheels
 .venv/bin/python scripts/deployment_migration_scenario.py
+.venv/bin/python scripts/deployment_adoption_scenario.py
 ```
 
 默认只使用本地临时 Git 源和空 requirements；`--with-wheels` 额外下载一个公开测试依赖并在固定插件解释器中执行。脚本创建独立目录、记录当前 commit/tree/dirty 状态并留下 `result.json`、bundle、数据库和 receipt；从不连接已有安装或 provider。`--output` 只接受尚不存在的目录。Session/Message 同时核对完整 SQL dump 与数据库字节，配置、plugin-data、旧 cache 和 receipt 核对完整文件内容。

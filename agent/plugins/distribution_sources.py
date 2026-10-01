@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
-from agent.plugins.manifest import load_plugin_manifest
+from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.static_manifest import load_static_plugin_manifest
@@ -58,8 +58,122 @@ def is_distribution_input(record: Mapping[str, object], code: Path) -> bool:
     return True
 
 
+def read_distribution_adoption(workspace: Path) -> Mapping[str, object] | None:
+    """只读取当前 Root 引用的历史归属凭证，孤立归档不生效。"""
+    selection = PluginSelection(workspace)
+    root = selection.read() if selection.path.exists() else None
+    if root is None:
+        return None
+    ref = selection.archive.read_descriptor(root).get("distribution_adoption_ref")
+    if ref is None:
+        return None
+    record = selection.archive.read_descriptor(cast(str, ref))
+    check_distribution_adoption_format(record)
+    return record
+
+
+def check_distribution_adoption_format(record: Mapping[str, object]) -> None:
+    """在部署清单和归档边界校验转换凭证的完整结构。"""
+    fields = {"schema_version", "base_root_ref", "plan_sha256", "distribution_source_commit", "entries"}
+    if set(record) != fields or type(record["schema_version"]) is not int or record["schema_version"] != 1:
+        raise ValueError("历史归属凭证格式无效")
+    for key, length in (("base_root_ref", 64), ("plan_sha256", 64), ("distribution_source_commit", 40)):
+        value = record[key]
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{%d}" % length, value) is None:
+            raise ValueError(f"历史归属凭证身份无效: {key}")
+    entries = record["entries"]
+    if not isinstance(entries, (list, tuple)) or not entries:
+        raise ValueError("历史归属转换必须列出精确输入")
+    seen: set[str] = set()
+    fields = {"plugin_id", "component_ref", "artifact_pointer", "source_revision", "code_sha256",
+              "manifest_digest", "data_dir", "source_commit", "evidence_sha256"}
+    for entry in entries:
+        if not isinstance(entry, Mapping) or set(entry) != fields:
+            raise ValueError("历史归属转换条目格式无效")
+        plugin_id = entry["plugin_id"]
+        if (not isinstance(plugin_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*", plugin_id) is None
+            or plugin_id in seen):
+            raise ValueError("历史归属转换插件身份重复或无效")
+        seen.add(plugin_id)
+        for key in fields - {"plugin_id", "artifact_pointer", "data_dir"}:
+            value = entry[key]
+            length = 40 if key in {"source_revision", "source_commit"} else 64
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{%d}" % length, value) is None:
+                raise ValueError(f"历史归属转换摘要无效: {plugin_id}/{key}")
+        pointer = entry["artifact_pointer"]
+        if not isinstance(pointer, str) or re.fullmatch(r"\.artifacts/[A-Za-z0-9][A-Za-z0-9._-]*", pointer) is None:
+            raise ValueError(f"历史归属 artifact pointer 无效: {plugin_id}")
+        if not isinstance(entry["data_dir"], str):
+            raise ValueError(f"历史归属 data_dir 无效: {plugin_id}")
+
+
+def _adopted_distribution_roots(
+    workspace: Path, plugins_home: Path, record: Mapping[str, object], *, preparing: bool,
+) -> tuple[set[Path], set[str]]:
+    """核对已批准的旧输入；任何 cache、选择或数据身份漂移都停止转换。"""
+    check_distribution_adoption_format(record)
+    selection = PluginSelection(workspace)
+    current = selection.read()
+    if preparing and current != record["base_root_ref"]:
+        raise SelectionConflictError("历史归属转换 Root 基线已变化")
+    assert current is not None
+    baseline = selection.archive.read_descriptor(cast(str, record["base_root_ref"]))
+    base_components = cast(tuple[str, ...], baseline["components"])
+    base_data = [selection.archive.read_descriptor(ref)["data_dir"] for ref in base_components]
+    current_record = selection.archive.read_descriptor(current)
+    selected = {cast(str, item["plugin_id"]): item for ref in cast(tuple[str, ...], current_record["components"])
+                for item in (selection.archive.read_descriptor(ref),)}
+    ignored: set[Path] = set()
+    historical: set[str] = set()
+    # 1. 逐项绑定原选择与已核验 artifact；不按插件名或 provenance 单独推断归属。
+    for row in cast(tuple[Mapping[str, str], ...], record["entries"]):
+        plugin_id = row["plugin_id"]
+        name, marketplace = plugin_id.split("@")
+        old = selection.archive.read_descriptor(row["component_ref"])
+        data = workspace_plugin_data_dir(workspace, name, marketplace)
+        if (row["component_ref"] not in base_components or old["plugin_id"] != plugin_id
+            or old["source_type"] != "installed" or old["code"] != row["code_sha256"]
+            or old["data_dir"] != row["data_dir"]
+            or base_data.count(row["data_dir"]) != 1
+            or row["data_dir"] != data.relative_to(workspace).as_posix()
+            or data.resolve() != data or not data.is_dir()):
+            raise SelectionConflictError(f"历史归属选择或数据身份不符: {plugin_id}")
+        base = plugins_home / "cache" / marketplace / name
+        if any(path.is_symlink() for path in (plugins_home / "cache", base.parent, base)):
+            raise SelectionConflictError(f"历史归属 cache 路径包含链接: {plugin_id}")
+        pointers = read_pointers(base)
+        if (pointers is None or pointers.stable != pointers.latest
+            or pointers.stable.path != row["artifact_pointer"]):
+            raise SelectionConflictError(f"历史归属 cache pointer 已变化: {plugin_id}")
+        artifact = resolve_pointer(base, pointers.stable)
+        assert artifact is not None
+        identity = load_static_plugin_manifest(artifact)
+        revision = subprocess.check_output(
+            ["git", "--no-optional-locks", "-C", str(artifact), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        code = hashlib.sha256(encode_tree(tree_entries(
+            artifact, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
+        ))).hexdigest()
+        provenance = json.loads((artifact / ".akashic-source.json").read_text())
+        if (identity.name != name or identity.identity_digest != row["manifest_digest"]
+            or revision != row["source_revision"] or code != row["code_sha256"]
+            or provenance != {"commit": row["source_commit"], "path": f"plugins/{name}"}):
+            raise SelectionConflictError(f"历史归属 cache 内容已变化: {plugin_id}")
+        # 2. 提交后只能是普通发行版输入或未加载；退役/停用也不释放原数据身份。
+        active = selected.get(plugin_id)
+        if active is not None:
+            valid_source = (active == old if preparing else is_distribution_input(
+                active, selection.archive.open(cast(str, active["code"]))))
+            if not valid_source or active["data_dir"] != row["data_dir"]:
+                raise SelectionConflictError(f"历史归属已被其它选择占用: {plugin_id}")
+        ignored.add(artifact)
+        historical.add(plugin_id)
+    return ignored, historical
+
+
 def distribution_sources(
     workspace: Path, plugins_home: Path, distribution: Path | None = None,
+    *, adoption: Mapping[str, object] | None = None,
 ) -> DistributionSources:
     """The immutable first receipt proves old cache ownership, never current choice."""
     if distribution is None:
@@ -77,6 +191,17 @@ def distribution_sources(
     ignored: set[Path] = set()
     historical: set[str] = set()
     legacy: set[str] = set()
+    committed_adoption = read_distribution_adoption(workspace)
+    if adoption is not None and committed_adoption is not None:
+        raise SelectionConflictError("历史归属已经转换，不能再次转换")
+    proof = adoption if adoption is not None else committed_adoption
+    if proof is not None:
+        adopted_roots, adopted_ids = _adopted_distribution_roots(
+            workspace, plugins_home, proof, preparing=adoption is not None,
+        )
+        ignored.update(adopted_roots)
+        historical.update(adopted_ids)
+        legacy.update(adopted_ids)
     for row in receipt.get("installed", []):
         plugin_id = f'{row["name"]}@{row["marketplace"]}'
         historical.add(plugin_id)
@@ -135,6 +260,7 @@ def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSourc
 
 def distribution_migration_sources(
     workspace: Path, plugins_home: Path, distribution: Path | None = None,
+    *, adoption: Mapping[str, object] | None = None,
 ) -> tuple[ResolvedPluginSource, ...]:
     """只把归属明确的内置数据目录交给当前发行版的 Yoyo。"""
     if distribution is None:
@@ -142,7 +268,7 @@ def distribution_migration_sources(
         if not configured:
             return ()
         distribution = Path(configured)
-    available = distribution_sources(workspace, plugins_home, distribution)
+    available = distribution_sources(workspace, plugins_home, distribution, adoption=adoption)
     sources = distribution_plugin_sources(distribution)
     by_id = {f"{source.plugin_name}@{source.marketplace}": source for source in sources}
     legacy_codes: dict[str, str] = {}

@@ -8,11 +8,13 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
+from typing import cast
 from uuid import uuid4
 
 from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
-from agent.plugins.distribution_sources import distribution_plugin_sources
+from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
 from agent.plugin_composition.archive import sync_directory
 
 from agent.plugins.artifacts import (
@@ -196,6 +198,9 @@ def install_git_plugin(
         plugin_name = _validate_path_segment(static_manifest.name, "插件 name")
         # 默认 preset 的身份不能被外置安装接管；克隆校验后、cache/data 写入前拒绝。
         reserved = set(reserved_ids)
+        adoption = read_distribution_adoption(workspace)
+        if adoption is not None:
+            reserved.update(row["plugin_id"] for row in cast(tuple[Mapping[str, str], ...], adoption["entries"]))
         receipt_path = workspace / "runtime/distribution-install.json"
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text())
