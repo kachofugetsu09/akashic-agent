@@ -297,3 +297,9 @@ Tool/Command/React 仍在自己的启动事务内核对，Core 只拥有原事�
 本轮不增加持久状态、来源队列或执行框架。原输入接纳、停止、重试、跨来源输出提交与取消
 排空合同不变。旧 `reply.execute.v3` 常量保持原合同，新 provider 只发布 v4；
 外置调用者须在完整新组合里显式传入执行前提。
+
+### 2026-10-01 实际回传适配器验收
+
+`docker/debug/completion_source_ordering.py` 现挂载真实 Sources、Conversation、Reply、ReplyProgram provider，经 Subagents 的回传入口消费 `reply.execute.v4`，不在场景里复写 report 或直接绕过适配器调用 run_reply。16 个受控场景分别令控制来源或输出来源的 Input/Control 先落盘，并延迟 loop 通知，核对入口、generation claim、Tool started、真实本地效果之后与最终 Output 的行为。调用账、原 Message、SQLite 完整性和清理一同核对；模型 driver、材料与投递仍是本地受控边界，不代表正式 provider 或真实送达验收。
+
+命令没有新增第二份 started 状态：原不可变 `CommandIntent` 就是同事务首次准入事实；不能把 durable claim 到 handler 的物理时间间隔解释为缺少另一份准入状态。最终 Output 仍由同来源 head CAS 拒绝过期提交，未知外部效果由固定命令 owner 恢复。

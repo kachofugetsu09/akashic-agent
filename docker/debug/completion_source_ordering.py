@@ -1,6 +1,7 @@
 """A background report keeps the controlling Source through first effect and Output.
 
-Uses real Subagents._announce, SourceSession.complete, Task, run_reply, ReAct,
+Mounts real Sources, Conversation, Reply and ReplyProgram providers and calls
+Subagents._announce through their public capabilities, with real Task, ReAct,
 ModelsStore and MessageLog. Only the model driver and destination are local
 fixtures. Notifications are deliberately delayed after real SQL commit; no
 production files, credentials, external model request or delivery are used.
@@ -19,7 +20,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from docker.debug import source_reply_boundaries as fixture
-from agent.plugin_composition import CompositionRoot, PluginRuntime
+from agent.plugin_composition import CHAT_MODELS, CompositionRoot, PluginRuntime
+from agent.plugin_composition.artifacts import ARTIFACT_READ
+from agent.plugin_composition.archive import PluginArchive
+from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.channels import ChannelInboundMessage
+from agent.restart import RESTART_GATE, RestartGate
 from agent.plugin_composition.messages import (
     MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     MessageWriters, OwnerState, SessionAdmission,
@@ -32,12 +38,19 @@ from plugins.tools.api import MessageReply, Result, result_message_id
 from plugins.tools.menu import ToolCallDecode
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.delivery import DELIVERY
-from agent.plugin_contracts.reply import REPLY_PROGRAM_V3
-from agent.plugin_contracts.sources import CHECK_ORIGIN, CONVERSATION_COMPLETE_V2
-from plugins.sources.session import SourceSession, check_source
+from agent.plugin_contracts.reply import REPLY_PROGRAM_V3, REPLY_EXECUTE_V4
+from agent.plugin_contracts.tools import ALL_TOOLS
+from plugins.commands import plugin as commands_plugin
+from plugins.conversation import plugin as conversation_plugin
+from plugins.reply import plugin as reply_plugin
+from plugins.reply_program import plugin as program_plugin
+from plugins.reply_program import inputs as program_inputs
+from plugins.sources import plugin as sources_plugin
+from agent.plugin_contracts.sources import CHECK_ORIGIN, CONVERSATION_COMPLETE_V2, SOURCES_V4
+from plugins.sources.session import SourceSession
 from plugins.subagent.request import PROFILE_TOOLS, Request
 from plugins.subagent.runtime import Subagents
-from session.log import MessageLog, OwnerStore
+from session.log import MessageLog, MessageWriter, OwnerStore
 
 
 class LocalDelivery(fixture.LocalDelivery):
@@ -47,7 +60,7 @@ class LocalDelivery(fixture.LocalDelivery):
         return super().prepare(reader, message, sinks)
 
 
-async def check(directory: Path, stage: str, control: bool):
+async def check(directory: Path, stage: str, control: bool, *, boundary_source: str = "conversation"):
     log = MessageLog(directory / "sessions.db")
     models = fixture.ModelsStore(directory / "models.db", directory / "backups")
     models.initialize()
@@ -55,10 +68,11 @@ async def check(directory: Path, stage: str, control: bool):
     writers, state = MessageWriters(log), OwnerState(log)
     contexts, calls, report_tasks, effects = {}, [], [], []
     tool_state = log.owner("tools")
+    tool_tasks = None
     reached, proceed = asyncio.Event(), asyncio.Event()
     committed, notify = asyncio.Event(), asyncio.Event()
     rejected = asyncio.Event()
-    source = None
+    bindings = Bindings(log, PluginArchive(directory / "archives"), root)
 
     async def hold():
         reached.set()
@@ -100,7 +114,8 @@ async def check(directory: Path, stage: str, control: bool):
 
         async def create_menu(self, reader, output_source, *, check_start, **_kwargs):
             self.reader, self.source, self.check_start = reader, output_source, check_start
-            self.tasks = tasks.open(contexts["reply"])
+            assert tool_tasks is not None
+            self.tasks = tool_tasks
             return self
 
         def decode(self, call):
@@ -154,60 +169,64 @@ async def check(directory: Path, stage: str, control: bool):
             finally:
                 writer.expire()
 
-    async def complete(session_id, program):
-        assert source is not None and session_id == "parent"
-        async with contexts["conversation"].runtime_scope():
-            return await source.complete(program)
-
-    async def report(task, reader, output_source, _reminders, *, check_admission):
-        report_tasks.append(task)
-        try:
-            async with contexts["reply"].runtime_scope():
-                if stage == "entry":
-                    await hold()
-                return await fixture.run_reply(
-                    contexts["reply"], task, reader, output_source,
-                    models=Models(), content=Content(), context=fixture.ContextBuilder(),
-                    tools=fixture.EmptyTools(), cleanup=fixture.cleanup,
-                    check_admission=check_admission, selection=fixture.SelectionOwner(),
-                    tool_program=Menu() if stage in {"tool", "tool-success", "tool-finished"} else fixture.EmptyTools(), model_checks=fixture.MessageChecksOwner(),
-                    model_content=fixture.ContentOwner(), model_projection=fixture.ProjectionOwner(),
-                    writers=writers, owner_state=state, artifact_reader=None, read_call=models.read_call,
-                    react=fixture.react, materials=fixture.material_scope(),
-                    turn_projection=fixture.TurnProjection(), authorize=None,
-                    max_output_tokens=100, max_steps=4, fixed_bindings={},
-                )
-        except asyncio.CancelledError:
-            rejected.set()
-            raise
+    class Materials:
+        def bind(self, **_kwargs):
+            return fixture.material_scope()
 
     async def storage(ctx):
+        nonlocal tool_tasks
         for key, value in (
             (MESSAGE_CATALOG, log.catalog()), (MESSAGE_WRITERS, writers), (OWNER_STATE, state),
             (SESSION_ADMISSION, SessionAdmission(log)), (TASKS, tasks), (CONTENT, Content()),
-            (CHECK_ORIGIN, lambda _part: ContentReferences()), (DELIVERY, LocalDelivery()),
-            (CONVERSATION_COMPLETE_V2, complete), (REPLY_PROGRAM_V3, report),
+            (DELIVERY, LocalDelivery()), (BINDINGS, bindings), (ARTIFACT_READ, object()),
+            (RESTART_GATE, RestartGate(boot_id="scenario", supervised=False)),
+            (CHAT_MODELS, Models()), (ALL_TOOLS, lambda: fixture.EmptyTools()),
+            (program_inputs.CONTEXT, fixture.ContextBuilder()),
+            (program_inputs.MATERIALS, Materials()), (program_inputs.MODEL_CALLS, models.read_call),
+            (program_inputs.MODEL_CHECKS, fixture.MessageChecksOwner()),
+            (program_inputs.MODEL_CONTENT, fixture.ContentOwner()),
+            (program_inputs.MODEL_PROJECTION, fixture.ProjectionOwner()),
+            (program_inputs.MODEL_SELECTION, fixture.SelectionOwner()),
+            (program_inputs.REACT, fixture.react), (program_inputs.TOOL_CLEANUP, fixture.cleanup),
+            (program_inputs.TOOL_PROGRAM, Menu() if stage in {"tool", "tool-success", "tool-finished"} else fixture.EmptyTools()),
+            (program_inputs.TOOLS, fixture.EmptyTools()),
+            (program_inputs.TURN_PROJECTION, fixture.TurnProjection()),
         ):
             await ctx.provide(key, value)
+        tool_tasks = tasks.open(ctx)
 
+    # 1. 实际 provider 发布和消费 V4，不在测试中复写 report 或 execute。
+    await root.mount(storage, name="storage",
+        runtime=PluginRuntime("storage", "storage", directory, directory, directory, {}))
+    for module, inject in ((sources_plugin, sources_plugin.inject), (commands_plugin, ()),
+                           (conversation_plugin, conversation_plugin.inject),
+                           (program_plugin, program_plugin.inject), (reply_plugin, reply_plugin.inject)):
+        async def mount(ctx, module=module):
+            contexts[module.name] = ctx
+            await module.apply(ctx)
+        await root.mount(mount, name=module.name, inject=inject,
+            runtime=PluginRuntime(module.name, module.name, directory, directory, directory, {}))
+
+    async def subagent_owner(ctx):
+        contexts["subagent"] = ctx
     dependencies = (MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION, TASKS,
                     CONTENT, CHECK_ORIGIN, DELIVERY, CONVERSATION_COMPLETE_V2, REPLY_PROGRAM_V3)
-    await root.mount(storage, name="storage")
-    for name in ("conversation", "reply", "subagent"):
-        async def owner(ctx, name=name):
-            contexts[name] = ctx
-        await root.mount(owner, name=name, inject=dependencies,
-            runtime=PluginRuntime(name, name, directory, directory, directory, {},
-                                 workspace_roots=("subagent-runs",), workspace_files=("memory/spawn_trace.jsonl",)))
+    await root.mount(subagent_owner, name="subagent", inject=dependencies,
+        runtime=PluginRuntime("subagent", "subagent", directory, directory, directory, {},
+                             workspace_roots=("subagent-runs",), workspace_files=("memory/spawn_trace.jsonl",)))
+    assert contexts["reply"].require(REPLY_EXECUTE_V4) is contexts["reply_program"].require(REPLY_EXECUTE_V4)
+    sources = contexts["conversation"].require(SOURCES_V4)
+
     def writer(kind, source_name="conversation", session="parent"):
         return log.writer(session, author=source_name, source=source_name,
                           body_types=(kind,), content={"text": fixture.check_text})
-    inputs, controls = writer(Input), writer(Control)
-    async with contexts["conversation"].runtime_scope():
-        source = SourceSession(reader=log.reader("parent"), inputs=inputs, controls=controls,
-                               tasks=tasks.open(contexts["conversation"]))
-        await source.accept("original", Input(()))
-        writer(Output).append("original-answer", Output((), "complete"))
+
+    def inbound(text):
+        return ChannelInboundMessage(channel="local", chat_id="one", sender="user", content=text,
+                                     timestamp=datetime.now(UTC), metadata={})
+
+    await sources.accept("parent", "original", inbound("original"))
+    writer(Output).append("original-answer", Output((), "complete"))
     request = Request(job_id="c" * 32, label="finished child", profile="research", background=True,
         retry_count=0, parent_session_id="parent", parent_message_id="original", parent_part_index=0,
         origin={"channel": "local", "chat_id": "one", "sender": "user"},
@@ -219,6 +238,8 @@ async def check(directory: Path, stage: str, control: bool):
         jobs = Subagents(contexts["subagent"])
         jobs.accept("job", request, "child task")
     writer(Output, "subagent", request.session_id).append("child-result", Output((ContentPart("text", "child done"),), "complete"))
+    if boundary_source == "report":
+        writer(Input, request.session_id).append("report-original", Input(()))
     originals = tuple(message for session in ("parent", request.session_id) for message in log.reader(session).snapshot())
     original_transact = OwnerStore.transact_async
 
@@ -228,13 +249,27 @@ async def check(directory: Path, stage: str, control: bool):
             await hold()
         return await original_transact(store, callback, **kwargs)
 
+    original_complete = SourceSession.complete
+
+    async def observe_complete(session, program):
+        async def observe(task, reader, guard):
+            report_tasks.append(task)
+            try:
+                if stage == "entry":
+                    await hold()
+                return await program(task, reader, guard)
+            except asyncio.CancelledError:
+                rejected.set()
+                raise
+        return await original_complete(session, observe)
+
     async def announce():
         async with contexts["subagent"].runtime_scope():
             return await jobs._announce("job", request, log.reader(request.session_id), ("completed", "child done"))
 
     announce_job = accepting = None
     try:
-        with patch.object(OwnerStore, "transact_async", transact):
+        with patch.object(OwnerStore, "transact_async", transact), patch.object(SourceSession, "complete", observe_complete):
             announce_job = asyncio.create_task(announce())
             if stage in {"success", "tool-success"}:
                 assert await announce_job is True
@@ -243,23 +278,45 @@ async def check(directory: Path, stage: str, control: bool):
                 assert any(m.source == request.session_id for m in log.reader("parent").snapshot())
             else:
                 await asyncio.wait_for(reached.wait(), 3)
-                selected = controls if control else inputs
-                original_append = selected.append_async
+                original_append = MessageWriter.append_async
 
-                async def delayed(identity, body, **kwargs):
-                    callback = kwargs.pop("on_commit")
+                async def delayed(writer, identity, body, **kwargs):
+                    if identity not in {"new-control", "new-input"}:
+                        return await original_append(writer, identity, body, **kwargs)
+                    callback = kwargs.pop("on_commit", None)
                     receipts = []
-                    message = await original_append(identity, body,
+                    message = await original_append(writer, identity, body,
                         on_commit=lambda saved, created: receipts.append((saved, created)), **kwargs)
                     committed.set()
                     await notify.wait()
-                    for receipt in receipts:
-                        callback(*receipt)
+                    if callback is not None:
+                        for receipt in receipts:
+                            callback(*receipt)
                     return message
 
-                selected.append_async = delayed
-                accepting = asyncio.create_task(source.pause("new-control") if control else source.accept("new-input", Input(())))
-                await asyncio.wait_for(committed.wait(), 3)
+                async def accept():
+                    with patch.object(MessageWriter, "append_async", delayed):
+                        if boundary_source == "conversation":
+                            if control:
+                                await sources.interrupt(log.reader("parent"), "new-control", "local")
+                            else:
+                                await sources.accept("parent", "new-input", inbound("new input"))
+                        else:
+                            target = writer(Control if control else Input, request.session_id)
+                            head = log.reader("parent").head(source=request.session_id)
+                            try:
+                                await target.append_async("new-control" if control else "new-input",
+                                    Control("pause", head) if control else Input(()))
+                            finally:
+                                target.expire()
+
+                accepting = asyncio.create_task(accept())
+                try:
+                    await asyncio.wait_for(committed.wait(), 3)
+                except TimeoutError:
+                    if accepting.done():
+                        await accepting
+                    raise
                 assert report_tasks and report_tasks[0].active
                 assert log.reader("parent").get("new-control" if control else "new-input") is not None
                 proceed.set()
@@ -286,7 +343,7 @@ async def check(directory: Path, stage: str, control: bool):
             with sqlite3.connect(directory / "models.db") as db:
                 statuses = [row[0] for row in db.execute("SELECT state FROM model_calls")]
                 assert statuses == ["success"] * len(calls), statuses
-            return {"stage": stage, "control": control, "driver_calls": len(calls), "models_receipts": statuses, "tool_effects": len(effects)}
+            return {"stage": stage, "boundary_source": boundary_source, "control": control, "driver_calls": len(calls), "models_receipts": statuses, "tool_effects": len(effects)}
     finally:
         proceed.set()
         notify.set()
@@ -306,10 +363,15 @@ async def main(directory):
         path = directory / f"{stage}-{control}"
         path.mkdir()
         results.append(await check(path, stage, control))
+    for stage in ("claim", "output"):
+        for control in (False, True):
+            path = directory / f"report-{stage}-{control}"
+            path.mkdir()
+            results.append(await check(path, stage, control, boundary_source="report"))
     return results
 
 
 if __name__ == "__main__":
     with TemporaryDirectory(prefix="akashic-completion-order-") as directory:
-        results = asyncio.run(asyncio.wait_for(main(Path(directory)), 30))
+        results = asyncio.run(asyncio.wait_for(main(Path(directory)), 45))
     print(json.dumps({"cases": results, "cleanup": "passed"}, indent=2))
