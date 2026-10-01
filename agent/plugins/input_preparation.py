@@ -17,7 +17,7 @@ from agent.plugins.manifest import (
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
 )
-from agent.plugins.python_environment import ENVIRONMENT_FILE, read_environment_refs
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
 from agent.plugins.static_manifest import (
     PluginSourceCompileError,
     PluginSourceContentError,
@@ -102,11 +102,21 @@ def prepare_plugin_input(
             environments = read_environment_refs(plugin_dir, identity)
         elif mod["source_type"] == "installed":
             raise RuntimeError("插件尚未准备固定 Python 环境；请通过安装流程重建")
+        elif "distribution_source" in mod:
+            owner = PythonEnvironments(workspace)
+            environments = {
+                runtime.runtime_root: owner.prepared(
+                    code_ref, runtime,
+                    wheel_digest=mod.get("wheel_tree_sha256", "")
+                    if (plugin_dir / runtime.requirements).read_text().strip() else "",
+                ) for runtime in identity.python
+            }
     ref = archive.save_descriptor({
         "version": 4, "code": code_ref, "python_environments": environments,
         "plugin_id": plugin_id, "source_revision": revision,
         "config_revision": config_revision, "config": encode_config(config),
         "source_type": mod["source_type"],
+        **({"distribution_source": mod["distribution_source"]} if "distribution_source" in mod else {}),
         "data_dir": data_dir.resolve().relative_to(workspace.resolve()).as_posix(),
         "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
     })

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent.plugin_composition.models import MODEL_CALL_STATS, ModelCallStats
+from agent.plugin_composition.models import MODEL_CALL_STATS, ModelCallStats, ModelUnavailableError
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 
 import asyncio
@@ -353,7 +353,12 @@ class _GenerationAkashicAdapter:
         if open_scope is None:
             raise RuntimeError("akashic model selection 缺少 host request scope")
         async with open_scope() as scope:
-            return scope.require(MODEL_SELECTION).read_saved(metadata)
+            selection = scope.require(MODEL_SELECTION).read_saved(metadata)
+            try:
+                return scope.require(MODEL_CATALOG).validate_chat_selection(selection)
+            except ModelUnavailableError:
+                # 现有但不可用的选择仍交给 UI 标明原因；执行入口继续拒绝它。
+                return selection
 
     def attach_runtime(self, ports: ChannelRuntimePorts) -> None:
         if self._stopped:

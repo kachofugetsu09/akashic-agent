@@ -120,7 +120,7 @@ async function measure(page, label) {
         .filter((e) => {
           if (
             e.closest(
-              ".primary-band-nav,.onboarding-step-list,.meme-dashboard__sidebar,.model-capsule__rails",
+              ".product-band__nav,.onboarding-step-list,.meme-dashboard__sidebar,.model-capsule__rails",
             )
           )
             return false;
@@ -193,8 +193,14 @@ async function hit(locator) {
 
 /** 通过 Shell 的原生入口切换页面。 */
 async function main(page, label, selector) {
+  // 全新 workspace 首跑时 onboarding 邀请弹窗会遮住导航；像用户一样关掉它。
+  const invite = page.locator(".onboarding-invite[open]");
+  if (await invite.count())
+    await invite
+      .getByRole("button", { name: "稍后再说", exact: true })
+      .click();
   await page
-    .locator(".primary-band-nav")
+    .locator(".product-band__nav")
     .getByRole("button", { name: label, exact: true })
     .click();
   await page
@@ -572,7 +578,7 @@ async function models(page, prefix) {
       await summaries.nth(j).click();
       await measure(page, `${prefix}-connection-${i}-section-${j}`);
     }
-    const manual = dialog.locator("[data-manual]");
+    const manual = dialog.locator("[data-manual-toggle]");
     if (await manual.count()) {
       await manual.click();
       await measure(page, `${prefix}-connection-${i}-manual`);
@@ -689,6 +695,18 @@ try {
     );
     try {
       await page.goto(values.url, { waitUntil: "domcontentloaded" });
+      // 全新 workspace 首跑时 onboarding 邀请弹窗会异步弹出并遮住导航；
+      // 给它一个出现窗口，像用户一样关掉；同一 context 内不再复现。
+      const firstInvite = page.locator(".onboarding-invite[open]");
+      if (
+        await firstInvite
+          .waitFor({ timeout: 5000 })
+          .then(() => true)
+          .catch(() => false)
+      )
+        await firstInvite
+          .getByRole("button", { name: "稍后再说", exact: true })
+          .click();
       if (values.large || values.rtl)
         await page.evaluate(
           ({ large, rtl }) => {

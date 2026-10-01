@@ -6,7 +6,7 @@ import { useStickToBottomContext } from "use-stick-to-bottom";
 
 import { MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
-import type { ChatMessage, ChatRole } from "./chat-message";
+import type { ChatMessage } from "./chat-message";
 import { ChatMessageView, TimelineMessageView } from "./message-view";
 import { StreamProjectionStore } from "./stream-projection";
 import type { ChatStatus } from "./web-chat-status";
@@ -71,7 +71,6 @@ export function DesktopConversationMessages({
           key={message.id}
           message={message}
           initiallyVisible={index >= messages.length - 8}
-          followsSameRole={messages[index - 1]?.role === message.role}
           replySourceUnavailable={Boolean(message.reply && !messageIds.has(message.reply.messageId))}
           canReply={Boolean(onReply && message.canonical) && status === "idle"}
           copied={copiedMessageId === message.id}
@@ -92,7 +91,6 @@ export function DesktopConversationMessages({
 const DesktopMessageRow = React.memo(function DesktopMessageRow({
   message,
   initiallyVisible,
-  followsSameRole,
   replySourceUnavailable,
   canReply,
   copied,
@@ -107,7 +105,6 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
 }: {
   message: ChatMessage;
   initiallyVisible: boolean;
-  followsSameRole: boolean;
   replySourceUnavailable: boolean;
   canReply: boolean;
   copied: boolean;
@@ -147,7 +144,6 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   const renderFullMessage = nearViewport || message.streaming === true;
   return (
     <>
-      {followsSameRole ? <RoleDivider role={message.role} /> : null}
       <div
         className={`web-message-anchor ${message.role} ${message.streaming === true ? "streaming" : "history-isolated"}`}
         data-message-id={message.id}
@@ -219,10 +215,6 @@ function DesktopMessagePlaceholder({ message }: { message: ChatMessage }) {
       </div>
     </div>
   );
-}
-
-function RoleDivider({ role }: { role: ChatRole }) {
-  return <div aria-hidden="true" className={`role-divider ${role}-divider`} />;
 }
 
 function WebMessageMeta({

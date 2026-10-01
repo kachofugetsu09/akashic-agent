@@ -1,140 +1,20 @@
-/* Shell owns the outer page, primary navigation, and theme control. */
+/* Shell owns the outer page, primary navigation behavior, and theme control.
+   顶栏的几何与视觉由 theme/src/product-band.css 统一拥有。 */
 
   .unified-shell {
-    --shell-band-height: 48px;
-    --shell-band-gap: 8px;
-    --shell-nav-gap: 6px;
-    --shell-group-gap: 16px;
-    --shell-band-inline: 16px;
     display: grid;
     width: 100%;
     height: 100dvh;
-    grid-template-rows: calc(var(--shell-band-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
+    grid-template-rows: calc(var(--band-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
     grid-template-columns: minmax(0, 1fr);
     gap: 0;
     overflow: hidden;
     padding: 0;
   }
 
-  .primary-band {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: var(--shell-band-gap);
-    padding-block: env(safe-area-inset-top, 0px) 0;
-    padding-inline: max(var(--shell-band-inline), env(safe-area-inset-left, 0px))
-      max(var(--shell-band-inline), env(safe-area-inset-right, 0px));
-    border-block-end: 1px solid var(--ak-rule-subtle);
-  }
-
-  .primary-band-brand {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: var(--shell-band-gap);
-    margin-inline-end: var(--shell-group-gap);
-    color: var(--md-sys-color-primary);
-  }
-
-  .primary-band-brand img {
-    width: 22px;
-    height: 22px;
-    object-fit: contain;
-    filter: var(--ak-ink-image-filter);
-  }
-
-  .primary-band-brand strong {
-    font-size: 0.9375rem;
-    font-weight: 650;
-    letter-spacing: 0.01em;
-  }
-
-  .primary-band-nav {
-    min-width: 0;
-    flex: 1;
-    overflow-x: auto;
-    scrollbar-width: none;
-    touch-action: pan-x;
-  }
-
-  .primary-band-track {
-    display: flex;
-    width: max-content;
-    min-width: 100%;
-    gap: var(--shell-nav-gap);
-  }
-
-  .primary-rail-button {
-    position: relative;
-    z-index: 1;
-    display: inline-flex;
-    min-height: 36px;
-    min-width: 36px;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: 0.4rem;
-    border: 0;
-    border-radius: 8px;
-    padding-block: 0;
-    padding-inline: 12px;
-    color: var(--md-sys-color-on-surface-variant);
-    background: transparent;
-    font: inherit;
-    font-size: 0.875rem;
-    font-weight: 500;
-    white-space: nowrap;
-    cursor: pointer;
-    transition-property: color, background-color;
-    transition-duration: var(--t-fast);
-    transition-timing-function: var(--ease-out);
-  }
-
-  .primary-band-track .primary-rail-button[aria-current="page"] {
-    z-index: 2;
-    color: var(--md-sys-color-on-surface);
-    font-weight: 680;
-    box-shadow: inset 0 -2px var(--ak-rule-focus);
-  }
-
-  .primary-rail-button svg {
-    width: 16px;
-    height: 16px;
-    stroke-width: 1.75;
-  }
-
   /* Keep contributed SVGs in the same flex layout as the former inline icons. */
   .shell-page-icon {
     display: contents;
-  }
-
-  .primary-rail-button span {
-    white-space: nowrap;
-  }
-
-  .primary-rail-button:hover {
-    color: var(--md-sys-color-on-surface);
-  }
-
-  .primary-band-track .primary-rail-button:hover {
-    background: transparent;
-  }
-
-  .primary-rail-button.is-active {
-    color: var(--md-sys-color-on-surface);
-  }
-
-  .primary-rail-button:focus-visible {
-    outline: 2px solid var(--md-sys-color-primary);
-    outline-offset: -2px;
-  }
-
-  .primary-band-footer {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: var(--shell-nav-gap);
-    margin-inline-start: auto;
-    padding-inline-start: var(--shell-group-gap);
   }
 
   .shell-view-stack,
@@ -164,13 +44,7 @@
     overscroll-behavior: contain;
   }
 
-  .shell-view iframe {
-    display: block;
-    border: 0;
-    background: transparent;
-  }
-
-  .primary-band-footer .theme-cycle-button {
+  .product-band__footer .theme-cycle-button {
     min-height: 34px;
     padding: 0 10px;
     border: 0;
@@ -178,15 +52,15 @@
     background: transparent;
   }
 
-  .primary-band-footer .theme-cycle-button span {
+  .product-band__footer .theme-cycle-button span {
     display: none;
   }
 
   .theme-cycle-button {
     @apply flex h-11 flex-shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-border bg-transparent px-3 text-fg;
     transition-property: background-color, border-color, color, scale;
-    transition-duration: 140ms;
-    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+    transition-duration: var(--ak-sys-duration-short);
+    transition-timing-function: var(--ak-sys-motion-standard);
   }
 
   .theme-cycle-button:hover {
@@ -209,10 +83,10 @@
   .shell-settings-dialog {
     width: min(460px, calc(100vw - 40px));
     padding: 24px;
-    border: 1px solid var(--md-sys-color-outline-variant, #ddd);
+    border: 1px solid var(--ak-rule-default);
     border-radius: 14px;
-    background: var(--md-sys-color-surface, #fff);
-    color: inherit;
+    background: var(--ak-paper-sheet);
+    color: var(--ak-ink-primary);
   }
 
   .shell-settings-dialog::backdrop {
@@ -243,17 +117,18 @@
     align-items: center;
     gap: 10px;
     font: inherit;
-    border: 1px solid var(--md-sys-color-outline-variant, #ddd);
+    border: 1px solid var(--ak-rule-default);
     border-radius: 8px;
     padding: 8px 14px;
     background: transparent;
     color: inherit;
     text-align: left;
     cursor: pointer;
+    transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
 
   .shell-settings-dialog button:hover {
-    background: color-mix(in oklch, var(--md-sys-color-on-surface) 5%, transparent);
+    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
   }
 
   .shell-settings-dialog header button {
@@ -302,21 +177,19 @@
 }
 
 @media (max-width: 760px) {
-    .unified-shell { --shell-band-height: 96px; }
-    .primary-band {
-      --shell-band-inline: 12px;
-      --shell-group-gap: 0;
+    .unified-shell { --band-height: 96px; }
+    .product-band {
+      --band-inline: 12px;
+      --band-group-gap: 0;
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
       grid-template-rows: 48px 48px;
       gap: 0;
     }
-    .primary-band-brand { margin: 0; }
-    .primary-band-footer { grid-column: 2; grid-row: 1; }
-    .primary-band-nav { grid-column: 1 / -1; grid-row: 2; align-self: stretch; }
-    .primary-band-track { height: 100%; }
-    .primary-rail-button {
-      min-height: 44px;
+    .product-band__brand { margin: 0; }
+    .product-band__footer { grid-column: 2; grid-row: 1; }
+    .product-band__nav { grid-column: 1 / -1; grid-row: 2; }
+    .product-band__item {
       min-width: max-content;
       flex: 1;
       justify-content: center;
@@ -324,7 +197,7 @@
       border-radius: 0;
       font-size: 1rem;
     }
-    .primary-band-footer .theme-cycle-button { min-width: 44px; min-height: 44px; }
+    .product-band__footer .theme-cycle-button { min-width: 44px; min-height: 44px; }
     .shell-settings-dialog {
       width: 100%;
       max-width: none;

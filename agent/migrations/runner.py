@@ -24,10 +24,10 @@ from agent.migrations.bundles import (
     validate_pending_requirements,
 )
 from agent.plugins.source_resolver import ResolvedPluginSource
-from agent.plugins.source_resolver import resolve_plugin_sources
-from agent.plugins.manifest import load_plugin_manifest, plugins_root, workspace_plugin_data_dir
+from agent.plugins.manifest import plugins_root, workspace_plugin_data_dir
+from agent.plugins.distribution_sources import distribution_migration_sources
+from agent.plugins.reload_journal import check_pending_publication
 from agent.plugins.selection import PluginSelection
-from agent.plugins.static_manifest import load_static_plugin_manifest
 from bootstrap.workspace_lock import WorkspaceInstanceLock, WorkspaceMaintenanceLock
 
 
@@ -42,7 +42,7 @@ class MigrationOutcome:
 
 
 class MigrationRunner:
-    """核对迁移账本，在明确初始化或部署授权下执行缺失 step。"""
+    """在启动前推进 Core 和内置插件的 Yoyo 账本。"""
 
     def __init__(
         self,
@@ -51,7 +51,6 @@ class MigrationRunner:
         config_path: Path,
         workspace: Path,
         plugin_dirs: Sequence[Path] = (),
-        installed_cache_root: Path | None = None,
         migration_catalog: Path | None = None,
         fixed_sources: Sequence[ResolvedPluginSource] | None = None,
         startup_selection: bool = False,
@@ -69,10 +68,6 @@ class MigrationRunner:
         self.plugin_dirs = tuple(path.expanduser() for path in plugin_dirs)
         self.fixed_sources = None if fixed_sources is None else tuple(fixed_sources)
         self.startup_selection = startup_selection
-        self.installed_cache_root = (
-            (installed_cache_root or (plugins_root() / "cache"))
-            .expanduser()
-        )
         self.migration_catalog = (
             migration_catalog
             if migration_catalog is not None
@@ -80,23 +75,28 @@ class MigrationRunner:
         ).expanduser()
 
     def run(self) -> MigrationOutcome:
-        """既有选择只检查迁移；显式首次初始化保留建库流程。"""
+        """先迁移 Core 和当前发行版内置数据，再允许 runtime 启动。"""
 
         # 1. 复用 workspace 锁串行化迁移与 runtime 启动
         workspace_lock = WorkspaceInstanceLock(self.workspace)
         workspace_lock.acquire()
         try:
             if self.startup_selection:
-                self.fixed_sources = _startup_sources(self.workspace)
-            return self._apply_pending(
-                approved_migrations=() if self.startup_selection and PluginSelection(self.workspace).read() is not None else None,
-            )
+                self.fixed_sources = distribution_migration_sources(self.workspace, plugins_root())
+                # Core 先升级自己拥有的账本结构，才能读取完整的配置恢复事实。
+                core = self._apply_pending(core_only=True)
+                selection = PluginSelection(self.workspace)
+                if self.check() and selection.path.exists() and selection.read() is not None:
+                    check_pending_publication(self.workspace)
+                plugins = self._apply_pending()
+                migrations = core.migrations + plugins.migrations
+                return MigrationOutcome(state="migrated" if migrations else "current", migrations=migrations)
+            return self._apply_pending()
         finally:
             workspace_lock.release()
 
     def run_under_maintenance(
         self, maintenance: WorkspaceMaintenanceLock, *, core_only: bool = False,
-        approved_migrations: tuple[str, ...] = (),
     ) -> MigrationOutcome:
         """Apply migrations while the release owns the workspace maintenance lock."""
 
@@ -104,15 +104,15 @@ class MigrationRunner:
             self.workspace / ".supervisor.lock", self.workspace / ".instance.lock",
         ) or len(maintenance._streams) != 2):
             raise RuntimeError("release migration 缺少当前 workspace maintenance owner")
-        return self._apply_pending(core_only=core_only, approved_migrations=approved_migrations)
+        return self._apply_pending(core_only=core_only)
 
-    def check(self, approved_migrations: tuple[str, ...] = ()) -> tuple[str, ...]:
+    def check(self) -> tuple[str, ...]:
         """只读核对目标代码的待迁移集合，不创建账本或运行 step。"""
-        return self._apply_pending(approved_migrations=approved_migrations, check_only=True).migrations
+        return self._apply_pending(check_only=True).migrations
 
     def _apply_pending(
         self, *, core_only: bool = False,
-        approved_migrations: tuple[str, ...] | None = None, check_only: bool = False,
+        check_only: bool = False,
     ) -> MigrationOutcome:
         """加载不可变目录并提交全部缺失迁移。"""
 
@@ -123,7 +123,6 @@ class MigrationRunner:
             core_migrations = _read_migrations(str(self.migrations_root))
             bundles = discover_migration_bundles(
                 plugin_dirs=self.plugin_dirs,
-                installed_cache_root=self.installed_cache_root,
                 fixed_sources=self.fixed_sources,
             )
             requirements = load_migration_requirements(self.migration_catalog)
@@ -152,16 +151,7 @@ class MigrationRunner:
                 applied_ids=applied_ids,
                 bundles=bundles,
             )
-            # 既有 workspace 的迁移必须来自部署者清单；先核对再打开写连接。
-            loaded = set(core_ids + bundle_ids)
-            pending_ids = loaded - set(applied_ids) - set(baseline or ())
-            if approved_migrations is not None:
-                unknown = set(approved_migrations) - loaded - set(applied_ids)
-                missing = pending_ids - set(approved_migrations)
-                if unknown or missing:
-                    raise RuntimeError(
-                        f"迁移清单不匹配: 未批准={sorted(missing)}, 未知={sorted(unknown)}"
-                    )
+            pending_ids = set(core_ids + bundle_ids) - set(applied_ids) - set(baseline or ())
             if check_only:
                 return MigrationOutcome(state="current", migrations=tuple(sorted(pending_ids)))
             if fresh and baseline is not None:
@@ -243,50 +233,6 @@ def migrate_installation(config_path: Path, workspace: Path) -> MigrationOutcome
         workspace=workspace,
         startup_selection=True,
     ).run()
-
-
-def _startup_sources(workspace: Path) -> tuple[ResolvedPluginSource, ...]:
-    """Read exact selected archives, or the enabled inputs of a new selection."""
-
-    selection = PluginSelection(workspace)
-    root_ref = selection.read()
-    if root_ref is None:
-        # First boot has no committed components yet; Manager uses this manifest
-        # to choose installed inputs before it commits the first complete Root.
-        enabled = load_plugin_manifest()
-        return tuple(source for source in resolve_plugin_sources(
-            installed_cache_root=plugins_root() / "cache",
-        ) if enabled.get(f"{source.plugin_name}@{source.marketplace}", True))
-
-    root = selection.archive.read_descriptor(root_ref)
-    components = root["components"]
-    if not isinstance(components, tuple):
-        raise ValueError("selected migration components 无效")
-    sources: list[ResolvedPluginSource] = []
-    for ref in components:
-        if not isinstance(ref, str):
-            raise ValueError("selected migration component ref 无效")
-        descriptor = selection.archive.read_descriptor(ref)
-        plugin_id = descriptor["plugin_id"]
-        code_ref = descriptor["code"]
-        source_type = descriptor["source_type"]
-        if (descriptor["version"] != 4 or not isinstance(plugin_id, str)
-            or not isinstance(code_ref, str)
-            or (source_type != "builtin" and source_type != "installed")
-            or plugin_id.count("@") != 1):
-            raise ValueError(f"selected migration descriptor 无效: {ref}")
-        name, marketplace = plugin_id.split("@")
-        code = selection.archive.open(code_ref)
-        manifest = load_static_plugin_manifest(code)
-        if manifest.name != name:
-            raise ValueError(f"selected migration 身份不一致: {plugin_id}")
-        sources.append(ResolvedPluginSource(
-            plugin_root=code,
-            source_type="builtin" if source_type == "builtin" else "installed",
-            marketplace=marketplace, plugin_name=name,
-            static_manifest=manifest,
-        ))
-    return tuple(sources)
 
 
 def _workspace_is_empty(workspace: Path, config_path: Path) -> bool:

@@ -1,4 +1,4 @@
-"""发现并校验外部 artifact 的离线 Yoyo migration bundle。"""
+"""发现并校验内置插件的离线 Yoyo migration bundle。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from agent.plugins.source_resolver import (
     ResolvedPluginSource,
     resolve_plugin_sources,
 )
-from agent.plugins.static_manifest import StaticPluginManifest
 
 
 _MIGRATION_CATALOG = "migration.catalog.toml"
@@ -132,20 +131,21 @@ class MigrationRequirement:
 def discover_migration_bundles(
     *,
     plugin_dirs: Sequence[Path] = (),
-    installed_cache_root: Path | None = None,
     fixed_sources: Sequence[ResolvedPluginSource] | None = None,
 ) -> tuple[MigrationBundle, ...]:
     """只从明确的插件 source 读取 bundle，不扫描 checkout/plugins。"""
 
     sources = (
         tuple(fixed_sources) if fixed_sources is not None else
-        tuple(resolve_plugin_sources(plugin_dirs, installed_cache_root=installed_cache_root))
+        tuple(resolve_plugin_sources(plugin_dirs))
     )
     bundles: list[MigrationBundle] = []
     seen_bundles: set[str] = set()
     seen_packages: set[str] = set()
     seen_migrations: set[str] = set()
     for source in sources:
+        if source.source_type != "builtin":
+            continue
         catalog = source.plugin_root / _MIGRATION_CATALOG
         if not catalog.exists() and not catalog.is_symlink():
             continue
@@ -332,25 +332,6 @@ def load_migration_bundle(
         plugin_name=source.plugin_name,
         marketplace=source.marketplace,
     )
-
-
-def validate_migration_artifact(
-    plugin_root: Path,
-    *,
-    static_manifest: StaticPluginManifest,
-) -> MigrationBundle | None:
-    """在 artifact 发布前校验约定路径下的 migration bundle。"""
-
-    catalog = plugin_root / _MIGRATION_CATALOG
-    if not catalog.exists() and not catalog.is_symlink():
-        return None
-    source = ResolvedPluginSource(
-        plugin_root=plugin_root.resolve(strict=True),
-        source_type="installed",
-        plugin_name=static_manifest.name,
-        static_manifest=static_manifest,
-    )
-    return load_migration_bundle(source)
 
 
 def load_migration_requirements(path: Path) -> tuple[MigrationRequirement, ...]:

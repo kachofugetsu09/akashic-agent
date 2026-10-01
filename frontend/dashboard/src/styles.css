@@ -1,19 +1,15 @@
 @import "../../theme/src/material-tokens.css";
 @import "../../theme/src/brand-tokens.css";
 @import "../../theme/src/paper-surface.css";
+@import "../../theme/src/product-band.css";
 
 @tailwind base;
 
 :root {
-  --shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.16), 0 1px 3px 1px rgb(var(--md-sys-color-shadow-rgb) / 0.08);
   --radius: var(--md-sys-shape-corner-medium);
   --radius-lg: var(--md-sys-shape-corner-large);
-  --radius-xl: var(--md-sys-shape-corner-extra-large);
   --ease-out: var(--ak-sys-motion-standard);
-  --ease-in-out: var(--ak-sys-motion-emphasized);
   --t-fast: var(--ak-sys-duration-short);
-  --t-base: var(--ak-sys-duration-medium);
-  --t-slow: 400ms;
   --sans: var(--ak-type-reading);
   --mono: var(--ak-type-technical);
 }
