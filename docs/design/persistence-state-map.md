@@ -983,3 +983,8 @@ Embedding 的保存引用复用不可变 `bindings` 与代码归档：Models 注
 Yoyo `20260909_02_execution_failures` 当时由 workspace 独占锁保护，迁移旧客户端命令、Models 调用账、Wake attempt v8→v9 和旧 Core Delivery v1→v2。旧失败终态映射为 completed error/error/failed，其余行与字段完整保留，不减少 Message、附件或任何数据库行。当前不新增旧客户端回执，未完成 handoff 不裁切；恢复证据为各 `backups/*-errors/<id>/` 的原库、manifest 与迁移前后字段及 integrity 检查。
 
 旧 Message ToolResult/owner 回执只在读取边界解释，原正文不改写。Wake 失败关闭原 Pointer、实际引用 Content 成员和 Drift revision；Alert 结束原领取但不声明送达。scheduler fire 与子任务通知也以原发送回执关闭等待，不再次发送失败效果。具体运行策略见 [0063](../decisions/0063-execution-failures-have-terminal-results.md)。
+
+
+## 分发来源组合（0082）
+
+`PluginSelection` 仍独占完整运行输入；停止期准备后只提交一次完整 Root。v4 descriptor 可增加不可变的 `distribution_source` commit，读取时核对归档 provenance；旧 descriptor、Root 和源码不改写。首次 distribution receipt 永久保留作为旧 cache 来源证明，启动标记不再是版本选择。内置升级只增加归档与固定 Python 环境；退役只减少当前 selection 成员，旧 cache、环境、plugin-data、配置、Message 和 Session 均不自动减少。manifest 只为新默认项增加选择，保留既有布尔值；内置停用及外置同 ID 覆盖的卸载保留 false。选择版本即接受 Core/内置 Yoyo：停止期持锁推进成功账本，迁移后才提交组合。内置配置允许由迁移更新并归档，失败重试保留已迁移输入；外置配置与数据仍由自身负责。迁移步骤只按已声明合同增加或更新状态，不授予删除权。准备/CAS/运行成功分别报告，已执行的数据写入不因旧 selection 保留而自动回滚。详见 [0082](../decisions/0082-distribution-owned-plugin-composition.md)。

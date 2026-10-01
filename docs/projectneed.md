@@ -718,7 +718,7 @@ Core 只负责通用传输、revision、运行实例引用、调度、取消和�
 
 运行时只有一张图，普通请求使用当前运行实例。安装增加不可变制品，并由唯一 owner 持锁原子更新已选输入记录；选择与运行状态明确分离，accepted 不等于 active。不存在 latest 候选、候选授权、晋升或 revert 撤销：新版本应用失败只使实际硬依赖分支不可用，不自动恢复旧版本；选择提交后进程退出时下次正常启动读取新选择，不续跑未完成的应用，不猜测旧版本安全。显式安装旧版本也是一次普通安装，仍由该版本解释现有数据，不承诺数据恢复。选择写入结果不确定时停止本次应用并报告不确定，不回写旧值。operator 显式更新仍固定精确制品、独占应用并记录真实验证来源，不伪造测试成功。旧状态格式只在带备份、锁与完整性检查的显式升级中转换，不在普通启动路径维持双读双写。
 
-首次 `PluginSelection.read()` 为 `None` 时，底座可对每个 source 做静态 identity 与源码 compile 准备；插件自身的内容错误只保留进程内 source diagnostic，并跳过该输入。一次且仅一次 CAS 提交完整成功子集，全失败提交 `()`；提交后的 import/apply/Fiber 错误仍由 selected generation owner 解释，不反向健康过滤 selection。共享配置、cache/pointer、权限、归档、身份、selection/CAS 与 host 错误必须 fail-loud。watcher/SIGHUP 只 reconcile 当前 selection：新增或修复但未选 source 不自动安装，源码暂失不自动停用；新增选择成员须显式 install，移除成员须显式 disable/uninstall，已选健康 source 的更新仍走既有受控 prepare/replacement/CAS 链。source diagnostic 不新增 durable owner/schema/writer，`plugin_status` 可单独投影它并与 generation/Fiber 错误区分。
+首次 `PluginSelection.read()` 为 `None` 时，底座可对每个 source 做静态 identity 与源码 compile 准备；插件自身的内容错误只保留进程内 source diagnostic，并跳过该输入。一次且仅一次 CAS 提交完整成功子集，全失败提交 `()`；提交后的 import/apply/Fiber 错误仍由 selected generation owner 解释，不反向健康过滤 selection。共享配置、cache/pointer、权限、归档、身份、selection/CAS 与 host 错误必须 fail-loud。watcher/SIGHUP 只 reconcile 当前 selection：新增或修复但未选 source 不自动安装，源码暂失不自动停用；运行期新增选择成员须显式 install，移除成员须显式 disable/uninstall；产品部署按 ONB-002 组合固定分发来源，已选健康 source 的更新仍走既有受控 prepare/replacement/CAS 链。source diagnostic 不新增 durable owner/schema/writer，`plugin_status` 可单独投影它并与 generation/Fiber 错误区分。
 
 ### PLG-014 新插件使用开放组合能力并由 Core 统一应用
 
@@ -786,6 +786,12 @@ ToolCall。固定目录在 system 中只列插件 ID、声明用途和工具数�
 目录中不存在的模型调用必须保存明确的未执行反馈，允许模型在原步数上限内纠正；不得伪造实际工具请求或执行成功。
 通用 ReAct、工具执行和回复程序不得按加载工具、间接调用工具或来源名称分支。
 
+
+### PLG-019 内置 preset 与显式替换
+
+内置本体是随发行版更新的默认插件组合。新增默认功能自动启用，已有用户停用选择保留；退役只退出加载。内置插件使用与外置插件相同的公共能力和生命周期。替换核心行为时，新实现通过同一个 ServiceKey 或显式独占 claim 声明竞争关系，由用户停用原实现并启用替代实现；inject 只声明依赖，不赋予覆盖权。重复独占提供者必须报冲突，不按加载顺序、来源或插件名自动选赢家。不增加自动回退、自动恢复默认或第二套 provider 选择状态。
+
+
 ## 11. Workspace、文件和进程
 
 ### WSP-001 Workspace 可写状态显式归属
@@ -817,7 +823,9 @@ Workload writer；容器名、镜像和 endpoint 都不是持久状态 owner。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 
-迁移框架读取 Core 自有脚本和正式安装插件声明的 migration bundle，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。既有 selected Root 的普通启动只检查待迁移，发现缺失时明确失败；部署者以清单批准 migration ID，发布器在 runtime、provider 和业务写入 owner 停止且持有 maintenance 锁时执行。首次显式初始化允许建库迁移。任一步失败时不得记录成功回执，runtime 不得启动。未来已发布 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。业务 schema 由相应插件拥有，Core 只负责通用装配与执行。
+选择并部署一个发行版，即接受该版本 Core 与内置插件所需的 Yoyo 迁移。启动和发布必须在新版 runtime、provider 和业务写入 owner 启动前持锁完成迁移，再提交并加载新的内置组合；不要求逐项列出 migration ID。迁移范围来自目标发行版的全部内置源码，与默认 profile 和用户启停选择正交，停用插件也能升级其保留数据。外置插件的数据兼容和迁移由外置插件负责；框架不发现、校验或执行它的 Yoyo bundle。
+
+`<workspace>/migrations.sqlite3` 的成功回执决定待执行集合。已成功的 step 不重跑，失败不得记为成功或继续启动；发布前失败保留旧选择，但不能把已发生的数据写入声称为回滚。迁移可按自身合同增加或更新数据，不因升级、停用或退役自动删除用户数据。未来已发布 migration ID 只追加不修改，修正通过新 ID 和依赖表达；事务、恢复点和重试由 step 合同定义。业务 schema 由相应内置插件拥有，Core 只负责通用装配与执行。
 
 ### MIG-002 当前结构是迁移基线，Yoyo 保留未来兼容能力
 
@@ -1030,4 +1038,4 @@ Fitbit 等外部 provider 的 `efficiency` 只以有限数值进入展示；非�
 
 ### ONB-002 Product startup preparation
 
-The product entry prepares dependencies, Web assets and the default plugin distribution before starting Core. The same command handles first and later starts. Default profile installation is first-install-only; restart preserves existing plugin choices and business state. Product preparation reports progress in the terminal, starts Supervisor, and opens the browser only after the Web shell and plugin gateway are ready. Failures exit with a log path; rerunning the same command retries preparation. Supervisor is the only HTTP owner. The standalone Compose starts without model credentials and runs tools inside the container; Host Bridge remains an explicit deployment choice. Startup does not authorize a software upgrade or a data migration of an existing installation.
+The product entry prepares dependencies, Web assets and the default plugin distribution before starting Core. The same command handles first and later starts. Default profile installation is first-install-only; subsequent deployment preparation composes the current distribution-owned code with exact preserved external selections. Removed distribution code stops loading; removal from the default profile alone does not retire an existing plugin. Existing config, disabled/uninstalled choices and business state are preserved. New defaults get an initial choice, and distribution-plugin removal retains an explicit disabled choice. Built-in and external are source attributes of the same ordinary plugin lifecycle. Product preparation reports progress in the terminal, starts Supervisor, and opens the browser only after the Web shell and plugin gateway are ready. Failures exit with a log path; rerunning the same command retries preparation. Supervisor is the only HTTP owner. The standalone Compose starts without model credentials and runs tools inside the container; Host Bridge remains an explicit deployment choice. Selecting a new product distribution authorizes its built-in preset and required Core/built-in Yoyo migrations. These migrations finish before the complete selection commit and runtime activation; external plugin migrations remain their own responsibility; old archives and data remain. Source adoption and failure boundaries are specified in decision 0082.

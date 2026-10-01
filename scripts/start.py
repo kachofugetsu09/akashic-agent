@@ -83,7 +83,8 @@ def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, P
     preparation.step("安装运行依赖 · 首次启动可能需要几分钟")
     uv = shutil.which("uv")
     if uv:
-        preparation.run([uv, "venv", "--python", sys.executable, str(stage / "env")])
+        # Wheel preparation runs through this interpreter's pip, including with uv.
+        preparation.run([uv, "venv", "--seed", "--python", sys.executable, str(stage / "env")])
         preparation.run([uv, "pip", "install", "--python", str(python),
                          "-r", str(ROOT / "requirements.txt"), str(ROOT / "sdk/python")])
     else:
@@ -94,6 +95,8 @@ def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, P
     distribution = stage / "distribution"
     preparation.run([str(python), str(ROOT / "scripts/build_plugin_distribution.py"),
                      "--revision", revision, "--output", str(distribution)])
+    preparation.run([str(python), str(ROOT / "scripts/distribution_runtime.py"),
+                     "prepare-wheels", "--distribution", str(distribution)])
     preparation.run([str(python), "-c",
                      "from pathlib import Path; from scripts.install_plugin_distribution import extract_core; "
                      "import sys; extract_core(Path(sys.argv[1]), Path(sys.argv[2]))",
@@ -120,8 +123,8 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
             previous = json.loads(marker.read_text())
         except json.JSONDecodeError as error:
             raise ValueError(f"安装标记损坏：{marker}。请从备份恢复该文件；已有运行数据不会被重装。") from error
-        if previous["source_commit"] != revision:
-            raise RuntimeError("此数据目录属于另一软件版本。请使用原版本启动；升级需走正式发布流程，试用新版本可指定新的 --state 目录。")
+        if previous.get("schema_version") != 1 or not isinstance(previous.get("source_commit"), str):
+            raise ValueError("安装标记格式不受支持；请使用原入口核对已有安装。")
     # 1. Do not treat an existing installation without a receipt as a fresh product.
     if not marker.exists():
         if config.exists() or (workspace.exists() and any(workspace.iterdir())) or (plugin_home.exists() and any(plugin_home.iterdir())):
@@ -138,9 +141,10 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
             os.fsync(directory)
         finally:
             os.close(directory)
-    preparation.step("准备数据目录")
-    preparation.run([str(python), str(core / "main.py"), "init", "--config", str(config),
-                     "--workspace", str(workspace)], cwd=core)
+    if not receipt.exists():
+        preparation.step("准备数据目录")
+        preparation.run([str(python), str(core / "main.py"), "init", "--config", str(config),
+                         "--workspace", str(workspace)], cwd=core)
     # 2. The formal installer is the only owner of profile installation and receipts.
     preparation.step("检查已安装功能" if receipt.exists() else "安装默认功能")
     preparation.run([str(python), str(core / "scripts/install_plugin_distribution.py"),
@@ -150,9 +154,11 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
 
 
 def run_service(preparation: Preparation, core: Path, python: Path,
-                state: Path, port: int, container: bool, open_browser: bool) -> int:
+                state: Path, port: int, container: bool, open_browser: bool,
+                distribution: Path) -> int:
     """Wait for loaded Web modules, then keep the Supervisor attached to this launch."""
     environment = dict(os.environ, AKASHIC_PLUGIN_HOME=str(state / "plugin-home"),
+                       AKASHIC_PLUGIN_DISTRIBUTION=str(distribution),
                        AKASHIC_WEB_PORT=str(port),
                        AKASHIC_WEB_HOST="0.0.0.0" if container else "127.0.0.1",
                        AKASHIC_WEB_ALLOW_NON_LOOPBACK="1" if container else "0")
@@ -255,7 +261,7 @@ def main() -> int:
                     core, distribution, python = prepare_source(preparation, args.cache.expanduser().resolve())
                 prepare_install(preparation, core, distribution, python, state)
             return run_service(preparation, core, python, state, args.port,
-                               args.distribution is not None, not args.no_browser)
+                               args.distribution is not None, not args.no_browser, distribution)
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
             print(f"启动失败：{error}\n日志：{preparation.log}\n处理原因后重新运行同一启动命令。", file=sys.stderr, flush=True)
             return 1
