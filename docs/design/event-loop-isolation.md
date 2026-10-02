@@ -131,9 +131,8 @@ accepted Input 与 selection token：准备完成后才发送，真实 Delivery 
 
 v1 同步能力保留给已发布的旧 Wake 和其他既有消费者；v1/v2 都访问同一 DriftStore。
 新 Wake 明确依赖 v2，旧 provider 缺少 v2 时由既有依赖解析阻止激活，不猜测或降级。
-这次没有改 `drift.proposals.v1` 的来源上报；它及旧 v1 消费者仍可能同步等待数据库。
-EventMail/Alert 的同步状态操作和发送前检查也继续作为 #879 后续范围，尤其不能把
-Alert 换版直接放入线程，破坏“核对原版本 → Delivery started”的现有排序。
+来源上报现有 `drift.proposals.v2` 可等待接口；旧 v1 仍保留兼容，调用它仍可能同步等待数据库。
+EventMail/Alert 已按下文迁入 v2 与共享准入段，保证原版本检查覆盖 Delivery started 提交。
 
 持久化 schema 不变：来源仍按原身份增加 proposal；领取、流转与结算只更新同一行的
 状态、版本和原回执字段；终态是逻辑变化，没有新增物理减少权限。恢复点是原数据库
@@ -497,3 +496,25 @@ Wake 的请求与 flow 指针继续同事务追加，阶段 Input、quiet Output
 Subagent 的容量检查、Session 准入与 Input/恢复指针提交共用同一 Tasks 准入段；
 并发第四个请求明确拒绝，不留下空 Session。pause 提交后的回调先撤销原 Task，
 再排空其效果；取消等待者也不跳过这一步。结算与诊断文件写入使用有界 worker。
+
+
+## 其他运行期 Owner 与来源写入
+
+摘要 prepare/reduce 的 head/父链读取、发布时的原前缀检查和 summary/head 事务，
+Computer started/ended/failed 回执及收尾完整投影，插件更新的持久通知意图，均由
+原 async 调用者等待完整 worker 操作。Context 能力先在原 scope 取得；真实网络或
+安装效果仍在意图提交之后开始。摘要只增加记录并推进 head，不改写原消息；Computer
+与安装意图沿用原版本、身份和恢复入口，不增加删除权限。
+
+Drift 来源使用 `drift.proposals.v2` 时先复制请求内容，再在线程中提交原 proposal。
+changed 事件仍在原 loop 发出，已提交后取消不丢通知，同身份重放不重复通知。
+同步 v1 保留给旧归档，不能据此宣称任意第三方旧消费者已经隔离。本轮核对的 14 个
+外置选择中没有 Drift proposal 消费者；另仓 Emotion 的旧接口迁移不在该选择范围内。
+
+`owner_write_io.py` 的真实 SQLite/本地 socket 场景覆盖摘要 CAS、Computer 回执、
+取消排空和原消息完整性；同一提交屏障下旧基线约 1 秒，改后小于 1 毫秒。
+`drift_proposal_io.py` 验证真实 Root 的提案提交、请求快照、取消、重放与 loop 通知。
+这些是隔离组件证据，不是生产 P99。外置 Observe、status_commands、proactive_feedback、
+github-watch 与四个 EventMail 来源的源码修复已经交付；正式安装链、选择新 Root 和
+生产完整进程恢复仍未验，#879 在该层验收前保持开放。Akasha 已在线程中的 Recall/Scope
+操作及 settings/auth 等未证明的次级线索不扩入本次修改。

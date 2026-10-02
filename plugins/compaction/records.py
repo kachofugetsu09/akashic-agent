@@ -310,7 +310,7 @@ class SummaryRecords:
             raise ValueError("摘要 head 没有对应 Session 的已发布记录")
         return record
 
-    def publish(
+    async def publish(
         self, record: SummaryRecord, reader: MessageReader, *, parent: StoredSummary | None,
         summary_range: Callable[[tuple[Message, ...], tuple[str, ...]], range],
     ) -> SummaryRecord:
@@ -349,4 +349,4 @@ class SummaryRecords:
                         expected_version=None if previous is None else previous.version)
             return record
 
-        return self._state.transact(commit)
+        return await self._state.transact_async(commit)

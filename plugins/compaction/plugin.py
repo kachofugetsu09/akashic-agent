@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from uuid import uuid4
 
+from core.common.file_io import run_file_io
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPPING, Context
@@ -105,7 +107,8 @@ async def apply(ctx: Context) -> None:
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         if not snapshot:
             return {}
-        record = records().head(snapshot[0].session_id)
+        state = records()
+        record = await run_file_io(lambda: state.head(snapshot[0].session_id))
         if record is None:
             return {}
         return {"summary": material(record)}
@@ -131,7 +134,8 @@ async def apply(ctx: Context) -> None:
         before = projection.estimate(request)
         if window is None or not snapshot or (not force and before < int(window * 0.74)):
             return None
-        parent = records().head(snapshot[0].session_id)
+        state = records()
+        parent = await run_file_io(lambda: state.head(snapshot[0].session_id))
         current_summary = materials.get("summary")
         if current_summary is not None and not isinstance(current_summary, Mapping):
             raise TypeError("Context 材料摘要必须是对象")
@@ -227,7 +231,7 @@ async def apply(ctx: Context) -> None:
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
         reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)
-        _ = records().publish(
+        _ = await state.publish(
             record, reader, parent=parent, summary_range=context.summary_range,
         )
         return summary

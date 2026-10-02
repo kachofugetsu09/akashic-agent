@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from copy import deepcopy
 from typing import Protocol
 
 from agent.plugin_composition import Context, EmitEventKey, ServiceKey
@@ -40,6 +41,16 @@ class DriftProposalServices(Protocol):
 
 
 DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
+
+
+class AsyncDriftProposalServices(Protocol):
+    async def propose(
+        self, proposal_id: str, revision: str, payload: Mapping[str, object],
+        due_at: datetime, *, next_due: datetime | None = None,
+    ) -> Mapping[str, object]: ...
+
+
+DRIFT_PROPOSALS_V2 = ServiceKey[AsyncDriftProposalServices]("drift.proposals.v2")
 DRIFT_CHANGED = EmitEventKey[None]("drift.changed")
 
 
@@ -94,6 +105,31 @@ class _ProposalServices:
         if result["inserted"]:
             self._changed()
         return result
+
+
+class _AsyncProposalServices:
+    def __init__(self, store: DriftStore, changed: Callable[[], None]) -> None:
+        self._store, self._changed = store, changed
+
+    async def propose(
+        self, proposal_id: str, revision: str, payload: Mapping[str, object],
+        due_at: datetime, *, next_due: datetime | None = None,
+    ) -> Mapping[str, object]:
+        """固定来源内容；真实提交后在原 loop 发事件，取消也不丢通知。"""
+        saved_payload = deepcopy(dict(payload))
+        inserted = False
+
+        def write() -> Mapping[str, object]:
+            nonlocal inserted
+            result = self._store.propose(proposal_id, revision, saved_payload, due_at, next_due=next_due)
+            inserted = result["inserted"] is True
+            return result
+
+        try:
+            return await run_file_io(write)
+        finally:
+            if inserted:
+                self._changed()
 
 
 class _DeliveryServices:
@@ -155,6 +191,7 @@ async def apply(ctx: Context) -> None:
     store = DriftStore(ctx.data_root / "drift.sqlite3")
     await run_file_io(store.initialize)
     _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store, lambda: ctx.emit(DRIFT_CHANGED, None)))
+    _ = await ctx.provide(DRIFT_PROPOSALS_V2, _AsyncProposalServices(store, lambda: ctx.emit(DRIFT_CHANGED, None)))
     _ = await ctx.provide(DRIFT_WAKE, _WakeServices(store))
     _ = await ctx.provide(DRIFT_DELIVERY, _DeliveryServices(store))
     _ = await ctx.provide(DRIFT_WAKE_V2, _AsyncWakeServices(store))
