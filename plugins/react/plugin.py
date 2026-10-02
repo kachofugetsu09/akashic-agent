@@ -580,14 +580,14 @@ async def react(
         )
         frozen = snapshot
 
-        def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
+        async def commit(message_id: str, body: Output, metadata: Mapping[str, object] | None = None) -> Message:
             """检查与追加同事务；竞争 Output、新边界或读集内结果都取代旧草稿。"""
             related = _related_results(frozen, writer.source)
             if state is None:
                 current_head = head
                 for _ in range(4):
                     try:
-                        return writer.append(
+                        return await writer.append_async(
                             message_id, body,
                             expected_source_head=current_head, metadata=metadata,
                         )
@@ -603,6 +603,8 @@ async def react(
                         current_head = max(m.seq for m in newer)
                 raise MessageConflict("来源 head 持续变化，提交前提无法稳定")
 
+            prepared_append = await writer.prepare_async(message_id, body, metadata=metadata)
+
             def narrow(transaction: OwnerTransaction) -> Message:
                 existing = reader.get(message_id)
                 if existing is not None:
@@ -612,13 +614,13 @@ async def react(
                 for message in reader.snapshot(after_seq=head):
                     if _competing(message, writer.source, related):
                         raise _Superseded
-                return transaction.append(writer, message_id, body, metadata=metadata)
+                return transaction.append_prepared(prepared_append)
 
-            return state.transact(narrow)
+            return await state.transact_async(narrow)
 
         try:
             if terminal_tools and _terminal_result(snapshot, writer.source, tools, terminal_tools):
-                return commit(uuid4().hex, Output((), "quiet"))
+                return await commit(uuid4().hex, Output((), "quiet"))
         except _Superseded:
             raise asyncio.CancelledError from None
         if max_steps > 0 and _steps(snapshot, writer.source) >= max_steps:
@@ -843,7 +845,7 @@ async def react(
                 parts.append(ContentPart("context.summary", {"reference": summary["reference"]}))
             # 4. 内容完成后在窄事务内核对前提并提交；失败的草稿绝不触发工具。
             try:
-                message = commit(
+                message = await commit(
                     message_id,
                     Output(tuple(parts), "continue" if indices else "complete"),
                     metadata,
