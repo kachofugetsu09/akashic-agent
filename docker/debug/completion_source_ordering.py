@@ -236,7 +236,7 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
         log.save_binding(identity, {"scenario": identity})
     async with contexts["subagent"].runtime_scope():
         jobs = Subagents(contexts["subagent"])
-        jobs.accept("job", request, "child task")
+        await jobs.accept("job", request, "child task")
     writer(Output, "subagent", request.session_id).append("child-result", Output((ContentPart("text", "child done"),), "complete"))
     if boundary_source == "report":
         writer(Input, request.session_id).append("report-original", Input(()))
