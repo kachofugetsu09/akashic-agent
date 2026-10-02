@@ -82,6 +82,7 @@ from .settings import (
     StartConnectionAuth,
     SyncModels,
     UpdateConnection,
+    UpdateModel,
     VerifyModel,
 )
 from .store import (
@@ -1483,6 +1484,14 @@ class ModelsState:
             revision = self.store.remove_model(
                 command, fallback_model_id=next(iter(candidates), None),
             )
+        elif isinstance(command, UpdateModel):
+            snapshot = self._snapshot_required()
+            model = snapshot.models.get(command.model_id)
+            if model is None:
+                raise ModelUnavailableError(f"模型不存在: {command.model_id}")
+            if model.kind is not ModelKind.CHAT:
+                raise ModelUnavailableError("向量模型的参数由试算维度决定，不支持手动编辑。")
+            revision = self.store.update_model(command)
         elif isinstance(command, SetDefaultModel):
             if command.verify_embedding:
                 if command.role is not None:

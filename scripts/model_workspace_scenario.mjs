@@ -25,7 +25,7 @@ function providerEntry(activateProvider) {
   return entry;
 }
 
-async function mount(provider, initialCatalog = null) {
+async function mount(provider, initialCatalog = null, {beforeWrite = () => {}, beforeRead = () => {}} = {}) {
   const dom = new JSDOM('<main id="host"></main>', {url: "http://model-workspace.local"});
   for (const name of ["window", "document", "Option", "Event", "HTMLElement", "FormData"]) {
     globalThis[name] = dom.window[name];
@@ -49,12 +49,14 @@ async function mount(provider, initialCatalog = null) {
   activate({
     ui: {inject: (_id, mount) => mount({register(value) { entry = value; return () => {}; }})},
     http: {async request(_url, init) {
+      if (init?.method !== "POST") await beforeRead();
       let result = catalog;
       if (_url.endsWith("/discover_saved") || _url.endsWith("/discover")) {
         result = {models: [{kind: provider.id === "openai-compatible" ? null : "chat", model: "fixture-chat", capabilities: {inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}}]};
       } else if (init?.method === "POST") {
         const payload = JSON.parse(init.body);
         commands.push(payload);
+        await beforeWrite(payload);
         if (!["start_auth", "cancel_auth"].includes(payload.type)) {
           assert.equal((payload.connection?.expected_revision ?? payload.expected_revision), catalog.revision, "writes use the last committed catalog revision");
         }
@@ -84,6 +86,11 @@ async function mount(provider, initialCatalog = null) {
         } else if (payload.type === "remove_model") {
           catalog.models = catalog.models.filter(model => model.id !== payload.model_id);
           for (const role of Object.keys(catalog.roleBindings)) if (catalog.roleBindings[role] === payload.model_id) delete catalog.roleBindings[role];
+          result = {revision: ++catalog.revision, status: "committed"};
+        } else if (payload.type === "update_model") {
+          const model = catalog.models.find(model => model.id === payload.model_id);
+          Object.assign(model.capabilities, {contextWindow: payload.context_window,
+            maxOutputTokens: payload.max_output_tokens, inputModalities: payload.image_input ? ["text", "image"] : ["text"]});
           result = {revision: ++catalog.revision, status: "committed"};
         } else if (payload.type === "verify_model") {
           result = {revision: catalog.revision, status: "verified"};
@@ -312,6 +319,122 @@ try {
   checks.push("External provider pickModels keeps locked candidates checked through bulk actions; confirm/cancel preserve inputs and never auto-save");
 } finally {
   await externalFixture.close();
+}
+
+// 参数草稿通过真实宿主生命周期验证；写入延迟由 promise 控制。
+const editCatalog = {revision: 1,
+  connections: [{id: "saved", name: "Saved", driverId: "codex", availability: "available"}],
+  models: ["first", "second"].map(id => ({id, connectionId: "saved", kind: "chat", model: id,
+    availability: "available", capabilities: {contextWindow: 200000, maxOutputTokens: 32000, inputModalities: ["text"]}, capabilitySources: {inputModalities: "fixture"}})),
+  roleBindings: {}, defaultEmbeddingModelId: null};
+let releaseWrite, failWrite = false, failRead = false;
+const waitingWrite = new Promise(resolve => { releaseWrite = resolve; });
+const editFixture = await mount(providerEntry(activateCodex), editCatalog, {
+  beforeWrite: async payload => {
+    if (payload.type !== "update_model") return;
+    await waitingWrite;
+    if (failWrite) throw new Error("fixture save failed");
+  },
+  beforeRead: () => { if (failRead) throw new Error("fixture read failed"); },
+});
+try {
+  assert.ok(document.querySelector("[data-connections] button"), document.body.textContent);
+  document.querySelector("[data-connections] button").click();
+  await settle();
+  const editors = [...document.querySelectorAll(".settings-model-entry")];
+  for (const editor of editors) editor.querySelector(".settings-model-expand").click();
+  const context = editor => editor.querySelector('[name="contextWindow"]');
+  const save = editor => editor.querySelector("[data-detail-save]");
+  const fill = (input, value) => { input.value = value; input.dispatchEvent(new Event("input", {bubbles: true})); };
+  fill(context(editors[0]), "1M");
+  fill(context(editors[1]), "777K");
+  const confirmations = [];
+  window.confirm = message => { confirmations.push(message); return false; };
+  const dialog = document.querySelector("dialog[open]");
+  dialog.dispatchEvent(new Event("cancel", {cancelable: true}));
+  assert.equal(confirmations.length, 1);
+  assert.ok(dialog.open);
+  const navigate = new Event("akashic:before-navigate", {cancelable: true});
+  window.dispatchEvent(navigate);
+  assert.ok(navigate.defaultPrevented);
+  const unload = new Event("beforeunload", {cancelable: true});
+  window.dispatchEvent(unload);
+  assert.ok(unload.defaultPrevented);
+  editors[1].querySelector('.settings-model-toggle input').click();
+  assert.ok(editors[1].querySelector('.settings-model-toggle input').checked, "cancelled removal keeps the dirty row");
+  save(editors[0]).click();
+  assert.ok(context(editors[0]).disabled, "submitted values cannot change during the write");
+  fill(context(editors[1]), "888K");
+  context(editors[1]).focus();
+  releaseWrite();
+  await settle();
+  assert.equal(context(editors[0]).value, "1M");
+  assert.ok(save(editors[0]).disabled, "saved row is clean");
+  assert.equal(context(editors[1]).value, "888K");
+  assert.equal(document.activeElement, context(editors[1]));
+  assert.ok(editors.every(editor => editor.isConnected && !editor.querySelector('.settings-model-detail').hidden));
+  dialog.dispatchEvent(new Event("cancel", {cancelable: true}));
+  assert.ok(dialog.open, "saving one row must not clear another row's leave protection");
+  checks.push("Model drafts survive partial saves and keep focus; close/navigation/unload and row removal protect unsaved inputs");
+
+  failWrite = true;
+  save(editors[1]).click();
+  await settle();
+  assert.equal(context(editors[1]).value, "888K");
+  assert.match(editors[1].querySelector('[data-detail-status]').textContent, /fixture save failed/);
+  assert.equal(editFixture.catalog.models[1].capabilities.contextWindow, 200000);
+  assert.equal(save(editors[1]).disabled, false);
+  failWrite = false;
+  failRead = true;
+  save(editors[1]).click();
+  await settle();
+  assert.equal(context(editors[1]).value, "888K");
+  assert.match(editors[1].querySelector('[data-detail-status]').textContent, /参数已提交.*读取最新状态失败/);
+  assert.equal(editFixture.catalog.models[1].capabilities.contextWindow, 888000);
+  failRead = false;
+  window.confirm = () => true;
+  dialog.dispatchEvent(new Event("cancel", {cancelable: true}));
+  await settle();
+  document.querySelector('[data-connections] button').click();
+  await settle();
+  const reopened = document.querySelectorAll('.settings-model-entry')[1];
+  assert.equal(context(reopened).value, "888K");
+  checks.push("Save failure retains draft; committed write with failed read reports uncertainty locally and reopening reads the saved value");
+} finally { await editFixture.close(); }
+
+for (const activateProvider of [activateOpenAI, activateOpenCode]) {
+  const provider = providerEntry(activateProvider);
+  const catalog = structuredClone(editCatalog);
+  catalog.connections[0].driverId = provider.id;
+  const fixture = await mount(provider, catalog);
+  try {
+    document.querySelector('[data-connections] button').click();
+    await settle();
+    const edit = async value => {
+      const input = document.querySelector('[name="contextWindow"]');
+      input.value = value;
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      input.dispatchEvent(new Event('change', {bubbles: true}));
+      input.dispatchEvent(new window.KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true}));
+      await settle();
+    };
+    let confirmations = 0;
+    window.confirm = () => { confirmations++; return false; };
+    await edit('2M');
+    assert.equal(fixture.catalog.models[0].capabilities.contextWindow, 2000000);
+    document.querySelector('dialog[open]').dispatchEvent(new Event('cancel', {cancelable: true}));
+    await settle();
+    assert.equal(confirmations, 0, 'model input must not mark the provider form dirty');
+    assert.equal(document.querySelector('dialog[open]'), null);
+    document.querySelector('[data-connections] button').click();
+    await settle();
+    document.querySelector('form [name="name"]').dispatchEvent(new Event('input', {bubbles: true}));
+    await edit('3M');
+    document.querySelector('dialog[open]').dispatchEvent(new Event('cancel', {cancelable: true}));
+    assert.equal(confirmations, 1, 'saving a model must not clear an actual provider draft');
+    assert.ok(document.querySelector('dialog[open]'));
+    checks.push(`${provider.id}: model/provider drafts remain independent; Enter saves parameters`);
+  } finally { await fixture.close(); }
 }
 
 const stylesheet = postcss.parse(await readFile(new URL("../frontend/plugins/models/src/style.css", import.meta.url), "utf8"));

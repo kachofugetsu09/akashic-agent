@@ -35,6 +35,7 @@ from .settings import (
     SetDefaultModel,
     RemoveModel,
     UpdateConnection,
+    UpdateModel,
 )
 from agent.plugin_composition.models import (
     BoundModelDescriptor,
@@ -735,6 +736,111 @@ class ModelsStore:
 
         return self._domain_write(command.expected_revision, "remove-model", write)
 
+    def update_model(self, command: UpdateModel) -> int:
+        """Rewrite the user-declared chat capabilities in one revision CAS.
+
+        The three fields carry their full target state: null clears a token
+        limit to unknown, and image_input toggles the image modality while
+        preserving the rest. Sources of the touched fields become "user".
+        """
+        model_id = _required(command.model_id, "model_id")
+        for name, value in (
+            ("context window", command.context_window),
+            ("max output tokens", command.max_output_tokens),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"model {name} must be positive")
+
+        def write(connection: sqlite3.Connection) -> bool:
+            row = connection.execute(
+                "SELECT supported_reasoning_efforts, context_window, "
+                "max_output_tokens, input_modalities, capability_source, "
+                "context_window_source, max_output_tokens_source, "
+                "input_modalities_source, supports_parallel_tool_calls, "
+                "use_responses_lite, reasoning_summary, capabilities_json "
+                "FROM model_definitions WHERE id = ?",
+                (model_id,),
+            ).fetchone()
+            if row is None:
+                if connection.execute(
+                    "SELECT 1 FROM embedding_models WHERE id = ?", (model_id,)
+                ).fetchone():
+                    raise ValueError(
+                        f"embedding model does not take chat capabilities: {model_id}"
+                    )
+                raise ValueError(f"model does not exist: {model_id}")
+
+            modalities = list(_decode_string_list(str(row[3]), "model modalities"))
+            if command.image_input and "image" not in modalities:
+                modalities.append("image")
+            if not command.image_input:
+                # 与能力写入共用 CAS 事务，不能留下会阻断所有聊天的视觉绑定。
+                if connection.execute(
+                    "SELECT 1 FROM model_role_bindings WHERE role = 'vision' AND model_id = ?",
+                    (model_id,),
+                ).fetchone() is not None:
+                    raise ValueError("此模型正在用于视觉角色，请先更换视觉模型，再关闭可看图。")
+                modalities = [item for item in modalities if item != "image"]
+            if not modalities:
+                modalities = ["text"]
+
+            # capabilities_json 是权威载荷；旧行按一等列先合成等价载荷再补写。
+            raw = row[11]
+            if raw is not None and str(raw):
+                payload: dict[str, Any] = json.loads(str(raw))
+            else:
+                payload = {
+                    "capabilities": {
+                        "context_window": int(row[1]) or None,
+                        "max_output_tokens": int(row[2]) or None,
+                        "input_modalities": modalities,
+                        "supports_tool_calls": True,
+                        "supports_parallel_tool_calls": bool(row[8]),
+                        "supported_reasoning_efforts": list(
+                            _decode_string_list(str(row[0]), "model reasoning efforts")
+                        ),
+                    },
+                    "capability_sources": {
+                        "context_window": str(row[5]),
+                        "max_output_tokens": str(row[6]),
+                        "input_modalities": str(row[7]),
+                        "tool_calls": str(row[4]),
+                        "parallel_tool_calls": str(row[4]),
+                        "reasoning_efforts": str(row[4]),
+                    },
+                    "driver_config": {
+                        "use_responses_lite": bool(row[9]),
+                        "reasoning_summary": str(row[10]),
+                    },
+                    "source": "manual",
+                }
+            capabilities = payload["capabilities"]
+            capabilities["context_window"] = command.context_window
+            capabilities["max_output_tokens"] = command.max_output_tokens
+            capabilities["input_modalities"] = modalities
+            sources = payload["capability_sources"]
+            sources["context_window"] = "user"
+            sources["max_output_tokens"] = "user"
+            sources["input_modalities"] = "user"
+
+            connection.execute(
+                "UPDATE model_definitions SET "
+                "context_window = ?, max_output_tokens = ?, input_modalities = ?, "
+                "context_window_source = 'user', max_output_tokens_source = 'user', "
+                "input_modalities_source = 'user', capabilities_json = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (
+                    int(command.context_window or 0),
+                    int(command.max_output_tokens or 0),
+                    json.dumps(modalities, ensure_ascii=False, separators=(",", ":")),
+                    _strict_json(payload, "model capabilities"),
+                    model_id,
+                ),
+            )
+            return True
+
+        return self._domain_write(command.expected_revision, "update-model", write)
+
     def set_default(self, command: SetDefaultModel) -> int:
         """Set one chat role or the workspace default embedding model."""
 
@@ -866,6 +972,11 @@ class ModelsStore:
                         item, kind=model.kind, default_reasoning_effort=model.default_reasoning_effort,
                         driver_config=model.driver_config,
                     )
+            # 用户字段覆盖目录证据，其余能力和可用性继续由目录刷新。
+            for key, item in known.items():
+                stored = existing.get(key)
+                if item.kind is ModelKind.CHAT and stored is not None:
+                    known[key] = _keep_user_capabilities(item, current.models[stored[0]])
             items = tuple(known.values())
             # 2. 可用性和能力只更新已选行，仍保护手工配置。
             legacy_keys = frozenset(
@@ -1137,6 +1248,23 @@ def _existing_model_ids(
                 raw_payload is None or not str(raw_payload),
             )
     return result
+
+
+def _keep_user_capabilities(item: DiscoveredModel, stored: StoredModel) -> DiscoveredModel:
+    """目录同步保留逐字段的用户声明，包括明确声明为未知的值。"""
+    caps = item.capabilities
+    sources = item.capability_sources
+    # 三项覆盖独立保留，不把整行变成手工模型而停掉其余目录更新。
+    if stored.capability_sources.context_window == "user":
+        caps = replace(caps, context_window=stored.capabilities.context_window)
+        sources = replace(sources, context_window="user")
+    if stored.capability_sources.max_output_tokens == "user":
+        caps = replace(caps, max_output_tokens=stored.capabilities.max_output_tokens)
+        sources = replace(sources, max_output_tokens="user")
+    if stored.capability_sources.input_modalities == "user":
+        caps = replace(caps, input_modalities=stored.capabilities.input_modalities)
+        sources = replace(sources, input_modalities="user")
+    return replace(item, capabilities=caps, capability_sources=sources)
 
 
 def _sync_would_change(
