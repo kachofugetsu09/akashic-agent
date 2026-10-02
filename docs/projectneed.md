@@ -370,7 +370,7 @@ Compaction 插件不拆分已提交的完整 Turn 投影；开放 source 段只�
 再次经过本 Gate。
 
 ledger 没有任何 generation 时，首次 compact 必须先从当前向历史方向按完整 Turn 单元
-选择不超过 `floor(context_window * 0.74)` 软水位的最大连续近期窗口，同时满足完整请求的硬输入边界；不得为凑满预算跨过阈值。窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
+选择不超过 `floor(context_window * 0.74)` 软水位的最大连续近期窗口，同时满足完整请求的硬输入边界；不得为凑满预算跨过阈值。当前未结束工作不可跳过：若它本身已超窗，先按上述闭合工具批次规则压缩，再检查完整请求，不能在首次窗口选择时提前拒绝。窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
 但 SessionDB 原始消息必须完整保留。已有 generation 后只处理有效 cursor 到当前的增量。
 
 持久 checkpoint 写入 `session_compactions`，保存 summary、parent lineage、source_ref、
