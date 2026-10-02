@@ -164,6 +164,7 @@ async def test_subagent_cancel_rechecks_completion_committed_during_read(tmp_pat
     """C3: 真实来源在异步读取期间完成，旧取消检查不能改写其终态。"""
     from agent.plugin_composition import CompositionRoot, PluginRuntime
     from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, MessageWriters, OwnerState
+    from agent.plugin_composition.tasks import TASKS, PluginTasks
     from plugins.subagent.request import PROFILE_TOOLS, Request
     from plugins.subagent.runtime import Subagents
     from session.log import MessageReader
@@ -177,12 +178,13 @@ async def test_subagent_cancel_rechecks_completion_committed_during_read(tmp_pat
         await ctx.provide(MESSAGE_CATALOG, log.catalog())
         await ctx.provide(MESSAGE_WRITERS, MessageWriters(log))
         await ctx.provide(OWNER_STATE, OwnerState(log))
+        await ctx.provide(TASKS, PluginTasks())
 
     async def consumer(ctx):
         contexts.append(ctx)
 
     await root.mount(storage, name="storage")
-    await root.mount(consumer, name="jobs", inject=(MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE),
+    await root.mount(consumer, name="jobs", inject=(MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASKS),
                      runtime=PluginRuntime("jobs", "jobs", tmp_path, tmp_path, tmp_path, {}))
     ctx = contexts[0]
     request = Request(job_id="a" * 32, label="job", profile="research", background=False,
