@@ -9,7 +9,7 @@ from agent.config_models import Config
 from agent.control.errors import RuntimeClosedError
 from agent.control.service import ControlService
 from agent.plugin_composition.rpc import RpcMethod, rpc_method_key
-from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.channels import CHANNEL_INPUT_V2, ChannelInboundMessage
 from agent.plugin_composition.message_view import project_message_rows
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.reply_status import RuntimeReplyStatus
@@ -32,7 +32,7 @@ def build_control_service(
         root = manager.live_root
         if root is None:
             raise RuntimeClosedError("正式 live Root 不可用")
-        provider_context, accept_input = root._service_provider(CHANNEL_INPUT)
+        provider_context, accept_input = root._service_provider(CHANNEL_INPUT_V2)
         async with provider_context.runtime_scope():
             return await accept_input(session_id, message_id, incoming)
 
