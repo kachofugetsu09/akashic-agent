@@ -143,11 +143,13 @@ async def apply(ctx: Context) -> None:
             raise ValueError("本次已取得摘要与当前 Session head 不一致")
         turns = ctx.require(TURN_PROJECTION)
         if parent is None:
-            origin: int | None = None
-            # 首次窗口从最近完整单元累加；完整业务输入不得越过软水位或硬边界。
-            for index in reversed(window_starts(
+            starts = window_starts(
                 snapshot, turns, settled_prefixes=context.settled_prefixes,
-            )):
+            )
+            # 当前工作不能跳过；即使原文超窗，也先让已闭合工具批次参与摘要。
+            origin = starts[-1]
+            # 只有更早的完整单元受首次窗口预算约束，不为凑窗口丢弃当前任务。
+            for index in reversed(starts):
                 candidate, error = ctx.require(CONTEXT).build_attempt(
                     snapshot, materials=materials, model=projection,
                     tools=request.tools, max_output_tokens=request.max_output_tokens,
@@ -159,8 +161,6 @@ async def apply(ctx: Context) -> None:
                 if projection.estimate(candidate) > int(window * 0.74):
                     break
                 origin = index
-            if origin is None:
-                raise SummaryError("当前完整工作与固定材料超过首次窗口容量")
             start = origin
         else:
             covered = context.summary_range(snapshot, parent.source_message_ids)
