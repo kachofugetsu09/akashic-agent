@@ -30,15 +30,14 @@ async def measure(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     """在指定源码和一次性目录内测量真实进程、UDS 和清理。"""
     sys.path.insert(0, str(args.source))
     client = importlib.import_module("agent.host_bridge.client")
-    unified = importlib.import_module("agent.tools.unified_exec")
+    unified = importlib.import_module("agent.process_runtime")
     grpc = importlib.import_module("grpc")
     commit = subprocess.check_output(
         ["git", "-C", str(args.source), "rev-parse", "HEAD"], text=True
     ).strip()
     source_hash = hashlib.sha256()
     sources = sorted((args.source / "agent/host_bridge").glob("*.py")) + [
-        args.source / "agent/tools/unified_exec.py",
-        args.source / "agent/tools/filesystem.py",
+        args.source / "agent/process_runtime.py",
     ]
     for source in sources:
         source_hash.update(str(source.relative_to(args.source)).encode())
@@ -199,7 +198,7 @@ def measure_codec(args: argparse.Namespace) -> dict[str, Any]:
     protocol = importlib.import_module("agent.host_bridge.protocol")
     client = importlib.import_module("agent.host_bridge.client")
     server = importlib.import_module("agent.host_bridge.server")
-    unified = importlib.import_module("agent.tools.unified_exec")
+    unified = importlib.import_module("agent.process_runtime")
     results = []
     for size in args.sizes:
         raw = (bytes(range(256)) * ((size + 255) // 256))[:size]

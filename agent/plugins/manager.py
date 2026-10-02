@@ -53,7 +53,7 @@ from agent.plugins._operation import (
     observe_operation,
     run_operation,
 )
-from agent.plugins.archive import PluginArchive, decode_config, encode_config
+from agent.plugin_composition.archive import PluginArchive, decode_config, encode_config
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration

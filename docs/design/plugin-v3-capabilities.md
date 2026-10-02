@@ -55,6 +55,13 @@ Core 不读取它。无配置时输入为空对象。固定输入中的凭据仍
 
 首次业务配置使用插件自己的 Web 页面/API，并可向普通 onboarding provider 注册步骤。`main.py setup` 仅初始化 Core，不再发现或执行 `configure.py`。自身配置应用端口、首次 `initial_config.json` 与回执合同见[引导设计](plugin-onboarding-projection.md#11-实现决断与交付边界)。已有固定输入优先，新安装缺省与旧安装语义不能混用。
 
+旧 Python 转发模块已删除：归档使用 `agent.plugin_composition.archive`，进程使用
+`agent.process_runtime`，Shell 选择使用 `agent.plugin_composition.shell_runtime`，Host Bridge
+文件能力使用 `agent.host_bridge.filesystem`。旧 `agent.tools.*` 转发入口和组合包下的进程、
+工具上下文别名不再存在。无当前消费者的旧 Tool 基类、全局工具事件、ToolExecutionContext、
+ToolGrant 和 TurnExecutionScope 也已退役；工具调用由 `CallSource`、`ToolRef` 和 Task 表达。
+这些删除不改变进程 owner、当前 scope 或持久归档内容。
+
 ### 当前服务合同
 
 同一能力只发布当前设计，不为旧插件保留导出、别名或同步适配器。插件必须与目标 Core

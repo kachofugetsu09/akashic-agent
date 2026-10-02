@@ -509,8 +509,8 @@ Computer started/ended/failed 回执及收尾完整投影，插件更新的持�
 
 Drift 来源使用 `drift.proposals.v2` 时先复制请求内容，再在线程中提交原 proposal。
 changed 事件仍在原 loop 发出，已提交后取消不丢通知，同身份重放不重复通知。
-同步 v1 契约与 provider 已退役。14 个正式外置选择中没有 Drift proposal 消费者；
-另仓 Emotion 必须使用当前异步 Drift 契约，不能依赖旧归档恢复同步服务。
+同步 v1 契约与 provider 已退役。[fleet 当前外置集合](hua-home-plugin-runtime-source-of-truth.md#1-维护范围只认-fleet运行事实只认-hua-home)
+中没有 Drift proposal 消费者；非 fleet 的历史仓库不构成保留兼容接口或新增迁移的理由。
 
 `owner_write_io.py` 的真实 SQLite/本地 socket 场景覆盖摘要 CAS、Computer 回执、
 取消排空和原消息完整性；同一提交屏障下旧基线约 1 秒，改后小于 1 毫秒。

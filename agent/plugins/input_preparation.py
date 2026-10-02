@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from agent.plugin_composition.config_input import load_config, config_bytes, CONFIG_INPUT
-from agent.plugins.archive import PluginArchive, encode_config
+from agent.plugin_composition.archive import PluginArchive, encode_config
 from agent.plugins.manifest import (
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,

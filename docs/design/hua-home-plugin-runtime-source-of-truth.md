@@ -1,71 +1,50 @@
 # hua-home 插件运行事实
 
-状态：2026-09-02 已在 `hua-home` 实机核验。
+状态：当前取证规则；第 3 节只保留 2026-09-02 的历史记录。
 
-## 1. 只认 hua-home
+## 1. 维护范围只认 fleet，运行事实只认 hua-home
 
-插件线上事实按下面顺序取证：
+维护者明确保留的外置插件集合由 [akashic-fleet](https://github.com/kachofugetsu09/akashic-fleet)
+当前分支的 `.gitmodules` 与 `plugins/` gitlink 定义。先固定 fleet commit，再沿其中的仓库和
+版本核对消费者。查询、升级、API 清理或“全部外置插件”都只覆盖这个集合；内置插件另由
+当前 Core 分发源码定义。目录、cache、历史安装清单和旧 PR 不能扩充维护范围。
 
-1. `/srv/data/services/akashic/activation/active.json`：当前 Core exact release commit。
-2. `/srv/data/services/akashic/state/plugin-home/manifest.toml`：安装身份和 enabled 状态。
-3. `plugin-home/cache/<marketplace>/<plugin>/.pointers.json`：外部插件的 exact stable/latest artifact。
-4. `plugin-home/cache/.../.artifacts/<identity>/akashic.plugin.toml` 与 entrypoint：V3 admission
-   identity 和真实模块。
-5. `/srv/data/services/akashic/runtime-sources/<active-commit>/plugins/`：该 release 实际携带的
-   builtin 插件源码。
-6. `akashic-core` 容器进程、日志、snapshot/generation 证据：证明声明已启动，不用安装事实代替
-   live 行为。
+`/mnt/data/coding/akashic-plugin/<name>` 只是可能保留历史源码的本地目录。只有 fleet
+列出的仓库才是本次维护对象；非 fleet 仓库不因仍存在而需要迁移、兼容或重新设计。
+保留历史源码和 plugin-data 不等于保留插件功能，也不授权删除这些文件。
 
-开发机路径都不是运行事实：
+线上运行证据与维护集合分别取证：
 
-- `/home/huashen/.akashic-plugin` 只是从 hua-home 拉取的可删镜像；不能反向同步到服务端，
-  不能用其 mtime、lock 或进程状态证明线上状态。
-- `/home/huashen/.akashic` 是历史开发 workspace；不得用于 fleet、manifest、plugin-data、MCP
-  或 generation 审计。废弃的本地 `workspace/mcp` 已删除。
-- 当前 Git worktree 的 `plugins/` 是待发布源码。只有 exact commit 激活到 hua-home 后，才成为
-  builtin 运行事实。
-- `/mnt/data/coding/akashic-plugin/<name>` 是外部插件 canonical 开发仓库；它拥有修改，但不代表
-  stable artifact 已安装或已启用。
+1. `/srv/data/services/akashic/activation/active.json` 与实际容器挂载：当前 Core release。
+2. `state/workspace/runtime/plugin-stable.json` 的 `root_ref`：当前完整插件选择。
+3. `state/workspace/runtime/plugin-archives/<root_ref>.json` 及其组件 descriptor：精确代码、
+   配置引用和环境；由组件的 `code` 定位对应归档树，再读取 `plugin.py`。
+4. 实际 live Root/Fiber、容器和工作流结果：证明选择已激活且消费者正常工作。
+
+`state/plugin-home/manifest.toml` 只证明安装意图，cache 只证明制品存在；它们不能代替
+完整 selection 和 live 行为。旧 stable/latest 指针与旧 `akashic.plugin.toml` 只作历史证据。
+若生产环境存在非 fleet 残留，单独报告，不自动把它纳入受支持插件集合。
 
 ## 2. 固定查找方法
 
-先查 release 和 manifest：
+先取得当前 fleet 清单，不修改本地 checkout 或递归更新子模块：
 
 ```bash
-ssh hua-home 'cat /srv/data/services/akashic/activation/active.json'
-ssh hua-home 'sed -n "1,240p" /srv/data/services/akashic/state/plugin-home/manifest.toml'
+git -C /mnt/data/coding/akashic-fleet fetch --no-recurse-submodules origin main
+git -C /mnt/data/coding/akashic-fleet rev-parse origin/main
+git -C /mnt/data/coding/akashic-fleet show origin/main:.gitmodules
+git -C /mnt/data/coding/akashic-fleet ls-tree origin/main:plugins
 ```
 
-再查 exact pointer，不扫描开发机旧 cache：
+再使用服务器上的 release、selection、归档 descriptor 和 live Root 取证。正式 workspace
+路径为 `/srv/data/services/akashic/state/workspace`；必要时从容器内只读访问挂载目录。
+只输出身份、路径和能力信息，不打印固定配置或凭据内容。版本变化后重新固定证据。
 
-```bash
-ssh hua-home 'find /srv/data/services/akashic/state/plugin-home/cache \
-  -name .pointers.json -type f -print | sort'
-ssh hua-home 'sed -n "1,80p" \
-  /srv/data/services/akashic/state/plugin-home/cache/github/feed/.pointers.json'
-```
+开发机 worktree 是待发布源码；`~/.akashic`、`~/.akashic-plugin` 和旧源码目录不是生产事实。
+离线分析只复制已固定选择引用的制品，不通过扫描旧 cache 或本地目录推断支持范围。
+安装、正式选择、live 激活和真实工作流验收分别报告；源码通过不能代替部署。
 
-最后核对真实 runtime：
-
-```bash
-ssh hua-home '~/.local/bin/akashic-release doctor'
-ssh hua-home 'docker ps --filter name=akashic-core --format "{{.Names}} {{.Status}}"'
-ssh hua-home 'docker exec akashic-core ps -eo pid,args'
-ssh hua-home 'docker logs --since 30m akashic-core 2>&1 | tail -200'
-```
-
-需要在开发机只读分析 artifact 时，先重建镜像：
-
-```bash
-rsync -a --delete --exclude=.publication.lock \
-  hua-home:/srv/data/services/akashic/state/plugin-home/ \
-  /home/huashen/.akashic-plugin/
-```
-
-该命令的方向只能是 `hua-home → 开发机`。镜像同步后至少核对两端 `manifest.toml` SHA-256，
-再读取 pointer；不要把 rsync 成功当作 runtime ready。
-
-## 3. 2026-09-02 exact snapshot
+## 3. 历史快照：2026-09-02（不定义当前维护或安装范围）
 
 - Core release：`9f30b079619523cafb2c49374260c9ea9ea9a180`
 - Core image：`sha256:f1acf299d15ee2dcacbd025fe8074ad0574aac98aea834f8a9796a7483f56b17`
@@ -74,9 +53,9 @@ rsync -a --delete --exclude=.publication.lock \
 - manifest SHA-256：`7c9f8f274a0ea4b274d1a1227c6d978d53801259e8d7e37095f1ea0934d612bf`
 - enabled manifest entries：33（17 builtin + 16 external）
 - external artifact directories：40；逐个 static manifest + entrypoint 扫描后 non-V3 为 0
-- 所有 24 个外部 plugin identity 的 stable 与 latest 当前相同
+- 所有 24 个外部 plugin identity 的 stable 与 latest 在当时相同
 
-### 3.1 Enabled builtins
+### 3.1 当时启用的内置插件
 
 | Plugin | Release source |
 |---|---|
@@ -100,7 +79,7 @@ rsync -a --delete --exclude=.publication.lock \
 
 表中的相对路径必须接在 active release source 后面，不能接当前开发 worktree。
 
-### 3.2 Enabled external plugins
+### 3.2 当时启用的外置插件
 
 | Plugin | Version | Stable artifact | Runtime declarations |
 |---|---:|---|---|
@@ -121,7 +100,7 @@ rsync -a --delete --exclude=.publication.lock \
 | status_commands@github | 2.0.0 | `2.0.0-8d119e8cfa53bd91-restaged-300683768df04d9a` | - |
 | steam@github | 3.2.1 | `3.2.1-a0fda0602185a0a4-restaged-959c3b8e1d654b84` | MCP 1 |
 
-### 3.3 Installed but disabled external identities
+### 3.3 当时已安装但禁用的外置身份
 
 `content-wake-formal` marketplace 中以下 8 个 identity 已禁用，但 artifact 仍是 V3：
 
