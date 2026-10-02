@@ -17,7 +17,7 @@ from agent.plugin_contracts.content import (
     CONTENT as CONTENT,
 )
 from agent.plugin_contracts.delivery import (
-    DELIVERY as DELIVERY,
+    DELIVERY_V2 as DELIVERY,
     DELIVERY_READ as DELIVERY_READ,
     DELIVERY_SENDERS as DELIVERY_SENDERS,
     DeliveryHistory as DeliveryHistory,

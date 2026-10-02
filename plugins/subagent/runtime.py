@@ -257,7 +257,7 @@ class Subagents:
         # 2. 原发送成功或失败都关闭通知；失败回执保留，不重复回传。
         assert request.sink is not None
         delivery = ctx.require(DELIVERY).open(ctx)
-        selected = delivery.prepare(parent, message, (request.sink,))
+        selected = await delivery.prepare_async(parent, message, (request.sink,))
         try:
             receipts = [await delivery.send(message.message_id, sink) for sink in selected.sinks]
         except Exception:

@@ -238,7 +238,7 @@ async def apply(ctx: Context) -> None:
                             else:
                                 sinks = ()
                             assert sinks is not None
-                            selected = delivery.prepare(reader, message, sinks, passive=True)
+                            selected = await delivery.prepare_async(reader, message, sinks, passive=True)
                             for sink in selected.sinks:
                                 permit = None if child_permit is None else child_permit()
                                 try:

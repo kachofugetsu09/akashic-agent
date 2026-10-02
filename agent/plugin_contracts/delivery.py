@@ -133,6 +133,22 @@ class Delivery(Protocol):
     def open(self, consumer: Context) -> Deliveries: ...
 
 
+class AsyncDeliveries(Deliveries, Protocol):
+    """持久准备可等待；只读查询和原发送身份不变。"""
+
+    async def prepare_async(self, reader: MessageReader, message: Message,
+                            sinks: tuple[Mapping[str, object], ...], *, passive: bool = False) -> Selection: ...
+    async def publish_async(self, writer: MessageWriter, message_id: str, body: Body,
+                            sinks: tuple[Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]: ...
+    async def consume_async(self, reader: MessageReader, message: Message,
+                            sinks: tuple[Mapping[str, object], ...] | None, *, passive: bool = False) -> Selection | None: ...
+    async def add_async(self, message_id: str, sink: Mapping[str, object]) -> None: ...
+
+
+class AsyncDelivery(Protocol):
+    def open(self, consumer: Context) -> AsyncDeliveries: ...
+
+
 class DeliveredMessage(Protocol):
     @property
     def message(self) -> Message: ...
@@ -172,6 +188,7 @@ class FinalOutputDelivery(FinalOutputWaiter, Protocol):
 
 
 DELIVERY = ServiceKey[Delivery]("delivery.v1")
+DELIVERY_V2 = ServiceKey[AsyncDelivery]("delivery.v2")
 DELIVERY_SENDERS = ServiceKey[Senders]("delivery.senders.v1")
 DELIVERY_READ = ServiceKey[DeliveryHistory]("delivery.read.v1")
 FINAL_OUTPUT_DELIVERY = ServiceKey[FinalOutputDelivery]("delivery.final_output.v1")

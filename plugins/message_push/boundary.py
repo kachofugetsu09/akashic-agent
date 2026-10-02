@@ -18,7 +18,7 @@ from agent.plugin_contracts.content import (
     ContentView as ContentView,
 )
 from agent.plugin_contracts.delivery import (
-    DELIVERY as DELIVERY,
+    DELIVERY_V2 as DELIVERY,
     DELIVERY_SENDERS as DELIVERY_SENDERS,
     FINAL_OUTPUT_DELIVERY as FINAL_OUTPUT_DELIVERY,
     FinalOutputDelivery as FinalOutputDelivery,

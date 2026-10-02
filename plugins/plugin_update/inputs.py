@@ -11,11 +11,11 @@ from agent.plugin_contracts.content import (
     CONTENT as CONTENT,
 )
 from agent.plugin_contracts.delivery import (
-    DELIVERY as DELIVERY,
+    DELIVERY_V2 as DELIVERY,
     DELIVERY_SENDERS as DELIVERY_SENDERS,
     INPUT_ORIGIN as INPUT_ORIGIN,
-    Deliveries as Deliveries,
-    Delivery as Delivery,
+    AsyncDeliveries as Deliveries,
+    AsyncDelivery as Delivery,
     InputOrigin as InputOrigin,
     Receipt as Receipt,
     Selection as Selection,

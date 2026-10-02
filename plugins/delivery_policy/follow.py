@@ -103,7 +103,7 @@ async def follow(
                             delivery = execution()
                             existing = delivery.selection(message.message_id)
                             sinks = select(reader, message) if existing is None else ()
-                            selected = delivery.consume(reader, message, sinks, passive=True)
+                            selected = await delivery.consume_async(reader, message, sinks, passive=True)
                         if selected is not None:
                             for sink in selected.sinks:
                                 wake_destination(session_id, sink, selected.recovery_owner, message.seq - 1)
