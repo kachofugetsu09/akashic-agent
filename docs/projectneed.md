@@ -944,6 +944,11 @@ pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
 
 ### CTRL-003 Programmatic 会话使用当前运行图且默认不学习
 
+程序调用可用 Models 的 `models/catalog` 查询目录，在 `programmatic/message/send`
+用 `model_id` 和 `reasoning_effort` 为本次输入选择模型。选择随 Input 保存，不更新 Session
+默认偏好；省略时沿用原默认规则。新选择必须经过 Models 校验，同一输入的幂等重试保留原值。
+调用方继续指定同一 `programmatic:` Session ID，即可复用原生历史与上下文压缩。
+
 新 programmatic session 使用当前运行图；不提供 `latest`、候选或旧版本选择器。学习资格在 `programmatic/session/admit` 首次创建 Session 时固定：`persist_memory` 省略或 false 为 `learning=excluded`，显式 true 为 `learning=eligible`。同一 Session ID 与相同属性的重试幂等，属性冲突必须失败；后续 send、pause/resume、retry 和 result 不得改变资格。普通 Session 的既有默认不变。
 
 Session 无论是否可学习，都正常持久化 Input、Control、工具调用及结果、Output 与终态。Akasha 和 Markdown 只有在 Session 为 eligible 且各自来源配置允许时才学习；不为 programmatic 新建逐 Turn suppress scope。历史消息的排除事实仍按 MEM-009 只读处理。Prompt 是否读取既有记忆与 Tool 是否可用分别由 `disabled_prompt_sections` 和 `ToolGrant` 决定，均不由学习资格推断。
