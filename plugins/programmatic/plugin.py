@@ -80,7 +80,10 @@ def open_source(ctx: Context, session_id: str) -> SourceSession:
             value = cast(Mapping[str, str | None], part.value)
             # 新输入不能把拼错的 ID 当作已删除的历史偏好而回退。
             if value["model_id"] is not None:
-                catalog.snapshot().model(value["model_id"])
+                try:
+                    catalog.snapshot().model(value["model_id"])
+                except KeyError as error:
+                    raise ValueError(f"未知模型: {value["model_id"]}") from error
             catalog.validate_chat_selection(ChatModelSelection(value["model_id"], value["reasoning_effort"]))
             return references
 
