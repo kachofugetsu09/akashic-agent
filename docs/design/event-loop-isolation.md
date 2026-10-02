@@ -431,3 +431,20 @@ Source 前提检查防止旧回复越过已接纳的新边界。正常消息只�
 撤权、实际排空、完整旧消息和 SQLite 完整性。模型驱动只返回本地固定响应；
 不是付费模型、正式 workspace 或生产延迟验收。ToolResult、Delivery、Wake 来源
 与 EventMail 写入仍须分别迁移，不由 Output 这一层自动覆盖。
+
+## Tools 的结果与接纳（#879）
+
+Tools 在同 key 的异步接纳中固定 requested 回执，再启动既有 Task；取消接纳
+可以留下没有外部效果的 requested，恢复仍使用原 key、binding、参数和结果身份。
+prepared 与 ToolResult/done 通过原 OwnerStore 的有界事务提交，内容校验仍在调用者
+scope。放弃结算同样持有该 key 的异步接纳，并在真实提交回到 loop 后取消原 Task。
+
+放弃与真实结果竞争时，done 的首次提交胜出；迟到结果只读已提交的正文指针。
+requested/prepared 的等待期间发生放弃，不得用旧版本覆盖终态。错误回执可能先唤醒
+订阅者，等待路径仍取回原 Task 的错误，不能把真实执行异常伪装成正常返回。
+普通 Source 停止仍排空已有工具；已通过 started 前提的工具按原协议完成，不改变
+并行工具按模型顺序提交结果的规则。无 schema、旧消息或正式 workspace 改写。
+
+`docker/debug/tool_result_io.py` 使用真实 Source/ReAct/Tools、SQLite 和本地文件效果，
+覆盖四个持久阶段的正常/停止八场景，以及放弃先提交而成功结果迟到的竞争。
+逐项核对消息与 done 指针、外部文件效果、旧消息及数据库完整性；不使用付费模型。

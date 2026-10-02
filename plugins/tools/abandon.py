@@ -26,7 +26,7 @@ async def abandon_call(
         raise ValueError("工具没有已接纳的放弃控制")
     key = durable_call_key(reply.call_ref)
 
-    def settle(slot: TaskSlot) -> Result:
+    async def settle(slot: TaskSlot) -> Result:
         record = state.read(key)
         if record is None:
             for message in reply.reader.snapshot():
@@ -62,7 +62,11 @@ async def abandon_call(
             if record.value["phase"] not in {"requested", "prepared", "started"}:
                 raise ValueError("工具回执阶段无效")
         started = record is not None and record.value["phase"] == "started"
-        result = finish(
+        def cancel_after_commit(_result: Result) -> None:
+            if slot.current is not None:
+                slot.current.cancel()
+
+        result = await finish(
             state, key, record,
             Result("interrupted" if started else "denied", (ContentPart(
                 "text", "用户已放弃此工作；调用已中断，外部效果可能已经发生，不能据此重跑。"
@@ -70,12 +74,11 @@ async def abandon_call(
             ),)), target,
             initial={"version": 1, "request": fingerprint, "binding": call.binding_id,
                      "reply_id": target.message_id, "arguments": call.arguments},
+            on_commit=cancel_after_commit,
         )
-        if slot.current is not None:
-            slot.current.cancel()
         return result
 
-    return await tasks.admit((task_key, key), settle)
+    return await tasks.admit_async((task_key, key), settle)
 
 
 async def follow_abandon(
