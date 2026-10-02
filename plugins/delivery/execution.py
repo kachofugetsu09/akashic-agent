@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable, Hashable, Mapping
-from contextlib import AbstractContextManager, AsyncExitStack
+from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from agent.plugin_composition.messages import MessageCatalog, MessageReader, MessageWriter
+from agent.plugin_composition.messages import MessageCatalog, MessageReader, MessageWriter, OwnerRecord
+from agent.plugin_contracts.delivery import StartGuard
+from core.common.file_io import run_file_io
 from agent.plugin_contracts import Body, Message
 
 from .api import OpenSender, Receipt, Sink
@@ -94,8 +96,10 @@ class Deliveries:
         """推理前等待当前被动工作；发送仍在实际边界重新检查。"""
         await self._tasks.wait_idle((self._task_key, "target", channel, address))
 
-    async def _start(self, message_id: str, sink: str, before_start: Callable[[], str | None] | None = None) -> tuple[Task, bool]:
+    async def _start(self, message_id: str, sink: str, before_start: Callable[[], str | None] | None = None, start_guard: StartGuard | None = None) -> tuple[Task, bool]:
         """同步接纳时先占被动活动；实际 I/O 的活动范围继续覆盖取消后的清理。"""
+        if before_start is not None and start_guard is not None:
+            raise ValueError("发送不能同时使用同步检查与异步 guard")
         selected = self._records.check_owner(message_id)
         _, delivery = self._records.read(message_id, sink)
 
@@ -108,7 +112,7 @@ class Deliveries:
                 _ = hold.__enter__()
 
             async def run(task: Task) -> Receipt:
-                return await self._send(task, message_id, sink, before_start)
+                return await self._send(task, message_id, sink, before_start, start_guard)
 
             try:
                 task = slot.start(run)
@@ -124,14 +128,14 @@ class Deliveries:
 
         return await self._tasks.admit((self._task_key, message_id, sink), admit)
 
-    async def start(self, message_id: str, sink: str, *, before_start: Callable[[], str | None] | None = None) -> Task:
+    async def start(self, message_id: str, sink: str, *, before_start: Callable[[], str | None] | None = None, start_guard: StartGuard | None = None) -> Task:
         """独立启动原效果并返回等待句柄；后来的回复取消不取得它的撤销权。"""
-        task, _ = await self._start(message_id, sink, before_start)
+        task, _ = await self._start(message_id, sink, before_start, start_guard)
         return task
 
-    async def send(self, message_id: str, sink: str, *, before_start: Callable[[], str | None] | None = None) -> Receipt:
+    async def send(self, message_id: str, sink: str, *, before_start: Callable[[], str | None] | None = None, start_guard: StartGuard | None = None) -> Receipt:
         """发送并等待；重复等待者不取得实际发送任务的取消权。"""
-        task, owned = await self._start(message_id, sink, before_start)
+        task, owned = await self._start(message_id, sink, before_start, start_guard)
         try:
             return cast(Receipt, await task.join())
         except asyncio.CancelledError:
@@ -142,18 +146,18 @@ class Deliveries:
 
     async def retry(self, message_id: str, sink: str) -> Receipt:
         """显式重试被拒绝的原效果；不改消息、目的地、绑定或幂等键。"""
-        def rearm(slot: TaskSlot) -> Task | None:
+        async def rearm(slot: TaskSlot) -> Task | None:
             record, delivery = self._records.read(message_id, sink)
             if delivery.phase != "rejected":
                 return None
             # 旧 Task 可能已读取 rejected 但仍在关闭 scope；先排空才能重新接纳。
             if slot.current is not None:
                 return slot.current
-            _ = self._records.save(message_id, record, Delivery(sink=delivery.sink, phase="prepared"))
+            _ = await self._records.save_async(message_id, record, Delivery(sink=delivery.sink, phase="prepared"))
             return None
 
         while True:
-            previous = await self._tasks.admit((self._task_key, message_id, sink), rearm)
+            previous = await self._tasks.admit_async((self._task_key, message_id, sink), rearm)
             if previous is None:
                 return await self.send(message_id, sink)
             try:
@@ -167,19 +171,15 @@ class Deliveries:
         """明确撤回尚未开始的发送；关闭进程的 Task 取消不冒充此业务决定。"""
         receipt = Receipt(status="rejected", error=reason)
 
-        def cancel(slot: TaskSlot) -> tuple[bool, Task | None]:
-            record, delivery = self._records.read(message_id, sink)
-            if delivery.phase != "prepared":
-                return False, None
-            _ = self._records.save(message_id, record, Delivery(
-                sink=delivery.sink, phase="rejected", receipt=receipt,
-            ))
+        async def cancel(slot: TaskSlot) -> tuple[bool, Task | None]:
             current = slot.current
-            if current is not None:
-                current.cancel()
-            return True, current
+            def committed(cancelled: bool) -> None:
+                if cancelled and current is not None:
+                    current.cancel()
+            cancelled = await self._records.cancel_prepared_async(message_id, sink, receipt, on_commit=committed)
+            return cancelled, current if cancelled else None
 
-        cancelled, task = await self._tasks.admit((self._task_key, message_id, sink), cancel)
+        cancelled, task = await self._tasks.admit_async((self._task_key, message_id, sink), cancel)
         if task is not None:
             await _drain(task)
             caller = asyncio.current_task()
@@ -187,7 +187,7 @@ class Deliveries:
                 raise asyncio.CancelledError
         return cancelled
 
-    async def _send(self, task: Task, message_id: str, sink: str, before_start: Callable[[], str | None] | None) -> Receipt:
+    async def _send(self, task: Task, message_id: str, sink: str, before_start: Callable[[], str | None] | None, start_guard: StartGuard | None) -> Receipt:
         """先读耐久事实，再恢复未知效果；确认即将发送后才提交 started。"""
         record, delivery = self._records.read(message_id, sink)
         if delivery.phase in {"delivered", "rejected", "failed"}:
@@ -219,48 +219,76 @@ class Deliveries:
                 if found is not None:
                     found = Receipt.model_validate(found.model_dump())
                 if found is not None:
-                    _ = self._records.save(message_id, record, Delivery(
+                    _ = await self._records.save_async(message_id, record, Delivery(
                         sink=delivery.sink, phase=found.status, receipt=found,
                     ))
                     return found
                 if not sender.idempotent:
                     result = Receipt(status="failed", error="原发送中断且没有可查询回执；可能已送达，不自动重发")
-                    _ = self._records.save(message_id, record, Delivery(
+                    _ = await self._records.save_async(message_id, record, Delivery(
                         sink=delivery.sink, phase="failed", receipt=result,
                     ))
                     return result
 
-            # 2. 同一事件循环的撤权与 start 不跨 await；随后异常不冒称 rejected。
-            if not task.active:
-                raise asyncio.CancelledError
-            # 业务只可拒绝确定尚未开始的效果；未知效果仍按原幂等协议恢复。
-            if delivery.phase == "prepared" and before_start is not None:
-                reason = before_start()
-                if reason is not None:
-                    if inspect.iscoroutine(reason):
-                        reason.close()
-                    if not isinstance(reason, str) or not reason:
-                        raise TypeError("发送前检查必须同步返回 None 或非空拒绝原因")
-                    result = Receipt(status="rejected", error=reason)
-                    _ = self._records.save(message_id, record, Delivery(
-                        sink=delivery.sink, phase="rejected", receipt=result,
-                    ))
-                    return result
-            record = self._records.save(message_id, record, Delivery(sink=delivery.sink, phase="started"))
+            # 2. 同 key 的 started 与显式撤回串行；领域 guard 只覆盖持久开始，不覆盖网络等待。
+            def committed(value: OwnerRecord) -> None:
+                nonlocal record
+                record = value
+
+            async def begin(_slot: TaskSlot) -> Receipt | None:
+                nonlocal record, delivery
+                record, delivery = await run_file_io(lambda: self._records.read(message_id, sink))
+                if delivery.phase in {"delivered", "rejected", "failed"}:
+                    assert delivery.receipt is not None
+                    return delivery.receipt
+                if not task.active:
+                    raise asyncio.CancelledError
+                if before_start is not None:
+                    # 旧同步 guard 仍按原合同与 started 不跨 await；新消费者使用版本化 start_guard。
+                    reason = before_start() if delivery.phase == "prepared" else None
+                    rejected = _rejection(reason)
+                    value = Delivery(sink=delivery.sink, phase="started") if rejected is None else Delivery(
+                        sink=delivery.sink, phase="rejected", receipt=rejected)
+                    committed(self._records.save(message_id, record, value))
+                    return rejected
+                guard = start_guard() if start_guard is not None and delivery.phase == "prepared" else nullcontext(None)
+                async with guard as reason:
+                    rejected = _rejection(reason)
+                    value = Delivery(sink=delivery.sink, phase="started") if rejected is None else Delivery(
+                        sink=delivery.sink, phase="rejected", receipt=rejected)
+                    await self._records.save_async(message_id, record, value, on_commit=committed)
+                    return rejected
+
             try:
+                rejected = await self._tasks.admit_async((self._task_key, message_id, sink), begin)
+                if rejected is not None:
+                    return rejected
+                if not task.active:
+                    raise asyncio.CancelledError
                 response = await sender.send(key, delivery.sink.address, message)
                 # 不同归档拥有独立 Python 类型；按本版本公开 schema 接纳跨插件回执。
                 result = Receipt.model_validate(response.model_dump())
             except BaseException:
-                _ = self._records.save(message_id, record, Delivery(
-                    sink=delivery.sink, phase="failed",
-                    receipt=Receipt(status="failed", error="发送已开始但未取得可确认回执"),
-                ))
+                if record.value["phase"] == "started":
+                    _ = await self._records.save_async(message_id, record, Delivery(
+                        sink=delivery.sink, phase="failed",
+                        receipt=Receipt(status="failed", error="发送已开始但未取得可确认回执"),
+                    ))
                 raise
-            _ = self._records.save(message_id, record, Delivery(
+            _ = await self._records.save_async(message_id, record, Delivery(
                 sink=delivery.sink, phase=result.status, receipt=result,
             ))
             return result
+
+
+def _rejection(reason: str | None) -> Receipt | None:
+    if reason is None:
+        return None
+    if inspect.iscoroutine(reason):
+        reason.close()
+    if not isinstance(reason, str) or not reason:
+        raise TypeError("发送前检查必须返回 None 或非空拒绝原因")
+    return Receipt(status="rejected", error=reason)
 
 
 async def _drain(task: Task) -> None:

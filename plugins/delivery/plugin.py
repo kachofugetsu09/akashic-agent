@@ -9,6 +9,7 @@ from agent.plugin_composition.tasks import TASKS, TaskAdmission
 from agent.plugin_contracts.delivery import (
     DELIVERY as DELIVERY,
     DELIVERY_V2,
+    DELIVERY_GUARDED_START,
 )
 
 from .api import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
@@ -56,6 +57,7 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(DELIVERY_SENDERS, Senders(ctx))
     _ = await ctx.provide(DELIVERY, DeliveryAdmission(ctx, state, tasks))
     _ = await ctx.provide(DELIVERY_V2, DeliveryAdmission(ctx, state, tasks, DELIVERY_V2))
+    _ = await ctx.provide(DELIVERY_GUARDED_START, DeliveryAdmission(ctx, state, tasks, DELIVERY_GUARDED_START))
     _ = await ctx.provide(FINAL_OUTPUT_DELIVERY, FinalOutputDelivery())
     # 状态能力在正式生命周期中才打开，候选加载期不触碰运行库。
     _ = await ctx.provide(DELIVERY_READ, DeliveryHistory(

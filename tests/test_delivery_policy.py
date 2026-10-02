@@ -5,7 +5,7 @@ import shutil
 import pytest
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.delivery.records import DeliveryRecords
-from session.log import OwnerTransaction
+from session.log import OwnerRecord, OwnerStore
 from session.message import Output
 from tests.test_default_reply import application, live_root
 from tests.support.delivery_sources import sources
@@ -16,15 +16,15 @@ async def test_real_input_reply_and_archived_delivery_are_independent_consumers(
     shutil.copytree(Path(__file__).parents[1] / "plugins/delivery_policy", tmp_path / "plugins/delivery_policy",
                     ignore=shutil.ignore_patterns("__pycache__"))
     delivered = asyncio.Event()
-    original = OwnerTransaction.save
+    original = OwnerStore.transact_async
 
-    def observe(self, key, value, **kwargs):
-        result = original(self, key, value, **kwargs)
-        if key.startswith("delivery:") and value["phase"] == "delivered":
+    async def observe(self, callback, **kwargs):
+        result = await original(self, callback, **kwargs)
+        if isinstance(result, OwnerRecord) and result.value.get("phase") == "delivered":
             delivered.set()
         return result
 
-    monkeypatch.setattr(OwnerTransaction, "save", observe)
+    monkeypatch.setattr(OwnerStore, "transact_async", observe)
     async with application(tmp_path, replying=True) as (log, host):
         async with live_root(host) as root:
             accepted = await root.context.require(CHANNEL_INPUT)(
@@ -73,8 +73,6 @@ async def test_slow_destination_does_not_delay_next_fast_receipt(tmp_path):
                 entered.set()
                 await release.wait()
             sent[address].append(message.message_id)
-            if address == "fast" and message.message_id == "second":
-                fast.set()
             return Receipt(status="delivered")
 
         async def query(self, key, address):
@@ -91,7 +89,11 @@ async def test_slow_destination_does_not_delay_next_fast_receipt(tmp_path):
         log.save_binding(name, {"name": name})
     outputs = writer(log, author="assistant", bodies=(Output,))
     outputs.append("first", Output((), "complete"))
-    job = asyncio.create_task(follow(root.context, log.catalog(), lambda: delivery, lambda reader, message: sinks))
+    def settled(message_id, sink):
+        if sink == "fast" and message_id == "second":
+            fast.set()
+    job = asyncio.create_task(follow(root.context, log.catalog(), lambda: delivery,
+                                    lambda reader, message: sinks, settled=settled))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         outputs.append("second", Output((), "complete"))

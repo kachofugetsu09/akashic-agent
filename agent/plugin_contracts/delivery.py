@@ -149,6 +149,24 @@ class AsyncDelivery(Protocol):
     def open(self, consumer: Context) -> AsyncDeliveries: ...
 
 
+StartGuard = Callable[[], AbstractAsyncContextManager[str | None]]
+
+
+class GuardedDeliveries(AsyncDeliveries, Protocol):
+    """guard 覆盖领域前提检查与首次 started 提交，随后释放再发送。"""
+
+    async def start(self, message_id: str, sink: str, *,
+                    before_start: Callable[[], str | None] | None = None,
+                    start_guard: StartGuard | None = None) -> Task: ...
+    async def send(self, message_id: str, sink: str, *,
+                   before_start: Callable[[], str | None] | None = None,
+                   start_guard: StartGuard | None = None) -> Receipt: ...
+
+
+class GuardedDelivery(Protocol):
+    def open(self, consumer: Context) -> GuardedDeliveries: ...
+
+
 class DeliveredMessage(Protocol):
     @property
     def message(self) -> Message: ...
@@ -189,6 +207,7 @@ class FinalOutputDelivery(FinalOutputWaiter, Protocol):
 
 DELIVERY = ServiceKey[Delivery]("delivery.v1")
 DELIVERY_V2 = ServiceKey[AsyncDelivery]("delivery.v2")
+DELIVERY_GUARDED_START = ServiceKey[GuardedDelivery]("delivery.guarded-start.v1")
 DELIVERY_SENDERS = ServiceKey[Senders]("delivery.senders.v1")
 DELIVERY_READ = ServiceKey[DeliveryHistory]("delivery.read.v1")
 FINAL_OUTPUT_DELIVERY = ServiceKey[FinalOutputDelivery]("delivery.final_output.v1")
