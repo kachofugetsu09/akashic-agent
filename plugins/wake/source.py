@@ -34,6 +34,8 @@ from agent.plugin_contracts.models import (
 )
 
 from ._boundary import CONTENT, DELIVERY
+from agent.plugin_contracts.delivery import StartGuard
+
 from .api import DRIFT_DELIVERY, DRIFT_WAKE, EVENTMAIL_DELIVERY, EVENTMAIL_WAKE
 from .content import (
     _candidate_id,
@@ -144,11 +146,11 @@ class Source:
             domain = self.ctx.require(EVENTMAIL_WAKE)
             ref = request.alert_ref
             assert ref is not None
-            changed = domain.change_alert(ref, request.accepted, "skip", self.now())
-            if not changed and domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) == "selected":
+            changed = await domain.change_alert(ref, request.accepted, "skip", self.now())
+            if not changed and await domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) == "selected":
                 raise RuntimeError("Alert 发送失败后没有关闭原领取")
         else:
-            selected = (self.ctx.require(EVENTMAIL_DELIVERY).lookup(request.accepted)
+            selected = (await self.ctx.require(EVENTMAIL_DELIVERY).lookup(request.accepted)
                         if request.owner == "content"
                         else await self.ctx.require(DRIFT_DELIVERY).lookup(request.accepted))
             if selected is None:
@@ -156,7 +158,7 @@ class Source:
             if selected.get("status") == "ready_for_delivery":
                 token = _string(selected.get("selection_token"), "selection_token")
                 if request.owner == "content":
-                    self._change_content(token, "failed")
+                    await self._change_content(token, "failed")
                 elif (await self.ctx.require(DRIFT_WAKE).transition(token, "failed")).get("changed") is not True:
                     raise RuntimeError("Drift 发送失败后没有关闭原领取")
         self._settled(request, reader)
@@ -245,14 +247,14 @@ class Source:
         wanted = allowed if screen is None else {item.candidate_id for item in screen.items}
         refs = tuple(_mapping(item.get("ref"), "Content ref") for item in all_candidates
                      if _candidate_id(_mapping(item.get("ref"), "Content ref")) in wanted)
-        selected = domain.selection(request.accepted)
+        selected = await domain.selection(request.accepted)
         if selected is None:
-            claimed = domain.select_batch(refs, request.snapshot_seq, request.accepted, request.now)
+            claimed = await domain.select_batch(refs, request.snapshot_seq, request.accepted, request.now)
             if claimed.get("selected") is not True:
                 await self._record(request, "defer", "原 Content 批次已经变化，领取被拒绝")
                 self._settled(request, reader)
                 return "admission_rejected"
-            selected = domain.selection(request.accepted)
+            selected = await domain.selection(request.accepted)
             if selected is None:
                 raise ValueError("Content 领取成功却缺少领域回执")
         await run_file_io(lambda: self.state.commit_content_admission(request.items))
@@ -261,11 +263,11 @@ class Source:
         if status == "selected":
             if proposal.decision == "decline":
                 await self._record(request, "skip", "来源明确要求等待内容变化")
-                self._change_content(token, "await_change")
+                await self._change_content(token, "await_change")
             elif screen is None:
                 await self._record(request, "defer", "初筛没有提交有效候选")
                 action = "invalidated" if retryable(finished(reader, request, "screen")) is False else "defer"
-                self._change_content(token, action)
+                await self._change_content(token, action)
             else:
                 _ = await self._phase(
                     task, request, reader, "investigate",
@@ -277,21 +279,21 @@ class Source:
                         chosen = _selected_content_refs(selected, value.items)
                     except ValueError:
                         await self._record(request, "defer", "调查分享引用了原批次之外的候选")
-                        self._change_content(token, "defer")
+                        await self._change_content(token, "defer")
                     else:
                         await self._record(request, "share", value.message)
-                        self._change_content(token, "ready_for_delivery", refs=chosen)
+                        await self._change_content(token, "ready_for_delivery", refs=chosen)
                 elif isinstance(value, Skip):
                     await self._record(request, "skip", value.reason)
-                    self._change_content(token, "release")
+                    await self._change_content(token, "release")
                 else:
                     await self._record(request, "defer", "调查没有提交唯一有效决定")
                     action = "invalidated" if retryable(finished(reader, request, "investigate")) is False else "defer"
-                    self._change_content(token, action)
+                    await self._change_content(token, action)
         return await self._finish_domain(task, request, reader, "investigate")
 
-    def _change_content(self, token: str, action: str, *, refs: Sequence[Mapping[str, object]] | None = None) -> None:
-        result = self.ctx.require(EVENTMAIL_WAKE).transition(token, action,
+    async def _change_content(self, token: str, action: str, *, refs: Sequence[Mapping[str, object]] | None = None) -> None:
+        result = await self.ctx.require(EVENTMAIL_WAKE).transition(token, action,
             not_before=self.now() + timedelta(minutes=5) if action == "defer" else None, selected_refs=refs)
         if result.get("changed") is not True:
             raise RuntimeError("原 Content 领取没有提交预期变化")
@@ -351,7 +353,7 @@ class Source:
     async def _finish_domain(
         self, task: Task, request: Request, reader: MessageReader, stage: Stage,
     ) -> str:
-        selected = (self.ctx.require(EVENTMAIL_DELIVERY).lookup(request.accepted)
+        selected = (await self.ctx.require(EVENTMAIL_DELIVERY).lookup(request.accepted)
                     if request.owner == "content"
                     else await self.ctx.require(DRIFT_DELIVERY).lookup(request.accepted))
         if selected is None:
@@ -371,7 +373,7 @@ class Source:
             await self._fail_notification(request, reader)
             return "failed"
         token = _string(selected.get("selection_token"), "selection_token")
-        result = (self.ctx.require(EVENTMAIL_DELIVERY).settle(token, request.notification_id)
+        result = (await self.ctx.require(EVENTMAIL_DELIVERY).settle(token, request.notification_id)
                   if request.owner == "content"
                   else await self.ctx.require(DRIFT_DELIVERY).settle(token, request.notification_id))
         if result.get("settled") is not True:
@@ -381,7 +383,7 @@ class Source:
 
     async def _notify(
         self, task: Task, request: Request, text: str, *,
-        before_start: Callable[[], str | None] | None = None,
+        start_guard: StartGuard | None = None,
     ) -> bool:
         """通知正文与原 Sink 一起提交；未知或拒绝回执不冒充领域已送达。"""
         target = request.target
@@ -402,7 +404,7 @@ class Source:
         selected = await delivery.prepare_async(reader, message, (sink,))
         if selected.sinks != (sink["name"],):
             raise ValueError("Wake 原通知目的地不一致")
-        receipt = await delivery.send(message.message_id, sink["name"], before_start=before_start)
+        receipt = await delivery.send(message.message_id, sink["name"], start_guard=start_guard)
         return receipt.status == "delivered"
 
     async def _alert(self, task: Task, request: Request, reader: MessageReader) -> str:
@@ -410,7 +412,7 @@ class Source:
         domain = self.ctx.require(EVENTMAIL_WAKE)
         ref = request.alert_ref
         assert ref is not None
-        selected = domain.select_alert(request.accepted, request.now, item_ref=ref)
+        selected = await domain.select_alert(request.accepted, request.now, item_ref=ref)
         if selected is None:
             return await self._finish_old_alert(request, reader)
         screening = ({"payload": _mapping(selected.get("payload"), "Alert payload")},)
@@ -419,7 +421,7 @@ class Source:
             screening=screening, started_at=request.now))
         delivery = self.ctx.require(DELIVERY).open(self.ctx)
         has_delivery = delivery.selection(request.notification_id) is not None
-        if not has_delivery and domain.change_alert(ref, request.accepted, "expire", self.now()):
+        if not has_delivery and await domain.change_alert(ref, request.accepted, "expire", self.now()):
             previous = await run_file_io(lambda: self.state.get_run(request.flow_id))
             assert previous is not None
             if previous["decision"] is None:
@@ -433,34 +435,32 @@ class Source:
         if not isinstance(value, Alert):
             action = "skip" if retryable(finished(reader, request, "alert")) is False else "defer"
             await self._record(request, action, "告警没有提交唯一有效 share_alert")
-            _ = domain.change_alert(ref, request.accepted, action, self.now(),
+            _ = await domain.change_alert(ref, request.accepted, action, self.now(),
                                     not_before=self.now() + timedelta(minutes=5) if action == "defer" else None)
             self._settled(request, reader)
             return "model_skip" if action == "skip" else "deferred"
         await self._record(request, "share", value.message)
         # 模型期间来源可能已经换版；不得发送旧版本的新通知或关闭新 projection。
-        if domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) != "selected":
+        if await domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) != "selected":
             return await self._finish_old_alert(request, reader)
-        def before_start() -> str | None:
-            if domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) != "selected":
-                return "原告警版本已结束"
-            expires_at = selected.get("expires_at")
-            if expires_at is not None and _datetime(expires_at) <= self.now():
-                return "告警在发送前已过期"
-            return None
+        expiry = selected.get("expires_at")
+        expires_at = None if expiry is None else _datetime(expiry)
 
-        if not await self._notify(task, request, value.message, before_start=before_start):
+        def start_guard():
+            return domain.alert_start(ref, expires_at, self.now)
+
+        if not await self._notify(task, request, value.message, start_guard=start_guard):
             receipt = delivery.receipt(request.notification_id, request.sink["name"])
             if receipt is not None and receipt.status == "rejected":
-                if domain.change_alert(ref, request.accepted, "expire", self.now()):
+                if await domain.change_alert(ref, request.accepted, "expire", self.now()):
                     self._settled(request, reader)
                     return "model_skip"
-                if domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) != "selected":
+                if await domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) != "selected":
                     return await self._finish_old_alert(request, reader)
             await self._fail_notification(request, reader)
             return "failed"
-        changed = domain.change_alert(ref, request.accepted, "deliver", self.now())
-        status = domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"])
+        changed = await domain.change_alert(ref, request.accepted, "deliver", self.now())
+        status = await domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"])
         if not changed and status not in {"delivered", "superseded"}:
             raise RuntimeError("Alert 已送达但原领取无法确认")
         self._settled(request, reader)

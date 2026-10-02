@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from agent.plugin_composition.tasks import Tasks
-from core.common.file_io import run_file_io
+from plugins.eventmail.plugin import _StoreIO, _WakeServices, _AlertSourceServices
 from plugins.delivery.api import Receipt
 from plugins.delivery.execution import Deliveries
 from plugins.delivery.records import DeliveryRecords
@@ -37,14 +37,13 @@ async def check(directory: Path, phase: str, cancel: bool) -> dict:
     domain.report_alert(source_id="sensor", event_id="event", payload={"text": "first"}, observed_at=now)
     selected = domain.select_alert({"session_id": "s", "turn_id": "turn"}, now)
     assert selected is not None
-    gate = asyncio.Lock()
+    io = _StoreIO()
+    wake = _WakeServices(domain, io)
+    alerts = _AlertSourceServices(domain, io, lambda: None).bind("sensor")
     sending, release_sender = asyncio.Event(), asyncio.Event()
 
-    @asynccontextmanager
-    async def guard():
-        async with gate:
-            status = await run_file_io(lambda: domain.alert_status("sensor", "event", mail_id=selected["mail_id"]))
-            yield None if status == "selected" else "superseded"
+    def guard():
+        return wake.alert_start(selected, None, lambda: now)
 
     class Sender:
         idempotent = False
@@ -83,9 +82,8 @@ async def check(directory: Path, phase: str, cancel: bool) -> dict:
         return row
 
     async def update():
-        async with gate:
-            return await run_file_io(lambda: domain.report_alert(source_id="sensor", event_id="event",
-                payload={"text": "new version"}, observed_at=now + timedelta(seconds=1)))
+        return await alerts.report(event_id="event", payload={"text": "new version"},
+                                   observed_at=now + timedelta(seconds=1))
 
     if phase == "guard_reject":
         await update()
@@ -107,7 +105,7 @@ async def check(directory: Path, phase: str, cancel: bool) -> dict:
                 assert not job.done()
                 if phase == "guard":
                     updating = asyncio.create_task(update())
-                    assert gate.locked()
+                    assert io.lock.locked()
                     assert not updating.done()
                 if cancel:
                     job.cancel()
@@ -152,6 +150,7 @@ async def check(directory: Path, phase: str, cancel: bool) -> dict:
             if pending is not None and not pending.done():
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
+        alerts.close()
         await tasks.close()
         writer.expire()
         log.close()

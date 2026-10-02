@@ -478,3 +478,13 @@ started 提交后释放保护，再进入网络发送；恢复旧 started 不重
 和本地 sender 文件效果，覆盖慢 started/终态、重复取消、prepared 撤回、重试、
 版本先更新则拒绝，以及 started 先提交后更新无需等待网络结束的十二场景。
 既有投递集成的观测点改为真实提交完成，不把 sender 返回或事务内 INSERT 当成回执。
+
+### EventMail 来源与 Wake v2
+
+EventMail 只发布 `eventmail.content_source.v2`、`eventmail.alert_source.v2`、
+`eventmail.context_source.v2`、`eventmail.wake.v2` 和 `eventmail.delivery.v2`。
+来源提交、查询和结算均须 await；Feed、Fitbit、Calendar、Steam 与 Wake 必须按这组能力一起发布。
+同步 v1 来源不能与异步告警开始保护混用，否则换版可能越过首次发送的持久开始。
+同一 EventMail owner 的写锁覆盖告警版本检查到 `delivery.guarded-start.v1` 的首次 started 提交；
+随后释放锁再进入网络发送。取消排空已开始的 SQL，已提交来源仍在原 loop 发出 changed。
+原 envelope、选择、结算与 ACK 的身份和保留规则不变，没有新增持久表或删除路径。

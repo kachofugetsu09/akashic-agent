@@ -48,10 +48,10 @@ class Duties:
         self._maintenance = asyncio.Lock()
 
     async def deadline(self, now: datetime) -> datetime | None:
-        content = self.content.snapshot(now)
+        content = await self.content.snapshot(now)
         items = _sequence(content.get("items"), "Content items")
         unseen = await run_file_io(lambda: self.state.unseen_deadline(items))
-        values = [unseen, self.content.alert_deadline(now)]
+        values = [unseen, await self.content.alert_deadline(now)]
         drift = (await self.drift.snapshot(now)).get("next_due")
         if drift is not None:
             values.append(_datetime(drift))
@@ -59,9 +59,9 @@ class Duties:
 
     async def check(self, now: datetime) -> Admission:
         """Admit due Alerts before unrelated Content scoring or maintenance."""
-        alert = self.content.alert_deadline(now)
+        alert = await self.content.alert_deadline(now)
         if alert is not None and alert <= now:
-            snapshot = self.content.snapshot(now)
+            snapshot = await self.content.snapshot(now)
             items = tuple(_sequence(snapshot.get("items"), "Content items"))
             pool = Pool(_integer(snapshot.get("snapshot_seq"), "snapshot_seq"), items,
                         sum(item.get("status") in {"pending", "deferred"} for item in items),
@@ -71,7 +71,7 @@ class Duties:
         count = await run_file_io(lambda: self.state.unseen_due_count(pool.items, now))
         audit = await run_file_io(lambda: self.state.audit_pool(pool.items, now=now))
         detail = _pool_detail(pool.detail, count, audit)
-        alert = self.content.alert_deadline(now)
+        alert = await self.content.alert_deadline(now)
         if alert is not None and alert <= now:
             return Admission("alert", detail + "；Alert 已到期", pool)
         if await run_file_io(lambda: self.state.has_unseen_due(pool.items, now)):
@@ -87,7 +87,7 @@ class Duties:
     async def maintain(self, now: datetime) -> Pool:
         """沿原规则只评分一次，低质量 Content 满最短停留期后由 EventMail 过期。"""
         async with self._maintenance:
-            snapshot = self.content.snapshot(now)
+            snapshot = await self.content.snapshot(now)
             items = _sequence(snapshot.get("items"), "Content items")
             scored = len(await run_file_io(lambda: self.state.unscored_due_items(items)))
             items = await self._score(items, now)
@@ -95,9 +95,9 @@ class Duties:
                 items, now=now, minimum_residence=timedelta(hours=24)))
             expired = 0
             if refs:
-                result = self.content.expire(refs, now)
+                result = await self.content.expire(refs, now)
                 expired = len(_sequence(result.get("expired"), "expired Content"))
-                snapshot = self.content.snapshot(now)
+                snapshot = await self.content.snapshot(now)
                 items = _sequence(snapshot.get("items"), "Content items")
                 scored += len(await run_file_io(lambda: self.state.unscored_due_items(items)))
                 items = await self._score(items, now)
