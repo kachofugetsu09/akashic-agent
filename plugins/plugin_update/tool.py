@@ -111,7 +111,7 @@ class InstallPlugin:
         updates = ctx.require(PLUGIN_UPDATES)
         if store.read(identity) is not None or updates.read(ctx, identity) is not None:
             raise RuntimeError("已有插件更新请求只能查询")
-        _ = store.transact(lambda tx: tx.save(identity, request.model_dump(mode="json"), expected_version=None))
+        _ = await store.transact_async(lambda tx: tx.save(identity, request.model_dump(mode="json"), expected_version=None))
         install = request.install
         status = await updates.install(ctx, identity, source=install.source,
             marketplace=install.marketplace, ref=install.ref, sparse=tuple(install.sparse))

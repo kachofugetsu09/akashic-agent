@@ -24,6 +24,8 @@ from agent.plugin_composition import (
     WorkloadLimits,
     WorkloadPort,
 )
+from core.common.file_io import run_file_io
+
 from agent.plugin_composition.assets import INSTALLED_ASSETS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
@@ -67,9 +69,9 @@ class ComputerControl:
             "turn_input_id": identity.turn_input_id,
         }
         state = self._state()
-        existing = state.read(owner_key)
+        existing = await run_file_io(lambda: state.read(owner_key))
         if existing is None:
-            _ = state.transact(lambda tx: tx.save(owner_key, value, expected_version=None))
+            _ = await state.transact_async(lambda tx: tx.save(owner_key, value, expected_version=None))
         elif existing.value.get("phase") == "ended" and _same_identity(existing.value, value):
             raise RuntimeError("Computer 调用已经结束")
         elif existing.value != value:
@@ -342,7 +344,7 @@ async def _start_follower(ctx: Context) -> None:
             state = ctx.require(OWNER_STATE).open(ctx)
         assert state is not None
         groups: dict[tuple[str, str, str, str], list[tuple[str, OwnerRecord]]] = {}
-        for key, record in state.list():
+        for key, record in await run_file_io(state.list):
             value = record.value
             if not key.startswith("computer-use:") or value.get("phase") != "started":
                 continue
@@ -385,11 +387,13 @@ async def _try_end(
         )
     ):
         # 字段无效的记录永远无法完成收尾：终态标记，避免每次唤醒都撞同一组。
-        _fail_group(ctx, records, "Computer owner record 字段无效")
+        await _fail_group(ctx, records, "Computer owner record 字段无效")
         ctx.report_incident("computer-end-turn", f"{key}: Computer owner record 字段无效")
         return
     reader = catalog.reader(cast(str, value["session_id"]))
-    turns = projection.project(reader.snapshot(), cast(str, value["source"]))
+    through_seq = reader.head()
+    turns = await run_file_io(lambda: projection.project(
+        reader.snapshot(through_seq=through_seq), cast(str, value["source"])))
     if not any(
         turn.status in {"complete", "quiet", "abandoned"}
         and cast(str, value["turn_input_id"]) in turn.message_ids
@@ -412,7 +416,7 @@ async def _try_end(
             await bound.end_turn(identity, end_id)
     except (KeyError, ValueError) as error:
         # 不可变 binding 缺失或结构不匹配是终态；标记 failed 后不再重试。
-        _fail_group(ctx, records, f"computer control binding 不可用: {error}")
+        await _fail_group(ctx, records, f"computer control binding 不可用: {error}")
         ctx.report_incident("computer-end-turn", f"{key}: {error}")
         return
     except Exception as error:
@@ -435,10 +439,10 @@ async def _try_end(
                 expected_version=item_record.version,
             )
 
-    state.transact(commit)
+    await state.transact_async(commit)
 
 
-def _fail_group(
+async def _fail_group(
     ctx: Context,
     records: list[tuple[str, OwnerRecord]],
     reason: str,
@@ -461,4 +465,4 @@ def _fail_group(
                 expected_version=item_record.version,
             )
 
-    state.transact(stop)
+    await state.transact_async(stop)
