@@ -1,56 +1,15 @@
+<!-- 面向没读过会话的评审者。小改动可以直接写两三段，删除不需要的标题和提示。 -->
+
 ## 问题与结果
 
-- 解决的问题：
-- 用户可见结果：
-- 本 PR 不处理：
+<!-- 什么场景出了什么问题？这次之后会怎样？必要时链接 issue。 -->
 
-## Change intent
+## 方案与理由
 
-- `change_type`：`fix | feature | refactor | migration | docs`
-- `semantic_delta`：`none | compatible | breaking`
-- `capability_owner`：`core | protocol | client | plugin | mixed | not_applicable`
-- `consumer_scope`：
-- `runtime_patch`：`none | required`
-- `runtime_patch_reason`：
-- `authoritative_state_owner`：
-- `client_only_alternative`：
-- `concept_gate`：`required | not_applicable`
-- `concept_gate_reason`：
-- 关联不变量：
-- `protected_state`：
-- 允许的副作用：
-- 禁止的副作用：
-
-## 改动范围
-
-- 主要文件：
-- 配置或迁移影响：
-- 已知 schema lineage 与最终 schema identity：
-- 协议 source、runtime、provider 与 scenario 的不可变 revision：
-- 回滚方式：
+<!-- 为什么这样改？只解释关键取舍；复用已有 decision。涉及数据、公共行为或外部效果时，明确改变与保持的合同及必要恢复方式。 -->
 
 ## 验证
 
-- [ ] 概念基线 pytest 已通过：`pytest -q tests`。
-- [ ] 静态检查已通过：pyright（主工程与 tests）、`plugin_boundary.py check`、`check_yoyo_migrations.py`、协议生成物 `--check`、前端 `npm run typecheck`；不适用项已说明。
-- 真实设备证据（设备/API、debug application ID、源码/APK 身份；不适用时说明）：
-- 未运行项与原因：
+<!-- 实际做了什么、观察到什么、哪些未验证。不要把静态检查或 CI 通过写成功能或部署验收。 -->
 
-## 正交性与概念完整性
-
-- 是否属于架构性 PR 或大改动：`yes | no`
-- 独立 reviewer / model / reasoning：
-- 审查 head：
-- 新增概念及其唯一 owner；没有时写 `none`：
-- 无关设计轴的变化传播；没有时写 `none`：
-- 最短正常/失败/热更新链路：
-- legacy/source-specific 残留扫描：
-- must-fix 及处置证据：
-- 最终结论：`pass | fail | not_applicable`
-
-## 工作手册
-
-- [ ] 已核对 `projectneed.md`、相关决策和 `NOW.md`。
-- [ ] 长期语义变化已先获得确认，或本次没有长期语义变化。
-- [ ] 跨仓库或客户端改动已按 MOB-001 核对能力 owner；不适用时已标明。
-- [ ] 已完成事项已从 `NOW.md` 删除；当前没有对应事项时标记不适用。
+<!-- 每张 PR 默认新增约 500 行以内，删除不限；大任务优先 stacked PR，并链接前置 PR。 -->

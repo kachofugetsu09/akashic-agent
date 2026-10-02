@@ -45,8 +45,6 @@ runtime_patch: required
 runtime_patch_reason: "Turn owner、generation lease、取消、Tool executor 权限和 terminal 是跨来源一致事实；只在插件侧实现会复制 Core 语义。"
 authoritative_state_owner: "Core owns Turn execution and plugin publication; Scheduler owns schedules; Subagent owns spawn state and artifacts; Session and Channel owners remain unchanged."
 client_only_alternative: "not_applicable"
-concept_gate: required
-concept_gate_reason: "新增 Core Turn/Timer/lifecycle 原子，迁移两个 execution owner，并删除旧 Core source branches。"
 invariants:
   - Message 组成 Turn，Turn 归入 Session，Loop 只表达 Message 到 react 到 Message
   - 同 session Turn 串行，不同 session 可并发

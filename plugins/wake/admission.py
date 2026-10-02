@@ -52,7 +52,7 @@ class Duties:
         items = _sequence(content.get("items"), "Content items")
         unseen = await run_file_io(lambda: self.state.unseen_deadline(items))
         values = [unseen, self.content.alert_deadline(now)]
-        drift = self.drift.snapshot(now).get("next_due")
+        drift = (await self.drift.snapshot(now)).get("next_due")
         if drift is not None:
             values.append(_datetime(drift))
         return min((value for value in values if value is not None), default=None)
@@ -79,7 +79,7 @@ class Duties:
             detail = _pool_detail(pool.detail, count, result)
             if result.should_wake:
                 return Admission("content", detail, pool)
-        proposals = _sequence(self.drift.snapshot(now).get("proposals"), "Drift proposals")
+        proposals = _sequence((await self.drift.snapshot(now)).get("proposals"), "Drift proposals")
         if any(item.get("due") is True for item in proposals):
             return Admission("drift", detail + "；Drift 已到期", pool, tuple(proposals))
         return Admission(None, detail + "；没有到期职责或新 Content 不足", pool)

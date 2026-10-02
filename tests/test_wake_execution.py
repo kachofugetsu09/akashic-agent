@@ -31,7 +31,7 @@ async def test_due_alert_bypasses_running_content_score(tmp_path):
             return tuple(0.5 for _ in texts)
 
     class Drift:
-        def snapshot(self, now):
+        async def snapshot(self, now):
             return {"proposals": ()}
 
     duties = Duties(_WakeServices(mail), cast(DriftWakeServices, Drift()), state, cast(SemanticInterest, Interest()))

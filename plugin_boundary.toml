@@ -469,3 +469,11 @@ note = "注册表 open 返回带显式完成控制前提的来源；旧 session 
 [capabilities."reply.execute.v4"]
 role = "seam"
 note = "来源入口提供必填执行前提；回复程序不重建或推断来源权限"
+
+[capabilities."drift.wake.v2"]
+role = "seam"
+note = "Drift 拥有异步快照、领取与流转；取消等待实际存储退出"
+
+[capabilities."drift.delivery.v2"]
+role = "seam"
+note = "Drift 拥有异步送达读取与结算；真实发送仍归 Delivery"

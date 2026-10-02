@@ -1,6 +1,6 @@
 # 项目工作手册与语义安全技术设计
 
-- 状态：proposed
+- 状态：proposed（历史事故分析保留；流程、单测与 Gate 提议由 [0083](../decisions/0083-short-workflow-preserves-design-intent.md) 替代，现行入口为 [WORKFLOW](../WORKFLOW.md)。产品语义按有效需求与决策核对。）
 - 日期：2026-07-16
 - 目标读者：维护者、coding agent、评审者、CI 实现者
 - 关联条款：WBK-001～WBK-006、COM-001～COM-004、PRM-001～PRM-008、CTX-001～CTX-006、SES-003、TST-001～TST-005

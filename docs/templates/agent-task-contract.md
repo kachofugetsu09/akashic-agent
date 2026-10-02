@@ -1,84 +1,12 @@
-# Agent 任务合同模板
+# 复杂任务交接（按需使用）
 
-> 只保留会改变当前任务行为的字段。简单任务不需要机械填满全部内容。
+普通任务直接在会话中说明，不必建文件。规则见 [WORKFLOW](../WORKFLOW.md)。
 
-## Role
+- 目标与可观察的完成标准：
+- 本次改变什么、保持什么：
+- 已读取的需求与有效 decision，以及本次如何适用：
+- 仍会改变设计或授权范围的未知：
+- 验证方法与实际结果：
+- 下一步与阻塞：
 
-- 负责范围：
-- 当前阶段：research / design / implementation / review
-
-## Goal
-
-[一句话写用户最终能看到的结果。]
-
-## Success criteria
-
-- [ ] [可以独立判断的结果 1]
-- [ ] [可以独立判断的结果 2]
-- [ ] 相关验证已运行，未运行项和原因已说明。
-
-## Evidence
-
-- 必须先读取：
-- 已核对事实：
-- 未确认事实：
-- 关键假设：
-
-## Change intent
-
-```yaml
-change_type: fix|feature|refactor|migration|docs
-semantic_delta: none|compatible|breaking
-capability_owner: core|protocol|client|plugin|mixed|not_applicable
-consumer_scope: []
-runtime_patch: none|required
-runtime_patch_reason: ""
-authoritative_state_owner: ""
-client_only_alternative: ""
-concept_gate: required|not_applicable
-concept_gate_reason: ""
-invariants: []
-protected_state: []
-allowed_paths: []
-forbidden_paths: []
-allowed_effects: []
-forbidden_effects: []
-validation: []
-rollback: ""
-worktree_writer: ""
-handoff_head: ""
-external_revisions: []
-schema_lineages: []
-```
-
-`runtime_patch: required` 必须引用既有或已批准的不变量，并说明客户端实现为什么会复制、猜测或破坏权威语义。“未来可能复用”不是充分理由。
-
-新增领域词、Service/Event，或改动 Core/Bootstrap、owner、持久状态、权限、lifecycle、热更新、公共扩展边界时，`concept_gate` 必须为 `required`；其他任务写 `not_applicable` 和理由。需要 Gate 时在实施前填写，最终由独立 Terra xhigh reviewer 复核：
-
-| fact / invariant | sole decision/write owner | public reader/port | unrelated change propagation | static/dynamic oracle |
-|---|---|---|---|---|
-| | | | none | |
-
-## Autonomy
-
-- 可自主执行：
-- 执行前需确认：
-
-## Tools
-
-| 工具 | 使用时机 | 关键结果 | 空/失败如何处理 |
-|---|---|---|---|
-| | | | |
-
-## Output
-
-- 交付文件或字段：
-- 格式和长度：
-- 必须附带的证据：
-
-## Stop rules
-
-- 满足全部成功标准后停止。
-- 缺少下列事实时提出最小问题：
-- 最多尝试下列 fallback：
-- 出现下列状态时停止并报告阻塞：
+涉及状态时补充实际增、改、减、owner 和必要恢复方式；没有数据风险不填备份项。多人交接时记录 repository、worktree、branch、base/head、dirty state、writer 与允许路径。不要复制整份项目规则。

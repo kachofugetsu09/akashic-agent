@@ -21,7 +21,7 @@ from agent.plugin_composition.model import FiberState, PluginRuntime
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, MessageWriters, OwnerState
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_composition.timers import TIMERS, PluginTimers
-from plugins.drift.plugin import _WakeServices as DriftServices
+from plugins.drift.plugin import _AsyncWakeServices as DriftServices
 from plugins.drift.store import DriftStore
 from plugins.eventmail.plugin import _WakeServices as MailServices
 from plugins.eventmail.plugin import _DeliveryServices as MailDelivery
