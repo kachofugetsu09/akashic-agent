@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import deque
+from collections.abc import Mapping
+from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -29,7 +32,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         """消费本地场景响应，并记录真实收到的 POST 次数。"""
-        self.rfile.read(int(self.headers["Content-Length"]))
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         status, delay = self.server.replies.popleft()
         self.server.received.append(status)
         value = (
@@ -38,11 +41,24 @@ class Handler(BaseHTTPRequestHandler):
              "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
             if status == 200 else {"error": {"message": "scenario failure"}}
         )
-        body = json.dumps(value).encode()
+        streaming = status == 200 and request.get("stream")
+        if streaming:
+            chunks: list[dict[str, object]] = [
+                {"choices": [{"delta": {"reasoning_content": "local-thinking"}}]},
+                {"choices": [{"delta": {"content": "local-result"}}]},
+            ]
+            if delay != "stream-error":
+                chunks.append({"choices": [{"delta": {}, "finish_reason": "stop"}],
+                               "usage": value["usage"]})
+            body = ("".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+                    + ("" if delay == "stream-error" else "data: [DONE]\n\n")).encode()
+        else:
+            body = json.dumps(value).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        if delay is not None:
+        self.send_header("Content-Type", "text/event-stream" if streaming else "application/json")
+        # 声明更多字节后关闭连接，制造真实的 HTTP 流中断。
+        self.send_header("Content-Length", str(len(body) + (100 if delay == "stream-error" else 0)))
+        if delay is not None and not streaming:
             self.send_header("Retry-After", str(delay))
         self.end_headers()
         self.wfile.write(body)
@@ -57,6 +73,12 @@ class Credential:
 
     async def read(self) -> dict[str, str]:
         return {"api_key": "local-scenario"}
+
+    async def refresh(self, payload: Mapping[str, str]) -> None:
+        raise AssertionError("本地固定凭据不支持刷新")
+
+    def exclusive(self) -> AbstractAsyncContextManager[None]:
+        raise AssertionError("本地固定凭据不支持认证轮换")
 
 
 async def run(args: argparse.Namespace) -> dict:
@@ -76,6 +98,8 @@ async def run(args: argparse.Namespace) -> dict:
         MODEL_SETTINGS, AddConnection, AddModel, CreateConnectionWithModel, SetDefaultModel,
     )
     from plugins.models.state import ModelsState
+    from agent.plugin_composition.tasks import Tasks
+    from plugins.reply.status import ReplyState
 
     descriptor = BoundModelDescriptor(
         binding_id="scenario", plugin_snapshot_id="scenario", model_revision=0,
@@ -97,6 +121,45 @@ async def run(args: argparse.Namespace) -> dict:
         Credential(), descriptor, driver._ModelConfig(None, 16), http,
     )
     report = {"source": str(args.source), "checks": []}
+
+    async def complete_with_preview(bound, request, on_attempt=None):
+        """通过真实 Task、Reply 预览、Models 和 HTTP，观察同一草稿的尝试切换。"""
+        tasks, status = Tasks(), ReplyState()
+        snapshots = []
+
+        async def operation(task):
+            with status.open(task, "scenario", "conversation") as preview:
+                with preview("scenario-output") as publish:
+                    async def delta(value):
+                        await publish(value)
+                        snapshots.append(status.snapshot("scenario")[0].preview)
+                        if on_attempt is not None and "call_record_id" in value:
+                            on_attempt()
+
+                    response = await bound.complete(replace(request, on_delta=delta))
+                    draft = status.snapshot("scenario")[0].preview
+                    assert draft.message_id == "scenario-output"
+                    assert draft.text == response.content == "local-result"
+                    assert draft.thinking == response.thinking == "local-thinking"
+                    assert draft.call_record_id == response.call_record_id
+                    return response
+
+        try:
+            task = await tasks.admit("scenario", lambda slot: slot.start(operation))
+            try:
+                return await task.join()
+            except asyncio.CancelledError:
+                task.cancel()
+                try:
+                    await task.join()
+                except asyncio.CancelledError:
+                    pass
+                raise
+        finally:
+            await tasks.close()
+            assert not status.snapshot("scenario"), snapshots
+            status.close()
+
     with tempfile.TemporaryDirectory(prefix="model-retry-check-") as temporary:
         root = Path(temporary)
 
@@ -171,7 +234,7 @@ async def run(args: argparse.Namespace) -> dict:
             bound = _BoundChat(descriptor, physical, store, max_attempts=_retry_budget(config))
             try:
                 try:
-                    response = await bound.complete(request)
+                    response = await complete_with_preview(bound, request)
                 except ModelError:
                     assert not success, name
                 else:
@@ -199,6 +262,7 @@ async def run(args: argparse.Namespace) -> dict:
                     assert success and result.content == "local-result", name
                 assert len(server.received) == count, f"{name}: 重新开库导致重复 POST"
                 assert len(reopened.calls_for_key(name)) == count
+                assert reopened.calls_for_key(name) == records, "回放改变了既有调用记录"
             finally:
                 reopened.close()
             report["checks"].append({"case": name, "posts": count})
@@ -217,6 +281,69 @@ async def run(args: argparse.Namespace) -> dict:
                        [429, 200], 1, False)
             await case("uncertain-5xx", {}, [503, 200], 1, False)
             await case("auth-no-retry", {}, [401, 200], 1, False)
+
+            # HTTP 200 已产生思考和正文后报错，仍终结本次调用，不自动重试。
+            server.replies = deque([(200, "stream-error"), (200, None)])
+            server.received = []
+            store = ModelsStore(root / "stream-error.db", root / "backups")
+            store.initialize()
+            try:
+                bound = _BoundChat(descriptor, physical, store, max_attempts=3)
+                try:
+                    await complete_with_preview(bound, ModelRequest([], request_key="stream-error"))
+                except ModelError:
+                    pass
+                else:
+                    raise AssertionError("流内错误被报告为成功")
+                records = store.calls_for_key("stream-error")
+                assert len(records) == 1 and server.received == [200]
+                assert records[0]["partial_response"] and records[0]["state"] == "error"
+                assert records[0]["next_attempt_at"] is None
+                report["checks"].append({"case": "reply-stream-error-no-retry", "posts": 1})
+            finally:
+                store.close()
+
+            # 首次连接确实被拒绝，第二个 attempt 发布时才让同一端口开始监听。
+            recovery = ThreadingHTTPServer(("127.0.0.1", 0), Handler, bind_and_activate=False)
+            recovery.server_bind()
+            recovery.replies = deque([(200, None)])
+            recovery.received = []
+            recovery_thread = threading.Thread(target=recovery.serve_forever, daemon=True)
+            recovery_endpoint = f"http://127.0.0.1:{recovery.server_port}"
+            recovery_http = HttpClient(lambda: httpx.AsyncClient(
+                base_url=recovery_endpoint, trust_env=False,
+            ))
+            recovery_driver = driver._BoundChat(
+                driver._ConnectionConfig(recovery_endpoint, 1, 1, 0, False),
+                Credential(), descriptor, driver._ModelConfig(None, 16), recovery_http,
+            )
+            store = ModelsStore(root / "connect-recovery.db", root / "backups")
+            store.initialize()
+
+            def listen_on_retry():
+                if len(store.calls_for_key("connect-recovery")) == 2:
+                    recovery.server_activate()
+                    recovery_thread.start()
+
+            try:
+                bound = _BoundChat(descriptor, recovery_driver, store, max_attempts=3)
+                response = await complete_with_preview(
+                    bound, ModelRequest([], request_key="connect-recovery"), listen_on_retry,
+                )
+                records = store.calls_for_key("connect-recovery")
+                assert len(records) == 2 and recovery.received == [200]
+                assert records[0]["send_evidence"] == "unsent"
+                assert records[0]["state"] == "error" and records[1]["state"] == "success"
+                assert records[0]["id"] != records[1]["id"] == response.call_record_id
+                report["checks"].append({"case": "reply-connect-recovery", "attempts": 2, "posts": 1})
+            finally:
+                store.close()
+                await recovery_http.aclose()
+                if recovery_thread.is_alive():
+                    await asyncio.to_thread(recovery.shutdown)
+                    recovery_thread.join(timeout=5)
+                recovery.server_close()
+                assert not recovery_thread.is_alive()
 
             # 2. 无 key 调用仍只尝试一次；连接未建立的真实错误使用有界额度。
             server.replies = deque([(429, 0), (200, None)])
@@ -285,7 +412,7 @@ async def run(args: argparse.Namespace) -> dict:
 
             try:
                 with patch("plugins.models.state.asyncio.sleep", wait_backoff):
-                    task = asyncio.create_task(bound.complete(request))
+                    task = asyncio.create_task(complete_with_preview(bound, request))
                     await asyncio.wait_for(backoff.wait(), 5)
                     record = store.calls_for_key("cancel")[0]
                     assert record["next_attempt_at"] is not None and record["state"] == "error"
@@ -305,7 +432,7 @@ async def run(args: argparse.Namespace) -> dict:
                 resumed = _BoundChat(descriptor, physical, resumed_store, max_attempts=_retry_budget({}))
                 # 确定性推进耐久退避的墙钟；网络请求仍穿过真实 HTTP/driver。
                 with patch("plugins.models.state.time.time", return_value=record["next_attempt_at"] + 1):
-                    assert (await resumed.complete(request)).content == "local-result"
+                    assert (await complete_with_preview(resumed, request)).content == "local-result"
                 assert len(server.received) == 2
                 assert len(resumed_store.calls_for_key("cancel")) == 2
             finally:
