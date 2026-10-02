@@ -17,9 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 akashic && useradd --uid 1000 --gid 1000 --create-home akashic \
     && mkdir /data && chown akashic:akashic /data
-COPY --from=build /opt/venv /opt/venv
-COPY --from=build /opt/distribution /opt/distribution
-COPY --from=build /opt/core /opt/core
+COPY --from=build --chown=akashic:akashic /opt/venv /opt/venv
+COPY --from=build --chown=akashic:akashic /opt/distribution /opt/distribution
+COPY --from=build --chown=akashic:akashic /opt/core /opt/core
 ENV PATH=/opt/venv/bin:$PATH AKASHIC_EXECUTION_MODE=local PYTHONUNBUFFERED=1 AKASHIC_PLUGIN_DISTRIBUTION=/opt/distribution
 USER akashic
 WORKDIR /opt/core
