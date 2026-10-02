@@ -73,6 +73,7 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
         reason = WakeFailure(message=str(error), retryable=error.retryable).model_dump_json()
     # 此处只结算本层已知的失败；未知工具效果和存储错误保持原事实并向上传播。
     writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Control,), content={})(reader.session_id)
+    task.on_close(writer.expire)
     try:
         if not task.active:
             raise asyncio.CancelledError

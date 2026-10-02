@@ -181,6 +181,7 @@ class Source:
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Input,),
                 content={"wake.phase": check_phase, "model.selection": ctx.require(MODEL_SELECTION).check,
                          "text": ctx.require(CONTENT).check_text})(request.session_id)
+            task.on_close(writer.expire)
             try:
                 phase = Phase(input_id=request.input_id, stage=stage)
                 phase_message = await writer.append_async(
