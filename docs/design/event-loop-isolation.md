@@ -448,3 +448,15 @@ requested/prepared 的等待期间发生放弃，不得用旧版本覆盖终态�
 `docker/debug/tool_result_io.py` 使用真实 Source/ReAct/Tools、SQLite 和本地文件效果，
 覆盖四个持久阶段的正常/停止八场景，以及放弃先提交而成功结果迟到的竞争。
 逐项核对消息与 done 指针、外部文件效果、旧消息及数据库完整性；不使用付费模型。
+
+## Delivery 的异步准备能力（#879）
+
+`delivery.v2` 为正文与目的地发布、已有消息选路、按序消费和新增目的地提供显式
+异步入口。消息内容仍在原 scope 校验；固定正文、selection、prepared 和 cursor
+由原 owner 在同一 SQL 事务提交，取消后排空，不拆成可能留下半笔状态的多个提交。
+消息推送、调度、更新通知、子任务、Wake 和自动投递消费 v2；缺少 v2 不能回退到
+同步写入。v1 接口继续供已有归档使用，不改变其同步签名或原 recovery owner。
+
+`docker/debug/delivery_prepare_io.py` 挂载真实 Delivery provider，覆盖四类准备的正常与
+重复取消八场景，核对原消息、目的地、cursor、数据库完整性及原 loop 上的内容校验。
+发送开始、终态回执和 Alert 的版本顺序仍由后续独立层处理。

@@ -314,6 +314,10 @@ note = "公共结构合同；实际状态与生命周期由提供方插件拥有
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
 
+[capabilities."delivery.v2"]
+role = "seam"
+note = "公共结构合同；实际状态与生命周期由提供方插件拥有"
+
 [capabilities."drift.delivery.v1"]
 role = "seam"
 note = "公共结构合同；实际状态与生命周期由提供方插件拥有"

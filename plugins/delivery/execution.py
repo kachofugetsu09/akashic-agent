@@ -52,6 +52,22 @@ class Deliveries:
         selected = self._records.consume(reader, message, sinks, passive=passive)
         return selected if selected is not None and selected.recovery_owner == self._records.recovery_owner else None
 
+    async def prepare_async(self, reader: MessageReader, message: Message,
+                            sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> Selection:
+        return await self._records.prepare_async(reader, message, sinks, passive=passive)
+
+    async def publish_async(self, writer: MessageWriter, message_id: str, body: Body,
+                            sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]:
+        return await self._records.publish_async(writer, message_id, body, sinks, passive=passive)
+
+    async def consume_async(self, reader: MessageReader, message: Message,
+                            sinks: tuple[Sink | Mapping[str, object], ...] | None, *, passive: bool = False) -> Selection | None:
+        selected = await self._records.consume_async(reader, message, sinks, passive=passive)
+        return selected if selected is not None and selected.recovery_owner == self._records.recovery_owner else None
+
+    async def add_async(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
+        await self._records.add_async(message_id, sink)
+
     def cursor(self, session_id: str) -> int:
         return self._records.cursor(session_id)
 

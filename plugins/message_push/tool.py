@@ -118,7 +118,7 @@ class MessagePush:
                 content={"text": text_check, "artifact_ref": artifact_check},
             )(f"{prepared.sink.name}:{prepared.sink.address}")
             try:
-                _, selected = delivery.publish(
+                _, selected = await delivery.publish_async(
                     writer,
                     identity,
                     body,

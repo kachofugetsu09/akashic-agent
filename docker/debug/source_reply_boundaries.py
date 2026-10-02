@@ -38,7 +38,7 @@ from agent.plugin_composition.models import (
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Output
 from agent.plugin_contracts.content import CONTENT
-from agent.plugin_contracts.delivery import DELIVERY, DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_V2 as DELIVERY, DELIVERY_SENDERS
 from agent.plugin_contracts.models import MODEL_SELECTION
 from agent.plugin_contracts.sources import CHECK_ORIGIN
 from plugins.content.plugin import _decode_text, check_text
@@ -141,6 +141,15 @@ class LocalDelivery:
 
     def prepare(self, _reader, message, _sinks):
         return self.selections[message.message_id]
+
+    async def publish_async(self, writer, identity, body, sinks):
+        message = await writer.append_async(identity, body)
+        selected = SimpleNamespace(sinks=sinks)
+        self.selections[identity] = selected
+        return message, selected
+
+    async def prepare_async(self, reader, message, sinks):
+        return self.prepare(reader, message, sinks)
 
     async def send(self, _identity, _sink):
         return SimpleNamespace(status="delivered")

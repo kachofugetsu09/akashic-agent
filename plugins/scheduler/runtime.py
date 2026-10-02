@@ -145,12 +145,12 @@ class SchedulerRuntime:
             )(target.session_id)
             task.on_close(writer.expire)
             binding = ctx.require(DELIVERY_SENDERS).bind(fire.job.channel, ctx.require(BINDINGS))
-            notification, selected = delivery.publish(writer, fire.notification_id, Output(parts, "complete"), ({"name": fire.job.channel, "binding_id": binding, "address": fire.job.chat_id},))
+            notification, selected = await delivery.publish_async(writer, fire.notification_id, Output(parts, "complete"), ({"name": fire.job.channel, "binding_id": binding, "address": fire.job.chat_id},))
 
         # 2. Scheduler 只恢复自己原定的非空选路；空集合不能冒称通知已送达。
         if selected is None:
             raise ValueError("调度通知缺少原发送选择")
-        selected = delivery.prepare(target, notification, ())
+        selected = await delivery.prepare_async(target, notification, ())
         if not selected.sinks:
             raise ValueError("调度通知缺少原发送目的地")
         try:

@@ -91,7 +91,7 @@ async def apply(ctx: Context) -> None:
             try:
                 delivery = ctx.require(DELIVERY).open(ctx)
                 sinks = () if request.sink is None else (request.sink,)
-                _, selected = delivery.publish(writer, message_id, body, sinks, passive=True)
+                _, selected = await delivery.publish_async(writer, message_id, body, sinks, passive=True)
             finally:
                 writer.expire()
             for sink in selected.sinks:

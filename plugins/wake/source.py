@@ -396,10 +396,10 @@ class Source:
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Output,),
                 content={"text": ctx.require(CONTENT).check_text})(target.session_id)
             try:
-                message, _ = delivery.publish(writer, request.notification_id, Output((ContentPart("text", text),), "complete"), (sink,))
+                message, _ = await delivery.publish_async(writer, request.notification_id, Output((ContentPart("text", text),), "complete"), (sink,))
             finally:
                 writer.expire()
-        selected = delivery.prepare(reader, message, (sink,))
+        selected = await delivery.prepare_async(reader, message, (sink,))
         if selected.sinks != (sink["name"],):
             raise ValueError("Wake 原通知目的地不一致")
         receipt = await delivery.send(message.message_id, sink["name"], before_start=before_start)

@@ -1,4 +1,6 @@
 from functools import partial
+from typing import Any
+from agent.plugin_composition import ServiceKey
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
@@ -6,6 +8,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, Owne
 from agent.plugin_composition.tasks import TASKS, TaskAdmission
 from agent.plugin_contracts.delivery import (
     DELIVERY as DELIVERY,
+    DELIVERY_V2,
 )
 
 from .api import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
@@ -25,13 +28,15 @@ class DeliveryAdmission:
 
     def __init__(
         self, ctx: Context, state: OwnerStore | None, tasks: TaskAdmission | None,
+        service: ServiceKey[Any] = DELIVERY,
     ):
         self._ctx = ctx
+        self._service = service
         self._state = state
         self._tasks = tasks
 
     def open(self, consumer: Context) -> Deliveries:
-        owner = consumer.require_runtime_owner(DELIVERY, self)
+        owner = consumer.require_runtime_owner(self._service, self)
         if self._state is None or self._tasks is None:
             raise RuntimeError("candidate 验证期禁止打开正式 Delivery")
         ctx = self._ctx
@@ -50,6 +55,7 @@ async def apply(ctx: Context) -> None:
     tasks = ctx.require(TASKS).open(ctx) if state is not None else None
     _ = await ctx.provide(DELIVERY_SENDERS, Senders(ctx))
     _ = await ctx.provide(DELIVERY, DeliveryAdmission(ctx, state, tasks))
+    _ = await ctx.provide(DELIVERY_V2, DeliveryAdmission(ctx, state, tasks, DELIVERY_V2))
     _ = await ctx.provide(FINAL_OUTPUT_DELIVERY, FinalOutputDelivery())
     # 状态能力在正式生命周期中才打开，候选加载期不触碰运行库。
     _ = await ctx.provide(DELIVERY_READ, DeliveryHistory(
