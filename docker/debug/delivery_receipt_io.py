@@ -68,7 +68,7 @@ async def check(directory: Path, phase: str, cancel: bool) -> dict:
     writer = log.writer("s", author="scenario", source="scenario", body_types=(Output,),
                         content={"text": lambda _: ContentReferences()})
     message = writer.append("message", Output((ContentPart("text", "original body"),), "complete"))
-    delivery.prepare(log.reader("s"), message, ({"name": "local", "binding_id": "local", "address": "one"},))
+    await delivery.prepare_async(log.reader("s"), message, ({"name": "local", "binding_id": "local", "address": "one"},))
     if phase == "retry":
         await delivery.cancel_prepared("message", "local", "fixture rejected")
     target_phase = {"cancel_prepared": "rejected", "retry": "prepared", "guard": "started", "guard_reject": "rejected"}.get(phase, phase)

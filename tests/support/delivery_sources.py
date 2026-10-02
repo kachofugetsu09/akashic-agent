@@ -15,7 +15,7 @@ from agent.plugin_composition import RUNTIME_STARTED, ServiceKey
 api_version = 3
 name = "test_sender"
 version = "1.0.0"
-inject = (ServiceKey("delivery.senders.v1"), ServiceKey("delivery.v1"))
+inject = (ServiceKey("delivery.senders.v1"), ServiceKey("delivery.guarded-start.v1"))
 
 @dataclass(frozen=True)
 class SendResult:
@@ -53,5 +53,5 @@ async def apply(ctx):
             raise PermissionError("original credential revoked")
         yield Sender()
     await ctx.require(inject[0]).register(ctx, name="test", idempotent=True, open=open)
-    await ctx.provide(ServiceKey("fixture.delivery"), lambda: ctx.require(ServiceKey("delivery.v1")).open(ctx))
+    await ctx.provide(ServiceKey("fixture.delivery"), lambda: ctx.require(ServiceKey("delivery.guarded-start.v1")).open(ctx))
 ''')

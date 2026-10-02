@@ -29,7 +29,7 @@ from .api import (
     settled_prefixes,
     summary_range,
 )
-from .materials import MATERIALS, ContextMaterials
+from .materials import ContextMaterials
 
 api_version = 3
 name = "context"
@@ -217,5 +217,4 @@ async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     _ = await ctx.provide(CONTEXT, ContextBuilder())
     materials = ContextMaterials(ctx, prompt_sources=config.prompt_sources, summary_source=config.summary_source or None)
-    _ = await ctx.provide(MATERIALS, materials, binding_contributors=materials.binding_contributors)
     _ = await ctx.provide(MATERIALS_V4, materials, binding_contributors=materials.binding_contributors)

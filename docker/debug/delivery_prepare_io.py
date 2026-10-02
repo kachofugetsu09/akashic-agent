@@ -1,9 +1,8 @@
-"""真实 Delivery v2 的消息、目的地和 cursor 提交隔离。"""
+"""真实 Delivery 当前接口的消息、目的地和 cursor 提交隔离。"""
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -16,11 +15,7 @@ from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, OwnerState
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-BASELINE = os.environ.get("BASELINE") == "1"
-if BASELINE:
-    from agent.plugin_contracts.delivery import DELIVERY as DELIVERY_V2
-else:
-    from agent.plugin_contracts.delivery import DELIVERY_V2
+from agent.plugin_contracts.delivery import DELIVERY_GUARDED_START as DELIVERY
 from plugins.delivery import plugin
 from session.log import MessageLog, OwnerTransaction
 from session.message import ContentPart, ContentReferences, Output
@@ -64,29 +59,18 @@ async def check(directory: Path, action: str, cancel: bool) -> dict:
     original = writer.append("original", Output((ContentPart("text", "original body"),), "complete"))
     try:
         for name, apply, inject in (("storage", storage, ()), ("delivery", plugin.apply, plugin.inject),
-                                    ("consumer", consumer, (DELIVERY_V2,))):
+                                    ("consumer", consumer, (DELIVERY,))):
             await root.mount(apply, name=name, inject=inject,
                 runtime=PluginRuntime(name, name, directory, directory, directory, {}))
         ctx = contexts[0]
         async with ctx.runtime_scope():
-            delivery = ctx.require(DELIVERY_V2).open(ctx)
+            delivery = ctx.require(DELIVERY).open(ctx)
             if action == "add":
-                if BASELINE:
-                    delivery.prepare(log.reader("s"), original, (sink,))
-                else:
-                    await delivery.prepare_async(log.reader("s"), original, (sink,))
+                await delivery.prepare_async(log.reader("s"), original, (sink,))
 
         async def operation():
             async with ctx.runtime_scope():
-                delivery = ctx.require(DELIVERY_V2).open(ctx)
-                if BASELINE:
-                    if action == "publish":
-                        return delivery.publish(writer, "new", Output((ContentPart("text", "new body"),), "complete"), (sink,))
-                    if action == "prepare":
-                        return delivery.prepare(log.reader("s"), original, (sink,))
-                    if action == "consume":
-                        return delivery.consume(log.reader("s"), original, (sink,))
-                    return delivery.add("original", extra)
+                delivery = ctx.require(DELIVERY).open(ctx)
                 if action == "publish":
                     return await delivery.publish_async(writer, "new", Output((ContentPart("text", "new body"),), "complete"), (sink,))
                 if action == "prepare":
@@ -99,11 +83,10 @@ async def check(directory: Path, action: str, cancel: bool) -> dict:
             job = asyncio.create_task(operation())
             await asyncio.wait_for(reached.wait(), 3)
             lag = time.perf_counter() - stamps[0]
-            if not BASELINE:
-                assert lag < 0.2, lag
-                assert not job.done()
+            assert lag < 0.2, lag
+            assert not job.done()
             assert await log.reader("peer").snapshot_async(through_seq=-1) == ()
-            if cancel and not BASELINE:
+            if cancel:
                 job.cancel()
                 job.cancel()
                 await loop.run_in_executor(None, lambda: None)
@@ -116,7 +99,7 @@ async def check(directory: Path, action: str, cancel: bool) -> dict:
         assert log.reader("s").get("original") == original
         identity = "new" if action == "publish" else "original"
         async with ctx.runtime_scope():
-            delivery = ctx.require(DELIVERY_V2).open(ctx)
+            delivery = ctx.require(DELIVERY).open(ctx)
             selected = delivery.selection(identity)
             assert selected is not None and selected.sinks == ("local",)
             assert delivery.destination(identity, "local").address == "one"

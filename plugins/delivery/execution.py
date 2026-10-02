@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Hashable, Mapping
 from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from typing import cast
 
@@ -29,30 +29,6 @@ class Deliveries:
         self._open_sender = open_sender
         self._task_key = task_key
 
-    def prepare(
-        self,
-        reader: MessageReader,
-        message: Message,
-        sinks: tuple[Sink | Mapping[str, object], ...],
-        *,
-        passive: bool = False,
-    ) -> Selection:
-        return self._records.prepare(reader, message, sinks, passive=passive)
-
-    def publish(self, writer: MessageWriter, message_id: str, body: Body,
-                sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]:
-        return self._records.publish(writer, message_id, body, sinks, passive=passive)
-
-    def consume(
-        self,
-        reader: MessageReader,
-        message: Message,
-        sinks: tuple[Sink | Mapping[str, object], ...] | None,
-        *,
-        passive: bool = False,
-    ) -> Selection | None:
-        selected = self._records.consume(reader, message, sinks, passive=passive)
-        return selected if selected is not None and selected.recovery_owner == self._records.recovery_owner else None
 
     async def prepare_async(self, reader: MessageReader, message: Message,
                             sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> Selection:
@@ -76,8 +52,6 @@ class Deliveries:
     def selection(self, message_id: str) -> Selection | None:
         return self._records.selection(message_id)
 
-    def add(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
-        self._records.add(message_id, sink)
 
     def destination(self, message_id: str, sink: str) -> Sink:
         return self._records.read(message_id, sink)[1].sink
@@ -96,10 +70,8 @@ class Deliveries:
         """推理前等待当前被动工作；发送仍在实际边界重新检查。"""
         await self._tasks.wait_idle((self._task_key, "target", channel, address))
 
-    async def _start(self, message_id: str, sink: str, before_start: Callable[[], str | None] | None = None, start_guard: StartGuard | None = None) -> tuple[Task, bool]:
+    async def _start(self, message_id: str, sink: str, start_guard: StartGuard | None = None) -> tuple[Task, bool]:
         """同步接纳时先占被动活动；实际 I/O 的活动范围继续覆盖取消后的清理。"""
-        if before_start is not None and start_guard is not None:
-            raise ValueError("发送不能同时使用同步检查与异步 guard")
         selected = self._records.check_owner(message_id)
         _, delivery = self._records.read(message_id, sink)
 
@@ -112,7 +84,7 @@ class Deliveries:
                 _ = hold.__enter__()
 
             async def run(task: Task) -> Receipt:
-                return await self._send(task, message_id, sink, before_start, start_guard)
+                return await self._send(task, message_id, sink, start_guard)
 
             try:
                 task = slot.start(run)
@@ -128,14 +100,14 @@ class Deliveries:
 
         return await self._tasks.admit((self._task_key, message_id, sink), admit)
 
-    async def start(self, message_id: str, sink: str, *, before_start: Callable[[], str | None] | None = None, start_guard: StartGuard | None = None) -> Task:
+    async def start(self, message_id: str, sink: str, *, start_guard: StartGuard | None = None) -> Task:
         """独立启动原效果并返回等待句柄；后来的回复取消不取得它的撤销权。"""
-        task, _ = await self._start(message_id, sink, before_start, start_guard)
+        task, _ = await self._start(message_id, sink, start_guard)
         return task
 
-    async def send(self, message_id: str, sink: str, *, before_start: Callable[[], str | None] | None = None, start_guard: StartGuard | None = None) -> Receipt:
+    async def send(self, message_id: str, sink: str, *, start_guard: StartGuard | None = None) -> Receipt:
         """发送并等待；重复等待者不取得实际发送任务的取消权。"""
-        task, owned = await self._start(message_id, sink, before_start, start_guard)
+        task, owned = await self._start(message_id, sink, start_guard)
         try:
             return cast(Receipt, await task.join())
         except asyncio.CancelledError:
@@ -187,7 +159,7 @@ class Deliveries:
                 raise asyncio.CancelledError
         return cancelled
 
-    async def _send(self, task: Task, message_id: str, sink: str, before_start: Callable[[], str | None] | None, start_guard: StartGuard | None) -> Receipt:
+    async def _send(self, task: Task, message_id: str, sink: str, start_guard: StartGuard | None) -> Receipt:
         """先读耐久事实，再恢复未知效果；确认即将发送后才提交 started。"""
         record, delivery = self._records.read(message_id, sink)
         if delivery.phase in {"delivered", "rejected", "failed"}:
@@ -243,14 +215,6 @@ class Deliveries:
                     return delivery.receipt
                 if not task.active:
                     raise asyncio.CancelledError
-                if before_start is not None:
-                    # 旧同步 guard 仍按原合同与 started 不跨 await；新消费者使用版本化 start_guard。
-                    reason = before_start() if delivery.phase == "prepared" else None
-                    rejected = _rejection(reason)
-                    value = Delivery(sink=delivery.sink, phase="started") if rejected is None else Delivery(
-                        sink=delivery.sink, phase="rejected", receipt=rejected)
-                    committed(self._records.save(message_id, record, value))
-                    return rejected
                 guard = start_guard() if start_guard is not None and delivery.phase == "prepared" else nullcontext(None)
                 async with guard as reason:
                     rejected = _rejection(reason)

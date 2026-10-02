@@ -73,68 +73,11 @@ class Senders(Protocol):
     ) -> AbstractAsyncContextManager[Sender]: ...
 
 
-class Deliveries(Protocol):
-    """已授权调用者的投递入口；恢复沿原选择与回执，不重选目标。"""
-
-    def prepare(
-        self,
-        reader: MessageReader,
-        message: Message,
-        sinks: tuple[Mapping[str, object], ...],
-        *,
-        passive: bool = False,
-    ) -> Selection: ...
-    def publish(
-        self,
-        writer: MessageWriter,
-        message_id: str,
-        body: Body,
-        sinks: tuple[Mapping[str, object], ...],
-        *,
-        passive: bool = False,
-    ) -> tuple[Message, Selection]: ...
-    def consume(
-        self,
-        reader: MessageReader,
-        message: Message,
-        sinks: tuple[Mapping[str, object], ...] | None,
-        *,
-        passive: bool = False,
-    ) -> Selection | None: ...
-    def cursor(self, session_id: str) -> int: ...
-    def selection(self, message_id: str) -> Selection | None: ...
-    def add(self, message_id: str, sink: Mapping[str, object]) -> None: ...
-    def destination(self, message_id: str, sink: str) -> Sink: ...
-    def receipt(self, message_id: str, sink: str) -> Receipt | None: ...
-    def pending(self) -> tuple[tuple[str, str], ...]: ...
-    def activity(self, channel: str, address: str) -> AbstractContextManager[None]: ...
-    async def wait_idle(self, channel: str, address: str) -> None: ...
-    async def start(
-        self,
-        message_id: str,
-        sink: str,
-        *,
-        before_start: Callable[[], str | None] | None = None,
-    ) -> Task: ...
-    async def send(
-        self,
-        message_id: str,
-        sink: str,
-        *,
-        before_start: Callable[[], str | None] | None = None,
-    ) -> Receipt: ...
-    async def retry(self, message_id: str, sink: str) -> Receipt: ...
-    async def cancel_prepared(
-        self, message_id: str, sink: str, reason: str
-    ) -> bool: ...
+StartGuard = Callable[[], AbstractAsyncContextManager[str | None]]
 
 
-class Delivery(Protocol):
-    def open(self, consumer: Context) -> Deliveries: ...
-
-
-class AsyncDeliveries(Deliveries, Protocol):
-    """持久准备可等待；只读查询和原发送身份不变。"""
+class GuardedDeliveries(Protocol):
+    """持久准备可等待；领域 guard 覆盖前提检查到首次 started 提交。"""
 
     async def prepare_async(self, reader: MessageReader, message: Message,
                             sinks: tuple[Mapping[str, object], ...], *, passive: bool = False) -> Selection: ...
@@ -143,24 +86,21 @@ class AsyncDeliveries(Deliveries, Protocol):
     async def consume_async(self, reader: MessageReader, message: Message,
                             sinks: tuple[Mapping[str, object], ...] | None, *, passive: bool = False) -> Selection | None: ...
     async def add_async(self, message_id: str, sink: Mapping[str, object]) -> None: ...
-
-
-class AsyncDelivery(Protocol):
-    def open(self, consumer: Context) -> AsyncDeliveries: ...
-
-
-StartGuard = Callable[[], AbstractAsyncContextManager[str | None]]
-
-
-class GuardedDeliveries(AsyncDeliveries, Protocol):
-    """guard 覆盖领域前提检查与首次 started 提交，随后释放再发送。"""
-
+    def cursor(self, session_id: str) -> int: ...
+    def selection(self, message_id: str) -> Selection | None: ...
+    def destination(self, message_id: str, sink: str) -> Sink: ...
+    def receipt(self, message_id: str, sink: str) -> Receipt | None: ...
+    def pending(self) -> tuple[tuple[str, str], ...]: ...
+    def activity(self, channel: str, address: str) -> AbstractContextManager[None]: ...
+    async def wait_idle(self, channel: str, address: str) -> None: ...
     async def start(self, message_id: str, sink: str, *,
-                    before_start: Callable[[], str | None] | None = None,
                     start_guard: StartGuard | None = None) -> Task: ...
     async def send(self, message_id: str, sink: str, *,
-                   before_start: Callable[[], str | None] | None = None,
                    start_guard: StartGuard | None = None) -> Receipt: ...
+    async def retry(self, message_id: str, sink: str) -> Receipt: ...
+    async def cancel_prepared(
+        self, message_id: str, sink: str, reason: str
+    ) -> bool: ...
 
 
 class GuardedDelivery(Protocol):
@@ -205,8 +145,6 @@ class FinalOutputDelivery(FinalOutputWaiter, Protocol):
     def unregister(self, source: str, provider: FinalOutputWaiter) -> None: ...
 
 
-DELIVERY = ServiceKey[Delivery]("delivery.v1")
-DELIVERY_V2 = ServiceKey[AsyncDelivery]("delivery.v2")
 DELIVERY_GUARDED_START = ServiceKey[GuardedDelivery]("delivery.guarded-start.v1")
 DELIVERY_SENDERS = ServiceKey[Senders]("delivery.senders.v1")
 DELIVERY_READ = ServiceKey[DeliveryHistory]("delivery.read.v1")

@@ -107,7 +107,7 @@ class DeliveryRecords:
             raise ValueError("发送目的地与记录身份不一致")
         return row, delivery
 
-    def prepare(
+    def _prepare_message(
         self,
         reader: MessageReader,
         message: Message,
@@ -125,23 +125,11 @@ class DeliveryRecords:
             return self._prepare(tx, message, sinks, passive=passive)
         return self._state.transact(commit)
 
-    def publish(self, writer: MessageWriter, message_id: str, body: Body,
-                sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]:
-        """已授权 writer 的新消息与首次选路同事务，崩溃不会留下可被抢选的通知。"""
-        sinks = _normalize_sinks(sinks)
-        if len({sink.name for sink in sinks}) != len(sinks):
-            raise ValueError("一次选路不能重复同一目的地")
-        def commit(tx: OwnerTransaction) -> tuple[Message, Selection]:
-            message = tx.append(writer, message_id, body)
-            existing = self.selection(message_id)
-            selected = self.check_owner(message_id) if existing is not None else self._prepare(tx, message, sinks, passive=passive)
-            return message, selected
-        return self._state.transact(commit)
 
     async def prepare_async(self, reader: MessageReader, message: Message,
                             sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> Selection:
         fixed = _normalize_sinks(sinks)
-        return await run_file_io(lambda: self.prepare(reader, message, fixed, passive=passive))
+        return await run_file_io(lambda: self._prepare_message(reader, message, fixed, passive=passive))
 
     async def publish_async(self, writer: MessageWriter, message_id: str, body: Body,
                             sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]:
@@ -161,11 +149,11 @@ class DeliveryRecords:
     async def consume_async(self, reader: MessageReader, message: Message,
                             sinks: tuple[Sink | Mapping[str, object], ...] | None, *, passive: bool = False) -> Selection | None:
         fixed = None if sinks is None else _normalize_sinks(sinks)
-        return await run_file_io(lambda: self.consume(reader, message, fixed, passive=passive))
+        return await run_file_io(lambda: self._consume_message(reader, message, fixed, passive=passive))
 
     async def add_async(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
         fixed = _normalize_sink(sink)
-        await run_file_io(lambda: self.add(message_id, fixed))
+        await run_file_io(lambda: self._add_destination(message_id, fixed))
 
     def _check_message(self, reader: MessageReader, message: Message, sinks: tuple[Sink, ...]) -> None:
         self._state.check_access(reader)
@@ -174,7 +162,7 @@ class DeliveryRecords:
         if len({sink.name for sink in sinks}) != len(sinks):
             raise ValueError("一次选路不能重复同一目的地")
 
-    def consume(self, reader: MessageReader, message: Message, sinks: tuple[Sink | Mapping[str, object], ...] | None,
+    def _consume_message(self, reader: MessageReader, message: Message, sinks: tuple[Sink | Mapping[str, object], ...] | None,
                 *, passive: bool = False) -> Selection | None:
         """按序消费；None 表示不拥有选路权，空集合是明确的零目标选择。"""
         if sinks is not None:
@@ -214,7 +202,7 @@ class DeliveryRecords:
             self._add(tx, message.message_id, sink)
         return selection
 
-    def add(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
+    def _add_destination(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
         """显式新增一个目的地；相同发送键不能改绑地址或旧 generation。"""
         sink = _normalize_sink(sink)
         def commit(tx: OwnerTransaction) -> None:
@@ -233,8 +221,6 @@ class DeliveryRecords:
         value = Delivery(sink=sink, phase="prepared")
         _ = tx.save(key, value.model_dump(mode="json"), expected_version=None)
 
-    def save(self, message_id: str, previous: OwnerRecord, delivery: Delivery) -> OwnerRecord:
-        return self._state.transact(lambda tx: self._save(tx, message_id, previous, delivery))
 
     async def save_async(self, message_id: str, previous: OwnerRecord, delivery: Delivery, *,
                          on_commit: Callable[[OwnerRecord], None] | None = None) -> OwnerRecord:
