@@ -12,7 +12,6 @@ from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_composition.tasks import child_task_context
 from agent.plugin_contracts import Message
 from agent.plugin_contracts.context import (
-    MATERIALS as MATERIALS,
     MaterialKind,
 )
 
@@ -36,7 +35,7 @@ Prepare = Callable[[tuple[Message, ...], str], Awaitable[MaterialData]]
 class _Source:
     prepare: Prepare
     priority: int
-    kind: MaterialKind | None
+    kind: MaterialKind
     prompt: bool
     summary: bool
     context: Context
@@ -175,7 +174,7 @@ class ContextMaterials:
 
     async def register(
         self, ctx: Context, *, name: str, prepare: Prepare,
-        priority: int = 0, prompt: bool = False, kind: MaterialKind | None = None,
+        kind: MaterialKind, priority: int = 0, prompt: bool = False,
         reduce: SummaryReducer | None = None,
     ) -> Effect:
         """Register an independent owner; priority orders output, not execution.
@@ -192,7 +191,7 @@ class ContextMaterials:
             raise TypeError("材料 priority 必须是整数")
         if type(prompt) is not bool:
             raise TypeError("Prompt 声明必须是 bool")
-        if kind not in {None, "context", "recall", "profile"}:
+        if kind not in {"context", "recall", "profile"}:
             raise ValueError("材料 kind 无效")
         plugin_id = ctx.runtime.plugin_id
         expected = self._prompt_sources.get(name)
@@ -222,30 +221,19 @@ class ContextMaterials:
         return tuple(source.context for source in self._sources.values())
 
     @asynccontextmanager
-    async def bind(self, *, exclude: frozenset[str] = frozenset(),
-                   exclude_kinds: frozenset[MaterialKind] | None = None) -> AsyncIterator[MaterialView]:
+    async def bind(self, *, exclude_kinds: frozenset[MaterialKind] = frozenset()) -> AsyncIterator[MaterialView]:
         """固定 ACTIVE 材料并持有 provider 与贡献者的局部 scope。"""
-        if exclude_kinds is not None:
-            if exclude or not exclude_kinds <= {"context", "recall", "profile"}:
-                raise ValueError("材料用途选择不能混用旧名称排除，也不能包含未知用途")
+        if not exclude_kinds <= {"context", "recall", "profile"}:
+            raise ValueError("材料用途选择不能包含未知用途")
         async with self._ctx.runtime_scope():
             active = {name: source for name, source in self._sources.items()
                       if source.context.fiber.state is FiberState.ACTIVE}
-            if exclude_kinds and any(source.kind is None for source in active.values()):
-                raise ValueError("材料 owner 尚未声明 kind，不能按用途选择")
             sources = {
                 name: source
                 for name, source in active.items()
-                if name not in exclude and (exclude_kinds is None or source.kind not in exclude_kinds)
+                if source.kind not in exclude_kinds
             }
-            for name, plugin_id in self._prompt_sources.items():
-                # 新选择中 grant 只授予 Prompt 权，不强迫未安装的材料出现。
-                if exclude_kinds is not None or name in exclude:
-                    continue
-                source = sources.get(name)
-                if source is None or not source.prompt or source.plugin_id != plugin_id:
-                    raise ValueError(f"获授的 Prompt 材料未就绪: {name}")
-            if self._summary_source is not None and self._summary_source[0] not in exclude:
+            if self._summary_source is not None:
                 name, plugin_id = self._summary_source
                 source = sources.get(name)
                 if source is None or not source.summary or source.plugin_id != plugin_id:

@@ -17,7 +17,7 @@ from agent.plugin_contracts.context import (
     CONTEXT as CONTEXT,
     MATERIALS_V4 as MATERIALS,
     ContextBuilder as ContextBuilder,
-    ContextMaterials as ContextMaterials,
+    ContextMaterialsV4 as ContextMaterials,
     MaterialView as MaterialView,
 )
 from agent.plugin_contracts.models import (

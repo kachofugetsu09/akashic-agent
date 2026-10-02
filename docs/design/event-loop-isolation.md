@@ -454,7 +454,8 @@ requested/prepared 的等待期间发生放弃，不得用旧版本覆盖终态�
 异步入口。消息内容仍在原 scope 校验；固定正文、selection、prepared 和 cursor
 由原 owner 在同一 SQL 事务提交，取消后排空，不拆成可能留下半笔状态的多个提交。
 消息推送、调度、更新通知、子任务、Wake 和自动投递消费 v2；缺少 v2 不能回退到
-同步写入。v1 接口继续供已有归档使用，不改变其同步签名或原 recovery owner。
+同步写入。当前只发布 `delivery.guarded-start.v1`，保留原 recovery owner；
+旧 v1/v2 入口及同步方法退役，所有消费者使用同一异步合同。
 
 `docker/debug/delivery_prepare_io.py` 挂载真实 Delivery provider，覆盖四类准备的正常与
 重复取消八场景，核对原消息、目的地、cursor、数据库完整性及原 loop 上的内容校验。

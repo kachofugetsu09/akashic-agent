@@ -43,7 +43,7 @@ from agent.plugin_composition.models import (
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Output
 from agent.plugin_contracts.content import CONTENT
-from agent.plugin_contracts.delivery import DELIVERY_V2 as DELIVERY, DELIVERY_GUARDED_START, DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_GUARDED_START as DELIVERY, DELIVERY_SENDERS
 from agent.plugin_contracts.models import MODEL_SELECTION
 from agent.plugin_contracts.sources import CHECK_ORIGIN
 from plugins.content.plugin import _decode_text, check_text
@@ -237,7 +237,7 @@ async def check(directory: Path, kind: str, mode: str):
             (OWNER_STATE, state), (SESSION_ADMISSION, SessionAdmission(log)),
             (TASKS, tasks), (BINDINGS, bindings), (CONTENT, TextContent()),
             (MODEL_SELECTION, SelectionOwner()), (CHECK_ORIGIN, lambda _part: ContentReferences()),
-            (DELIVERY, LocalDelivery()), (DELIVERY_GUARDED_START, LocalDelivery()), (DELIVERY_SENDERS, LocalDelivery()),
+            (DELIVERY, LocalDelivery()), (DELIVERY_SENDERS, LocalDelivery()),
             (SUBAGENT_PROGRAM, subagent_program), (WAKE_PROGRAM, wake_program),
         ):
             await ctx.provide(key, value)
@@ -246,7 +246,7 @@ async def check(directory: Path, kind: str, mode: str):
         contexts[kind] = ctx
 
     dependencies = (MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
-                    TASKS, BINDINGS, CONTENT, MODEL_SELECTION, CHECK_ORIGIN, DELIVERY, DELIVERY_GUARDED_START, DELIVERY_SENDERS)
+                    TASKS, BINDINGS, CONTENT, MODEL_SELECTION, CHECK_ORIGIN, DELIVERY, DELIVERY_SENDERS)
     await root.mount(storage, name="storage")
     await root.mount(owner, name=kind, inject=dependencies,
                      runtime=PluginRuntime(kind, kind, directory, directory, directory, {},

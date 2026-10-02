@@ -10,10 +10,10 @@ from collections.abc import Callable, Mapping
 from typing import Protocol
 
 from agent.plugin_contracts.delivery import (
-    DELIVERY_V2 as DELIVERY,
+    DELIVERY_GUARDED_START as DELIVERY,
     DELIVERY_SENDERS as DELIVERY_SENDERS,
     FINAL_OUTPUT_DELIVERY as FINAL_OUTPUT_DELIVERY,
-    AsyncDeliveries as DeliveryExecution,  # noqa: F401 - 显式再导出给本插件消费者。
+    GuardedDeliveries as DeliveryExecution,  # noqa: F401 - 显式再导出给本插件消费者。
     FinalOutputTurn as FinalOutputTurn,
     FinalOutputWaiter as FinalOutputWaiter,
 )

@@ -55,6 +55,34 @@ Core 不读取它。无配置时输入为空对象。固定输入中的凭据仍
 
 首次业务配置使用插件自己的 Web 页面/API，并可向普通 onboarding provider 注册步骤。`main.py setup` 仅初始化 Core，不再发现或执行 `configure.py`。自身配置应用端口、首次 `initial_config.json` 与回执合同见[引导设计](plugin-onboarding-projection.md#11-实现决断与交付边界)。已有固定输入优先，新安装缺省与旧安装语义不能混用。
 
+### 当前服务合同
+
+同一能力只发布当前设计，不为旧插件保留导出、别名或同步适配器。插件必须与目标 Core
+一起准备并验证；缺少依赖时拒绝激活，旧归档不会把新服务降级。ABI 的 `api_version = 3`
+与各服务名称中的版本分别描述入口形状和业务合同，不能按数字统一改名。
+
+| 能力 | 当前入口 |
+|---|---|
+| Channel / Source | `channel.input.v2`、`sources.v5`、`source.session.v4`、`source.changed.v3` |
+| 来源控制 / 完成 | `source.check.v2`、`source.interrupt.v2`、`conversation.complete.v2` |
+| 回复 / 执行 | `reply.execute.v4`、`reply.program.v3`、`react.ordered-start.v2`、`tools.program.v2` |
+| 上下文材料 | `context.materials.v4`；注册必填 `kind`，仅按 `exclude_kinds` 选择 |
+| Delivery | `delivery.guarded-start.v1`；持久准备可等待，`start_guard` 保护首次持久开始 |
+| Drift | `drift.proposals.v2`、`drift.wake.v2`、`drift.delivery.v2`，全部可等待 |
+
+```text
+┌────────────────────┐    ┌────────────────────┐    ┌──────────────────┐
+│ 当前插件 apply(ctx)│ ─▶ │ 当前服务契约       │ ─▶ │ 原状态 owner     │
+└────────────────────┘    └────────────────────┘    └──────────────────┘
+                          缺失即拒绝激活              消息与回执保留
+```
+
+退役运行接口不授权改写历史事实。消息、业务回执、选择记录和归档不因 API 清理而减少；
+读取边界保留已存在事实的格式解释，显式数据迁移仍由对应 owner 负责。新消息照常追加，
+领取、配置和回执仅沿已有 owner 协议更新；本次没有新增逻辑失效或物理删除路径。
+代码可由 Git 恢复，正式状态恢复仍需对应 workspace 的一致备份。旧 Core 与当前插件
+不能任意混装，源码检查通过也不代表正式 Root 已切换。
+
 ### Python 安装输入
 
 制品根目录和嵌套目录中的 `requirements.txt` 是 Python runtime 的唯一文件约定，

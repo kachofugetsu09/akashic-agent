@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from agent.plugin_composition import CompositionRoot, ServiceKey
 from agent.plugin_composition.channel_io import unavailable
 from agent.plugin_composition.model import PluginRuntime
-from agent.plugin_contracts.context import MATERIALS, MATERIALS_V4
+from agent.plugin_contracts.context import MATERIALS_V4
 from plugins.context import plugin as context
 from plugins.context.materials import ContextMaterials
 from plugins.reply_program import plugin as reply
@@ -57,18 +57,12 @@ async def check(workspace: Path) -> None:
         await disposing
         async with materials.bind(exclude_kinds=frozenset({"profile", "recall"})) as view:
             assert (await view.prepare((), "scheduler"))["system_prompt"] == "instructions"
-        # 旧接口保留原显式名称选择及 grant readiness，供已保存调用恢复。
-        legacy = root.context.require(MATERIALS)
-        async with legacy.bind(exclude=frozenset({"biography", "retrieved-events"})) as view:
-            assert (await view.prepare((), "legacy"))["system_prompt"] == "instructions"
-
-        undeclared = await root.mount(provider("old-provider", None), name="unclassified", inject=(MATERIALS_V4,), runtime=runtime("old-owner"))
-        try:
-            async with materials.bind(exclude_kinds=frozenset({"recall"})):
-                raise AssertionError("未知用途被猜测")
-        except ValueError as error:
-            assert "kind" in str(error)
-        await undeclared.dispose()
+        assert root.context.get(ServiceKey[object]("context.materials.v3")) is None
+        invalid = await root.mount(provider("old-provider", None), name="unclassified",
+                                   inject=(MATERIALS_V4,), runtime=runtime("old-owner"))
+        assert isinstance(invalid.error, ValueError) and "kind" in str(invalid.error)
+        assert "old-provider" not in materials._sources
+        await invalid.dispose()
         assert "akasha" not in materials._sources and "markdown_memory" not in materials._sources
         # 只有新材料接口时，真实 Reply 的新入口已就绪，旧入口局部缺席。
         isolated = CompositionRoot("new-material-api-only")
@@ -91,4 +85,4 @@ async def check(workspace: Path) -> None:
 if __name__ == "__main__":
     with TemporaryDirectory(prefix="akashic-materials-") as directory:
         asyncio.run(check(Path(directory)))
-    print("PASS: renamed providers, kind selection, grant independence, drain, legacy selection, unknown kind rejected")
+    print("PASS: renamed providers, kind selection, grant independence, drain, retired API absent, unknown kind rejected")

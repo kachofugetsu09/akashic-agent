@@ -86,24 +86,6 @@ class MaterialView(Protocol):
     ) -> SummaryData | None: ...
 
 
-class ContextMaterials(Protocol):
-    """注册 Effect 归贡献者；bind 固定并保护本次实际使用的材料。"""
-
-    async def register(
-        self,
-        ctx: Context,
-        *,
-        name: str,
-        prepare: Prepare,
-        priority: int = 0,
-        prompt: bool = False,
-        reduce: SummaryReducer | None = None,
-    ) -> Effect: ...
-    def bind(
-        self, *, exclude: frozenset[str] = frozenset()
-    ) -> AbstractAsyncContextManager[MaterialView]: ...
-
-
 class ContextMaterialsV4(Protocol):
     """注册 Effect 归贡献者；bind 固定并保护本次实际使用的材料。"""
 
@@ -124,6 +106,4 @@ class ContextMaterialsV4(Protocol):
 
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")
-MATERIALS = ServiceKey[ContextMaterials]("context.materials.v3")
-
 MATERIALS_V4 = ServiceKey[ContextMaterialsV4]("context.materials.v4")
