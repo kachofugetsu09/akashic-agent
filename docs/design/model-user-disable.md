@@ -50,6 +50,22 @@ Models 宿主持有每行的临时草稿，保存一行保留其他行的输入�
 - 已开始的 `ModelExecution` 保持原绑定与 credential handle，删除只影响后续执行；调用账通过自己的 binding 快照继续读写。
 - 移除向量模型：清除相应默认向量指针，不替换已有向量空间；保存的旧 binding 明确失败，等待用户重新配置对应任务。
 
+## 程序化输入的模型选择
+
+调用方从 Models 插件的 `models/catalog` 读取模型 ID、可用性和推理能力，再向
+`programmatic/message/send` 传入可选 `model_id` 与 `reasoning_effort`。程序来源借用
+Models 已发布的目录和选择规则；没有这些能力时，显式选择失败，普通文本输入不增加依赖。
+新输入的未知 ID、禁用模型、不可用连接或不支持的推理强度在接纳前拒绝。
+
+选择作为 `model.selection` 与 Input 一起追加，只影响该输入的执行，不更新 Session
+默认偏好。省略两个字段沿用既有默认规则；显式 `model_id: null` 选择默认模型，不能单独
+指定推理强度。同一 `message_id` 的重试必须保留原选择；已接纳的原样重试不重新检查
+当前目录。后续输入继续使用相同 `session_id`，不会因为改变模型而新建会话。
+
+```json
+{"session_id":"programmatic:review","message_id":"review-2","text":"继续评审","model_id":"configured-chat-id","reasoning_effort":"low"}
+```
+
 ## Schema、恢复和验证
 
 本 PR 尚未发布的 opt-out 扩列与迁移已撤去，当前方案没有 schema delta，也不修改正式 workspace。已运行过旧草稿迁移的测试库不属于正式迁移输入，应恢复当时的隔离备份或重建测试库，不能猜测用户意图自动删列。

@@ -16,14 +16,18 @@ from agent.plugin_composition.messages import (
     MessageReader,
 )
 from agent.plugin_composition.rpc import rpc_method_key
+from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
 from agent.plugin_composition.tasks import (
     RESTART_GATE,
     TASKS,
 )
 from agent.plugin_contracts import (
+    ContentPart,
+    ContentReferences,
     Control,
     Input,
 )
+from agent.plugin_contracts.models import MODEL_SELECTION
 from agent.plugin_contracts.content import (
     CONTENT as CONTENT,
 )
@@ -67,10 +71,27 @@ def open_source(ctx: Context, session_id: str) -> SourceSession:
     def changed(reader: MessageReader, source: str, pending: bool) -> None:
         ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source, pending))
 
+    def check_model(part: ContentPart) -> ContentReferences:
+        """显式输入借 Models 的目录和选择规则，不给来源模型执行权。"""
+        with ctx.borrow(MODEL_SELECTION) as selection, ctx.borrow(MODEL_CATALOG) as catalog:
+            if selection is None or catalog is None:
+                raise ValueError("当前组合不提供模型选择能力")
+            references = selection.check(part)
+            value = cast(Mapping[str, str | None], part.value)
+            # 新输入不能把拼错的 ID 当作已删除的历史偏好而回退。
+            if value["model_id"] is not None:
+                try:
+                    catalog.snapshot().model(value["model_id"])
+                except KeyError as error:
+                    raise ValueError(f"未知模型: {value["model_id"]}") from error
+            catalog.validate_chat_selection(ChatModelSelection(value["model_id"], value["reasoning_effort"]))
+            return references
+
     writers = ctx.require(MESSAGE_WRITERS)
     return ctx.require(SOURCE_SESSION)(reader=reader,
         inputs=writers.bind(ctx, author="user", source="programmatic", body_types=(Input,),
-            content={"text": ctx.require(CONTENT).check_text, "channel.origin": ctx.require(CHECK_ORIGIN)})(session_id),
+            content={"text": ctx.require(CONTENT).check_text, "channel.origin": ctx.require(CHECK_ORIGIN),
+                     "model.selection": check_model})(session_id),
         controls=writers.bind(ctx, author="app", source="programmatic", body_types=(Control,),
             content={})(session_id),
         tasks=ctx.require(TASKS).open(ctx), changed=changed,

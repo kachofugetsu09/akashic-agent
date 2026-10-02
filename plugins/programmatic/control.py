@@ -38,6 +38,8 @@ class AdmitParams(SessionIdParams):
 class SendParams(SessionIdParams):
     message_id: str = Field(min_length=1, max_length=256)
     text: str = Field(min_length=1, max_length=1_048_576)
+    model_id: str | None = Field(default=None, min_length=1, max_length=512)
+    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class PauseParams(SessionIdParams):
@@ -206,13 +208,18 @@ class Programmatic:
             send = cast(SendParams, params)
             if not send.text.strip():
                 raise ValueError("程序输入不能为空白")
+            parts = (
+                ContentPart("text", send.text),
+                ContentPart("channel.origin", {"channel": "programmatic", "chat_id": session_id[13:],
+                                                "sender": "control"}),
+            )
+            if send.model_fields_set & {"model_id", "reasoning_effort"}:
+                parts += (ContentPart("model.selection", {
+                    "model_id": send.model_id, "reasoning_effort": send.reasoning_effort,
+                }),)
             created = self._reserve_before_accept(session_id, send.message_id, transport)
             try:
-                message = await source.accept(send.message_id, Input((
-                    ContentPart("text", send.text),
-                    ContentPart("channel.origin", {"channel": "programmatic", "chat_id": session_id[13:],
-                                                    "sender": "control"}),
-                )))
+                message = await source.accept(send.message_id, Input(parts))
             except BaseException:
                 if created:
                     self._frames.release_input(session_id, send.message_id)
