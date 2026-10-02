@@ -300,7 +300,7 @@ async def check(directory: Path, kind: str, mode: str):
                     retry_count=0, parent_session_id="parent", parent_message_id="parent-input", parent_part_index=0,
                     origin=None, sink=None, program_binding="program", tools={key: key for key in PROFILE_TOOLS["research"]})
                 jobs = Subagents(ctx)
-                jobs.accept("job", request, "child input")
+                await jobs.accept("job", request, "child input")
                 if mode == "recovered":
                     jobs = Subagents(ctx)
                 task = await jobs.start("job")

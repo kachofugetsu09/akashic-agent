@@ -493,3 +493,7 @@ SessionAdmission 的异步准入在原 scope 校验维度，然后排空完整 c
 Conversation、Programmatic、Scheduler 与 Wake 使用它；固定 Session 属性仍不可改写。
 Wake 的请求与 flow 指针继续同事务追加，阶段 Input、quiet Output、失败 Control 和结算指针均等待实际提交。
 取消若发生在 quiet 已提交但指针未推进时，重读原消息即可补齐结算；不重写旧正文。
+
+Subagent 的容量检查、Session 准入与 Input/恢复指针提交共用同一 Tasks 准入段；
+并发第四个请求明确拒绝，不留下空 Session。pause 提交后的回调先撤销原 Task，
+再排空其效果；取消等待者也不跳过这一步。结算与诊断文件写入使用有界 worker。

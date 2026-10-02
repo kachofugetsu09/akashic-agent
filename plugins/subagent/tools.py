@@ -99,7 +99,7 @@ class Spawn:
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         prepared = Prepared.model_validate(json_value(arguments))
         try:
-            self.jobs.accept(key, prepared.request, prepared.task)
+            await self.jobs.accept(key, prepared.request, prepared.task)
         except SubagentBusy as error:
             return Result("error", (ContentPart("text", str(error)),))
         if not prepared.request.background:

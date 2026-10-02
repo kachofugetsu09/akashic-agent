@@ -8,6 +8,8 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Literal, cast
 
+from core.common.file_io import run_file_io
+
 from agent.plugin_composition import CompositionError, Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
@@ -42,13 +44,9 @@ class Subagents:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
         if record is None:
             return None
-        value = record.value
-        if (set(value) != {"session_id", "input_id", "settled"}
-                or not isinstance(value["session_id"], str) or not isinstance(value["input_id"], str)
-                or type(value["settled"]) is not bool):
-            raise ValueError("子任务恢复指针损坏")
-        reader = self.ctx.require(MESSAGE_CATALOG).reader(value["session_id"])
-        message = reader.get(value["input_id"])
+        session_id, input_id, _ = _pointer(record)
+        reader = self.ctx.require(MESSAGE_CATALOG).reader(session_id)
+        message = reader.get(input_id)
         if message is None or not isinstance(message.body, Input):
             raise ValueError("子任务原输入缺失")
         requests = [part for part in message.body.parts if part.kind == "subagent.request"]
@@ -59,47 +57,67 @@ class Subagents:
             raise ValueError("子任务请求与恢复指针不一致")
         return record, request, reader
 
-    def accept(self, key: str, request: Request, text: str) -> None:
-        """同一输入与来源回执原子提交；重放不重新占额或创建任务目录。"""
+    async def accept(self, key: str, request: Request, text: str) -> None:
+        """同一来源准入锁覆盖容量检查与持久提交，重放不再占额。"""
         ctx = self.ctx
         state = ctx.require(OWNER_STATE).open(ctx)
-        existing = self.read(key)
-        if existing is None and len(self.jobs()) >= _MAX_ACTIVE:
-            raise SubagentBusy("subagent capacity reached: max=3; current spawn rejected")
-        _ = ctx.require(SESSION_ADMISSION).ensure(ctx, request.session_id,
-            SessionAttributes(visibility="internal", learning="excluded"))
-        writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="subagent", source="subagent",
-            body_types=(Input,), content={"text": ctx.require(CONTENT).check_text, "subagent.request": partial(check_request, check_origin=ctx.require(CHECK_ORIGIN))})(request.session_id)
-        body = Input((ContentPart("text", text), ContentPart("subagent.request", request.model_dump())))
-        def commit(tx: OwnerTransaction) -> None:
-            previous = tx.read(key)
-            if previous is None:
-                _ = tx.save(key, {"session_id": request.session_id, "input_id": request.input_id,
-                                  "settled": False}, expected_version=None)
-            elif (previous.value["session_id"], previous.value["input_id"]) != (request.session_id, request.input_id):
-                raise ValueError("同一子任务效果 key 已用于另一请求")
-            _ = tx.append(writer, request.input_id, body)
-        try:
-            state.transact(commit)
-        finally:
-            writer.expire()
-        if existing is None:
-            self._trace(request, "started")
 
-    def _trace(self, request: Request, phase: str) -> None:
+        def check_capacity() -> None:
+            if state.read(key) is None and sum(not _pointer(row)[2] for _, row in state.list()) >= _MAX_ACTIVE:
+                raise SubagentBusy("subagent capacity reached: max=3; current spawn rejected")
+
+        async def admit(_slot: TaskSlot) -> None:
+            # 1. 所有实例通过同一 owner 的准入 key；拒绝不会留下空 Session。
+            await run_file_io(check_capacity)
+            _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, request.session_id,
+                SessionAttributes(visibility="internal", learning="excluded"))
+            writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="subagent", source="subagent",
+                body_types=(Input,), content={"text": ctx.require(CONTENT).check_text,
+                    "subagent.request": partial(check_request, check_origin=ctx.require(CHECK_ORIGIN))})(request.session_id)
+            body = Input((ContentPart("text", text), ContentPart("subagent.request", request.model_dump())))
+            created = False
+
+            def committed(value: bool) -> None:
+                nonlocal created
+                created = value
+
+            def commit(tx: OwnerTransaction) -> bool:
+                previous = tx.read(key)
+                if previous is None:
+                    _ = tx.save(key, {"session_id": request.session_id, "input_id": request.input_id,
+                                      "settled": False}, expected_version=None)
+                elif _pointer(previous)[:2] != (request.session_id, request.input_id):
+                    raise ValueError("同一子任务效果 key 已用于另一请求")
+                _ = tx.append_prepared(prepared)
+                return previous is None
+
+            try:
+                # 2. 内容检查保留原 Context，Input 与恢复指针仍在同一 SQL 事务。
+                prepared = await writer.prepare_async(request.input_id, body)
+                await state.transact_async(commit, on_commit=committed)
+            finally:
+                writer.expire()
+                if created:
+                    await self._trace(request, "started")
+
+        await ctx.require(TASKS).open(ctx).admit_async(("admission",), admit)
+
+    async def _trace(self, request: Request, phase: str) -> None:
         path = self.ctx.workspace_file("memory/spawn_trace.jsonl")
         value: dict[str, object] = {"version": 2, "job_id": request.job_id, "phase": phase,
                  "parent_session_id": request.parent_session_id, "parent_message_id": request.parent_message_id,
                  "parent_part_index": request.parent_part_index, "profile": request.profile,
                  "task_dir": str(self.ctx.workspace_root("subagent-runs") / request.job_id),
                  "timestamp": datetime.now(UTC).isoformat()}
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as stream:
-                _ = stream.write(json.dumps(value, ensure_ascii=False) + "\n")
-        except OSError:
-            # 诊断文件不是接纳或结算 owner；磁盘错误不能推翻已提交事实。
-            logger.exception("子任务诊断写入失败 job=%s phase=%s", request.job_id, phase)
+        def append() -> None:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as stream:
+                    _ = stream.write(json.dumps(value, ensure_ascii=False) + "\n")
+            except OSError:
+                # 诊断文件不是接纳或结算 owner；磁盘错误不能推翻已提交事实。
+                logger.exception("子任务诊断写入失败 job=%s phase=%s", request.job_id, phase)
+        await run_file_io(append)
 
     async def start(self, key: str) -> Task | None:
         """同步工具与正式订阅者共用准入 key；程序归档覆盖整个工作生命期。"""
@@ -133,10 +151,10 @@ class Subagents:
                 if not task.active:
                     raise
                 # 程序自行取消没有撤销 Task，不能伪造用户 pause 或取消父等待者。
-                self._control(request, "failure", "子任务程序意外取消：" + (str(error) or type(error).__name__))
+                await self._control(request, "failure", "子任务程序意外取消：" + (str(error) or type(error).__name__), task=task)
         except Exception as error:
             if task.active:
-                self._control(request, "failure", str(error) or type(error).__name__)
+                await self._control(request, "failure", str(error) or type(error).__name__, task=task)
             else:
                 raise
         # 2. 已开始的工具与原程序资源此时已经排空，回传不复制内部推理。
@@ -144,16 +162,16 @@ class Subagents:
         if outcome is None:
             raise RuntimeError("子任务程序没有保存终态")
         if not request.background:
-            self._settle(key)
-        self._trace(request, outcome[0])
+            await self._settle(key)
+        await self._trace(request, outcome[0])
 
-    def _settle(self, key: str) -> None:
+    async def _settle(self, key: str) -> None:
         state = self.ctx.require(OWNER_STATE).open(self.ctx)
         def commit(tx: OwnerTransaction) -> None:
             record = tx.read(key)
             assert record is not None
             _ = tx.save(key, {**record.value, "settled": True}, expected_version=record.version)
-        state.transact(commit)
+        await state.transact_async(commit)
 
     @staticmethod
     async def outcome(reader: MessageReader, *, through_seq: int | None = None) -> tuple[str, str] | None:
@@ -171,17 +189,21 @@ class Subagents:
                     "failed", message.body.reason or "子任务执行失败")
         return None
 
-    def _control(
+    async def _control(
         self, request: Request, action: Literal["pause", "failure"], reason: str,
-        *, expected_source_head: int | None = None,
+        *, expected_source_head: int | None = None, on_commit: Callable[[], None] | None = None,
+        task: Task | None = None,
     ) -> None:
         reader = self.ctx.require(MESSAGE_CATALOG).reader(request.session_id)
         writer = self.ctx.require(MESSAGE_WRITERS).bind(self.ctx, author="subagent", source="subagent",
             body_types=(Control,), content={})(request.session_id)
+        if task is not None:
+            task.on_close(writer.expire)
         try:
             head = reader.head(source="subagent") if expected_source_head is None else expected_source_head
-            _ = writer.append(request.input_id + ":" + action, Control(action, head, reason),
-                              expected_source_head=expected_source_head)
+            _ = await writer.append_async(request.input_id + ":" + action, Control(action, head, reason),
+                              expected_source_head=expected_source_head,
+                              on_commit=None if on_commit is None else lambda _message, _inserted: on_commit())
         finally:
             writer.expire()
 
@@ -193,29 +215,40 @@ class Subagents:
             record, request, reader = found
             if request.job_id != job_id:
                 continue
-            # 读期间可能完成；只对检查过的来源前缀提交 pause。
-            while True:
-                head = reader.head(source="subagent")
-                outcome = await self.outcome(reader, through_seq=head)
-                if outcome is not None:
-                    return outcome[0] == "cancelled"
-                if record.value["settled"]:
-                    raise ValueError("子任务结算记录缺少终态")
-                try:
-                    self._control(request, "pause", "用户取消子任务", expected_source_head=head)
-                except MessageConflict:
-                    if reader.head(source="subagent") == head:
-                        raise
-                    continue
-                break
-            def cancel(slot: TaskSlot) -> Task | None:
-                current = slot.current
-                if current is not None:
-                    current.cancel()
-                return current
-            task = await self.ctx.require(TASKS).open(self.ctx).admit(("job", key), cancel)
-            if task is not None:
-                await drain(task)
+            stopped: Task | None = None
+
+            async def cancel(slot: TaskSlot) -> bool:
+                def committed() -> None:
+                    nonlocal stopped
+                    stopped = slot.current
+                    if stopped is not None:
+                        stopped.cancel()
+
+                # 读期间可能完成；只对检查过的来源前缀提交 pause。
+                while True:
+                    head = reader.head(source="subagent")
+                    outcome = await self.outcome(reader, through_seq=head)
+                    if outcome is not None:
+                        return outcome[0] == "cancelled"
+                    if record.value["settled"]:
+                        raise ValueError("子任务结算记录缺少终态")
+                    try:
+                        await self._control(request, "pause", "用户取消子任务", expected_source_head=head,
+                                            on_commit=committed)
+                    except MessageConflict:
+                        if reader.head(source="subagent") == head:
+                            raise
+                        continue
+                    return True
+
+            try:
+                cancelled = await self.ctx.require(TASKS).open(self.ctx).admit_async(("job", key), cancel)
+            finally:
+                # 即使调用者在提交中取消，真实 pause 也先撤销原 Task 并排空。
+                if stopped is not None:
+                    await drain(stopped)
+            if not cancelled:
+                return False
             task = await self.start(key)
             if task is not None:
                 await drain(task)
@@ -263,13 +296,13 @@ class Subagents:
         except Exception:
             saved = [delivery.receipt(message.message_id, sink) for sink in selected.sinks]
             if any(receipt is not None and receipt.status == "failed" for receipt in saved):
-                self._settle(key)
-                self._trace(request, "delivery_failed")
+                await self._settle(key)
+                await self._trace(request, "delivery_failed")
             raise
         for receipt in receipts:
             if receipt.status != "delivered":
                 logger.error("子任务结果发送失败 job=%s reason=%s", request.job_id, receipt.error or receipt.status)
-                self._trace(request, "delivery_failed")
+                await self._trace(request, "delivery_failed")
         return True
 
     def jobs(self) -> tuple[Mapping[str, object], ...]:
@@ -306,7 +339,7 @@ class Subagents:
                             if outcome is None:
                                 raise RuntimeError("子任务没有可回传的终态")
                             if await self._announce(key, request, reader, outcome):
-                                self._settle(key)
+                                await self._settle(key)
                 except CompositionError as error:
                     if entered or error.code != "OWNER_UNAVAILABLE":
                         raise
@@ -355,6 +388,16 @@ class Subagents:
                 task.cancel()
             for task in tasks:
                 await drain(task)
+
+
+def _pointer(record: OwnerRecord) -> tuple[str, str, bool]:
+    """在存储边界读取同一份子任务恢复指针。"""
+    value = record.value
+    if (set(value) != {"session_id", "input_id", "settled"}
+            or not isinstance(value["session_id"], str) or not isinstance(value["input_id"], str)
+            or type(value["settled"]) is not bool):
+        raise ValueError("子任务恢复指针损坏")
+    return value["session_id"], value["input_id"], value["settled"]
 
 
 async def drain(task: Task) -> None:
