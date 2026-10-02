@@ -178,7 +178,7 @@ class Runtime:
         ctx, target = self.ctx, self.config.delivery
         if target is None:
             return None
-        alert = ctx.require(EVENTMAIL_WAKE).peek_alert(now) if owner == "alert" else None
+        alert = await ctx.require(EVENTMAIL_WAKE).peek_alert(now) if owner == "alert" else None
         if owner == "alert" and alert is None:
             return None
         bindings = ctx.require(BINDINGS)
@@ -217,7 +217,7 @@ class Runtime:
             rules=read_archived_rules(ctx.data_root) or "",
             history=recent_context(ctx.require(MESSAGE_CATALOG), ctx.require(DELIVERY_READ),
                                    target=target.session_id, now=now),
-            events=tuple(dict(item) for item in ctx.require(EVENTMAIL_WAKE).active_context(now)))
+            events=tuple(dict(item) for item in (await ctx.require(EVENTMAIL_WAKE).active_context(now))))
 
     async def follow(self) -> None:
         """先恢复原请求，再独立运行到期检查与五分钟池维护。"""
@@ -248,7 +248,7 @@ class Runtime:
             self.changed.clear()
             async with self.ctx.runtime_scope():
                 now = self.now()
-                alert = self.ctx.require(EVENTMAIL_WAKE).alert_deadline(now)
+                alert = await self.ctx.require(EVENTMAIL_WAKE).alert_deadline(now)
                 blocked = self._blocked(require_interest=alert is None or alert > now)
             if blocked is not None:
                 retry = now + timedelta(seconds=30)
@@ -277,7 +277,7 @@ class Runtime:
             try:
                 async with self.ctx.runtime_scope():
                     now = self.now()
-                    watermark = self.ctx.require(EVENTMAIL_WAKE).mail_watermark()
+                    watermark = await self.ctx.require(EVENTMAIL_WAKE).mail_watermark()
                     await run_file_io(lambda: self.state.set_attempt_mail_watermark(
                         attempt_id=flow_id, mail_watermark=watermark))
                     admission = await self.duties.check(now)
@@ -328,7 +328,7 @@ class Runtime:
                         await self._finish(flow_id, "admission_rejected", None,
                                            f"池维护未开始：{blocked}")
                         continue
-                    watermark = self.ctx.require(EVENTMAIL_WAKE).mail_watermark()
+                    watermark = await self.ctx.require(EVENTMAIL_WAKE).mail_watermark()
                     await run_file_io(lambda: self.state.set_attempt_mail_watermark(
                         attempt_id=flow_id, mail_watermark=watermark))
                     pool = await self.duties.maintain(self.now())

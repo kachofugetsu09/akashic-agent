@@ -23,7 +23,7 @@ from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_composition.timers import TIMERS, PluginTimers
 from plugins.drift.plugin import _AsyncWakeServices as DriftServices
 from plugins.drift.store import DriftStore
-from plugins.eventmail.plugin import _WakeServices as MailServices
+from plugins.eventmail.plugin import _StoreIO, _WakeServices as MailServices
 from plugins.eventmail.plugin import _DeliveryServices as MailDelivery
 from plugins.eventmail.store import EventMailStore
 from plugins.wake._boundary import SEMANTIC_INTEREST, SemanticInterest
@@ -116,8 +116,10 @@ async def scenario(directory: Path, kind: str, expect_blocking: bool) -> dict[st
 
             return cast(TimerHandle, Handle())
 
+    io = _StoreIO()
+
     async def providers(ctx):
-        await ctx.provide(EVENTMAIL_WAKE, GuardedMail(mail))
+        await ctx.provide(EVENTMAIL_WAKE, GuardedMail(mail, io))
         await ctx.provide(DRIFT_WAKE, DriftServices(drift))
         await ctx.provide(SEMANTIC_INTEREST, cast(SemanticInterest, Interest()))
         await ctx.provide(TIMERS, CleanupFailure(None) if kind == "cleanup_cancel" else actual_timer)
@@ -125,7 +127,7 @@ async def scenario(directory: Path, kind: str, expect_blocking: bool) -> dict[st
         await ctx.provide(MESSAGE_WRITERS, MessageWriters(messages))
         await ctx.provide(OWNER_STATE, OwnerState(messages))
         await ctx.provide(TASKS, PluginTasks())
-        await ctx.provide(EVENTMAIL_DELIVERY, MailDelivery(mail))
+        await ctx.provide(EVENTMAIL_DELIVERY, MailDelivery(mail, io))
 
     async def consumer(ctx):
         contexts.append(ctx)
