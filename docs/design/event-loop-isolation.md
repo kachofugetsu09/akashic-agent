@@ -412,3 +412,22 @@ Tool/Command/React 仍在自己的启动事务内核对，Core 只拥有原事�
 `docker/debug/completion_source_ordering.py` 现挂载真实 Sources、Conversation、Reply、ReplyProgram provider，经 Subagents 的回传入口消费 `reply.execute.v4`，不在场景里复写 report 或直接绕过适配器调用 run_reply。16 个受控场景分别令控制来源或输出来源的 Input/Control 先落盘，并延迟 loop 通知，核对入口、generation claim、Tool started、真实本地效果之后与最终 Output 的行为。调用账、原 Message、SQLite 完整性和清理一同核对；模型 driver、材料与投递仍是本地受控边界，不代表正式 provider 或真实送达验收。
 
 命令没有新增第二份 started 状态：原不可变 `CommandIntent` 就是同事务首次准入事实；不能把 durable claim 到 handler 的物理时间间隔解释为缺少另一份准入状态。最终 Output 仍由同来源 head CAS 拒绝过期提交，未知外部效果由固定命令 owner 恢复。
+
+## ReAct Output 的事务（#879）
+
+ReAct 在原插件 scope 内准备 Output 的内容引用、metadata 和 Session 投影，
+通过 `MessageWriter.prepare_async` 固定一次追加。`OwnerTransaction.append_prepared`
+只提交该 writer 的固定身份，不授予额外消息类型或跨库权限。来源检查、竞争消息检查、
+身份重放、附件引用和追加仍在同一 SQL 事务；事务整体进入有界文件 worker。
+无 OwnerStore 的 ReAct 路径使用相同准备边界和 `append_async` 的来源 head CAS。
+
+writer 撤权只持短 grant 锁，不等待 SQL 或 commit。事务取得 SQL 写权后核对 grant：
+先撤权则拒绝新追加；先通过 grant 的在途追加可以完成，取消等待实际事务结束，
+不能把取消当成已提交 Output 的回滚。新 Input/Control 与 Output 仍由同库事务排序，
+Source 前提检查防止旧回复越过已接纳的新边界。正常消息只追加，无 schema 或历史迁移。
+
+`docker/debug/react_output_io.py` 通过真实 Source、ReAct、Models 与 MessageLog，
+分别阻塞独立 SQLite 写锁及 INSERT 后的提交，检查 Timer、只读请求、重复取消、
+撤权、实际排空、完整旧消息和 SQLite 完整性。模型驱动只返回本地固定响应；
+不是付费模型、正式 workspace 或生产延迟验收。ToolResult、Delivery、Wake 来源
+与 EventMail 写入仍须分别迁移，不由 Output 这一层自动覆盖。

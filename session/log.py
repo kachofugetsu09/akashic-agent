@@ -1172,6 +1172,28 @@ class _PreparedMessage:
     session_metadata: Mapping[str, object | None]
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedAppend:
+    """固定一次追加的 writer、身份和已校验输入；不授予额外写入权。"""
+
+    _writer: MessageWriter
+    _message_id: str
+    _body: Body
+    _metadata: Mapping[str, object]
+    _prepared: _PreparedMessage | None
+    _existing: Message | None
+
+    def _append(self, expected_source_head: int | None) -> tuple[Message, bool]:
+        previous = self._writer._replay(self._message_id, self._body, self._metadata)
+        if previous is not None:
+            return previous, False
+        if self._prepared is None:
+            raise MessageConflict("预备追加的既有消息已被删除")
+        return self._writer._insert(
+            self._message_id, self._prepared, expected_source_head,
+        ), True
+
+
 class MessageWriter:
     def __init__(
         self,
@@ -1236,8 +1258,8 @@ class MessageWriter:
         metadata: Mapping[str, object] | None = None,
     ) -> Message:
         """原子追加消息及其绑定 owner 计算的元数据变化，重放不重复更新。"""
-        # SQL owner 在前、writer grant 在后；撤销不等待其它 writer 的磁盘工作。
-        with self._log._lock, self._grant_lock:
+        # SQL owner 排序追加；grant 只在 _insert 中持有短锁。
+        with self._log._lock:
             return self._log._write(
                 lambda: self._append(
                     message_id, body, expected_source_head=expected_source_head, metadata=metadata,
@@ -1291,17 +1313,13 @@ class MessageWriter:
             cast(Mapping[str, object | None], freeze_json(dict(changes))),
         )
 
-    async def append_async(
-        self, message_id: str, body: Input | Control, *,
-        expected_source_head: int | None = None, metadata: Mapping[str, object] | None = None,
-        on_commit: Callable[[Message, bool], None],
-    ) -> Message:
-        """Source 在原 scope 验证；纯 SQL 离开 loop，取消仍交付一次真实收据。"""
-        if not isinstance(body, (Input, Control)):
-            raise TypeError("异步来源提交只接纳 Input 或 Control")
+    async def prepare_async(
+        self, message_id: str, body: Body, *, metadata: Mapping[str, object] | None = None,
+    ) -> PreparedAppend:
+        """在原 scope 验证新内容，返回可用于纯 SQL owner 事务的固定追加。"""
         self._log._check_async_operation()
         message_metadata = self._metadata(body, metadata)
-        # 1. 重放必须先于当前 owner 校验，读取不等待另一个 writer 的磁盘工作。
+        # 重放先于当前 owner 校验，已提交内容不依赖仍安装原插件。
         def replay() -> Message | None:
             with self._log._read():
                 return self._replay(message_id, body, message_metadata)
@@ -1311,22 +1329,27 @@ class MessageWriter:
             if existing is None and not self._active:
                 raise WriterExpired("writer 已失效")
             prepared = None if existing is not None else self._prepare(body, message_metadata)
-        if existing is not None:
-            on_commit(existing, False)
-            return existing
-        assert prepared is not None
+        return PreparedAppend(self, message_id, body, message_metadata, prepared, existing)
 
-        # 2. grant、head、引用和不可变身份由同一 SQL 事务作最终决定。
+    async def append_async(
+        self, message_id: str, body: Body, *,
+        expected_source_head: int | None = None, metadata: Mapping[str, object] | None = None,
+        on_commit: Callable[[Message, bool], None] | None = None,
+    ) -> Message:
+        """原 scope 验证后执行纯 SQL；取消仍在原 loop 交付真实收据。"""
+        prepared = await self.prepare_async(message_id, body, metadata=metadata)
+        if prepared._existing is not None:
+            if on_commit is not None:
+                on_commit(prepared._existing, False)
+            return prepared._existing
+
         def write() -> tuple[Message, bool]:
-            with self._log._lock, self._grant_lock:
-                def commit() -> tuple[Message, bool]:
-                    previous = self._replay(message_id, body, message_metadata)
-                    if previous is not None:
-                        return previous, False
-                    return self._insert(message_id, prepared, expected_source_head), True
-                return self._log._write(commit)
+            with self._log._lock:
+                return self._log._write(lambda: prepared._append(expected_source_head))
 
-        message, _ = await _run_commit(write, lambda result: on_commit(*result))
+        message, _ = await _run_commit(
+            write, None if on_commit is None else lambda result: on_commit(*result),
+        )
         return message
 
     def _append(
@@ -1346,8 +1369,10 @@ class MessageWriter:
         self, message_id: str, prepared: _PreparedMessage, expected_source_head: int | None,
     ) -> Message:
         """只读取固定数据与 SQL 权威事实；不调用内容、metadata 或 Context owner。"""
-        if not self._active:
-            raise WriterExpired("writer 已失效")
+        # grant 的短临界区决定本次写入是否已开始；撤权不等待磁盘提交。
+        with self._grant_lock:
+            if not self._active:
+                raise WriterExpired("writer 已失效")
         connection = self._log._connection
         body, message_metadata = prepared.body, prepared.metadata
         payload = encode_body(body)
@@ -1561,7 +1586,6 @@ class OwnerStore:
             return self._log._write(invoke)
         finally:
             transaction._active = False
-            transaction._release_writers()
 
     async def transact_async(
         self, callback: Callable[[OwnerTransaction], _T], *,
@@ -1577,12 +1601,6 @@ class OwnerTransaction:
         self._store = store
         self._active = True
         self._failed = False
-        self._writers: list[MessageWriter] = []
-
-    def _release_writers(self) -> None:
-        for writer in reversed(self._writers):
-            writer._grant_lock.release()
-        self._writers.clear()
 
     def source_changed(
         self, reader: MessageReader, source: str, through_seq: int,
@@ -1665,14 +1683,21 @@ class OwnerTransaction:
         self._check_active()
         if writer._log is not self._store._log:
             raise ValueError("原子提交不能跨存储 authority")
-        if writer not in self._writers:
-            writer._grant_lock.acquire()
-            self._writers.append(writer)
         return self._perform(
             lambda: writer._append(
                 message_id, body, expected_source_head=expected_source_head, metadata=metadata
             )
         )
+
+    def append_prepared(
+        self, prepared: PreparedAppend, *, expected_source_head: int | None = None,
+    ) -> Message:
+        """在同一事务核对已准备消息的 grant、引用、身份和来源 head。"""
+        self._check_active()
+        writer = prepared._writer
+        if writer._log is not self._store._log:
+            raise ValueError("原子提交不能跨存储 authority")
+        return self._perform(lambda: prepared._append(expected_source_head)[0])
 
 
 def _json_object(raw: str, label: str) -> Mapping[str, object]:
