@@ -9,6 +9,7 @@ from typing import cast
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from agent.plugin_composition.tasks import ExternalRootPermit
 from agent.plugin_composition.messages import (
+    MessageConflict,
     OwnerRecord,
     OwnerStore,
     OwnerTransaction,
@@ -20,6 +21,7 @@ from agent.plugin_contracts import (
 )
 from agent.plugin_contracts import json_value
 from agent.plugin_contracts.tools import CommitAfter
+from core.common.file_io import run_file_io
 
 from .api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
@@ -87,10 +89,19 @@ class ToolExecution:
             )
 
         # 1. 不同插件 scope 共用获授的 Task key，热更不能把活调用当成崩溃。
-        def admit(slot: TaskSlot) -> tuple[Task, bool]:
+        async def admit(slot: TaskSlot) -> tuple[Task, bool]:
             current = slot.current
             if current is not None:
                 return current, False
+            record = await run_file_io(lambda: self._record(key, fingerprint))
+            if record is None:
+                if reply is not None:
+                    reply.check(self._state)
+                await self._save(key, None, {
+                    "version": 1, "request": fingerprint, "binding": binding_id,
+                    "reply_id": None if reply is None else reply.message_id,
+                    "phase": "requested", "arguments": arguments,
+                })
             permit = None if self._child_permit is None else self._child_permit()
             try:
                 started = slot.start(run)
@@ -102,7 +113,7 @@ class ToolExecution:
                 started.on_done(permit.release)
             return started, True
 
-        task, owned = await self._tasks.admit((self._task_key, key), admit)
+        task, owned = await self._tasks.admit_async((self._task_key, key), admit)
         try:
             result = (
                 cast(Result, await task.join()) if reply is None
@@ -150,7 +161,11 @@ class ToolExecution:
                 if record is not None and record.value["phase"] == "done":
                     return reply.read(record.value["result"])
                 return cast(Result, joined.result())
-            return terminal.result()
+            result = terminal.result()
+            if result.outcome == "error":
+                # 异步落盘会先唤醒订阅；错误回执不能抢在原异常之前伪装成正常返回。
+                return cast(Result, await joined)
+            return result
         finally:
             _ = joined.cancel()
             _ = terminal.cancel()
@@ -171,7 +186,7 @@ class ToolExecution:
         async def commit(record: OwnerRecord | None, result: Result) -> Result:
             if commit_after is not None:
                 await commit_after.wait()
-            return finish(self._state, key, record, result, reply)
+            return await finish(self._state, key, record, result, reply)
 
         record = self._record(key, fingerprint)
         if record is not None:
@@ -186,11 +201,7 @@ class ToolExecution:
             if reply is not None:
                 reply.check(self._state)
             if record is None:
-                record = self._save(key, None, {
-                    "version": 1, "request": fingerprint, "binding": binding_id,
-                    "reply_id": None if reply is None else reply.message_id,
-                    "phase": "requested", "arguments": arguments,
-                })
+                raise RuntimeError("已接纳工具缺少 requested 回执")
             async with self._open_tool(binding_id) as tool:
                 if not task.active:
                     raise asyncio.CancelledError
@@ -220,7 +231,7 @@ class ToolExecution:
                         "phase": "prepared",
                         "arguments": final,
                     }
-                    record = self._save(key, record, value)
+                    record = await self._save(key, record, value)
                 final_arguments = cast(Mapping[str, object], record.value["arguments"])
                 started = record.value["phase"] == "started"
                 # 3. 已跨过 start 的调用先 query；只有同 key 幂等协议才允许重发。
@@ -293,6 +304,13 @@ class ToolExecution:
                         raise failure from record_failure
                     raise
                 return await commit(record, result)
+        except MessageConflict:
+            # requested/prepared 等待期间，放弃可能先提交终态。
+            current = await run_file_io(lambda: self._record(key, fingerprint))
+            if current is None or current.value["phase"] != "done":
+                raise
+            return (_read_result(current.value["result"]) if reply is None
+                    else await run_file_io(lambda: reply.read(current.value["result"])))
         except asyncio.CancelledError as failure:
             # 恢复期间取消也终结原 started intent，不能稍后借重试重新发起效果。
             try:
@@ -318,10 +336,10 @@ class ToolExecution:
                 raise ValueError("同一工具 key 的 binding 或参数不一致")
         return record
 
-    def _save(
+    async def _save(
         self, key: str, previous: OwnerRecord | None, value: Mapping[str, object]
     ) -> OwnerRecord:
-        return self._state.transact(
+        return await self._state.transact_async(
             lambda transaction: transaction.save(
                 key,
                 value,
@@ -329,14 +347,44 @@ class ToolExecution:
             )
         )
 
-def finish(
+async def finish(
     state: OwnerStore, key: str, record: OwnerRecord | None, result: Result,
     reply: MessageReply | None, *, initial: Mapping[str, object] | None = None,
+    on_commit: Callable[[Result], None] | None = None,
 ) -> Result:
     """正文与回执同事务提交；放弃或真实结果先提交者胜出，迟到结果只读。"""
     value = initial if record is None else record.value
     if value is None:
         raise RuntimeError("工具结果缺少原请求身份")
+
+    def completed() -> Result | None:
+        current = state.read(key)
+        if current is None or current.value["phase"] != "done":
+            return None
+        if current.value["request"] != value["request"]:
+            raise ValueError("同一工具 key 的 binding 或参数不一致")
+        return (_read_result(current.value["result"]) if reply is None
+                else reply.read(current.value["result"]))
+
+    previous = await run_file_io(lambda: state.snapshot(completed))
+    if previous is not None:
+        if on_commit is not None:
+            on_commit(previous)
+        return previous
+    prepared = None
+    if reply is not None:
+        try:
+            prepared = await reply.writer.prepare_async(
+                reply.message_id, ToolResult(reply.call_ref, result.outcome, result.parts),
+            )
+        except MessageConflict:
+            # 放弃与真实结果竞争同一身份；只采用已经完成的权威回执。
+            previous = await run_file_io(lambda: state.snapshot(completed))
+            if previous is None:
+                raise
+            if on_commit is not None:
+                on_commit(previous)
+            return previous
 
     def commit(transaction: OwnerTransaction) -> Result:
         current = transaction.read(key)
@@ -349,18 +397,18 @@ def finish(
         if reply is None:
             saved = _result_value(result)
         else:
-            message = transaction.append(
-                reply.writer, reply.message_id,
-                ToolResult(reply.call_ref, result.outcome, result.parts),
-            )
+            assert prepared is not None
+            message = transaction.append_prepared(prepared)
             saved = {"message_id": message.message_id, "seq": message.seq}
+        if current is not None and current.value["request"] != value["request"]:
+            raise ValueError("同一工具 key 的 binding 或参数不一致")
         _ = transaction.save(
-            key, {**value, "phase": "done", "result": saved},
-            expected_version=None if record is None else record.version,
+            key, {**(value if current is None else current.value), "phase": "done", "result": saved},
+            expected_version=None if current is None else current.version,
         )
         return result
 
-    return state.transact(commit)
+    return await state.transact_async(commit, on_commit=on_commit)
 
 
 async def _drain(task: Task) -> None:
