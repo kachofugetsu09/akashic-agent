@@ -153,9 +153,6 @@ class ChannelInboundMessage:
 
 
 # 来源插件接纳已验证的传输输入；不获得 Channel lease 或发送权。
-CHANNEL_INPUT = ServiceKey[
-    Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
-]("channel.input.v1")
 
 CHANNEL_INPUT_V2 = ServiceKey[
     Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]

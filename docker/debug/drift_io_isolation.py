@@ -1,7 +1,6 @@
 """用临时 Root、真实 SQLite 和 Wake 验证 Drift 的异步存储边界。"""
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import sqlite3
@@ -21,7 +20,6 @@ from agent.plugin_composition.messages import (
     MessageWriters, OwnerState, SessionAdmission,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from agent.plugin_contracts.proactive import DRIFT_WAKE, DRIFT_DELIVERY
 from plugins.drift.plugin import apply as apply_drift
 from plugins.drift.store import DriftStore
 from plugins.wake.api import DRIFT_WAKE as ASYNC_WAKE, DRIFT_DELIVERY as ASYNC_DELIVERY, DeliveryTarget
@@ -38,7 +36,7 @@ async def loop_turn() -> None:
     await done.wait()
 
 
-async def storage(directory: Path, baseline: bool) -> dict[str, object]:
+async def storage(directory: Path) -> dict[str, object]:
     """核对真实锁等待、提交、回滚、重放及 owner 的取消排空。"""
     root = CompositionRoot("drift-io")
     provider = await root.mount(apply_drift, name="drift", runtime=PluginRuntime(
@@ -49,7 +47,7 @@ async def storage(directory: Path, baseline: bool) -> dict[str, object]:
         contexts.append(ctx)
 
     consumer = await root.mount(consume, name="consumer", inject=(
-        DRIFT_WAKE, DRIFT_DELIVERY, ASYNC_WAKE, ASYNC_DELIVERY))
+        ASYNC_WAKE, ASYNC_DELIVERY))
     ctx = contexts[0]
     store = DriftStore(directory / "drift.sqlite3")
     now = datetime.now(UTC)
@@ -69,9 +67,8 @@ async def storage(directory: Path, baseline: bool) -> dict[str, object]:
     holder = threading.Thread(target=lock_database)
     holder.start()
     assert await asyncio.to_thread(connected.wait, 2)
-    key = DRIFT_WAKE if baseline else ASYNC_WAKE
     async with ctx.runtime_scope():
-        service = ctx.require(key)
+        service = ctx.require(ASYNC_WAKE)
         started = time.perf_counter()
 
         def heartbeat():
@@ -80,15 +77,11 @@ async def storage(directory: Path, baseline: bool) -> dict[str, object]:
 
         loop.call_soon(heartbeat)
         accepted = {"session_id": "one", "turn_id": "input"}
-        result = (service.select(ref, accepted, now) if baseline
-                  else await service.select(ref, accepted, now))
+        result = await service.select(ref, accepted, now)
         assert result["selected"]
     await asyncio.to_thread(holder.join, 2)
     await loop_turn()
-    assert metrics["released_by_loop"] is (not baseline), metrics
-    if baseline:
-        await root.dispose()
-        return metrics
+    assert metrics["released_by_loop"] is True, metrics
 
     # 2. 所有 v2 查询和事务都在 worker 打开/使用/关闭自己的真实连接。
     original_connect = sqlite3.connect
@@ -264,17 +257,14 @@ async def wake_flow(directory: Path) -> dict[str, object]:
         log.close()
 
 
-async def main(baseline: bool) -> None:
+async def main() -> None:
     with TemporaryDirectory(prefix="drift-io-") as name:
         path = Path(name)
-        result = {"storage": await storage(path / "store", baseline)}
-        if not baseline:
-            (path / "wake").mkdir()
-            result["wake"] = await wake_flow(path / "wake")
+        result = {"storage": await storage(path / "store")}
+        (path / "wake").mkdir()
+        result["wake"] = await wake_flow(path / "wake")
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--baseline", action="store_true", help="实测保留的 v1 同步能力")
-    asyncio.run(main(parser.parse_args().baseline))
+    asyncio.run(main())

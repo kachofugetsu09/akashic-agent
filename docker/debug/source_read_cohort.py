@@ -1,7 +1,6 @@
-"""实际安装 Source 读取能力组，核对旧归档恢复和提交占位交错。"""
+"""实际安装当前 Source，核对旧消费者拒绝和提交占位交错。"""
 from __future__ import annotations
 
-import argparse
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
@@ -12,10 +11,6 @@ import sys
 import tempfile
 from types import SimpleNamespace
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--previous-source", type=Path, required=True,
-                    help="仍提供 sources.v4/source.session.v3 的完整旧源码")
-args = parser.parse_args()
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.plugin_composition import CompositionError, ServiceKey
@@ -24,24 +19,16 @@ from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.control_frames import CONTROL_FRAMES
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts.reply import REPLY_COMPLETION
-from agent.plugin_contracts.sources import SOURCES_V4, SOURCE_SESSION_V3, SOURCES_V5, SOURCE_CHANGED_V3
+from agent.plugin_contracts.sources import SOURCES_V5, SOURCE_CHANGED_V3
 from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams
 from plugins.programmatic.result import TURN_PROJECTION, read_result
 from session.message import Input, Output, ToolResult
 from tests.test_default_reply import application
 
 
-def copy_previous(destination, names):
-    """只复制显式给出的旧插件源码，安装 cache 完全由临时 Manager 拥有。"""
-    for name in names:
-        shutil.rmtree(destination / name)
-        shutil.copytree(args.previous_source / "plugins" / name, destination / name,
-                        ignore=shutil.ignore_patterns("__pycache__"))
-
-
 async def versions(path):
-    """半组不能启用；完整旧组执行后，破坏性局部更新拒绝并恢复旧组。"""
-    old_keys = (SOURCES_V4, SOURCE_SESSION_V3)
+    """当前组合明确拒绝旧来源能力，不隐式升级回调与权限。"""
+    old_keys = (ServiceKey[object]("sources.v4"), ServiceKey[object]("source.session.v3"))
     async with application(path / "current", replying=True) as (_log, host):
         root = host.live_root
         applied = []
@@ -59,48 +46,7 @@ async def versions(path):
         await actor.dispose()
         assert root.context.require(SOURCES_V5) is not None
 
-    async with application(path / "reverse", replying=True,
-                           extra_sources=lambda destination: copy_previous(destination, ("sources",))) as (_log, host):
-        root = host.live_root
-        assert root.context.require(SOURCES_V4) is not None
-        try:
-            root.context.require(SOURCES_V5)
-        except CompositionError:
-            pass
-        else:
-            raise AssertionError("旧 provider 启用了新 actor 所需的能力")
-
-    names = ("sources", "conversation", "reply", "react", "reply_program")
-    async with application(path / "restore", replying=True,
-                           extra_sources=lambda destination: copy_previous(destination, names)) as (log, host):
-        root = host.live_root
-        accepted = await root.context.require(CHANNEL_INPUT_V2)("test:room", "old-input", inbound("old"))
-        async def finished():
-            async for _ in log.catalog().follow():
-                rows = log.reader("test:room").snapshot()
-                if any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows):
-                    return rows
-        rows = await asyncio.wait_for(finished(), 10)
-        assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output]
-        destination = path / "restore/plugins"
-        for name in names:
-            shutil.rmtree(destination / name)
-            shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / name, destination / name,
-                            ignore=shutil.ignore_patterns("__pycache__"))
-        try:
-            await host.reconcile_changed()
-        except RuntimeError as error:
-            assert "PENDING" in str(error)
-        else:
-            raise AssertionError("跨能力组的逐插件更新意外启用")
-        assert host.live_root is root
-        assert log.reader("test:room").snapshot() == rows
-        assert log.reader("test:room").get("old-input") == accepted
-        for key in old_keys:
-            assert root.context.require(key) is not None
-    return {"old_actor_with_current_provider": "PENDING", "current_actor_with_old_provider": "missing v5",
-            "complete_old_group": "Input/Output/ToolResult/Output",
-            "breaking_partial_update": "rejected; old Root and exact messages restored"}
+    return {"old_actor_with_current_provider": "PENDING", "current_provider": "sources.v5"}
 
 
 def inbound(text):
@@ -277,8 +223,7 @@ async def programmatic_routes(path):
 
 
 async def main(path):
-    return {"previous_source": str(args.previous_source.resolve()),
-            "versions": await versions(path), "notifications": await notifications(path / "notifications"),
+    return {"versions": await versions(path), "notifications": await notifications(path / "notifications"),
             "programmatic_routes": await programmatic_routes(path / "programmatic")}
 
 

@@ -5,14 +5,18 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from agent.plugin_composition import CompositionRoot
+from agent.plugin_composition import CompositionRoot, ServiceKey
 from agent.plugin_composition.channel_io import unavailable
 from agent.plugin_composition.model import PluginRuntime
 from agent.plugin_contracts.context import MATERIALS, MATERIALS_V4
 from plugins.context import plugin as context
 from plugins.context.materials import ContextMaterials
 from plugins.reply_program import plugin as reply
-from agent.plugin_contracts.reply import REPLY_EXECUTE, REPLY_EXECUTE_V2, REPLY_EXECUTE_V3, REPLY_EXECUTE_V4
+from agent.plugin_contracts.reply import REPLY_EXECUTE_V4
+
+REPLY_EXECUTE = ServiceKey[object]("reply.execute.v1")
+REPLY_EXECUTE_V2 = ServiceKey[object]("reply.execute.v2")
+REPLY_EXECUTE_V3 = ServiceKey[object]("reply.execute.v3")
 
 
 async def check(workspace: Path) -> None:

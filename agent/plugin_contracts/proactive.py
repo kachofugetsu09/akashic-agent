@@ -101,37 +101,6 @@ class ContentWakeServicesV2(Protocol):
         ...
 
 
-class DriftWakeServices(Protocol):
-    def snapshot(self, now: datetime) -> Mapping[str, object]: ...
-
-    def select(
-        self,
-        ref: Mapping[str, object],
-        accepted_turn: Mapping[str, object],
-        now: datetime,
-    ) -> Mapping[str, object]: ...
-
-    def transition(self, token: str, action: str) -> Mapping[str, object]: ...
-
-    def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
-
-    def selection(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None: ...
-
-
-class DeliveryServices(Protocol):
-    def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
-
-    def lookup(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None: ...
-
-    def settle(
-        self, selection_token: str, settlement_ref: str
-    ) -> Mapping[str, object]: ...
-
-
 class EventMailDeliveryServicesV2(Protocol):
     async def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
 
@@ -154,8 +123,6 @@ class SemanticInterest(Protocol):
 
 EVENTMAIL_WAKE_V2 = ServiceKey[ContentWakeServicesV2]("eventmail.wake.v2")
 EVENTMAIL_DELIVERY_V2 = ServiceKey[EventMailDeliveryServicesV2]("eventmail.delivery.v2")
-DRIFT_WAKE = ServiceKey[DriftWakeServices]("drift.wake.v1")
-DRIFT_DELIVERY = ServiceKey[DeliveryServices]("drift.delivery.v1")
 SEMANTIC_INTEREST = ServiceKey[SemanticInterest]("akasha.semantic-interest.v1")
 
 
