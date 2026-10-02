@@ -6,20 +6,28 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from agent.plugin_composition import CompositionRoot, CredentialRef
-from agent.plugin_composition.channels import CHANNEL_INPUT as LEGACY_CHANNEL_INPUT, CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
+from agent.plugin_composition import CompositionRoot, CredentialRef, ServiceKey
+from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.model import FiberState, PluginRuntime
 from agent.plugin_composition.tasks import Tasks
-from agent.plugin_contracts.sources import (SOURCES as LEGACY_SOURCES, SOURCES_V3, SOURCES_V4, SOURCES_V5 as SOURCES,
-    SOURCE_SESSION, SOURCE_SESSION_V2, SOURCE_SESSION_V3, SOURCE_SESSION_V4)
+from agent.plugin_contracts.sources import SOURCES_V5 as SOURCES, SOURCE_SESSION_V4
 from plugins.sources import plugin as sources
 from plugins.sources.session import SourceSession
 from plugins.telegram_channel import plugin as telegram
 from session.log import MessageCatalog, MessageLog
 from session.message import ContentPart, ContentReferences, Control, Input
 
+
+# 故意声明已退役的请求，验证组合不会把旧消费者接到当前合同。
+LEGACY_CHANNEL_INPUT = ServiceKey[object]("channel.input.v1")
+LEGACY_SOURCES = ServiceKey[object]("sources.v2")
+SOURCES_V3 = ServiceKey[object]("sources.v3")
+SOURCES_V4 = ServiceKey[object]("sources.v4")
+SOURCE_SESSION = ServiceKey[object]("source.session.v1")
+SOURCE_SESSION_V2 = ServiceKey[object]("source.session.v2")
+SOURCE_SESSION_V3 = ServiceKey[object]("source.session.v3")
 
 async def check(workspace: Path) -> None:
     root, tasks = CompositionRoot("source-route-scenario"), Tasks()

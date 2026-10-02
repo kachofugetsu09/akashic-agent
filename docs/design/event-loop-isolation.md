@@ -129,9 +129,9 @@ worker 完成，调用方取消仍等待物理退出。Context、Task、程序�
 accepted Input 与 selection token：准备完成后才发送，真实 Delivery 回执后才结算，
 结算提交后才关闭 flow。提交后响应丢失使用原领取/settlement 重放，不创建第二份提案。
 
-v1 同步能力保留给已发布的旧 Wake 和其他既有消费者；v1/v2 都访问同一 DriftStore。
+Drift 只发布 v2 异步能力；旧消费者必须迁移后重新准备，旧服务名不再解析。
 新 Wake 明确依赖 v2，旧 provider 缺少 v2 时由既有依赖解析阻止激活，不猜测或降级。
-来源上报现有 `drift.proposals.v2` 可等待接口；旧 v1 仍保留兼容，调用它仍可能同步等待数据库。
+来源上报使用 `drift.proposals.v2` 可等待接口；存储事实和领取身份仍由同一 DriftStore 拥有。
 EventMail/Alert 已按下文迁入 v2 与共享准入段，保证原版本检查覆盖 Delivery started 提交。
 
 持久化 schema 不变：来源仍按原身份增加 proposal；领取、流转与结算只更新同一行的
@@ -140,7 +140,7 @@ EventMail/Alert 已按下文迁入 v2 与共享准入段，保证原版本检查
 
 `docker/debug/drift_io_isolation.py` 用真实临时 Root、SQLite 写锁、提交屏障和 Wake
 任务验证计时器推进、同版本竞争、失败回滚、重复/冲突结算、取消后 owner 排空及重开。
-`--baseline` 实测仍保留的 v1 同步能力；它与异步路径使用同一 store 和锁等待场景。
+旧同步基线保存在 Git 历史；当前场景只运行实际发布的 v2 能力。
 Wake 的来源拒绝分支保留原 Input 并完成唯一 flow；未使用的 binding 仅作持久引用夹具，
 不代表真实模型、发送、正式插件换代或生产延迟验收。正式 workspace 未写入。
 
@@ -508,8 +508,8 @@ Computer started/ended/failed 回执及收尾完整投影，插件更新的持�
 
 Drift 来源使用 `drift.proposals.v2` 时先复制请求内容，再在线程中提交原 proposal。
 changed 事件仍在原 loop 发出，已提交后取消不丢通知，同身份重放不重复通知。
-同步 v1 保留给旧归档，不能据此宣称任意第三方旧消费者已经隔离。本轮核对的 14 个
-外置选择中没有 Drift proposal 消费者；另仓 Emotion 的旧接口迁移不在该选择范围内。
+同步 v1 契约与 provider 已退役。14 个正式外置选择中没有 Drift proposal 消费者；
+另仓 Emotion 必须使用当前异步 Drift 契约，不能依赖旧归档恢复同步服务。
 
 `owner_write_io.py` 的真实 SQLite/本地 socket 场景覆盖摘要 CAS、Computer 回执、
 取消排空和原消息完整性；同一提交屏障下旧基线约 1 秒，改后小于 1 毫秒。

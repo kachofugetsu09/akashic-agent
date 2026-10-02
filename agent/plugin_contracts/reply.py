@@ -19,96 +19,6 @@ from agent.plugin_contracts.tools import ToolPresentation, ToolView
 from agent.plugin_contracts.sources import SourceGuard
 
 
-class ReplyExecute(Protocol):
-    """在来源已接纳的 Task 与 Input 上运行；调用者只交入授权与本次选择。"""
-
-    async def __call__(
-        self,
-        ctx: Context,
-        task: Task,
-        reader: MessageReader,
-        source: str,
-        *,
-        authorize: Callable[
-            [str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]
-        ],
-        max_output_tokens: int,
-        max_steps: int,
-        render_content: ContentRenderer | None = None,
-        tool_view: ToolView | None = None,
-        tool_names: Sequence[str] | None = None,
-        exclude_materials: frozenset[str] = frozenset(),
-        prompt_hints: Sequence[str] = (),
-        fixed_bindings: Mapping[str, str] | None = None,
-        preview: Callable[[str], AbstractContextManager[StreamCallback]] | None = None,
-        reminders: Sequence[Mapping[str, object]] = (),
-        terminal_tools: frozenset[str] = frozenset(),
-        presentation: ToolPresentation | None = None,
-    ) -> Message: ...
-
-
-class ReplyExecuteV2(Protocol):
-    """在来源已接纳的 Task 与 Input 上运行；调用者只交入授权与本次选择。"""
-
-    async def __call__(
-        self,
-        ctx: Context,
-        task: Task,
-        reader: MessageReader,
-        source: str,
-        *,
-        authorize: Callable[
-            [str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]
-        ],
-        max_output_tokens: int,
-        max_steps: int,
-        render_content: ContentRenderer | None = None,
-        tool_view: ToolView | None = None,
-        tool_names: Sequence[str] | None = None,
-        exclude_material_kinds: frozenset[MaterialKind] = frozenset(),
-        prompt_hints: Sequence[str] = (),
-        fixed_bindings: Mapping[str, str] | None = None,
-        preview: Callable[[str], AbstractContextManager[StreamCallback]] | None = None,
-        reminders: Sequence[Mapping[str, object]] = (),
-        terminal_tools: frozenset[str] = frozenset(),
-        presentation: ToolPresentation | None = None,
-    ) -> Message: ...
-
-
-class ReplyExecuteV3(Protocol):
-    """来源交入不可变控制前提，和输出来源的前提共同核对。
-
-    没有独立 check_admission 时，调用者把 Task.boundary_hint 固定为本次获授的
-    同来源 Input/Control seq；多阶段来源按实际阶段输入固定，不用稍后 head 代替。
-    跨来源回传必须交入控制来源签发的 check_admission，不能靠输出来源推断权限。
-    """
-
-    async def __call__(
-        self,
-        ctx: Context,
-        task: Task,
-        reader: MessageReader,
-        source: str,
-        *,
-        authorize: Callable[
-            [str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]
-        ],
-        max_output_tokens: int,
-        max_steps: int,
-        render_content: ContentRenderer | None = None,
-        tool_view: ToolView | None = None,
-        tool_names: Sequence[str] | None = None,
-        exclude_material_kinds: frozenset[MaterialKind] = frozenset(),
-        prompt_hints: Sequence[str] = (),
-        fixed_bindings: Mapping[str, str] | None = None,
-        preview: Callable[[str], AbstractContextManager[StreamCallback]] | None = None,
-        reminders: Sequence[Mapping[str, object]] = (),
-        terminal_tools: frozenset[str] = frozenset(),
-        presentation: ToolPresentation | None = None,
-        check_admission: SourceGuard | None = None,
-    ) -> Message: ...
-
-
 class ReplyExecuteV4(Protocol):
     """来源入口固定所有执行前提；程序在启动与输出事务中调用同一个检查。"""
 
@@ -138,9 +48,6 @@ class ReplyExecuteV4(Protocol):
     ) -> Message: ...
 
 
-REPLY_EXECUTE = ServiceKey[ReplyExecute]("reply.execute.v1")
-REPLY_EXECUTE_V2 = ServiceKey[ReplyExecuteV2]("reply.execute.v2")
-REPLY_EXECUTE_V3 = ServiceKey[ReplyExecuteV3]("reply.execute.v3")
 REPLY_EXECUTE_V4 = ServiceKey[ReplyExecuteV4]("reply.execute.v4")
 
 
@@ -185,11 +92,6 @@ class ReplyStatus(Protocol):
 
 
 REPLY_COMPLETION = ServiceKey[Completion]("reply.completion.v1")
-REPLY_PROGRAM = ServiceKey[
-    Callable[
-        [Task, MessageReader, str, Sequence[Mapping[str, object]]], Awaitable[Message]
-    ]
-]("reply.program.v2")
 REPLY_STATUS = ServiceKey[ReplyStatus]("reply.status.v2")
 
 

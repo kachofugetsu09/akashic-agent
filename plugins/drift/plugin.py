@@ -7,11 +7,8 @@ from typing import Protocol
 
 from agent.plugin_composition import Context, EmitEventKey, ServiceKey
 from agent.plugin_contracts.proactive import (
-    DRIFT_DELIVERY as DRIFT_DELIVERY,
     DRIFT_DELIVERY_V2,
     DRIFT_WAKE_V2,
-    DRIFT_WAKE as DRIFT_WAKE,
-    DriftWakeServices as DriftWakeServices,
 )
 
 from core.common.file_io import run_file_io
@@ -28,21 +25,6 @@ workspace_roots = ()
 workspace_files = ()
 
 
-class DriftProposalServices(Protocol):
-    def propose(
-        self,
-        proposal_id: str,
-        revision: str,
-        payload: Mapping[str, object],
-        due_at: datetime,
-        *,
-        next_due: datetime | None = None,
-    ) -> Mapping[str, object]: ...
-
-
-DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
-
-
 class AsyncDriftProposalServices(Protocol):
     async def propose(
         self, proposal_id: str, revision: str, payload: Mapping[str, object],
@@ -52,59 +34,6 @@ class AsyncDriftProposalServices(Protocol):
 
 DRIFT_PROPOSALS_V2 = ServiceKey[AsyncDriftProposalServices]("drift.proposals.v2")
 DRIFT_CHANGED = EmitEventKey[None]("drift.changed")
-
-
-class _WakeServices:
-    def __init__(self, store: DriftStore) -> None:
-        self._store = store
-
-    def snapshot(self, now: datetime) -> Mapping[str, object]:
-        return self._store.snapshot(now)
-
-    def select(
-        self,
-        ref: Mapping[str, object],
-        accepted_turn: Mapping[str, object],
-        now: datetime,
-    ) -> Mapping[str, object]:
-        return self._store.select(ref, accepted_turn, now)
-
-    def transition(self, token: str, action: str) -> Mapping[str, object]:
-        return self._store.transition(token, action)
-
-    def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
-        return self._store.selected(limit)
-
-    def selection(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None:
-        return self._store.selection(accepted_turn)
-
-
-class _ProposalServices:
-    def __init__(self, store: DriftStore, changed: Callable[[], None]) -> None:
-        self._store = store
-        self._changed = changed
-
-    def propose(
-        self,
-        proposal_id: str,
-        revision: str,
-        payload: Mapping[str, object],
-        due_at: datetime,
-        *,
-        next_due: datetime | None = None,
-    ) -> Mapping[str, object]:
-        result = self._store.propose(
-            proposal_id,
-            revision,
-            payload,
-            due_at,
-            next_due=next_due,
-        )
-        if result["inserted"]:
-            self._changed()
-        return result
 
 
 class _AsyncProposalServices:
@@ -130,22 +59,6 @@ class _AsyncProposalServices:
         finally:
             if inserted:
                 self._changed()
-
-
-class _DeliveryServices:
-    def __init__(self, store: DriftStore) -> None:
-        self._store = store
-
-    def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
-        return self._store.pending_delivery(limit)
-
-    def lookup(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None:
-        return self._store.delivery(accepted_turn)
-
-    def settle(self, selection_token: str, settlement_ref: str) -> Mapping[str, object]:
-        return self._store.settle_delivery(selection_token, settlement_ref)
 
 
 class _AsyncWakeServices:
@@ -190,9 +103,6 @@ async def apply(ctx: Context) -> None:
 
     store = DriftStore(ctx.data_root / "drift.sqlite3")
     await run_file_io(store.initialize)
-    _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store, lambda: ctx.emit(DRIFT_CHANGED, None)))
     _ = await ctx.provide(DRIFT_PROPOSALS_V2, _AsyncProposalServices(store, lambda: ctx.emit(DRIFT_CHANGED, None)))
-    _ = await ctx.provide(DRIFT_WAKE, _WakeServices(store))
-    _ = await ctx.provide(DRIFT_DELIVERY, _DeliveryServices(store))
     _ = await ctx.provide(DRIFT_WAKE_V2, _AsyncWakeServices(store))
     _ = await ctx.provide(DRIFT_DELIVERY_V2, _AsyncDeliveryServices(store))
