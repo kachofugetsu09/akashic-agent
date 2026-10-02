@@ -169,7 +169,7 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
             if result.result.text:
                 parts += (ContentPart("text", result.result.text),)
             finish = ("complete" if result.result.text else "quiet") if intent == selected else "continue"
-            _ = writer.append(intent.output_id, Output(parts, finish), expected_source_head=head)
+            _ = await writer.append_async(intent.output_id, Output(parts, finish), expected_source_head=head)
         return None if selected is None else reader.get(selected.output_id)
     finally:
         writer.expire()

@@ -179,13 +179,13 @@ class SchedulerRuntime:
     async def _content(self, task: Task, fire: Fire) -> tuple[ContentPart, ...]:
         """每次触发有独立内部 Session；已保存的完整输出足以恢复最终通知。"""
         ctx = self._ctx
-        _ = ctx.require(SESSION_ADMISSION).ensure(ctx, fire.session_id,
+        _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, fire.session_id,
             SessionAttributes(visibility="internal", learning="excluded"))
         if fire.job.tier == "instant":
             assert fire.job.message is not None
             return (ContentPart("text", fire.job.message),)
         reader = ctx.require(MESSAGE_CATALOG).reader(fire.session_id)
-        finished = [message for message in reader.snapshot() if isinstance(message.body, Output)
+        finished = [message for message in (await reader.snapshot_async(through_seq=reader.head())) if isinstance(message.body, Output)
                     and message.body.finish != "continue"]
         if finished:
             output = finished[-1]
@@ -196,7 +196,7 @@ class SchedulerRuntime:
                 content={"text": ctx.require(CONTENT).check_text},
             )(fire.session_id)
             task.on_close(writer.expire)
-            admitted = writer.append("scheduler-input:" + fire.key, Input((ContentPart("text", fire.job.prompt),)))
+            admitted = await writer.append_async("scheduler-input:" + fire.key, Input((ContentPart("text", fire.job.prompt),)))
             # The source owns this input, including replay; later controls must not
             # become a new grant merely because reply preparation starts later.
             task.boundary_hint = admitted.seq

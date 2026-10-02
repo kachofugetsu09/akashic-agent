@@ -76,6 +76,6 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
     try:
         if not task.active:
             raise asyncio.CancelledError
-        return writer.append(request.phase_id(phase.stage) + ":failure", Control("failure", reader.head(source="wake"), reason))
+        return await writer.append_async(request.phase_id(phase.stage) + ":failure", Control("failure", reader.head(source="wake"), reason))
     finally:
         writer.expire()

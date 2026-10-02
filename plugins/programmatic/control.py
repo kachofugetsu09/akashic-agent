@@ -187,7 +187,7 @@ class Programmatic:
         # 1. 创建时提交不可变资格；ACK 丢失可用调用方原身份幂等重试。
         if method == "programmatic/session/admit":
             create = cast(AdmitParams, params)
-            attributes = ctx.require(SESSION_ADMISSION).ensure(ctx, session_id, SessionAttributes(
+            attributes = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, session_id, SessionAttributes(
                 visibility="internal", learning="eligible" if create.persist_memory else "excluded",
             ))
             return {"version": 2, "session_id": session_id, "visibility": attributes.visibility,

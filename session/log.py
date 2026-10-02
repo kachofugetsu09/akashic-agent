@@ -452,6 +452,11 @@ class MessageLog:
             return current
         return self._write(create)
 
+    async def ensure_session_async(self, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
+        """完整 create-once 事务离开 loop；取消仍排空已开始的写入。"""
+        self._check_async_operation()
+        return await _run_commit(lambda: self.ensure_session(session_id, attributes), None)
+
     def _check_async_operation(self) -> None:
         """线程工作不能离开调用者自己的未提交或只读事务。"""
         lock = self._lock

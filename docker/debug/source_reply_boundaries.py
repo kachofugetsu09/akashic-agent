@@ -15,14 +15,19 @@ import json
 from pathlib import Path
 import sqlite3
 import sys
+import threading
+import time
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--slow-writes", action="store_true")
 parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[2])
 parser.add_argument("--owner", choices=("scheduler", "subagent", "wake"))
 parser.add_argument("--case", choices=("fresh", "recovered", "newer-input", "newer-control", "two-phases"))
 args = parser.parse_args()
+if args.slow_writes and args.case not in {None, "fresh", "two-phases"}:
+    parser.error("--slow-writes 只用于 fresh 或 two-phases；其他模式会同步写入恢复/竞争 fixture")
 sys.path.insert(0, str(args.source))
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
@@ -38,7 +43,7 @@ from agent.plugin_composition.models import (
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Output
 from agent.plugin_contracts.content import CONTENT
-from agent.plugin_contracts.delivery import DELIVERY_V2 as DELIVERY, DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_V2 as DELIVERY, DELIVERY_GUARDED_START, DELIVERY_SENDERS
 from agent.plugin_contracts.models import MODEL_SELECTION
 from agent.plugin_contracts.sources import CHECK_ORIGIN
 from plugins.content.plugin import _decode_text, check_text
@@ -232,7 +237,7 @@ async def check(directory: Path, kind: str, mode: str):
             (OWNER_STATE, state), (SESSION_ADMISSION, SessionAdmission(log)),
             (TASKS, tasks), (BINDINGS, bindings), (CONTENT, TextContent()),
             (MODEL_SELECTION, SelectionOwner()), (CHECK_ORIGIN, lambda _part: ContentReferences()),
-            (DELIVERY, LocalDelivery()), (DELIVERY_SENDERS, LocalDelivery()),
+            (DELIVERY, LocalDelivery()), (DELIVERY_GUARDED_START, LocalDelivery()), (DELIVERY_SENDERS, LocalDelivery()),
             (SUBAGENT_PROGRAM, subagent_program), (WAKE_PROGRAM, wake_program),
         ):
             await ctx.provide(key, value)
@@ -241,7 +246,7 @@ async def check(directory: Path, kind: str, mode: str):
         contexts[kind] = ctx
 
     dependencies = (MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
-                    TASKS, BINDINGS, CONTENT, MODEL_SELECTION, CHECK_ORIGIN, DELIVERY, DELIVERY_SENDERS)
+                    TASKS, BINDINGS, CONTENT, MODEL_SELECTION, CHECK_ORIGIN, DELIVERY, DELIVERY_GUARDED_START, DELIVERY_SENDERS)
     await root.mount(storage, name="storage")
     await root.mount(owner, name=kind, inject=dependencies,
                      runtime=PluginRuntime(kind, kind, directory, directory, directory, {},
@@ -251,6 +256,24 @@ async def check(directory: Path, kind: str, mode: str):
         SUBAGENT_PROGRAM.name if kind == "subagent" else WAKE_PROGRAM.name), "metadata": {}})
     for identity in ("sink", *PROFILE_TOOLS["research"], "screen_content", "share_content", "skip_content"):
         log.save_binding(identity, {"scenario": identity})
+    delays = []
+    original_write = log._write
+    loop = asyncio.get_running_loop()
+
+    def slow_write(callback):
+        def commit():
+            result = callback()
+            release, started = threading.Event(), time.perf_counter()
+            def heartbeat():
+                delays.append(time.perf_counter() - started)
+                release.set()
+            loop.call_soon_threadsafe(heartbeat)
+            release.wait(1)
+            return result
+        return original_write(commit)
+
+    if args.slow_writes:
+        log._write = slow_write
     try:
         async with ctx.runtime_scope():
             if kind == "scheduler":
@@ -293,7 +316,7 @@ async def check(directory: Path, kind: str, mode: str):
                     program_binding="program", tools={name: name for name in ("screen_content", "share_content", "skip_content")},
                     snapshot_seq=0, rules="", history="")
                 source = WakeSource(ctx, WakeState(directory / "wake.db"))
-                source.accept(request)
+                await source.accept(request)
                 reader = log.reader(request.session_id)
                 stages = ("screen", "investigate") if mode == "two-phases" else ("screen",)
                 if mode == "recovered":
@@ -311,6 +334,8 @@ async def check(directory: Path, kind: str, mode: str):
                     await task.join()
                 except asyncio.CancelledError:
                     assert stale, "valid Wake phase was rejected before the model"
+            if args.slow_writes:
+                assert delays and max(delays) < 0.2, delays
             expected = 0 if stale else (2 if mode == "two-phases" else 1)
             assert len(calls) == len(receipts) == expected, (kind, mode, len(calls), len(receipts))
             assert all(boundary >= 0 and boundary <= head for _, boundary, head in inputs), inputs
@@ -320,7 +345,7 @@ async def check(directory: Path, kind: str, mode: str):
             with sqlite3.connect(directory / "sessions.db") as raw:
                 assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
                 assert raw.execute("PRAGMA foreign_key_check").fetchall() == []
-            return {"source": kind, "case": mode, "driver_calls": len(calls), "boundaries": inputs}
+            return {"slow_write_delays": delays, "source": kind, "case": mode, "driver_calls": len(calls), "boundaries": inputs}
     finally:
         await tasks.close()
         await root.dispose()
@@ -331,7 +356,7 @@ async def check(directory: Path, kind: str, mode: str):
 async def main(directory):
     results = []
     for source in ((args.owner,) if args.owner else ("scheduler", "subagent", "wake")):
-        for mode in ((args.case,) if args.case else ("fresh", "recovered", "newer-input", "newer-control", *(("two-phases",) if source == "wake" else ()))):
+        for mode in ((args.case,) if args.case else ("fresh",) if args.slow_writes else ("fresh", "recovered", "newer-input", "newer-control", *(("two-phases",) if source == "wake" else ()))):
             path = directory / (source + "-" + mode)
             path.mkdir()
             results.append(await check(path, source, mode))
