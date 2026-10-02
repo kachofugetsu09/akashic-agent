@@ -774,6 +774,12 @@ class ModelsStore:
             if command.image_input and "image" not in modalities:
                 modalities.append("image")
             if not command.image_input:
+                # 与能力写入共用 CAS 事务，不能留下会阻断所有聊天的视觉绑定。
+                if connection.execute(
+                    "SELECT 1 FROM model_role_bindings WHERE role = 'vision' AND model_id = ?",
+                    (model_id,),
+                ).fetchone() is not None:
+                    raise ValueError("此模型正在用于视觉角色，请先更换视觉模型，再关闭可看图。")
                 modalities = [item for item in modalities if item != "image"]
             if not modalities:
                 modalities = ["text"]

@@ -153,6 +153,31 @@ async def scenario(workspace: Path) -> None:
             assert snapshot().models["extra"].capabilities.context_window is None
             print("PASS user overrides survive catalog refresh, unknown values and model return; other fields refresh and repeated sync is a no-op")
 
+            # 视觉角色约束与能力修改同事务检查；拒绝后仍能进行普通文字聊天。
+            await models.settings.apply(UpdateModel(snapshot().revision, "extra", 8192, None, True))
+            await models.settings.apply(SetDefaultModel(snapshot().revision, "vision", "extra"))
+            before = snapshot()
+            try:
+                await models.settings.apply(UpdateModel(before.revision, "extra", 4096, 1024, False))
+            except ValueError as error:
+                assert "先更换视觉模型" in str(error)
+            else:
+                raise AssertionError("取消图像能力留下了失效的视觉角色绑定")
+            assert snapshot() == before, "拒绝修改必须保留全部配置和 revision"
+            async with models.chat_models.execution() as execution:
+                response = await execution.chat("agent").complete(
+                    ModelRequest(messages=({"role": "user", "content": "hello"},)))
+                assert response.call_record_id is not None
+                assert models.store.read_call(response.call_record_id)["state"] == "success"
+            # 显式换到另一个可看图模型后，原模型可以正常改为仅文字。
+            caps = snapshot().models[CHAT].capabilities
+            await models.settings.apply(UpdateModel(snapshot().revision, CHAT,
+                caps.context_window, caps.max_output_tokens, True))
+            await models.settings.apply(SetDefaultModel(snapshot().revision, "vision", CHAT))
+            await models.settings.apply(UpdateModel(snapshot().revision, "extra", 8192, None, False))
+            assert snapshot().models["extra"].capabilities.input_modalities == ("text",)
+            print("PASS vision capability removal is atomic; ordinary chat and its durable receipt survive rejection; reassignment permits editing")
+
             # 2. 删除有 CAS、真实备份；在途绑定及调用账不依赖被删配置行。
             async with models.chat_models.execution(model_id="extra") as execution:
                 old = execution.chat("agent")
