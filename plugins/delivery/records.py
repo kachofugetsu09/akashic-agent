@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Annotated, Literal, Protocol, Self, cast, runtime_checkable
 
@@ -234,6 +234,26 @@ class DeliveryRecords:
         _ = tx.save(key, value.model_dump(mode="json"), expected_version=None)
 
     def save(self, message_id: str, previous: OwnerRecord, delivery: Delivery) -> OwnerRecord:
+        return self._state.transact(lambda tx: self._save(tx, message_id, previous, delivery))
+
+    async def save_async(self, message_id: str, previous: OwnerRecord, delivery: Delivery, *,
+                         on_commit: Callable[[OwnerRecord], None] | None = None) -> OwnerRecord:
+        return await self._state.transact_async(
+            lambda tx: self._save(tx, message_id, previous, delivery), on_commit=on_commit,
+        )
+
+    async def cancel_prepared_async(self, message_id: str, sink: str, receipt: Receipt, *,
+                                    on_commit: Callable[[bool], None]) -> bool:
+        """同事务判定并撤回 prepared，不能把已 started 的真实效果改成 rejected。"""
+        def commit(tx: OwnerTransaction) -> bool:
+            previous, delivery = self.read(message_id, sink)
+            if delivery.phase != "prepared":
+                return False
+            self._save(tx, message_id, previous, Delivery(sink=delivery.sink, phase="rejected", receipt=receipt))
+            return True
+        return await self._state.transact_async(commit, on_commit=on_commit)
+
+    def _save(self, tx: OwnerTransaction, message_id: str, previous: OwnerRecord, delivery: Delivery) -> OwnerRecord:
         """真实回执与首个送达时间索引同事务提交；旧回执不补造历史时间。"""
         selection = self.check_owner(message_id)
         old = read_delivery(previous.value)
@@ -242,20 +262,17 @@ class DeliveryRecords:
         if delivery.phase == "delivered" and old.phase != "delivered":
             delivery = delivery.model_copy(update={"confirmed_at": datetime.now(timezone.utc)})
 
-        def commit(tx: OwnerTransaction) -> OwnerRecord:
-            row = tx.save(delivery_key(message_id, delivery.sink.name),
-                          cast(Mapping[str, object], delivery.model_dump(mode="json")),
-                          expected_version=previous.version)
-            key = "confirmed-message:" + message_id
-            if delivery.confirmed_at is not None and tx.read(key) is None:
-                confirmation = Confirmation(message_id=message_id, session_id=selection.session_id,
-                                            confirmed_at=delivery.confirmed_at)
-                value = confirmation.model_dump(mode="json")
-                _ = tx.save(key, value, expected_version=None)
-                _ = tx.save(time_key(delivery.confirmed_at) + message_id, value, expected_version=None)
-            return row
-
-        return self._state.transact(commit)
+        row = tx.save(delivery_key(message_id, delivery.sink.name),
+                      cast(Mapping[str, object], delivery.model_dump(mode="json")),
+                      expected_version=previous.version)
+        key = "confirmed-message:" + message_id
+        if delivery.confirmed_at is not None and tx.read(key) is None:
+            confirmation = Confirmation(message_id=message_id, session_id=selection.session_id,
+                                        confirmed_at=delivery.confirmed_at)
+            value = confirmation.model_dump(mode="json")
+            _ = tx.save(key, value, expected_version=None)
+            _ = tx.save(time_key(delivery.confirmed_at) + message_id, value, expected_version=None)
+        return row
 
     def pending(self) -> tuple[tuple[str, str], ...]:
         """恢复只枚举已固定的效果；不因新策略新增目的地。"""

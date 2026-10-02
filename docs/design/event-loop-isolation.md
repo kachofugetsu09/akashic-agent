@@ -460,3 +460,21 @@ requested/prepared 的等待期间发生放弃，不得用旧版本覆盖终态�
 `docker/debug/delivery_prepare_io.py` 挂载真实 Delivery provider，覆盖四类准备的正常与
 重复取消八场景，核对原消息、目的地、cursor、数据库完整性及原 loop 上的内容校验。
 发送开始、终态回执和 Alert 的版本顺序仍由后续独立层处理。
+
+## Delivery 的开始与终态（#879）
+
+无同步 `before_start` 的发送使用原 Task key 的异步接纳，started 与显式 prepared
+撤回串行；终态回执、确认时间索引和显式重试也通过原 owner 的有界事务完成。
+取消在 started 提交后仍先取回确切版本，再记录真实失败；送达回执提交中取消则
+保留已完成的确认事实。物理工作结束前不释放 Task、sender scope 或领域保护。
+
+`delivery.guarded-start.v1` 明确提供 `start_guard`：领域 owner 的 async context
+覆盖前提读取与首次 started 的完整提交，返回拒绝原因则保存 rejected。
+started 提交后释放保护，再进入网络发送；恢复旧 started 不重新判定为从未发生。
+该能力不执行 Context 回调的线程迁移。旧 `before_start` 仍保留原同步语义，Wake
+会在 EventMail 写入迁移时改用新能力，两种检查不得混用。
+
+`docker/debug/delivery_receipt_io.py` 使用实际 MessageLog、Delivery、EventMailStore
+和本地 sender 文件效果，覆盖慢 started/终态、重复取消、prepared 撤回、重试、
+版本先更新则拒绝，以及 started 先提交后更新无需等待网络结束的十二场景。
+既有投递集成的观测点改为真实提交完成，不把 sender 返回或事务内 INSERT 当成回执。
