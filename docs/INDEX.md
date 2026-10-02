@@ -63,7 +63,7 @@
 
 涉及消息、记忆、附件、配置、凭据、调度、plugin-data，或裁切、压缩、重建、同步、迁移、覆盖、卸载、删除时，先读 [持久化状态地图](design/persistence-state-map.md) 的相关对象及其勘误，再按 STA-003 核对本次增、改、减与恢复方式。地图中的推断和未知不能充当删除依据。
 
-Git worktree 保存源码、测试和项目文档；Akashic `<workspace>` 保存运行数据。切分支、删源码或清理 worktree 不授权改变后者。插件 cache 和 workspace 软链接不是源码编辑入口；外置插件须回到其源码仓库，再通过正式安装链验证。
+Git worktree 保存源码、测试和项目文档；Akashic `<workspace>` 保存运行数据。切分支、删源码或清理 worktree 不授权改变后者。插件 cache 和 workspace 软链接不是源码编辑入口；外置插件只以 [fleet 当前清单](https://github.com/kachofugetsu09/akashic-fleet) 为维护范围，再回到对应源码仓库并通过正式安装链验证；本地历史目录和旧部署快照不能扩充范围。取证规则见 [hua-home 事实入口](design/hua-home-plugin-runtime-source-of-truth.md)。
 
 ## 5. 维护本索引
 

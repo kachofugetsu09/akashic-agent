@@ -7,13 +7,6 @@ TURN_EFFECTS_KEY = "effects"
 POST_COMMIT_EFFECT_KEY = "post_commit"
 
 
-class TurnStorage(StrEnum):
-    """Declare whether one Turn is part of durable Session history."""
-
-    DURABLE = "durable"
-    IN_MEMORY = "in_memory"
-
-
 class PostCommitEffect(StrEnum):
     """Declare whether durable projections may consume a closed Turn."""
 

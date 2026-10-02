@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from agent.plugin_composition import PROCESSES, Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MessageReader
-from agent.plugin_composition.process_runtime import (
+from agent.process_runtime import (
     DEFAULT_HARD_TIMEOUT_S,
     DEFAULT_INITIAL_YIELD_TIME_MS,
     DEFAULT_MAX_OUTPUT_TOKENS,

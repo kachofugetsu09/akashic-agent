@@ -53,7 +53,8 @@
 
 ## P1 · 外部插件发布兼容
 
-核对外部已安装插件的显式依赖声明、公共合同导入与真实分发组合。
+仅按 [fleet 当前集合](design/hua-home-plugin-runtime-source-of-truth.md#1-维护范围只认-fleet运行事实只认-hua-home)
+核对外置插件的显式依赖声明、公共合同导入与真实分发组合；旧本地仓库不纳入迁移。
 [Issue 766 本地实现](design/issue-766-orthogonal-capabilities.md) 已完成合同和宿主装配收敛；
 内置插件验证不能代替外部安装、正式发布或真实 Android Shell 客户端验收。
 

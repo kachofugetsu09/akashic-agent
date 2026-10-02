@@ -9,7 +9,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from agent.control.context import running_turn_id
-from agent.plugin_composition.process_runtime import (
+from agent.process_runtime import (
     DEFAULT_HARD_TIMEOUT_S,
     DEFAULT_INITIAL_YIELD_TIME_MS,
     DEFAULT_MAX_OUTPUT_TOKENS,

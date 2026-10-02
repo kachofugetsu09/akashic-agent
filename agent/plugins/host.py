@@ -71,7 +71,7 @@ from agent.plugin_composition.runtime_catalog import (
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_composition.ui import DASHBOARD_ROUTES
 from agent.plugin_contracts.ui import MESSAGE_DISPLAY, PLUGIN_UI
-from agent.plugins.archive import PluginArchive
+from agent.plugin_composition.archive import PluginArchive
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
