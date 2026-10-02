@@ -93,10 +93,10 @@ class Source:
         return tuple(key.removeprefix("flow:") for key, row in self.ctx.require(OWNER_STATE).open(self.ctx).list()
                      if key.startswith("flow:") and not Pointer.model_validate(dict(row.value)).settled)
 
-    def accept(self, request: Request) -> None:
+    async def accept(self, request: Request) -> None:
         """原选择与恢复指针同事务提交，先于任何 EventMail/Drift 领取。"""
         ctx = self.ctx
-        _ = ctx.require(SESSION_ADMISSION).ensure(ctx, request.session_id,
+        _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, request.session_id,
             SessionAttributes(visibility="internal", learning="excluded"))
         writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Input,),
             content={"wake.request": check_request})(request.session_id)
@@ -106,9 +106,10 @@ class Source:
             previous = tx.read(key)
             if previous is None:
                 _ = tx.save(key, pointer.model_dump(), expected_version=None)
-            _ = tx.append(writer, request.input_id, Input((ContentPart("wake.request", request.model_dump(mode="json")),)))
+            _ = tx.append_prepared(prepared)
         try:
-            ctx.require(OWNER_STATE).open(ctx).transact(commit)
+            prepared = await writer.prepare_async(request.input_id, Input((ContentPart("wake.request", request.model_dump(mode="json")),)))
+            await ctx.require(OWNER_STATE).open(ctx).transact_async(commit)
         finally:
             writer.expire()
 
@@ -161,7 +162,7 @@ class Source:
                     await self._change_content(token, "failed")
                 elif (await self.ctx.require(DRIFT_WAKE).transition(token, "failed")).get("changed") is not True:
                     raise RuntimeError("Drift 发送失败后没有关闭原领取")
-        self._settled(request, reader)
+        await self._settled(request, reader)
 
     async def _phase(self, task: Task, request: Request, reader: MessageReader,
                      stage: Stage, data: Mapping[str, object]) -> Message:
@@ -180,9 +181,10 @@ class Source:
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Input,),
                 content={"wake.phase": check_phase, "model.selection": ctx.require(MODEL_SELECTION).check,
                          "text": ctx.require(CONTENT).check_text})(request.session_id)
+            task.on_close(writer.expire)
             try:
                 phase = Phase(input_id=request.input_id, stage=stage)
-                phase_message = writer.append(
+                phase_message = await writer.append_async(
                     request.phase_id(stage),
                     Input((ContentPart("wake.phase", phase.model_dump(mode="json")),
                           ContentPart("text", json.dumps({"stage": stage, "data": dict(data)}, ensure_ascii=False)),
@@ -199,14 +201,14 @@ class Source:
         async with ctx.require(BINDINGS).open(request.program_binding, WAKE_PROGRAM) as (program, _):
             return await program(task, reader, request)
 
-    def _settled(self, request: Request, reader: MessageReader) -> None:
+    async def _settled(self, request: Request, reader: MessageReader) -> None:
         """未进入模型的纯业务决定也正常关闭输入，然后推进唯一来源指针。"""
         ctx = self.ctx
-        messages = reader.snapshot()
+        messages = await reader.snapshot_async(through_seq=reader.head())
         if isinstance(messages[-1].body, Input):
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Output,), content={})(request.session_id)
             try:
-                _ = writer.append("wake-close:" + request.flow_id, Output((), "quiet"))
+                _ = await writer.append_async("wake-close:" + request.flow_id, Output((), "quiet"))
             finally:
                 writer.expire()
         def commit(tx: OwnerTransaction) -> None:
@@ -216,7 +218,7 @@ class Source:
             pointer = Pointer.model_validate(dict(row.value))
             if not pointer.settled:
                 _ = tx.save(key, pointer.model_copy(update={"settled": True}).model_dump(), expected_version=row.version)
-        ctx.require(OWNER_STATE).open(ctx).transact(commit)
+        await ctx.require(OWNER_STATE).open(ctx).transact_async(commit)
 
     async def _record(self, request: Request, action: str, detail: str) -> None:
         """保存实际决定后才继续原领域流转；取消等到数据库真实关闭。"""
@@ -252,7 +254,7 @@ class Source:
             claimed = await domain.select_batch(refs, request.snapshot_seq, request.accepted, request.now)
             if claimed.get("selected") is not True:
                 await self._record(request, "defer", "原 Content 批次已经变化，领取被拒绝")
-                self._settled(request, reader)
+                await self._settled(request, reader)
                 return "admission_rejected"
             selected = await domain.selection(request.accepted)
             if selected is None:
@@ -319,7 +321,7 @@ class Source:
                 assert previous is not None
                 if previous["decision"] is None:
                     await self._record(request, "defer", "原 Drift 职责领取被拒绝")
-                self._settled(request, reader)
+                await self._settled(request, reader)
                 return "admission_rejected"
             selected = await domain.selection(request.accepted)
             if selected is None:
@@ -346,7 +348,7 @@ class Source:
         if result.get("changed") is not True:
             raise RuntimeError("原 Drift 领取没有提交预期变化")
         if action != "ready_for_delivery":
-            self._settled(request, reader)
+            await self._settled(request, reader)
             return "deferred" if action == "defer" else "model_skip"
         return await self._finish_domain(task, request, reader, "drift")
 
@@ -359,7 +361,7 @@ class Source:
         if selected is None:
             raise ValueError("Wake 完成缺少原领域领取")
         if selected.get("status") not in {"ready_for_delivery", "delivered", "settled"}:
-            self._settled(request, reader)
+            await self._settled(request, reader)
             return "failed" if selected.get("status") == "failed" else "deferred" if selected.get("status") == "deferred" else "model_skip"
         value = decision(reader, request, stage)
         if not isinstance(value, Share):
@@ -378,7 +380,7 @@ class Source:
                   else await self.ctx.require(DRIFT_DELIVERY).settle(token, request.notification_id))
         if result.get("settled") is not True:
             raise RuntimeError("Wake 真实送达后的领域确认未提交")
-        self._settled(request, reader)
+        await self._settled(request, reader)
         return "shared"
 
     async def _notify(
@@ -426,7 +428,7 @@ class Source:
             assert previous is not None
             if previous["decision"] is None:
                 await self._record(request, "skip", "告警在发送前已过期")
-            self._settled(request, reader)
+            await self._settled(request, reader)
             return "model_skip"
         _ = await self._phase(
             task, request, reader, "alert", {"alert": dict(selected)}
@@ -437,7 +439,7 @@ class Source:
             await self._record(request, action, "告警没有提交唯一有效 share_alert")
             _ = await domain.change_alert(ref, request.accepted, action, self.now(),
                                     not_before=self.now() + timedelta(minutes=5) if action == "defer" else None)
-            self._settled(request, reader)
+            await self._settled(request, reader)
             return "model_skip" if action == "skip" else "deferred"
         await self._record(request, "share", value.message)
         # 模型期间来源可能已经换版；不得发送旧版本的新通知或关闭新 projection。
@@ -453,7 +455,7 @@ class Source:
             receipt = delivery.receipt(request.notification_id, request.sink["name"])
             if receipt is not None and receipt.status == "rejected":
                 if await domain.change_alert(ref, request.accepted, "expire", self.now()):
-                    self._settled(request, reader)
+                    await self._settled(request, reader)
                     return "model_skip"
                 if await domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) != "selected":
                     return await self._finish_old_alert(request, reader)
@@ -463,7 +465,7 @@ class Source:
         status = await domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"])
         if not changed and status not in {"delivered", "superseded"}:
             raise RuntimeError("Alert 已送达但原领取无法确认")
-        self._settled(request, reader)
+        await self._settled(request, reader)
         return "shared"
 
     async def _finish_old_alert(self, request: Request, reader: MessageReader) -> str:
@@ -476,7 +478,7 @@ class Source:
                 if not cancelled:
                     result = await delivery.send(request.notification_id, sink)
                     if result.status == "failed":
-                        self._settled(request, reader)
+                        await self._settled(request, reader)
                         return "failed"
-        self._settled(request, reader)
+        await self._settled(request, reader)
         return "model_skip"

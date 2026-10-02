@@ -243,7 +243,7 @@ async def wake_flow(directory: Path) -> dict[str, object]:
                 program_binding="unused", tools={name: "unused" for name in TOOLS["drift"]},
                 snapshot_seq=0, proposals=tuple(dict(p) for p in proposals), rules="", history="")
             source = Source(ctx, state)
-            source.accept(request)
+            await source.accept(request)
             original = log.reader(request.session_id).snapshot()[0]
             task = await source.start(request.flow_id)
             assert task is not None

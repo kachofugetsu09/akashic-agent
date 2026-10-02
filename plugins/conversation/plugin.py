@@ -122,7 +122,7 @@ async def apply(ctx: Context) -> None:
         # 1. 带宽键的首条输入先接纳 Session；之后同一 scope 重复声明是幂等核对。
         dimensions = session_dimensions(message.metadata)
         if dimensions:
-            _ = ctx.require(SESSION_ADMISSION).ensure(ctx, session_id, SessionAttributes.scoped(dimensions))
+            _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, session_id, SessionAttributes.scoped(dimensions))
         # 2. 来源只核验已发布附件，不接管传输 lease 或派生另一份元数据。
         if message.attachments:
             artifacts = ctx.require(ARTIFACT_READ)

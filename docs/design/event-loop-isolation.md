@@ -488,3 +488,8 @@ EventMail 只发布 `eventmail.content_source.v2`、`eventmail.alert_source.v2`�
 同一 EventMail owner 的写锁覆盖告警版本检查到 `delivery.guarded-start.v1` 的首次 started 提交；
 随后释放锁再进入网络发送。取消排空已开始的 SQL，已提交来源仍在原 loop 发出 changed。
 原 envelope、选择、结算与 ACK 的身份和保留规则不变，没有新增持久表或删除路径。
+
+SessionAdmission 的异步准入在原 scope 校验维度，然后排空完整 create-once 事务。
+Conversation、Programmatic、Scheduler 与 Wake 使用它；固定 Session 属性仍不可改写。
+Wake 的请求与 flow 指针继续同事务追加，阶段 Input、quiet Output、失败 Control 和结算指针均等待实际提交。
+取消若发生在 quiet 已提交但指针未推进时，重读原消息即可补齐结算；不重写旧正文。

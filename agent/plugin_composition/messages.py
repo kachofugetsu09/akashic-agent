@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
+from core.common.file_io import run_file_io
+
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
@@ -159,13 +161,26 @@ class SessionAdmission:
         _ = ctx.require_runtime_owner(SESSION_ADMISSION, self)
         # 1. 维度值只在首次接纳时由其 owner 校验；已有 Session 只比较固定事实。
         if attributes.scope and not self._admitted(session_id):
-            for name, value in attributes.scope:
-                grant = self._dimensions.get(name)
-                if grant is None:
-                    raise PermissionError(f"Session 维度没有 owner: {name}")
-                grant[1](value)
+            self._check_dimensions(attributes)
         # 2. 固定事实写入与冲突检查仍由同一个 create-once 事务完成。
         return self._log.ensure_session(session_id, attributes)
+
+    async def ensure_async(self, ctx: Context, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
+        """原 scope 校验维度；完整 create-once 事务进入文件线程并排空取消。"""
+        log = self._log
+        if log is None:
+            raise RuntimeError("candidate 验证期禁止接纳正式 Session")
+        _ = ctx.require_runtime_owner(SESSION_ADMISSION, self)
+        if attributes.scope and not await run_file_io(lambda: self._admitted(session_id)):
+            self._check_dimensions(attributes)
+        return await log.ensure_session_async(session_id, attributes)
+
+    def _check_dimensions(self, attributes: SessionAttributes) -> None:
+        for name, value in attributes.scope:
+            grant = self._dimensions.get(name)
+            if grant is None:
+                raise PermissionError(f"Session 维度没有 owner: {name}")
+            grant[1](value)
 
     def _admitted(self, session_id: str) -> bool:
         assert self._log is not None

@@ -287,7 +287,7 @@ class Runtime:
                         outcome = "admission_rejected" if owner is not None else (
                             "content_insufficient" if admission.pool.due_count or admission.pool.expired_count else "no_due")
                     else:
-                        self.source.accept(original)
+                        await self.source.accept(original)
                         result = await self._run(flow_id)
                         assert result is not None
                         outcome = result
