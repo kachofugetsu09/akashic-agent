@@ -39,6 +39,7 @@ async def check(directory: Path, phase: str, cancel: bool):
     await root.mount(consumer, name="wake", inject=(MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION),
                      runtime=PluginRuntime("wake", "io", directory, directory, directory, {}))
     ctx = contexts[0]
+    log.save_binding("unused", {"scenario": True})
     request = Request(flow_id="a" * 32, owner="drift", now=datetime.now(UTC), timezone="UTC",
         target=DeliveryTarget(channel="unused", recipient="unused", session_id="target"),
         sink={"name": "unused", "binding_id": "unused", "address": "unused"}, program_binding="unused",
@@ -51,7 +52,7 @@ async def check(directory: Path, phase: str, cancel: bool):
         def commit():
             value = callback()
             selected = (isinstance(value, SessionAttributes) if phase == "session" else
-                        isinstance(value, Message) if phase == "quiet" else value is None)
+                        isinstance(value, tuple) and isinstance(value[0], Message) if phase == "quiet" else value is None)
             if selected and not stamps:
                 stamps.append(time.perf_counter())
                 loop.call_soon_threadsafe(reached.set)
@@ -73,7 +74,10 @@ async def check(directory: Path, phase: str, cancel: bool):
                         else:
                             await source._settled(request, reader)
                 job = asyncio.create_task(operation())
-                await asyncio.wait_for(reached.wait(), 3)
+                try:
+                    await asyncio.wait_for(reached.wait(), 3)
+                except TimeoutError as error:
+                    raise AssertionError((phase, cancel, job.done())) from error
                 lag = time.perf_counter() - stamps[0]
                 assert lag < 0.2, lag
                 if cancel:
