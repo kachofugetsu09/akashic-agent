@@ -95,8 +95,10 @@ class ReplyState:
                 if draft is None or draft.message_id != message_id:
                     raise RuntimeError("预览回调已离开原消息 scope")
                 call_id = value.get("call_record_id", draft.call_record_id)
-                if draft.call_record_id is not None and call_id != draft.call_record_id:
-                    raise RuntimeError("同一草稿的模型调用 ID 已改变")
+                # Models 的安全重试会为同一草稿发布新的调用 ID；已有内容不得跨尝试拼接。
+                if (draft.call_record_id is not None and call_id != draft.call_record_id
+                        and (draft.text or draft.thinking)):
+                    raise RuntimeError("已有内容的草稿不能切换模型调用 ID")
                 self._items[task.handle] = replace(current, preview=replace(
                     draft, text=draft.text + value.get("content_delta", ""),
                     thinking=draft.thinking + value.get("thinking_delta", ""),
