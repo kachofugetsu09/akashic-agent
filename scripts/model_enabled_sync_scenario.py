@@ -58,7 +58,7 @@ async def scenario(workspace: Path) -> None:
             async def add(model_id, *, discovery_owned=True):
                 return await models.settings.apply(AddModel(
                     expected_revision=snapshot().revision, model_id=model_id,
-                    connection_id=CONNECTION, kind=candidate.kind, model=candidate.model,
+                    connection_id=CONNECTION, kind=ModelKind.CHAT, model=candidate.model,
                     capabilities=candidate.capabilities, capability_sources=candidate.capability_sources,
                     discovery_owned=discovery_owned,
                 ))
