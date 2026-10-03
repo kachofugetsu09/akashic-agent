@@ -50,7 +50,12 @@ export class AnonymousBrowsers {
       backend.on("event", onEvent);
       return id;
     } catch (error) {
-      await this.close(id, context);
+      try {
+        await this.close(id, context);
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError],
+          `Anonymous browser failed: ${error.message}; cleanup failed: ${cleanupError.message}`);
+      }
       throw error;
     }
   }
@@ -166,18 +171,21 @@ export class AnonymousBrowsers {
       if (instance.backend && !this.exited())
         await instance.backend.releaseInputs();
     } finally {
-      instance.backend?.close();
       try {
-        if (instance.contextId && !this.exited())
-          await this.engine.backend.browser.send(
-            "Target.disposeBrowserContext",
-            { browserContextId: instance.contextId },
-          );
+        instance.backend?.close();
       } finally {
-        this.instances.delete(id);
-        if (!this.instances.size && this.engine) {
-          this.stopping = this.stopEngine().finally(() => { this.stopping = null; });
-          await this.stopping;
+        try {
+          if (instance.contextId && !this.exited())
+            await this.engine.backend.browser.send(
+              "Target.disposeBrowserContext",
+              { browserContextId: instance.contextId },
+            );
+        } finally {
+          this.instances.delete(id);
+          if (!this.instances.size && this.engine) {
+            this.stopping = this.stopEngine().finally(() => { this.stopping = null; });
+            await this.stopping;
+          }
         }
       }
     }
@@ -198,7 +206,7 @@ export class AnonymousBrowsers {
         await engine.exited;
       }
     }
-    await rm(engine.directory, { recursive: true });
+    await rm(engine.directory, { recursive: true, force: true });
     this.engine = null;
   }
 

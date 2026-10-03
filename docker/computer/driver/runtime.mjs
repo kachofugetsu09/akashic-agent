@@ -153,6 +153,7 @@ export class ComputerDriver {
         "Computer call cancelled before admission; no actions were sent",
       );
     }
+    signal?.throwIfAborted();
     const active = {
       context,
       pending: new Set(),

@@ -465,6 +465,6 @@ export class BrowserBackend extends EventEmitter {
   close() {
     for (const connection of this.connections.values()) connection.close();
     this.connections.clear();
-    this.browser.close();
+    this.browser?.close();
   }
 }

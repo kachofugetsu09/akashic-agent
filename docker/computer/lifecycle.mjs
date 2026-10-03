@@ -47,6 +47,11 @@ export class ComputerLifecycle {
     if (this.state === "ready") this.lastUsed = performance.now();
   }
 
+  fail(error) {
+    this.state = "failed";
+    this.error = error.message;
+  }
+
   async use(task) {
     const release = await this.acquire();
     try { return await task(); }
@@ -108,15 +113,19 @@ export class ComputerLifecycle {
         () => child.exitCode !== null || child.signalCode !== null,
       );
       this.state = "ready";
+      this.error = "";
       this.touch();
     } catch (error) {
       this.state = "stopping";
       try {
         await this.stopRuntime();
-      } finally {
-        this.state = "failed";
-        this.error = `Computer startup failed: ${error.message}`;
+      } catch (cleanupError) {
+        this.fail(new AggregateError([error, cleanupError],
+          `Computer startup failed: ${error.message}; cleanup failed: ${cleanupError.message}`));
+        throw new Error(this.error);
       }
+      this.state = "sleeping";
+      this.error = `Computer startup failed: ${error.message}`;
       throw error;
     }
   }
@@ -147,6 +156,7 @@ export class ComputerLifecycle {
       await this.stopDriver();
     } finally {
       if (this.child?.pid) await this.stopProcess();
+      else this.child = null;
     }
   }
 
@@ -168,6 +178,8 @@ export class ComputerLifecycle {
       }
     }
     this.child = null;
+    if (child.signalCode)
+      throw new Error(`Computer runtime exited by ${child.signalCode}; profile flush was not confirmed`);
   }
 
   async close() {

@@ -11,6 +11,20 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 let driver;
 let driverReady;
+const driverCalls = new Map();
+/** 取消先于唤醒或请求到达时，也必须在准入前保留结果。 */
+function driverCall(callId) {
+  requiredString(callId, "call_id", 256);
+  for (const [id, call] of driverCalls)
+    if (call.expires < Date.now()) driverCalls.delete(id);
+  let call = driverCalls.get(callId);
+  if (!call) {
+    if (driverCalls.size >= 4096) throw new Error("Too many pending Computer calls");
+    call = { controller: new AbortController(), expires: Date.now() + 300000 };
+    driverCalls.set(callId, call);
+  }
+  return call;
+}
 async function readyDriver() {
   await computer.wake();
   return driverReady;
@@ -715,6 +729,8 @@ if (activity.active) await saveActivity(activity.action, false);
 
 const server = createServer(async (request, response) => {
   let release;
+  let call;
+  let callId;
   if (stopping) {
     json(response, 503, { error: "Computer is stopping" });
     return;
@@ -725,6 +741,19 @@ const server = createServer(async (request, response) => {
       request.method === "POST" && url.pathname === "/driver/run"
         ? await body(request)
         : null;
+    if (driverPayload) {
+      callId = driverPayload.context?.call_id;
+      if (driverCalls.get(callId)?.done)
+        throw new InputError("Computer call_id is already running");
+      call = driverCall(callId);
+      call.expires = Infinity;
+      call.done = new Promise((resolve) => { call.finish = resolve; });
+      response.once("close", () => {
+        if (!response.writableFinished)
+          call.controller.abort(new Error("Computer caller disconnected"));
+      });
+      call.controller.signal.throwIfAborted();
+    }
     // 操作持有占用；活动轮询、握手与取消均不得唤醒主浏览器。
     const operation =
       [
@@ -746,11 +775,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       await readyDriver();
-      const controller = new AbortController();
-      response.once("close", () => {
-        if (!response.writableFinished)
-          controller.abort(new Error("Computer caller disconnected"));
-      });
+      call.controller.signal.throwIfAborted();
       const turn = JSON.stringify([
         payload.context?.session_id,
         payload.context?.turn_id,
@@ -764,7 +789,7 @@ const server = createServer(async (request, response) => {
               endTurn: payload.endTurn,
               timeoutMs: payload.timeoutMs,
             },
-            controller.signal,
+            call.controller.signal,
           ),
         );
         if (!payload.endTurn) computer.turns.add(turn);
@@ -774,11 +799,18 @@ const server = createServer(async (request, response) => {
       }
     } else if (request.method === "POST" && url.pathname === "/driver/cancel") {
       const payload = await body(request);
-      if (driver) await driver.cancel(payload.call_id);
+      const cancelled = driverCall(payload.call_id);
+      cancelled.controller.abort(new Error("Computer call cancelled before admission; earlier effects may remain"));
+      if (driver?.active?.context.call_id === payload.call_id)
+        await driver.cancel(payload.call_id);
+      if (cancelled.done) await cancelled.done;
       json(response, 200, { released: true });
     } else if (request.method === "POST" && url.pathname === "/driver/reset") {
       const payload = await body(request);
+      requiredString(payload.session_id, "session_id", 256);
       if (driver) await driver.reset(payload.session_id);
+      for (const turn of computer.turns)
+        if (JSON.parse(turn)[0] === payload.session_id) computer.turns.delete(turn);
       json(response, 200, { reset: true });
     } else if (
       request.method === "GET" &&
@@ -851,15 +883,20 @@ const server = createServer(async (request, response) => {
     }
   } catch (error) {
     if (driver?.closed && computer.state === "ready") {
-      computer.state = "failed";
-      computer.error = error.message;
+      computer.fail(error);
     }
     const status =
       error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
     json(response, status, {
       error: error instanceof Error ? error.message : String(error),
     });
-  } finally { release?.(); }
+  } finally {
+    release?.();
+    if (call?.finish) {
+      driverCalls.delete(callId);
+      call.finish();
+    }
+  }
 }).listen(8080, "0.0.0.0");
 
 const openCliServer = createServer(proxyOpenCli).listen(19826, "0.0.0.0");
@@ -876,7 +913,7 @@ async function refreshIdentity() {
           "refresh",
           "--all",
           "--site",
-          process.env.OPENCLI_AUTH_REFRESH_SITES,
+          process.env.OPENCLI_AUTH_REFRESH_SITES ?? "",
           "--concurrency",
           "2",
           "--timeout",
