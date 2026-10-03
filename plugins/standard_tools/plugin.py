@@ -44,6 +44,8 @@ async def apply(ctx: Context) -> None:
         if not snapshot:
             return {}
         current = directories.snapshot(snapshot[-1].session_id)
+        if current.path is None:
+            return {}
         info = await directories.inspect(current.path)
         rules = await read_agents(current.path)
         return {"reminders": ({"name": "working-directory", "priority": 400, "replay": False,

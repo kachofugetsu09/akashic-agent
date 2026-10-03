@@ -1,5 +1,6 @@
 from collections.abc import Awaitable, Callable, Mapping
 from typing import cast
+from core.common.file_io import run_file_io
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
@@ -119,10 +120,17 @@ async def apply(ctx: Context) -> None:
             if not isinstance(retry, str) or not retry:
                 raise ValueError("重试必须引用已有 Input")
             return await open(session_id).resume(message_id, retry)
-        # 1. 带宽键的首条输入先接纳 Session；之后同一 scope 重复声明是幂等核对。
+        # 1. 每条首次输入都接纳 Session；省略维度的续聊保留已有固定属性。
         dimensions = session_dimensions(message.metadata)
-        if dimensions:
-            _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, session_id, SessionAttributes.scoped(dimensions))
+        catalog = ctx.require(MESSAGE_CATALOG)
+        reader = catalog.reader(session_id)
+
+        def initial_attributes() -> SessionAttributes:
+            with reader.read_snapshot():
+                return reader.attributes if catalog.exists(session_id) else SessionAttributes()
+
+        attributes = SessionAttributes.scoped(dimensions) if dimensions else await run_file_io(initial_attributes)
+        _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, session_id, attributes)
         # 2. 来源只核验已发布附件，不接管传输 lease 或派生另一份元数据。
         if message.attachments:
             artifacts = ctx.require(ARTIFACT_READ)
