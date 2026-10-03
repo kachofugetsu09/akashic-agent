@@ -156,7 +156,7 @@ workspace_files = ()
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:0a4fc0231e1d55949b4a62dcfa6a353ab37c06c6829e075908c71fd1a99830e2"
+    "sha256:6a2cb0b57e912d48dae55b1b4c1d62c43d52108692bb330b038c1ba00bb6a365"
 )
 
 
@@ -275,7 +275,8 @@ async def apply(ctx: Context) -> None:
             "Prefer suitable dedicated skills, connectors, APIs or CLIs when available. "
             "Run JavaScript with the initialized browser and desktop APIs. "
             "Use browser.tabs, tab.ax, tab.playwright, tab.dom_cua or sky. "
-            "Bindings persist within this Session. Call nodeRepl.write(value) or "
+            "Use agent.browsers.create() for an anonymous BrowserContext and close() to release it. "
+            "Bindings persist while awake; sleep, errors or reset invalidate them. Call nodeRepl.write(value) or "
             "nodeRepl.emitImage(bytes) for output. Read the computer skill first."
         ),
         parameters={

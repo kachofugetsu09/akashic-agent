@@ -82,6 +82,7 @@
 }
 
 .computer-connection-state button {
+  min-height: 44px;
   margin-block-start: 6px;
   padding-inline: 14px;
 }
