@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ComputerDriver } from "./driver/runtime.mjs";
+import { ComputerLifecycle, duration } from "./lifecycle.mjs";
 import { execFile } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -8,11 +9,43 @@ import { connect as tcpConnect } from "node:net";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
-const driver = new ComputerDriver();
+let driver;
 let driverReady;
-function readyDriver() {
-  return (driverReady ??= driver.start());
+async function readyDriver() {
+  await computer.wake();
+  return driverReady;
 }
+const computer = new ComputerLifecycle({
+  idleMs: duration("COMPUTER_IDLE_MS", 600000),
+  async start(exited) {
+    // 1. 图形进程就绪后才创建 driver；控制服务健康检查不会走这里。
+    const deadline = Date.now() + 20000;
+    let failure;
+    while (Date.now() < deadline) {
+      if (exited()) throw new Error("Computer runtime exited during startup");
+      try {
+        await health();
+        failure = null;
+        break;
+      } catch (error) {
+        failure = error;
+        await sleep(100);
+      }
+    }
+    if (failure) throw failure;
+    driver = new ComputerDriver();
+    driverReady = driver.start();
+    await driverReady;
+  },
+  async stop() {
+    // 2. 已确认正常输入释放后才允许关闭浏览器与重用 profile。
+    if (driver) await driver.close();
+    driver = undefined;
+    driverReady = undefined;
+    activeTargetId = "";
+    browserSnapshots.clear();
+  },
+});
 const activityPath = "/data/state/activity.json";
 const maxBodyBytes = 256 * 1024;
 let activity = { revision: 0, noticeId: 0, active: false, action: "", updatedAt: "" };
@@ -612,31 +645,54 @@ async function screenshot(response, quiet) {
   response.end(bytes);
 }
 
-function proxyOpenCli(request, response) {
+async function proxyOpenCli(request, response) {
   const url = new URL(request.url ?? "/", "http://opencli.local");
   if (url.pathname === "/shutdown") {
-    json(response, 403, { error: "the Computer plugin owns the OpenCLI daemon lifecycle" });
+    json(response, 403, {
+      error: "the Computer plugin owns the OpenCLI daemon lifecycle",
+    });
     return;
   }
-  const upstream = httpRequest(
-    {
-      hostname: "127.0.0.1",
-      port: 19825,
-      method: request.method,
-      path: request.url,
-      headers: { ...request.headers, host: "127.0.0.1:19825" },
-    },
-    (upstreamResponse) => {
-      response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
-      upstreamResponse.pipe(response);
-    },
-  );
-  upstream.setTimeout(125_000, () => upstream.destroy(new Error("OpenCLI daemon timed out")));
-  upstream.on("error", (error) => {
-    if (!response.headersSent) json(response, 502, { error: error.message });
-    else response.destroy(error);
-  });
-  request.pipe(upstream);
+  try {
+    await computer.use(
+      () =>
+        new Promise((resolve, reject) => {
+          response.once("finish", resolve);
+          response.once("close", resolve);
+          const upstream = httpRequest(
+            {
+              hostname: "127.0.0.1",
+              port: 19825,
+              method: request.method,
+              path: request.url,
+              headers: { ...request.headers, host: "127.0.0.1:19825" },
+            },
+            (upstreamResponse) => {
+              response.writeHead(
+                upstreamResponse.statusCode ?? 502,
+                upstreamResponse.headers,
+              );
+              upstreamResponse.pipe(response);
+            },
+          );
+          upstream.setTimeout(125_000, () =>
+            upstream.destroy(new Error("OpenCLI daemon timed out")),
+          );
+          upstream.on("error", (error) => {
+            if (!response.headersSent)
+              json(response, 502, { error: error.message });
+            else response.destroy(error);
+            reject(error);
+          });
+          response.once("close", () => upstream.destroy());
+          request.pipe(upstream);
+        }),
+    );
+  } catch (error) {
+    if (!response.headersSent && !response.destroyed)
+      json(response, 502, { error: error.message });
+    else console.error("OpenCLI proxy:", error.message);
+  }
 }
 
 try {
@@ -650,37 +706,103 @@ try {
 if (activity.active) await saveActivity(activity.action, false);
 
 const server = createServer(async (request, response) => {
-  if (stopping) { json(response, 503, {error:"Computer is stopping"}); return; }
+  let release;
+  if (stopping) {
+    json(response, 503, { error: "Computer is stopping" });
+    return;
+  }
   try {
     const url = new URL(request.url ?? "/", "http://computer.local");
+    const driverPayload =
+      request.method === "POST" && url.pathname === "/driver/run"
+        ? await body(request)
+        : null;
+    // 操作持有占用；活动轮询、握手与取消均不得唤醒主浏览器。
+    const operation =
+      [
+        "/screenshot",
+        "/input",
+        "/browser/observe",
+        "/browser/action",
+        "/wake",
+      ].includes(url.pathname) ||
+      (driverPayload && (!driverPayload.endTurn || driver));
+    if (operation) release = await computer.acquire();
     if (request.method === "POST" && url.pathname === "/driver/run") {
-      const payload = await body(request);
+      const payload = driverPayload;
+      if (payload.endTurn && !driver) {
+        json(response, 200, {
+          content: [],
+          call_id: payload.context?.call_id,
+        });
+        return;
+      }
       await readyDriver();
       const controller = new AbortController();
       response.once("close", () => {
         if (!response.writableFinished)
           controller.abort(new Error("Computer caller disconnected"));
       });
-      json(
-        response,
-        200,
-        await tracked("computer", () => driver.run({context: payload.context, code: payload.code, endTurn: payload.endTurn, timeoutMs: payload.timeoutMs}, controller.signal)),
-      );
-    } else if (request.method === "POST" && url.pathname === "/driver/cancel") {
+      const turn = JSON.stringify([
+        payload.context?.session_id,
+        payload.context?.turn_id,
+      ]);
+      try {
+        const result = await tracked("computer", () =>
+          driver.run(
+            {
+              context: payload.context,
+              code: payload.code,
+              endTurn: payload.endTurn,
+              timeoutMs: payload.timeoutMs,
+            },
+            controller.signal,
+          ),
+        );
+        if (!payload.endTurn) computer.turns.add(turn);
+        json(response, 200, result);
+      } finally {
+        if (payload.endTurn) computer.turns.delete(turn);
+      }
+    } else if (
+      request.method === "POST" &&
+      url.pathname === "/driver/cancel"
+    ) {
       const payload = await body(request);
-      await driver.cancel(payload.call_id);
+      if (driver) await driver.cancel(payload.call_id);
       json(response, 200, { released: true });
-    } else if (request.method === "POST" && url.pathname === "/driver/reset") {
+    } else if (
+      request.method === "POST" &&
+      url.pathname === "/driver/reset"
+    ) {
       const payload = await body(request);
-      await driver.reset(payload.session_id);
+      if (driver) await driver.reset(payload.session_id);
       json(response, 200, { reset: true });
-    } else if (request.method === "GET" && url.pathname === "/driver/status") {
-      await readyDriver();
-      json(response, 200, { version: 2, source: true, ready: !driver.closed });
+    } else if (
+      request.method === "GET" &&
+      url.pathname === "/driver/status"
+    ) {
+      json(response, 200, {
+        version: 3,
+        source: true,
+        ready: computer.state !== "failed",
+        browser: computer.status(),
+      });
     } else if (request.method === "GET" && url.pathname === "/health") {
-      json(response, 200, await health());
+      await daemonStatus();
+      if (computer.state === "failed") throw new Error(computer.error);
+      json(response, 200, {
+        status: "ready",
+        control: "ready",
+        browser: computer.state,
+      });
     } else if (request.method === "GET" && url.pathname === "/activity") {
-      json(response, 200, activity);
+      json(response, 200, { ...activity, browser: computer.status() });
+    } else if (request.method === "POST" && url.pathname === "/wake") {
+      json(response, 200, computer.status());
+    } else if (request.method === "POST" && url.pathname === "/touch") {
+      computer.touch();
+      json(response, 200, computer.status());
     } else if (request.method === "GET" && url.pathname === "/screenshot") {
       await screenshot(response, url.searchParams.get("quiet") === "1");
     } else if (request.method === "POST" && url.pathname === "/input") {
@@ -704,36 +826,86 @@ const server = createServer(async (request, response) => {
       await readyDriver();
       const controller = new AbortController();
       response.once("close", () => {
-        if (!response.writableFinished) controller.abort(new Error("Computer caller disconnected"));
+        if (!response.writableFinished)
+          controller.abort(new Error("Computer caller disconnected"));
       });
-      const result = await driver.perform(signal => legacyCall.run(
-        {signal, context: driver.active.context}, async () => {
-          try { return await browserAction(payload); }
-          finally { await driver.browser.endTurn(driver.active.context); }
-        }), controller.signal);
+      const result = await driver.perform(
+        (signal) =>
+          legacyCall.run(
+            { signal, context: driver.active.context },
+            async () => {
+              try {
+                return await browserAction(payload);
+              } finally {
+                await driver.browser.endTurn(driver.active.context);
+              }
+            },
+          ),
+        controller.signal,
+      );
       json(response, 200, result);
     } else {
       json(response, 404, { error: "not found" });
     }
   } catch (error) {
+    if (driver?.closed && computer.state === "ready") {
+      computer.state = "failed";
+      computer.error = error.message;
+    }
     const status =
       error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
     json(response, status, {
       error: error instanceof Error ? error.message : String(error),
     });
-  }
+  } finally { release?.(); }
 }).listen(8080, "0.0.0.0");
 
 const openCliServer = createServer(proxyOpenCli).listen(19826, "0.0.0.0");
 let stopping = false;
+let refreshTimer;
+/** 一次刷新持有完整占用；失败回执与下一次计划均保留在控制服务。 */
+async function refreshIdentity() {
+  try {
+    await computer.use(() =>
+      exec(
+        "opencli",
+        [
+          "auth",
+          "refresh",
+          "--site",
+          process.env.OPENCLI_AUTH_REFRESH_SITES,
+          "--concurrency",
+          "2",
+          "--timeout",
+          "45",
+          "--format",
+          "json",
+        ],
+        { timeout: 120000 },
+      ),
+    );
+    await writeFile("/data/state/auth-refresh.ok", new Date().toISOString(), {
+      mode: 0o600,
+    });
+    refreshTimer = setTimeout(refreshIdentity, 43200000);
+  } catch (error) {
+    console.error("OpenCLI login refresh failed:", error.message);
+    refreshTimer = setTimeout(refreshIdentity, 900000);
+  }
+}
+refreshTimer = setTimeout(refreshIdentity, 900000);
 async function stop() {
   if (stopping) return;
   stopping = true;
+  clearTimeout(refreshTimer);
   server.close();
   openCliServer.close();
-  const timer = setTimeout(() => { console.error("Computer shutdown timed out"); process.exit(1); }, 30000);
+  const timer = setTimeout(() => {
+    console.error("Computer shutdown timed out");
+    process.exit(1);
+  }, 30000);
   try {
-    if (driverReady) { await driverReady; await driver.close(); }
+    await computer.close();
     console.error("Computer driver input release confirmed");
     clearTimeout(timer);
     process.exit(0);

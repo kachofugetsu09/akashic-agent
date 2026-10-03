@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0084](0084-computer-keeps-identity-without-an-idle-desktop.md) | accepted | Computer 保存身份、按需唤醒与空闲回收 | PLG-017、STA-003、BAK-001、ERR-001 |
 | [0083](0083-short-workflow-preserves-design-intent.md) | accepted | 精简流程、短 PR、行为验证与按风险备份，保留设计意图 | WBK、GOV、BAK-001、TST-001～TST-006 |
 | [0079](0079-parallel-tool-calls-commit-in-model-order.md) | accepted | 并行工具调用重叠执行，按模型顺序提交 | PRM-004、SES-003～SES-005、RUN-003、STA-001 |
 | [0077](0077-trust-installed-runtime-inputs.md) | accepted | 信任已安装的运行材料，删除运行时摘要复验 | PLG-001、PLG-002、PLG-009、ERR-001 |

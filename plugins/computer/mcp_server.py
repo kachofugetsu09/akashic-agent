@@ -247,12 +247,12 @@ async def serve() -> None:
         status.raise_for_status()
         info = status.json()
         if (
-            info.get("version") != 2
+            info.get("version") != 3
             or info.get("source") is not True
             or info.get("ready") is not True
         ):
             raise RuntimeError(
-                "Computer requires the v2 source driver image; publish it and update the plugin image digest"
+                "Computer requires the v3 on-demand driver image; publish it and update the plugin image digest"
             )
     data_root = os.environ.get("AKA_PLUGIN_DATA_DIR") or os.environ.get(
         "AKASHIC_PLUGIN_DATA_DIR"

@@ -16,7 +16,10 @@ container, using its logged-in Chromium profile. `browser`, `agent`, `sky`, and 
 If the tool is not visible, call `load_tools` with `{"plugin":"computer"}`. Its exact tool name is
 `computer`.
 
-Bindings persist within this Akashic Session; a timeout, error, reset, or workload restart invalidates them.
+Bindings persist within this Akashic Session while Computer is awake; a timeout, error, reset,
+idle sleep, or workload restart invalidates them. First use wakes the saved personal profile.
+An active Turn prevents sleep. After the Turn and identity refresh finish, 10 minutes without
+actual input releases the desktop. A panel left open does not keep it alive.
 After a tool error, read the error and API, then re-list tabs and acquire fresh bindings.
 Earlier actions may have taken effect: inspect the current page before retrying an action.
 Correct an invalid method and continue; do not treat a script error as task completion.

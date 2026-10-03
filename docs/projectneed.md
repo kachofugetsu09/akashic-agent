@@ -785,6 +785,10 @@ Workload readiness 完成后，同一组合的 MCP 才能通过实际资源引�
 默认 `computer` 插件通过这条普通边界提供一台持久 Linux 用户桌面。人工操作使用 generation-bound RFB
 通道直达同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 也只操作这台桌面及其唯一
 Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪装成桌面控制。
+持久身份由磁盘 profile 保存；首次使用按需启动桌面。无实际操作满 10 分钟且 Agent Turn 与
+身份刷新都结束后允许释放桌面；面板打开、轮询和自动重连不延长占用或唤醒。下一次使用恢复
+已保存身份，JS 绑定和页面运行状态重新初始化。启停与主 profile 的单 writer 由 Computer
+插件内唯一 owner 保证；释放失败不能继续启动第二个 writer。见 [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)。
 
 ### PLG-018 工具依赖传递实际注册引用
 
