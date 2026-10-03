@@ -868,7 +868,7 @@ let refreshTimer;
 /** 一次刷新持有完整占用；失败回执与下一次计划均保留在控制服务。 */
 async function refreshIdentity() {
   try {
-    await computer.use(() =>
+    const { stdout } = await computer.use(() =>
       exec(
         "opencli",
         [
@@ -887,6 +887,10 @@ async function refreshIdentity() {
         { timeout: 120000 },
       ),
     );
+    const sites = JSON.parse(stdout);
+    if (!Array.isArray(sites) || sites.length === 0) throw new Error("OpenCLI returned no refresh results");
+    const failed = sites.filter(site => !["refreshed", "touched"].includes(site.status));
+    if (failed.length) throw new Error(`OpenCLI refresh incomplete: ${failed.map(site => `${site.site}:${site.status}`).join(", ")}`);
     await writeFile("/data/state/auth-refresh.ok", new Date().toISOString(), {
       mode: 0o600,
     });
