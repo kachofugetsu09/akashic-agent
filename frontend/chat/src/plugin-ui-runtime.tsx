@@ -361,13 +361,14 @@ export async function queryHostPlugin(
   method: string,
   payload: Record<string, unknown> = {},
   signal?: AbortSignal,
+  sessionId?: string,
 ): Promise<Record<string, unknown>> {
   const matches = hostPlugins(pluginName);
   if (matches.length > 1) throw new Error(`存在多个同名插件，无法选择: ${matches.map((plugin) => plugin.id).join(", ")}`);
   const plugin = matches[0];
   if (!plugin) throw new Error(`插件未安装或正在更新: ${pluginName}`);
   return queryWebPluginUi({
-    pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "drawer.panel",
+    pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "drawer.panel", sessionId,
     signal: signal ?? new AbortController().signal,
   });
 }

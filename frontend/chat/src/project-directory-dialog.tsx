@@ -71,7 +71,7 @@ export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus 
   return <Dialog open onOpenChange={(open) => { if (!open && !submitting) onClose(); }}>
     <DialogContent className="directory-dialog" overlayClassName="project-dialog-overlay"
       onCloseAutoFocus={onCloseFocus ? (event) => { event.preventDefault(); onCloseFocus(); } : undefined}>
-      <DialogHeader><DialogTitle>{project.directory ? "固定目录" : "选择项目目录"}</DialogTitle></DialogHeader>
+      <DialogHeader className="directory-dialog__header"><DialogTitle>{project.directory ? "固定目录" : "选择项目目录"}</DialogTitle></DialogHeader>
       <DialogDescription>{project.directory ? "这个项目的目录已固定。已有对话的工作目录各自独立。"
         : "目录可不设置。首次绑定后不可更改或清空；只作为之后新建对话的默认目录，已有对话不变。"}</DialogDescription>
       {project.directory ? <div>
