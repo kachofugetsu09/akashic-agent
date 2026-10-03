@@ -39,6 +39,7 @@ from agent.process_runtime import ExecutionCleanupReport
 from agent.process_runtime import ExecutionResult
 from agent.process_runtime import ShellProcessManager
 from agent.tool_catalog import ToolResult
+from agent.host_bridge.path_info import PathInfoOperation
 from agent.host_bridge.filesystem import (
     EditFileOperation,
     ListDirOperation,
@@ -494,6 +495,16 @@ class HostBridgeService(rpc.HostBridgeServicer):
         )
         # 1. 每支 oneof 只拥有对应工具的公开参数。
         match request.WhichOneof("operation"):
+            case "path_info":
+                info = request.path_info
+                async with self._manager_operation(request.context):
+                    result = await PathInfoOperation().execute(
+                        info.action, info.path,
+                        base_dir=info.base_dir if info.HasField("base_dir") else None,
+                        after=info.after if info.HasField("after") else None,
+                        limit=info.limit if info.HasField("limit") else 100,
+                        max_bytes=info.max_bytes if info.HasField("max_bytes") else 32768,
+                    )
             case "read":
                 read = request.read
                 require_fields(read, "path")

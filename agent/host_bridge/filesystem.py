@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from agent.host_bridge.path_info import PathAccess as PathAccess, PathInfo as PathInfo
+
 from core.common.file_io import run_file_io as _run_file_io
 
 from agent.media import detect_supported_image_mime, encode_image_data_uri
