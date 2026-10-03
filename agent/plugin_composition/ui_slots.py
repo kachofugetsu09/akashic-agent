@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Awaitable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -49,7 +49,9 @@ class PluginUiQueryHandler(Protocol):
         *,
         session_id: str | None,
         turn_id: str | None,
-    ) -> object: ...
+    ) -> object | Awaitable[object]:
+        """Sync handlers run in bounded workers; async handlers keep the owner scope."""
+        ...
 
 
 class PluginUiRpcInvalidRequest(ValueError):

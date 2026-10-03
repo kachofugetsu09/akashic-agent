@@ -213,7 +213,8 @@ class SessionAdmission:
             grant = self._dimensions.get(name)
             if grant is None:
                 raise PermissionError(f"Session 维度没有 owner: {name}")
-            grant[1](value)
+            with grant[0]._call_scope():
+                grant[1](value)
 
     def _admitted(self, session_id: str) -> bool:
         assert self._log is not None

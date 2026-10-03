@@ -20,7 +20,7 @@ from agent.plugin_contracts import (
     freeze_json,
 )
 from agent.plugin_contracts import json_value
-from agent.plugin_contracts.tools import CommitAfter
+from agent.plugin_contracts.tools import CallSource, CommitAfter
 from core.common.file_io import run_file_io
 
 from .api import (
@@ -41,6 +41,7 @@ class ToolExecution:
         *,
         task_key: Hashable,
         child_permit: Callable[[], ExternalRootPermit] | None = None,
+        check_batch: Callable[[CallSource], str | None] | None = None,
     ):
         self._state = state
         self._tasks = tasks
@@ -48,6 +49,7 @@ class ToolExecution:
         self._authorize = authorize
         self._task_key = task_key
         self._child_permit = child_permit
+        self._check_batch = check_batch
 
     async def execute(
         self, key: str, binding_id: str, arguments: Mapping[str, object]
@@ -202,6 +204,10 @@ class ToolExecution:
                 reply.check(self._state)
             if record is None:
                 raise RuntimeError("已接纳工具缺少 requested 回执")
+            if reply is not None and self._check_batch is not None:
+                refusal = self._check_batch(reply.source())
+                if refusal is not None:
+                    return await commit(record, Result("denied", (ContentPart("text", refusal),)))
             async with self._open_tool(binding_id) as tool:
                 if not task.active:
                     raise asyncio.CancelledError
