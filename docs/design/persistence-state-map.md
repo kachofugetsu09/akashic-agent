@@ -36,6 +36,19 @@ attempt 重放、Session 模型历史投影及 compaction prepare/persist 链已
 本次没有迁移或操作正式 workspace；源码恢复使用修改前 Git 备份，正式数据恢复
 仍需对应 workspace 的一致备份，不能以源码回退代替。
 
+## 2026-10-03：Project 默认目录与 Session 当前目录
+
+[0085](../decisions/0085-project-default-and-session-working-directory.md) 增加普通插件的目录状态，不迁移或改写旧 Session、消息或记忆。
+
+| 对象 | 增加与原位更新 | 失效与物理减少 |
+|---|---|---|
+| `sessions.db/owner_records` 的 Projects 记录 `directory` | 首次显式绑定在同一事务从 null 写 path；rename/archive 合并原字段 | 路径缺失保留值，不能改绑/清空，无自动减少协议；workspace 一致备份恢复 |
+| standard_tools 的 `directory:<session>` | 真正创建 Session 时与 Session 行同事务快照，含 null；切换按 revision CAS | 旧记录缺失保持未设置；失效保留路径，不 mkdir 或回退；无自动减少协议 |
+| standard_tools 的 `directory-switch:<effect>` | 与 cwd 更新共同增加固定结果，原 key 幂等重放 | 无自动 retention；恢复原 receipt，不猜测新 cwd |
+| cwd 和 AGENTS 的实时请求材料 | 每次新模型请求重新读取；不进入永久 Input 或 persona | 删除/切换撤下旧材料，实时提醒不进入 model.facts reminder，也不接续旧 opaque 会话；模型请求审计与已冻结恢复请求仍按原 owner 保留 |
+
+运行 workspace 与代码目录分离；外部 worktree 由显式 Shell/Git 操作创建和删除，本功能不获得 prune、reset 或历史删除权限。正式数据与部署未在源码实现任务中操作。
+
 ## 1. 这份地图怎样使用
 
 这份文件不只回答“落了哪些文件”，还回答每类数据怎样增加、怎样原位更新、怎样逻辑失效、什么条件才允许物理减少。它先陈述代码事实，再提出设计意图推断。两者不能混用：

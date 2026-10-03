@@ -394,6 +394,10 @@ MEMORY/SELF。插件失败不回滚 ledger；重放相同 receipt 必须幂等�
 通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt
 orphan recovery 可以清除 prepare。
 
+### CTX-009 当前目录与仓库规则属于请求材料
+
+每次模型请求读取 Session 当前目录和适用 AGENTS，目录切换在同 Turn 下一请求生效。规则从最近 Git 根到当前目录按父子顺序读取，每层 override 优先，累计上限 32 KiB；更深规则在进入对应目录前读取。来源和读取失败可见；失败允许聊天并暂停依赖规则的仓库修改。规则删除或切换撤下旧材料，不保存为永久用户消息、全局 persona 或记忆，不自动加载项目配置、Skill 或启动脚本。
+
 ### CTX-008 长结果折叠保留原文与首次判断机会
 
 长工具结果的折叠由普通插件管理，只改变模型视图。原始结果必须完整保留，模型先完整收到该内容，
@@ -447,6 +451,12 @@ orphan recovery 可以清除 prepare。
 Message 的 `metadata` 是按插件命名空间组织的普通 JSON 对象，用于引用依据、表情类别等可选附加信息；不要求把标签注册成 ContentPart。正文与通用附件仍在 body，权限、finish、控制目标及工具调用关联不能藏入 metadata。Core 校验 JSON、大小与写入归属，插件自行校验自己的结构与版本。
 
 metadata 与正文同事务提交，参与同 ID 幂等核对，提交后不可原位更新。未知扩展在存储、历史读取和客户端同步中原样保留；缺少插件不影响正文与通用附件可读。插件不支持扩展版本时明确报告该扩展不可用，不猜测解释或删除数据。后续反馈与消费进度由插件自己保存并关联 message_id。物理减少仍只按 SES-003 执行。
+
+### SES-011 Project 默认目录与 Session 当前目录独立
+
+Project 可以永不关联目录；首次关联已存在且可访问的执行主机目录后固定，同值重试幂等，改绑或清空失败。新 Session 在创建提交时一次快照默认值，包括未指定和已失效路径；旧 Session 不追溯继承。Agent 可显式切换当前 Session 的已有目录，成功后持久保留，失败保留旧值。切换不改变组织身份、scope、消息、记忆和其他 Session，不自动创建或删除 worktree。
+
+UI 只有 Project 首次目录选择入口，提交前显示完整路径和不可更改说明；取消不保存。Session 只读展示当前路径和规则来源。失效目录保留并明确显示不可用，不混同未关联，不自动创建或回退到运行 workspace、scratch 或 Project 默认值。删除 Project/Session 不删除外部目录。
 
 ### SES-010 Session scope 是接纳时固定的宽键
 
@@ -871,6 +881,10 @@ Shell 在短等待窗口内返回已完成结果；命令仍运行时返回当�
 ### SH-002 Shell cleanup 不拥有 turn 与重启终态
 
 工具执行错误必须作为工具结果或明确异常交给当轮 Agent；当前 query 结束后的 execution cleanup 属于独立生命周期。回复一旦按 OUT-001 提交，cleanup 的权限错误、超时或残留不得把 turn 改成 failed，也不得阻止已获合法提交的 Gateway 重启。仅剩 zombie 时由 Guardian 持续 `wait` 回收；仍有活进程且当前权限不能终止时，runtime 保留 execution ownership、记录结构化诊断，并在本次 runtime 内隔离同 owner 的新 Shell spawn，普通对话继续运行。cleanup 未确认前不得把 execution 从注册表移除；重启不持久化该隔离状态。
+
+### SH-004 Session 目录统一工具目标且不改变执行回执
+
+Shell 默认 cwd 与文件相对路径使用同一 Session 当前目录和执行 backend；未指定保留既有默认行为，失效明确失败。prepare 固定最终 cwd 和绝对目标，重试/恢复不重新读取当前目录。单次显式 cwd 不修改 Session，运行中进程保持启动目录。目录切换独占工具批次；混合批次在任何准备与效果之前明确拒绝，模型需单独调用。
 
 ### SH-003 Bridged Shell 保留统一句柄和 boot ownership
 

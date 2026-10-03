@@ -9,10 +9,13 @@ import heapq
 import json
 import logging
 import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
+
+from agent.host_bridge.path_info import PathAccess as PathAccess, PathInfo as PathInfo
 
 from core.common.file_io import run_file_io as _run_file_io
 
@@ -355,16 +358,42 @@ class ReadFileOperation(_FileOperation):
             return ToolResult(text=f"读取文件失败：{e}", is_error=True)
 
 
+def _create_write_parents(file_path: Path, required_dir: Path) -> None:
+    """Create missing parents without ever creating the required working directory."""
+    # 1. The original cwd is an execution dependency, not an access restriction.
+    if not stat.S_ISDIR(required_dir.stat().st_mode):
+        raise NotADirectoryError(str(required_dir))
+    if not os.access(required_dir, os.R_OK | os.X_OK):
+        raise PermissionError(f"Cannot access working directory: {required_dir}")
+    # 2. Each mkdir needs its existing parent; no recursive call can rebuild cwd.
+    missing: list[Path] = []
+    parent = file_path.parent
+    while True:
+        try:
+            parent.stat()
+            break
+        except FileNotFoundError:
+            if parent == required_dir:
+                raise
+            missing.append(parent)
+            parent = parent.parent
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+
+
 class WriteFileOperation(_FileOperation):
     """将内容写入文件，自动创建所需的父目录。"""
 
-    async def execute(self, path: str, content: str, **kwargs: Any) -> str | ToolResult:
+    async def execute(self, path: str, content: str, *, required_dir: str | None = None, **kwargs: Any) -> str | ToolResult:
+        if required_dir is not None and not Path(required_dir).is_absolute():
+            raise ValueError("required_dir must be absolute")
         bridge = self._get_bridge()
         if bridge is not None:
             result = await bridge.execute_file_tool(
                 "write_file",
                 allowed_dir=self._allowed_dir,
-                arguments={"path": path, "content": content, **kwargs},
+                arguments={"path": path, "content": content,
+                           **({"required_dir": required_dir} if required_dir is not None else {}), **kwargs},
             )
             return result
         try:
@@ -375,7 +404,9 @@ class WriteFileOperation(_FileOperation):
                     return ToolResult(
                         text=f"写入文件失败：目标路径是目录：{path}", is_error=True
                     )
-                atomic_write_text(file_path, content, domain="filesystem")
+                if required_dir is not None:
+                    _create_write_parents(file_path, Path(required_dir))
+                atomic_write_text(file_path, content, domain="filesystem", create_parents=required_dir is None)
                 return f"已写入 {len(content)} 字节到 {path}"
 
             return await _run_with_file_mutation_lock(file_path, _write)

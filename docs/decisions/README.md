@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0085](0085-project-default-and-session-working-directory.md) | accepted | Project 固定默认目录，Session 独立当前目录与请求规则 | SES-011、SH-004、CTX-009 |
 | [0084](0084-computer-keeps-identity-without-an-idle-desktop.md) | accepted | Computer 保存身份、按需唤醒与空闲回收 | PLG-017、STA-003、BAK-001、ERR-001 |
 | [0083](0083-short-workflow-preserves-design-intent.md) | accepted | 精简流程、短 PR、行为验证与按风险备份，保留设计意图 | WBK、GOV、BAK-001、TST-001～TST-006 |
 | [0079](0079-parallel-tool-calls-commit-in-model-order.md) | accepted | 并行工具调用重叠执行，按模型顺序提交 | PRM-004、SES-003～SES-005、RUN-003、STA-001 |

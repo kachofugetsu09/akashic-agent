@@ -5,7 +5,7 @@ import {
   Pin,
   PinOff,
 } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { ConversationNavigation, ConversationSessionRow, type ConversationSession } from "./conversation-navigation";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
@@ -13,6 +13,8 @@ import { formatNavigationTime, sessionLabel } from "./web-chat-message-data";
 import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
 import type { NavigationRowAction } from "./navigation-row-menu";
 import type { PendingProjectRow, ProjectMemory, ProjectRow } from "./web-projects";
+import { ProjectDirectoryDialog } from "./project-directory-dialog";
+import { Folder } from "lucide-react";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
   active: boolean;
@@ -31,6 +33,7 @@ export interface DesktopSidebarProjects {
   onContinue: (key: string) => Promise<void>;
   onStop: (key: string) => void;
   onOpenCreate?: () => void;
+  onBindDirectory: (projectId: string, path: string) => Promise<void>;
 }
 
 export interface DesktopSidebarProps {
@@ -62,6 +65,14 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onNewChat,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
+  const sidebarRef = useRef<HTMLElement>(null);
+  const [directoryProjectId, setDirectoryProjectId] = useState("");
+  const directoryProject = projects?.items.find((project) => project.id === directoryProjectId);
+  const directoryAction = (project: ProjectRow): NavigationRowAction => ({
+    label: project.directory ? "查看固定目录" : "选择目录",
+    icon: <Folder size={18} aria-hidden="true" />,
+    onSelect: () => setDirectoryProjectId(project.id),
+  });
   const needle = query.trim().toLowerCase();
   const searching = Boolean(needle);
   const allSessions = useMemo(() => {
@@ -123,7 +134,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   });
 
   return (
-    <aside className="chat-sidebar chat-sidebar--entry">
+    <aside ref={sidebarRef} className="chat-sidebar chat-sidebar--entry">
       <div className="chat-sidebar__toolbar">
         <button type="button" className="chat-sidebar__new" onClick={() => onNewChat()}>
           <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
@@ -159,7 +170,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
               onToggle={() => navigationPins.toggleProject(pin.id)}
               onNewChat={() => projects.onNewChat(pin.id)}
               onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
-              actions={pinAction(pin, true)} searching={searching}
+              actions={[directoryAction(project), ...pinAction(pin, true)]} searching={searching}
             /> : null;
           } else {
             const session = allSessions.find((item) => item.id === pin.id);
@@ -194,7 +205,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         onOpenCreateProject={projects.onOpenCreate}
         expandedProjects={navigationPins.expandedProjects}
         onToggleProject={navigationPins.toggleProject}
-        projectActions={(project) => pinAction({ kind: "project", id: project.id }, false)}
+        projectActions={(project) => [directoryAction(project), ...pinAction({ kind: "project", id: project.id }, false)]}
         searching={searching}
         heading={pinnedProjects.size ? "其他项目" : "项目"}
       /> : null}
@@ -218,6 +229,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         ) : undefined}
       />
       </div>
+      {directoryProject && projects ? <ProjectDirectoryDialog project={directoryProject}
+        onClose={() => setDirectoryProjectId("")} onBind={projects.onBindDirectory}
+        onCloseFocus={() => Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>("[data-project-id]") ?? [])
+          .find((row) => row.dataset.projectId === directoryProject.id)?.querySelector<HTMLButtonElement>(".navigation-menu-trigger")?.focus()} /> : null}
     </aside>
   );
 });

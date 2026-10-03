@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import math
-from collections.abc import Coroutine, Mapping
+from collections.abc import Awaitable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from typing import Any, cast
@@ -464,25 +465,30 @@ class LivePluginUiProvider:
                     fiber=binding.context.fiber.name,
                     operation="plugin_ui.query",
                 ):
-                    diagnostic_context = copy_context()
-                    job = self._executor.submit(
-                        lambda: diagnostic_context.run(
-                            binding.query,
-                            method,
-                            payload,
-                            session_id=session_id,
-                            turn_id=turn_id,
-                        ),
-                    )
-                    future = asyncio.wrap_future(job, loop=loop)
-                    try:
-                        result = await asyncio.shield(future)
-                    except asyncio.CancelledError:
-                        # Queued work can be withdrawn. Running threads retain
-                        # their scope and quota until actual completion.
-                        job.cancel()
-                        await complete_critical(future)
-                        raise
+                    handler = binding.query
+                    if inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
+                        getattr(handler, "__call__", None)
+                    ):
+                        # Async I/O keeps its actual owner scope and the same quota.
+                        result = await cast(Awaitable[object], handler(
+                            method, payload, session_id=session_id, turn_id=turn_id,
+                        ))
+                    else:
+                        diagnostic_context = copy_context()
+                        job = self._executor.submit(
+                            lambda: diagnostic_context.run(
+                                handler, method, payload,
+                                session_id=session_id, turn_id=turn_id,
+                            ),
+                        )
+                        future = asyncio.wrap_future(job, loop=loop)
+                        try:
+                            result = await asyncio.shield(future)
+                        except asyncio.CancelledError:
+                            # Running threads keep scope and quota until completion.
+                            job.cancel()
+                            await complete_critical(future)
+                            raise
                     failure = "返回无效"
                     normalized = _normalize_rpc_result(
                         result,

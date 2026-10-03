@@ -105,6 +105,7 @@ message FileRequest {
     WriteFile write = 4;
     EditFile edit = 5;
     ListDir list = 6;
+    PathInfo path_info = 7;
   }
 }
 message ReadFile {
@@ -115,6 +116,7 @@ message ReadFile {
 message WriteFile {
   optional string path = 1;
   optional string content = 2;
+  optional string required_dir = 3;
 }
 message EditFile {
   optional string path = 1;
@@ -126,6 +128,14 @@ message ListDir {
   optional string path = 1;
   optional int32 limit = 2;
   optional string after = 3;
+}
+message PathInfo {
+  string action = 1;
+  string path = 2;
+  optional string base_dir = 3;
+  optional string after = 4;
+  optional int32 limit = 5;
+  optional int32 max_bytes = 6;
 }
 message FileReply {
   oneof result {

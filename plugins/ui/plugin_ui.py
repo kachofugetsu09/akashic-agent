@@ -64,7 +64,8 @@ class PluginUiSlots:
         # 1. Validate the public ABI before any registration becomes visible.
         if not isinstance(definition, PluginUiDefinition):
             raise TypeError("插件 Plugin UI 声明必须是 PluginUiDefinition")
-        _validate_sync_callable(query, "query")
+        if not callable(query):
+            raise TypeError("插件 Plugin UI query 必须可调用")
         if available is not None:
             _validate_sync_callable(available, "available")
         navigation = definition.navigation
