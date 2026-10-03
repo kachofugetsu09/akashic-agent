@@ -159,6 +159,9 @@ def build_distribution_release(
     repository = repository.resolve(strict=True)
     commit, tree = _resolve_commit(repository, requested_commit)
     _assert_release_paths_safe(repository, commit)
+    _ = subprocess.run(
+        ["docker", "buildx", "version"], check=True, capture_output=True, text=True
+    )
     with tempfile.TemporaryDirectory(prefix="akashic-distribution-runtime-") as temporary:
         context = Path(temporary) / "distribution"
         source = _create_context(repository, commit, tree, context)
@@ -173,7 +176,9 @@ def build_distribution_release(
             "AKASHIC_SOURCE_TREE": tree,
             "AKASHIC_CORE_SHA256": core_sha256,
         }
-        command = ["docker", "build", "--pull=false", "--tag", image_tag]
+        command = [
+            "docker", "buildx", "build", "--load", "--pull=false", "--tag", image_tag
+        ]
         for key, value in build_arguments.items():
             command.extend(("--build-arg", f"{key}={value}"))
         command.extend(("--file", str(context / "Dockerfile.distribution"), str(context)))
