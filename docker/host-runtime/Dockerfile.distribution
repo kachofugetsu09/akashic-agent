@@ -41,7 +41,8 @@ COPY requirements.lock /opt/akashic/distribution/requirements.lock
 ARG AKASHIC_PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG AKASHIC_REQUIREMENTS_SHA256
 RUN --mount=type=cache,target=/root/.cache/pip \
-    printf '%s  %s\n' "${AKASHIC_REQUIREMENTS_SHA256}" /opt/akashic/distribution/requirements.lock | sha256sum -c - \
+    export PIP_CACHE_DIR=/root/.cache/pip \
+    && printf '%s  %s\n' "${AKASHIC_REQUIREMENTS_SHA256}" /opt/akashic/distribution/requirements.lock | sha256sum -c - \
     && python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install \
         --index-url "${AKASHIC_PYPI_INDEX_URL}" \
@@ -76,7 +77,8 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && /opt/venv/bin/python -c "import akashic_sdk; assert akashic_sdk.__file__.startswith('/opt/akashic/source/sdk/python/src/')"
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
+    export PIP_CACHE_DIR=/root/.cache/pip \
+    && mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
     && /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py prepare-wheels \
         --distribution /opt/akashic/distribution \
     && /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
