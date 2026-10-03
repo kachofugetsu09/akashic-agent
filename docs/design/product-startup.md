@@ -35,6 +35,8 @@ The standalone Compose image builds a fetched Git commit in a builder stage. It 
 
 仓库 Compose 构建明确指定的完整源码提交。Release 附件是独立 Compose，不包含 build context 或额外环境文件；镜像固定到已发布的多平台 manifest digest。两者复用同一份端口、healthcheck 和数据卷配置。发行工作流分别构建并实际启动 AMD64、ARM64 镜像，验证首次安装和保留数据卷重建后，组合这两个已验证镜像。匿名下载和发行附件启动验收通过后才发布 release。程序和发行制品归 root 所有，运行用户只读；运行数据写入 data 卷。发行不会部署 hua-home 或修改已有实例。
 
+首次推送 GHCR 包后，包 owner 需要在 GitHub 的 package settings 中将该发行包设为 Public。工作流使用空 Docker config 验证匿名拉取；若公开访问未就绪，保留构建与验收证据，不创建面向使用者的 release。
+
 ## Development entry
 
 For direct checkout development, prepare Python and Node dependencies, build the Web assets, and explicitly install the desired plugin distribution once. The product launcher is not a watcher for dirty business-plugin source.

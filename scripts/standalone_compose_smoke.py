@@ -20,7 +20,9 @@ from pathlib import Path
 
 assert os.getuid() != 0, '运行进程必须使用普通用户'
 for directory in ('/opt/venv', '/opt/core', '/opt/distribution'):
-    assert not os.access(directory, os.W_OK), directory
+    root = Path(directory)
+    for path in (root, *root.rglob('*')):
+        assert not os.access(path, os.W_OK), path
 distribution = Path('/opt/distribution')
 report = json.loads((distribution / 'distribution.json').read_text())
 for plugin in report['plugins']:
