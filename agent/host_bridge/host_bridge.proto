@@ -116,6 +116,7 @@ message ReadFile {
 message WriteFile {
   optional string path = 1;
   optional string content = 2;
+  optional string required_dir = 3;
 }
 message EditFile {
   optional string path = 1;

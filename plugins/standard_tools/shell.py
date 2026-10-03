@@ -43,6 +43,7 @@ from agent.plugin_contracts.tools import (
 from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
 from .shell_backend import _log_shell_execution, _shell_env
 from .shell_security import validate_command
+from .working_directory import WorkingDirectories
 
 
 class ShellSettings(BaseModel):
@@ -151,10 +152,12 @@ SHELL_OWNERS = ServiceKey[ShellOwners]("shell.owners.v1")
 class ShellTool:
     idempotent = False
 
-    def __init__(self, ctx: Context, name: Literal["shell", "write_stdin", "task_stop"], settings: ShellSettings):
+    def __init__(self, ctx: Context, name: Literal["shell", "write_stdin", "task_stop"], settings: ShellSettings,
+                 directories: WorkingDirectories | None = None):
         self._ctx = ctx
         self._name = name
         self._settings = settings
+        self._directories = directories
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """校验最终命令并固定进程 owner；恢复不重选目录、shell 或默认参数。"""
@@ -187,6 +190,17 @@ class ShellTool:
         except ValueError as error:
             return str(error)
         cwd = command.cwd or self._settings.working_dir or self._settings.restricted_dir
+        if self._directories is not None:
+            session_id = None if source is None else source.messages[-1].session_id
+            if command.cwd is None and self._settings.working_dir is None and session_id is not None:
+                current = self._directories.snapshot(session_id)
+                if current.path is not None:
+                    cwd = current.path
+            try:
+                cwd, _ = await self._directories.resolve_target(session_id, cwd or ".")
+                _ = await self._directories.check_directory(cwd)
+            except ValueError as error:
+                return str(error)
         directory = None if cwd is None else Path(cwd).expanduser().absolute()
         denied = validate_command(
             text, allow_network=self._settings.allow_network,
@@ -249,7 +263,7 @@ class ShellTool:
         return None
 
 
-async def register_shell(ctx: Context) -> tuple[ToolRef, ...]:
+async def register_shell(ctx: Context, directories: WorkingDirectories | None = None) -> tuple[ToolRef, ...]:
     """配置由 Shell owner 校验，所有操作与作业释放共用此插件身份。"""
     owners = ShellOwners(ctx)
     shell_tasks = ctx.require(TASKS).open(ctx)
@@ -275,7 +289,7 @@ async def register_shell(ctx: Context) -> tuple[ToolRef, ...]:
     )
     refs: list[ToolRef] = []
     for name, schema, description in definitions:
-        refs.append(await _register(ctx, name, schema, description))
+        refs.append(await _register(ctx, name, schema, description, directories))
     return tuple(refs)
 
 
@@ -284,13 +298,14 @@ async def _register(
     name: Literal["shell", "write_stdin", "task_stop"],
     schema: type[BaseModel],
     description: str,
+    directories: WorkingDirectories | None,
 ) -> ToolRef:
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         return ShellSettings.model_validate(json_value(configuration)).model_dump()
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[ShellTool]:
-        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)))
+        yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)), directories)
 
     return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx,

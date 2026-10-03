@@ -179,6 +179,7 @@ class ToolCatalog(Protocol):
         public: bool = True,
         idempotent: bool = False,
         parallel: bool = False,
+        exclusive_batch: bool = False,
     ) -> ToolRef: ...
     async def register_prepare(
         self,
@@ -247,6 +248,8 @@ class DecodedCall(Protocol):
     def arguments(self) -> Mapping[str, object]: ...
     @property
     def rejection(self) -> Mapping[str, object] | None: ...
+    @property
+    def exclusive_batch(self) -> bool: ...
 
 
 class CommitAfter(Protocol):

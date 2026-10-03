@@ -171,7 +171,7 @@ export function ProjectNavigationRow({
   actions?: NavigationRowAction[];
   searching?: boolean;
 }) {
-  return <div className={`project-group ${active ? "active" : ""}`}>
+  return <div className={`project-group ${active ? "active" : ""}`} data-project-id={project.id}>
     <NavigationRowMenu title={project.name} className="project-group__row" actions={[
       { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
       ...(actions ?? []),
@@ -194,6 +194,7 @@ export function ProjectNavigationRow({
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>
+    {open && project.directory ? <p className="project-directory-path" title={project.directory}>{project.directory}</p> : null}
     {open ? <nav className="project-group__sessions" aria-label={`${project.name} 的对话`}>
       {items.length === 0 ? <small className="project-group__hint">{searching ? "没有匹配的对话" : "还没有对话"}</small> : null}
       {items.map((session) => <button key={session.id} type="button"

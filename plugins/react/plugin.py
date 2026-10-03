@@ -817,10 +817,19 @@ async def react(
             parts: list[Part] = list(decoded)
             indices: list[int] = []
             actual_calls: list[ToolCall | ContentPart] = []
-            for call in response.tool_calls:
+            decoded_calls = tuple(tools.decode(call) for call in response.tool_calls)
+            mixed_exclusive = len(decoded_calls) > 1 and any(
+                decoded.binding_id is not None and decoded.exclusive_batch
+                for decoded in decoded_calls
+            )
+            for call, decoded_call in zip(response.tool_calls, decoded_calls, strict=True):
                 indices.append(len(parts))
-                decoded_call = tools.decode(call)
-                if decoded_call.rejection is not None:
+                if mixed_exclusive:
+                    actual = ContentPart("model.tool_rejection", {
+                        "name": call.name, "arguments": call.arguments,
+                        "error": "此批次包含要求独占的工具；整批未执行，请单独调用该工具。",
+                    })
+                elif decoded_call.rejection is not None:
                     actual = ContentPart("model.tool_rejection", decoded_call.rejection)
                 else:
                     assert decoded_call.binding_id is not None

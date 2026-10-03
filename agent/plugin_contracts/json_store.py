@@ -123,13 +123,14 @@ def atomic_write_text(
     content: str,
     *,
     domain: str = "json_store",
+    create_parents: bool = True,
 ) -> None:
-    """原子写入 UTF-8 文本，并在替换后持久化父目录。"""
+    """原子写入 UTF-8 文本；可要求父目录已存在，替换后同步目录。"""
 
     def write_content(stream: TextIO) -> None:
         stream.write(content)
 
-    _atomic_write(path, write_content, domain=domain)
+    _atomic_write(path, write_content, domain=domain, create_parents=create_parents)
 
 
 def _create_atomic_temp(path: Path) -> tuple[int, Path]:
@@ -156,11 +157,13 @@ def _atomic_write(
     writer: Callable[[TextIO], None],
     *,
     domain: str,
+    create_parents: bool = True,
 ) -> None:
     """在同目录临时文件中完成写入、替换和目录同步。"""
 
     # 1. 创建父目录并读取现有目标的权限位
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
     try:
         target_mode = stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
