@@ -22,8 +22,11 @@ class ToolCallDecode:
     binding_id: str | None
     arguments: Mapping[str, object]
     rejection: Mapping[str, object] | None = None
+    exclusive_batch: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.exclusive_batch) is not bool:
+            raise TypeError("工具批次标记必须是 bool")
         if not isinstance(self.arguments, Mapping):
             raise TypeError("工具解码参数必须是对象")
         accepted = self.binding_id is not None
@@ -97,6 +100,10 @@ class ToolMenu:
 
         self._bound = dict(fixed_bindings)
         descriptions = self._descriptions()
+        self._exclusive_bindings = frozenset(
+            self._bound[name] for name, description in descriptions.items()
+            if description.get("exclusive_batch") is True
+        )
         self._presentation = presentation or NativePresentation(descriptions)
         if limit is not None and len(self._presentation.schemas) > limit:
             raise ValueError(
@@ -140,7 +147,7 @@ class ToolMenu:
         identity = self._bound.get(name)
         if identity is None:
             raise PermissionError(f"展示层返回了未获授工具: {name}")
-        return ToolCallDecode(identity, arguments)
+        return ToolCallDecode(identity, arguments, exclusive_batch=identity in self._exclusive_bindings)
 
     def bind(self, name: str) -> str:
         """让归档旧 ReAct 只解析已经固定在本菜单中的 binding。"""
@@ -165,10 +172,6 @@ class ToolMenu:
     def check_call(self, call: ToolCall) -> None:
         if call.binding_id not in self._bound.values():
             raise PermissionError("工具请求不属于本次获授 view")
-
-    def exclusive_batch(self, binding_id: str) -> bool:
-        description = cast(Mapping[str, object], self._bindings.describe(binding_id, TOOLS)["tool"])
-        return description.get("exclusive_batch") is True
 
     async def execute(self, call: CallRef, *, commit_after: CommitAfter | None = None) -> Result:
         opened = self._reply(call)

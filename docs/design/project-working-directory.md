@@ -49,7 +49,7 @@ Project UI 查询 `project.bind_directory` 接受 Project ID 和执行主机的�
 
 `directory.current` 以真实 Session ID 返回 path、revision、实时状态与 AGENTS 来源，不返回规则正文。`set_working_directory` 不接受任意 Session ID，只从实际 CallSource 取所属 Session；prepare 固定绝对目标与 expected revision。目录 owner 使用 CAS，并把 cwd 更新和效果 receipt 同事务保存。同路径切换不增加 revision，失败保留原状态。
 
-切换工具通过通用 `exclusive_batch` 元数据声明独占。ReAct 在解码整批后拒绝所有混合调用；Tools 在 prepare 和任何物理效果之前复核持久 Output，直接提交非法批次也不能产生部分效果。普通工具注册不增加该元数据。
+切换工具通过通用 `exclusive_batch` 元数据声明独占。独占属性随冻结的解码结果返回，ReAct 不额外读取菜单实现的内部状态。ReAct 在解码整批后拒绝所有混合调用；Tools 在 prepare 和任何物理效果之前复核持久 Output，直接提交非法批次也不能产生部分效果。普通工具注册不增加该元数据。
 
 文件 prepare 固定绝对 path 与既有 allowed_dir 限制；默认 read/list 根随已设置的 Session cwd，显式配置的限制保留。Shell prepare 固定 cwd；显式命令 cwd 或插件 working_dir 保持优先。write_stdin 和 task_stop 只找原进程 owner，运行中的 PTY 不因切换而迁移。
 
