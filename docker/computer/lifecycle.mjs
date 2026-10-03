@@ -153,7 +153,7 @@ export class ComputerLifecycle {
   async stopProcess() {
     const child = this.child;
     if (child.exitCode === null && child.signalCode === null) {
-      process.kill(-child.pid, "SIGTERM");
+      // Driver 已发送 Browser.close；等待浏览器落盘，再由 shell 关闭桌面。
       const exited = await Promise.race([
         this.exited.then(() => true),
         sleep(15000).then(() => false),
