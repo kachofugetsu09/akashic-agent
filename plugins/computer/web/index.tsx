@@ -388,8 +388,10 @@ function renderComputer(
     void ctx.http.request("/api/dashboard/computer/touch", { method: "POST" }).then((response) => {
       if (!response.ok) throw new Error(`touch ${response.status}`);
     }).catch((error) => {
-      showConnection("操作状态发送失败", String(error), true);
-      setStatus("failed");
+      if (disposed) return;
+      console.warn("Computer activity update failed", error);
+      statusText.textContent = "已连接 · 活动状态同步失败";
+      void loadActivity();
     });
   }
 
@@ -683,6 +685,8 @@ function renderComputer(
     screen.removeEventListener("keyup", onRemoteKeyUp, true);
     screen.removeEventListener("paste", onRemotePaste, true);
     for (const name of inputEvents) screen.removeEventListener(name, touch, true);
+    sendClipboard.removeEventListener("click", touch);
+    ctrlAltDelete.removeEventListener("click", touch);
     window.removeEventListener("blur", onWindowBlur);
     document.removeEventListener("visibilitychange", onVisibilityChange);
     releaseRemoteKeys();

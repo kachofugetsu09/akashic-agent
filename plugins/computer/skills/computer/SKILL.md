@@ -65,7 +65,7 @@ listed before use. macOS application AX and optional desktop audio are unavailab
    useful output with `await tab.markDeliverable()`. Never close a human tab without explicitly claiming it.
 6. Keep `drag_handle()` inside one call and use `try/finally` with `end()`. The driver releases remaining
    input when the call ends. A cancelled action may already have changed the page; observe before retrying.
-7. Do not start another Chromium, alter profile files, or bypass the Workload owner. Use the Computer
+7. Do not launch Chromium yourself, alter profile files, or bypass the Workload owner. Use the Computer
    panel for human login and takeover. File chooser paths refer to the container, not the Akashic host.
 
 ```js
@@ -87,3 +87,19 @@ reports that the current model cannot accept images.
 currently full text; its formatting and compression are not claimed identical to the original WASM.
 
 OpenCLI remains a separate ordinary shell command and uses the same browser.
+
+For anonymous E2E, use the managed extension `await agent.browsers.create()`. It returns the same
+Browser API with an empty, isolated Context in a separate shared headless Chromium. It never copies
+the personal profile, login state, or OpenCLI extension. `browser` still refers to the main browser.
+At most eight anonymous browsers can be open. Close them with `await testBrowser.close()`;
+ending the Turn, a tool error, Session reset, or sleep also closes them. Another Turn cannot use them.
+The last Context releases the headless process and its temporary data. A process crash affects all
+anonymous Contexts; close them and acquire fresh bindings. Saved screenshots keep their normal owner.
+
+```js
+var testBrowser = await agent.browsers.create();
+var testTab = await testBrowser.tabs.new();
+await testTab.goto("http://localhost:3000");
+await testTab.ax.write();
+await testBrowser.close();
+```

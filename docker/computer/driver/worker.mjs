@@ -1,10 +1,10 @@
 import { create as createDomain } from "node:domain";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { parentPort, workerData } from "node:worker_threads";
+import { parentPort, workerData, Worker } from "node:worker_threads";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { start as startRepl } from "node:repl";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -39,8 +39,9 @@ function call(kind, method, params) {
 const pipes = new Set();
 class BrowserPipe extends EventEmitter {
   buffer = Buffer.alloc(0);
-  constructor() {
+  constructor(browserId = workerData.browserId ?? "primary") {
     super();
+    this.browserId = browserId;
     pipes.add(this);
   }
   send(message) {
@@ -58,7 +59,10 @@ class BrowserPipe extends EventEmitter {
       const size = this.buffer.readUInt32LE(0);
       const message = JSON.parse(this.buffer.subarray(4, size + 4));
       this.buffer = this.buffer.subarray(size + 4);
-      call("browser", message.method, message.params ?? {}).then(
+      call("browser", message.method, {
+        browserId: this.browserId,
+        params: message.params ?? {},
+      }).then(
         (result) => {
           if (message.id != null)
             this.send({ jsonrpc: "2.0", id: message.id, result });
@@ -177,17 +181,109 @@ const nodeRepl = {
     );
   },
 };
-globalThis.nodeRepl = nodeRepl;
-const { handleRpc } = await import(
-  "./reference/browser/scripts/browser-service.mjs"
-);
+const browserScope = new AsyncLocalStorage();
+Object.defineProperty(globalThis, "nodeRepl", {
+  configurable: true,
+  get: () => browserScope.getStore() ?? nodeRepl,
+});
+const { handleRpc } =
+  await import("./reference/browser/scripts/browser-service.mjs");
 nodeRepl.rpc = (service, request) => {
   if (service !== "browser") throw new Error(`Unknown service: ${service}`);
   return handleRpc(request);
 };
-const { setupBrowserRuntime } = await import(
-  "./reference/browser/scripts/browser-client.mjs"
-);
+const { setupBrowserRuntime } =
+  await import("./reference/browser/scripts/browser-client.mjs");
+
+const services = new Map();
+
+/** 每个匿名 service 属于可终止的 worker，关闭后连同模块缓存一起释放。 */
+async function createBrowser() {
+  // 1. 创建空 Context，service 的模块缓存由独立 worker 持有。
+  const turn = context.turn_id;
+  const browserId = await call("browser", "createBrowser", {});
+  const pipePath = `${workerData.pipePath}-${browserId}`;
+  let closed = false;
+  let failure;
+  const replies = new Map();
+  let sequence = 0;
+  await writeFile(pipePath, "", { mode: 0o600 });
+  const worker = new Worker(new URL(import.meta.url), {
+    workerData: { ...workerData, pipePath, browserId, service: true },
+  });
+  const request = (rpc) => {
+    requireCall();
+    if (closed) return Promise.reject(new Error("Anonymous browser is closed"));
+    if (failure) return Promise.reject(failure);
+    const id = ++sequence;
+    return new Promise((resolve, reject) => {
+      replies.set(id, { resolve, reject });
+      worker.postMessage({ kind: "service", id, rpc, context });
+    });
+  };
+  const hook = { run: () => context.turn_id === turn ? request({ method: "afterCode" }) : undefined };
+  const turnHook = { run: (metadata) => metadata.turn_id === turn ? request({ method: "endTurn", params: metadata }) : undefined };
+  const dispose = async () => {
+    if (closed) return;
+    closed = true;
+    services.delete(browserId);
+    hooks.splice(hooks.indexOf(hook), 1);
+    turnHooks.splice(turnHooks.indexOf(turnHook), 1);
+    await worker.terminate();
+    await rm(pipePath);
+  };
+  // 2. RPC 只转发属于当前调用的 backend 请求；退出会拒绝所有等待者。
+  worker.on("message", (message) => {
+    if (message.kind === "serviceResult") {
+      const reply = replies.get(message.id);
+      replies.delete(message.id);
+      if (!reply) return;
+      if (message.error) reply.reject(new Error(message.error));
+      else { output.push(...message.content); reply.resolve(message.result); }
+    } else if (message.kind === "browser") {
+      const work = message.callId !== context?.call_id
+        ? Promise.reject(new Error("Anonymous operation is outside a live call"))
+        : callScope.run(context, () => call("browser", message.method, message.params));
+      work.then(
+        (result) => worker.postMessage({ kind: "reply", id: message.id, result }),
+        (error) => worker.postMessage({ kind: "reply", id: message.id, error: error.message }),
+      );
+    }
+  });
+  const fail = (error) => {
+    failure = error;
+    for (const reply of replies.values()) reply.reject(error);
+    replies.clear();
+  };
+  worker.on("error", fail);
+  worker.on("exit", (code) => fail(new Error(`Anonymous service exited: ${code}`)));
+  hooks.push(hook);
+  turnHooks.push(turnHook);
+  services.set(browserId, { worker, turn, dispose });
+  // 3. 用户获得原参考 Browser API；关闭和 Turn 结束都终止 service。
+  try {
+    const host = Object.create(nodeRepl);
+    host.rpc = (name, rpc) => {
+      if (name !== "browser") throw new Error(`Unknown service: ${name}`);
+      return request(rpc);
+    };
+    return await browserScope.run(host, async () => {
+      const client = await setupBrowserRuntime({ environment: "training" });
+      const browser = await client.browsers.get("cdp");
+      browser.close = async () => {
+        if (closed) return;
+        await call("browser", "closeBrowser", { browserId, params: {} });
+        await dispose();
+      };
+      return browser;
+    });
+  } catch (error) {
+    await dispose();
+    await call("browser", "closeBrowser", { browserId, params: {} });
+    throw error;
+  }
+}
+
 let initialized = false;
 const terminal = new PassThrough();
 terminal.on("data", (data) => {
@@ -209,11 +305,13 @@ const repl = startRepl({
   useGlobal: false,
 });
 // Reference service 使用私有 host；用户 REPL 只获得公开的输出与临时目录接口。
-repl.context.nodeRepl = Object.freeze({
-  write: nodeRepl.write,
-  emitImage: nodeRepl.emitImage,
-  cwd: nodeRepl.cwd,
-  tmpDir: nodeRepl.tmpDir,
+Object.defineProperty(repl.context, "nodeRepl", {
+  value: Object.freeze({
+    write: nodeRepl.write,
+    emitImage: nodeRepl.emitImage,
+    cwd: nodeRepl.cwd,
+    tmpDir: nodeRepl.tmpDir,
+  }),
 });
 const evaluate = (code) =>
   new Promise((resolve, reject) => {
@@ -284,7 +382,13 @@ sky.drag_handle = () => {
 };
 repl.context.sky = sky;
 repl.context.desktop = sky;
+let serviceQueue = Promise.resolve();
+if (workerData.service) parentPort.once("close", () => process.exit(0));
 parentPort.on("message", (message) => {
+  if (message.kind === "service") {
+    serviceQueue = serviceQueue.then(() => runService(message));
+    return;
+  }
   if (message.kind === "reply") {
     const item = pending.get(message.id);
     if (!item) return;
@@ -292,14 +396,16 @@ parentPort.on("message", (message) => {
     if (message.error) item.reject(new Error(message.error));
     else item.resolve(message.result);
   } else if (message.kind === "event") {
+    services.get(message.browserId)?.worker.postMessage(message);
     for (const pipe of pipes)
-      callScope.run(context, () =>
-        pipe.send({
-          jsonrpc: "2.0",
-          method: "onCDPEvent",
-          params: message.event,
-        }),
-      );
+      if (pipe.browserId === (message.browserId ?? "primary"))
+        callScope.run(context, () =>
+          pipe.send({
+            jsonrpc: "2.0",
+            method: "onCDPEvent",
+            params: message.event,
+          }),
+        );
   } else if (message.kind === "run") {
     callScope
       .run(message.context, () => run(message))
@@ -329,6 +435,7 @@ async function run(message) {
       for (const doc of docs)
         if (doc.requiredFor?.length) await agent.documentation.get(doc.name);
       repl.context.agent = agent;
+      agent.browsers.create = createBrowser;
       repl.context.browser = await agent.browsers.get("cdp");
       await repl.context.browser.documentation();
       initialized = true;
@@ -339,6 +446,8 @@ async function run(message) {
           session_id: context.session_id,
           turn_id: context.turn_id,
         });
+      for (const service of [...services.values()])
+        if (service.turn === context.turn_id) await service.dispose();
     } else {
       const value = await evaluate(message.code);
       if (value !== undefined) nodeRepl.write(value);
@@ -350,4 +459,23 @@ async function run(message) {
     context = undefined;
   }
 }
+/** 顺序处理 service RPC，输出与 backend 调用始终绑定发起它的 Computer call。 */
+async function runService(message) {
+  context = message.context;
+  output = [];
+  await callScope.run(context, async () => {
+    try {
+      let result;
+      if (message.rpc.method === "afterCode") {
+        for (const hook of hooks) await hook.run();
+      } else if (message.rpc.method === "endTurn") {
+        for (const hook of turnHooks) await hook.run(message.rpc.params);
+      } else result = await handleRpc(message.rpc);
+      parentPort.postMessage({ kind: "serviceResult", id: message.id, result, content: output });
+    } catch (error) {
+      parentPort.postMessage({ kind: "serviceResult", id: message.id, error: error.message });
+    } finally { context = undefined; }
+  });
+}
+
 parentPort.postMessage({ kind: "ready" });
