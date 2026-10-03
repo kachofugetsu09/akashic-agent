@@ -6,6 +6,7 @@ import sqlite3
 from yoyo import step
 from agent.migrations.context import current_migration_context
 from session.log import create_message_source_index
+from utils.timing import measure
 
 __depends__ = {"20260928_01_plugin_config_updates"}
 
@@ -19,7 +20,8 @@ def upgrade(connection: sqlite3.Connection) -> None:
         messages.row_factory = sqlite3.Row
         if messages.execute("SELECT 1 FROM sqlite_master WHERE name='messages'").fetchone() is None:
             return
-        create_message_source_index(messages)
+        with measure("migration.message_source_index"):
+            create_message_source_index(messages)
 
 
 steps = [step(upgrade, None)]
