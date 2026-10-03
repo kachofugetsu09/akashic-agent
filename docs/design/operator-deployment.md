@@ -49,7 +49,8 @@ Bridge 的 release 路径指向按解释器路径/文件摘要与锁文件内容
 终端产品入口 `./start` 的运行依赖同样按 Python、requirements 与 SDK 完整树复用，生成的 Core/Web 分发仍固定到各自 commit。
 构建阶段只共享 pip/npm 下载缓存，不把未校验的下载、可变构建目录或其他版本的 Web 产物当作当前发布输入。
 从源码构建需要 Docker Buildx（Arch 包名 `docker-buildx`）；发布器在生成 Web 分发前检查它，
-并显式使用 BuildKit 构建，将完成的镜像加载到本机 Docker。旧 builder 不支持下载 cache mount。
+并显式使用 BuildKit 构建，将完成的镜像加载到本机 Docker。旧 builder 不支持下载 cache mount。Core 与插件 wheel 构建默认使用官方 PyPI；
+直接调用分发 builder 时可用既有 `--pypi-index-url` 覆盖 Core 下载源。锁文件与哈希校验不随下载源变化。
 
 在线预检只允许增加可重建的代码归档和 Python 环境；容器将正式 state 设为只读，仅两个 cache 根可写。
 此时不发布 descriptor 选择、不写配置或业务数据库，不执行迁移。停止期仍重新持锁、核对清单并读取迁移后的配置。
