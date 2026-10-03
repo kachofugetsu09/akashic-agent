@@ -152,7 +152,7 @@ def build_distribution_release(
     output_manifest: Path,
     base_image: str,
     arch_snapshot: str,
-    pypi_index_url: str = "https://mirrors.aliyun.com/pypi/simple",
+    pypi_index_url: str = "https://pypi.org/simple",
 ) -> dict[str, Any]:
     """Build the formal Core-plus-bundles image without a checkout fallback."""
 
@@ -332,7 +332,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--pypi-index-url",
-        default="https://mirrors.aliyun.com/pypi/simple",
+        default="https://pypi.org/simple",
     )
     args = parser.parse_args()
     if args.legacy_checkout:

@@ -38,7 +38,7 @@ RUN printf '%s\n' \
 WORKDIR /opt/akashic
 
 COPY requirements.lock /opt/akashic/distribution/requirements.lock
-ARG AKASHIC_PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG AKASHIC_PYPI_INDEX_URL=https://pypi.org/simple
 ARG AKASHIC_REQUIREMENTS_SHA256
 RUN --mount=type=cache,target=/root/.cache/pip \
     export PIP_CACHE_DIR=/root/.cache/pip \
