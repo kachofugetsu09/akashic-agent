@@ -138,7 +138,7 @@ jobs:
           docker compose up -d --wait --wait-timeout 600
           \`\`\`
 
-          成功返回后打开 http://localhost:2236，完成初始配置。无需先配置模型 Key。
+          成功返回后打开 http://localhost:2236/#onboarding，完成初始配置。无需先配置模型 Key。
           镜像支持 AMD64、ARM64，Compose 固定到已验证镜像的 digest。
           已通过两种架构的首次安装和保留数据卷重建，以及匿名镜像拉取验收。
           修复 #955 的默认插件源码读取权限，同时保留发行代码只读边界。
