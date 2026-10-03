@@ -443,6 +443,36 @@ async def run(args):
         inputs=root,
     )
     assert pub["new_root_ref"] == json.loads(plan.read_text())["expected_root_ref"]
+    # A Core-only release changes provenance but retains all exact plugin inputs.
+    refs_before = selected(work)
+    caches_before = snapshot(work / "runtime/plugin-archives")
+    environments_before = snapshot(work / "runtime/plugin-python-environments")
+    (repo / "core-only.txt").write_text("new Core, unchanged plugins\n")
+    core_only = distribution(repo, root / "core-only", ["alpha", "disabled", "optional", "newcomer"],
+                             ["alpha", "disabled", "newcomer"])
+    if args.with_wheels:
+        prepare_wheels(core_only)
+    ensure_profile(core_only, core_only / "profiles/default.json", workspace=work, plugins_home=home,
+                   config_path=config, receipt_path=receipt)
+    assert selected(work) == refs_before
+    assert snapshot(work / "runtime/plugin-archives") == caches_before
+    assert snapshot(work / "runtime/plugin-python-environments") == environments_before
+    # Changed plugin source gets a new input without rebuilding unchanged dependencies.
+    requirements_before = (repo / "plugins/alpha/requirements.txt").read_bytes()
+    plugin(repo, "alpha", "3")
+    (repo / "plugins/alpha/requirements.txt").write_bytes(requirements_before)
+    code_changed = distribution(repo, root / "code-changed", ["alpha", "disabled", "optional", "newcomer"],
+                                ["alpha", "disabled", "newcomer"])
+    if args.with_wheels:
+        prepare_wheels(code_changed)
+    ensure_profile(code_changed, code_changed / "profiles/default.json", workspace=work, plugins_home=home,
+                   config_path=config, receipt_path=receipt)
+    changed = selected(work)
+    assert changed["alpha@release"][0] != refs_before["alpha@release"][0]
+    assert changed["alpha@release"][1]["python_environments"] == refs_before["alpha@release"][1]["python_environments"]
+    assert snapshot(work / "runtime/plugin-python-environments") == environments_before
+    assert changed["outside@thirdparty"] == refs_before["outside@thirdparty"]
+    assert changed["optional@release"] == refs_before["optional@release"]
     # Corrupt new image bytes are rejected before any selection change.
     before = PluginSelection(work).read()
     entry = new / "sources/alpha/plugin.py"
@@ -530,7 +560,11 @@ step(upgrade)
     preflight = publish_distribution(distribution=published, workspace=work, plugins_home=home,
                                     config_path=config, plan=plan, inputs=root, preflight_only=True)
     assert preflight["migration_ids"] == ["scenario_publish_upgrade"]
-    assert snapshot(state) == before_preflight
+    after_preflight = snapshot(state)
+    assert {k: v for k, v in after_preflight.items()
+            if not k.startswith(("workspace/runtime/plugin-archives/", "workspace/runtime/plugin-python-environments/"))} == {
+        k: v for k, v in before_preflight.items()
+        if not k.startswith(("workspace/runtime/plugin-archives/", "workspace/runtime/plugin-python-environments/"))}
     publish_distribution(distribution=published, workspace=work, plugins_home=home,
                          config_path=config, plan=plan, inputs=root)
     migration(repo, "optional", "scenario_failed_upgrade",

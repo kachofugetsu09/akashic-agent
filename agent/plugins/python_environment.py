@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
+from utils.timing import measure
 
 from agent.plugin_composition.archive import (
     PluginArchive,
@@ -154,7 +155,7 @@ class PythonEnvironments:
 
     def prepared(self, code_id: str, runtime: StaticPythonRuntime, *, wheel_digest: str = "") -> str:
         """Read an already prepared distribution environment; never install at load."""
-        value = _environment_input(code_id, runtime, wheel_digest)
+        value = _environment_input(self.archive.open(code_id), code_id, runtime, wheel_digest)
         pointer = self.path / (hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest() + ".ref")
         if pointer.is_symlink():
             raise ValueError("Python 环境引用不能是符号链接")
@@ -166,6 +167,16 @@ class PythonEnvironments:
         self, code: Path, runtime: StaticPythonRuntime, *,
         offline_wheels: OfflineWheels | None = None,
     ) -> str:
+        """Measure dependency preparation, including cache reuse."""
+        with measure("plugin.environment", plugin=code.name, runtime=runtime.runtime_root) as timing:
+            ref, reused = self._prepare(code, runtime, offline_wheels=offline_wheels)
+            timing.update(ref=ref, reused=reused)
+            return ref
+
+    def _prepare(
+        self, code: Path, runtime: StaticPythonRuntime, *,
+        offline_wheels: OfflineWheels | None = None,
+    ) -> tuple[str, bool]:
         """安装 owner 首次解析依赖；环境始终留在创建时的最终目录。"""
         wheel_digest = None
         if offline_wheels is not None:
@@ -174,19 +185,20 @@ class PythonEnvironments:
         self.path.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._archive_path.mkdir(mode=0o700, parents=True, exist_ok=True)
         # 1. 固定完整代码输入；其中已包含 requirements 与本地构建文件。
-        code_id = self.archive.save(
-            code, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})
-        )
-        source = self.archive.open(code_id)
+        requirements = (code / runtime.requirements).read_bytes()
+        # Named offline packages and empty inputs do not install plugin source.
+        # Online/local/editable builds still depend on the entire code tree.
+        code_id = ""
+        if requirements.strip() and offline_wheels is None:
+            code_id = self.archive.save(
+                code, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})
+            )
         executable = (
             Path(sys.base_prefix)
             / "bin"
             / f"python{sys.version_info.major}.{sys.version_info.minor}"
         ).resolve(strict=True)
-        if offline_wheels is not None:
-            _check_offline_requirements(source / runtime.requirements)
-            _ = _verify_offline_wheels(offline_wheels)
-        input_value = _environment_input(code_id, runtime, wheel_digest or "")
+        input_value = _environment_input(code, code_id, runtime, wheel_digest or "")
         input_id = hashlib.sha256(
             json.dumps(input_value, sort_keys=True).encode()
         ).hexdigest()
@@ -196,7 +208,15 @@ class PythonEnvironments:
                 raise ValueError("Python 环境引用不能是符号链接")
             ref = pointer.read_text()
             _ = self.open(ref)
-            return ref
+            return ref, True
+
+        if not code_id:
+            code_id = self.archive.save(
+                code, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})
+            )
+        source = self.archive.open(code_id)
+        if _environment_input(source, code_id, runtime, wheel_digest or "") != input_value:
+            raise RuntimeError("插件依赖输入在归档期间发生变化")
 
         # 2. 不 rename venv；脚本 shebang 与 .pth 中的绝对路径从创建起就有效。
         location = uuid4().hex
@@ -238,19 +258,19 @@ class PythonEnvironments:
                         f"--find-links={offline_wheels.directory}", "--only-binary=:all:",
                         "--no-cache-dir", "--no-input", "-r", str(requirements_path),
                     ]
-                _run(command, build_source)
-                if offline_wheels is not None:
-                    _ = _verify_offline_wheels(offline_wheels)
-            for current, _, files in os.walk(root, topdown=False):
-                for name in files:
-                    path = Path(current) / name
-                    if path.is_symlink():
-                        continue
-                    path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
-                    with path.open("rb") as stream:
-                        os.fsync(stream.fileno())
-                sync_directory(Path(current))
-            sync_directory(self.path)
+                with measure("plugin.pip", plugin=code.name, runtime=runtime.runtime_root):
+                    _run(command, build_source)
+            with measure("plugin.environment.sync", plugin=code.name):
+                for current, _, files in os.walk(root, topdown=False):
+                    for name in files:
+                        path = Path(current) / name
+                        if path.is_symlink():
+                            continue
+                        path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
+                        with path.open("rb") as stream:
+                            os.fsync(stream.fileno())
+                    sync_directory(Path(current))
+                sync_directory(self.path)
             if offline_wheels is not None:
                 _ = _verify_offline_wheels(offline_wheels)
             ref = self.archive.save_descriptor(
@@ -279,7 +299,7 @@ class PythonEnvironments:
             finally:
                 pending.unlink()
             _ = self.open(ref)
-            return ref
+            return ref, False
         finally:
             if not published:
                 shutil.rmtree(root)
@@ -302,12 +322,18 @@ class PythonEnvironments:
         return root
 
 
-def _environment_input(code_id: str, runtime: StaticPythonRuntime, wheel_digest: str) -> dict[str, object]:
+def _environment_input(code: Path, code_id: str, runtime: StaticPythonRuntime, wheel_digest: str) -> dict[str, object]:
+    """Key named wheels by dependencies; retain source identity for local builds."""
+    requirements = (code / runtime.requirements).read_bytes()
     value: dict[str, object] = {
-        "code": code_id,
-        "base": {"executable": str((Path(sys.base_prefix) / "bin" / f"python{sys.version_info.major}.{sys.version_info.minor}").resolve(strict=True))},
+        "base": {"executable": str((Path(sys.base_prefix) / "bin" / f"python{sys.version_info.major}.{sys.version_info.minor}").resolve(strict=True)),
+                 "version": sys.version},
         "runtime_root": runtime.runtime_root,
     }
+    if wheel_digest or not requirements.strip():
+        value["requirements_sha256"] = hashlib.sha256(requirements).hexdigest()
+    else:
+        value["code"] = code_id
     if wheel_digest:
         value["wheel_tree_sha256"] = wheel_digest
     return value

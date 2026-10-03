@@ -6,6 +6,7 @@ import os
 import secrets
 import subprocess
 import time
+import sys
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -14,6 +15,7 @@ from scripts.akashic_release.manifest import activation_receipt, atomic_write, r
 from scripts.akashic_release.model import ReleasePaths
 from scripts.akashic_release.systemd import install_units, install_operator_entrypoint
 from scripts.akashic_release.systemd import start_bridge, start_core, stop_runtime
+from utils.timing import measure
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -197,7 +199,7 @@ def _publish(
 ) -> dict[str, object]:
     """让目标镜像检查或执行同一份固定部署清单。"""
 
-    # 1. 输入只读挂载；在线预检也将正式 state 设为只读。
+    # 1. Online preparation can write only rebuildable archive/environment caches.
     if hashlib.sha256(plan.read_bytes()).hexdigest() != digest:
         raise RuntimeError("部署清单在预检后改变")
     command = ["docker", "run", "--rm", "--network", "none", "--read-only",
@@ -205,6 +207,20 @@ def _publish(
                "--mount", f"type=bind,src={paths.state},dst={paths.state}" + (",readonly" if preflight else ""),
                "--mount", f"type=bind,src={plan},dst=/opt/akashic/deploy-plan.json,readonly",
                "--mount", f"type=bind,src={inputs},dst=/opt/akashic/deploy-inputs,readonly"]
+    if preflight:
+        workspace = Path(candidate["AKASHIC_WORKSPACE"])
+        owner = workspace.stat()
+        for name in ("plugin-archives", "plugin-python-environments"):
+            cache = workspace / "runtime" / name
+            current = paths.state
+            for part in cache.relative_to(paths.state).parts:
+                current /= part
+                if current.is_symlink():
+                    raise RuntimeError(f"preparation cache 不得穿过 symlink: {current}")
+            if not cache.exists():
+                cache.mkdir(mode=0o700)
+                os.chown(cache, owner.st_uid, owner.st_gid)
+            command += ["--mount", f"type=bind,src={cache},dst={cache}"]
     if backup_dir is not None and not preflight:
         backup_dir.parent.mkdir(parents=True, exist_ok=True)
         command += ["--mount", f"type=bind,src={backup_dir.parent},dst={backup_dir.parent}"]
@@ -217,15 +233,23 @@ def _publish(
         command.append("--preflight-only")
     elif backup_dir is not None:
         command += ["--backup-dir", str(backup_dir)]
-    completed = run(command, check=False, capture_output=True, text=True)
-    if completed.returncode != 0:
-        raise RuntimeError(f"目标镜像发布失败（exit={completed.returncode}）: {completed.stderr.strip()}")
+    with measure("release.preflight" if preflight else "release.publish"):
+        completed = run(command, check=False, capture_output=True, text=True)
+        if completed.returncode != 0:
+            raise RuntimeError(f"目标镜像发布失败（exit={completed.returncode}）: {completed.stderr.strip()}")
+    timings = []
+    for line in completed.stderr.splitlines():
+        if line.startswith('{"event": "release.timing",'):
+            row = json.loads(line)
+            timings.append(row)
+            print(line, file=sys.stderr, flush=True)
     result = json.loads(completed.stdout)
     # 2. 容器输出只确认本次清单；Root 仍由持久选择和运行时共同核对。
     if (not isinstance(result, dict) or result.get("plan_sha256") != digest
         or result.get("old_root_ref") != read_json(plan)["expected_root_ref"]
         or result.get("status") != ("preflight_ok" if preflight else "selected_not_started")):
         raise RuntimeError("目标镜像返回了不匹配的发布结果")
+    result["timings"] = timings
     return result
 
 
@@ -286,16 +310,19 @@ def _start_and_record(
     install_operator_entrypoint(checkout=checkout, backup_root=backup_root, target=cli_path)
     _prepare_workload_dirs(paths)
     atomic_write(environment_file, render_environment(candidate))
-    start_bridge(run=run)
-    start_core(run=run)
-    verify_release(environment_file)
+    with measure("release.start"):
+        start_bridge(run=run)
+        start_core(run=run)
+    with measure("release.health"):
+        verify_release(environment_file)
     if root_ref is None:
         # 首次安装 profile 只在首次启动建立选择；升级不会再次应用它。
         root_ref = _read_selection(paths=paths, candidate=candidate, run=run)["root_ref"]
         if not isinstance(root_ref, str):
             raise RuntimeError("首次启动尚未发布 Root")
-    live = _verify_selected_runtime(candidate=candidate, root_ref=root_ref,
-                                    ordered_components=components, run=run)
+    with measure("release.runtime"):
+        live = _verify_selected_runtime(candidate=candidate, root_ref=root_ref,
+                                        ordered_components=components, run=run)
     # 2. active 是成功边界；写入后不再执行可能将健康服务停掉的收尾动作。
     attempt.update(status="verified", phase="verified", runtimeCheck=live)
     write_json(attempt_path, attempt)
@@ -313,7 +340,8 @@ def _record_failure(
     """保持停止并保存真实阶段，不声称数据或外部效果已经回滚。"""
     attempt.update(status="maintenance_required", detail=str(error))
     try:
-        stop_runtime(run=run)
+        with measure("release.stop"):
+            stop_runtime(run=run)
     except (subprocess.CalledProcessError, OSError) as stop_error:
         attempt["stopError"] = str(stop_error)
     write_json(attempt_path, attempt)
@@ -373,7 +401,8 @@ def activate_release(
     write_json(attempt_path, attempt)
     # 2. 从停机开始保留失败现场；安装、迁移、Root CAS 由目标镜像统一执行。
     try:
-        stop_runtime(run=run)
+        with measure("release.stop"):
+            stop_runtime(run=run)
         attempt["phase"] = "publishing"
         write_json(attempt_path, attempt)
         if root_ref is not None:

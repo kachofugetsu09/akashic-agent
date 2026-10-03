@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import cast
+from utils.timing import measure
 
 from session.message import freeze_json
 from session.message_codec import json_value
@@ -31,40 +32,48 @@ class PluginArchive:
         self.path = path.resolve()
 
     def save(self, source: Path, *, exclude: frozenset[str] = frozenset()) -> str:
+        """Measure code archive work and report actual cache reuse."""
+        with measure("plugin.archive", plugin=source.name) as timing:
+            identity, reused = self._save(source, exclude=exclude)
+            timing.update(ref=identity, reused=reused)
+            return identity
+
+    def _save(self, source: Path, *, exclude: frozenset[str]) -> tuple[str, bool]:
         """按复制后的内容命名并原子发布；返回前同步磁盘。"""
         # 1. 文件树是完整输入；运行环境等边界由调用者明确选定。
         if self.path.is_relative_to(source.resolve()):
             raise ValueError("插件归档不能写入自身输入目录")
-        source_entries = tree_entries(source, exclude=exclude)
+        with measure("plugin.archive.hash", plugin=source.name):
+            source_entries = tree_entries(source, exclude=exclude)
         identity = hashlib.sha256(encode_tree(source_entries)).hexdigest()
         if (self.path / identity).exists() or (self.path / identity).is_symlink():
             _ = self.open(identity)
             sync_directory(self.path)
-            return identity
+            return identity, True
         pending = Path(tempfile.mkdtemp(prefix=".pending-", dir=self.path))
         try:
             tree = pending / "tree"
-            _ = shutil.copytree(
-                source,
-                tree,
-                symlinks=True,
-                ignore=shutil.ignore_patterns(*(_CACHE_NAMES | exclude)),
-            )
-            actual = tree_entries(tree)
-            payload = encode_tree(actual)
-            archive_id = hashlib.sha256(payload).hexdigest()
-
+            with measure("plugin.archive.copy", plugin=source.name):
+                _ = shutil.copytree(
+                    source,
+                    tree,
+                    symlinks=True,
+                    ignore=shutil.ignore_patterns(*(_CACHE_NAMES | exclude)),
+                )
+                actual = tree_entries(tree)
+                payload = encode_tree(actual)
+                archive_id = hashlib.sha256(payload).hexdigest()
             # 2. 归档文件先落盘，再让内容身份可见。
-            for relative, kind, _ in actual:
-                item = tree / relative
-                if kind == "file":
-                    item.chmod(0o555 if item.stat().st_mode & 0o111 else 0o444)
-                    with item.open("rb") as stream:
-                        os.fsync(stream.fileno())
-            for current, _, _ in os.walk(tree, topdown=False, followlinks=False):
-                sync_directory(Path(current))
-            sync_directory(pending)
-
+            with measure("plugin.archive.sync", plugin=source.name, files=len(actual)):
+                for relative, kind, _ in actual:
+                    item = tree / relative
+                    if kind == "file":
+                        item.chmod(0o555 if item.stat().st_mode & 0o111 else 0o444)
+                        with item.open("rb") as stream:
+                            os.fsync(stream.fileno())
+                for current, _, _ in os.walk(tree, topdown=False, followlinks=False):
+                    sync_directory(Path(current))
+                sync_directory(pending)
             # 3. 同内容复用已发布对象，不覆盖已有目录。
             target = self.path / archive_id
             if target.exists() or target.is_symlink():
@@ -77,7 +86,7 @@ class PluginArchive:
                         raise
                     _ = self.open(archive_id)
             sync_directory(self.path)
-            return archive_id
+            return archive_id, False
         finally:
             # 只清理本次尚未发布的临时副本，已发布归档没有减少路径。
             if pending.exists():
@@ -106,6 +115,11 @@ class PluginArchive:
         ).encode()
         identity = hashlib.sha256(payload).hexdigest()
         target = self.path / f"{identity}.json"
+        if target.exists() or target.is_symlink():
+            if target.is_symlink() or target.read_bytes() != payload:
+                raise RuntimeError("插件归档 descriptor 损坏")
+            sync_directory(self.path)
+            return identity
         fd, name = tempfile.mkstemp(prefix=".pending-", dir=self.path)
         pending = Path(name)
         try:
