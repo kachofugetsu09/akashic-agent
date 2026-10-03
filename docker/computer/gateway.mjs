@@ -647,6 +647,10 @@ async function screenshot(response, quiet) {
 
 async function proxyOpenCli(request, response) {
   const url = new URL(request.url ?? "/", "http://opencli.local");
+  if (request.headers["x-opencli"] !== "1" || request.headers.upgrade) {
+    json(response, 403, { error: "Only OpenCLI client requests may wake Computer" });
+    return;
+  }
   if (url.pathname === "/shutdown") {
     json(response, 403, {
       error: "the Computer plugin owns the OpenCLI daemon lifecycle",
@@ -768,17 +772,11 @@ const server = createServer(async (request, response) => {
       } finally {
         if (payload.endTurn) computer.turns.delete(turn);
       }
-    } else if (
-      request.method === "POST" &&
-      url.pathname === "/driver/cancel"
-    ) {
+    } else if (request.method === "POST" && url.pathname === "/driver/cancel") {
       const payload = await body(request);
       if (driver) await driver.cancel(payload.call_id);
       json(response, 200, { released: true });
-    } else if (
-      request.method === "POST" &&
-      url.pathname === "/driver/reset"
-    ) {
+    } else if (request.method === "POST" && url.pathname === "/driver/reset") {
       const payload = await body(request);
       if (driver) await driver.reset(payload.session_id);
       json(response, 200, { reset: true });
