@@ -2449,6 +2449,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
 /* Execution paths wrap fully; only the directory list owns scrolling. */
 .directory-dialog { min-width: 0; color: var(--ak-ink-primary); background: var(--ak-paper-canvas); }
+.directory-dialog__header { padding-inline-end: 44px; text-align: start; }
 .directory-path, .project-directory-path { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--chat-type-control); }
 .project-directory-path { margin: 0; padding-inline: var(--chat-rail-inline); color: var(--ak-ink-secondary); }
 .directory-open { display: grid; gap: 8px; }
@@ -2462,3 +2463,9 @@ form.composer:focus-within [data-slot="input-group"] {
 .directory-notice { color: var(--ak-ink-secondary); }
 .directory-notice strong { display: block; color: var(--ak-ink-primary); }
 .directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }
+.session-directory { flex: 0 0 auto; min-width: 0; padding-inline: max(var(--chat-dock-inset), env(safe-area-inset-left, 0px)) max(var(--chat-dock-inset), env(safe-area-inset-right, 0px)); color: var(--ak-ink-secondary); font-size: var(--chat-type-control); }
+.session-directory summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 44px; cursor: pointer; }
+.session-directory summary .directory-path { min-width: 0; flex: 1 1 12rem; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.session-directory__details { max-height: min(12rem, 25dvh); overflow-y: auto; border-block-start: 1px solid var(--ak-rule-subtle); }
+.session-directory__details ul { padding-inline-start: 20px; }
+.session-directory__details button { min-height: 44px; text-decoration: underline; }

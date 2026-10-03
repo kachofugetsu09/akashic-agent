@@ -25,6 +25,8 @@ export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus 
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
+    setPath(target);
+    setPage(null);
     setLoading(true);
     setError("");
     try {
@@ -67,11 +69,18 @@ export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus 
     }
   };
   const openPath = (event: FormEvent) => { event.preventDefault(); if (!loading) void browse(path); };
+  const editPath = (value: string) => {
+    request.current?.abort();
+    setPath(value);
+    setPage(null);
+    setLoading(false);
+    setError("");
+  };
 
   return <Dialog open onOpenChange={(open) => { if (!open && !submitting) onClose(); }}>
     <DialogContent className="directory-dialog" overlayClassName="project-dialog-overlay"
       onCloseAutoFocus={onCloseFocus ? (event) => { event.preventDefault(); onCloseFocus(); } : undefined}>
-      <DialogHeader><DialogTitle>{project.directory ? "固定目录" : "选择项目目录"}</DialogTitle></DialogHeader>
+      <DialogHeader className="directory-dialog__header"><DialogTitle>{project.directory ? "固定目录" : "选择项目目录"}</DialogTitle></DialogHeader>
       <DialogDescription>{project.directory ? "这个项目的目录已固定。已有对话的工作目录各自独立。"
         : "目录可不设置。首次绑定后不可更改或清空；只作为之后新建对话的默认目录，已有对话不变。"}</DialogDescription>
       {project.directory ? <div>
@@ -81,7 +90,7 @@ export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus 
       </div> : <>
         <form className="directory-open" onSubmit={openPath}>
           <label htmlFor="project-directory-path">执行主机路径</label>
-          <div><Input id="project-directory-path" value={path} onChange={(event) => setPath(event.target.value)} disabled={submitting} />
+          <div><Input id="project-directory-path" value={path} onChange={(event) => editPath(event.target.value)} disabled={submitting} />
             <button type="submit" disabled={!path.trim() || loading || submitting}>打开</button></div>
         </form>
         <p ref={heading} tabIndex={-1} className="directory-path" aria-live="polite">{page?.path ?? "尚未选择目录"}</p>

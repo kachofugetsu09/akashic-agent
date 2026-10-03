@@ -20,6 +20,7 @@ import { ReplyActivityView } from "./message-view";
 import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
+import { SessionDirectory } from "./session-directory";
 
 interface DesktopChatViewProps {
   embeddedShell: boolean;
@@ -90,6 +91,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           />
           <h1 title={headingTitle}>{headingTitle}</h1>
         </header>
+        {activeSessionId ? <SessionDirectory key={activeSessionId} sessionId={activeSessionId}
+          refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
             {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} modelProblem={modelProblem} /> : (

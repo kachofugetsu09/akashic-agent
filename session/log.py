@@ -688,6 +688,13 @@ class MessageCatalog:
     def attributes(self, session_id: str) -> SessionAttributes:
         return self.reader(session_id).attributes
 
+    def exists(self, session_id: str) -> bool:
+        """Check admission without treating empty or nullable metadata as absence."""
+        with self._log._read():
+            return self._log._connection.execute(
+                "SELECT 1 FROM sessions WHERE key=?", (session_id,),
+            ).fetchone() is not None
+
     def sessions(
         self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
         after: tuple[str, str] | None = None, limit: int = 50,

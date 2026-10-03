@@ -73,8 +73,8 @@ class WorkingDirectories:
         async with PathAccess() as access:
             return (await access.read("browse", path, after=after)).model_dump(exclude_none=True)
 
-    async def resolve_target(self, session_id: str | None, path: str, *, legacy_base: str | None = None) -> str:
-        """Fix relative targets using the live Session base on the execution host."""
+    async def resolve_target(self, session_id: str | None, path: str, *, legacy_base: str | None = None) -> tuple[str, str | None]:
+        """Fix the target and its original directory dependency on the execution host."""
         current = DirectorySnapshot(None, None) if session_id is None else self.snapshot(session_id)
         base = current.path if current.path is not None else legacy_base
         explicit = Path(path).is_absolute() or path.startswith("~")
@@ -84,7 +84,7 @@ class WorkingDirectories:
             info = await access.read("resolve", path, base_dir=base)
         if info.status != "available":
             raise ValueError(f"路径解析失败 ({info.status}): {info.error}")
-        return info.path
+        return info.path, current.path if not explicit else None
 
     async def prepare_switch(self, session_id: str, path: str) -> Mapping[str, object]:
         """Validate a target and freeze the Session revision before execution."""
