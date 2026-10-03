@@ -56,4 +56,5 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
         "20260921_01_plugin_update_input_ref",
         "20260928_01_plugin_config_updates",
         "20261004_01_message_source_index",
+        "20261004_02_message_body_kind_index",
     }
