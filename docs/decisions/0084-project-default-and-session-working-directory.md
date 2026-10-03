@@ -29,7 +29,7 @@ Agent 使用现有 Shell 创建 worktree，再显式调用目录切换工具。�
 
 不采用 coding/chat 模式、自动 worktree 开关、项目指令编辑器和 Session 目录表单：它们引入与组织身份无关的第二套行为模型。不可变 Session 根会妨碍 Agent 在同 Turn 使用新 worktree，因此只固定 Project 默认值。
 
-不把目录放进 scope：位置变化不是记忆分区变化。AGENTS 只属于请求材料，不进入永久用户消息或全局 persona。每层 override 优先，规则从最近 Git 根到 cwd 依次读取，累计上限 32 KiB；深层规则由 Agent 在进入相关目录前读取。
+不把目录放进 scope：位置变化不是记忆分区变化。AGENTS 只属于请求材料，不进入永久用户消息或全局 persona；规则提醒不重放，带实时材料的请求不接续可能保留旧规则的 opaque provider 会话。每层 override 优先，规则从最近 Git 根到 cwd 依次读取，累计上限 32 KiB；深层规则由 Agent 在进入相关目录前读取。
 
 代价是移走 Project 目录后不能原位改绑；可新建 Project，或显式切换原 Session。若以后需要迁移 Project，必须另定消息、记忆和身份合同，不能借目录设置实现迁移。
 

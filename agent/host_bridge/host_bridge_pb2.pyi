@@ -204,12 +204,14 @@ class ReadFile(_message.Message):
     def __init__(self, path: _Optional[str] = ..., offset: _Optional[int] = ..., limit: _Optional[int] = ...) -> None: ...
 
 class WriteFile(_message.Message):
-    __slots__ = ("path", "content")
+    __slots__ = ("path", "content", "required_dir")
     PATH_FIELD_NUMBER: _ClassVar[int]
     CONTENT_FIELD_NUMBER: _ClassVar[int]
+    REQUIRED_DIR_FIELD_NUMBER: _ClassVar[int]
     path: str
     content: str
-    def __init__(self, path: _Optional[str] = ..., content: _Optional[str] = ...) -> None: ...
+    required_dir: str
+    def __init__(self, path: _Optional[str] = ..., content: _Optional[str] = ..., required_dir: _Optional[str] = ...) -> None: ...
 
 class EditFile(_message.Message):
     __slots__ = ("path", "old_text", "new_text", "replace_all")

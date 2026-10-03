@@ -11,6 +11,7 @@ from agent.plugin_composition.messages import OwnerStore, OwnerTransaction, Sess
 from agent.plugin_contracts.directories import DirectorySnapshot
 
 from .path_access import PathAccess, check_directory
+from .agents import read_agents
 
 _SESSION = "directory:"
 _SWITCH = "directory-switch:"
@@ -72,9 +73,9 @@ class WorkingDirectories:
         async with PathAccess() as access:
             return (await access.read("browse", path, after=after)).model_dump(exclude_none=True)
 
-    async def resolve_target(self, session_id: str, path: str, *, legacy_base: str | None = None) -> str:
-        """Fix relative targets using the live Session base on the execution host."""
-        current = self.snapshot(session_id)
+    async def resolve_target(self, session_id: str | None, path: str, *, legacy_base: str | None = None) -> tuple[str, str | None]:
+        """Fix the target and its original directory dependency on the execution host."""
+        current = DirectorySnapshot(None, None) if session_id is None else self.snapshot(session_id)
         base = current.path if current.path is not None else legacy_base
         explicit = Path(path).is_absolute() or path.startswith("~")
         async with PathAccess() as access:
@@ -83,7 +84,7 @@ class WorkingDirectories:
             info = await access.read("resolve", path, base_dir=base)
         if info.status != "available":
             raise ValueError(f"路径解析失败 ({info.status}): {info.error}")
-        return info.path
+        return info.path, current.path if not explicit else None
 
     async def prepare_switch(self, session_id: str, path: str) -> Mapping[str, object]:
         """Validate a target and freeze the Session revision before execution."""
@@ -127,3 +128,10 @@ class WorkingDirectories:
     def receipt(self, key: str) -> Mapping[str, object] | None:
         record = self._store.read(_SWITCH + key)
         return None if record is None else record.value
+
+    async def current_info(self, session_id: str) -> dict[str, object]:
+        current = self.snapshot(session_id)
+        info = await self.inspect(current.path)
+        rules = await read_agents(current.path)
+        return {"path": current.path, "revision": current.revision, "status": info["status"],
+                "agents": {key: value for key, value in rules.items() if key != "files"}}
