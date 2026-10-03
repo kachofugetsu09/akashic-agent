@@ -657,6 +657,10 @@ async function proxyOpenCli(request, response) {
     await computer.use(
       () =>
         new Promise((resolve, reject) => {
+          if (response.destroyed) {
+            resolve();
+            return;
+          }
           response.once("finish", resolve);
           response.once("close", resolve);
           const upstream = httpRequest(
@@ -872,6 +876,7 @@ async function refreshIdentity() {
         [
           "auth",
           "refresh",
+          "--all",
           "--site",
           process.env.OPENCLI_AUTH_REFRESH_SITES,
           "--concurrency",
