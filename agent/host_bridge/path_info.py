@@ -158,4 +158,3 @@ class PathAccess:
         if not isinstance(raw, str):
             raise TypeError("Path backend must return JSON text")
         return PathInfo.model_validate_json(raw)
-

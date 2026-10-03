@@ -32,7 +32,7 @@ standard_tools 拥有 Session 当前目录；Projects 只注册默认取值查�
 | 外部 worktree | 现有 Shell 明确创建 | 普通 Git 操作 | 实际 Git/文件错误 | 不自动删除、prune、reset 或复制 dirty 内容 |
 | 消息与记忆 | 既有追加/学习 | 本功能不获得改写权 | 不因目录失效而失效 | 本功能不获得删除权 |
 
-取消未提交操作不落盘；提交后按 durable receipt 判定。路径失效与未指定不同，恢复时仍探测原路径；Shell/PTY 保持启动目录。准备过的参数不因后来切换而重新解析。规则读取失败允许聊天并明确要求暂停依赖规则的仓库修改。
+取消未提交操作不落盘；提交后按 durable receipt 判定。路径失效与未指定不同，恢复时仍探测原路径；Shell/PTY 保持启动目录。准备过的参数不因后来切换而重新解析。相对写入还固定原 cwd 依赖，local/Host Bridge 执行时要求该目录仍可访问；只逐层创建缺少的子目录，原子写不补建父目录。显式绝对目标与未指定 cwd 保留既有创建父目录行为；cwd 不成为权限限制。规则读取失败允许聊天并明确要求暂停依赖规则的仓库修改。
 
 ## 实施与验收边界
 
@@ -49,7 +49,7 @@ Project UI 查询 `project.bind_directory` 接受 Project ID 和执行主机的�
 
 `directory.current` 以真实 Session ID 返回 path、revision、实时状态与 AGENTS 来源，不返回规则正文。`set_working_directory` 不接受任意 Session ID，只从实际 CallSource 取所属 Session；prepare 固定绝对目标与 expected revision。目录 owner 使用 CAS，并把 cwd 更新和效果 receipt 同事务保存。同路径切换不增加 revision，失败保留原状态。
 
-切换工具通过通用 `exclusive_batch` 元数据声明独占。ReAct 在解码整批后拒绝所有混合调用；Tools 在 prepare 和任何物理效果之前复核持久 Output，直接提交非法批次也不能产生部分效果。普通工具注册不增加该元数据。
+切换工具通过通用 `exclusive_batch` 元数据声明独占。独占属性随冻结的解码结果返回，ReAct 不额外读取菜单实现的内部状态。ReAct 在解码整批后拒绝所有混合调用；Tools 在 prepare 和任何物理效果之前复核持久 Output，直接提交非法批次也不能产生部分效果。普通工具注册不增加该元数据。
 
 文件 prepare 固定绝对 path 与既有 allowed_dir 限制；默认 read/list 根随已设置的 Session cwd，显式配置的限制保留。Shell prepare 固定 cwd；显式命令 cwd 或插件 working_dir 保持优先。write_stdin 和 task_stop 只找原进程 owner，运行中的 PTY 不因切换而迁移。
 

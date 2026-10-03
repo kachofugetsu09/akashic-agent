@@ -819,7 +819,7 @@ async def react(
             actual_calls: list[ToolCall | ContentPart] = []
             decoded_calls = tuple(tools.decode(call) for call in response.tool_calls)
             mixed_exclusive = len(decoded_calls) > 1 and any(
-                decoded.binding_id is not None and tools.exclusive_batch(decoded.binding_id)
+                decoded.binding_id is not None and decoded.exclusive_batch
                 for decoded in decoded_calls
             )
             for call, decoded_call in zip(response.tool_calls, decoded_calls, strict=True):
