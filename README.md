@@ -13,7 +13,7 @@ Akashic 是一个会主动找你的 AI 伙伴。它可以对话，也能根据�
 3. 运行：
 
 ```bash
-docker compose up -d --wait --wait-timeout 600
+docker compose up -d --wait
 ```
 
 首次自动拉取发行镜像、准备数据卷并安装默认功能。命令成功返回后打开 <http://localhost:2236/#onboarding> 进入“初始配置”。如果先打开了对话页，点击右上角“功能设置”→“初始配置”。配置页面能显示，即可返回“对话”；首次欢迎提示可选择“稍后再说”，然后在输入框写入草稿。完成这些步骤即启动成功；没有模型凭据时先配置模型，再开始对话。容器显示 `running` 或网页返回 HTTP 200 都不单独代表启动成功。
@@ -24,7 +24,7 @@ docker compose up -d --wait --wait-timeout 600
 
 ```bash
 docker compose stop
-docker compose up -d --wait --wait-timeout 600
+docker compose up -d --wait
 ```
 
 配置、会话、附件和插件选择保存在此 Compose project 的 `data` 卷。`docker compose down` 只删除容器和网络；**不要加 `-v`，它会删除数据卷**。保持目录和 project 名称不变，才能继续使用同一实例。独立试用使用新目录及 `docker compose -p <名称>`。
@@ -47,7 +47,7 @@ Linux、macOS 或 WSL2：
 git clone --branch v0.2.0 https://github.com/kachofugetsu09/akashic-agent.git
 cd akashic-agent
 printf 'AKASHIC_REVISION=%s\n' "$(git rev-parse HEAD)" > .env
-docker compose up -d --build --wait --wait-timeout 600
+docker compose up -d --build --wait
 ```
 
 Windows PowerShell（已安装 Git 和 Docker Desktop）：
@@ -56,7 +56,7 @@ Windows PowerShell（已安装 Git 和 Docker Desktop）：
 git clone --branch v0.2.0 https://github.com/kachofugetsu09/akashic-agent.git
 cd akashic-agent
 "AKASHIC_REVISION=$(git rev-parse HEAD)" | Set-Content .env
-docker compose up -d --build --wait --wait-timeout 600
+docker compose up -d --build --wait
 ```
 
 首次构建包含已完成的网页和插件包，后续同一镜像启动不重新编译。`.env` 保存源码提交，之后在新终端也能停止和重启。成功标准、日志、端口和数据管理与发行版相同。构建新发行版时先 `git fetch --tags`、`git switch --detach <新 tag>`，修改已有 `.env` 中的 `AKASHIC_REVISION` 为新的完整提交，再运行构建启动命令。保留 `.env` 中已有的端口设置；不要把提交设为浮动的 `main`，它可能复用旧构建层。源码调试见[开发入口](docs/design/product-startup.md#development-entry)。

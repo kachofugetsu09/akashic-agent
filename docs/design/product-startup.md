@@ -61,4 +61,4 @@ Use isolated HOME, state, plugin home, cache, browser profile and Compose projec
 
 ## Updating standalone Compose
 
-源码构建先取得并切换目标已推送提交，将 `AKASHIC_REVISION` 重新设为 `git rev-parse HEAD`，再运行 `docker compose up -d --build --wait --wait-timeout 600`。发行版使用者先停止服务并备份实例数据卷，在同一目录替换新发行版的 Compose，运行 `docker compose up -d --wait --wait-timeout 600`。保持 project 和数据卷不变。旧镜像只恢复代码；已经发生的数据迁移需要升级前的匹配数据备份。不要使用 `down -v` 升级。
+源码构建先取得并切换目标已推送提交，将 `AKASHIC_REVISION` 重新设为 `git rev-parse HEAD`，再运行 `docker compose up -d --build --wait`。发行版使用者先停止服务并备份实例数据卷，在同一目录替换新发行版的 Compose，运行 `docker compose up -d --wait`。保持 project 和数据卷不变。旧镜像只恢复代码；已经发生的数据迁移需要升级前的匹配数据备份。不要使用 `down -v` 升级。

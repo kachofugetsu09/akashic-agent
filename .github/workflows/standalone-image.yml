@@ -135,7 +135,7 @@ jobs:
           下载 Assets 中的 compose.yaml，放入专用目录后运行：
 
           \`\`\`bash
-          docker compose up -d --wait --wait-timeout 600
+          docker compose up -d --wait
           \`\`\`
 
           成功返回后打开 http://localhost:2236/#onboarding，完成初始配置。无需先配置模型 Key。
