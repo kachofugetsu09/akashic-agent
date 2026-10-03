@@ -42,6 +42,9 @@ from session.message_codec import decode_body, encode_body, json_value
 _T = TypeVar("_T")
 _logger = logging.getLogger(__name__)
 
+MESSAGE_SOURCE_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_seq
+    ON messages (session_key, source, seq);"""
+
 
 _SCOPE_DIMENSION = re.compile(r"[a-z][a-z0-9_]{0,31}")
 _SCOPE_VALUE_LIMIT = 128
@@ -204,6 +207,7 @@ _SCHEMA = {
                         {_MESSAGE_METADATA_COLUMN},
                         UNIQUE(session_key, seq)
                     );""",
+    "message_source_seq": MESSAGE_SOURCE_INDEX_SCHEMA,
     "bindings": """CREATE TABLE IF NOT EXISTS bindings (
                         binding_id TEXT PRIMARY KEY,
                         descriptor TEXT NOT NULL
@@ -285,6 +289,13 @@ def _check_schema(connection: sqlite3.Connection) -> None:
             raise RuntimeError(f"{name} schema 不匹配，请先完成对应 yoyo 迁移")
 
 
+def create_message_source_index(connection: sqlite3.Connection) -> None:
+    """Build a source prefix index without changing message rows or their order."""
+    _check_schema(connection)
+    _ = connection.execute(MESSAGE_SOURCE_INDEX_SCHEMA)
+    _check_schema(connection)
+
+
 class MessageConflict(ValueError):
     """消息身份、引用或来源前缀发生冲突。"""
 
@@ -347,7 +358,7 @@ class MessageLog:
             with self._connection:
                 for name, statement in _SCHEMA.items():
                     # 新库由 owner 初始化；已有库的新持久能力只能由 yoyo 接纳。
-                    if name in {"owner_records", "message_embeddings", "ix_message_embeddings_hash",
+                    if name in {"owner_records", "message_embeddings", "ix_message_embeddings_hash", "message_source_seq",
                                 "attachments", "message_attachments", "idx_message_attachments_artifact"} and not fresh:
                         continue
                     _ = self._connection.execute(statement)
