@@ -86,12 +86,13 @@ class FileTool:
             if current.path is not None:
                 allowed = current.path
         try:
-            target = await self._directories.resolve_target(
+            target, required_dir = await self._directories.resolve_target(
                 session_id, cast(str, prepared["path"]), legacy_base=allowed,
             )
         except ValueError as error:
             return str(error)
-        return {**prepared, "path": target, "_allowed_dir": allowed}
+        return {**prepared, "path": target, "_allowed_dir": allowed,
+                **({"required_dir": required_dir} if isinstance(self._backend, WriteFileTool) and required_dir is not None else {})}
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
         """读取真实结果，保留明确错误和可由 Model 投影的图片附件。"""

@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 import json
+from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MessageConflict
@@ -24,9 +25,16 @@ class DirectoryInput(BaseModel):
 
 class PreparedDirectory(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    session_id: str
+    session_id: str = Field(min_length=1)
     path: str
     expected_version: int | None = Field(ge=0)
+
+    @field_validator("path")
+    @classmethod
+    def absolute_path(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("prepared 目录必须是绝对路径")
+        return value
 
 
 class DirectoryTool:

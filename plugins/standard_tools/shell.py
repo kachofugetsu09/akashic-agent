@@ -197,7 +197,7 @@ class ShellTool:
                 if current.path is not None:
                     cwd = current.path
             try:
-                cwd = await self._directories.resolve_target(session_id, cwd or ".")
+                cwd, _ = await self._directories.resolve_target(session_id, cwd or ".")
                 _ = await self._directories.check_directory(cwd)
             except ValueError as error:
                 return str(error)
