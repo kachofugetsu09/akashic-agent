@@ -40,11 +40,12 @@ WORKDIR /opt/akashic
 COPY requirements.lock /opt/akashic/distribution/requirements.lock
 ARG AKASHIC_PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG AKASHIC_REQUIREMENTS_SHA256
-RUN printf '%s  %s\n' "${AKASHIC_REQUIREMENTS_SHA256}" /opt/akashic/distribution/requirements.lock | sha256sum -c - \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    printf '%s  %s\n' "${AKASHIC_REQUIREMENTS_SHA256}" /opt/akashic/distribution/requirements.lock | sha256sum -c - \
     && python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install \
         --index-url "${AKASHIC_PYPI_INDEX_URL}" \
-        --no-cache-dir --require-hashes \
+        --require-hashes \
         -r /opt/akashic/distribution/requirements.lock \
     && /opt/venv/bin/python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'akashic-sdk.pth').write_text('/opt/akashic/source/sdk/python/src\\n')"
 
