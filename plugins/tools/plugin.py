@@ -27,6 +27,8 @@ from agent.plugin_contracts import (
     ContentPart,
     ContentReferences,
     ToolResult,
+    Output,
+    ToolCall,
     freeze_json,
 )
 from agent.plugin_contracts.content import (
@@ -55,12 +57,27 @@ from .api import (
     result_message_id,
 )
 from .execution import ToolExecution
+from .api import CallSource
 from .program import TOOL_PROGRAM, ToolProgramFactory
 
 api_version = 3
 name = "tools"
 version = "1.0.0"
 desc = "声明工具并固定实际实现；一次调用的回执独立于会话"
+
+
+def _batch_error(bindings: Bindings, source: CallSource) -> str | None:
+    """Reject every member before prepare when the saved Output needs exclusivity."""
+    output = source.messages[-1].body
+    if not isinstance(output, Output):
+        raise ValueError("工具调用来源必须是 Output")
+    calls = tuple(part for part in output.parts if isinstance(part, ToolCall))
+    if len(calls) > 1 and any(
+        cast(Mapping[str, object], bindings.describe(call.binding_id, TOOLS)["tool"]).get("exclusive_batch") is True
+        for call in calls
+    ):
+        return "此批次包含要求独占的工具；整批未执行，请单独调用该工具。"
+    return None
 
 
 def _matches_saved_description(current: Mapping[str, object], saved: Mapping[str, object]) -> bool:
@@ -198,6 +215,7 @@ class ToolCatalog:
         public: bool = True,
         idempotent: bool = False,
         parallel: bool = False,
+        exclusive_batch: bool = False,
     ) -> ToolRef:
         """目标自行校验参数 schema；注册表固定发现描述与真实资源入口。"""
         self._check_context(ctx)
@@ -208,7 +226,7 @@ class ToolCatalog:
             raise ValueError("工具名或描述无效")
         if parameters.get("type") != "object":
             raise ValueError("工具参数必须声明 object schema")
-        if any(type(value) is not bool for value in (idempotent, public, parallel)):
+        if any(type(value) is not bool for value in (idempotent, public, parallel, exclusive_batch)):
             raise TypeError("工具执行选项必须是 bool")
         if capture is not None and not callable(capture):
             raise TypeError("工具 capture 必须是可调用对象")
@@ -222,6 +240,7 @@ class ToolCatalog:
                     "description": description,
                     "parameters": parameters,
                     "idempotent": idempotent,
+                    **({"exclusive_batch": True} if exclusive_batch else {}),
                 }
             ),
         )
@@ -330,6 +349,7 @@ class ToolCatalog:
             authorize_binding,
             task_key="effects",
             child_permit=child_permit,
+            check_batch=lambda source: _batch_error(bindings, source),
         )
 
     def view(self, *refs: ToolRef) -> ToolView:

@@ -18,6 +18,7 @@ from .filesystem import (
 from .shell import register_shell
 from .skills import register_skills
 from .working_directory import WorkingDirectories
+from .directory_tool import register_directory
 
 api_version = 3
 name = "standard_tools"
@@ -37,15 +38,17 @@ async def apply(ctx: Context) -> None:
         ctx, name="working-directory", initialize=directories.initialize,
     )
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
+    await register_directory(ctx, directories)
     for backend in (ReadFileTool, ListDirTool, WriteFileTool, EditFileTool):
         await register_file(
             ctx,
             backend,
+            directories=directories,
             allowed_dir=(
                 ctx.runtime.workspace
                 if backend in (ReadFileTool, ListDirTool)
                 else None
             ),
         )
-    await register_shell(ctx)
+    await register_shell(ctx, directories)
     await register_skills(ctx)

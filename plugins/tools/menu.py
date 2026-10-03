@@ -166,6 +166,10 @@ class ToolMenu:
         if call.binding_id not in self._bound.values():
             raise PermissionError("工具请求不属于本次获授 view")
 
+    def exclusive_batch(self, binding_id: str) -> bool:
+        description = cast(Mapping[str, object], self._bindings.describe(binding_id, TOOLS)["tool"])
+        return description.get("exclusive_batch") is True
+
     async def execute(self, call: CallRef, *, commit_after: CommitAfter | None = None) -> Result:
         opened = self._reply(call)
         reply = await opened if inspect.isawaitable(opened) else opened

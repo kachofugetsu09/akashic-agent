@@ -72,9 +72,9 @@ class WorkingDirectories:
         async with PathAccess() as access:
             return (await access.read("browse", path, after=after)).model_dump(exclude_none=True)
 
-    async def resolve_target(self, session_id: str, path: str, *, legacy_base: str | None = None) -> str:
+    async def resolve_target(self, session_id: str | None, path: str, *, legacy_base: str | None = None) -> str:
         """Fix relative targets using the live Session base on the execution host."""
-        current = self.snapshot(session_id)
+        current = DirectorySnapshot(None, None) if session_id is None else self.snapshot(session_id)
         base = current.path if current.path is not None else legacy_base
         explicit = Path(path).is_absolute() or path.startswith("~")
         async with PathAccess() as access:
