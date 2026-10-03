@@ -22,6 +22,7 @@ from .application.consumer import run_memory_job
 from .application.snapshot import read_memory
 from .domain.model import MemoryConfig
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
+from .scopes import MemoryDisabled
 from .recalls import ProgramSource, Recall, RecallRecords, ToolSource, query_memory, render_materials
 
 
@@ -131,6 +132,10 @@ class RecallTool:
         origin = None if source is None else ToolSource(
             session_id=source.messages[0].session_id, call_ref=source.call_ref,
         )
+        try:
+            _ = self._memory(None if origin is None else origin.session_id)
+        except MemoryDisabled as error:
+            return str(error)
         binding, model_id = self._select_learning()
         return PreparedRecall(**request.model_dump(), source=origin,
                               learning_binding=binding,

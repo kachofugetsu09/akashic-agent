@@ -28,16 +28,20 @@ DEFAULT_GRAPH = "default"
 GRAPHS_DIRECTORY = "akasha-graphs"
 
 
+class MemoryDisabled(ValueError):
+    """The calling Session has no permission to use Akasha memory."""
+
+
 class PolicyLocked(ValueError):
     """已有 Session 按旧策略路由，改写需要显式重建协议。"""
 
 
 @dataclass(frozen=True, slots=True)
 class Route:
-    """write 为 None 表示不学习；read 始终指向一张可召回的图。"""
+    """None disables the corresponding learning or recall route."""
 
     write: str | None
-    read: str
+    read: str | None
 
 
 def graph_key(isolated: tuple[tuple[str, str], ...]) -> str:
@@ -86,24 +90,34 @@ class ScopePolicies:
             raise ValueError(f"Akasha scope 策略损坏: {dimension}={value}")
         return cast(LearnPolicy, learn)
 
+    def recall_enabled(self, dimension: str, value: str) -> bool:
+        """Old records allowed recall; new records store this independent choice."""
+        record = self._store.read(_policy_key(dimension, value))
+        if record is None:
+            return True
+        recall = record.value.get("recall", True)
+        if type(recall) is not bool:
+            raise ValueError(f"Akasha recall policy is corrupt: {dimension}={value}")
+        return recall
+
     # 策略只在该取值还没有任何 Session 时写入一次，已有路由因此永远确定。
-    def set(self, dimension: str, value: str, learn: LearnPolicy) -> LearnPolicy:
-        if learn not in LEARN_POLICIES:
-            raise ValueError("Akasha 学习策略无效")
+    def set(self, dimension: str, value: str, learn: LearnPolicy, *, recall: bool = True) -> LearnPolicy:
+        if learn not in LEARN_POLICIES or type(recall) is not bool:
+            raise ValueError("Akasha 记忆策略无效")
         _ = SessionAttributes(scope=((dimension, value),))
         key = _policy_key(dimension, value)
         def save(transaction: OwnerTransaction) -> LearnPolicy:
             # 1. 同值重放幂等；不同值说明策略已固定。
             current = transaction.read(key)
             if current is not None:
-                if current.value.get("learn") == learn:
+                if current.value.get("learn") == learn and current.value.get("recall", True) is recall:
                     return learn
                 raise PolicyLocked("该范围的记忆策略已固定")
             # 2. 同一写事务内确认尚无 Session 路由到该取值，接纳无法插入其间。
             if any(attributes.dimension(dimension) == value
                    for attributes in self._catalog.snapshot_attributes().values()):
                 raise PolicyLocked("该范围已有对话，记忆策略不能再改变")
-            _ = transaction.save(key, {"learn": learn}, expected_version=None)
+            _ = transaction.save(key, {"learn": learn, "recall": recall}, expected_version=None)
             return learn
         try:
             return self._store.transact(save)
@@ -111,15 +125,16 @@ class ScopePolicies:
             raise PolicyLocked("该范围的记忆策略正在被并发写入") from error
 
     def route(self, session_id: str) -> Route:
-        """isolated 跨维度传染；任一维度 off 则不学习但仍可读取所属图。"""
+        """Route each axis; any scope may disable learning or recall."""
         cached = self._routes.get(session_id)
         if cached is not None:
             return cached
         attributes = self._catalog.attributes(session_id)
         policies = {(name, value): self.read(name, value) for name, value in attributes.scope}
         isolated = tuple(pair for pair, learn in policies.items() if learn == "isolated")
-        read = graph_key(isolated)
-        write = None if attributes.learning == "excluded" or "off" in policies.values() else read
+        graph = graph_key(isolated)
+        write = None if attributes.learning == "excluded" or "off" in policies.values() else graph
+        read = graph if all(self.recall_enabled(name, value) for name, value in attributes.scope) else None
         route = Route(write=write, read=read)
         self._routes[session_id] = route
         return route

@@ -42,7 +42,8 @@ attempt 重放、Session 模型历史投影及 compaction prepare/persist 链已
 
 | 对象 | 增加与原位更新 | 失效与物理减少 |
 |---|---|---|
-| `sessions.db/owner_records` 的 Projects 记录 `directory` | 首次显式绑定在同一事务从 null 写 path；rename/archive 合并原字段 | 路径缺失保留值，不能改绑/清空，无自动减少协议；workspace 一致备份恢复 |
+| `sessions.db/owner_records` 的 Projects 记录 `directory`、`created_directory` | 创建时可与项目同事务写入目录；`created_directory` 固定原创建意图，缺失表示旧请求未选目录。之后仅允许首次显式绑定从 null 写 path；rename/archive 合并原字段 | 路径缺失保留值，不能改绑/清空，无自动减少协议；workspace 一致备份恢复 |
+| 浏览器 `akashic.project-create.<id>` | 提交前保存 ID、名称、记忆策略和可选目录；旧请求缺少目录仍可重放 | 只有确认创建或用户停止尝试才清除；刷新不自动重试，不撤销服务端提交 |
 | standard_tools 的 `directory:<session>` | 真正创建 Session 时与 Session 行同事务快照，含 null；切换按 revision CAS | 旧记录缺失保持未设置；失效保留路径，不 mkdir 或回退；无自动减少协议 |
 | standard_tools 的 `directory-switch:<effect>` | 与 cwd 更新共同增加固定结果，原 key 幂等重放 | 无自动 retention；恢复原 receipt，不猜测新 cwd |
 | cwd 和 AGENTS 的实时请求材料 | 每次新模型请求重新读取；不进入永久 Input 或 persona | 删除/切换撤下旧材料，实时提醒不进入 model.facts reminder，也不接续旧 opaque 会话；模型请求审计与已冻结恢复请求仍按原 owner 保留 |
@@ -158,7 +159,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `memory2.db/*` | 无当前 writer；经典记忆退出前曾写入结构化记忆和替换关系 | runtime 不再读取、导入或更新 | 只作为历史归档备份，不自动删除 |
 | `akasha.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录；重建与在线学习共用同一个 `MessageConsumer` | 可以用同一组输入确定性重建；用户整组撤销 interaction 后由 Akasha owner 串行全量替换；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 或 interaction 撤销协调流程替换；模型或维度不匹配必须 fail-loud；缺少固定向量的单个 turn 明确跳过并记账（`consumption.skipped`），不计入图 |
 | `memory/akasha-graphs/<摘要>/akasha.db` 与 `manifest.json` | MEM-013 的 isolated 范围第一次有成员 Session 时建立；与 default 图同一 `MessageConsumer`，只消费路由到本图的 Session，从成员第一条消息开始学习；`manifest.json` 记录 `v2:` 前缀的有序维度元组 JSON 键 | 与 `akasha.db` 相同：同输入确定性重建，显式重建逐图建立恢复点（`backups/rebuild/graphs/<摘要>/`）后原子替换；本 PR 旧预览图不自动搬迁或回退读取 | 与 `akasha.db` 相同，没有自动减少协议；范围归档不删除图文件 |
-| `sessions.db/owner_records` 的 Akasha `scope-policy` 子空间 | 每个 `(维度, 取值)` 至多一条 `{learn}`，只在该取值尚无 Session 时由同一写事务创建；缺失即 global | 不允许原位更新；同值重放幂等，不同值失败 | 无减少协议；改写需要另行批准的重建协议 |
+| `sessions.db/owner_records` 的 Akasha `scope-policy` 子空间 | 每个 `(维度, 取值)` 至多一条 `{learn, recall}`（旧记录缺少 recall 时为 true），只在该取值尚无 Session 时由同一写事务创建；缺失即 global | 不允许原位更新；同值重放幂等，不同值失败 | 无减少协议；改写需要另行批准的重建协议 |
 | `sessions.db/owner_records` 的 `projects` 记录 | Web 先提交 Akasha 策略，再以稳定 ID 请求 projects 插件按 `project:<id>` 创建项目记录（名称、原始创建名称、归档标记、创建时间）；原始名称只用于同 ID 创建重放 | 只允许改名和归档；归档后不再接纳新 Session，原始创建名称不更新 | 无删除协议；历史 Session 的 scope 必须始终能解析到记录；未确认 Web 请求留在浏览器 localStorage，刷新只读并单独展示，用户显式继续才以原 ID/策略重放；停止尝试只删本地请求，不撤销服务端事实 |
 | `sessions.db/sessions.attributes.scope` | SES-010：Session 首次接纳时由 conversation 调 `SESSION_ADMISSION` 写入；空 scope 不写键，旧行字节不变 | 不允许原位更新；冲突接纳失败 | 只随 SES-003 删除 Session 一起减少 |
 | 新链路 `sessions.db/owner_records` 的 Akasha `recall:*` | Akasha 在实际查询完成后只创建一条版本化出处，含绑定、查询来源、图版本、命中 Message 引用及顺序，不复制聊天正文；单条最多 1 MiB、45 个命中 | 正常路径不原位更新，也不随后续学习改写。模型取消或未生成最终回答不使“发生过查询”失效；该记录不证明请求已发送或消息已送达 | 无自动减少协议。恢复读取同一 workspace SQLite 备份，失败的记录事务不发布引用；未来删除必须由独立管理合同列出已有 Citation 的影响。本项属于第 08 层新接口，正式插件接线仍待完成 |

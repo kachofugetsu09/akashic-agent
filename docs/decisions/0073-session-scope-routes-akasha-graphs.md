@@ -20,7 +20,7 @@
    `session_dimensions`，conversation 在写入 Input 前完成 create-once 接纳。
 3. **图是视图，不是分区。** 类比 Kafka：日志只有一份，每张 Akasha 图像一个 consumer group，
    有自己的成员选择器与进度。不相交分区无法表达“共享给全局”，视图可以。
-4. **策略归 Akasha。** 每个 `(维度, 取值)` 一条 `global | isolated | off`，缺失为 global。
+4. **策略归 Akasha。** 每个 `(维度, 取值)` 一条学习策略 `global | isolated | off` 和独立的 `recall` 开关，缺失分别为 global 和 true。
    isolated 在多维间传染。图身份是有序维度元组的无歧义 JSON 编码（前缀 `v2:`），
    不做 hash 取模；维度取值含 `&`、`=` 时仍不能串图。
 5. **策略 set-once。** 只能在该取值尚无 Session 时写入；写入与“尚无 Session”检查在同一个
@@ -92,3 +92,9 @@ Projects / Session 事实 ──▶ 侧栏投影 ◀── 服务端有序置顶
 schema 或迁移。插件停止/卸载不清除该记录；代码回滚保留引用，恢复同版本代码后可重读。浏览器
 展开状态独立保存在本地，搜索临时展开不写回。服务端失败保留原偏好并报告；响应丢失可重读或按
 同一目标重试，不能把未确认写入当成已取消。
+
+## 项目可关闭 Akasha（2026-10-04）
+
+创建项目可选择“不使用记忆”：Akasha 保存 `learn=off, recall=false`。学习与召回是两个独立变化轴；保留 `off` 的“不学习但可召回”合同，不把新选择加入学习枚举。任一 scope 禁止召回时，该 Session 不产生自动召回材料、查询 embedding 或召回记录，显式召回和记忆反馈工具也返回明确的策略拒绝。学习仍通过同一个成员选择器排除这些 Session，重建沿用该选择器。
+
+新字段不改写旧策略或 Message；旧记录缺少 `recall` 时继续允许召回。两项策略一起 set-once，同值重放仍幂等。该选项只控制 Akasha；会话上下文、聊天记录及其他插件拥有的 Markdown 档案不随之关闭或删除。

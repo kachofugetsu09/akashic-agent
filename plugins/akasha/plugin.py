@@ -70,7 +70,7 @@ from .recall_tool import RecallArguments, RecallTool, check_recall
 from .recalls import Recall, RecallRecords, RecallRecordsRead
 from .runtime import MessageMemory, prepare_materials
 from .tools import FeedbackArguments, FeedbackTool, check_feedback
-from .scopes import DEFAULT_GRAPH, LEARN_POLICIES, LearnPolicy, PolicyLocked, ScopePolicies, ensure_graph_directory, graph_path
+from .scopes import DEFAULT_GRAPH, LEARN_POLICIES, LearnPolicy, MemoryDisabled, PolicyLocked, ScopePolicies, ensure_graph_directory, graph_path
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,8 @@ async def run(ctx: Context, interest: Interest) -> None:
     def read_path(session_id: str | None) -> Path:
         """显式召回与反馈共用图路由，已知故障不能绕过。"""
         key = DEFAULT_GRAPH if session_id is None else policies.route(session_id).read
+        if key is None:
+            raise MemoryDisabled("此会话的 Akasha 记忆已关闭，不能调用记忆工具")
         if key in graph_errors:
             raise MemoryRebuildRequiredError(f"图 {key} 不可用：{graph_errors[key]}")
         return graph_path(memory_path, key)
@@ -287,11 +289,14 @@ async def run(ctx: Context, interest: Interest) -> None:
             if method == "scope.policy.get":
                 if set(payload) != {"dimension", "value"}:
                     raise PluginUiRpcInvalidRequest("记忆策略查询参数无效")
-                return {"learn": policies.read(dimension, value), "choices": list(LEARN_POLICIES)}
+                return {"learn": policies.read(dimension, value),
+                        "recall": policies.recall_enabled(dimension, value), "choices": list(LEARN_POLICIES)}
             learn = payload.get("learn")
-            if set(payload) != {"dimension", "value", "learn"} or learn not in LEARN_POLICIES:
-                raise PluginUiRpcInvalidRequest("记忆策略只能是 global、isolated 或 off")
-            return {"learn": policies.set(dimension, value, cast(LearnPolicy, learn))}
+            recall = payload.get("recall", True)
+            if (set(payload) not in ({"dimension", "value", "learn"}, {"dimension", "value", "learn", "recall"})
+                or learn not in LEARN_POLICIES or type(recall) is not bool):
+                raise PluginUiRpcInvalidRequest("学习策略必须是 global、isolated 或 off；召回必须为布尔值")
+            return {"learn": policies.set(dimension, value, cast(LearnPolicy, learn), recall=recall), "recall": recall}
         except PluginUiRpcInvalidRequest:
             raise
         except PolicyLocked as error:
@@ -409,6 +414,9 @@ async def run(ctx: Context, interest: Interest) -> None:
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         key = policies.route(snapshot[0].session_id).read if snapshot else DEFAULT_GRAPH
+        # An explicit policy denial precedes graph startup, embeddings, and receipts.
+        if key is None:
+            return {}
         if running:
             async with graph_access(key):
                 if not await start_memory(key):
