@@ -2446,3 +2446,19 @@ form.composer:focus-within [data-slot="input-group"] {
     animation-delay: 0ms !important;
   }
 }
+
+/* Execution paths wrap fully; only the directory list owns scrolling. */
+.directory-dialog { min-width: 0; color: var(--ak-ink-primary); background: var(--ak-paper-canvas); }
+.directory-path, .project-directory-path { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--chat-type-control); }
+.project-directory-path { margin: 0; padding-inline: var(--chat-rail-inline); color: var(--ak-ink-secondary); }
+.directory-open { display: grid; gap: 8px; }
+.directory-open > div { display: flex; gap: 8px; min-width: 0; }
+.directory-open input { min-width: 0; flex: 1; }
+.directory-dialog button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--ak-rule-default); border-radius: 8px; font-size: var(--chat-type-control); }
+.directory-dialog button:disabled { opacity: 0.5; }
+.directory-browser { display: grid; max-height: 12rem; overflow-y: auto; gap: 4px; }
+.directory-browser button { text-align: start; overflow-wrap: anywhere; }
+.directory-error { color: var(--ak-color-status-error); overflow-wrap: anywhere; }
+.directory-notice { color: var(--ak-ink-secondary); }
+.directory-notice strong { display: block; color: var(--ak-ink-primary); }
+.directory-actions { display: flex; flex-flow: row wrap; gap: 8px; }

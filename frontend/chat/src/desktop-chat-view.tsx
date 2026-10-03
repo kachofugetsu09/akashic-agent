@@ -41,13 +41,14 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
-    startProjectChat, createProject, continueProject, stopProject,
+    startProjectChat, createProject, continueProject, stopProject, bindDirectory,
   } = controller;
   const sidebarProjects = useMemo(() => projectsInstalled ? {
     items: projects, pending: pendingProjects, pendingError: pendingProjectsError,
     activeProjectId: activeProject?.id ?? "", memoryInstalled,
     onNewChat: startProjectChat, onCreate: createProject, onContinue: continueProject, onStop: stopProject,
-  } : undefined, [activeProject?.id, createProject, continueProject, memoryInstalled, pendingProjects,
+    onBindDirectory: bindDirectory,
+  } : undefined, [activeProject?.id, bindDirectory, createProject, continueProject, memoryInstalled, pendingProjects,
     pendingProjectsError, projects, projectsInstalled, startProjectChat, stopProject]);
   const activeTitle = sidebarSessions.find((session) => session.active)?.title || "新会话";
   const headingTitle = activeProject ? `${activeProject.name} / ${activeTitle}` : activeTitle;

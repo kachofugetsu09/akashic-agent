@@ -9,6 +9,7 @@ import {
   MEMORY_PLUGIN,
   PROJECT_DIMENSION,
   PROJECTS_PLUGIN,
+  bindProjectDirectory,
   createProject as createProjectRecord,
   continueProject as continueProjectRecord,
   listPendingProjects,
@@ -821,6 +822,11 @@ export function useDesktopChatController() {
     refreshPendingProjects();
   }, [refreshPendingProjects]);
 
+  const bindDirectory = useCallback(async (projectId: string, path: string) => {
+    const project = await bindProjectDirectory(projectId, path);
+    setProjects((current) => current.map((item) => item.id === project.id ? { ...item, directory: project.directory } : item));
+  }, []);
+
   const activateSession = useCallback((sessionId: string) => {
     if (surface === "chat" && activeSessionRef.current === sessionId) return;
     const row = sessions.find((session) => session.key === sessionId)
@@ -934,7 +940,7 @@ export function useDesktopChatController() {
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
-    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject, navigationPins,
+    projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject, navigationPins, bindDirectory,
     startProjectChat, createProject, continueProject, stopProject,
   };
 }

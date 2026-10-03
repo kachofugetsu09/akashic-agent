@@ -19,6 +19,7 @@ export interface ProjectRow {
   name: string;
   archived: boolean;
   createdAt: string;
+  directory: string | null;
   memory?: ProjectMemory;
   memoryUnreadable?: boolean;
 }
@@ -154,7 +155,16 @@ function projectRow(value: unknown): ProjectRow {
     || typeof row.archived !== "boolean" || typeof row.created_at !== "string") {
     throw new Error("项目记录无效");
   }
-  return { id: row.id, name: row.name, archived: row.archived, createdAt: row.created_at };
+  if (row.directory !== undefined && row.directory !== null && typeof row.directory !== "string") {
+    throw new Error("项目目录无效");
+  }
+  return { id: row.id, name: row.name, archived: row.archived, createdAt: row.created_at,
+    directory: typeof row.directory === "string" ? row.directory : null };
+}
+
+/** 首次绑定由插件原子提交；UI 不提供重绑或清空请求。 */
+export async function bindProjectDirectory(projectId: string, path: string): Promise<ProjectRow> {
+  return projectRow(await queryHostPlugin(PROJECTS_PLUGIN, "project.bind_directory", { project_id: projectId, path }));
 }
 
 export function projectMemoryLabel(memory: ProjectMemory | undefined): string {
