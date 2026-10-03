@@ -52,7 +52,7 @@
 | Web 窄屏、布局、导航和插件组合 | WEBUI → [窄屏设计](design/web-narrow-reading.md)、[Web 组合](design/web-ui-plugin-composition.md)、[纸张品牌](design/akashic-paper-brand-system.md) | `frontend/**/src`、`plugins/conversation_ui/` |
 | 启动、停止、自重启 | RUN-001～RUN-004 → [Supervisor 设计](design/linux-supervisor-safe-self-restart.md)、[产品启动](design/product-startup.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py` |
 | Shell、PTY、进程续接 | SH → [0014](decisions/0014-shell-uses-unified-execution.md)、[Shell 设计](design/unified-shell-execution.md) | `plugins/standard_tools/`、`agent/tools/unified_exec.py` |
-| 容器、Host Bridge、Computer | RUN-013～RUN-016 → [0075](decisions/0075-host-bridge-runtime-recovery.md)、[Bridge 协议](design/host-bridge-protocol-v2.md)、[Computer 合同](design/computer-plugin-workload-task-contract.md) | `docker/`、`agent/plugin_composition/`、正式 Controller |
+| 容器、Host Bridge、Computer | RUN-013～RUN-016、PLG-017 → [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)、 [0075](decisions/0075-host-bridge-runtime-recovery.md)、[Bridge 协议](design/host-bridge-protocol-v2.md)、[Computer 合同](design/computer-plugin-workload-task-contract.md) | `docker/`、`agent/plugin_composition/`、正式 Controller |
 | 部署、升级、备份、恢复 | MIG、BAK → [0082](decisions/0082-distribution-owned-plugin-composition.md)、[部署手册](design/operator-deployment.md)、[hua-home 事实入口](design/hua-home-plugin-runtime-source-of-truth.md) | `scripts/install-akashic.sh`、`scripts/akashic_release/` |
 | Workspace、配置、迁移与数据清理 | STA、WSP、MIG → [状态地图](design/persistence-state-map.md)、[0066](decisions/0066-yoyo-current-baseline.md)、[Yoyo 手册](design/git-migration-authoring.md) | 相应状态 owner、`migrations/`、`bootstrap/init_workspace.py` |
 | 事件循环、执行资源与阻塞 | ERR、RUN → [执行边界](design/event-loop-isolation.md) | 实际 owner 的调用路径与运行证据 |

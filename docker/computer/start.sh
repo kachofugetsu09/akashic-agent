@@ -8,6 +8,32 @@ if [ "${1:-}" != "--desktop-session" ]; then
 fi
 shift
 
+if [ "${1:-}" != "--runtime" ]; then
+  mkdir -p /data/cache /data/config /data/home /data/profile /data/state
+  # The Workload owner proves the old container and mount are gone before start.
+  # Chromium leaves host-named singleton links after an abrupt stop; only these
+  # ephemeral locks may be removed. Cookies and the rest of the profile stay.
+  rm -f \
+    /data/profile/SingletonCookie \
+    /data/profile/SingletonLock \
+    /data/profile/SingletonSocket
+
+  node /usr/local/lib/node_modules/@jackwener/opencli/dist/src/daemon.js &
+  daemon_pid=$!
+  node /opt/computer/gateway.mjs &
+  gateway_pid=$!
+  cleanup_control() {
+    trap - TERM INT EXIT
+    kill -TERM "$gateway_pid" 2>/dev/null || true
+    wait "$gateway_pid" 2>/dev/null || true
+    kill -TERM "$daemon_pid" 2>/dev/null || true
+    wait "$daemon_pid" 2>/dev/null || true
+  }
+  trap cleanup_control TERM INT EXIT
+  wait "$gateway_pid"
+  exit
+fi
+
 mkdir -p \
   /data/cache \
   /data/config \
@@ -15,24 +41,12 @@ mkdir -p \
   /data/profile \
   /data/state
 
-# The Workload owner proves the old container and mount are gone before start.
-# Chromium leaves host-named singleton links after an abrupt stop; only these
-# ephemeral locks may be removed. Cookies and the rest of the profile stay.
-rm -f \
-  /data/profile/SingletonCookie \
-  /data/profile/SingletonLock \
-  /data/profile/SingletonSocket
 
 cleanup() {
   trap - TERM INT EXIT
-  # Driver 先在仍存活的 X11/Chromium 上释放输入，再由 Workload 结束图形进程。
-  if [ -n "${gateway_pid:-}" ]; then
-    kill -TERM "$gateway_pid" 2>/dev/null || true
-    wait "$gateway_pid" 2>/dev/null || true
-  fi
-  kill -TERM "${refresh_pid:-}" "${browser_pid:-}" \
-    "${desktop_pid:-}" "${display_pid:-}" "${daemon_pid:-}" \
-    "${xvnc_pid:-}" 2>/dev/null || true
+  kill -TERM "${browser_pid:-}" 2>/dev/null || true
+  wait "${browser_pid:-}" 2>/dev/null || true
+  kill -TERM "${desktop_pid:-}" "${display_pid:-}" "${xvnc_pid:-}" 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup TERM INT EXIT
@@ -73,9 +87,6 @@ until xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id # 0x
   sleep 0.1
 done
 
-node /usr/local/lib/node_modules/@jackwener/opencli/dist/src/daemon.js &
-daemon_pid=$!
-
 chromium \
   --user-data-dir=/data/profile \
   --load-extension=/opt/opencli-extension \
@@ -94,26 +105,4 @@ chromium \
   about:blank &
 browser_pid=$!
 
-node /opt/computer/gateway.mjs &
-gateway_pid=$!
-
-(
-  sleep 900
-  while :; do
-    if opencli auth refresh \
-      --site "${OPENCLI_AUTH_REFRESH_SITES}" \
-      --concurrency 2 \
-      --timeout 45 \
-      --format json; then
-      touch /data/state/auth-refresh.ok
-      delay=43200
-    else
-      echo "OpenCLI login refresh failed; retrying in 15 minutes" >&2
-      delay=900
-    fi
-    sleep "$delay"
-  done
-) &
-refresh_pid=$!
-
-wait "$gateway_pid"
+wait "$browser_pid"

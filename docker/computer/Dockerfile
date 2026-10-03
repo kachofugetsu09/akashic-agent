@@ -13,7 +13,7 @@ COPY --from=desktop-build /build/target/release/akashic-desktop /opt/computer/bi
 COPY --chown=1000:1000 docker/computer/package.json docker/computer/package-lock.json /opt/computer/
 RUN cd /opt/computer && npm ci --omit=dev --no-audit --no-fund
 COPY --chown=1000:1000 docker/computer/driver /opt/computer/driver
-COPY --chown=1000:1000 docker/computer/gateway.mjs /opt/computer/gateway.mjs
+COPY --chown=1000:1000 docker/computer/gateway.mjs docker/computer/lifecycle.mjs /opt/computer/
 COPY --chown=1000:1000 docker/computer/start.sh /opt/computer/start.sh
 RUN chmod 0755 /opt/computer/start.sh
 USER 1000:1000
