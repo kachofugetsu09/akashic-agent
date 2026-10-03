@@ -24,6 +24,7 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.static_manifest import load_static_plugin_manifest
+from utils.timing import measure
 
 
 # 只打包宿主运行入口；业务 plugins/ 不进入 Core，也没有开发源码路径。
@@ -158,15 +159,11 @@ def _run_web_command(
     cwd: Path,
     env: dict[str, str],
 ) -> None:
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    with measure("build.web", command=" ".join(command)):
+        result = subprocess.run(
+            command, cwd=cwd, env=env, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
     if result.returncode:
         output = result.stdout[-4000:]
         raise RuntimeError(

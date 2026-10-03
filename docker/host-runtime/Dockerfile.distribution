@@ -74,7 +74,8 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && /opt/venv/bin/python -c "from pathlib import Path; assert Path('/opt/akashic/distribution/requirements.lock').read_bytes() == Path('/opt/akashic/source/docker/host-runtime/requirements.lock').read_bytes(), 'Build lock differs from Core lock'" \
     && /opt/venv/bin/python -c "import akashic_sdk; assert akashic_sdk.__file__.startswith('/opt/akashic/source/sdk/python/src/')"
 
-RUN mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
     && /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py prepare-wheels \
         --distribution /opt/akashic/distribution \
     && /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \

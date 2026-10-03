@@ -17,7 +17,7 @@ import subprocess
 import tarfile
 import tempfile
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal, cast
 
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +42,7 @@ from agent.plugins.input_preparation import prepare_plugin_input, _source_revisi
 from agent.plugins.reload_journal import ReloadJournal, PendingPublicationError, check_pending_publication
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
+from utils.timing import measure
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -150,6 +151,9 @@ def _stage_deployment_targets(
     selection: PluginSelection, workspace: Path, plugins_home: Path,
 ) -> list[dict[str, Any]]:
     """在临时目录固定 bundle/wheels，并核对每个显式目标。"""
+
+    if not targets:
+        return []
 
     # 1. Require each target to own a coherent selected installed input.
     report = verify_distribution(distribution)
@@ -282,6 +286,12 @@ def _git(*arguments: str) -> str:
 
 
 def verify_distribution(distribution: Path) -> dict[str, Any]:
+    """Measure complete artifact verification at the publication boundary."""
+    with measure("distribution.verify"):
+        return _verify_distribution(distribution)
+
+
+def _verify_distribution(distribution: Path) -> dict[str, Any]:
     """核对报告、Core tar 和每个独立 bundle 的不可变身份。"""
 
     root = distribution.expanduser().resolve(strict=True)
@@ -446,6 +456,26 @@ def _code_identity(root: Path) -> str:
     """Use the archive owner's tree identity without writing an archive."""
     entries = tree_entries(root, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}))
     return hashlib.sha256(encode_tree(entries)).hexdigest()
+
+
+def _distribution_code_identity(root: Path) -> str:
+    """Compare executable input without the release's provenance stamp."""
+    entries = tree_entries(root, exclude=frozenset({
+        ".venv", "node_modules", ENVIRONMENT_FILE, ".akashic-source.json",
+    }))
+    return hashlib.sha256(encode_tree(entries)).hexdigest()
+
+
+def _distribution_input_source(
+    source: ResolvedPluginSource, old: tuple[str, Mapping[str, object], Path] | None,
+) -> tuple[Path, str]:
+    """Retain the existing provenance when the complete plugin content matches."""
+    if old is not None and old[1]["source_type"] == "builtin" and (
+        is_distribution_input(old[1], old[2])
+        and _distribution_code_identity(source.plugin_root) == _distribution_code_identity(old[2])
+    ):
+        return old[2], cast(str, old[1]["distribution_source"])
+    return source.plugin_root, source.distribution_source
 
 
 def _provenance(root: Path) -> dict[str, str] | None:
@@ -958,7 +988,7 @@ def _distribution_candidate(
             descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API}):
             raise RuntimeError(f"preserved plugin runtime is incompatible with this Core: {plugin_id}; explicit reinstall required")
         if choices.get(plugin_id, True):
-            candidate[plugin_id] = ResolvedPluginSource(code, descriptor["source_type"], marketplace, name,
+            candidate[plugin_id] = ResolvedPluginSource(code, cast(Literal["builtin", "installed"], descriptor["source_type"]), marketplace, name,
                                                        load_static_plugin_manifest(code))
     for source in available.sources:
         plugin_id = f"{source.plugin_name}@{source.marketplace}"
@@ -984,16 +1014,7 @@ def _prepare_distribution_inputs(
         if f'{row["owner"]}@{marketplace}' not in choices
         and f'{row["owner"]}@{marketplace}' in candidate
     ])
-    owner = PythonEnvironments(workspace)
-    # Disabled image sources are prepared too: later enable must not install dependencies.
-    for source in available.sources:
-        identity = source.static_manifest
-        assert identity is not None
-        for runtime in identity.python:
-            wheels = None
-            if (source.plugin_root / runtime.requirements).read_text().strip():
-                wheels = OfflineWheels(distribution / "wheels" / source.plugin_name, source.wheel_tree_sha256)
-            owner.prepare(source.plugin_root, runtime, offline_wheels=wheels)
+    environments = _prepare_distribution_environments(available, distribution, workspace, selected)
     prepared: dict[str, str] = {}
     for plugin_id, source in candidate.items():
         old = selected.get(plugin_id)
@@ -1004,16 +1025,33 @@ def _prepare_distribution_inputs(
         ensure_workspace_plugin_data_dir(data_dir, workspace)
         identity = source.static_manifest
         assert identity is not None
+        code, source_commit = _distribution_input_source(source, old)
         if old is not None and old[1]["data_dir"] != data_dir.relative_to(workspace).as_posix():
             raise SelectionConflictError(f"distribution data identity changed: {plugin_id}")
+        # The old immutable input already passed compilation. Reuse only when
+        # code, post-migration config, dependencies, and the Core contract match.
+        with measure("plugin.input", plugin=plugin_id) as timing:
+            if old is not None and (
+                old[1]["source_type"] == "builtin"
+                and is_distribution_input(old[1], old[2])
+                and old[1]["runtime"] == {"python_tag": sys.implementation.cache_tag,
+                                           "binding_api": PLUGIN_ARCHIVE_BINDING_API}
+                and code == old[2]
+                and load_config(data_dir)[1] == old[1]["config_revision"]
+                and dict(cast(Mapping[str, str], old[1]["python_environments"])) == environments.get(plugin_id, {})
+            ):
+                prepared[plugin_id] = old[0]
+                timing.update(reused=True, ref=old[0])
+                continue
+            result = prepare_plugin_input(
+                {"name": source.plugin_name, "marketplace": source.marketplace,
+                 "plugin_root": str(code), "module_path": str(code / "plugin.py"),
+                 "manifest_digest": identity.identity_digest, "source_type": "builtin",
+                 "distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256},
+                workspace=workspace, archive=selection.archive, initial=old is None,
+            )
+            timing.update(reused=False, ref=result.archive_ref)
         # 停止期已结算配置 owner；读取迁移后的持久输入，也支持迁移成功后的发布重试。
-        result = prepare_plugin_input(
-            {"name": source.plugin_name, "marketplace": source.marketplace,
-             "plugin_root": str(source.plugin_root), "module_path": str(source.plugin_root / "plugin.py"),
-             "manifest_digest": identity.identity_digest, "source_type": "builtin",
-             "distribution_source": source.distribution_source, "wheel_tree_sha256": source.wheel_tree_sha256},
-            workspace=workspace, archive=selection.archive, initial=old is None,
-        )
         prepared[plugin_id] = result.archive_ref
     # This is a user choice ledger, not another version pointer. Existing values never change.
     for source in available.sources:
@@ -1034,8 +1072,10 @@ def _same_selected_sources(
     for plugin_id, source in candidate.items():
         descriptor = selected[plugin_id][1]
         if (descriptor["source_type"] != source.source_type
-            or descriptor.get("distribution_source", "") != source.distribution_source
-            or descriptor["code"] != _code_identity(source.plugin_root)
+            or (not source.distribution_source and descriptor["code"] != _code_identity(source.plugin_root))
+            or (source.distribution_source and (
+                not is_distribution_input(descriptor, selected[plugin_id][2])
+                or _distribution_code_identity(selected[plugin_id][2]) != _distribution_code_identity(source.plugin_root)))
             or descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag,
                                          "binding_api": PLUGIN_ARCHIVE_BINDING_API}):
             return False
@@ -1045,30 +1085,40 @@ def _same_selected_sources(
 def _check_distribution_sources(distribution: Path, report: dict[str, Any]) -> None:
     """Check unpacked code against its bundle at preparation, not on runtime reads."""
     for row in report["plugins"]:
-        source = distribution / "sources" / row["name"]
-        if _provenance(source) != {"commit": report["source_commit"], "path": row["source_path"]}:
-            raise ValueError(f"distribution source provenance mismatch: {row['name']}")
-        with tempfile.TemporaryDirectory(prefix="akashic-source-check-") as temporary:
-            root = Path(temporary) / "source"
-            _git("clone", "--no-local", "--no-checkout", str(distribution / row["file"]), str(root))
-            _git("-C", str(root), "checkout", "--detach", row["source_revision"])
-            if _code_identity(root) != _code_identity(source):
-                raise ValueError(f"distribution source/bundle mismatch: {row['name']}")
-        for entry in source.rglob("*.py"):
-            compile(entry.read_bytes(), str(entry), "exec")
+        with measure("distribution.source", plugin=row["name"]):
+            source = distribution / "sources" / row["name"]
+            if _provenance(source) != {"commit": report["source_commit"], "path": row["source_path"]}:
+                raise ValueError(f"distribution source provenance mismatch: {row['name']}")
+            with tempfile.TemporaryDirectory(prefix="akashic-source-check-") as temporary:
+                root = Path(temporary) / "source"
+                _git("clone", "--no-local", "--no-checkout", str(distribution / row["file"]), str(root))
+                _git("-C", str(root), "checkout", "--detach", row["source_revision"])
+                if _code_identity(root) != _code_identity(source):
+                    raise ValueError(f"distribution source/bundle mismatch: {row['name']}")
+            for entry in source.rglob("*.py"):
+                compile(entry.read_bytes(), str(entry), "exec")
 
-
-def _preflight_distribution_environments(available: DistributionSources, distribution: Path, stage: Path) -> None:
+def _prepare_distribution_environments(
+    available: DistributionSources, distribution: Path, workspace: Path,
+    selected: dict[str, tuple[str, Mapping[str, object], Path]],
+) -> dict[str, dict[str, str]]:
+    """Warm immutable caches before downtime, including disabled plugin environments."""
+    owner = PythonEnvironments(workspace)
+    prepared: dict[str, dict[str, str]] = {}
     for source in available.sources:
         identity = source.static_manifest
         assert identity is not None
-        for index, runtime in enumerate(identity.python):
-            if not (source.plugin_root / runtime.requirements).read_text().strip():
-                continue
-            wheels = OfflineWheels(distribution / "wheels" / source.plugin_name, source.wheel_tree_sha256)
-            destination = stage / f"builtin-{source.plugin_name}-{index}"
-            destination.mkdir()
-            preflight_offline_runtime(source.plugin_root, runtime, wheels, destination)
+        plugin_id = f"{source.plugin_name}@{source.marketplace}"
+        code, _ = _distribution_input_source(source, selected.get(plugin_id))
+        refs: dict[str, str] = {}
+        for runtime in identity.python:
+            wheels = None
+            if (source.plugin_root / runtime.requirements).read_text().strip():
+                wheels = OfflineWheels(distribution / "wheels" / source.plugin_name, source.wheel_tree_sha256)
+            with measure("distribution.environment", plugin=plugin_id, runtime=runtime.runtime_root):
+                refs[runtime.runtime_root] = owner.prepare(code, runtime, offline_wheels=wheels)
+        prepared[plugin_id] = refs
+    return prepared
 
 
 def publish_distribution(
@@ -1084,7 +1134,7 @@ def publish_distribution(
         raise SelectionConflictError("当前 Root 与部署清单基线不同")
     maintenance = WorkspaceMaintenanceLock(workspace)
     publication = PluginPublicationLock(plugins_home)
-    # 在线预检只读；停止期执行仍重新取得锁并核对同一基线。
+    # Online preparation adds immutable caches only; state and selection stay fixed.
     if not preflight_only:
         maintenance.acquire()
     try:
@@ -1105,7 +1155,13 @@ def publish_distribution(
                     replacement_ids=frozenset(item["plugin_id"] for item in requested),
                     adoption=adoption,
                 )
-                _preflight_distribution_environments(available, distribution, staged)
+                _prepare_distribution_environments(available, distribution, workspace, selected)
+                # Changed code is durable before downtime; config is read only after migration.
+                for plugin_id, source in candidate.items():
+                    if source.distribution_source:
+                        code, _ = _distribution_input_source(source, selected.get(plugin_id))
+                        with measure("distribution.archive", plugin=plugin_id):
+                            selection.archive.save(code, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}))
                 external_requests = [item for item in requested if not (
                     item.get("bundled") and item["plugin_id"] in candidate
                     and candidate[item["plugin_id"]].source_type == "builtin")]
@@ -1324,8 +1380,8 @@ def main() -> None:
         )
         print(json.dumps(result, ensure_ascii=False))
         return
-    report = verify_distribution(args.distribution)
     if args.verify_only:
+        report = verify_distribution(args.distribution)
         result: dict[str, Any] = {
             "status": "verified",
             "distribution_source_commit": report["source_commit"],
@@ -1335,18 +1391,19 @@ def main() -> None:
         if args.config is None:
             parser.error("安装 profile 必须提供 --config")
         if args.core_root is not None:
-            extract_core(args.distribution, args.core_root, report=report)
+            extract_core(args.distribution, args.core_root)
         if args.ensure_profile:
             if args.receipt is None:
                 parser.error("--ensure-profile 必须提供 --receipt")
-            result = ensure_profile(
-                args.distribution,
-                args.profile,
-                workspace=args.workspace,
-                plugins_home=args.plugins_home,
-                config_path=args.config,
-                receipt_path=args.receipt,
-            )
+            with measure("runtime.inputs"):
+                result = ensure_profile(
+                    args.distribution,
+                    args.profile,
+                    workspace=args.workspace,
+                    plugins_home=args.plugins_home,
+                    config_path=args.config,
+                    receipt_path=args.receipt,
+                )
         else:
             result = install_profile(
                 args.distribution,
