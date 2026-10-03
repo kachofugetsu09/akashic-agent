@@ -55,9 +55,10 @@ export function SessionDirectory({ sessionId, refreshKey }: { sessionId: string;
   if (!installed) return null;
   return <div className="session-directory">
     <details>
-      <summary><span>工作目录</span><span className="directory-path">{current?.path ?? (current ? "未设置" : "正在读取…")}</span>
+      <summary><span aria-hidden="true">▾</span><span>工作目录</span><span className="directory-path" title={current?.path ?? undefined}>{current?.path ?? (current ? "未设置" : "正在读取…")}</span>
         <small>{error ? "状态未能刷新" : current && current.status !== "unset" ? directoryStatus(current.status) : ""}</small></summary>
       <div className="session-directory__details">
+        {current?.path ? <p className="directory-path">{current.path}</p> : null}
         {current?.path ? <p>当前对话独立使用此目录。Agent 可通过工具切换，Project 默认目录保持固定。</p>
           : <p>当前对话未指定目录，Shell 和文件保持既有默认目录。之后绑定 Project 不会改变这个对话。</p>}
         {current?.agents.status === "ready" ? <>
