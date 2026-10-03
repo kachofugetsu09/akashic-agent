@@ -176,20 +176,22 @@ class ActiveExecutionsReply(_message.Message):
     def __init__(self, execution_ids: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class FileRequest(_message.Message):
-    __slots__ = ("context", "allowed_dir", "read", "write", "edit", "list")
+    __slots__ = ("context", "allowed_dir", "read", "write", "edit", "list", "path_info")
     CONTEXT_FIELD_NUMBER: _ClassVar[int]
     ALLOWED_DIR_FIELD_NUMBER: _ClassVar[int]
     READ_FIELD_NUMBER: _ClassVar[int]
     WRITE_FIELD_NUMBER: _ClassVar[int]
     EDIT_FIELD_NUMBER: _ClassVar[int]
     LIST_FIELD_NUMBER: _ClassVar[int]
+    PATH_INFO_FIELD_NUMBER: _ClassVar[int]
     context: RequestContext
     allowed_dir: str
     read: ReadFile
     write: WriteFile
     edit: EditFile
     list: ListDir
-    def __init__(self, context: _Optional[_Union[RequestContext, _Mapping]] = ..., allowed_dir: _Optional[str] = ..., read: _Optional[_Union[ReadFile, _Mapping]] = ..., write: _Optional[_Union[WriteFile, _Mapping]] = ..., edit: _Optional[_Union[EditFile, _Mapping]] = ..., list: _Optional[_Union[ListDir, _Mapping]] = ...) -> None: ...
+    path_info: PathInfo
+    def __init__(self, context: _Optional[_Union[RequestContext, _Mapping]] = ..., allowed_dir: _Optional[str] = ..., read: _Optional[_Union[ReadFile, _Mapping]] = ..., write: _Optional[_Union[WriteFile, _Mapping]] = ..., edit: _Optional[_Union[EditFile, _Mapping]] = ..., list: _Optional[_Union[ListDir, _Mapping]] = ..., path_info: _Optional[_Union[PathInfo, _Mapping]] = ...) -> None: ...
 
 class ReadFile(_message.Message):
     __slots__ = ("path", "offset", "limit")
@@ -202,12 +204,14 @@ class ReadFile(_message.Message):
     def __init__(self, path: _Optional[str] = ..., offset: _Optional[int] = ..., limit: _Optional[int] = ...) -> None: ...
 
 class WriteFile(_message.Message):
-    __slots__ = ("path", "content")
+    __slots__ = ("path", "content", "required_dir")
     PATH_FIELD_NUMBER: _ClassVar[int]
     CONTENT_FIELD_NUMBER: _ClassVar[int]
+    REQUIRED_DIR_FIELD_NUMBER: _ClassVar[int]
     path: str
     content: str
-    def __init__(self, path: _Optional[str] = ..., content: _Optional[str] = ...) -> None: ...
+    required_dir: str
+    def __init__(self, path: _Optional[str] = ..., content: _Optional[str] = ..., required_dir: _Optional[str] = ...) -> None: ...
 
 class EditFile(_message.Message):
     __slots__ = ("path", "old_text", "new_text", "replace_all")
@@ -230,6 +234,22 @@ class ListDir(_message.Message):
     limit: int
     after: str
     def __init__(self, path: _Optional[str] = ..., limit: _Optional[int] = ..., after: _Optional[str] = ...) -> None: ...
+
+class PathInfo(_message.Message):
+    __slots__ = ("action", "path", "base_dir", "after", "limit", "max_bytes")
+    ACTION_FIELD_NUMBER: _ClassVar[int]
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    BASE_DIR_FIELD_NUMBER: _ClassVar[int]
+    AFTER_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    MAX_BYTES_FIELD_NUMBER: _ClassVar[int]
+    action: str
+    path: str
+    base_dir: str
+    after: str
+    limit: int
+    max_bytes: int
+    def __init__(self, action: _Optional[str] = ..., path: _Optional[str] = ..., base_dir: _Optional[str] = ..., after: _Optional[str] = ..., limit: _Optional[int] = ..., max_bytes: _Optional[int] = ...) -> None: ...
 
 class FileReply(_message.Message):
     __slots__ = ("text", "image", "error")

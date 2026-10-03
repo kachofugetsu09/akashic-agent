@@ -358,6 +358,10 @@ class HostBridgeShellProcessManager:
         # Protobuf 会把 Python bool 转成整数；在丢失类型前拒绝错误参数。
         if operation == "list_dir" and isinstance(arguments.get("limit"), bool):
             raise ValueError("Host Bridge list_dir.limit 必须是整数，不能是布尔值")
+        if operation == "path_info" and any(
+            isinstance(arguments.get(name), bool) for name in ("limit", "max_bytes")
+        ):
+            raise ValueError("Host Bridge path limits must be integers, not booleans")
         request = pb.FileRequest(
             context=self._request_context(),
             allowed_dir=None if allowed_dir is None else str(allowed_dir),
@@ -371,6 +375,8 @@ class HostBridgeShellProcessManager:
                 request.edit.CopyFrom(pb.EditFile(**arguments))
             case "list_dir":
                 request.list.CopyFrom(pb.ListDir(**arguments))
+            case "path_info":
+                request.path_info.CopyFrom(pb.PathInfo(**arguments))
             case _:
                 raise ValueError(f"Host Bridge 不支持文件操作: {operation}")
         return decode_file_result(

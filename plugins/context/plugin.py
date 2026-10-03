@@ -85,8 +85,9 @@ class ContextBuilder:
     settled_prefixes = staticmethod(settled_prefixes)
 
     @staticmethod
-    def _reminder_content(materials: Materials) -> str | None:
-        reminders = [escape(part.text, quote=False) for part in materials.reminders if part.text.strip()]
+    def _reminder_content(materials: Materials, *, replay: bool = True) -> str | None:
+        reminders = [escape(part.text, quote=False) for part in materials.reminders
+                     if part.replay is replay and part.text.strip()]
         if not reminders:
             return None
         return (
@@ -173,9 +174,15 @@ class ContextBuilder:
         rows.extend(rendered.messages)
         if reminder is not None:
             rows.append({"role": "user", "content": reminder})
+        current_context = self._reminder_content(decoded_materials, replay=False)
+        if current_context is not None:
+            # Live materials never enter replay facts or overwrite a user Input.
+            rows.append({"role": "user", "content": current_context})
         request = replace(
             rendered,
             messages=rows,
+            # Opaque provider sessions can retain rules omitted from replay facts.
+            continuation=None if current_context is not None else rendered.continuation,
             tools=tools,
             system_prompt="",
             max_output_tokens=max_output_tokens,
