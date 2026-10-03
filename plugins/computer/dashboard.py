@@ -48,6 +48,16 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         result = forward("GET", "/activity")
         return Response(result.content, media_type="application/json")
 
+    @app.post("/api/dashboard/computer/wake")
+    def wake() -> Response:
+        result = forward("POST", "/wake", {})
+        return Response(result.content, media_type="application/json")
+
+    @app.post("/api/dashboard/computer/touch")
+    def touch() -> Response:
+        result = forward("POST", "/touch", {})
+        return Response(result.content, media_type="application/json")
+
     @app.websocket("/api/dashboard/computer/display")
     async def computer_display(socket: WebSocket) -> None:
         """Relay one generation-bound browser session to the private RFB bridge."""

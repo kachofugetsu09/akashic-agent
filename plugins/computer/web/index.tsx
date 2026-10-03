@@ -23,6 +23,7 @@ interface ConversationTabView {
 interface ComputerActivity {
   readonly noticeId: number;
   readonly active: boolean;
+  readonly browser: { readonly state: string; readonly error: string };
 }
 
 function checkView(value: unknown): ConversationTabView {
@@ -51,7 +52,9 @@ function iconButton(label: string, path: string): HTMLButtonElement {
 function checkedActivity(value: unknown): ComputerActivity {
   if (!value || typeof value !== "object") throw new Error("Computer activity 回执无效");
   const activity = value as Partial<ComputerActivity>;
-  if (!Number.isInteger(activity.noticeId) || typeof activity.active !== "boolean") {
+  if (!Number.isInteger(activity.noticeId) || typeof activity.active !== "boolean"
+    || !activity.browser || typeof activity.browser.state !== "string"
+    || typeof activity.browser.error !== "string") {
     throw new Error("Computer activity 回执无效");
   }
   return activity as ComputerActivity;
@@ -178,6 +181,10 @@ function renderComputer(
   let lastNotice: number | null = null;
   let agentActive = false;
   let catalogStale = false;
+  let sleeping = false;
+  let failed = false;
+  let waking = false;
+  let lastTouch = 0;
   const heldKeys = new Map<string, { keysym: number; code: string }>();
   let pasteAttempt: {
     readonly id: number;
@@ -218,7 +225,7 @@ function renderComputer(
   }
 
   function scheduleReconnect() {
-    if (disposed || catalogStale || !active || reconnectTimer || rfb) return;
+    if (disposed || catalogStale || sleeping || failed || !active || reconnectTimer || rfb) return;
     const delay = reconnectDelay(reconnectAttempt++);
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = 0;
@@ -227,7 +234,7 @@ function renderComputer(
   }
 
   function connect() {
-    if (disposed || catalogStale || !active || rfb) return;
+    if (disposed || catalogStale || sleeping || failed || !active || rfb) return;
     if (backgroundTimer) window.clearTimeout(backgroundTimer);
     backgroundTimer = 0;
     screen.replaceChildren();
@@ -290,8 +297,7 @@ function renderComputer(
       }
       showConnection("连接已中断", "正在自动重新连接", true);
       setStatus("failed");
-      void loadActivity();
-      scheduleReconnect();
+      void loadActivity().then(scheduleReconnect);
     });
   }
 
@@ -303,7 +309,7 @@ function renderComputer(
       if (backgroundTimer) window.clearTimeout(backgroundTimer);
       backgroundTimer = 0;
       if (rfb) rfb.focus({ preventScroll: true });
-      else connect();
+      else void wake();
       return;
     }
     releaseRemoteKeys();
@@ -331,15 +337,60 @@ function renderComputer(
       }
       if (!response.ok) throw new Error(`activity ${response.status}`);
       const activity = checkedActivity(await response.json());
+      sleeping = activity.browser.state === "sleeping" || activity.browser.state === "stopping";
+      failed = activity.browser.state === "failed";
+      if (sleeping && !waking) {
+        clearTimers();
+        rfb?.disconnect();
+        showConnection("Computer 已休眠", "无操作满 10 分钟，桌面已释放；保存的登录身份仍在", true);
+        retry.textContent = "唤醒 Computer";
+        setStatus("waiting");
+        statusText.textContent = "已休眠";
+      } else if (activity.browser.state === "failed") {
+        clearTimers();
+        showConnection("Computer 启动或停止失败", activity.browser.error, true);
+        setStatus("failed");
+      } else if (!rfb && active && !waking && activity.browser.state === "ready") {
+        connect();
+      }
       agentActive = activity.active;
       if (shouldOpenForActivity(lastNotice, activity.noticeId, activity.active)) {
         view.requestAttention(`computer:${activity.noticeId}`);
       }
       lastNotice = activity.noticeId;
-      if (rfb) setStatus("connected");
+      if (rfb && activity.browser.state === "ready") setStatus("connected");
     } catch {
       if (!catalogStale && rfb === null) setStatus("failed");
     }
+  }
+
+  async function wake() {
+    if (waking || disposed || catalogStale) return;
+    waking = true;
+    showConnection("正在唤醒 Computer", "正在打开你的主浏览器", false);
+    setStatus("connecting");
+    try {
+      const response = await ctx.http.request("/api/dashboard/computer/wake", { method: "POST" });
+      if (!response.ok) throw new Error(`wake ${response.status}`);
+      sleeping = false;
+      failed = false;
+      retry.textContent = "重新连接";
+      connect();
+    } catch (error) {
+      showConnection("无法唤醒 Computer", String(error), true);
+      setStatus("failed");
+    } finally { waking = false; }
+  }
+
+  function touch(event: Event) {
+    if (!event.isTrusted || !rfb || Date.now() - lastTouch < 1000) return;
+    lastTouch = Date.now();
+    void ctx.http.request("/api/dashboard/computer/touch", { method: "POST" }).then((response) => {
+      if (!response.ok) throw new Error(`touch ${response.status}`);
+    }).catch((error) => {
+      showConnection("操作状态发送失败", String(error), true);
+      setStatus("failed");
+    });
   }
 
   function setClipboardOpen(open: boolean, returnToDesktop = false) {
@@ -559,12 +610,16 @@ function renderComputer(
   screen.addEventListener("keydown", onRemoteKeyDown, true);
   screen.addEventListener("keyup", onRemoteKeyUp, true);
   screen.addEventListener("paste", onRemotePaste, true);
+  const inputEvents = ["pointerdown", "pointermove", "pointerup", "wheel", "keydown", "keyup", "paste"];
+  for (const name of inputEvents) screen.addEventListener(name, touch, true);
+  sendClipboard.addEventListener("click", touch);
+  ctrlAltDelete.addEventListener("click", touch);
   window.addEventListener("blur", onWindowBlur);
   document.addEventListener("visibilitychange", onVisibilityChange);
   retry.addEventListener("click", () => {
     reconnectAttempt = 0;
     rfb?.disconnect();
-    if (!rfb) connect();
+    if (!rfb) void wake();
   });
   clipboardButton.addEventListener("click", () => setClipboardOpen(clipboard.hidden));
   clipboardClose.addEventListener("click", () => setClipboardOpen(false));
@@ -617,6 +672,7 @@ function renderComputer(
   const stopActive = view.onActiveChange(setActive);
   const activityPoll = window.setInterval(() => void loadActivity(), 1_000);
   void loadActivity();
+  if (active) void wake();
 
   return () => {
     disposed = true;
@@ -626,6 +682,7 @@ function renderComputer(
     screen.removeEventListener("keydown", onRemoteKeyDown, true);
     screen.removeEventListener("keyup", onRemoteKeyUp, true);
     screen.removeEventListener("paste", onRemotePaste, true);
+    for (const name of inputEvents) screen.removeEventListener(name, touch, true);
     window.removeEventListener("blur", onWindowBlur);
     document.removeEventListener("visibilitychange", onVisibilityChange);
     releaseRemoteKeys();
