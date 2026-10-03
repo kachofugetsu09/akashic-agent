@@ -224,6 +224,7 @@ async function createBrowser() {
   const hook = { run: () => context.turn_id === turn ? request({ method: "afterCode" }) : undefined };
   const turnHook = { run: (metadata) => metadata.turn_id === turn ? request({ method: "endTurn", params: metadata }) : undefined };
   const dispose = async () => {
+    if (closed) return;
     closed = true;
     services.delete(browserId);
     hooks.splice(hooks.indexOf(hook), 1);

@@ -15,7 +15,6 @@ export class ComputerDriver {
   sessions = new Map();
   active = null;
   closed = false;
-  cancelledCalls = new Map();
   async start() {
     await this.browser.start();
     await deadline(this.desktop.start(), 4000, "Native startup");
@@ -147,12 +146,7 @@ export class ComputerDriver {
       throw new TypeError("Computer code exceeds 128 KiB");
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 110_000)
       throw new TypeError("timeoutMs must be 1..110000");
-    if (this.cancelledCalls.has(context.call_id)) {
-      this.cancelledCalls.delete(context.call_id);
-      throw new Error(
-        "Computer call cancelled before admission; no actions were sent",
-      );
-    }
+    signal?.throwIfAborted();
     const active = {
       context,
       pending: new Set(),
@@ -282,17 +276,7 @@ export class ComputerDriver {
       throw new Error("Input release is uncertain; driver is stopped");
     if (typeof callId !== "string" || !callId.length || callId.length > 256)
       throw new TypeError("cancel requires a valid call_id");
-    if (this.active?.context.call_id !== callId) {
-      const now = Date.now();
-      for (const [id, until] of this.cancelledCalls)
-        if (until < now) this.cancelledCalls.delete(id);
-      if (this.cancelledCalls.size >= 4096)
-        throw new Error(
-          "Too many pending cancellations; release was not confirmed",
-        );
-      this.cancelledCalls.set(callId, now + 300000);
-      return;
-    }
+    if (this.active?.context.call_id !== callId) return;
     const active = this.active;
     active.reject(new Error("Computer call cancelled"));
     await active.done;

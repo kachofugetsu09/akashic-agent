@@ -29,6 +29,10 @@ Computer Workload 常驻控制服务与 OpenCLI 定时器，浏览器、桌面�
 Chromium 禁止独立实例同时写入同一 user-data-dir。刷新复用主实例的专用标签。
 只在 Workload 首次启动、Controller 已确认旧容器停止后清理遗留 singleton 链接。
 日常唤醒不删锁，先等待上次停机完成；释放失败关闭启动准入并明确返回错误。
+启动失败只有在 driver 收尾和 runtime 正常退出均已确认后，才返回休眠状态允许重试。
+SIGKILL、异常信号退出或输入释放失败仍关闭准入，不能把进程退出当作身份落盘证明。
+取消由常驻 gateway 保留，覆盖尚未创建 driver 的唤醒窗口；回执等待请求占用释放。
+显式 Session reset 清除该 Session 的 Turn 占用，不用 TTL 回收仍在工作的 Agent。
 profile、HOME 和 config 沿正常浏览器使用原位更新，空闲回收不删除这些目录。
 JS 绑定、DOM、页面运行状态和桌面进程失效，下一次调用重新初始化。保存文件沿原
 输出 owner 保留。正式身份目录的迁移或删除仍需要用户授权与可恢复备份。
