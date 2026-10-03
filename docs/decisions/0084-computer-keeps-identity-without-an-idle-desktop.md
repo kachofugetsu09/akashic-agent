@@ -33,6 +33,8 @@ Chromium 禁止独立实例同时写入同一 user-data-dir。刷新复用主实
 SIGKILL、异常信号退出或输入释放失败仍关闭准入，不能把进程退出当作身份落盘证明。
 取消由常驻 gateway 保留，覆盖尚未创建 driver 的唤醒窗口；回执等待请求占用释放。
 显式 Session reset 清除该 Session 的 Turn 占用，不用 TTL 回收仍在工作的 Agent。
+已知边界：旧 control binding 丢失、无法发送 endTurn 时，占用可能保留；需要显式 reset
+该 Session 或重启 Workload，目前没有自动恢复这条终态路径。
 profile、HOME 和 config 沿正常浏览器使用原位更新，空闲回收不删除这些目录。
 JS 绑定、DOM、页面运行状态和桌面进程失效，下一次调用重新初始化。保存文件沿原
 输出 owner 保留。正式身份目录的迁移或删除仍需要用户授权与可恢复备份。
