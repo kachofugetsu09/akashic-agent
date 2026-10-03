@@ -55,4 +55,5 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
     assert set(_applied_ids(workspace / "migrations.sqlite3")) == {
         "20260921_01_plugin_update_input_ref",
         "20260928_01_plugin_config_updates",
+        "20261004_01_message_source_index",
     }
