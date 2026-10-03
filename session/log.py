@@ -435,27 +435,50 @@ class MessageLog:
                 raise RuntimeError("owner_records 缺失，请先运行对应 yoyo 迁移")
         return OwnerStore(self, name)
 
-    def ensure_session(self, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
+    def ensure_session(
+        self, session_id: str, attributes: SessionAttributes, *,
+        initializers: tuple[tuple[OwnerStore, Callable[[str, SessionAttributes, OwnerTransaction], None]], ...] = (),
+    ) -> SessionAttributes:
         """原子接纳固定属性；同 ID 重试不能修改已有会话的事实。"""
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("Session ID 不能为空")
         payload = encode_attributes(attributes)
         def create() -> SessionAttributes:
             stamp = datetime.now(UTC).isoformat()
-            _ = self._connection.execute(
+            inserted = self._connection.execute(
                 "INSERT OR IGNORE INTO sessions (key,created_at,updated_at,attributes) VALUES (?,?,?,?)",
                 (session_id, stamp, stamp, payload),
             )
             current = self.catalog().attributes(session_id)
             if current != attributes:
                 raise MessageConflict("同一 Session 的固定属性不能改变")
+            # Only the new row admits initial owner state, in this same transaction.
+            if inserted.rowcount == 1:
+                for store, initialize in initializers:
+                    if store._log is not self:
+                        raise ValueError("Session 初始化不能跨存储 authority")
+                    transaction = OwnerTransaction(store)
+                    try:
+                        result = initialize(session_id, current, transaction)
+                        transaction._check_active()
+                        if inspect.isawaitable(result):
+                            if inspect.iscoroutine(result):
+                                result.close()
+                            raise TypeError("Session 初始化必须同步，不能跨 await")
+                    finally:
+                        transaction._active = False
             return current
         return self._write(create)
 
-    async def ensure_session_async(self, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
+    async def ensure_session_async(
+        self, session_id: str, attributes: SessionAttributes, *,
+        initializers: tuple[tuple[OwnerStore, Callable[[str, SessionAttributes, OwnerTransaction], None]], ...] = (),
+    ) -> SessionAttributes:
         """完整 create-once 事务离开 loop；取消仍排空已开始的写入。"""
         self._check_async_operation()
-        return await _run_commit(lambda: self.ensure_session(session_id, attributes), None)
+        return await _run_commit(lambda: self.ensure_session(
+            session_id, attributes, initializers=initializers,
+        ), None)
 
     def _check_async_operation(self) -> None:
         """线程工作不能离开调用者自己的未提交或只读事务。"""

@@ -211,6 +211,8 @@ Telegram / QQ ──继续使用 channel-bound session identity
 
 ## 6. Issue 2 草案：Project Session 与 Coding Context
 
+> 本节的模式、不可变 Session 根、指令设置与目录恢复路线已由 [0084](../decisions/0084-project-default-and-session-working-directory.md) 替代；仅保留历史推理，不能作为现行实现合同。组织与记忆仍以 0073 为准。
+
 - GitHub：[Issue #369](https://github.com/kachofugetsu09/akashic-agent/issues/369)
 
 ### 建议标题

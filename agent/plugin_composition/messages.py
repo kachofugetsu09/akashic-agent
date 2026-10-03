@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack, AsyncExitStack
 
 from core.common.file_io import run_file_io
 
@@ -138,6 +139,26 @@ class SessionAdmission:
     def __init__(self, log: _MessageLog | None):
         self._log = log
         self._dimensions: dict[str, tuple[Context, Callable[[str], None]]] = {}
+        self._initializers: dict[str, tuple[Context, OwnerStore, Callable[[str, SessionAttributes, OwnerTransaction], None]]] = {}
+
+    async def register_initializer(
+        self, ctx: Context, *, name: str,
+        initialize: Callable[[str, SessionAttributes, OwnerTransaction], None],
+    ) -> Effect:
+        """Admit plugin state only with a new Session, using that owner's transaction."""
+        if ctx.require(SESSION_ADMISSION) is not self:
+            raise PermissionError("初始化注册不属于当前 SessionAdmission")
+        store = ctx.require(OWNER_STATE).open(ctx)
+        if not name or not callable(initialize):
+            raise ValueError("Session 初始化需要名称和同步函数")
+
+        def setup():
+            if name in self._initializers:
+                raise ValueError(f"Session 初始化已有 owner: {name}")
+            self._initializers[name] = (ctx, store, initialize)
+            return lambda: self._initializers.pop(name)
+
+        return await ctx.effect(setup, label="session-initializer:" + name)
 
     # 每个 scope 维度只有一个 owner 负责校验取值；卸载只释放内存注册。
     async def register_dimension(
@@ -163,7 +184,13 @@ class SessionAdmission:
         if attributes.scope and not self._admitted(session_id):
             self._check_dimensions(attributes)
         # 2. 固定事实写入与冲突检查仍由同一个 create-once 事务完成。
-        return self._log.ensure_session(session_id, attributes)
+        with ExitStack() as scopes:
+            registered = tuple(self._initializers.values())
+            for owner, _, _ in registered:
+                _ = scopes.enter_context(owner._call_scope())
+            return self._log.ensure_session(session_id, attributes, initializers=tuple(
+                (store, initialize) for _, store, initialize in registered
+            ))
 
     async def ensure_async(self, ctx: Context, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
         """原 scope 校验维度；完整 create-once 事务进入文件线程并排空取消。"""
@@ -173,7 +200,13 @@ class SessionAdmission:
         _ = ctx.require_runtime_owner(SESSION_ADMISSION, self)
         if attributes.scope and not await run_file_io(lambda: self._admitted(session_id)):
             self._check_dimensions(attributes)
-        return await log.ensure_session_async(session_id, attributes)
+        async with AsyncExitStack() as scopes:
+            registered = tuple(self._initializers.values())
+            for owner, _, _ in registered:
+                _ = await scopes.enter_async_context(owner.runtime_scope())
+            return await log.ensure_session_async(session_id, attributes, initializers=tuple(
+                (store, initialize) for _, store, initialize in registered
+            ))
 
     def _check_dimensions(self, attributes: SessionAttributes) -> None:
         for name, value in attributes.scope:
