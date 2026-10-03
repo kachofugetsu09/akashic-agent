@@ -33,7 +33,7 @@ Preparation status is process-local terminal output. The launcher waits for `cha
 
 The standalone Compose image builds a fetched Git commit in a builder stage. It contains the Core archive and independent plugin bundles, with no business plugin source in Core. Default tools run inside the container; the Docker socket and host filesystem are not exposed. Plugins needing external Workload infrastructure require that infrastructure to be explicitly configured; the default profile does not start Computer.
 
-The image workflow is manually dispatched and publishes a commit-tagged GHCR image. Before this PR is merged, candidate validation sets `AKASHIC_REVISION` to the full pushed candidate SHA; upstream main does not yet contain this entry. The default Compose works through a source build without assuming that a public image tag already exists. Image publishing and production deployment are separate from this PR's local validation.
+仓库 Compose 构建明确指定的完整源码提交。Release 附件是独立 Compose，不包含 build context 或额外环境文件；镜像固定到已发布的多平台 manifest digest。两者复用同一份端口、healthcheck 和数据卷配置。发行工作流分别构建并实际启动 AMD64、ARM64 镜像，验证首次安装和保留数据卷重建后，组合这两个已验证镜像。匿名下载和发行附件启动验收通过后才发布 release。程序和发行制品归 root 所有，运行用户只读；运行数据写入 data 卷。发行不会部署 hua-home 或修改已有实例。
 
 ## Development entry
 
@@ -53,8 +53,10 @@ The full build/install API is `scripts/build_plugin_distribution.py --help` and 
 
 ## Acceptance
 
-Use isolated HOME, state, plugin home, cache, browser profile and Compose project. Verify the distribution commit, default profile, formal install receipt, selected runtime and actual Web bootstrap modules. Exercise cold start, warm start, failed preparation and rerun, port collision, stop/restart, and persistence. An HTTP 200 or a running container alone does not prove that the plugins loaded.
+Use isolated HOME, state, plugin home, cache, browser profile and Compose project. Verify the distribution commit, default profile, formal install receipt, selected runtime and actual Web bootstrap modules. Exercise cold start, warm start, failed preparation and rerun, port collision, stop/restart, and persistence. An HTTP 200 or a running container alone does not prove that the plugins loaded. Without model credentials, the browser must show onboarding and allow opening conversation and settings. Runtime UID must be nonzero; Core, dependencies and distribution sources must not be runtime-writable. Retained-volume recreation must preserve configuration, the install receipt and plugin selection.
+
+维护者可用 Python 标准库运行 `python3 scripts/standalone_compose_smoke.py --image <本地镜像> --revision <完整 commit>`。它创建独立 project 和空数据卷，验证普通用户读取制品、网页与插件模块、重建容器后的配置和选择保留；不连接模型。日志留在输出目录，结束后只删除本次 project 的测试卷。
 
 ## Updating standalone Compose
 
-After `git pull --ff-only`, use `AKASHIC_REVISION="$(git rev-parse HEAD)" docker compose up -d --build`. The full commit changes Docker's build argument and binds the fetched source. `main` is a floating input whose fetch layer can be cached; `git pull` plus an unchanged `main` build argument does not prove that a new image was built. Keep the same Compose project and data volume; never use `down -v` for an update.
+源码构建先取得并切换目标已推送提交，将 `AKASHIC_REVISION` 重新设为 `git rev-parse HEAD`，再运行 `docker compose up -d --build --wait --wait-timeout 600`。发行版使用者先停止服务并备份实例数据卷，在同一目录替换新发行版的 Compose，运行 `docker compose up -d --wait --wait-timeout 600`。保持 project 和数据卷不变。旧镜像只恢复代码；已经发生的数据迁移需要升级前的匹配数据备份。不要使用 `down -v` 升级。

@@ -1,24 +1,152 @@
 name: Standalone product image
 on:
   workflow_dispatch:
+  push:
+    tags: ['v*']
+  pull_request:
 permissions:
   contents: read
-  packages: write
 jobs:
   image:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REVISION }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Build candidate image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/standalone/Dockerfile
+          build-args: AKASHIC_REVISION=${{ env.SOURCE_REVISION }}
+          load: true
+          tags: akashic-standalone:candidate
+          cache-from: type=gha,scope=standalone-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=standalone-${{ matrix.arch }}
+      - name: Check fresh install and retained-volume recreation
+        run: |
+          python3 scripts/standalone_compose_smoke.py --image akashic-standalone:candidate \
+            --revision "$SOURCE_REVISION" --output "$RUNNER_TEMP/standalone-smoke"
+      - name: Upload startup evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-startup-${{ matrix.arch }}
+          path: ${{ runner.temp }}/standalone-smoke
+          if-no-files-found: ignore
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the tested image
+        if: github.event_name != 'pull_request'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker tag akashic-standalone:candidate "$IMAGE:$SOURCE_REVISION-$ARCH"
+          docker push "$IMAGE:$SOURCE_REVISION-$ARCH"
+  release:
+    needs: image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      SOURCE_REVISION: ${{ github.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - name: Combine the tested platform images
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:$SOURCE_REVISION" \
+            "$IMAGE:$SOURCE_REVISION-amd64" "$IMAGE:$SOURCE_REVISION-arm64"
+          docker buildx imagetools inspect "$IMAGE:$SOURCE_REVISION" \
+            --format '{{json .Manifest}}' > "$RUNNER_TEMP/manifest.json"
+      - name: Generate the independent release Compose
+        run: |
+          mkdir "$RUNNER_TEMP/release"
+          DIGEST=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["digest"])' "$RUNNER_TEMP/manifest.json")
+          python3 scripts/build_standalone_compose.py --image "$IMAGE@$DIGEST" \
+            --output "$RUNNER_TEMP/release/compose.yaml"
+          python3 - "$RUNNER_TEMP/release" "$SOURCE_REVISION" "$IMAGE@$DIGEST" <<'PY'
+          import json, pathlib, sys
+          directory = pathlib.Path(sys.argv[1])
+          (directory / 'release.json').write_text(json.dumps({
+              'source_commit': sys.argv[2], 'image': sys.argv[3],
+              'platforms': ['linux/amd64', 'linux/arm64'],
+          }, indent=2) + '\n')
+          PY
+          (cd "$RUNNER_TEMP/release" && sha256sum compose.yaml release.json > SHA256SUMS)
+      - name: Require anonymous pull and check the downloadable Compose
+        run: |
+          IMAGE_REF=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$RUNNER_TEMP/release/release.json")
+          # 空 Docker config：维护者登录成功不能代替普通用户的下载验收。
+          mkdir "$RUNNER_TEMP/anonymous-docker"
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous-docker" docker pull "$IMAGE_REF"
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous-docker" python3 scripts/standalone_compose_smoke.py \
+            --image "$IMAGE_REF" --revision "$SOURCE_REVISION" \
+            --compose "$RUNNER_TEMP/release/compose.yaml" --output "$RUNNER_TEMP/release-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          context: .
-          file: docker/standalone/Dockerfile
-          build-args: AKASHIC_REVISION=${{ github.sha }}
-          push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          name: standalone-release
+          path: |
+            ${{ runner.temp }}/release
+            ${{ runner.temp }}/release-smoke
+          if-no-files-found: ignore
+      - name: Publish the verified tag and release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          IMAGE_REF=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$RUNNER_TEMP/release/release.json")
+          docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE_REF"
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          下载 Assets 中的 compose.yaml，放入专用目录后运行：
+
+          \`\`\`bash
+          docker compose up -d --wait --wait-timeout 600
+          \`\`\`
+
+          成功返回后打开 http://localhost:2236，完成初始配置。无需先配置模型 Key。
+          镜像支持 AMD64、ARM64，Compose 固定到已验证镜像的 digest。
+          已通过两种架构的首次安装和保留数据卷重建，以及匿名镜像拉取验收。
+          修复 #955 的默认插件源码读取权限，同时保留发行代码只读边界。
+          配置、会话和插件选择写入 data 卷；不要使用 docker compose down -v。
+
+          源码提交：$SOURCE_REVISION
+          镜像：$IMAGE_REF
+          [完整启动说明](https://github.com/$GITHUB_REPOSITORY/blob/$SOURCE_REVISION/README.md)
+          EOF
+          gh release create "$VERSION" --verify-tag --title "$VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/release/"*

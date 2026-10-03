@@ -1,11 +1,11 @@
 services:
   akashic:
-    # The first run builds a fixed Git revision. Later starts reuse this image.
+    # README 提供固定源码提交；发行附件使用预构建镜像，不使用此 build。
     build:
       context: .
       dockerfile: docker/standalone/Dockerfile
       args:
-        AKASHIC_REVISION: ${AKASHIC_REVISION:-main}
+        AKASHIC_REVISION: ${AKASHIC_REVISION:?请先按 README 设置当前源码提交}
     ports:
       - "127.0.0.1:${AKASHIC_PORT:-2236}:2236"
     volumes:
@@ -14,10 +14,11 @@ services:
     stop_grace_period: 60s
     restart: "no"
     healthcheck:
-      test: ["CMD", "python", "-c", "import json,urllib.request; s=json.load(urllib.request.urlopen('http://127.0.0.1:2236/api/shell/state', timeout=3)); assert s['chatReady']"]
+      # 与启动器一致：聊天网关和 Web 插件目录都就绪后才显示 healthy。
+      test: ["CMD", "python", "-c", "import json,urllib.request; u='http://127.0.0.1:2236'; assert json.load(urllib.request.urlopen(u+'/api/shell/state', timeout=3))['chatReady']; assert json.load(urllib.request.urlopen(u+'/api/chat/web-ui/bootstrap', timeout=3))['modules']"]
       interval: 10s
       timeout: 5s
-      retries: 6
-      start_period: 180s
+      retries: 12
+      start_period: 480s
 volumes:
   data:
