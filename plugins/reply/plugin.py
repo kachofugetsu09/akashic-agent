@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from time import monotonic
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
@@ -15,6 +17,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.messages import (
     MESSAGE_CATALOG,
+    MessageCatalog,
     MESSAGE_WRITERS,
     OWNER_STATE,
     MessageReader,
@@ -29,7 +32,9 @@ from agent.plugin_contracts.sources import (
     SOURCES_V5 as SOURCES,
     SOURCE_CHECK_V2 as SOURCE_CHECK,
     SourceGuard,
+    SourcesV5,
 )
+from core.common.diagnostic_log import log_event
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOL_LOADING_PRESENTATION
 
 from .api import REPLY_PROGRAM
@@ -61,6 +66,57 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_steps: int = Field(default=40, strict=True, ge=0)
     max_output_tokens: int = Field(default=4096, gt=0)
+
+
+async def _prepare_pending(
+    catalog: MessageCatalog, get_sources: Callable[[], SourcesV5],
+    changed: Callable[[MessageReader, str, bool], None],
+) -> None:
+    """Prepare independent Sessions with bounded reads and unchanged source CAS."""
+    # 1. Share one Session iterator across four loop-owned workers, matching file I/O capacity.
+    started = monotonic()
+    heads = catalog.snapshot_heads()
+    sessions = iter(heads)
+    counts = {"sessions": len(heads), "checks": 0, "retries": 0, "workers": 4}
+    seconds = {"head_reads": 0.0, "needs_reply": 0.0, "changed": 0.0}
+
+    async def read_sessions() -> None:
+        for session_id in sessions:
+            reader = catalog.reader(session_id)
+            for source in get_sources().entries():
+                while True:
+                    stamp = monotonic()
+                    head = reader.head(source=source.name)
+                    seconds["head_reads"] += monotonic() - stamp
+                    stamp = monotonic()
+                    pending_reply = await source.needs_reply(reader)
+                    seconds["needs_reply"] += monotonic() - stamp
+                    counts["checks"] += 1
+                    if not any(current is source for current in get_sources().entries()):
+                        break
+                    stamp = monotonic()
+                    current_head = reader.head(source=source.name)
+                    seconds["head_reads"] += monotonic() - stamp
+                    if current_head == head:
+                        stamp = monotonic()
+                        changed(reader, source.name, pending_reply)
+                        seconds["changed"] += monotonic() - stamp
+                        break
+                    counts["retries"] += 1
+
+    # 2. The parent owns every worker; failure/cancellation drains all physical reads.
+    outcome = "failed"
+    try:
+        async with asyncio.TaskGroup() as group:
+            for worker in range(4):
+                _ = group.create_task(read_sessions(), name=f"reply-prepare-{worker}")
+        outcome = "success"
+    finally:
+        # Awaited phase sums overlap across workers; duration is the outer wall time.
+        log_event(logging.getLogger(__name__), logging.INFO, "reply.prepare.timing",
+                  duration_ms=round((monotonic() - started) * 1000, 3),
+                  outcome=outcome, counts=counts,
+                  measurement={name + "_ms": round(value * 1000, 3) for name, value in seconds.items()})
 
 
 async def apply(ctx: Context) -> None:
@@ -167,18 +223,7 @@ async def apply(ctx: Context) -> None:
     async def prepare(_event: object) -> None:
         nonlocal running
         running = True
-        catalog = ctx.require(MESSAGE_CATALOG)
-        for session_id in catalog.snapshot_heads():
-            for source in ctx.require(SOURCES).entries():
-                reader = catalog.reader(session_id)
-                while True:
-                    head = reader.head(source=source.name)
-                    pending_reply = await source.needs_reply(reader)
-                    if not any(current is source for current in ctx.require(SOURCES).entries()):
-                        break
-                    if reader.head(source=source.name) == head:
-                        changed(reader, source.name, pending_reply)
-                        break
+        await _prepare_pending(ctx.require(MESSAGE_CATALOG), partial(ctx.require, SOURCES), changed)
 
     async def start(_event: object) -> None:
         nonlocal watcher

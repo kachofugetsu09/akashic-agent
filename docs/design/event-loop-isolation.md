@@ -525,3 +525,12 @@ github-watch 与四个 EventMail 来源的源码修复已经交付；正式安�
 Source pending checks use the last Input sequence, the last finished Output sequence after that input, and ordered Control bodies in the same frozen source prefix. `MessageReader.latest_input_seq` and `latest_finished_output_seq` return positions without loading content or metadata. `scan_controls` pages Control bodies in sequence order inside one read snapshot; its consumer is synchronous and must not keep the iterator. Ordinary message/context readers still return complete messages.
 
 The source body-kind/finish index serves these narrow reads. The Sources owner retains pause/resume/abandon rules and the full source head for CAS and task boundaries. Earlier controls before the latest input remain outside that decision, matching the existing bounded-tail algorithm. A terminal Output follows every earlier Control through_seq because a Control cannot refer to a future prefix; therefore selecting the last terminal Output and applying ordered controls yields the same boundary.
+
+Reply startup shares one Session iterator across four TaskGroup workers, matching the existing file I/O capacity. Each worker keeps one Session's sources in order, checks the source head before and after the awaited predicate, and skips a registration that has been removed. A changed head retries before publishing pending state. All workers finish before runtime readiness; failure or cancellation cancels siblings and drains their actual reads before the parent returns.
+
+```text
+Session iterator → four owned workers → fixed source read → head CAS → pending hold
+                         └──────── all joined before ready ───────────────┘
+```
+
+`reply.prepare.timing` records outer wall time, Session/check/retry counts, and head-read, awaited-predicate and changed-callback time. Awaited phase totals overlap across workers and must not be added to outer wall time. Records contain no message content or Session IDs. Parallelism changes scheduling of independent Sessions; source admission, predicate rules and per-source CAS remain unchanged.
