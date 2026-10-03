@@ -60,6 +60,9 @@ Bridge 的 release 路径指向按解释器路径/文件摘要与锁文件内容
 每个插件的 hash/copy/fsync、依赖安装、输入复用及 stop/publish/start/health/runtime 阶段。
 `reused` 表示该次真实命中，不能从总耗时推断。阶段存在嵌套，不把所有秒数相加；比较同名外层阶段，再按插件分项定位。
 发布容器的明细写入 publication 回执的 `timings`；Host 阶段记录在发布器 stderr，启动准备见 Core 日志。
+会话按来源读取时使用 `(session_key, source, seq)` 索引，避免为其他来源扫描历史消息。
+已有库由 `20261004_01_message_source_index` 在停止期建立可重建索引；新库由 MessageLog 初始化。
+这一步不改消息行、顺序、格式或归属，旧 Core 可以继续读取；不为派生索引创建整库备份。
 
 ## 日常更新
 
