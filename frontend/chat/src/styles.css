@@ -639,10 +639,11 @@ input {
   line-height: 1.6;
 }
 .project-dialog__description svg { flex: 0 0 auto; }
-.project-dialog__footer { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.project-dialog__footer { flex-flow: row wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .project-dialog__footer > :first-child { margin-inline-end: auto; }
 .project-dialog__memory-trigger {
   display: inline-flex;
+  flex-shrink: 0;
   min-height: 40px;
   align-items: center;
   gap: 8px;
@@ -691,6 +692,7 @@ input {
 @media (max-width: 480px) {
   .project-dialog { padding: 20px; }
   .project-dialog form { gap: 18px; }
+  .directory-dialog { padding: 20px; }
 }
 
 .compact-navigation-trigger,
@@ -2469,3 +2471,10 @@ form.composer:focus-within [data-slot="input-group"] {
 .session-directory__details { max-height: min(12rem, 25dvh); overflow-y: auto; border-block-start: 1px solid var(--ak-rule-subtle); }
 .session-directory__details ul { padding-inline-start: 20px; }
 .session-directory__details button { min-height: 44px; text-decoration: underline; }
+
+/* Creation keeps the selected path readable at narrow widths and large text. */
+.project-dialog__directory { display: grid; gap: 8px; margin-block: 16px; }
+.project-dialog__directory p { margin: 0; color: var(--ak-ink-secondary); font-size: var(--chat-type-control); }
+.project-dialog__directory-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.project-dialog__directory-choice > span { flex-basis: 100%; }
+.project-dialog__directory-choice button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--ak-rule-default); border-radius: 8px; color: inherit; background: transparent; }

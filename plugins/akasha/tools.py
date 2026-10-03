@@ -12,6 +12,7 @@ from agent.plugin_contracts import ContentPart, ContentReferences, Input, Output
 from agent.plugin_contracts import json_value
 from ._boundaries import CallSource, Result, TOOLS
 from .learning import Feedback, Learning, resolve_feedback
+from .scopes import MemoryDisabled
 from .projection import Sample
 
 
@@ -72,7 +73,10 @@ class FeedbackTool:
         # 2. 已完成的反馈共同校验到学习节点，U2/U3 不会成为两个相互冲突的目标。
         sample = Sample(calling, members, tuple(by_id[identity] for _, identity in turn.observations))
         previous = self._learning.read_feedback(sample, self._bindings)
-        targets = self._targets(calling.session_id)
+        try:
+            targets = self._targets(calling.session_id)
+        except MemoryDisabled as error:
+            return str(error)
         planned = [feedback]
         # 3. 同一 Output 的结果在调用前缀之外，必须联合检查其原始反馈请求。
         actions: dict[str, Literal["remember", "forget"]] = {

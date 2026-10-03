@@ -29,7 +29,7 @@ export interface DesktopSidebarProjects {
   activeProjectId: string;
   memoryInstalled: boolean;
   onNewChat: (projectId: string) => void;
-  onCreate: (name: string, memory: ProjectMemory) => Promise<void>;
+  onCreate: (name: string, memory: ProjectMemory, directory: string | null) => Promise<void>;
   onContinue: (key: string) => Promise<void>;
   onStop: (key: string) => void;
   onOpenCreate?: () => void;
@@ -230,7 +230,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       />
       </div>
       {directoryProject && projects ? <ProjectDirectoryDialog project={directoryProject}
-        onClose={() => setDirectoryProjectId("")} onBind={projects.onBindDirectory}
+        onClose={() => setDirectoryProjectId("")} onChoose={(path) => projects.onBindDirectory(directoryProject.id, path)}
         onCloseFocus={() => Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>("[data-project-id]") ?? [])
           .find((row) => row.dataset.projectId === directoryProject.id)?.querySelector<HTMLButtonElement>(".navigation-menu-trigger")?.focus()} /> : null}
     </aside>

@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ProjectDirectoryDialog } from "./project-directory-dialog";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
@@ -61,7 +62,7 @@ export function ProjectNavigation({
   onSelectSession: (sessionId: string) => void;
   onPrefetchSession?: (sessionId: string) => void;
   onNewProjectChat: (projectId: string) => void;
-  onCreateProject: (name: string, memory: ProjectMemory) => Promise<void>;
+  onCreateProject: (name: string, memory: ProjectMemory, directory: string | null) => Promise<void>;
   onContinueProject: (key: string) => Promise<void>;
   onStopProject: (key: string) => void;
   onOpenCreateProject?: () => void;
@@ -115,6 +116,7 @@ export function ProjectNavigation({
           <span className="project-pending__name" title={item.name}>{item.name}</span>
           <small>{item.invalid ? "本地请求损坏，无法继续" : projects.some((project) => item.id === project.id)
             ? "项目已在列表中，本地请求仍未确认" : `创建结果未确认 · ${projectMemoryLabel(item.memory)}`}</small>
+          {item.directory ? <small className="directory-path">默认目录：{item.directory}</small> : null}
           <div className="project-pending__actions">
             {!item.invalid ? <button type="button" disabled={Boolean(busyKey)} onClick={() => void continuePending(item.key)}>
               {busyKey === item.key ? "正在继续…" : "继续创建"}
@@ -211,7 +213,7 @@ export function ProjectNavigationRow({
   </div>;
 }
 
-/** 记忆策略在项目还没有对话时一次选定；之后改变需要显式重建学习图。 */
+/** 创建时一次选定记忆策略；之后改变需要显式重建学习图。 */
 export function NewProjectDialog({
   open,
   memoryInstalled,
@@ -222,10 +224,13 @@ export function NewProjectDialog({
   open: boolean;
   memoryInstalled: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (name: string, memory: ProjectMemory) => Promise<void>;
+  onCreate: (name: string, memory: ProjectMemory, directory: string | null) => Promise<void>;
   onCloseFocus?: () => void;
 }) {
   const [name, setName] = useState("");
+  const [directory, setDirectory] = useState<string | null>(null);
+  const [choosingDirectory, setChoosingDirectory] = useState(false);
+  const directoryButton = useRef<HTMLButtonElement>(null);
   const [memory, setMemory] = useState<ProjectMemory>("global");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -234,6 +239,8 @@ export function NewProjectDialog({
     if (!nextOpen && submitting) return;
     if (!nextOpen) {
       setName("");
+      setDirectory(null);
+      setChoosingDirectory(false);
       setMemory("global");
       setError("");
     }
@@ -246,7 +253,7 @@ export function NewProjectDialog({
     setSubmitting(true);
     setError("");
     try {
-      await onCreate(name.trim(), memory);
+      await onCreate(name.trim(), memory, directory);
       setSubmitting(false);
       reset(false);
     } catch (reason: unknown) {
@@ -256,6 +263,7 @@ export function NewProjectDialog({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={reset}>
       <DialogContent className="project-dialog" overlayClassName="project-dialog-overlay" onCloseAutoFocus={onCloseFocus ? (event) => {
         event.preventDefault();
@@ -277,6 +285,18 @@ export function NewProjectDialog({
             <Lightbulb size={22} strokeWidth={1.5} aria-hidden="true" />
             <span>把相关对话放在一起，方便持续开展同一项工作。创建时可以选择记忆范围。</span>
           </DialogDescription>
+          <div className="project-dialog__directory">
+            <strong>默认目录（可选）</strong>
+            <p>选择运行 Akashic 工具的执行主机上的目录；远程服务使用远程主机，不是浏览器所在电脑。</p>
+            <div className="project-dialog__directory-choice">
+              <span className="directory-path">{directory ?? "未设置"}</span>
+              <button ref={directoryButton} type="button" disabled={submitting} onClick={() => setChoosingDirectory(true)}>
+                {directory ? "重新选择" : "选择目录"}
+              </button>
+              {directory ? <button type="button" disabled={submitting} onClick={() => setDirectory(null)}>取消选择</button> : null}
+            </div>
+            {directory ? <p>创建后目录固定，之后的新会话使用这个默认目录。</p> : null}
+          </div>
           {error ? <p className="project-dialog__error" role="alert">{error}。若项目栏出现未确认请求，可在那里继续创建或停止尝试。</p> : null}
           <DialogFooter className="project-dialog__footer">
             {memoryInstalled ? <DropdownMenu>
@@ -295,7 +315,7 @@ export function NewProjectDialog({
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
-                <p className="project-memory-menu__note">开始对话后，记忆选项将固定。</p>
+                <p className="project-memory-menu__note">创建后，记忆选项将固定。</p>
               </DropdownMenuContent>
             </DropdownMenu> : <span className="project-dialog__no-memory">记忆功能未启用</span>}
             <button type="submit" className="project-dialog__button primary" disabled={!name.trim() || submitting}>
@@ -305,5 +325,10 @@ export function NewProjectDialog({
         </form>
       </DialogContent>
     </Dialog>
+    {open && choosingDirectory ? <ProjectDirectoryDialog
+      onChoose={async (path) => { setDirectory(path); }}
+      onClose={() => setChoosingDirectory(false)}
+      onCloseFocus={() => directoryButton.current?.focus()} /> : null}
+    </>
   );
 }

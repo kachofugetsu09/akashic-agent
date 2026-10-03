@@ -41,20 +41,24 @@ class Projects:
         projects = [_project_row(key[len(_PREFIX):], dict(record.value)) for key, record in rows]
         return sorted(projects, key=lambda row: cast(str, row["created_at"]))
 
-    def create(self, project_id: str, project_name: str) -> dict[str, object]:
+    def create(self, project_id: str, project_name: str, directory: str | None = None) -> dict[str, object]:
         """由请求的稳定 ID 创建一次；响应丢失后同名重放返回原记录。"""
         if _PROJECT_ID.fullmatch(project_id) is None:
             raise PluginUiRpcInvalidRequest("项目 ID 无效")
         name = _check_name(project_name)
         value: dict[str, object] = {
             "name": name, "created_name": name, "archived": False,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(), "created_directory": directory,
         }
+        if directory is not None:
+            value["directory"] = directory
         def save(transaction: OwnerTransaction) -> dict[str, object]:
             current = transaction.read(_PREFIX + project_id)
             if current is not None:
                 if current.value.get("created_name", current.value["name"]) != name:
                     raise PluginUiRpcInvalidRequest("项目 ID 已用于其他名称")
+                if current.value.get("created_directory") != directory:
+                    raise PluginUiRpcInvalidRequest("项目 ID 已用于其他初始目录")
                 return _project_row(project_id, dict(current.value))
             _ = transaction.save(_PREFIX + project_id, value, expected_version=None)
             return _project_row(project_id, value)
@@ -62,6 +66,9 @@ class Projects:
             return self._store.transact(save)
         except MessageConflict as error:
             raise PluginUiRpcInvalidRequest("项目正在并发创建，请重试") from error
+
+    def exists(self, project_id: str) -> bool:
+        return self._store.read(_PREFIX + project_id) is not None
 
     def update(self, project_id: str, **changes: object) -> dict[str, object]:
         if set(changes) - {"name", "archived"}:
@@ -158,9 +165,24 @@ async def apply(ctx: Context) -> None:
               turn_id: str | None) -> dict[str, object]:
         if method == "project.list" and not payload:
             return {"dimension": DIMENSION, "items": await run_file_io(projects.list)}
-        if method == "project.create" and set(payload) == {"project_id", "name"}:
+        if method == "project.create" and set(payload) in (
+            {"project_id", "name"}, {"project_id", "name", "directory"},
+        ):
             project_id, project_name = _project_id(payload), _check_name(payload["name"])
-            return await run_file_io(lambda: projects.create(project_id, project_name))
+            directory = payload.get("directory")
+            if directory is not None:
+                if not isinstance(directory, str) or not Path(directory).is_absolute():
+                    raise PluginUiRpcInvalidRequest("请选择执行主机上的绝对目录")
+                # A replay acknowledges the original commit even if its path moved.
+                if not await run_file_io(lambda: projects.exists(project_id)):
+                    with ctx.borrow(WORKING_DIRECTORY) as directories:
+                        if directories is None:
+                            raise PluginUiRpcInvalidRequest("当前组合没有可用的目录工具")
+                        try:
+                            _ = await directories.check_directory(directory)
+                        except ValueError as error:
+                            raise PluginUiRpcInvalidRequest(str(error)) from error
+            return await run_file_io(lambda: projects.create(project_id, project_name, directory))
         if method == "project.rename" and set(payload) == {"project_id", "name"}:
             project_id, project_name = _project_id(payload), _check_name(payload["name"])
             return await run_file_io(lambda: projects.update(project_id, name=project_name))

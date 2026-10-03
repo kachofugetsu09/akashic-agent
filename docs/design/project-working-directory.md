@@ -6,7 +6,7 @@
 
 ## Owner 和创建边界
 
-Projects 的 owner_records 保存默认目录，绑定只在同一事务里从 null 写入 path。rename/archive 合并当前记录，不覆盖已绑定字段。
+Projects 的 owner_records 保存默认目录，创建项目可选目录，记录和目录在同一事务内提交；同 ID、同初始目录重试返回原记录，即使目录后来失效。初始目录意图与后来的首次绑定分别保留，不能用重试改绑。已有项目的绑定只在同一事务里从 null 写入 path。rename/archive 合并当前记录，不覆盖已绑定字段。
 
 SessionAdmission 注册普通 owner 初始化函数。MessageLog 只有插入新 Session 时才在同一个 SQL 事务内执行各 owner 初始化；失败回滚 Session 和 owner 记录，重试已有 Session 不再次初始化。旧 Session 缺少目录记录表示旧的未指定状态，不运行全库迁移。Web scoped 输入、CLI conversation、programmatic、scheduler、wake 和 subagent 仍走各自既有接纳路径，不由 scope 校验函数写 cwd。
 
@@ -26,7 +26,7 @@ standard_tools 拥有 Session 当前目录；Projects 只注册默认取值查�
 
 | 对象 | 增加 | 原位更新 | 逻辑失效 | 物理减少与恢复 |
 |---|---|---|---|---|
-| Project 默认目录 | 显式绑定一次 | null → path | 探测失败保留路径 | 不自动减少；workspace 备份恢复 |
+| Project 默认目录 | 创建时可选，或之后显式绑定一次 | null → path | 探测失败保留路径 | 不自动减少；workspace 备份恢复 |
 | Session cwd | 创建时一次快照 | 成功切换递增 revision | 缺失/离线保留路径 | 不自动减少；owner 数据随 workspace 保留 |
 | AGENTS 材料 | 每次新请求读取 | 替换临时材料 | 删除/不可读撤下旧规则 | 只释放请求投影，不改历史 |
 | 外部 worktree | 现有 Shell 明确创建 | 普通 Git 操作 | 实际 Git/文件错误 | 不自动删除、prune、reset 或复制 dirty 内容 |
@@ -68,3 +68,5 @@ Project 行只有一个目录入口：未绑定时浏览执行主机、展示完
 隔离真实 API 验证并发绑定、同值重试、旧/未设置 Session 不回填及独立切换。真实 PluginManager、Tools 和 Models 账本配合受控本地 model driver，验证同一 Turn 混合批次整批拒绝、随后单独切换、下一模型请求的新规则及旧规则撤下。实际 Git worktree、所有相对文件工具、默认 Shell cwd、运行中 PTY 和缺失路径均已核对。
 
 恢复验证在真实 Tools 写入 prepared 回执后退出进程；第二进程切换 cwd；第三进程使用原归档 binding 恢复，仍写入原绝对目标。Host Bridge 的独立 gRPC 进程验证宿主 cwd、浏览、规则读取、有界原文与离线状态。Chromium 使用生产 chat bundle 和真实插件 HTTP API 验证取消焦点、草稿、固定后的只读入口、Session 状态、320px/200% 字体和长路径。其他页面与完整既有检查由 CI/后续主审核对，不能把本地组件验收当作正式部署。
+
+创建项目窗口复用执行主机目录浏览器；选择仅修改本地草稿，取消创建不保存项目。未确认创建请求保留目录，与原 ID 和记忆策略一起手动重放。目录来自文件和 Shell 使用的同一 backend：host-bridge 模式读取 Bridge 所在机器；local 模式读取 Akashic 运行机器。浏览器不调用本机目录选择 API。UI 明确说明远程服务的目录不来自当前浏览器所在电脑。

@@ -535,7 +535,7 @@ Markdown 新草稿逐条引用本次可学习的真实 Message ID。用户事实
 
 ### MEM-013 Akasha 图是按 scope 路由的物化视图
 
-`sessions.db/messages` 仍是唯一事实来源；Akasha 的每张图只是日志上的一个物化视图，拥有自己的成员选择与消费进度，不是日志分区。路由由 Akasha 拥有的策略决定：每个 `(维度, 取值)` 一条 `global | isolated | off`，缺失即 `global`，与旧行为一致。global 学习进入并召回 default 图；isolated 只在本范围自己的图内学习和召回，多个维度同为 isolated 时按显式偏键合成一张图；off 不写入任何图但仍召回其所属图。`learning=excluded` 仍是 Core 的硬排除，优先于任何策略。
+`sessions.db/messages` 仍是唯一事实来源；Akasha 的每张图只是日志上的一个物化视图，拥有自己的成员选择与消费进度，不是日志分区。路由由 Akasha 拥有的策略决定：每个 `(维度, 取值)` 一条学习策略 `global | isolated | off` 和独立的 `recall` 开关，缺失即 `global` 与 `true`，与旧行为一致。global 学习进入并召回 default 图；isolated 只在本范围自己的图内学习和召回，多个维度同为 isolated 时按显式偏键合成一张图；off 不写入任何图但仍召回其所属图；任一维度的 `recall=false` 禁止该 Session 的自动和显式召回，记忆工具不能绕过。创建项目的“不使用记忆”对应 `off + recall=false`，不影响聊天记录、会话上下文或 Markdown 档案。`learning=excluded` 仍是 Core 的硬排除，优先于任何策略。
 
 default 图沿用 `memory/akasha.db`，不迁移已有数据；独立图位于 `memory/akasha-graphs/<规范键摘要>/`，附带记录规范键的 `manifest.json`，embedding 仍按 Message 共享。策略只能在该取值还没有任何 Session 时一次写入；已有 Session 后改变策略需要另行批准的显式重建协议，普通 UI 不提供改写。显式重建逐图执行，每张图各自按 MEM-009 留恢复点并原子替换。
 

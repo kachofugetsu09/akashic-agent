@@ -5,11 +5,11 @@ import { queryHostPlugin } from "./plugin-ui-runtime";
 import { PROJECTS_PLUGIN, type ProjectRow } from "./web-projects";
 import { directoryPage, directoryState, directoryStatus, type DirectoryPage, type DirectoryState } from "./directory-data";
 
-/** 一个选择入口；固定后同一入口只读，不提供清空或重绑。 */
-export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus }: {
-  project: ProjectRow;
+/** Browse execution-host paths for a draft choice or a fixed Project default. */
+export function ProjectDirectoryDialog({ project, onClose, onChoose, onCloseFocus }: {
+  project?: ProjectRow;
   onClose: () => void;
-  onBind: (projectId: string, path: string) => Promise<void>;
+  onChoose: (path: string) => Promise<void>;
   onCloseFocus?: () => void;
 }) {
   const [path, setPath] = useState("~");
@@ -46,7 +46,7 @@ export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus 
   }, []);
 
   useEffect(() => {
-    if (!project.directory) { void browse("~"); return () => request.current?.abort(); }
+    if (!project?.directory) { void browse("~"); return () => request.current?.abort(); }
     const controller = new AbortController();
     request.current = controller;
     void queryHostPlugin(PROJECTS_PLUGIN, "project.directory", { project_id: project.id }, controller.signal)
@@ -54,14 +54,14 @@ export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus 
       .catch((reason: unknown) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "目录状态读取失败"); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [browse, project.id, project.directory]);
+  }, [browse, project?.id, project?.directory]);
 
   const submit = async () => {
     if (!page?.path || loading || submitting) return;
     setSubmitting(true);
     setError("");
     try {
-      await onBind(project.id, page.path);
+      await onChoose(page.path);
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "目录绑定失败");
@@ -80,11 +80,13 @@ export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus 
   return <Dialog open onOpenChange={(open) => { if (!open && !submitting) onClose(); }}>
     <DialogContent className="directory-dialog" overlayClassName="project-dialog-overlay"
       onCloseAutoFocus={onCloseFocus ? (event) => { event.preventDefault(); onCloseFocus(); } : undefined}>
-      <DialogHeader className="directory-dialog__header"><DialogTitle>{project.directory ? "固定目录" : "选择项目目录"}</DialogTitle></DialogHeader>
-      <DialogDescription>{project.directory ? "这个项目的目录已固定。已有对话的工作目录各自独立。"
-        : "目录可不设置。首次绑定后不可更改或清空；只作为之后新建对话的默认目录，已有对话不变。"}</DialogDescription>
-      {project.directory ? <div>
-        <p className="directory-path">{project.directory}</p>
+      <DialogHeader className="directory-dialog__header"><DialogTitle>{project?.directory ? "固定目录" : "选择执行主机目录"}</DialogTitle></DialogHeader>
+      <DialogDescription>{project?.directory ? "这个项目的目录已固定。已有对话的工作目录各自独立。"
+        : project ? "目录可不设置。首次绑定后不可更改或清空；已有对话不变。"
+          : "这里只选择目录；创建项目时才保存。"}</DialogDescription>
+      <p className="directory-notice">目录来自运行 Akashic 工具的执行主机。连接远程服务时，不是当前浏览器所在电脑的目录。</p>
+      {project?.directory ? <div>
+        <p className="directory-path">{project?.directory}</p>
         <p role="status">{loading ? "正在检查执行主机…" : state ? directoryStatus(state.status) : "状态未能读取"}</p>
         {state?.error ? <p className="directory-error">{state.error}</p> : null}
       </div> : <>
@@ -101,13 +103,13 @@ export function ProjectDirectoryDialog({ project, onClose, onBind, onCloseFocus 
           {!page.items.length ? <p>没有子目录，可以选择当前目录。</p> : null}
           {page.after ? <button type="button" disabled={submitting} onClick={() => void browse(page.path!, page.after!)}>下一页</button> : null}
         </div> : null}
-        {page?.path ? <p className="directory-notice">将永久固定为：<strong className="directory-path">{page.path}</strong></p> : null}
+        {page?.path ? <p className="directory-notice">{project ? "将永久固定为：" : "将选用："}<strong className="directory-path">{page.path}</strong></p> : null}
       </>}
       {error ? <p className="directory-error" role="alert">{error}</p> : null}
       <DialogFooter className="directory-actions">
-        <button type="button" disabled={submitting} onClick={onClose}>{project.directory ? "关闭" : "取消"}</button>
-        {!project.directory ? <button type="button" disabled={!page || loading || submitting} onClick={() => void submit()}>
-          {submitting ? "正在绑定…" : "绑定此目录"}</button> : null}
+        <button type="button" disabled={submitting} onClick={onClose}>{project?.directory ? "关闭" : "取消"}</button>
+        {!project?.directory ? <button type="button" disabled={!page || loading || submitting} onClick={() => void submit()}>
+          {submitting ? "正在保存…" : project ? "绑定此目录" : "使用此目录"}</button> : null}
       </DialogFooter>
     </DialogContent>
   </Dialog>;

@@ -797,9 +797,9 @@ export function useDesktopChatController() {
     setNewChatProjectId(projectId);
   }, [startNewChat]);
 
-  const createProject = useCallback(async (name: string, memory: ProjectMemory) => {
+  const createProject = useCallback(async (name: string, memory: ProjectMemory, directory: string | null) => {
     try {
-      const project = await createProjectRecord(name, memory, memoryInstalled);
+      const project = await createProjectRecord(name, memory, memoryInstalled, directory);
       setProjects((current) => [...current.filter((item) => item.id !== project.id), project]);
       startProjectChat(project.id);
     } finally {

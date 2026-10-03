@@ -6,11 +6,12 @@ export const PROJECTS_PLUGIN = "projects";
 export const MEMORY_PLUGIN = "akasha";
 export const PROJECT_DIMENSION = "project";
 
-export type ProjectMemory = "global" | "isolated" | "off";
+export type ProjectMemory = "global" | "isolated" | "off" | "none";
 
 export const PROJECT_MEMORY_CHOICES: readonly { value: ProjectMemory; label: string; description: string }[] = [
   { value: "global", label: "共享全局记忆", description: "对话参与全局学习，也能回忆其他对话。" },
   { value: "isolated", label: "独立记忆", description: "只在本项目内学习和回忆，不影响全局。" },
+  { value: "none", label: "不使用记忆", description: "关闭 Akasha 学习与召回；保留 Markdown 档案、会话上下文和聊天记录。" },
   { value: "off", label: "不学习", description: "对话不写入记忆，仍可回忆全局记忆。" },
 ];
 
@@ -29,6 +30,7 @@ interface PendingProject {
   name: string;
   memory: ProjectMemory;
   memoryInstalled: boolean;
+  directory?: string | null;
 }
 
 const PENDING_PREFIX = "akashic.project-create.";
@@ -38,6 +40,7 @@ export interface PendingProjectRow {
   id?: string;
   name: string;
   memory?: ProjectMemory;
+  directory?: string | null;
   invalid: boolean;
 }
 
@@ -47,8 +50,10 @@ function parsePending(key: string, raw: string | null): PendingProject {
   const row = value as Record<string, unknown>;
   if (typeof row.id !== "string" || key !== PENDING_PREFIX + row.id
     || typeof row.name !== "string" || !row.name
-    || (row.memory !== "global" && row.memory !== "isolated" && row.memory !== "off")
-    || typeof row.memoryInstalled !== "boolean") throw new Error("待创建项目记录无效");
+    || (row.memory !== "global" && row.memory !== "isolated" && row.memory !== "off" && row.memory !== "none")
+    || typeof row.memoryInstalled !== "boolean"
+    || (row.directory !== undefined && row.directory !== null
+      && (typeof row.directory !== "string" || !row.directory.startsWith("/")))) throw new Error("待创建项目记录无效");
   return row as unknown as PendingProject;
 }
 
@@ -64,7 +69,7 @@ export function listPendingProjects(): { items: PendingProjectRow[]; error: stri
       const raw = localStorage.getItem(key);
       try {
         const pending = parsePending(key, raw);
-        items.push({ key, id: pending.id, name: pending.name, memory: pending.memory, invalid: false });
+        items.push({ key, id: pending.id, name: pending.name, memory: pending.memory, directory: pending.directory, invalid: false });
       } catch {
         items.push({ key, name: "无法读取的本地请求", invalid: true });
       }
@@ -90,13 +95,13 @@ async function finishProject(pending: PendingProject, memoryInstalled: boolean, 
   if (pending.memoryInstalled) {
     if (!memoryInstalled) throw new Error("记忆插件暂不可用，项目创建等待重试");
     const result = await queryHostPlugin(MEMORY_PLUGIN, "scope.policy.set", {
-      dimension: PROJECT_DIMENSION, value: pending.id, learn: pending.memory,
+      dimension: PROJECT_DIMENSION, value: pending.id, learn: pending.memory === "none" ? "off" : pending.memory, recall: pending.memory !== "none",
     }, signal);
-    if (memoryValue(result.learn) !== pending.memory) throw new Error("项目记忆策略与创建请求不一致");
+    if (memoryValue(result) !== pending.memory) throw new Error("项目记忆策略与创建请求不一致");
   }
   // 2. 同一 ID 创建一次；只有项目记录提交后才开放 Session 入口。
   const project = projectRow(await queryHostPlugin(PROJECTS_PLUGIN, "project.create", {
-    project_id: pending.id, name: pending.name,
+    project_id: pending.id, name: pending.name, ...(pending.directory ? { directory: pending.directory } : {}),
   }, signal));
   if (project.id !== pending.id) throw new Error("项目创建响应 ID 不一致");
   localStorage.removeItem(PENDING_PREFIX + pending.id);
@@ -123,6 +128,7 @@ export async function createProject(
   name: string,
   memory: ProjectMemory,
   memoryInstalled: boolean,
+  directory: string | null = null,
 ): Promise<ProjectRow> {
   if (!memoryInstalled && memory !== "global") throw new Error("记忆插件暂不可用，不能创建非全局项目");
   const snapshot = listPendingProjects();
@@ -130,7 +136,7 @@ export async function createProject(
   if (snapshot.items.some((item) => item.name === name)) {
     throw new Error("同名项目存在未确认请求，请在项目栏继续创建或停止尝试");
   }
-  const pending = { id: `p_${createUuid().replaceAll("-", "")}`, name, memory, memoryInstalled };
+  const pending = { id: `p_${createUuid().replaceAll("-", "")}`, name, memory, memoryInstalled, directory };
   localStorage.setItem(PENDING_PREFIX + pending.id, JSON.stringify(pending));
   return finishProject(pending, memoryInstalled);
 }
@@ -139,10 +145,15 @@ async function readProjectMemory(projectId: string, signal?: AbortSignal): Promi
   const result = await queryHostPlugin(MEMORY_PLUGIN, "scope.policy.get", {
     dimension: PROJECT_DIMENSION, value: projectId,
   }, signal);
-  return memoryValue(result.learn);
+  return memoryValue(result);
 }
 
-function memoryValue(value: unknown): ProjectMemory {
+function memoryValue(result: Record<string, unknown>): ProjectMemory {
+  const value = result.learn;
+  // Old policy records and servers recalled by default.
+  if (result.recall !== undefined && typeof result.recall !== "boolean") throw new Error("召回策略无效");
+  if (value === "off" && result.recall === false) return "none";
+  if (result.recall === false) throw new Error("此记忆策略组合无法在项目界面显示");
   if (value === "global" || value === "isolated" || value === "off") return value;
   throw new Error("记忆策略无效");
 }
