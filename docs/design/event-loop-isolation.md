@@ -519,3 +519,9 @@ changed 事件仍在原 loop 发出，已提交后取消不丢通知，同身份
 github-watch 与四个 EventMail 来源的源码修复已经交付；正式安装链、选择新 Root 和
 生产完整进程恢复仍未验，#879 在该层验收前保持开放。Akasha 已在线程中的 Recall/Scope
 操作及 settings/auth 等未证明的次级线索不扩入本次修改。
+
+### Source startup reads only reply facts
+
+Source pending checks use the last Input sequence, the last finished Output sequence after that input, and ordered Control bodies in the same frozen source prefix. `MessageReader.latest_input_seq` and `latest_finished_output_seq` return positions without loading content or metadata. `scan_controls` pages Control bodies in sequence order inside one read snapshot; its consumer is synchronous and must not keep the iterator. Ordinary message/context readers still return complete messages.
+
+The source body-kind/finish index serves these narrow reads. The Sources owner retains pause/resume/abandon rules and the full source head for CAS and task boundaries. Earlier controls before the latest input remain outside that decision, matching the existing bounded-tail algorithm. A terminal Output follows every earlier Control through_seq because a Control cannot refer to a future prefix; therefore selecting the last terminal Output and applying ordered controls yields the same boundary.
