@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BrowserBackend } from "./cdp.mjs";
 import { DesktopBackend } from "./desktop.mjs";
+import { AnonymousBrowsers } from "./anonymous.mjs";
 
 /** 一个容器拥有一份输入状态；各 Session 仅隔离 JS 绑定，不复制浏览器 profile。 */
 export class ComputerDriver {
   browser = new BrowserBackend();
+  anonymous = new AnonymousBrowsers();
   desktop = new DesktopBackend();
   sessions = new Map();
   active = null;
@@ -82,8 +84,10 @@ export class ComputerDriver {
       });
       return;
     }
-    const backend = message.kind === "browser" ? this.browser : this.desktop;
-    const work = backend.call(message.method, message.params, active.context);
+    const work =
+      message.kind === "browser"
+        ? this.browserCall(session, message, active.context)
+        : this.desktop.call(message.method, message.params, active.context);
     active.pending.add(work);
     work
       .then(
@@ -97,6 +101,20 @@ export class ComputerDriver {
           }),
       )
       .finally(() => active.pending.delete(work));
+  }
+
+  async browserCall(session, message, context) {
+    if (message.method === "createBrowser") {
+      let id;
+      id = await this.anonymous.create(context, (event) =>
+        session.worker.postMessage({ kind: "event", event, browserId: id }),
+      );
+      return id;
+    }
+    const { browserId, params } = message.params;
+    if (browserId === "primary")
+      return this.browser.call(message.method, params, context);
+    return this.anonymous.call(browserId, message.method, params, context);
   }
   /** 调用结束时先 drain 再 release；异常会使本 Session 的 JS 对象失效。 */
   async run(
@@ -191,8 +209,15 @@ export class ComputerDriver {
         if (!failure)
           await deadline(this.desktop.call("release"), 4000, "Native release");
         await deadline(this.browser.releaseInputs(), 11000, "Browser release");
+        await deadline(this.anonymous.releaseInputs(context), 11000, "Anonymous input release");
         if (endTurn)
           await deadline(this.browser.endTurn(context), 11000, "Turn cleanup");
+        if (endTurn || failure)
+          await this.anonymous.cleanup(
+            (instance) =>
+              instance.context.session_id === context.session_id &&
+              (failure || instance.context.turn_id === context.turn_id),
+          );
       } catch (error) {
         this.closed = true;
         await this.desktop.cancel().catch(() => {});
@@ -277,6 +302,9 @@ export class ComputerDriver {
   async reset(sessionId) {
     if (this.active)
       throw new Error("Cannot reset while a Computer call is running");
+    await this.anonymous.cleanup(
+      (instance) => instance.context.session_id === sessionId,
+    );
     const session = this.sessions.get(sessionId);
     if (!session) return;
     await session.worker.terminate();
@@ -292,6 +320,7 @@ export class ComputerDriver {
     }
     for (const session of this.sessions.values())
       await session.worker.terminate();
+    await this.anonymous.cleanup(() => true);
     await this.desktop.cancel();
     await deadline(this.browser.releaseInputs(), 11000, "Browser release");
     this.browser.close();

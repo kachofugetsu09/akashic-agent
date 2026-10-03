@@ -75,8 +75,18 @@ class CdpConnection extends EventEmitter {
   }
 }
 
-/** 将原 Browser service 的后端协议绑定到容器内唯一 Chromium。 */
+/** 每个后端绑定一个浏览器端点，并可限制为一个匿名 Context。 */
 export class BrowserBackend extends EventEmitter {
+  constructor(
+    url = "http://127.0.0.1:9222",
+    name = "Akashic Chromium",
+    browserContextId = null,
+  ) {
+    super();
+    this.url = url;
+    this.name = name;
+    this.browserContextId = browserContextId;
+  }
   tabs = new Map();
   connections = new Map();
   connecting = new Map();
@@ -85,7 +95,7 @@ export class BrowserBackend extends EventEmitter {
   expressions = new Map();
   sessionNames = new Map();
   async start() {
-    const response = await fetch("http://127.0.0.1:9222/json/version", {
+    const response = await fetch(`${this.url}/json/version`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok)
@@ -98,7 +108,12 @@ export class BrowserBackend extends EventEmitter {
     const { targetInfos } = await this.browser.send("Target.getTargets");
     const live = new Set();
     const results = [];
-    for (const target of targetInfos.filter((item) => item.type === "page")) {
+    for (const target of targetInfos.filter(
+      (item) =>
+        item.type === "page" &&
+        (!this.browserContextId ||
+          item.browserContextId === this.browserContextId),
+    )) {
       live.add(target.targetId);
       let tab = this.tabs.get(target.targetId);
       if (!tab) {
@@ -150,7 +165,7 @@ export class BrowserBackend extends EventEmitter {
     if (this.connections.has(id)) return this.connections.get(id);
     const tab = this.tab(id);
     const connection = await new CdpConnection().open(
-      `ws://127.0.0.1:9222/devtools/page/${tab.targetId}`,
+      `${this.url.replace("http", "ws")}/devtools/page/${tab.targetId}`,
     );
     this.connections.set(id, connection);
     connection.on("event", (event) =>
@@ -256,7 +271,7 @@ export class BrowserBackend extends EventEmitter {
       case "getInfo":
         return {
           type: "cdp",
-          name: "Akashic Chromium",
+          name: this.name,
           family: "chrome",
           capabilities: { browser: [], tab: [] },
           apiSupportOverrides: {
@@ -311,6 +326,9 @@ export class BrowserBackend extends EventEmitter {
       case "createTab": {
         const { targetId } = await this.browser.send("Target.createTarget", {
           url: "about:blank",
+          ...(this.browserContextId
+            ? { browserContextId: this.browserContextId }
+            : {}),
         });
         await this.listTabs();
         const tab = this.tabs.get(targetId);

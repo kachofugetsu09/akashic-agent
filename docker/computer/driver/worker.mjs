@@ -39,8 +39,9 @@ function call(kind, method, params) {
 const pipes = new Set();
 class BrowserPipe extends EventEmitter {
   buffer = Buffer.alloc(0);
-  constructor() {
+  constructor(browserId = "primary") {
     super();
+    this.browserId = browserId;
     pipes.add(this);
   }
   send(message) {
@@ -58,7 +59,10 @@ class BrowserPipe extends EventEmitter {
       const size = this.buffer.readUInt32LE(0);
       const message = JSON.parse(this.buffer.subarray(4, size + 4));
       this.buffer = this.buffer.subarray(size + 4);
-      call("browser", message.method, message.params ?? {}).then(
+      call("browser", message.method, {
+        browserId: this.browserId,
+        params: message.params ?? {},
+      }).then(
         (result) => {
           if (message.id != null)
             this.send({ jsonrpc: "2.0", id: message.id, result });
@@ -177,17 +181,82 @@ const nodeRepl = {
     );
   },
 };
-globalThis.nodeRepl = nodeRepl;
-const { handleRpc } = await import(
-  "./reference/browser/scripts/browser-service.mjs"
-);
+const browserScope = new AsyncLocalStorage();
+Object.defineProperty(globalThis, "nodeRepl", {
+  configurable: true,
+  get: () => browserScope.getStore() ?? nodeRepl,
+});
+const { handleRpc } =
+  await import("./reference/browser/scripts/browser-service.mjs");
 nodeRepl.rpc = (service, request) => {
   if (service !== "browser") throw new Error(`Unknown service: ${service}`);
   return handleRpc(request);
 };
-const { setupBrowserRuntime } = await import(
-  "./reference/browser/scripts/browser-client.mjs"
-);
+const { setupBrowserRuntime } =
+  await import("./reference/browser/scripts/browser-client.mjs");
+
+/** 保持参考 API 原样，为每个匿名实例提供独立 service、pipe 与生命周期。 */
+async function createBrowser() {
+  const browserId = await call("browser", "createBrowser", {});
+  const pipePath = `${workerData.pipePath}-${browserId}`;
+  let closed = false;
+  try {
+    await writeFile(pipePath, "", { mode: 0o600 });
+    const host = Object.create(nodeRepl);
+    host.env = Object.freeze({
+      ...nodeRepl.env,
+      CDP_BROWSER_BACKEND_PIPE_PATH: pipePath,
+    });
+    host.nativePipe = {
+      async createConnection(path) {
+        if (path !== pipePath)
+          throw new Error("Unknown anonymous browser pipe");
+        return new BrowserPipe(browserId);
+      },
+    };
+    host.addAfterSubmittedCodeHook = (hook) =>
+      hooks.push({
+        run: () =>
+          closed ? undefined : browserScope.run(host, () => hook.run()),
+      });
+    host.addTurnEndedHandler = (hook) => {
+      const scoped = {
+        run: (metadata) =>
+          closed ? undefined : browserScope.run(host, () => hook.run(metadata)),
+      };
+      turnHooks.push(scoped);
+      return () => {
+        turnHooks.splice(turnHooks.indexOf(scoped), 1);
+      };
+    };
+    const service = new URL(
+      "./reference/browser/scripts/browser-service.mjs",
+      import.meta.url,
+    );
+    service.searchParams.set("instance", browserId);
+    return await browserScope.run(host, async () => {
+      const { handleRpc: handleAnonymousRpc } = await import(service.href);
+      host.rpc = (name, request) => {
+        if (name !== "browser") throw new Error(`Unknown service: ${name}`);
+        if (closed) throw new Error("Anonymous browser is closed");
+        return browserScope.run(host, () => handleAnonymousRpc(request));
+      };
+      const client = await setupBrowserRuntime({ environment: "training" });
+      const browser = await client.browsers.get("cdp");
+      browser.close = async () => {
+        if (closed) return;
+        await call("browser", "closeBrowser", { browserId, params: {} });
+        closed = true;
+        for (const pipe of [...pipes])
+          if (pipe.browserId === browserId) pipe.end();
+      };
+      return browser;
+    });
+  } catch (error) {
+    await call("browser", "closeBrowser", { browserId, params: {} });
+    throw error;
+  }
+}
 let initialized = false;
 const terminal = new PassThrough();
 terminal.on("data", (data) => {
@@ -209,11 +278,13 @@ const repl = startRepl({
   useGlobal: false,
 });
 // Reference service 使用私有 host；用户 REPL 只获得公开的输出与临时目录接口。
-repl.context.nodeRepl = Object.freeze({
-  write: nodeRepl.write,
-  emitImage: nodeRepl.emitImage,
-  cwd: nodeRepl.cwd,
-  tmpDir: nodeRepl.tmpDir,
+Object.defineProperty(repl.context, "nodeRepl", {
+  value: Object.freeze({
+    write: nodeRepl.write,
+    emitImage: nodeRepl.emitImage,
+    cwd: nodeRepl.cwd,
+    tmpDir: nodeRepl.tmpDir,
+  }),
 });
 const evaluate = (code) =>
   new Promise((resolve, reject) => {
@@ -293,13 +364,14 @@ parentPort.on("message", (message) => {
     else item.resolve(message.result);
   } else if (message.kind === "event") {
     for (const pipe of pipes)
-      callScope.run(context, () =>
-        pipe.send({
-          jsonrpc: "2.0",
-          method: "onCDPEvent",
-          params: message.event,
-        }),
-      );
+      if (pipe.browserId === (message.browserId ?? "primary"))
+        callScope.run(context, () =>
+          pipe.send({
+            jsonrpc: "2.0",
+            method: "onCDPEvent",
+            params: message.event,
+          }),
+        );
   } else if (message.kind === "run") {
     callScope
       .run(message.context, () => run(message))
@@ -329,6 +401,7 @@ async function run(message) {
       for (const doc of docs)
         if (doc.requiredFor?.length) await agent.documentation.get(doc.name);
       repl.context.agent = agent;
+      agent.browsers.create = createBrowser;
       repl.context.browser = await agent.browsers.get("cdp");
       await repl.context.browser.documentation();
       initialized = true;

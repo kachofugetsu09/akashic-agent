@@ -275,7 +275,8 @@ async def apply(ctx: Context) -> None:
             "Prefer suitable dedicated skills, connectors, APIs or CLIs when available. "
             "Run JavaScript with the initialized browser and desktop APIs. "
             "Use browser.tabs, tab.ax, tab.playwright, tab.dom_cua or sky. "
-            "Bindings persist within this Session. Call nodeRepl.write(value) or "
+            "Use agent.browsers.create() for an anonymous BrowserContext and close() to release it. "
+            "Bindings persist while awake; sleep, errors or reset invalidate them. Call nodeRepl.write(value) or "
             "nodeRepl.emitImage(bytes) for output. Read the computer skill first."
         ),
         parameters={
