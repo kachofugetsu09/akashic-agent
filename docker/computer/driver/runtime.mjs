@@ -294,6 +294,7 @@ export class ComputerDriver {
       await session.worker.terminate();
     await this.desktop.cancel();
     await deadline(this.browser.releaseInputs(), 11000, "Browser release");
+    await this.browser.browser.send("Browser.close");
     this.browser.close();
     for (const session of this.sessions.values())
       await rm(session.directory, { recursive: true, force: true });
