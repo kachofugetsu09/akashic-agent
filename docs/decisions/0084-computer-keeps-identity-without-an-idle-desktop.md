@@ -45,6 +45,8 @@ headless Chromium；个人桌面始终复用主实例。维护者选择优先轻
 创建它的 Turn；关闭、Turn 结束、调用失败、Session 重置和休眠都会释放。
 最后一个 Context 关闭后，owner 先确认进程退出，再删除仅由它创建的临时 profile、
 HOME 和 cache。它们不承载持久身份；截图仍由既有输出 owner 保留。主身份目录不受影响。
+参考 Browser API 的每个匿名 service 使用可终止的 worker，关闭时一并释放模块缓存和
+临时 pipe，避免连续创建/关闭使 Session 的 ESM import 缓存不断增长。
 
 ```text
 ┌────────────────────────┐  ┌─────────────────────────────┐
