@@ -11,6 +11,7 @@ from agent.plugin_composition.messages import OwnerStore, OwnerTransaction, Sess
 from agent.plugin_contracts.directories import DirectorySnapshot
 
 from .path_access import PathAccess, check_directory
+from .agents import read_agents
 
 _SESSION = "directory:"
 _SWITCH = "directory-switch:"
@@ -127,3 +128,10 @@ class WorkingDirectories:
     def receipt(self, key: str) -> Mapping[str, object] | None:
         record = self._store.read(_SWITCH + key)
         return None if record is None else record.value
+
+    async def current_info(self, session_id: str) -> dict[str, object]:
+        current = self.snapshot(session_id)
+        info = await self.inspect(current.path)
+        rules = await read_agents(current.path)
+        return {"path": current.path, "revision": current.revision, "status": info["status"],
+                "agents": {key: value for key, value in rules.items() if key != "files"}}
