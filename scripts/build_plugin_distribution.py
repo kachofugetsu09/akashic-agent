@@ -164,12 +164,12 @@ def _run_web_command(
             command, cwd=cwd, env=env, check=False,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
-    if result.returncode:
-        output = result.stdout[-4000:]
-        raise RuntimeError(
-            "固定提交的 Web 资产构建失败: "
-            f"command={' '.join(command)} exit={result.returncode}\n{output}"
-        )
+        if result.returncode:
+            output = result.stdout[-4000:]
+            raise RuntimeError(
+                "固定提交的 Web 资产构建失败: "
+                f"command={' '.join(command)} exit={result.returncode}\n{output}"
+            )
 
 
 def _build_web_assets(

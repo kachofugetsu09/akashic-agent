@@ -235,14 +235,14 @@ def _publish(
         command += ["--backup-dir", str(backup_dir)]
     with measure("release.preflight" if preflight else "release.publish"):
         completed = run(command, check=False, capture_output=True, text=True)
+        if completed.returncode != 0:
+            raise RuntimeError(f"目标镜像发布失败（exit={completed.returncode}）: {completed.stderr.strip()}")
     timings = []
     for line in completed.stderr.splitlines():
         if line.startswith('{"event": "release.timing",'):
             row = json.loads(line)
             timings.append(row)
             print(line, file=sys.stderr, flush=True)
-    if completed.returncode != 0:
-        raise RuntimeError(f"目标镜像发布失败（exit={completed.returncode}）: {completed.stderr.strip()}")
     result = json.loads(completed.stdout)
     # 2. 容器输出只确认本次清单；Root 仍由持久选择和运行时共同核对。
     if (not isinstance(result, dict) or result.get("plan_sha256") != digest
