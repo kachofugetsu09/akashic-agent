@@ -233,3 +233,5 @@ cat /srv/data/services/akashic/activation/active.json
 未列出插件保持、安装完成后继续发布、过期 Root 拒绝、显式备份与迁移执行一次；本机只读 Docker
 容器复跑了发布场景与 Root probe。容器使用已有依赖镜像挂载当前代码，只证明该隔离路径，
 不是新 release image、完整 systemd 升级或正式业务验收。未新增或改写单元测试。
+
+Source body-kind reads also use `message_source_kind_seq` on Session, source, `json_extract(body, '$.kind')`, sequence, and finish. The next stopped Yoyo step builds this derived index once for existing stores; fresh stores create it through MessageLog. Latest Input/Control queries can seek the exact kind without reading unrelated bodies. Message format, rows, prefix order and previous reader compatibility stay unchanged. Both index migrations emit their own wall time.

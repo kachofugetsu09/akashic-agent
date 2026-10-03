@@ -58,12 +58,16 @@ class _ReplyState:
         elif isinstance(body, Output) and body.finish != "continue":
             self.boundary = message.seq
         elif isinstance(body, Control):
-            if body.action == "abandon":
-                self.boundary = max(self.boundary, body.through_seq)
-            elif body.action in {"pause", "failure"}:
-                self.paused_through = max(self.paused_through, body.through_seq)
-            elif body.action == "resume" and body.through_seq >= self.paused_through:
-                self.paused_through = -1
+            self.add_control(body)
+
+    def add_control(self, body: Control) -> None:
+        """Keep ordered pause/resume and abandon rules independent of message content."""
+        if body.action == "abandon":
+            self.boundary = max(self.boundary, body.through_seq)
+        elif body.action in {"pause", "failure"}:
+            self.paused_through = max(self.paused_through, body.through_seq)
+        elif body.action == "resume" and body.through_seq >= self.paused_through:
+            self.paused_through = -1
 
 
 def _read_state(messages: Sequence[Message] | MessageReader, source: str) -> _ReplyState:
@@ -71,15 +75,16 @@ def _read_state(messages: Sequence[Message] | MessageReader, source: str) -> _Re
     state = _ReplyState()
     if isinstance(messages, MessageReader):
         state.head = messages.head(source=source)
-        latest = messages.latest_input(source, through_seq=state.head)
+        latest = messages.latest_input_seq(source, through_seq=state.head)
         if latest is None:
             return state
-        through = state.head
-        state.add(latest)
+        state.latest_input = latest
+        boundary = messages.latest_finished_output_seq(source, after_seq=latest, through_seq=state.head)
+        state.boundary = -1 if boundary is None else boundary
         def consume(rows):
-            for message in rows:
-                state.add(message)
-        messages.scan(consume, after_seq=latest.seq, through_seq=through, source=source)
+            for _, control in rows:
+                state.add_control(control)
+        messages.scan_controls(consume, after_seq=latest, through_seq=state.head, source=source)
     else:
         for message in messages:
             if message.source == source:

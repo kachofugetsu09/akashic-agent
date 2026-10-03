@@ -44,6 +44,9 @@ _logger = logging.getLogger(__name__)
 
 MESSAGE_SOURCE_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_seq
     ON messages (session_key, source, seq);"""
+MESSAGE_BODY_KIND_INDEX_SCHEMA = """CREATE INDEX IF NOT EXISTS message_source_kind_seq
+    ON messages (session_key, source, json_extract(body, '$.kind'), seq,
+                 json_extract(body, '$.finish'));"""
 
 
 _SCOPE_DIMENSION = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -208,6 +211,7 @@ _SCHEMA = {
                         UNIQUE(session_key, seq)
                     );""",
     "message_source_seq": MESSAGE_SOURCE_INDEX_SCHEMA,
+    "message_source_kind_seq": MESSAGE_BODY_KIND_INDEX_SCHEMA,
     "bindings": """CREATE TABLE IF NOT EXISTS bindings (
                         binding_id TEXT PRIMARY KEY,
                         descriptor TEXT NOT NULL
@@ -296,6 +300,13 @@ def create_message_source_index(connection: sqlite3.Connection) -> None:
     _check_schema(connection)
 
 
+def create_message_body_kind_index(connection: sqlite3.Connection) -> None:
+    """Index body kinds so Input and Control lookups skip unrelated bodies."""
+    _check_schema(connection)
+    _ = connection.execute(MESSAGE_BODY_KIND_INDEX_SCHEMA)
+    _check_schema(connection)
+
+
 class MessageConflict(ValueError):
     """消息身份、引用或来源前缀发生冲突。"""
 
@@ -358,7 +369,7 @@ class MessageLog:
             with self._connection:
                 for name, statement in _SCHEMA.items():
                     # 新库由 owner 初始化；已有库的新持久能力只能由 yoyo 接纳。
-                    if name in {"owner_records", "message_embeddings", "ix_message_embeddings_hash", "message_source_seq",
+                    if name in {"owner_records", "message_embeddings", "ix_message_embeddings_hash", "message_source_seq", "message_source_kind_seq",
                                 "attachments", "message_attachments", "idx_message_attachments_artifact"} and not fresh:
                         continue
                     _ = self._connection.execute(statement)
@@ -912,6 +923,59 @@ class MessageReader:
                 (self._session_id, source, through_seq),
             ).fetchone()
             return None if row is None else self._log._decode(row)
+
+    def latest_input_seq(self, source: str, *, through_seq: int) -> int | None:
+        """Read the last Input position without loading its content or metadata."""
+        with self._log._read():
+            row = self._log._connection.execute(
+                "SELECT seq FROM messages WHERE session_key=? AND source=? AND seq<=? "
+                "AND json_extract(body,'$.kind')='input' ORDER BY seq DESC LIMIT 1",
+                (self._session_id, source, through_seq),
+            ).fetchone()
+        return None if row is None else row[0]
+
+    def latest_finished_output_seq(
+        self, source: str, *, after_seq: int, through_seq: int,
+    ) -> int | None:
+        """Read the last terminal Output position in a fixed source range."""
+        with self._log._read():
+            row = self._log._connection.execute(
+                "SELECT seq FROM messages WHERE session_key=? AND source=? AND seq>? AND seq<=? "
+                "AND json_extract(body,'$.kind')='output' "
+                "AND json_extract(body,'$.finish') IN ('complete','quiet') ORDER BY seq DESC LIMIT 1",
+                (self._session_id, source, after_seq, through_seq),
+            ).fetchone()
+        return None if row is None else row[0]
+
+    def scan_controls(
+        self, consume: Callable[[Iterable[tuple[int, Control]]], _T], *,
+        source: str, after_seq: int, through_seq: int,
+    ) -> _T:
+        """Read ordered Control bodies in one prefix without unrelated message data."""
+        with self._log._read():
+            def controls() -> Generator[tuple[int, Control], None, None]:
+                cursor = after_seq
+                while cursor < through_seq:
+                    rows = self._log._connection.execute(
+                        "SELECT seq,body FROM messages WHERE session_key=? AND source=? AND seq>? AND seq<=? "
+                        "AND json_extract(body,'$.kind')='control' ORDER BY seq LIMIT 64",
+                        (self._session_id, source, cursor, through_seq),
+                    ).fetchall()
+                    if not rows:
+                        return
+                    for row in rows:
+                        body = decode_body(row['body'])
+                        assert isinstance(body, Control)
+                        if body.through_seq >= row['seq']:
+                            raise ValueError("Control cannot refer to an unaccepted prefix")
+                        yield row['seq'], body
+                    cursor = rows[-1]['seq']
+            result = consume(controls())
+            if inspect.isawaitable(result):
+                if inspect.iscoroutine(result):
+                    result.close()
+                raise TypeError("Control scan callback must be synchronous")
+            return result
 
     def latest_control(self, source: str, *, through_seq: int) -> Message | None:
         """读取固定前缀内最后一条同来源 Control，不解码较早的正文。"""
