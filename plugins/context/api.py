@@ -95,6 +95,7 @@ class Reminder:
     name: str
     text: str
     priority: int
+    replay: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -103,6 +104,8 @@ class Reminder:
             raise TypeError("提醒正文必须是字符串")
         if type(self.priority) is not int:
             raise TypeError("提醒 priority 必须是整数")
+        if type(self.replay) is not bool:
+            raise TypeError("提醒 replay 必须是 bool")
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,12 +176,15 @@ def _summary(value: object) -> Summary | None:
 
 def _reminder(value: object) -> Reminder:
     data = _object(value, "reminder")
-    if set(data) != {"name", "text", "priority"}:
+    if set(data) not in ({"name", "text", "priority"}, {"name", "text", "priority", "replay"}):
         raise ValueError("reminder 字段无效")
     name, text, priority = data["name"], data["text"], data["priority"]
     if not isinstance(name, str) or not isinstance(text, str) or type(priority) is not int:
         raise TypeError("reminder 的 name/text/priority 类型无效")
-    return Reminder(name, text, priority)
+    replay = data.get("replay", True)
+    if type(replay) is not bool:
+        raise TypeError("reminder.replay 必须是 bool")
+    return Reminder(name, text, priority, replay)
 
 
 def decode_material(value: object) -> Materials:
@@ -205,7 +211,8 @@ def material_data(materials: Materials) -> MaterialData:
     }
     return {
         "system_prompt": materials.system_prompt,
-        "reminders": tuple({"name": item.name, "text": item.text, "priority": item.priority} for item in materials.reminders),
+        "reminders": tuple({"name": item.name, "text": item.text, "priority": item.priority,
+                            **({"replay": False} if not item.replay else {})} for item in materials.reminders),
         "summary": summary,
         "references": tuple(dict(item) for item in materials.references),
     }

@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 import json
+from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MessageConflict
@@ -14,6 +15,7 @@ from agent.plugin_contracts import ContentPart, json_value
 
 from ._tool_boundary import TOOLS, CallSource, ToolResultValue
 from .working_directory import WorkingDirectories
+from .agents import read_agents
 
 
 class DirectoryInput(BaseModel):
@@ -23,9 +25,16 @@ class DirectoryInput(BaseModel):
 
 class PreparedDirectory(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    session_id: str
+    session_id: str = Field(min_length=1)
     path: str
     expected_version: int | None = Field(ge=0)
+
+    @field_validator("path")
+    @classmethod
+    def absolute_path(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("prepared 目录必须是绝对路径")
+        return value
 
 
 class DirectoryTool:
@@ -44,18 +53,21 @@ class DirectoryTool:
             return str(error)
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+        prepared = PreparedDirectory.model_validate(json_value(arguments))
         try:
-            prepared = PreparedDirectory.model_validate(json_value(arguments))
             result = await self._directories.switch(key, prepared.model_dump())
         except (ValueError, MessageConflict) as error:
             return ToolResultValue("error", (ContentPart("text", str(error)),))
-        return ToolResultValue("success", (ContentPart("text", json.dumps(dict(result), ensure_ascii=False)),))
+        return await self._result(result)
 
     async def query(self, key: str) -> ToolResultValue | None:
         result = self._directories.receipt(key)
-        return None if result is None else ToolResultValue(
-            "success", (ContentPart("text", json.dumps(dict(result), ensure_ascii=False)),),
-        )
+        return None if result is None else await self._result(result)
+
+    async def _result(self, result: Mapping[str, object]) -> ToolResultValue:
+        rules = await read_agents(str(result["path"]))
+        value = {**result, "agents": {key: item for key, item in rules.items() if key != "files"}}
+        return ToolResultValue("success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
 
 
 async def register_directory(ctx: Context, directories: WorkingDirectories) -> None:

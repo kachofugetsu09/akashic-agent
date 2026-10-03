@@ -525,7 +525,8 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 async with self._manager_operation(request.context):
                     result = await WriteFileOperation(
                         allowed_dir=allowed_dir, enable_bridge=False
-                    ).execute(request.write.path, request.write.content)
+                    ).execute(request.write.path, request.write.content,
+                              required_dir=request.write.required_dir if request.write.HasField("required_dir") else None)
             case "edit":
                 require_fields(request.edit, "path", "old_text", "new_text")
                 async with self._manager_operation(request.context):
