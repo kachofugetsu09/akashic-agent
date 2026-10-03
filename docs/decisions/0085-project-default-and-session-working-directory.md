@@ -1,4 +1,4 @@
-# 0084 · Project 固定默认目录，Session 独立当前目录
+# 0085 · Project 固定默认目录，Session 独立当前目录
 
 - 状态：accepted
 - 日期：2026-10-03

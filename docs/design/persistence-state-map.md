@@ -38,7 +38,7 @@ attempt 重放、Session 模型历史投影及 compaction prepare/persist 链已
 
 ## 2026-10-03：Project 默认目录与 Session 当前目录
 
-[0084](../decisions/0084-project-default-and-session-working-directory.md) 增加普通插件的目录状态，不迁移或改写旧 Session、消息或记忆。
+[0085](../decisions/0085-project-default-and-session-working-directory.md) 增加普通插件的目录状态，不迁移或改写旧 Session、消息或记忆。
 
 | 对象 | 增加与原位更新 | 失效与物理减少 |
 |---|---|---|

@@ -1,7 +1,7 @@
 # Project 默认目录与 Session 当前目录
 
 - 状态：accepted / implemented; isolated acceptance complete
-- 语义与理由：[0084](../decisions/0084-project-default-and-session-working-directory.md)
+- 语义与理由：[0085](../decisions/0085-project-default-and-session-working-directory.md)
 - 关联条款：SES-011、SH-004、CTX-009
 
 ## Owner 和创建边界
