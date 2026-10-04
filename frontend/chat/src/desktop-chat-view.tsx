@@ -1,5 +1,5 @@
 import { timelineReplyGroups, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
-import React, { useMemo, useRef } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
@@ -42,7 +42,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
     canSend, modelProblem, modelsError, retryModels, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
-    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice,
+    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
@@ -84,6 +84,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             onCycleTheme={cycleTheme} onNewChat={startNewChat} rail={rail}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
             onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
+            onRenameSession={renameSession}
           />
 
         <section className="chat-main">
@@ -96,8 +97,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             onCycleTheme={cycleTheme} onNewChat={startNewChat}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
             onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
+            onRenameSession={renameSession}
           />
-          <h1 title={headingTitle}>{headingTitle}</h1>
+          <SessionHeadingTitle key={activeSessionId} heading={headingTitle} value={activeTitle}
+            onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
         </header>
         {activeSessionId ? <SessionDirectory key={activeSessionId} sessionId={activeSessionId}
           refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
@@ -253,6 +256,62 @@ function DesktopEmptyState({ shellStatus, loadingSession, modelProblem, onSugges
       </div>
     )}
   </ConversationEmptyState>;
+}
+
+/** 会话标题：双击进入行内编辑；只编辑会话名，项目前缀是展示拼接、不参与提交。 */
+function SessionHeadingTitle({ heading, value, onRename }: {
+  heading: string;
+  value: string;
+  onRename?: (title: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
+  if (!onRename) return <h1 title={heading}>{heading}</h1>;
+  const start = () => {
+    cancelledRef.current = false;
+    setDraft(value);
+    setEditing(true);
+    window.setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 0);
+  };
+  const commit = async () => {
+    if (cancelledRef.current) return;
+    const title = draft.trim();
+    if (title === value.trim()) {
+      setEditing(false);
+      return;
+    }
+    try {
+      await onRename(title);
+      setEditing(false);
+    } catch {
+      // 错误已由 controller 上报；编辑态保留，用户可再试或按 Esc 放弃。
+    }
+  };
+  if (!editing) return <h1 title={heading} onDoubleClick={start}>{heading}</h1>;
+  return <input
+    ref={inputRef}
+    className="conversation-heading-input"
+    value={draft}
+    maxLength={200}
+    aria-label="重命名会话"
+    onChange={(event) => setDraft(event.target.value)}
+    onKeyDown={(event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void commit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancelledRef.current = true;
+        setEditing(false);
+      }
+    }}
+    onBlur={() => void commit()}
+  />;
 }
 
 class MessageRendererErrorBoundary extends React.Component<

@@ -30,6 +30,7 @@ import {
   fetchChatJson,
   isAbortError,
   sessionPage,
+  renameChatSession,
   setChatSessionDeleted,
   uploadFiles,
   webShellState,
@@ -935,6 +936,20 @@ export function useDesktopChatController() {
     setDeletedNotice(null);
   }, []);
 
+  /** 标题覆盖：成功后本地行即时更新，再对齐目录与置顶解析；拒绝时向调用者抛出以便行内保留编辑态。 */
+  const renameSession = useCallback(async (sessionId: string, title: string) => {
+    try {
+      const stored = await renameChatSession(sessionId, title);
+      setSessions((current) => current.map((session) =>
+        session.key === sessionId ? { ...session, title: stored } : session));
+    } catch (error) {
+      reportError(error);
+      throw error;
+    }
+    void loadSessionsSafely();
+    void navigationPins.reload();
+  }, [loadSessionsSafely, navigationPins, reportError]);
+
 
   const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
   const handleModelChange = useCallback((runtimeId: string, effort: string) => {
@@ -989,7 +1004,7 @@ export function useDesktopChatController() {
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     canSend, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
-    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice,
+    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,

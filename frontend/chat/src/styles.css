@@ -1028,6 +1028,23 @@ input {
   padding-inline-end: 10rem;
 }
 
+/* 标题行内重命名：沿用 h1 排版，发丝底线标示编辑态。 */
+.conversation-heading-input {
+  min-inline-size: 0;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-block-end: 1px solid var(--chat-muted);
+  background: transparent;
+  color: var(--chat-muted);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.5;
+  outline: none;
+}
+
 .chat-sidebar--entry .conversation-session__copy {
   gap: 2px;
 }

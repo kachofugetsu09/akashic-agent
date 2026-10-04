@@ -17,6 +17,7 @@ from agent.plugin_composition.messages import (
     MessageConflict,
     SessionAttributes,
     SessionDeleteResult,
+    SessionTitleResult,
 )
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from agent.plugin_composition.models import (
@@ -59,6 +60,7 @@ class SessionEntryPort(Protocol):
     message_count: int
     head_seq: int
     first_message: Message | None
+    title: str | None
 
 
 class SessionPagePort(Protocol):
@@ -102,6 +104,8 @@ class MessageReaderPort(Protocol):
     @property
     def deleted(self) -> bool: ...
     @property
+    def title(self) -> str | None: ...
+    @property
     def session_id(self) -> str: ...
     def head(self) -> int: ...
     def follow(self, *, after_seq: int = -1) -> AsyncGenerator[Message, None]: ...
@@ -112,9 +116,10 @@ class MessageReaderPort(Protocol):
 
 
 class SessionAdminPort(Protocol):
-    """用户显式的会话数据管理操作；只有软删/恢复，没有消息或物理删除权限。"""
+    """用户显式的会话数据管理操作；软删/恢复与标题覆盖，没有消息或物理删除权限。"""
 
     async def set_deleted(self, session_key: str, *, deleted: bool) -> SessionDeleteResult: ...
+    async def set_title(self, session_key: str, title: str | None) -> SessionTitleResult: ...
 
 
 class MessageCatalogPort(Protocol):
