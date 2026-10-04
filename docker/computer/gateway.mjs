@@ -245,6 +245,11 @@ async function health() {
     }),
     rfbReady(5999),
     tcpReady(6080),
+    fetch("http://127.0.0.1:6081/api/health", {
+      signal: AbortSignal.timeout(1500),
+    }).then((response) => {
+      if (!response.ok) throw new Error(`Computer stream returned ${response.status}`);
+    }),
     exec("pgrep", ["-x", "xfce4-session"], { timeout: 1500 }),
   ]);
   if (!cdp.ok) throw new Error(`Chromium CDP returned ${cdp.status}`);
