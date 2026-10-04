@@ -439,11 +439,118 @@ input {
   .navigation-menu-row:has(:focus-visible) > .navigation-menu-trigger { opacity: 1; pointer-events: auto; }
   .navigation-menu-row:hover > .conversation-session,
   .navigation-menu-row:has(:focus-visible) > .conversation-session { padding-inline-end: 44px; }
+  .navigation-menu-row:hover > .conversation-session-delete,
+  .navigation-menu-row:has(:focus-visible) > .conversation-session-delete { opacity: 1; pointer-events: auto; }
+  .navigation-menu-row:has(> .conversation-session-delete):hover > .conversation-session,
+  .navigation-menu-row:has(> .conversation-session-delete):has(:focus-visible) > .conversation-session { padding-inline-end: 88px; }
 }
 
 @media (max-width: 820px), (hover: none) {
   .navigation-menu-trigger { width: 44px; height: 44px; }
 }
+
+/* 会话行两步删除：✕ 与 ⋯ 并排、同套显现合同；armed 成药丸，3s 未确认自动还原。 */
+.conversation-session-delete {
+  position: absolute;
+  inset-inline-end: 44px;
+  top: 50%;
+  translate: 0 -50%;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  color: var(--ak-ink-secondary);
+  background: var(--ak-paper-canvas);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  font: inherit;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.conversation-session-delete:focus-visible,
+.navigation-menu-row[data-menu-open] > .conversation-session-delete,
+.conversation-session-delete.is-armed {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.conversation-session-delete:hover { background: var(--ak-paper-sheet); }
+.conversation-session-delete:focus-visible { outline: 2px solid var(--ak-rule-focus); }
+
+.conversation-session-delete.is-armed {
+  width: auto;
+  padding-inline: 12px;
+  border: 1px solid color-mix(in oklch, var(--ak-color-status-error) 40%, transparent);
+  border-radius: 999px;
+  color: var(--ak-color-status-error);
+  background: var(--ak-paper-raised);
+}
+
+.navigation-row-menu__item--danger { color: var(--ak-color-status-error); }
+.navigation-row-menu__item--danger[data-highlighted] {
+  background: color-mix(in oklch, var(--ak-color-status-error) 8%, transparent);
+}
+
+/* 删除后的撤销窗口：导航区内一行就地提示，不是 toast，不遮挡消息区。 */
+.session-delete-notice {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 10px 0;
+  padding: 6px 12px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: 8px;
+  color: var(--chat-muted);
+  font-size: 0.75rem;
+}
+
+.session-delete-notice > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-delete-notice button {
+  border: 0;
+  padding: 0;
+  color: var(--chat-ink);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.session-delete-notice button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+
+.session-delete-notice__dismiss {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  text-decoration: none;
+}
+
+.session-restore-button {
+  margin-inline-start: 8px;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.session-restore-button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 
 .pinned-navigation {
   display: grid;

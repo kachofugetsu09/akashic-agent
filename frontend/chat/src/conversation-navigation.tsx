@@ -1,5 +1,5 @@
-import { ChevronRight } from "lucide-react";
-import type { ReactNode } from "react";
+import { ChevronRight, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import "./conversation-navigation.css";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 
@@ -52,6 +52,7 @@ export function ConversationNavigation({
   sessionHeadingAction,
   className = "",
   sessionActions,
+  onSessionDelete,
 }: {
   destinations: ConversationDestination[];
   sessions: ConversationSession[];
@@ -69,6 +70,8 @@ export function ConversationNavigation({
   sessionHeadingAction?: ReactNode;
   className?: string;
   sessionActions?: (session: ConversationSession) => NavigationRowAction[];
+  /** 提供后会话行获得就地两步删除；Promise 拒绝时行保持原位。 */
+  onSessionDelete?: (session: ConversationSession) => Promise<void>;
 }) {
   const featuredDestinations = destinations.filter((destination) => destination.featured);
   const standardDestinations = destinations.filter((destination) => !destination.featured);
@@ -110,6 +113,7 @@ export function ConversationNavigation({
             onActivate={onSessionActivate}
             onPrefetch={onSessionPrefetch}
             actions={sessionActions?.(session)}
+            onDelete={onSessionDelete ? () => onSessionDelete(session) : undefined}
           />)}
         </nav>
       </section>
@@ -138,14 +142,61 @@ export function ConversationNavigation({
   );
 }
 
-export function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions }: {
+export function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions, onDelete }: {
   session: ConversationSession;
   pendingSessionId?: string;
   onActivate: (sessionId: string) => void;
   onPrefetch?: (sessionId: string) => void;
   actions?: NavigationRowAction[];
+  onDelete?: () => Promise<void>;
 }) {
-  return <NavigationRowMenu title={session.title} actions={actions}
+  const [armed, setArmed] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => () => {
+    if (armTimer.current !== null) clearTimeout(armTimer.current);
+  }, []);
+
+  // 3 秒未确认自动还原；确认提交由 onDelete 的拒绝与否决定是否保留原位。
+  const disarm = () => {
+    if (armTimer.current !== null) clearTimeout(armTimer.current);
+    armTimer.current = null;
+    setArmed(false);
+  };
+  const arm = () => {
+    disarm();
+    setArmed(true);
+    armTimer.current = setTimeout(() => {
+      armTimer.current = null;
+      setArmed(false);
+    }, 3000);
+  };
+  const fire = async () => {
+    if (!onDelete) return;
+    disarm();
+    setDeleting(true);
+    try {
+      await onDelete();
+    } finally {
+      setDeleting(false);
+      setArmed(false);
+    }
+  };
+
+  const rowActions = onDelete
+    ? [...(actions ?? []), {
+      label: "删除", danger: true,
+      icon: <Trash2 size={18} aria-hidden="true" />,
+      // 菜单删除不直接执行：就地亮起确认药丸，并把焦点送过去完成第二次点击。
+      onSelect: () => {
+        arm();
+        window.setTimeout(() => deleteRef.current?.focus(), 0);
+      },
+    } satisfies NavigationRowAction]
+    : actions;
+
+  return <NavigationRowMenu title={session.title} actions={rowActions}
     className={`conversation-session-row ${session.active ? "active" : ""}`}>
     <button
       className={`conversation-session ${session.active ? "active" : ""} ${session.unavailable ? "unavailable" : ""}`}
@@ -165,6 +216,20 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
       </span>
       {session.state ? <span className="conversation-session__state">{session.state}</span> : null}
     </button>
+    {onDelete ? <button
+      ref={deleteRef}
+      type="button"
+      className={`conversation-session-delete${armed ? " is-armed" : ""}`}
+      aria-label={armed ? `确认删除 ${session.title}` : `删除 ${session.title}`}
+      title={armed ? "再次点击确认删除" : "删除会话"}
+      disabled={deleting}
+      aria-busy={deleting || undefined}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (!armed) arm();
+        else void fire();
+      }}
+    >{armed ? <span>确认删除</span> : <X size={16} strokeWidth={1.75} aria-hidden="true" />}</button> : null}
   </NavigationRowMenu>;
 }
 

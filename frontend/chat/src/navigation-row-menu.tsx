@@ -8,6 +8,8 @@ export interface NavigationRowAction {
   label: string;
   icon: ReactNode;
   disabled?: boolean;
+  /** 破坏性动作以 error 墨色呈现，仍走各自的就地确认。 */
+  danger?: boolean;
   onSelect: () => void;
 }
 
@@ -88,7 +90,8 @@ export function NavigationRowMenu({ title, actions = [], className, children }: 
             rowRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
           }}>
           {actions.map((action) => <DropdownMenuItem key={action.label} disabled={action.disabled}
-            onSelect={action.onSelect} className="navigation-row-menu__item">
+            onSelect={action.onSelect}
+            className={`navigation-row-menu__item${action.danger ? " navigation-row-menu__item--danger" : ""}`}>
             {action.icon}<span>{action.label}</span>
           </DropdownMenuItem>)}
         </DropdownMenuContent>

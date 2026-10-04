@@ -5,6 +5,7 @@ import {
   Pin,
   PinOff,
   ArrowUpDown,
+  X,
 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
@@ -94,6 +95,12 @@ export interface DesktopSidebarProps {
   onPrefetchSession?: (sessionId: string) => void;
   onCycleTheme: () => void;
   onNewChat: () => void;
+  /** 会话软删：行内两步确认后调用；Promise 拒绝时行保持原位。 */
+  onDeleteSession?: (sessionId: string, title: string) => Promise<void>;
+  /** 最近一次删除的撤销窗口；null 时不在导航区展示提示行。 */
+  deletedNotice?: { key: string; title: string } | null;
+  onRestoreSession?: (sessionId: string) => void;
+  onDismissDeletedNotice?: () => void;
   /** 宽屏侧栏的宽度控制；抽屉（compact）不带此 prop，因此不渲染拖拽柄。 */
   rail?: SidebarRailControl;
 }
@@ -109,6 +116,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onSelectSession,
   onPrefetchSession,
   onNewChat,
+  onDeleteSession,
+  deletedNotice,
+  onRestoreSession,
+  onDismissDeletedNotice,
   rail,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
@@ -186,6 +197,9 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     ...session, active: surface === "chat" && session.active,
     state: surface === "chat" && session.active ? <Check size={18} /> : null,
   });
+  const deleteHandler = onDeleteSession
+    ? (session: ConversationSession) => onDeleteSession(session.id, session.title)
+    : undefined;
 
   return (
     <aside ref={sidebarRef} className="chat-sidebar chat-sidebar--entry">
@@ -211,6 +225,13 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         <span>{navigationPins.error}</span>
         <button type="button" disabled={navigationPins.pending} onClick={() => { void navigationPins.reload(); }}>刷新置顶列表</button>
       </div> : null}
+      {deletedNotice ? <div className="session-delete-notice" role="status">
+        <span title={deletedNotice.title}>已删除「{deletedNotice.title}」</span>
+        <button type="button" onClick={() => onRestoreSession?.(deletedNotice.key)}>撤销</button>
+        <button type="button" className="session-delete-notice__dismiss" aria-label="关闭提示" onClick={onDismissDeletedNotice}>
+          <X size={14} aria-hidden="true" />
+        </button>
+      </div> : null}
       {navigationPins.pins.length ? <section className="pinned-navigation" aria-label="置顶">
         <header className="project-navigation__header"><span>置顶</span></header>
         {navigationPins.pins.map((pin) => {
@@ -233,6 +254,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
                 key={`session:${pin.id}`} session={sessionView(session)} pendingSessionId={pendingSessionId}
                 onActivate={onSelectSession} onPrefetch={onPrefetchSession}
                 actions={pinAction(pin, true)}
+                onDelete={onDeleteSession ? () => onDeleteSession(session.id, session.title) : undefined}
               /> : null;
           }
           if (needle && !pin.id.toLowerCase().includes(needle)) return null;
@@ -271,6 +293,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         destinations={[]}
         actions={[]}
         sessions={recentSessions.map(sessionView)}
+        onSessionDelete={deleteHandler}
         sessionActions={(session) => {
           const row = allSessions.find((item) => item.id === session.id);
           return row && !row.projectId && !row.projectScoped

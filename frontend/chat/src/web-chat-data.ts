@@ -18,6 +18,8 @@ export interface ChatHistoryPage {
   throughSeq: number;
   hasMore: boolean;
   beforeSeq: number | null;
+  /** 会话已软删时为 true；消息仍物理保留，按只读展示。 */
+  deleted: boolean;
 }
 
 export interface ChatModelState {
@@ -122,7 +124,7 @@ export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistory
     throw new Error(`${endpoint} 返回了不一致的历史游标`);
   }
   return { items, throughSeq: Number(body.through_seq), hasMore: body.has_more,
-    beforeSeq: body.before_seq as number | null };
+    beforeSeq: body.before_seq as number | null, deleted: body.deleted === true };
 }
 
 export function webShellState(payload: unknown): WebShellState {
@@ -188,6 +190,16 @@ export function chatModelState(payload: unknown): ChatModelState {
     runtimes,
     unavailableRuntimes,
   };
+}
+
+/** 软删/恢复是显式数据管理操作；返回值校验 key 与结果标记一致，防止对错会话生效。 */
+export async function setChatSessionDeleted(sessionKey: string, deleted: boolean): Promise<void> {
+  const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionKey)}/${deleted ? "delete" : "undelete"}`;
+  const payload = await fetchChatJson<unknown>(endpoint, { method: "POST" });
+  const body = recordValue(payload);
+  if (!body || body.key !== sessionKey || body.deleted !== deleted) {
+    throw new Error(`${endpoint} 返回了不一致的删除结果`);
+  }
 }
 
 export async function uploadFiles(files: ComposerFile[], signal: AbortSignal): Promise<UploadedFile[]> {
