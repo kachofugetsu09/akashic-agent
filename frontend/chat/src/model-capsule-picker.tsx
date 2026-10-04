@@ -147,12 +147,15 @@ function useDismissLayer(open: boolean, rootRef: RefObject<HTMLElement | null>, 
   }, [open, rootRef, onClose]);
 }
 
-// 上下/Home/End 只在 [data-nav] 行之间移动焦点；星星等次级按钮不插进方向链。
+// 上下/Home/End 只在 [data-nav] 行之间移动焦点；星星等次级按钮不插进方向链，
+// 焦点落在次级按钮上时按其所在行定位，方向键回到行间导航。
 function moveRowFocus(event: React.KeyboardEvent<HTMLElement>) {
   if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
   const options = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-nav]")];
   if (!options.length) return;
-  const current = options.indexOf(document.activeElement as HTMLElement);
+  const active = document.activeElement as HTMLElement | null;
+  const owningRow = active?.closest?.("[data-nav]") as HTMLElement | null;
+  const current = owningRow ? options.indexOf(owningRow) : -1;
   const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
     : (Math.max(0, current) + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
   event.preventDefault();
@@ -180,6 +183,12 @@ function ModelRow({ runtime, selected, favorite, onChoose, onToggleFavorite }: M
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onChoose();
+          return;
+        }
+        // ArrowRight 进入行内次级动作（收藏星），ArrowLeft 从星星回到行。
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          event.currentTarget.querySelector<HTMLElement>(".model-picker__star")?.focus();
         }
       }}
     >
@@ -200,6 +209,18 @@ function ModelRow({ runtime, selected, favorite, onChoose, onToggleFavorite }: M
         onClick={(event) => {
           event.stopPropagation();
           onToggleFavorite();
+        }}
+        onKeyDown={(event) => {
+          // Enter/Space 的键盘激活交给按钮原生 click；阻止冒泡，
+          // 否则外层行的 onKeyDown 会把同一次按键当成“选择该模型”。
+          if (event.key === "Enter" || event.key === " ") {
+            event.stopPropagation();
+            return;
+          }
+          if (event.key !== "ArrowLeft") return;
+          event.preventDefault();
+          event.stopPropagation();
+          (event.currentTarget.closest("[data-nav]") as HTMLElement | null)?.focus();
         }}
       >
         <Star size={13} aria-hidden="true" />
