@@ -272,6 +272,59 @@ function FlowItemView({ item, beforePart, onCopyToolDetail, partView }: {
   );
 }
 
+/** 连续 ≥3 个已完成工具收成一行摘要；运行中的工具不参与折叠，保持逐行可见。 */
+function groupToolRuns<T>(items: T[], settledTool: (item: T) => ToolBlock | null): (T | { members: T[]; durationMs?: number })[] {
+  const result: (T | { members: T[]; durationMs?: number })[] = [];
+  let run: T[] = [];
+  let runMs = 0;
+  let runCounted = false;
+  const flush = () => {
+    if (run.length >= 3) result.push({ members: run, durationMs: runCounted ? runMs : undefined });
+    else result.push(...run);
+    run = [];
+    runMs = 0;
+    runCounted = false;
+  };
+  for (const item of items) {
+    const block = settledTool(item);
+    if (block === null) { flush(); result.push(item); continue; }
+    run.push(item);
+    if (block.durationMs !== undefined) { runMs += block.durationMs; runCounted = true; }
+  }
+  flush();
+  return result;
+}
+
+/** 收起的工具组摘要行复用工具行栅格；展开后逐行恢复原行和详情。 */
+function CollapsedToolGroup({ count, durationMs, children }: {
+  count: number;
+  durationMs?: number;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="tool-group">
+      <button
+        type="button"
+        className="tool-step-summary tool-group-summary"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="tool-step-heading">
+          <span className="tool-step-title">
+            <Wrench className="tool-step-icon" size={13} aria-hidden="true" />
+            <span>已执行 {count} 个工具</span>
+          </span>
+          <span className="tool-step-description" />
+          <span className="tool-step-state">{durationMs !== undefined ? formatToolDuration(durationMs) : ""}</span>
+          <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" />
+        </span>
+      </button>
+      {open ? <div className="tool-group-items">{children}</div> : null}
+    </div>
+  );
+}
+
 /** 历史与实时回复共用一条流，过程项继续引用原消息和 part。 */
 function TimelineProcess({ flow, draftThinking = "", beforeReasoning, beforePart, onCopyToolDetail, partView }: {
   flow: FlowItem[];
@@ -283,13 +336,23 @@ function TimelineProcess({ flow, draftThinking = "", beforeReasoning, beforePart
 }) {
   // 槽位锚在首个过程项之前；纯文本输出没有过程项时退到流开头，仍由提交消息提供上下文。
   const slotIndex = flow.findIndex((item) => item.kind === "thinking" || item.kind === "tool");
-  const slotAt = slotIndex >= 0 ? slotIndex : (flow.length ? 0 : -1);
+  const slotKey = (slotIndex >= 0 ? flow[slotIndex] : flow[0])?.key ?? null;
+  const grouped = groupToolRuns(flow,
+    (item) => item.kind === "tool" && item.block.status !== "input-available" ? item.block : null);
   if (!flow.length && !draftThinking) return null;
   return <>
     <div className="process-trace">
-      {flow.map((item, index) => (
+      {grouped.map((item) => "members" in item ? (
+        <Fragment key={`toolgroup-${item.members[0].key}`}>
+          {item.members.some((member) => member.key === slotKey) ? beforeReasoning?.(item.members[0].origin) : null}
+          <CollapsedToolGroup count={item.members.length} durationMs={item.durationMs}>
+            {item.members.map((member) => <FlowItemView key={member.key} item={member}
+              beforePart={beforePart} onCopyToolDetail={onCopyToolDetail} partView={partView} />)}
+          </CollapsedToolGroup>
+        </Fragment>
+      ) : (
         <Fragment key={item.key}>
-          {index === slotAt ? beforeReasoning?.(item.origin) : null}
+          {item.key === slotKey ? beforeReasoning?.(item.origin) : null}
           <FlowItemView item={item} beforePart={beforePart} onCopyToolDetail={onCopyToolDetail} partView={partView} />
         </Fragment>
       ))}
@@ -527,26 +590,38 @@ const ProcessTrace = memo(function ProcessTrace({
   onCopyToolDetail?: (text: string) => void;
 }) {
   const lastThinkingIndex = blocks.reduce((last, block, index) => block.kind === "thinking" ? index : last, -1);
+  const grouped = groupToolRuns(blocks.map((block, index) => ({ block, index })),
+    (entry) => entry.block.kind === "tool" && entry.block.status !== "input-available" ? entry.block : null);
+  const renderBlock = (block: AgentBlock, index: number) => block.kind === "thinking" ? (
+    <ThinkingRow
+      content={block.content}
+      streaming={streaming && index === lastThinkingIndex}
+      duration={index === lastThinkingIndex && durationMs
+        ? Math.max(1, Math.round(durationMs / 1000)) : undefined}
+    />
+  ) : (
+    <ToolStep
+      block={block}
+      active={block.status === "input-available"}
+      onCopyDetail={onCopyToolDetail}
+    />
+  );
   return (
     <div className="process-trace">
       {startContent}
-      {blocks.map((block, index) => (
-        <Fragment key={block.kind === "thinking" ? `thinking-${index}` : block.callId}>
-          {beforeBlock?.(block, index)}
-          {block.kind === "thinking" ? (
-            <ThinkingRow
-              content={block.content}
-              streaming={streaming && index === lastThinkingIndex}
-              duration={index === lastThinkingIndex && durationMs
-                ? Math.max(1, Math.round(durationMs / 1000)) : undefined}
-            />
-          ) : (
-            <ToolStep
-              block={block}
-              active={block.status === "input-available"}
-              onCopyDetail={onCopyToolDetail}
-            />
-          )}
+      {grouped.map((entry) => "members" in entry ? (
+        <CollapsedToolGroup key={`toolgroup-${entry.members[0].index}`} count={entry.members.length} durationMs={entry.durationMs}>
+          {entry.members.map((member) => (
+            <Fragment key={member.index}>
+              {beforeBlock?.(member.block, member.index)}
+              {renderBlock(member.block, member.index)}
+            </Fragment>
+          ))}
+        </CollapsedToolGroup>
+      ) : (
+        <Fragment key={entry.block.kind === "thinking" ? `thinking-${entry.index}` : entry.block.callId}>
+          {beforeBlock?.(entry.block, entry.index)}
+          {renderBlock(entry.block, entry.index)}
         </Fragment>
       ))}
       {interrupted ? <div className="process-status-line">已中止</div> : null}

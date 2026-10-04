@@ -15,7 +15,7 @@ import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer } from "./desktop-composer";
-import { DesktopConversationMessages, DesktopTimelineMessages } from "./desktop-conversation";
+import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey } from "./desktop-conversation";
 import { ReplyActivityView } from "./message-view";
 import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
@@ -115,6 +115,9 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
                   onReply={handleReplyMessage} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages
                   messages={messages} status={status}
+                  carryDayKey={timelineMessages.length
+                    ? messageDayKey(timelineMessages[timelineMessages.length - 1].timestamp)
+                    : undefined}
                   copiedMessageId={copiedMessageId} streamStore={streamStore}
                   messageElementsRef={messageElementsRef}
                   onCopied={handleCopiedMessage} onError={reportError}
