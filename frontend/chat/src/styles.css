@@ -1871,29 +1871,37 @@ form.composer:focus-within [data-slot="input-group"] {
   object-fit: contain;
 }
 
+/* 整块面板自己是滚动容器：触控板落在任何位置都滚列表；
+   搜索行 sticky 钉在顶端，视觉与 Alma 的固定搜索行一致。 */
 .model-picker__panel {
   position: fixed;
   inset: auto;
   z-index: 80;
-  display: grid;
+  display: block;
   width: 300px;
   max-height: min(23.75rem, calc(100vh - 1.5rem));
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: 12px;
   background: var(--md-sys-color-surface-container-high);
+  scrollbar-color: var(--ak-color-border-strong) transparent;
+  scrollbar-width: thin;
 }
 
 .model-picker__search {
+  position: sticky;
+  z-index: 2;
+  top: 0;
   display: flex;
   height: 2.5rem;
-  flex: none;
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid var(--md-sys-color-outline-variant);
   padding: 0 12px;
   color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-high);
 }
 
 .model-picker__search input {
@@ -1907,12 +1915,7 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .model-picker__list {
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   padding: 4px;
-  scrollbar-color: var(--ak-color-border-strong) transparent;
-  scrollbar-width: thin;
 }
 
 .model-picker__group + .model-picker__group {

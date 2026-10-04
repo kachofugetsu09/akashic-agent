@@ -107,12 +107,12 @@ function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | n
       const spaceAbove = Math.max(0, rect.top - PANEL_GAP - PANEL_MARGIN);
       const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - PANEL_GAP - PANEL_MARGIN);
       const openUp = spaceAbove >= Math.min(PANEL_MAX_HEIGHT, 280) || spaceAbove >= spaceBelow;
-      const height = Math.min(PANEL_MAX_HEIGHT, Math.max(spaceAbove, spaceBelow));
+      const maxHeight = Math.min(PANEL_MAX_HEIGHT, Math.max(spaceAbove, spaceBelow));
       const left = Math.max(PANEL_MARGIN, Math.min(rect.left, window.innerWidth - width - PANEL_MARGIN));
       setStyle(
         openUp
-          ? { left, width, height, bottom: window.innerHeight - rect.top + PANEL_GAP, top: "auto" }
-          : { left, width, height, top: rect.bottom + PANEL_GAP, bottom: "auto" },
+          ? { left, width, maxHeight, bottom: window.innerHeight - rect.top + PANEL_GAP, top: "auto" }
+          : { left, width, maxHeight, top: rect.bottom + PANEL_GAP, bottom: "auto" },
       );
     }
     place();
