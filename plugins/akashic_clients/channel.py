@@ -26,7 +26,7 @@ from agent.plugin_composition.channels import (
     ProviderDeliveryRequest,
     StopReceipt,
 )
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMIN
 
 from .capabilities import (
     MESSAGE_DISPLAY,
@@ -46,6 +46,7 @@ from .services import (
     ModelCatalogReader,
     ModelSelectionReader,
     ReplyStatusPort,
+    SessionAdminPort,
 )
 from .services import ArtifactReadLeasePort, PluginUiProvider, WebUiProvider
 from agent.plugin_composition.message_view import MessageDisplayReader
@@ -267,6 +268,7 @@ class _GenerationAkashicAdapter:
                 MESSAGE_DISPLAY,
                 PLUGIN_UI,
                 WEB_UI,
+                SESSION_ADMIN,
             ):
                 _ = scope.require(key)
         self._artifact_store = _ChannelArtifactStore(self._context)
@@ -300,6 +302,13 @@ class _GenerationAkashicAdapter:
             raise RuntimeError("akashic message catalog 缺少 host request scope")
         async with self._open_request_scope() as scope:
             yield cast(MessageCatalogPort, scope.require(MESSAGE_CATALOG))
+
+    @asynccontextmanager
+    async def _session_admin_scope(self) -> AsyncIterator[SessionAdminPort]:
+        """软删/恢复只在一次 HTTP 操作内借用 Core 的窄管理端口。"""
+
+        async with self._open_request_scope() as scope:
+            yield cast(SessionAdminPort, scope.require(SESSION_ADMIN))
 
     @asynccontextmanager
     async def _plugin_ui_scope(self) -> AsyncIterator[PluginUiProvider]:
@@ -419,6 +428,7 @@ class _GenerationAkashicAdapter:
             artifact_store=artifact_store,
             reply_status=self._reply_status,
             message_scope=self._message_scope,
+            session_admin_scope=self._session_admin_scope,
             uds=str(socket_path),
         )
         await self._start_server(server, name="akashic-web")
