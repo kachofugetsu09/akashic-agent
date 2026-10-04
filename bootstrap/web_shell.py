@@ -80,8 +80,9 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
     "font-src 'self' data:",
     "connect-src 'self'",
     "frame-src 'self'",
-    "media-src 'none'",
-    "worker-src 'none'",
+    # Computer 的当前客户端创建 Blob 视频缓冲区和解码 Worker。
+    "media-src blob:",
+    "worker-src blob:",
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",

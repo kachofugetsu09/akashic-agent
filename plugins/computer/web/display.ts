@@ -77,7 +77,8 @@ export class ComputerDisplay extends EventTarget {
     const source = await response.text();
     if (this.closed) return;
     const socket = this.ctx.http.webSocketUrl("/api/dashboard/computer/stream");
-    const moduleUrl = this.blob(source, "text/javascript");
+    // srcdoc 的 location.origin 是 "null"；客户端消息使用真实的窗口 origin。
+    const moduleUrl = this.blob(source.replaceAll("window.location.origin", "window.origin"), "text/javascript");
     const settingsUrl = `${location.origin}/api/dashboard/computer/stream`;
     // 2. 键盘事件先交给面板，避免上游剪贴板 hold 重复消费同一次粘贴。
     const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -96,8 +97,8 @@ export class ComputerDisplay extends EventTarget {
         }, true);
       }
       </script><script type="module" src="${moduleUrl}"></script></body></html>`;
-    // 3. 每次连接独占 iframe 与 Blob；dispose 统一释放。
-    this.frame.src = this.blob(html, "text/html");
+    // 3. srcdoc 保持同源，也支持阻止 Blob 页面导航的内置浏览器。
+    this.frame.srcdoc = html;
     window.addEventListener("message", this.onMessage);
     this.host.replaceChildren(this.frame);
   }
