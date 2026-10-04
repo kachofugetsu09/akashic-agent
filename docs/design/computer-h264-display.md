@@ -102,6 +102,17 @@ Gateway 只在内存保留最新序号、位置与五秒有效期；新位置覆
 不写 activity、profile 或 workspace。Dashboard 使用当前 generation 的租约转发；
 浏览器向该只读通道发送消息会被拒绝。这个反馈不证明外部应用已接受点击。
 
+面板参考 Codex 光标的箭头、描边、蓝色光晕、长移动弧线和点击缩放反馈，使用
+独立 SVG 与既有品牌 token。动画只在位置更新后短暂运行，不让实际输入等待动画。
+热点对齐 iframe 中实际视频区域，缩放、留白和面板全屏沿同一位置换算。
+人工指针/键盘操作、失焦、到期、失败或断线立即隐藏；减少动态效果时直接定位。
+标记不接收指针事件、不获取焦点，断线通过状态文字说明，面板 dispose 释放订阅、
+观察器、计时器和动画。不增加独立重连 owner；重新连接面板时恢复订阅。
+
+隔离浏览器验收覆盖 Native 与主浏览器点击、普通窗口装饰和浏览器缩放的截图校准、
+320px/200% 字体、实际视频留白、全屏、减少动画、人工接管、五秒到期、匿名浏览器
+隔离和 dispose。实际公网接管仍需用户验收。
+
 上游资料：[固定版本源码](https://github.com/selkies-project/selkies/tree/2.0.0)、
 [Core API](https://github.com/selkies-project/selkies/blob/2.0.0/addons/selkies-web-core/README.md)、
 [TURN](https://webrtc.org/getting-started/turn-server)。

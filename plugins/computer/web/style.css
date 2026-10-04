@@ -275,3 +275,41 @@
   border: 0;
   display: block;
 }
+
+.computer-agent-cursor {
+  position: absolute;
+  inset: 0 auto auto 0;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  transform-origin: 2px 2px;
+  filter: drop-shadow(0 0 6px var(--ak-color-status-trace));
+}
+
+.computer-agent-cursor svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: var(--ak-ink-primary);
+  stroke: var(--ak-paper-raised);
+  stroke-width: 1.5px;
+  stroke-linejoin: round;
+  transform-origin: 2px 2px;
+}
+
+.computer-cursor-notice {
+  position: absolute;
+  inset: auto 8px 8px 8px;
+  z-index: 1;
+  pointer-events: none;
+  padding: 4px 8px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+  font-family: var(--ak-type-technical);
+}
+
+.computer-agent-cursor[hidden],
+.computer-cursor-notice[hidden] {
+  display: none;
+}
