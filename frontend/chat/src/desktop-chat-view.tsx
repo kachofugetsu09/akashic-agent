@@ -87,7 +87,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             onRenameSession={renameSession}
           />
 
-        <section className="chat-main">
+        <section className={`chat-main${hasMessages ? "" : " is-empty"}`}>
         <header className="conversation-heading">
           <CompactNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}

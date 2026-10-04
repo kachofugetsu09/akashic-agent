@@ -1340,10 +1340,47 @@ input {
   z-index: -1;
 }
 
-.composer-wrap.home {
-  /* 与有消息态同一底栏，避免和空屏文案抢同一垂直带 */
-  inset-block-start: auto;
-  inset-block-end: var(--composer-dock-end);
+/* 空态：hero 与输入条合成一个垂直居中簇，阅读列几何不变。同一 composer
+   实例留在原位只是换成流内定位——草稿、附件与焦点都不因布局切换丢失；
+   首条消息落地后回到底部 dock。上下 auto 外边距均分自由空间。 */
+.chat-main.is-empty {
+  overflow-y: auto;
+}
+
+.chat-main.is-empty .conversation {
+  flex: 0 0 auto;
+  margin-block-start: auto;
+}
+
+.chat-main.is-empty .composer-wrap.home {
+  position: relative;
+  inset: auto;
+  flex: none;
+  inline-size: min(
+    calc(100% - 12px),
+    calc(var(--chat-column) - 2 * var(--chat-dock-inset) + 2 * var(--composer-text-inset))
+  );
+  margin-block: var(--composer-dock-gap) auto;
+  margin-inline-start: max(
+    6px,
+    calc(max(0px, (100% - var(--chat-column)) / 4) + var(--chat-dock-inset) - var(--composer-text-inset))
+  );
+}
+
+.chat-main.is-empty .composer-wrap::before {
+  display: none;
+}
+
+.chat-main.is-empty .home-state {
+  height: auto;
+  padding: 16px 24px 12px;
+}
+
+@media (max-width: 820px) {
+  .chat-main.is-empty .composer-wrap.home {
+    margin-inline: var(--chat-dock-inset);
+    inline-size: auto;
+  }
 }
 
 .composer {
