@@ -887,7 +887,13 @@ class PluginManager:
         fibers = self._generation_fibers(generation)
         if root is None or not fibers:
             raise RuntimeError(f"目标 generation 未建立 Fiber: {generation.plugin_id}")
-        root.require_ready((*fibers, *affected, *root.consumers(fibers, declared=True)))
+        root.require_ready(fibers)
+        try:
+            root.require_ready((*affected, *root.consumers(fibers, declared=True)))
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"插件 {generation.plugin_id} 已就绪，但依赖消费者尚未就绪: {error}"
+            ) from error
 
     async def _start_local_generation(
         self,

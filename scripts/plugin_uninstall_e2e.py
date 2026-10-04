@@ -75,7 +75,7 @@ async def apply(ctx):
 """
 
 
-async def recover(manager, client, root, workspace):
+async def recover(manager, client, root, workspace, blocked=False):
     """真实截止时间取消 provider 后，从已选归档恢复并核对效果次数。"""
     from agent.plugin_composition import ServiceKey, FiberState
     source = root / 'sources/z_registry'
@@ -102,7 +102,16 @@ async def recover(manager, client, root, workspace):
     selected_before = (workspace / 'runtime/plugin-stable.json').read_bytes()
     release.set()
     manager.POST_PUBLISH_TIMEOUT_SECONDS = 300
-    await manager.reconcile_changed(plugin_ids=frozenset({'a_reader@lab', 'z_registry@lab'}))
+    try:
+        await manager.reconcile_changed(plugin_ids=frozenset({'a_reader@lab', 'z_registry@lab'}))
+    except RuntimeError as error:
+        assert blocked, str(error)
+        assert '插件 z_registry@lab 已就绪，但依赖消费者尚未就绪' in str(error), str(error)
+        assert 'aa_blocked' in str(error), str(error)
+    else:
+        assert not blocked, '未就绪消费者被误报为成功'
+    if blocked:
+        assert manager.generation('aa_blocked@lab').fiber.state is FiberState.PENDING
     assert (workspace / 'runtime/plugin-stable.json').read_bytes() == selected_before
     assert consumer is manager.generation('a_reader@lab')
     assert consumer.fiber.state is FiberState.ACTIVE
@@ -112,7 +121,8 @@ async def recover(manager, client, root, workspace):
     assert manager.generation('peer@lab') is peer
     assert (peer.data_dir / 'activations.txt').read_bytes() == peer_bytes
     return {'selected_provider_recovery': 'passed', 'pending_consumer_recovery': 'passed',
-            'no_selection_rewrite': 'passed', 'unrelated_effects_preserved': 'passed'}
+            'no_selection_rewrite': 'passed', 'unrelated_effects_preserved': 'passed',
+            **({'blocked_consumer_report': 'passed', 'ready_provider_retained': 'passed'} if blocked else {})}
 
 
 def git(path: Path, *args: str) -> str:
@@ -149,11 +159,7 @@ async def check_provenance(app, manager, plugins, workspace):
     archived_marker = (target.code_dir / '.akashic-source.json').read_bytes()
     marker = plugins / 'aa_marker/.akashic-source.json'
     marker.write_text(json.dumps({'commit': 'new-source-evidence'}))
-    try:
-        await manager.reconcile_changed()
-    except RuntimeError as error:
-        # 无模型的隔离组合允许既有消费者 PENDING，但不能换代目标。
-        assert '未 ACTIVE' in str(error), str(error)
+    await manager.reconcile_changed()
     assert manager.generation('aa_marker') is target
     assert target.fiber.context.fiber.activation_token is token
     assert (workspace / 'runtime/plugin-stable.json').read_bytes() == selected
@@ -198,10 +204,19 @@ async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict
     with (root / 'init.log').open('w') as output:
         subprocess.run([sys.executable, str(core / 'main.py'), 'init', '--config', str(config),
                         '--workspace', str(workspace)], env=env, check=True, stdout=output, stderr=output)
+    if case == 'provenance':
+        # 全量检查使用独立且就绪的普通组合，避免无模型默认配置的其他失败。
+        from agent.plugins.static_manifest import load_static_plugin_manifest
+        names = {load_static_plugin_manifest(path.parent).name for path in plugins.glob('*/plugin.py')}
+        config.write_text('[agent.plugins]\ndisabled_builtin = ' + json.dumps(sorted(names - {'channels', 'content', 'aa_marker'})) + '\n')
     provider = PROVIDER
     fixtures = [('annotation', CONTRIBUTOR), ('peer', PEER)]
-    if case == 'recovery':
+    if case in {'recovery', 'recovery-blocked'}:
         fixtures += [('clock_gate', GATE), ('a_reader', READER)]
+        if case == 'recovery-blocked':
+            fixtures.append(('aa_blocked', READER.replace("name = 'a_reader'", "name = 'aa_blocked'")
+                             .replace("ServiceKey('e2e.registry'),", "ServiceKey('e2e.registry'), ServiceKey('e2e.missing'),")
+                             .replace('e2e.reader', 'e2e.blocked')))
         provider = provider.replace('inject = ()', "inject = (ServiceKey('e2e.gate'),)").replace(
             'async def apply(ctx):', "async def apply(ctx):\n    if version == '2':\n        entered, release = ctx.require(inject[0])\n        entered.set()\n        await release.wait()")
     for name, source in [('z_registry', provider), *fixtures]:
@@ -250,9 +265,9 @@ asyncio.run(run())
         # 2. 让 watcher 以已有漂移为基线；这正是部署后才卸载的现场条件。
         app.plugin_watcher.stop()
         await app.plugin_watcher_task
-        if case == 'recovery':
+        if case in {'recovery', 'recovery-blocked'}:
             async with await AsyncAkashic.connect(str(workspace / 'akashic.sock')) as client:
-                result = await recover(manager, client, root, workspace)
+                result = await recover(manager, client, root, workspace, blocked=case == 'recovery-blocked')
             assert message_rows() == messages_before
             return result
         if case == 'provenance':
@@ -347,7 +362,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--core-root', type=Path, default=ROOT)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--case', choices=['uninstall', 'recovery', 'provenance'], default='uninstall')
+    parser.add_argument('--case', choices=['uninstall', 'recovery', 'recovery-blocked', 'provenance'], default='uninstall')
     parser.add_argument('--seed-core', type=Path)
     args = parser.parse_args()
     root = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='plugin-uninstall-e2e-'))
@@ -362,7 +377,7 @@ def main() -> None:
         raise
     result['core'] = git(args.core_root.resolve(), 'rev-parse', 'HEAD')
     result['source_sha256'] = {name: hashlib.sha256((args.core_root / name).read_bytes()).hexdigest()
-                               for name in ['agent/plugins/manager.py', 'agent/plugins/watcher.py']}
+                               for name in ['agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py']}
     (root / 'result.json').write_text(json.dumps({'status': 'passed', **result}, indent=2))
     print(json.dumps(result), flush=True)
 
