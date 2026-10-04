@@ -1,5 +1,5 @@
-/* Paper typefaces. LXGW WenKai Screen is redistributed under SIL OFL 1.1. */
-@import "./fonts/lxgw-wenkai-gb-screen.css";
+/* 中英文阅读字体随主题本地发布，许可证见 fonts/。 */
+@import "./fonts/reading-serif.css";
 
 @font-face {
   font-family: "JetBrains Mono";
@@ -11,9 +11,9 @@
 
 :root {
   /* Akashic owns these Material 3 system values; components only consume them. */
-  /* Keep one CJK-first paper stack so mixed Chinese and Latin text stays cohesive. */
-  --md-ref-typeface-brand: "LXGW WenKai GB Screen", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", Charter, Georgia, Palatino, serif;
-  --md-ref-typeface-plain: "LXGW WenKai GB Screen", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", Charter, Georgia, Palatino, serif;
+  /* 英文使用 Source Serif 4，中文由 Noto Serif SC 承接。 */
+  --md-ref-typeface-brand: "Source Serif 4", "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, serif;
+  --md-ref-typeface-plain: "Source Serif 4", "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, serif;
   --md-ref-typeface-mono: "JetBrains Mono", "SF Mono", "Fira Code", Consolas, Monaco, monospace;
 
   --md-sys-typescale-display-large-font: var(--md-ref-typeface-brand);

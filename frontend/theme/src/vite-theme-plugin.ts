@@ -15,6 +15,13 @@ export function emitThemeCatalog(): Plugin {
         fileName: "akashic-theme-catalog.json",
         source: readFileSync(catalogPath, "utf8"),
       });
+      this.emitFile({
+        type: "asset",
+        fileName: "reading-fonts-OFL.txt",
+        source: ["notoserifsc", "sourceserif4"]
+          .map((name) => readFileSync(resolve(here, "fonts", `${name}-OFL.txt`), "utf8"))
+          .join("\n\n"),
+      });
     },
   };
 }
