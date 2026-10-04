@@ -792,13 +792,14 @@ Workload readiness 完成后，同一组合的 MCP 才能通过实际资源引�
 当前 release 中仍存在的内置插件，不能伪造 installed artifact pointer，也不能把缺少当前插件的状态记为
 成功。内置插件不得绕过该路径直接管理容器。
 
-默认 `computer` 插件通过这条普通边界提供一台持久 Linux 用户桌面。人工操作使用 generation-bound RFB
-通道直达同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 默认操作这台桌面及其唯一
+默认 `computer` 插件通过这条普通边界提供一台持久 Linux 用户桌面。人工操作使用 generation-bound H.264 WebSocket
+通道操作同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 默认操作这台桌面及其唯一
 Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪装成桌面控制。
 持久身份由磁盘 profile 保存；首次使用按需启动桌面。无实际操作满 10 分钟且 Agent Turn 与
 身份刷新都结束后允许释放桌面；面板打开、轮询和自动重连不延长占用或唤醒。下一次使用恢复
 已保存身份，JS 绑定和页面运行状态重新初始化。启停与主 profile 的单 writer 由 Computer
-插件内唯一 owner 保证；释放失败不能继续启动第二个 writer。见 [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)。
+插件内唯一 owner 保证；释放失败不能继续启动第二个 writer。见 [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)；显示选择见
+[0086](decisions/0086-computer-streams-h264-over-dashboard-websocket.md)。
 Agent 可另建匿名 BrowserContext 做 E2E，默认共享一份独立 headless Chromium。各 Context
 隔离身份和页面存储，不读取主 profile，不装 OpenCLI 扩展；主面板仍显示主浏览器。
 匿名实例属于创建它的 Turn，最多同时八个；主动关闭、Turn 结束、调用失败、Session

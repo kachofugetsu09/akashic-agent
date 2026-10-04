@@ -1,5 +1,7 @@
 # Computer 插件与 Workload 原子能力任务合同
 
+> 显示传输勘误：本栈的默认人工显示改为 [0086](../decisions/0086-computer-streams-h264-over-dashboard-websocket.md) 的 H.264 WebSocket，接入与验收见 [显示设计](computer-h264-display.md)。下文 RFB/noVNC 是原实现的历史基线；同一 display/profile、generation 与输入语义约束继续适用。
+
 - 状态：implemented / verified
 - 日期：2026-08-31
 - 基线：`origin/main@322f71a464eee3da99b018914bf4644f0b7338c5`
