@@ -13,7 +13,7 @@
 
 ## 2. 当前调用链与 owner
 
-> 2026-09-10 注：`agent/tools/shell.py` 已在插件边界第 2 步作为无消费者死代码删除；active `shell` 工具由 `plugins/standard_tools/shell.py` / `shell_backend.py` 提供。本节以下旧描述只保留为迁移背景。
+> 2026-09-10 注：`agent/tools/shell.py` 已在插件边界第 2 步作为无消费者死代码删除；active `shell` 工具由 `plugins/standard_tools/shell.py` 的统一 ShellTool（PROCESSES capability）提供；`shell_backend.py` 只保留执行环境组装与生命周期日志辅助。本节以下旧描述只保留为迁移背景。
 
 旧调用链中，`agent/tools/shell.py` 同时拥有进程创建、自动转后台、模块级注册表、日志重读、硬超时和 stop。主 runtime 在 `agent/tools/meta/register.py` 分别创建三个互不显式共享 owner 的工具；scripting/general subagent 只获得 `shell`，不能可靠续接被自动转后台的任务。
 

@@ -2,6 +2,17 @@
 
 本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
 
+## 2026-10-05 熵清理第 2 层：删除 `standard_tools` 旧直连接 Shell 工具实现
+
+- 基线：`d984d439`（`refactor/entropy-pr1-agent-dead-packages` 头），分支 `refactor/entropy-pr2-shell-legacy-backend`，stacked 清理系列第 2 层，base = 第 1 层 PR 分支。生产 source set 580 文件 / Python 98,726 SLOC；候选 580 文件 / 98,360 SLOC（-0 文件、-366 SLOC）。恢复点为本 PR 单提交 revert；只改独立 worktree，未操作正式 workspace、服务、数据库、安装 cache 或 Git refs。
+- 删除对象：`plugins/standard_tools/shell_backend.py` 中旧直连接工具实现，文件 562 → 152 行（-410 物理行）：`_REMOVED_SHELL_ARGUMENTS`（旧参数黑名单）、`_cleanup_diagnostic`（cleanup 降级诊断）、`_LegacyTool` 基类（`validate_params`/`to_schema`）、旧 `ShellTool`（226 行）、`ShellWriteStdinTool`（59 行）、`ShellTaskStopTool`（37 行）、`_owner_session_key` 及其专属常量 `_LOCAL_OWNER_PREFIX`、`_error` 包装、`_validate_command`/`_validate_network_command` 两个别名，以及随删的 import（`json`、`hashlib`、`uuid4`、`typing.Any/Callable`、process_runtime 的 `DEFAULT_*`/`MAX_HARD_TIMEOUT_S`/`ExecutionCleanupReport`/`ShellProcessManager`/`ShellProcessManagerProtocol`/`format_execution_result`、`resolve_shell`、tool_catalog 两个校验/规范化函数、`shell_security` 两个校验函数、`diagnostic_line`、`current_session_key`）。保留 `_log_shell_execution`、`_execution_outcome`、`_shell_env`、PATH 发现助手（`_discover_user_path_entries`/`_discover_nvm_node_bins`/`_node_version_key`/`_prepend_existing_path_entries`）与环境常量。`docs/design/unified-shell-execution.md:16` 把 active `shell` 工具的提供方更正为 `shell.py` 的统一 ShellTool（PROCESSES capability），`shell_backend.py` 只保留环境与日志辅助。
+- 可达性证据：全仓 `git grep`（源码、tests、benchmark、eval、docker、scripts、配置）确认 `shell_backend` 的唯一活消费者是 `plugins/standard_tools/shell.py:44`，且只 import `_log_shell_execution, _shell_env` 两个符号；active 工具路径是 `shell.py` 自己的 `ShellTool`（PROCESSES capability），与 `shell_backend` 的旧工具类无继承或实例关系。全部被删符号（含 `_LOCAL_OWNER_PREFIX`）在模块外零命中；`"ShellTool"`/`"ShellWriteStdinTool"`/`"ShellTaskStopTool"` 字符串字面量注册零命中；相关 `getattr` 动态入口为零；本机 `~/.akashic-plugin/cache` 不存在，无缓存副本引用。旧工具的直接 manager 调用（`exec_command`/`write_stdin`/`terminate_execution`/`terminate_owner`/`shutdown`）在模块外零命中，说明没有其他动态装配路径。
+- 能力不变：语义不变。插件 manifest、声明的工具名/schema、hook 顺序与生命周期均未触碰；现行 `shell`/`write_stdin`/`task_stop` 工具行为由 `shell.py` 统一工具承担，本次只删除其中已无消费者的旧实现副本及其专属 helper。无运行时行为、持久 schema、迁移内容、外部发送或 generation 变化。
+- 登记联动：`plugin_boundary_baseline.toml` 不含被删符号，plugin_boundary 规则无这些路径，无需登记更新；无测试文件只覆盖被删行为（`tests/` 无 shell 命名测试，唯一引用 `standard_tools` 的 `test_default_reply.py` 覆盖的是现行插件装载路径），故无测试删除。
+- Gate：`.venv/bin/pytest -q tests/test_default_reply.py tests/test_message_push_plugin.py` 8 passed；`python -c "import plugins.standard_tools.plugin"` 冒烟通过；pyright `--level error` 前后均为 3 errors（同一组 `agent/control/client.py` 的 `akashic_sdk` 解析错误，与删除无关）；`plugin_boundary.py check --base refactor/entropy-pr1-agent-dead-packages` 通过（R1/R2/R3 均 0/0）；`check_yoyo_migrations.py --base refactor/entropy-pr1-agent-dead-packages` 通过；`git diff --check` 干净；SLOC 计量见基线条。不回填 gate digest。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。
+- 残余风险：历史 checkpoint、过期工作 checkout 与远端可能归档的旧 `shell_backend.py` 文本仍在，但不影响本基线；证据只覆盖本机可见快照与当前 Git 跟踪文件，不声称远端生产 fleet 或所有历史归档无消费者。
+
 ## 2026-10-05 熵清理第 1 层：删除无消费者的 `agent/turn_events`、`agent/prompting` 与 `agent/control` 旧 DTO
 
 - 基线：`b13be081`（origin/main），分支 `refactor/entropy-pr1-agent-dead-packages`，stacked 清理系列第 1 层，base = main。生产 source set 587 文件 / Python 98,919 SLOC；候选 580 文件 / 98,726 SLOC（-7 文件、-193 SLOC）。恢复点为本 PR 单提交 revert；只改独立 worktree，未操作正式 workspace、服务、数据库、安装 cache 或 Git refs。
