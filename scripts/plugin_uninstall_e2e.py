@@ -54,6 +54,77 @@ async def apply(ctx):
 """
 
 
+GATE = """import asyncio
+from agent.plugin_composition import ServiceKey
+api_version = 3
+name = 'clock_gate'
+version = '1'
+inject = ()
+async def apply(ctx):
+    await ctx.provide(ServiceKey('e2e.gate'), (asyncio.Event(), asyncio.Event()))
+"""
+READER = """from agent.plugin_composition import ServiceKey
+api_version = 3
+name = 'a_reader'
+version = '1'
+inject = (ServiceKey('e2e.registry'),)
+async def apply(ctx):
+    marker = ctx.runtime.data_dir / 'activations.txt'
+    marker.write_text(marker.read_text() + 'start\\n' if marker.exists() else 'start\\n')
+    await ctx.provide(ServiceKey('e2e.reader'), ctx.require(inject[0]))
+"""
+
+
+async def recover(manager, client, root, workspace, blocked=False):
+    """真实截止时间取消 provider 后，从已选归档恢复并核对效果次数。"""
+    from agent.plugin_composition import ServiceKey, FiberState
+    source = root / 'sources/z_registry'
+    text = (source / 'plugin.py').read_text().replace("version = '1'", "version = '2'")
+    (source / 'plugin.py').write_text(text)
+    git(source, 'add', '.')
+    git(source, '-c', 'user.name=E2E', '-c', 'user.email=e2e@example.invalid',
+        '-c', 'commit.gpgSign=false', 'commit', '-qm', 'provider update')
+    entered, release = manager.live_root.context.require(ServiceKey('e2e.gate'))
+    peer = manager.generation('peer@lab')
+    peer_bytes = (peer.data_dir / 'activations.txt').read_bytes()
+    manager.POST_PUBLISH_TIMEOUT_SECONDS = 0.5
+    accepted = await client.request('plugin/install', {
+        'source': str(source), 'marketplace': 'lab', 'ref': '', 'sparse': [], 'update_id': 'deadline-e2e'})
+    assert accepted['state'] == 'accepted', accepted
+    await asyncio.wait_for(entered.wait(), 5)
+    await wait_for(lambda: manager._operation.task.done(), 'deadline settled')
+    assert manager._operation.revoked and manager._operation.committed
+    assert asyncio.get_running_loop().time() >= manager._operation.deadline
+    assert manager.plugin_status()['operation']['state'] == 'cancelled'
+    assert manager.generation('z_registry@lab') is None
+    consumer = manager.generation('a_reader@lab')
+    assert consumer.fiber.state is FiberState.PENDING
+    selected_before = (workspace / 'runtime/plugin-stable.json').read_bytes()
+    release.set()
+    manager.POST_PUBLISH_TIMEOUT_SECONDS = 300
+    try:
+        await manager.reconcile_changed(plugin_ids=frozenset({'a_reader@lab', 'z_registry@lab'}))
+    except RuntimeError as error:
+        assert blocked, str(error)
+        assert '插件 z_registry@lab 已就绪，但依赖消费者尚未就绪' in str(error), str(error)
+        assert 'aa_blocked' in str(error), str(error)
+    else:
+        assert not blocked, '未就绪消费者被误报为成功'
+    if blocked:
+        assert manager.generation('aa_blocked@lab').fiber.state is FiberState.PENDING
+    assert (workspace / 'runtime/plugin-stable.json').read_bytes() == selected_before
+    assert consumer is manager.generation('a_reader@lab')
+    assert consumer.fiber.state is FiberState.ACTIVE
+    assert manager.generation('z_registry@lab').instance.version == '2'
+    assert manager.live_root.context.require(ServiceKey('e2e.reader')) is manager.live_root.context.require(ServiceKey('e2e.registry'))
+    assert (consumer.data_dir / 'activations.txt').read_text().count('start') == 2
+    assert manager.generation('peer@lab') is peer
+    assert (peer.data_dir / 'activations.txt').read_bytes() == peer_bytes
+    return {'selected_provider_recovery': 'passed', 'pending_consumer_recovery': 'passed',
+            'no_selection_rewrite': 'passed', 'unrelated_effects_preserved': 'passed',
+            **({'blocked_consumer_report': 'passed', 'ready_provider_retained': 'passed'} if blocked else {})}
+
+
 def git(path: Path, *args: str) -> str:
     return subprocess.check_output(['git', '-C', str(path), *args], text=True).strip()
 
@@ -138,7 +209,17 @@ async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict
         from agent.plugins.static_manifest import load_static_plugin_manifest
         names = {load_static_plugin_manifest(path.parent).name for path in plugins.glob('*/plugin.py')}
         config.write_text('[agent.plugins]\ndisabled_builtin = ' + json.dumps(sorted(names - {'channels', 'content', 'aa_marker'})) + '\n')
-    for name, source in [('z_registry', PROVIDER), ('annotation', CONTRIBUTOR), ('peer', PEER)]:
+    provider = PROVIDER
+    fixtures = [('annotation', CONTRIBUTOR), ('peer', PEER)]
+    if case in {'recovery', 'recovery-blocked'}:
+        fixtures += [('clock_gate', GATE), ('a_reader', READER)]
+        if case == 'recovery-blocked':
+            fixtures.append(('aa_blocked', READER.replace("name = 'a_reader'", "name = 'aa_blocked'")
+                             .replace("ServiceKey('e2e.registry'),", "ServiceKey('e2e.registry'), ServiceKey('e2e.missing'),")
+                             .replace('e2e.reader', 'e2e.blocked')))
+        provider = provider.replace('inject = ()', "inject = (ServiceKey('e2e.gate'),)").replace(
+            'async def apply(ctx):', "async def apply(ctx):\n    if version == '2':\n        entered, release = ctx.require(inject[0])\n        entered.set()\n        await release.wait()")
+    for name, source in [('z_registry', provider), *fixtures]:
         install_fixture(root, workspace, home, name, source)
     if seed_core is not None:
         # 用旧版真实启动生成 selection，候选版直接读取其完整归档。
@@ -184,6 +265,11 @@ asyncio.run(run())
         # 2. 让 watcher 以已有漂移为基线；这正是部署后才卸载的现场条件。
         app.plugin_watcher.stop()
         await app.plugin_watcher_task
+        if case in {'recovery', 'recovery-blocked'}:
+            async with await AsyncAkashic.connect(str(workspace / 'akashic.sock')) as client:
+                result = await recover(manager, client, root, workspace, blocked=case == 'recovery-blocked')
+            assert message_rows() == messages_before
+            return result
         if case == 'provenance':
             result = await check_provenance(app, manager, plugins, workspace)
             assert message_rows() == messages_before
@@ -276,7 +362,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--core-root', type=Path, default=ROOT)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--case', choices=['uninstall', 'provenance'], default='uninstall')
+    parser.add_argument('--case', choices=['uninstall', 'recovery', 'recovery-blocked', 'provenance'], default='uninstall')
     parser.add_argument('--seed-core', type=Path)
     args = parser.parse_args()
     root = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='plugin-uninstall-e2e-'))
@@ -289,6 +375,9 @@ def main() -> None:
     except BaseException as error:
         (root / 'result.json').write_text(json.dumps({'status': 'failed', 'error': repr(error)}, indent=2))
         raise
+    result['core'] = git(args.core_root.resolve(), 'rev-parse', 'HEAD')
+    result['source_sha256'] = {name: hashlib.sha256((args.core_root / name).read_bytes()).hexdigest()
+                               for name in ['agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py']}
     (root / 'result.json').write_text(json.dumps({'status': 'passed', **result}, indent=2))
     print(json.dumps(result), flush=True)
 

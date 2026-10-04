@@ -92,7 +92,7 @@ from agent.plugins.reload_journal import (
 )
 from agent.plugins.scope import CleanupFailure, PluginScope
 from agent.plugins.distribution_sources import is_distribution_input
-from agent.plugins.selection import PluginSelection
+from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.source_resolver import (
     PluginSourceFailure,
     ResolvedPluginSource,
@@ -887,13 +887,20 @@ class PluginManager:
         fibers = self._generation_fibers(generation)
         if root is None or not fibers:
             raise RuntimeError(f"目标 generation 未建立 Fiber: {generation.plugin_id}")
-        root.require_ready((*fibers, *affected, *root.consumers(fibers, declared=True)))
+        root.require_ready(fibers)
+        try:
+            root.require_ready((*affected, *root.consumers(fibers, declared=True)))
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"插件 {generation.plugin_id} 已就绪，但依赖消费者尚未就绪: {error}"
+            ) from error
 
     async def _start_local_generation(
         self,
         generation: PluginGeneration,
         *,
         affected: tuple[Fiber, ...] = (),
+        check_readiness: bool = True,
     ) -> None:
         """Load and mount one selected generation on the existing live Root."""
         root = self._live_root
@@ -911,7 +918,8 @@ class PluginManager:
         await self._attach_generation_hosts(generation)
         await self._mount_generation_composition(root, generation)
         self._check_operation_commit()
-        self._require_local_generation_ready(generation, affected=affected)
+        if check_readiness:
+            self._require_local_generation_ready(generation, affected=affected)
         generation.state = "active"
 
     async def _attach_generation_hosts(self, generation: PluginGeneration) -> None:
@@ -1509,6 +1517,24 @@ class PluginManager:
             if manifest.get(plugin_id, True) is False
             or plugin_id in self._disabled_builtin_plugins
         }
+        # 1. 已提交但失去实例的输入先全部挂回同一图；PENDING 消费者不能
+        # 阻止后面缺失的 provider 挂载。恢复读取已选归档，不另选当前源码。
+        missing = tuple(
+            ref for ref in selected_components
+            if (plugin_id := cast(str, self._archive.read_descriptor(ref)["plugin_id"]))
+            not in self._active_generations
+            and plugin_id not in explicitly_disabled
+            and (plugin_ids is None or plugin_id in plugin_ids)
+        )
+        restored = self._archived_generations(
+            missing, self._live_root, workspace=self._workspace,
+            sources={}, register_live=False,
+        )
+        readiness_ids = set(restored)
+        for generation in restored.values():
+            results.append(await self._update_live_generation(
+                generation, None, expected_ref=selection_ref, check_readiness=False,
+            ))
         for plugin_id in sorted((set(self._active_generations) | selected_ids) - desired):
             if plugin_ids is not None and plugin_id not in plugin_ids:
                 continue
@@ -1565,7 +1591,7 @@ class PluginManager:
                 active is not None
                 and active.state == "active"
                 and active.fiber is not None
-                and active.fiber.state == FiberState.ACTIVE
+                and active.fiber.state in {FiberState.ACTIVE, FiberState.PENDING}
                 and active.config_revision == config_revision
                 and (
                     active.source_revision == revision
@@ -1575,6 +1601,8 @@ class PluginManager:
                 )
             )
             if same_input and not had_source_failure:
+                if active.fiber.state is FiberState.PENDING:
+                    readiness_ids.add(plugin_id)
                 continue
             generation = await self._prepare_one_with_source_diagnostics(
                 mod,
@@ -1590,12 +1618,17 @@ class PluginManager:
                 # A disappeared source can be revalidated without replacing an
                 # unrelated live generation merely to clear its old diagnostic.
                 await self._dispose_generation(generation, state="discarded")
+                if active.fiber.state is FiberState.PENDING:
+                    readiness_ids.add(plugin_id)
                 continue
             result = await self._update_live_generation(
                 generation, active, expected_ref=selection_ref,
             )
             selection_ref = cast(str, result["selection_ref"])
             results.append(result)
+        # 2. 现有依赖图完成激活后，按本次实际恢复范围报告最终就绪。
+        for plugin_id in sorted(readiness_ids):
+            self._require_local_generation_ready(self._active_generations[plugin_id])
         return results
 
     async def _update_live_generation(
@@ -1607,6 +1640,7 @@ class PluginManager:
         update_id: str | None = None,
         accepted: asyncio.Future[UpdateStatus] | None = None,
         config_request_id: str | None = None,
+        check_readiness: bool = True,
     ) -> dict[str, object]:
         """Commit B, drain A, and mount B on the same live Root."""
         root = self._live_root
@@ -1638,10 +1672,16 @@ class PluginManager:
                     "publication_state": "active",
                 }
             operation = self._check_operation_commit()
-            selection_ref = self._selection.commit(
-                components,
-                expected_ref=expected_ref,
-            )
+            if previous is None and self._selection_contains(expected_ref, replacement_ref):
+                # 恢复已选实例不产生新的输入选择或重复发布记录。
+                if self._selection.read() != expected_ref:
+                    raise SelectionConflictError("stable 基线已变化")
+                selection_ref = cast(str, expected_ref)
+            else:
+                selection_ref = self._selection.commit(
+                    components,
+                    expected_ref=expected_ref,
+                )
             operation.committed = selection_ref
             if config_request_id is not None:
                 self._reload_journal.finish_config_update(config_request_id, "selected")
@@ -1654,7 +1694,9 @@ class PluginManager:
                 await self._dispose_generation(previous, state="retired")
             if not self._operation_can_continue():
                 raise OperationTimeoutError(operation)
-            await self._start_local_generation(generation, affected=affected)
+            await self._start_local_generation(
+                generation, affected=affected, check_readiness=check_readiness,
+            )
             return {
                 "plugin_id": generation.plugin_id,
                 "old_generation": None if previous is None else previous.generation_id,
