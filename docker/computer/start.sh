@@ -46,7 +46,7 @@ cleanup() {
   trap - TERM INT EXIT
   kill -TERM "${browser_pid:-}" 2>/dev/null || true
   wait "${browser_pid:-}" 2>/dev/null || true
-  kill -TERM "${desktop_pid:-}" "${display_pid:-}" "${xvnc_pid:-}" 2>/dev/null || true
+  kill -TERM "${desktop_pid:-}" "${display_pid:-}" "${stream_pid:-}" "${xvnc_pid:-}" 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup TERM INT EXIT
@@ -73,6 +73,19 @@ done
 
 websockify 0.0.0.0:6080 127.0.0.1:5999 &
 display_pid=$!
+
+# 视频与输入仍在同一 X11 / IPC namespace，随唯一桌面 owner 回收。
+/opt/computer/stream-venv/bin/python -m selkies \
+  --addr 0.0.0.0 --port 6081 --mode websockets \
+  --web-root /opt/computer/stream-web \
+  --encoder h264enc --gpu-id=-1 \
+  --framerate 30-30 --video-bitrate 4000-4000 --rate-control-mode cbr \
+  --audio-enabled false --microphone-enabled false --webcam-enabled false \
+  --gamepad-enabled false --publish-input-devices false \
+  --command-enabled false --file-transfers "" --printing-enabled false \
+  --enable-sharing false --enable-basic-auth false --enable-clipboard true \
+  --manual-resolution true --manual-width 1280 --manual-height 800 &
+stream_pid=$!
 
 startxfce4 &
 desktop_pid=$!
