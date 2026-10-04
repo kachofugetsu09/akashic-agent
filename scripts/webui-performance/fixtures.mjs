@@ -63,6 +63,7 @@ export function desktopModels(count = 48) {
     sessionOverride: "",
     sessionSelection: { modelRef: "perf/runtime", reasoningEffort: "medium" },
     runtimes,
+    unavailableRuntimes: [],
   };
 }
 
