@@ -267,8 +267,47 @@ async def check_provenance(app, manager, plugins, workspace):
             'archive_provenance_retained': 'passed', 'no_selection_rewrite': 'passed'}
 
 
+async def check_runtime_cli(root, core):
+    """实际启动 Host Bridge，再执行其生成的固定发行版 CLI。"""
+    token = root / 'token'
+    token.write_bytes(os.urandom(32).hex().encode())
+    token.chmod(0o600)
+    socket = root / 'bridge.sock'
+    artifacts = root / 'artifacts'
+    commit = git(core, 'rev-parse', 'HEAD')
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith('AKASHIC_') and key != 'PYTHONPATH'}
+    env.update(HOME=str(root), PYTHONPATH=str(core))
+    with (root / 'bridge.log').open('wb') as output:
+        bridge = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'agent.host_bridge.server', '--socket', str(socket),
+            '--token-file', str(token), '--artifact-root', str(artifacts),
+            '--release-commit', commit, '--runtime-checkout', str(core),
+            '--bridge-python', sys.executable, '--toolchain-digest',
+            hashlib.sha256((core / 'mise.toml').read_bytes()).hexdigest(),
+            cwd=root, env=env, stdout=output, stderr=output)
+        try:
+            await wait_for(lambda: socket.exists() or bridge.returncode is not None, 'Bridge startup')
+            assert bridge.returncode is None, (root / 'bridge.log').read_text()
+            launcher = artifacts / 'runtime-cli' / commit / 'akashic-runtime'
+            cli = await asyncio.create_subprocess_exec(
+                str(launcher), '--help', cwd=root, env={**env, 'PYTHONPATH': '/missing'},
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            output, _ = await asyncio.wait_for(cli.communicate(), 15)
+            (root / 'cli.log').write_bytes(output)
+            assert cli.returncode == 0, output.decode()
+            assert b'plugin-uninstall' in output, output.decode()
+        finally:
+            if bridge.returncode is None:
+                bridge.terminate()
+            await asyncio.wait_for(bridge.wait(), 10)
+    return {'host_bridge_runtime_cli': 'passed'}
+
+
 async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict[str, object]:
     """隔离全部路径并通过实际控制协议触发卸载和源码更新。"""
+    if case == 'cli':
+        return await check_runtime_cli(root, core)
     # 1. 初始化独占状态，复制候选源码，保留完整输入和报告。
     sys.path[:0] = [str(core), str(core / 'sdk/python/src')]
     for key in tuple(os.environ):
@@ -474,7 +513,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--core-root', type=Path, default=ROOT)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--case', choices=['uninstall', 'recovery', 'recovery-blocked', 'provenance', 'ui', 'client'], default='uninstall')
+    parser.add_argument('--case', choices=['uninstall', 'recovery', 'recovery-blocked', 'provenance', 'ui', 'client', 'cli'], default='uninstall')
     parser.add_argument('--seed-core', type=Path)
     args = parser.parse_args()
     root = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='plugin-uninstall-e2e-'))
@@ -489,7 +528,7 @@ def main() -> None:
         raise
     result['core'] = git(args.core_root.resolve(), 'rev-parse', 'HEAD')
     result['source_sha256'] = {name: hashlib.sha256((args.core_root / name).read_bytes()).hexdigest()
-                               for name in ['agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py',
+                               for name in ['agent/host_bridge/server.py', 'agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py',
                                             'plugins/ui/plugin.py', 'plugins/akashic_clients/plugin.py',
                                             'plugins/akashic_clients/capabilities.py', 'plugins/akashic_clients/channel.py',
                                             'frontend/dashboard/src/webHost.ts', 'frontend/dashboard/src/main.tsx']}

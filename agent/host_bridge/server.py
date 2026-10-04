@@ -791,11 +791,12 @@ def _materialize_runtime_cli(
     launcher_dir = artifact_root / "runtime-cli" / release_commit
     launcher_dir.mkdir(parents=True, exist_ok=True)
     launcher = launcher_dir / "akashic-runtime"
+    python_path = os.pathsep.join((str(runtime_checkout), str(runtime_checkout / "sdk/python/src")))
     content = "\n".join(
         (
             "#!/bin/sh",
             "set -eu",
-            f"exec env PYTHONPATH={shlex.quote(str(runtime_checkout))} \\",
+            f"exec env PYTHONPATH={shlex.quote(python_path)} \\",
             f'    {shlex.quote(str(bridge_python))} {shlex.quote(str(main_path))} "$@"',
             "",
         )
