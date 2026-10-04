@@ -46,7 +46,10 @@ cleanup() {
   trap - TERM INT EXIT
   kill -TERM "${browser_pid:-}" 2>/dev/null || true
   wait "${browser_pid:-}" 2>/dev/null || true
-  kill -TERM "${desktop_pid:-}" "${display_pid:-}" "${stream_pid:-}" "${xvnc_pid:-}" 2>/dev/null || true
+  # 编码服务先释放 XShm 和输入连接，X server 仍在时才能完成清理。
+  kill -TERM "${stream_pid:-}" 2>/dev/null || true
+  wait "${stream_pid:-}" 2>/dev/null || true
+  kill -TERM "${desktop_pid:-}" "${display_pid:-}" "${xvnc_pid:-}" 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup TERM INT EXIT
