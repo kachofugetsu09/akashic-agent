@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 
 /** Native 连接只由 supervisor 持有；JS 超时不能绕开输入释放。 */
-export class DesktopBackend {
+export class DesktopBackend extends EventEmitter {
   pending = new Map();
   nextId = 1;
   start() {
@@ -45,7 +45,8 @@ export class DesktopBackend {
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
   }
-  call(method, input = {}) {
+  /** 原生输入保持原回执，位置读取只生成独立的只读反馈。 */
+  async call(method, input = {}) {
     if (
       !this.process ||
       this.process.exitCode != null ||
@@ -53,10 +54,22 @@ export class DesktopBackend {
     )
       return Promise.reject(new Error("Desktop backend is not running"));
     const id = this.nextId++;
-    return new Promise((resolve, reject) => {
+    const result = await new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.process.stdin.write(JSON.stringify({ id, method, input }) + "\n");
     });
+    // 已完成的输入保持原回执；位置反馈失败单独报告，不重试输入。
+    if (this.listenerCount("cursor") &&
+        ["click", "move", "drag", "drag_handle", "scroll"].includes(method)) {
+      try {
+        const point = await this.call("get_pointer");
+        this.emit("cursor", { point: { ...point, kind: method === "click" ? "click" : "move" } });
+      } catch (error) {
+        console.error("Computer cursor read failed:", error.message);
+        this.emit("cursor", { point: null, error: "操作位置读取失败" });
+      }
+    }
+    return result;
   }
   async cancel() {
     if (!this.process) return;

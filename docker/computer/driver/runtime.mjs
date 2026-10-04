@@ -3,12 +3,13 @@ import { Worker } from "node:worker_threads";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { BrowserBackend } from "./cdp.mjs";
 import { DesktopBackend } from "./desktop.mjs";
 import { AnonymousBrowsers } from "./anonymous.mjs";
 
 /** 一个容器拥有一份输入状态；各 Session 仅隔离 JS 绑定，不复制浏览器 profile。 */
-export class ComputerDriver {
+export class ComputerDriver extends EventEmitter {
   browser = new BrowserBackend();
   anonymous = new AnonymousBrowsers();
   desktop = new DesktopBackend();
@@ -17,6 +18,8 @@ export class ComputerDriver {
   closed = false;
   cancelledCalls = new Map();
   async start() {
+    this.desktop.on("cursor", (state) => this.emit("cursor", state));
+    this.browser.on("cursor", (state) => this.emit("cursor", state));
     await this.browser.start();
     await deadline(this.desktop.start(), 4000, "Native startup");
     this.browser.on("event", (event) => {
@@ -248,6 +251,7 @@ export class ComputerDriver {
       active.finish();
     }
     if (failure) {
+      this.emit("cursor", { point: null, error: "操作中断，位置标记已清除" });
       failure.message +=
         "; earlier effects may remain; JS bindings for this session were reset";
       throw failure;

@@ -72,6 +72,45 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         result = forward("GET", stream_http.rstrip("/") + "/source/" + name)
         return Response(result.content, media_type="text/plain")
 
+    @app.websocket("/api/dashboard/computer/cursor")
+    async def computer_cursor(socket: WebSocket) -> None:
+        """当前 generation 只读订阅操作位置，不获取输入或唤醒权限。"""
+        timeout = httpx.Timeout(10.0, read=None)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as reader:
+                async with reader.stream("GET", gateway.rstrip("/") + "/cursor") as response:
+                    response.raise_for_status()
+                    await socket.accept()
+
+                    async def receive_cursor() -> None:
+                        async for line in response.aiter_lines():
+                            if line.startswith("data: "):
+                                await socket.send_text(line[6:])
+
+                    async def receive_browser() -> None:
+                        message = await socket.receive()
+                        if message["type"] != "websocket.disconnect":
+                            await socket.close(code=1008, reason="Cursor is read-only")
+
+                    tasks = {asyncio.create_task(receive_cursor()), asyncio.create_task(receive_browser())}
+                    try:
+                        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                        for task in done:
+                            await task
+                    finally:
+                        for task in tasks:
+                            task.cancel()
+                        for task in tasks:
+                            with suppress(asyncio.CancelledError):
+                                await task
+        except WebSocketDisconnect:
+            return
+        except httpx.HTTPError:
+            if socket.client_state is WebSocketState.CONNECTING:
+                await socket.accept()
+            if socket.client_state is WebSocketState.CONNECTED:
+                await socket.close(code=1013, reason="Computer cursor is unavailable")
+
     @app.websocket("/api/dashboard/computer/stream")
     @app.websocket("/api/dashboard/computer/display")
     async def computer_display(socket: WebSocket) -> None:

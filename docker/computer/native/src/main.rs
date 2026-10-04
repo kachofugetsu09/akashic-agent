@@ -385,6 +385,12 @@ impl Desktop {
         };
         match method {
             "get_screenshot" => return self.screenshot(),
+            "get_pointer" => {
+                let point = self.position()?;
+                let size = self.connection.get_geometry(self.root)?.reply()?;
+                return Ok(json!({"x":point.x, "y":point.y,
+                    "width":size.width, "height":size.height}));
+            }
             "release" => self.release()?,
             "move" => {
                 self.press_keys(input.key.as_deref())?;

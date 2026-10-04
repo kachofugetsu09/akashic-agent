@@ -79,6 +79,29 @@ profile、HOME、config 正常随主浏览器原位更新；休眠让进程、JS
 旧 generation 排空验收。正式采用还需固定 release/artifact、真实 Controller、完整
 generation 切换，以及用户实际公网浏览器的接管验收。
 
+## Agent 操作位置反馈
+
+桌面输入完成后，Native backend 读取 X11 的实际位置和屏幕尺寸。主浏览器的
+CDP 鼠标/触摸输入完成后，将主页面 CSS 坐标、缩放与窗口装饰换算到桌面位置；
+隐藏标签清除标记，匿名 headless 浏览器不发布主桌面反馈。设备仿真和多屏未验收。
+位置读取失败单独报告并清除标记，不重试输入、不改写已完成操作的回执。
+主浏览器位置读取最多等待 250 ms，避免页面脚本阻塞让辅助反馈长期占住输入调用。
+
+```text
+┌───────────────────────┐
+│ Native / 主浏览器输入 │
+└──────────┬────────────┘
+           │ 已执行的位置反馈
+┌──────────▼────────────┐   ┌──────────────────────────┐
+│ Gateway：内存最新位置│ → │ Dashboard：只读 WebSocket│
+└───────────────────────┘   └──────────────────────────┘
+```
+
+Gateway 只在内存保留最新序号、位置与五秒有效期；新位置覆盖旧位置，休眠和停止
+清空，重启不恢复。通道最多 32 个消费者，慢消费者断开，订阅不唤醒、不 touch，
+不写 activity、profile 或 workspace。Dashboard 使用当前 generation 的租约转发；
+浏览器向该只读通道发送消息会被拒绝。这个反馈不证明外部应用已接受点击。
+
 上游资料：[固定版本源码](https://github.com/selkies-project/selkies/tree/2.0.0)、
 [Core API](https://github.com/selkies-project/selkies/blob/2.0.0/addons/selkies-web-core/README.md)、
 [TURN](https://webrtc.org/getting-started/turn-server)。
