@@ -324,7 +324,10 @@ class _GenerationAkashicAdapter:
         if open_scope is None:
             raise RuntimeError("akashic reply status 缺少 host request scope")
         async with self._open_request_scope() as scope:
-            reader = cast(ReplyStatusPort, scope.require(REPLY_STATUS))
+            with scope.borrow(REPLY_STATUS) as service:
+                if service is None:
+                    raise RuntimeError("回复状态服务暂不可用")
+                reader = cast(ReplyStatusPort, service)
         async with aclosing(reader.follow(session_id)) as frames:
             async for frame in frames:
                 if isinstance(frame, Mapping):

@@ -180,8 +180,7 @@ class Ui:
     async def bootstrap(self) -> bytes:
         async with self._ctx.runtime_scope():
             self._ctx.require_runtime_owner(WEB_UI, self)
-            if self._ctx.require(RUNTIME_CATALOG)(self._ctx)["updating"]:
-                raise RuntimeError("插件配置正在应用，Web 目录尚未稳定")
+            # catalog 只含已激活并初始化的贡献；无关管理操作不关闭读取。
             return self.catalog().encode_bootstrap(self._ctx.generation_id)
 
     async def state(self) -> dict[str, str | bool]:

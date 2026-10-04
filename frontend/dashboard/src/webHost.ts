@@ -90,7 +90,7 @@ class BrowserCatalogSession implements WebHostSession {
     });
   }
 
-  async checkCurrent(): Promise<"current" | "updating" | "stale"> {
+  async checkCurrent(): Promise<"current" | "stale"> {
     this.requireOpen();
     const response = await fetch("/api/chat/web-ui/state", {
       headers: { Accept: "application/json" },
@@ -101,7 +101,7 @@ class BrowserCatalogSession implements WebHostSession {
     if (!isRecord(state)
       || typeof state.snapshotId !== "string"
       || typeof state.catalogId !== "string" || typeof state.updating !== "boolean") throw new Error("界面状态格式无效");
-    if (state.updating) return "updating";
+    // 当前 UI 目录由实际贡献方决定，管理操作进行中不使未变目录失效。
     if (state.snapshotId === this.bootstrap.snapshotId
       && state.catalogId === this.bootstrap.catalogId) return "current";
     this.markStale();
@@ -619,7 +619,6 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     checking = true;
     try {
       const state = await session.checkCurrent();
-      if (state === "updating") { sawChange = true; show(attempts >= 60 ? "自动核对已结束；操作不因此取消。请点击重新核对查看实际结果。" : "配置仍在应用，原操作会继续核对。等待较久时可重新核对。"); return; }
       if (state === "current") { if (sawChange) { window.clearInterval(timer); notice.remove(); } return; }
       sawChange = true;
       const next = await open();
