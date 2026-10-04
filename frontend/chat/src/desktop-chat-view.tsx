@@ -19,6 +19,7 @@ import { DesktopConversationMessages, DesktopTimelineMessages } from "./desktop-
 import { ReplyActivityView } from "./message-view";
 import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
+import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { SessionDirectory } from "./session-directory";
 
@@ -29,6 +30,7 @@ interface DesktopChatViewProps {
 
 export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewProps) {
   const theme = useTheme();
+  const rail = useSidebarRail();
   const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
   const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
   const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);
@@ -71,13 +73,13 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         />
       ) : null}
 
-      <div className="chat-shell-body">
+      <div className="chat-shell-body" style={rail.style}>
         <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
-            onCycleTheme={cycleTheme} onNewChat={startNewChat}
+            onCycleTheme={cycleTheme} onNewChat={startNewChat} rail={rail}
           />
 
         <section className="chat-main">

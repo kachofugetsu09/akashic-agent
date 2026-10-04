@@ -5,6 +5,8 @@ import type { ChatModelRuntime } from "./model-capsule-data";
 export interface SessionRow {
   key: string;
   updated_at?: string;
+  /** 服务端 session_row 提供；置顶解析补齐的目录外会话可能缺失。 */
+  created_at?: string;
   message_count?: number;
   first_message_content?: string;
   /** Session 接纳时固定的宽键；缺失维度即 default。 */
@@ -87,6 +89,7 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
     || !item.key.trim()
     || (item.first_message_content !== undefined && typeof item.first_message_content !== "string")
     || (item.updated_at !== undefined && typeof item.updated_at !== "string")
+    || (item.created_at !== undefined && typeof item.created_at !== "string")
     || (item.message_count !== undefined && (typeof item.message_count !== "number" || !Number.isFinite(item.message_count)))
     || (item.scope !== undefined && !isStringRecord(item.scope))
   ))) {
