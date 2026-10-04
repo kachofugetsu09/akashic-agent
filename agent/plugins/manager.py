@@ -412,17 +412,17 @@ class PluginManager:
     def reload_journal(self) -> ReloadJournal:
         return self._reload_journal
 
-    def watch_revision(self) -> str:
-        digest = hashlib.sha256()
+    def watch_revision(self) -> dict[str, str]:
+        """分别记录每个输入的磁盘变化，不把一次选择变更扩成全量更新。"""
         home = _plugins_home(self._installed_cache_root)
-        digest.update(_path_metadata(home / "manifest.toml"))
+        manifest = load_plugin_manifest(home)
+        revisions: dict[str, bytes] = {}
         mods, failures = self._discover_modules(
             record_source_failures=False,
         )
         for failure in failures:
-            digest.update(failure.source_type.encode())
-            digest.update(str(failure.source_root).encode())
-            digest.update(_source_metadata_revision(failure.source_root))
+            identity = failure.plugin_id or f"source:{failure.source_type}:{failure.source_root}"
+            revisions[identity] = _source_metadata_revision(failure.source_root)
         for mod in mods:
             plugin_id = _resolve_plugin_id(mod)
             plugin_dir = Path(mod["plugin_root"])
@@ -431,10 +431,17 @@ class PluginManager:
                 mod,
                 self._workspace,
             )
-            digest.update(plugin_id.encode())
-            digest.update(_source_metadata_revision(plugin_dir))
-            digest.update(_path_metadata(data_dir / CONFIG_INPUT))
-        return digest.hexdigest()
+            revisions[plugin_id] = (
+                _source_metadata_revision(plugin_dir)
+                + _path_metadata(data_dir / CONFIG_INPUT)
+            )
+        return {
+            plugin_id: hashlib.sha256(
+                revisions.get(plugin_id, b"source:missing")
+                + str(manifest.get(plugin_id, True)).encode()
+            ).hexdigest()
+            for plugin_id in revisions.keys() | manifest.keys()
+        }
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(
@@ -1077,8 +1084,11 @@ class PluginManager:
             _ = self._draining_generations.pop(generation.plugin_id, None)
 
 
-    async def reconcile_changed(self) -> list[dict[str, object]]:
-        return await self._run_operation(self._reconcile_changed)
+    async def reconcile_changed(
+        self, *, plugin_ids: frozenset[str] | None = None,
+    ) -> list[dict[str, object]]:
+        """应用指定的变化输入；显式全量请求仍检查当前已选来源。"""
+        return await self._run_operation(lambda: self._reconcile_changed(plugin_ids))
 
 
     def read_config_input(self, plugin_id: str) -> dict[str, object]:
@@ -1462,7 +1472,9 @@ class PluginManager:
         if plugin_id not in manifest:
             raise RuntimeError(f"插件未安装: {plugin_id}")
 
-    async def _reconcile_changed(self) -> list[dict[str, object]]:
+    async def _reconcile_changed(
+        self, plugin_ids: frozenset[str] | None = None,
+    ) -> list[dict[str, object]]:
         """Reconcile changed inputs in the one formal Root and owner map."""
         if self._live_root is None:
             raise RuntimeError("local Loader 尚未建立 live Root；已知宿主迁移缺口阻止更新")
@@ -1497,6 +1509,8 @@ class PluginManager:
             or plugin_id in self._disabled_builtin_plugins
         }
         for plugin_id in sorted((set(self._active_generations) | selected_ids) - desired):
+            if plugin_ids is not None and plugin_id not in plugin_ids:
+                continue
             if plugin_id not in explicitly_disabled:
                 active = self._active_generations.get(plugin_id)
                 source_root = self._source_root_hint(plugin_id, active)
@@ -1512,6 +1526,8 @@ class PluginManager:
             selection_ref = cast(str, result["selection_ref"])
             results.append(result)
         for plugin_id in sorted(desired):
+            if plugin_ids is not None and plugin_id not in plugin_ids:
+                continue
             if plugin_id not in selected_ids:
                 results.append({
                     "plugin_id": plugin_id,
@@ -2430,6 +2446,8 @@ def _source_metadata_revision(plugin_dir: Path) -> bytes:
         "__pycache__",
         "node_modules",
         ENVIRONMENT_FILE,
+        # 分发来源保留在完整归档中；来源标签不单独触发运行实例换代。
+        ".akashic-source.json",
     }
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
