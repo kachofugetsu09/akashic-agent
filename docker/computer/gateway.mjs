@@ -48,6 +48,7 @@ const computer = new ComputerLifecycle({
     }
     if (failure) throw failure;
     driver = new ComputerDriver();
+    driver.on("cursor", publishCursor);
     driverReady = driver.start();
     await driverReady;
   },
@@ -58,6 +59,7 @@ const computer = new ComputerLifecycle({
     driverReady = undefined;
     activeTargetId = "";
     browserSnapshots.clear();
+    publishCursor({ point: null });
   },
 });
 const activityPath = "/data/state/activity.json";
@@ -66,6 +68,23 @@ let activity = { revision: 0, noticeId: 0, active: false, action: "", updatedAt:
 let activeTargetId = "";
 const legacyCall = new AsyncLocalStorage();
 const browserSnapshots = new Map();
+const cursorClients = new Set();
+let cursor = { revision: 0, point: null, error: "" };
+
+function cursorEvent() {
+  const ttlMs = cursor.point ? Math.max(0, cursor.point.expiresAt - Date.now()) : 0;
+  return `data: ${JSON.stringify({ ...cursor, ttlMs })}\n\n`;
+}
+
+/** 坐标只驻留内存；慢消费者断开，不能让操作等待显示或积压帧。 */
+function publishCursor({ point, error = "" }) {
+  cursor = { revision: cursor.revision + 1,
+    point: point ? { ...point, expiresAt: Date.now() + 5000 } : null, error };
+  const event = cursorEvent();
+  for (const client of cursorClients) {
+    if (!client.write(event)) client.destroy();
+  }
+}
 
 class InputError extends Error {}
 
@@ -835,6 +854,16 @@ const server = createServer(async (request, response) => {
         control: "ready",
         browser: computer.state,
       });
+    } else if (request.method === "GET" && url.pathname === "/cursor") {
+      // 只读订阅不唤醒、不 touch，也不写 activity 或 profile。
+      if (cursorClients.size >= 32) {
+        json(response, 503, { error: "Too many cursor viewers" });
+        return;
+      }
+      response.writeHead(200, {"content-type": "text/event-stream", "cache-control": "no-store"});
+      response.write(cursorEvent());
+      cursorClients.add(response);
+      response.once("close", () => cursorClients.delete(response));
     } else if (request.method === "GET" && url.pathname === "/activity") {
       json(response, 200, { ...activity, browser: computer.status() });
     } else if (request.method === "POST" && url.pathname === "/wake") {
@@ -948,6 +977,7 @@ async function stop() {
   stopping = true;
   clearTimeout(refreshTimer);
   server.close();
+  for (const client of cursorClients) client.end();
   openCliServer.close();
   const timer = setTimeout(() => {
     console.error("Computer shutdown timed out");

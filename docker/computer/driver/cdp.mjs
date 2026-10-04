@@ -50,7 +50,7 @@ class CdpConnection extends EventEmitter {
     ]);
     return this;
   }
-  send(method, params = {}, sessionId) {
+  send(method, params = {}, sessionId, timeoutMs = 10_000) {
     if (this.socket.readyState !== WebSocket.OPEN)
       return Promise.reject(new Error("Chromium connection is closed"));
     const id = this.nextId++;
@@ -58,7 +58,7 @@ class CdpConnection extends EventEmitter {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`CDP timeout: ${method}; effects may remain`));
-      }, 10_000);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.socket.send(
         JSON.stringify({
@@ -255,7 +255,42 @@ export class BrowserBackend extends EventEmitter {
       commandParams.type === "mouseReleased"
     )
       input.emulatedTouch = null;
+    // 只投影个人桌面的已完成输入；匿名 Context 没有 cursor 消费者。
+    if (this.listenerCount("cursor")) {
+      const point = method === "Input.dispatchTouchEvent" ? commandParams.touchPoints?.[0] : commandParams;
+      const mouse = ["Input.dispatchMouseEvent", "Input.emulateTouchFromMouseEvent"].includes(method)
+        && ["mouseMoved", "mousePressed", "mouseWheel"].includes(commandParams.type);
+      const touch = method === "Input.dispatchTouchEvent"
+        && ["touchStart", "touchMove"].includes(commandParams.type);
+      if (mouse || touch) await this.publishCursor(connection, point,
+        ["mousePressed", "touchStart"].includes(commandParams.type) ? "click" : "move");
+    }
     return result;
+  }
+  /** 将主页面 CSS 坐标换算到同一 X11 桌面；投影失败不重试已送出的输入。 */
+  async publishCursor(connection, point, kind) {
+    try {
+      // 1. 页面必须正在显示；浏览器缩放包含在 DPR 中，装饰边框不缩放。
+      const { result, exceptionDetails } = await connection.send("Runtime.evaluate", {
+        expression: `(() => {
+          if (document.visibilityState !== "visible") return null;
+          const scale = devicePixelRatio;
+          const border = Math.max(0, (outerWidth - innerWidth * scale) / 2);
+          return {x: screenX + border + ${JSON.stringify(point.x)} * scale,
+            y: screenY + outerHeight - innerHeight * scale - border + ${JSON.stringify(point.y)} * scale,
+            width: screen.width, height: screen.height};
+        })()`, returnByValue: true,
+      }, undefined, 250);
+      if (exceptionDetails) throw new Error(exceptionDetails.text);
+      // 2. 隐藏标签或桌面外的点击不把坐标画到当前桌面上。
+      const value = result.value;
+      const visible = value && value.x >= 0 && value.y >= 0
+        && value.x < value.width && value.y < value.height;
+      this.emit("cursor", { point: visible ? { ...value, kind } : null });
+    } catch (error) {
+      console.error("Computer browser cursor read failed:", error.message);
+      this.emit("cursor", { point: null, error: "操作位置读取失败" });
+    }
   }
   checkOwner(tab, context) {
     const owner = tab.created ?? tab.claimed;
