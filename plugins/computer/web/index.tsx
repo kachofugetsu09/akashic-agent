@@ -1,4 +1,4 @@
-import RFB from "@novnc/novnc";
+import { ComputerDisplay } from "./display";
 
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 
@@ -172,7 +172,9 @@ function renderComputer(
   root.append(toolbar, desktop, clipboard);
   host.replaceChildren(root);
 
-  let rfb: RFB | null = null;
+  let display: ComputerDisplay | null = null;
+  let displayConnected = false;
+  let superseded = false;
   let active = view.active;
   let disposed = false;
   let reconnectAttempt = 0;
@@ -225,7 +227,7 @@ function renderComputer(
   }
 
   function scheduleReconnect() {
-    if (disposed || catalogStale || sleeping || failed || !active || reconnectTimer || rfb) return;
+    if (disposed || catalogStale || superseded || sleeping || failed || !active || reconnectTimer || display) return;
     const delay = reconnectDelay(reconnectAttempt++);
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = 0;
@@ -234,60 +236,72 @@ function renderComputer(
   }
 
   function connect() {
-    if (disposed || catalogStale || sleeping || failed || !active || rfb) return;
+    if (disposed || catalogStale || superseded || sleeping || failed || !active || display) return;
     if (backgroundTimer) window.clearTimeout(backgroundTimer);
     backgroundTimer = 0;
     screen.replaceChildren();
     showConnection("正在连接 Computer", "正在建立安全的远程桌面会话", false);
     setStatus("connecting");
 
-    let next: RFB;
+    let next: ComputerDisplay;
     try {
-      next = new RFB(
-        screen,
-        ctx.http.webSocketUrl("/api/dashboard/computer/display"),
-        { shared: true, wsProtocols: ["binary"] },
-      );
+      next = new ComputerDisplay(screen, ctx, {
+        keydown: onRemoteKeyDown,
+        keyup: onRemoteKeyUp,
+        paste: onRemotePaste,
+        touch,
+        blur: onWindowBlur,
+      });
     } catch {
       showConnection("无法连接 Computer", "请检查插件是否正在运行", true);
       setStatus("failed");
       scheduleReconnect();
       return;
     }
-    rfb = next;
-    next.scaleViewport = true;
-    next.resizeSession = false;
-    next.clipViewport = false;
-    next.focusOnClick = true;
-    next.viewOnly = false;
-    next.showDotCursor = true;
-    next.qualityLevel = 7;
-    next.compressionLevel = 2;
+    display = next;
+    displayConnected = false;
 
+    next.addEventListener("superseded", () => { superseded = true; });
+    next.addEventListener("stale", () => {
+      if (display !== next) return;
+      catalogStale = true;
+      clearTimers();
+      next.disconnect();
+      showConnection("界面已更新", "请刷新页面以使用新的 Computer", false);
+      setStatus("failed");
+    });
     next.addEventListener("connect", () => {
-      if (rfb !== next) return;
+      if (display !== next) return;
+      displayConnected = true;
       reconnectAttempt = 0;
       empty.hidden = true;
       setStatus("connected");
       if (active) next.focus({ preventScroll: true });
     });
     next.addEventListener("clipboard", (event) => {
-      void receiveRemoteClipboard(event.detail.text);
+      void receiveRemoteClipboard((event as CustomEvent<{ text: string }>).detail.text);
     });
-    next.addEventListener("securityfailure", (event) => {
+    next.addEventListener("error", (event) => {
       showConnection(
-        "Computer 拒绝了连接",
-        event.detail.reason || "远程桌面安全握手失败",
+        "无法连接 Computer",
+        (event as CustomEvent<{ reason: string }>).detail.reason || "远程显示连接失败",
         true,
       );
     });
     next.addEventListener("disconnect", () => {
-      if (rfb !== next) return;
-      rfb = null;
+      if (display !== next) return;
+      display = null;
+      displayConnected = false;
       if (disposed) return;
       if (catalogStale) {
         showConnection("界面已更新", "请刷新页面以使用新的 Computer", false);
         setStatus("failed");
+        return;
+      }
+      if (superseded) {
+        showConnection("Computer 已在另一窗口接管", "点击按钮可在此窗口继续操作", true);
+        retry.textContent = "在此窗口接管";
+        setStatus("waiting");
         return;
       }
       if (!active) {
@@ -308,16 +322,16 @@ function renderComputer(
     if (active) {
       if (backgroundTimer) window.clearTimeout(backgroundTimer);
       backgroundTimer = 0;
-      if (rfb) rfb.focus({ preventScroll: true });
+      if (display) display.focus({ preventScroll: true });
       else void wake();
       return;
     }
     releaseRemoteKeys();
-    rfb?.blur();
-    if (backgroundTimer || !rfb) return;
+    display?.blur();
+    if (backgroundTimer || !display) return;
     backgroundTimer = window.setTimeout(() => {
       backgroundTimer = 0;
-      rfb?.disconnect();
+      display?.disconnect();
     }, BACKGROUND_HOLD_MS);
   }
 
@@ -330,7 +344,7 @@ function renderComputer(
       if (response.headers.get("X-Akashic-Web-Stale") === "1") {
         catalogStale = true;
         clearTimers();
-        rfb?.disconnect();
+        display?.disconnect();
         showConnection("界面已更新", "请刷新页面以使用新的 Computer", false);
         setStatus("failed");
         return;
@@ -341,7 +355,7 @@ function renderComputer(
       failed = activity.browser.state === "failed";
       if (sleeping && !waking) {
         clearTimers();
-        rfb?.disconnect();
+        display?.disconnect();
         showConnection("Computer 已休眠", "无操作满 10 分钟，桌面已释放；保存的登录身份仍在", true);
         retry.textContent = "唤醒 Computer";
         setStatus("waiting");
@@ -350,7 +364,7 @@ function renderComputer(
         clearTimers();
         showConnection("Computer 启动或停止失败", activity.browser.error, true);
         setStatus("failed");
-      } else if (!rfb && active && !waking && activity.browser.state === "ready") {
+      } else if (!display && active && !waking && activity.browser.state === "ready") {
         connect();
       }
       agentActive = activity.active;
@@ -358,15 +372,16 @@ function renderComputer(
         view.requestAttention(`computer:${activity.noticeId}`);
       }
       lastNotice = activity.noticeId;
-      if (rfb && activity.browser.state === "ready") setStatus("connected");
+      if (displayConnected && activity.browser.state === "ready") setStatus("connected");
     } catch {
-      if (!catalogStale && rfb === null) setStatus("failed");
+      if (!catalogStale && display === null) setStatus("failed");
     }
   }
 
   async function wake() {
     if (waking || disposed || catalogStale) return;
     waking = true;
+    superseded = false;
     showConnection("正在唤醒 Computer", "正在打开你的主浏览器", false);
     setStatus("connecting");
     try {
@@ -383,7 +398,7 @@ function renderComputer(
   }
 
   function touch(event: Event) {
-    if (!event.isTrusted || !rfb || Date.now() - lastTouch < 1000) return;
+    if (!event.isTrusted || !display || Date.now() - lastTouch < 1000) return;
     lastTouch = Date.now();
     void ctx.http.request("/api/dashboard/computer/touch", { method: "POST" }).then((response) => {
       if (!response.ok) throw new Error(`touch ${response.status}`);
@@ -398,19 +413,19 @@ function renderComputer(
   function setClipboardOpen(open: boolean, returnToDesktop = false) {
     if (open) {
       releaseRemoteKeys();
-      rfb?.blur();
+      display?.blur();
     }
     clipboard.hidden = !open;
     clipboardButton.setAttribute("aria-expanded", String(open));
     if (open) clipboardText.focus();
-    else if (returnToDesktop) rfb?.focus({ preventScroll: true });
+    else if (returnToDesktop) display?.focus({ preventScroll: true });
     else clipboardButton.focus();
   }
 
   function releaseRemoteKeys() {
-    if (rfb) {
+    if (display) {
       for (const { keysym, code } of heldKeys.values()) {
-        rfb.sendKey(keysym, code, false);
+        display.sendKey(keysym, code, false);
       }
     }
     heldKeys.clear();
@@ -427,24 +442,30 @@ function renderComputer(
   }
 
   function sendPasteKeys(controlHeld: boolean) {
-    if (!rfb) return;
+    if (!display) return;
     const metaCodes = [...heldKeys.values()]
       .map((value) => value.code)
       .filter((code) => code === "MetaLeft" || code === "MetaRight");
     for (const event of pasteKeySequence(controlHeld, metaCodes)) {
-      rfb.sendKey(event.keysym, event.code, event.down);
+      display.sendKey(event.keysym, event.code, event.down);
     }
   }
 
-  function finishRemotePaste(attemptId: number, rawText: string) {
+  async function finishRemotePaste(attemptId: number, rawText: string) {
     const attempt = pasteAttempt;
-    if (!attempt || attempt.id !== attemptId || attempt.finished || !rfb) return;
+    if (!attempt || attempt.id !== attemptId || attempt.finished || !display) return;
     attempt.finished = true;
     clipboardText.value = rawText;
-    rfb.clipboardPasteFrom(rawText);
-    sendPasteKeys(hasHeldControl());
-    clipboardStatus.textContent = "已粘贴到 Computer。";
-    if (attempt.keyReleased) clearPasteAttempt();
+    const current = display;
+    try {
+      await current.clipboardPasteFrom(rawText);
+      if (disposed || display !== current) return;
+      sendPasteKeys(hasHeldControl());
+      clipboardStatus.textContent = "已粘贴到 Computer。";
+    } catch (error) {
+      if (!disposed) clipboardStatus.textContent = `粘贴失败：${String(error)}`;
+    }
+    if (pasteAttempt === attempt && attempt.keyReleased) clearPasteAttempt();
   }
 
   function beginRemotePaste(event: KeyboardEvent) {
@@ -478,7 +499,7 @@ function renderComputer(
   }
 
   function onRemotePaste(event: ClipboardEvent) {
-    if (!rfb) return;
+    if (!display) return;
     event.preventDefault();
     event.stopPropagation();
     const text = event.clipboardData?.getData("text/plain");
@@ -491,7 +512,7 @@ function renderComputer(
         keyReleased: true,
       };
     }
-    finishRemotePaste(pasteAttempt.id, text);
+    void finishRemotePaste(pasteAttempt.id, text);
   }
 
   async function writeTextToLocal(text: string): Promise<boolean> {
@@ -532,7 +553,7 @@ function renderComputer(
   function sendRemoteKey(event: KeyboardEvent, down: boolean) {
     event.preventDefault();
     event.stopPropagation();
-    if (!rfb) return;
+    if (!display) return;
     const id = event.code || event.key;
     if (down && event.repeat) return;
     const held = heldKeys.get(id);
@@ -540,7 +561,7 @@ function renderComputer(
     const keysym = held?.keysym ?? keysymForKey(event.key, event.code);
     if (keysym === null) return;
     const code = held?.code ?? event.code;
-    rfb.sendKey(keysym, code, down);
+    display.sendKey(keysym, code, down);
     if (down) heldKeys.set(id, { keysym, code });
     else heldKeys.delete(id);
   }
@@ -566,7 +587,7 @@ function renderComputer(
 
   function onWindowBlur() {
     releaseRemoteKeys();
-    rfb?.blur();
+    display?.blur();
   }
 
   function onVisibilityChange() {
@@ -608,7 +629,7 @@ function renderComputer(
     clipboardStatus.textContent = "文字已选中。请按 Ctrl+C 复制。";
   }
 
-  screen.addEventListener("focus", () => rfb?.focus({ preventScroll: true }));
+  screen.addEventListener("focus", () => display?.focus({ preventScroll: true }));
   screen.addEventListener("keydown", onRemoteKeyDown, true);
   screen.addEventListener("keyup", onRemoteKeyUp, true);
   screen.addEventListener("paste", onRemotePaste, true);
@@ -620,8 +641,8 @@ function renderComputer(
   document.addEventListener("visibilitychange", onVisibilityChange);
   retry.addEventListener("click", () => {
     reconnectAttempt = 0;
-    rfb?.disconnect();
-    if (!rfb) void wake();
+    display?.disconnect();
+    if (!display) void wake();
   });
   clipboardButton.addEventListener("click", () => setClipboardOpen(clipboard.hidden));
   clipboardClose.addEventListener("click", () => setClipboardOpen(false));
@@ -642,16 +663,22 @@ function renderComputer(
     void readLocalClipboard();
   });
   writeClipboard.addEventListener("click", () => void writeLocalClipboard());
-  sendClipboard.addEventListener("click", () => {
-    if (!rfb) {
+  sendClipboard.addEventListener("click", async () => {
+    if (!display) {
       clipboardStatus.textContent = "Computer 尚未连接。";
       return;
     }
-    rfb.clipboardPasteFrom(clipboardText.value);
-    clipboardStatus.textContent = "已发送到 Computer。关闭后在 Computer 中按 Ctrl+V 粘贴。";
+    const current = display;
+    try {
+      await current.clipboardPasteFrom(clipboardText.value);
+      if (disposed || display !== current) return;
+      clipboardStatus.textContent = "已发送到 Computer。关闭后在 Computer 中按 Ctrl+V 粘贴。";
+    } catch (error) {
+      if (!disposed) clipboardStatus.textContent = `发送失败：${String(error)}`;
+    }
   });
   ctrlAltDelete.addEventListener("click", () => {
-    rfb?.sendCtrlAltDel();
+    display?.sendCtrlAltDel();
     setClipboardOpen(false, true);
   });
   function syncFullscreenLabel() {
@@ -692,8 +719,8 @@ function renderComputer(
     releaseRemoteKeys();
     clearPasteAttempt();
     clearTimers();
-    rfb?.disconnect();
-    rfb = null;
+    display?.disconnect();
+    display = null;
     host.replaceChildren();
   };
 }

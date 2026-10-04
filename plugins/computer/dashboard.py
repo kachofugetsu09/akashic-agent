@@ -27,6 +27,8 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
 
     gateway = context.workload_url("computer", "gateway")
     display = _websocket_url(context.workload_url("computer", "display"))
+    stream_http = context.workload_url("computer", "stream")
+    stream = _websocket_url(stream_http).rstrip("/") + "/api/websockets"
     client = httpx.Client(base_url=gateway, timeout=125.0)
 
     def forward(
@@ -58,9 +60,22 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         result = forward("POST", "/touch", {})
         return Response(result.content, media_type="application/json")
 
+    @app.get("/api/dashboard/computer/stream-client")
+    def stream_client() -> Response:
+        result = forward("GET", stream_http.rstrip("/") + "/selkies-core.js")
+        return Response(result.content, media_type="text/javascript", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/dashboard/computer/stream-source/{name}")
+    def stream_source(name: str) -> Response:
+        if name not in {"selkies-ws-core.js", "util.js", "LICENSE"}:
+            raise HTTPException(status_code=404, detail="Unknown Computer stream source")
+        result = forward("GET", stream_http.rstrip("/") + "/source/" + name)
+        return Response(result.content, media_type="text/plain")
+
+    @app.websocket("/api/dashboard/computer/stream")
     @app.websocket("/api/dashboard/computer/display")
     async def computer_display(socket: WebSocket) -> None:
-        """Relay one generation-bound browser session to the private RFB bridge."""
+        """把当前 generation 的浏览器连接转发到私有显示服务。"""
 
         requested = {
             item.strip()
@@ -70,7 +85,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         protocols = [Subprotocol("binary")] if "binary" in requested else None
         try:
             upstream_context = connect(
-                display,
+                stream if socket.url.path.endswith("/stream") else display,
                 subprotocols=protocols,
                 compression=None,
                 open_timeout=10,
