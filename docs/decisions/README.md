@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0088](0088-computer-streams-h264-over-dashboard-websocket.md) | proposed | Computer 经现有 Dashboard WebSocket 传输 H.264 | PLG-017、RUN-016、WEBUI-008 |
 | [0086](0086-session-soft-delete-and-akasha-replay.md) | accepted | 会话软删除：逻辑失效可恢复，Akasha 学习与重放继续参与 | SES-003、SES-005、STA-003、MEM-009、WEBUI-009 |
 | [0087](0087-session-title-override.md) | proposed | 会话标题覆盖：显式管理状态，空值回到推导标题 | SES-003、WEBUI-009 |
 | [0085](0085-project-default-and-session-working-directory.md) | accepted | Project 固定默认目录，Session 独立当前目录与请求规则 | SES-011、SH-004、CTX-009 |
