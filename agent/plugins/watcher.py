@@ -16,7 +16,7 @@ class PluginWatcher:
         self,
         manager: PluginManager,
         *,
-        baseline_revision: str | None = None,
+        baseline_revision: dict[str, str] | None = None,
         interval_seconds: float = 1.0,
         after_reconcile: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
@@ -37,9 +37,11 @@ class PluginWatcher:
         """轮询插件文件状态，并在变化后执行一次热重载。"""
 
         revision = self._baseline_revision
-        failed_revision: str | None = None
+        failed_revision: dict[str, str] | None = None
         failed_attempts = 0
-        blocked_revision: str | None = None
+        blocked_revision: dict[str, str] | None = None
+        pending_ids: frozenset[str] = frozenset()
+        full_pending = False
         self._run_started = True
         try:
             # 1. 启动前已停止时，不再触碰 manager
@@ -78,6 +80,7 @@ class PluginWatcher:
                     if not forced:
                         continue
                 if manual_wake:
+                    full_pending = True
                     failed_revision = None
                     failed_attempts = 0
                     blocked_revision = None
@@ -86,6 +89,10 @@ class PluginWatcher:
                     failed_attempts = 0
                     blocked_revision = None
                 changed = forced or current_revision != revision
+                changed_ids = frozenset(
+                    plugin_id for plugin_id in current_revision.keys() | revision.keys()
+                    if current_revision.get(plugin_id) != revision.get(plugin_id)
+                ) | pending_ids
                 if blocked_revision == current_revision and not manual_wake:
                     changed = False
                 if not changed and not self._notification_pending:
@@ -100,11 +107,18 @@ class PluginWatcher:
                         blocked_revision = None
                     failed_attempts += 1
                     try:
-                        results = await self._manager.reconcile_changed()
+                        results = await self._manager.reconcile_changed(
+                            plugin_ids=None if full_pending else changed_ids,
+                        )
                     except Exception:
+                        pending_ids = changed_ids
                         logger.exception("插件热重载失败")
                         if failed_attempts >= _MAX_RECONCILE_ATTEMPTS:
                             blocked_revision = current_revision
+                            # 失败输入已观察并报告；无关变化不能重新授权它们。
+                            revision = current_revision
+                            pending_ids = frozenset()
+                            full_pending = False
                             if self._confirmation_pending:
                                 self._notification_pending = False
                         else:
@@ -119,10 +133,16 @@ class PluginWatcher:
                             for result in results
                         )
                         if needs_confirmation:
+                            pending_ids = changed_ids
                             self._confirmation_pending = True
                             self._forced = True
                         elif confirming:
                             self._confirmation_pending = False
+                            pending_ids = frozenset()
+                            full_pending = False
+                        else:
+                            pending_ids = frozenset()
+                            full_pending = False
                         revision = current_revision
                         self._notification_pending = self._after_reconcile is not None
                         failed_revision = None

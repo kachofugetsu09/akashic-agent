@@ -64,6 +64,7 @@ from agent.plugins.host import (
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.input_preparation import (
     PLUGIN_ARCHIVE_BINDING_API,
+    SOURCE_EXCLUDED_NAMES,
     _resolve_plugin_data_dir,
     _resolve_plugin_id,
     _source_revision,
@@ -81,7 +82,7 @@ from agent.plugins.manifest import (
     plugins_root,
     validate_workspace_plugin_data_path,
 )
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
+from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
     RecoveryActionName,
     RecoveryTarget,
@@ -412,17 +413,17 @@ class PluginManager:
     def reload_journal(self) -> ReloadJournal:
         return self._reload_journal
 
-    def watch_revision(self) -> str:
-        digest = hashlib.sha256()
+    def watch_revision(self) -> dict[str, str]:
+        """分别记录每个输入的磁盘变化，不把一次选择变更扩成全量更新。"""
         home = _plugins_home(self._installed_cache_root)
-        digest.update(_path_metadata(home / "manifest.toml"))
+        manifest = load_plugin_manifest(home)
+        revisions: dict[str, bytes] = {}
         mods, failures = self._discover_modules(
             record_source_failures=False,
         )
         for failure in failures:
-            digest.update(failure.source_type.encode())
-            digest.update(str(failure.source_root).encode())
-            digest.update(_source_metadata_revision(failure.source_root))
+            identity = failure.plugin_id or f"source:{failure.source_type}:{failure.source_root}"
+            revisions[identity] = _source_metadata_revision(failure.source_root)
         for mod in mods:
             plugin_id = _resolve_plugin_id(mod)
             plugin_dir = Path(mod["plugin_root"])
@@ -431,10 +432,17 @@ class PluginManager:
                 mod,
                 self._workspace,
             )
-            digest.update(plugin_id.encode())
-            digest.update(_source_metadata_revision(plugin_dir))
-            digest.update(_path_metadata(data_dir / CONFIG_INPUT))
-        return digest.hexdigest()
+            revisions[plugin_id] = (
+                _source_metadata_revision(plugin_dir)
+                + _path_metadata(data_dir / CONFIG_INPUT)
+            )
+        return {
+            plugin_id: hashlib.sha256(
+                revisions.get(plugin_id, b"source:missing")
+                + str(manifest.get(plugin_id, True)).encode()
+            ).hexdigest()
+            for plugin_id in revisions.keys() | manifest.keys()
+        }
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(
@@ -1077,8 +1085,11 @@ class PluginManager:
             _ = self._draining_generations.pop(generation.plugin_id, None)
 
 
-    async def reconcile_changed(self) -> list[dict[str, object]]:
-        return await self._run_operation(self._reconcile_changed)
+    async def reconcile_changed(
+        self, *, plugin_ids: frozenset[str] | None = None,
+    ) -> list[dict[str, object]]:
+        """应用指定的变化输入；显式全量请求仍检查当前已选来源。"""
+        return await self._run_operation(lambda: self._reconcile_changed(plugin_ids))
 
 
     def read_config_input(self, plugin_id: str) -> dict[str, object]:
@@ -1462,7 +1473,9 @@ class PluginManager:
         if plugin_id not in manifest:
             raise RuntimeError(f"插件未安装: {plugin_id}")
 
-    async def _reconcile_changed(self) -> list[dict[str, object]]:
+    async def _reconcile_changed(
+        self, plugin_ids: frozenset[str] | None = None,
+    ) -> list[dict[str, object]]:
         """Reconcile changed inputs in the one formal Root and owner map."""
         if self._live_root is None:
             raise RuntimeError("local Loader 尚未建立 live Root；已知宿主迁移缺口阻止更新")
@@ -1497,6 +1510,8 @@ class PluginManager:
             or plugin_id in self._disabled_builtin_plugins
         }
         for plugin_id in sorted((set(self._active_generations) | selected_ids) - desired):
+            if plugin_ids is not None and plugin_id not in plugin_ids:
+                continue
             if plugin_id not in explicitly_disabled:
                 active = self._active_generations.get(plugin_id)
                 source_root = self._source_root_hint(plugin_id, active)
@@ -1512,6 +1527,8 @@ class PluginManager:
             selection_ref = cast(str, result["selection_ref"])
             results.append(result)
         for plugin_id in sorted(desired):
+            if plugin_ids is not None and plugin_id not in plugin_ids:
+                continue
             if plugin_id not in selected_ids:
                 results.append({
                     "plugin_id": plugin_id,
@@ -1544,15 +1561,20 @@ class PluginManager:
             had_source_failure = (
                 _source_failure_key_for_mod(mod) in self._source_failures
             )
-            if (
+            same_input = (
                 active is not None
                 and active.state == "active"
                 and active.fiber is not None
                 and active.fiber.state == FiberState.ACTIVE
-                and active.source_revision == revision
                 and active.config_revision == config_revision
-                and not had_source_failure
-            ):
+                and (
+                    active.source_revision == revision
+                    # 旧归档的 digest 曾包含来源标签；按同一规则读取其
+                    # 固定代码，不改写旧 descriptor 或重新提交选择。
+                    or await run_file_io(lambda: _source_revision(active.code_dir)) == revision
+                )
+            )
+            if same_input and not had_source_failure:
                 continue
             generation = await self._prepare_one_with_source_diagnostics(
                 mod,
@@ -1564,14 +1586,7 @@ class PluginManager:
                     "selection_ref": selection_ref,
                 })
                 continue
-            if (
-                active is not None
-                and active.state == "active"
-                and active.fiber is not None
-                and active.fiber.state == FiberState.ACTIVE
-                and active.source_revision == revision
-                and active.config_revision == config_revision
-            ):
+            if same_input:
                 # A disappeared source can be revalidated without replacing an
                 # unrelated live generation merely to clear its old diagnostic.
                 await self._dispose_generation(generation, state="discarded")
@@ -2421,16 +2436,7 @@ def _source_failure_key_for_mod(mod: Mapping[str, str]) -> str:
 
 def _source_metadata_revision(plugin_dir: Path) -> bytes:
     digest = hashlib.sha256()
-    excluded = {
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".venv",
-        "__pycache__",
-        "node_modules",
-        ENVIRONMENT_FILE,
-    }
+    excluded = SOURCE_EXCLUDED_NAMES
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
         current_path = Path(current)
