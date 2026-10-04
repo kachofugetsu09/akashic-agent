@@ -1,16 +1,15 @@
-import { Check, ChevronDown, Search, Sparkles, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Check, ChevronDown, Search, Sparkles, Star } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import codexIcon from "./assets/provider-icons/codex.svg";
 import deepseekIcon from "./assets/provider-icons/deepseek.svg";
 import opencodeIcon from "./assets/provider-icons/opencode.svg";
 import openrouterIcon from "./assets/provider-icons/openrouter.svg";
 import { compatibleEffort, EFFORT_LABELS, groupModelRuntimes, type ChatModelRuntime } from "./model-capsule-data";
 
-const COMPACT_PANEL_GAP = 8;
-const COMPACT_PANEL_MARGIN = 12;
-const COMPACT_PANEL_MIN_WIDTH = 360;
-const COMPACT_PANEL_MAX_WIDTH = 420;
-const COMPACT_PANEL_MAX_HEIGHT = 416;
+const PANEL_GAP = 8;
+const PANEL_MARGIN = 12;
+const PANEL_MAX_HEIGHT = 380;
+const FAVORITES_KEY = "akashic.chat.model-favorites";
 
 export type { ChatModelRuntime } from "./model-capsule-data";
 
@@ -20,7 +19,14 @@ interface ModelCapsulePickerProps {
   selectedRuntimeId: string;
   selectedEffort: string;
   disabled: boolean;
-  compact?: boolean;
+  onChange: (runtimeId: string, effort: string) => void;
+}
+
+interface ModelEffortActionProps {
+  runtime: ChatModelRuntime;
+  effort: string;
+  explicit: boolean;
+  disabled: boolean;
   onChange: (runtimeId: string, effort: string) => void;
 }
 
@@ -42,12 +48,146 @@ function sourceIcon(runtime: ChatModelRuntime): string {
   return PROVIDER_ICONS[provider] || "";
 }
 
-function ModelMark({ runtime }: { runtime: ChatModelRuntime }) {
+function ModelMark({ runtime, small = false }: { runtime: ChatModelRuntime; small?: boolean }) {
   const icon = sourceIcon(runtime);
   return (
-    <span className="model-capsule__mark" aria-hidden="true">
+    <span className={`model-picker__mark ${small ? "model-picker__mark--small" : ""}`} aria-hidden="true">
       {icon ? <img src={icon} alt="" /> : <span>{runtime.sourceName.slice(0, 1).toUpperCase()}</span>}
     </span>
+  );
+}
+
+export function resolveVisibleRuntime(
+  runtimes: ChatModelRuntime[],
+  selectedRuntimeId: string,
+  defaultRuntime: string,
+): { visibleModel: ChatModelRuntime | undefined; defaultModel: ChatModelRuntime | undefined; explicitModel: ChatModelRuntime | undefined } {
+  const actualDefault = runtimes.find((runtime) => runtime.id === defaultRuntime);
+  const defaultModel = actualDefault || runtimes[0];
+  const explicitModel = runtimes.find((runtime) => runtime.id === selectedRuntimeId);
+  return { visibleModel: explicitModel || defaultModel, defaultModel, explicitModel };
+}
+
+function readFavorites(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(FAVORITES_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// 紧凑浮层贴触发器定位：上下择宽处展开，横向钳在视口内边距里。
+function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | null>, width: number) {
+  const [style, setStyle] = useState<CSSProperties | undefined>();
+  useLayoutEffect(() => {
+    if (!open) {
+      setStyle(undefined);
+      return;
+    }
+    function place() {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const spaceAbove = Math.max(0, rect.top - PANEL_GAP - PANEL_MARGIN);
+      const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - PANEL_GAP - PANEL_MARGIN);
+      const openUp = spaceAbove >= Math.min(PANEL_MAX_HEIGHT, 280) || spaceAbove >= spaceBelow;
+      const height = Math.min(PANEL_MAX_HEIGHT, Math.max(spaceAbove, spaceBelow));
+      const left = Math.max(PANEL_MARGIN, Math.min(rect.left, window.innerWidth - width - PANEL_MARGIN));
+      setStyle(
+        openUp
+          ? { left, width, height, bottom: window.innerHeight - rect.top + PANEL_GAP, top: "auto" }
+          : { left, width, height, top: rect.bottom + PANEL_GAP, bottom: "auto" },
+      );
+    }
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, triggerRef, width]);
+  return style;
+}
+
+function useDismissLayer(open: boolean, rootRef: RefObject<HTMLElement | null>, onClose: (restoreFocus: boolean) => void) {
+  useEffect(() => {
+    if (!open) return;
+    function closeOnPointer(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) onClose(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      onClose(true);
+    }
+    document.addEventListener("pointerdown", closeOnPointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open, rootRef, onClose]);
+}
+
+// 上下/Home/End 只在 [data-nav] 行之间移动焦点；星星等次级按钮不插进方向链。
+function moveRowFocus(event: React.KeyboardEvent<HTMLElement>) {
+  if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
+  const options = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-nav]")];
+  if (!options.length) return;
+  const current = options.indexOf(document.activeElement as HTMLElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+    : (Math.max(0, current) + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+  event.preventDefault();
+  options[next]?.focus({ preventScroll: true });
+}
+
+interface ModelRowProps {
+  runtime: ChatModelRuntime;
+  selected: boolean;
+  favorite: boolean;
+  onChoose: () => void;
+  onToggleFavorite: () => void;
+}
+
+function ModelRow({ runtime, selected, favorite, onChoose, onToggleFavorite }: ModelRowProps) {
+  return (
+    <div
+      className={`model-picker__option ${selected ? "is-selected" : ""}`}
+      role="option"
+      aria-selected={selected}
+      tabIndex={-1}
+      data-nav
+      onClick={onChoose}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onChoose();
+        }
+      }}
+    >
+      <Check size={14} className="model-picker__check" aria-hidden="true" />
+      <span className="model-picker__copy">
+        <strong>{runtime.model}</strong>
+        <span className="model-picker__meta">
+          {runtime.supportedReasoningEfforts.length > 0 ? <Sparkles size={11} aria-label="支持思考强度" /> : null}
+          <em>{runtime.provider}</em>
+        </span>
+      </span>
+      <button
+        type="button"
+        tabIndex={-1}
+        className={`model-picker__star ${favorite ? "is-favorite" : ""}`}
+        aria-label={favorite ? "取消收藏" : "收藏"}
+        aria-pressed={favorite}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleFavorite();
+        }}
+      >
+        <Star size={13} aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 
@@ -57,291 +197,251 @@ export function ModelCapsulePicker({
   selectedRuntimeId,
   selectedEffort,
   disabled,
-  compact = false,
   onChange,
 }: ModelCapsulePickerProps) {
   const [open, setOpen] = useState(false);
-  const [effortOpen, setEffortOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [sourceFilter, setSourceFilter] = useState<string>("all");
-  const [compactPanelStyle, setCompactPanelStyle] = useState<CSSProperties | undefined>();
+  const [favorites, setFavorites] = useState<string[]>(readFavorites);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const defaultOptionRef = useRef<HTMLButtonElement>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const effortRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const actualDefault = runtimes.find((runtime) => runtime.id === defaultRuntime);
-  const defaultModel = actualDefault || runtimes[0];
-  const explicitModel = runtimes.find((runtime) => runtime.id === selectedRuntimeId);
-  const visibleModel = explicitModel || defaultModel;
-  const hasSelection = Boolean(selectedRuntimeId ? explicitModel : actualDefault);
-  const selectionLabel = hasSelection ? visibleModel.model : selectedRuntimeId || defaultRuntime ? "所选模型不可用" : "选择对话模型";
-  const supportedEfforts = visibleModel?.supportedReasoningEfforts;
-  const groups = useMemo(() => groupModelRuntimes(runtimes), [runtimes]);
-  const visibleEffort = compatibleEffort(visibleModel || defaultModel, selectedEffort);
-  const filteredGroups = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return groups
-      .filter(([source]) => sourceFilter === "all" || source === sourceFilter)
-      .map(([source, models]) => [
-        source,
-        models.filter(({ runtime }) => {
-          if (!needle) return true;
-          return `${runtime.model} ${runtime.sourceName} ${runtime.provider}`.toLowerCase().includes(needle);
-        }),
-      ] as const)
-      .filter(([, models]) => models.length > 0);
-  }, [groups, query, sourceFilter]);
+  const { visibleModel, defaultModel, explicitModel } = resolveVisibleRuntime(runtimes, selectedRuntimeId, defaultRuntime);
+  const panelStyle = useFixedPanelStyle(open, triggerRef, 300);
 
-  useLayoutEffect(() => {
-    if (!open || !compact) {
-      setCompactPanelStyle(undefined);
-      return;
+  const items = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const filtered = needle
+      ? runtimes.filter((runtime) =>
+          `${runtime.model} ${runtime.sourceName} ${runtime.provider}`.toLowerCase().includes(needle))
+      : runtimes;
+    const favoriteSet = new Set(favorites);
+    const selectedSource = explicitModel ? explicitModel.sourceName : undefined;
+    // 1. 收藏组置顶；2. 选中模型所在来源排最前；3. 组内选中项排第一。
+    const groups = groupModelRuntimes(filtered).sort(
+      ([a], [b]) => (a === selectedSource ? -1 : b === selectedSource ? 1 : 0),
+    );
+    for (const [, models] of groups) {
+      models.sort((a, b) => (a.runtime.id === selectedRuntimeId ? -1 : b.runtime.id === selectedRuntimeId ? 1 : 0));
     }
-    function placeCompactPanel() {
-      const trigger = triggerRef.current;
-      if (!trigger) return;
-      const rect = trigger.getBoundingClientRect();
-      const width = Math.min(
-        window.innerWidth - COMPACT_PANEL_MARGIN * 2,
-        COMPACT_PANEL_MAX_WIDTH,
-        Math.max(COMPACT_PANEL_MIN_WIDTH, Math.min(window.innerWidth * 0.72, COMPACT_PANEL_MAX_WIDTH)),
-      );
-      const spaceAbove = Math.max(0, rect.top - COMPACT_PANEL_GAP - COMPACT_PANEL_MARGIN);
-      const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - COMPACT_PANEL_GAP - COMPACT_PANEL_MARGIN);
-      const openUp = spaceAbove >= Math.min(COMPACT_PANEL_MAX_HEIGHT, 280) || spaceAbove >= spaceBelow;
-      const height = Math.min(COMPACT_PANEL_MAX_HEIGHT, openUp ? spaceAbove : spaceBelow, Math.max(spaceAbove, spaceBelow));
-      const left = Math.max(
-        COMPACT_PANEL_MARGIN,
-        Math.min(rect.left, window.innerWidth - width - COMPACT_PANEL_MARGIN),
-      );
-      setCompactPanelStyle(
-        openUp
-          ? { left, width, height, bottom: window.innerHeight - rect.top + COMPACT_PANEL_GAP, top: "auto" }
-          : { left, width, height, top: rect.bottom + COMPACT_PANEL_GAP, bottom: "auto" },
-      );
-    }
-    placeCompactPanel();
-    window.addEventListener("resize", placeCompactPanel);
-    window.addEventListener("scroll", placeCompactPanel, true);
-    return () => {
-      window.removeEventListener("resize", placeCompactPanel);
-      window.removeEventListener("scroll", placeCompactPanel, true);
-    };
-  }, [compact, open, effortOpen]);
+    return { groups, favorites: filtered.filter((runtime) => favoriteSet.has(runtime.id)), favoriteSet };
+  }, [runtimes, query, favorites, explicitModel, selectedRuntimeId]);
 
   useEffect(() => {
     if (!open) return;
     const focusTimer = window.setTimeout(() => {
       searchRef.current?.focus({ preventScroll: true });
     }, 0);
-    function closeOnPointer(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) closePicker(false);
-    }
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      closePicker(true);
-    }
-    document.addEventListener("pointerdown", closeOnPointer);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.clearTimeout(focusTimer);
-      document.removeEventListener("pointerdown", closeOnPointer);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
+    return () => window.clearTimeout(focusTimer);
   }, [open]);
 
-  // 展开强度区后把焦点交给当前档位，键盘路径与旧第二屏一致。
-  useEffect(() => {
-    if (!open || !effortOpen) return;
-    const focusTimer = window.setTimeout(() => {
-      const effortIndex = Math.max(0, supportedEfforts?.indexOf(visibleEffort) ?? 0);
-      effortRefs.current[effortIndex]?.focus({ preventScroll: true });
-    }, 0);
-    return () => window.clearTimeout(focusTimer);
-  }, [open, effortOpen, supportedEfforts, visibleEffort]);
+  const closePicker = (restoreFocus: boolean) => {
+    setOpen(false);
+    setQuery("");
+    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
+  };
+  useDismissLayer(open, rootRef, closePicker);
 
   if (!visibleModel || !defaultModel) return null;
 
-  function closePicker(restoreFocus: boolean) {
-    setOpen(false);
-    setEffortOpen(false);
-    setQuery("");
-    setSourceFilter("all");
-    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
-  }
-
   function choose(runtime: ChatModelRuntime) {
     onChange(runtime.id, compatibleEffort(runtime, selectedEffort));
-    if (!runtime.supportedReasoningEfforts.length) closePicker(true);
-  }
-
-  function chooseEffort(effort: string) {
-    onChange(visibleModel.id, effort);
     closePicker(true);
   }
 
-  function toggleEfforts() {
-    setEffortOpen((current) => !current);
+  function toggleFavorite(runtimeId: string) {
+    setFavorites((current) => {
+      const next = current.includes(runtimeId) ? current.filter((id) => id !== runtimeId) : [...current, runtimeId];
+      try {
+        localStorage.setItem(FAVORITES_KEY, JSON.stringify(next));
+      } catch (error) {
+        if (!(error instanceof DOMException)) throw error;
+      }
+      return next;
+    });
   }
 
-  function movePickerFocus(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
-    const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
-    const current = options.indexOf(document.activeElement as HTMLButtonElement);
-    const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
-      : (Math.max(0, current) + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
-    event.preventDefault();
-    options[next]?.focus({ preventScroll: true });
-  }
-
-  const panel = open ? (
-    <div
-      id="model-capsule-panel"
-      className={`model-capsule__panel ${compact ? "model-capsule__panel--compact" : ""}`}
-      role="dialog"
-      aria-label={effortOpen ? "选择模型与思考强度" : "选择模型"}
-      style={compact ? compactPanelStyle : undefined}
-      onKeyDown={movePickerFocus}
-    >
-      <header className="model-capsule__header">
-        <button type="button" className="model-capsule__close" aria-label="关闭模型选择" onClick={() => closePicker(true)}><X size={18} aria-hidden="true" /></button>
-        <strong>选择模型</strong>
-        <small>{runtimes.length}</small>
-      </header>
-      <div className="model-capsule__main">
-        <label className="model-capsule__search">
-          <Search size={14} aria-hidden="true" />
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索模型"
-            aria-label="搜索模型"
-          />
-        </label>
-        {groups.length >= 3 ? (
-          <div className="model-capsule__rails" role="group" aria-label="按来源筛选">
-            <button type="button" aria-pressed={sourceFilter === "all"} onClick={() => setSourceFilter("all")}>全部</button>
-            {groups.map(([source]) => (
-              <button key={source} type="button" aria-pressed={sourceFilter === source} title={source} onClick={() => setSourceFilter(source)}>
-                {source}
-              </button>
-            ))}
-          </div>
-        ) : null}
-        <div className="model-capsule__list" aria-label="所有供应商的模型">
-          <section className="model-capsule__source">
-            <div className="model-capsule__source-title"><strong>会话策略</strong></div>
-            <div className={`model-capsule__option-wrap ${!selectedRuntimeId ? "is-selected" : ""}`}>
-              <button ref={defaultOptionRef} type="button" aria-pressed={!selectedRuntimeId} className="model-capsule__option" onClick={() => { onChange("", ""); closePicker(true); }}>
-                <ModelMark runtime={defaultModel} />
-                <span className="model-capsule__copy"><strong>跟随默认模型</strong><small>{actualDefault ? `${actualDefault.model} · ${actualDefault.sourceName}` : "系统默认尚未配置或不可用"}</small></span>
-                {!selectedRuntimeId && <Check size={16} aria-hidden="true" />}
-              </button>
-            </div>
-          </section>
-          {filteredGroups.map(([source, models]) => (
-            <section className="model-capsule__source" aria-label={source} key={source}>
-              <div className="model-capsule__source-title"><strong>{source}</strong><span>{models.length}</span></div>
-              {models.map(({ runtime, index }) => {
-                const active = runtime.id === selectedRuntimeId;
-                return (
-                  <div className={`model-capsule__option-wrap ${active ? "is-selected" : ""}`} key={runtime.id}>
-                    <button
-                      ref={(node) => { optionRefs.current[index] = node; }}
-                      type="button"
-                      aria-pressed={active}
-                      className="model-capsule__option"
-                      onClick={() => choose(runtime)}
-                    >
-                      <ModelMark runtime={runtime} />
-                      <span className="model-capsule__copy"><strong>{runtime.model}</strong><small>{runtime.sourceName} · {runtime.provider}</small></span>
-                      {active && <Check size={16} aria-hidden="true" />}
-                    </button>
-                  </div>
-                );
-              })}
-            </section>
-          ))}
-          {!filteredGroups.length ? <p className="model-capsule__empty">无匹配模型</p> : null}
-        </div>
-        {hasSelection && visibleModel.supportedReasoningEfforts.length > 0 && (
-          <div className="model-capsule__effort">
-            {effortOpen ? (
-              <>
-                <p className="model-capsule__effort-hint">{explicitModel ? "仅影响下一轮及之后的此会话" : `选择强度后，会把 ${visibleModel.model} 固定到当前会话`}</p>
-                <div className="model-capsule__effort-panel" id="model-capsule-efforts" role="group" aria-label={`${visibleModel.model} 支持的思考强度`}>
-                  {visibleModel.supportedReasoningEfforts.map((effort, index) => (
-                    <button
-                      ref={(node) => { effortRefs.current[index] = node; }}
-                      type="button"
-                      key={effort}
-                      aria-pressed={visibleEffort === effort}
-                      className={`model-capsule__effort-option ${visibleEffort === effort ? "is-selected" : ""}`}
-                      onClick={() => chooseEffort(effort)}
-                    >
-                      <span><strong>{EFFORT_LABELS[effort] || effort}</strong><small>{effort}</small></span>
-                      {visibleEffort === effort && <Check size={16} aria-hidden="true" />}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
-            <button type="button" className="model-capsule__effort-entry" aria-expanded={effortOpen} aria-controls="model-capsule-efforts" onClick={toggleEfforts}>
-              <Sparkles size={17} aria-hidden="true" />
-              <span><small>{explicitModel ? "思考强度" : "固定当前模型并设置强度"}</small><strong>{EFFORT_LABELS[visibleEffort] || visibleEffort}</strong></span>
-              <ChevronDown size={17} aria-hidden="true" />
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  ) : null;
-
-  const trigger = (
-        <button
-      ref={triggerRef}
-      type="button"
-      className="model-capsule__trigger"
-      aria-controls="model-capsule-panel"
-      aria-expanded={open}
-      aria-label={compact ? hasSelection ? `选择模型，当前 ${visibleModel.model}` : selectionLabel : undefined}
-      disabled={disabled}
-      onClick={() => {
-        if (open) closePicker(false);
-        else setOpen(true);
-      }}
-    >
-      {compact ? null : <ModelMark runtime={visibleModel} />}
-      {compact ? (
-        <span className="model-capsule__name">{selectionLabel}</span>
-      ) : (
-        <span className="model-capsule__trigger-copy">
-          <strong>{hasSelection ? `${visibleModel.model}：${visibleModel.sourceName}` : selectionLabel}</strong>
-          <small>{explicitModel ? (visibleEffort ? `思考 ${EFFORT_LABELS[visibleEffort] || visibleEffort}` : "固定到此会话") : "跟随默认模型"}</small>
-        </span>
-      )}
-      <ChevronDown size={compact ? 12 : 18} aria-hidden="true" />
-    </button>
-  );
-
-  if (compact) {
-    return (
-      <div ref={rootRef} className={`model-capsule model-capsule--compact ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`}>
-        {trigger}
-        {panel}
-      </div>
-    );
-  }
+  const hasSelection = Boolean(selectedRuntimeId ? explicitModel : runtimes.find((runtime) => runtime.id === defaultRuntime));
+  const selectionLabel = hasSelection ? visibleModel.model : selectedRuntimeId || defaultRuntime ? "所选模型不可用" : "选择对话模型";
 
   return (
-    <div ref={rootRef} className={`model-capsule ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`}>
-      <div className="model-capsule__shell">
-        {panel}
-        {trigger}
-      </div>
+    <div ref={rootRef} className={`model-picker ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="model-picker__trigger"
+        aria-expanded={open}
+        aria-label={hasSelection ? `选择模型，当前 ${visibleModel.model}` : selectionLabel}
+        disabled={disabled}
+        onClick={() => {
+          if (open) closePicker(false);
+          else setOpen(true);
+        }}
+      >
+        <ModelMark runtime={visibleModel} small />
+        <span className="model-picker__name">{selectionLabel}</span>
+        <ChevronDown size={11} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div
+          className="model-picker__panel"
+          role="dialog"
+          aria-label="选择模型"
+          style={panelStyle}
+          onKeyDown={moveRowFocus}
+        >
+          <div className="model-picker__search">
+            <Search size={14} aria-hidden="true" />
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索模型"
+              aria-label="搜索模型"
+            />
+          </div>
+          <div className="model-picker__list" role="listbox" aria-label="所有供应商的模型">
+            <div
+              className={`model-picker__option ${!selectedRuntimeId ? "is-selected" : ""}`}
+              role="option"
+              aria-selected={!selectedRuntimeId}
+              tabIndex={-1}
+              data-nav
+              onClick={() => {
+                onChange("", "");
+                closePicker(true);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onChange("", "");
+                  closePicker(true);
+                }
+              }}
+            >
+              <Check size={14} className="model-picker__check" aria-hidden="true" />
+              <span className="model-picker__copy">
+                <strong>跟随默认模型</strong>
+                <span className="model-picker__meta"><em>{defaultModel.model} · {defaultModel.sourceName}</em></span>
+              </span>
+            </div>
+            {items.favorites.length ? (
+              <div className="model-picker__group">
+                <div className="model-picker__group-title"><Star size={12} aria-hidden="true" />收藏</div>
+                {items.favorites.map((runtime) => (
+                  <ModelRow
+                    key={`fav:${runtime.id}`}
+                    runtime={runtime}
+                    selected={runtime.id === selectedRuntimeId}
+                    favorite
+                    onChoose={() => choose(runtime)}
+                    onToggleFavorite={() => toggleFavorite(runtime.id)}
+                  />
+                ))}
+              </div>
+            ) : null}
+            {items.groups.map(([source, models]) => (
+              <div className="model-picker__group" aria-label={source} key={source}>
+                <div className="model-picker__group-title">
+                  <ModelMark runtime={models[0].runtime} small />
+                  {source}
+                  <span>{models.length}</span>
+                </div>
+                {models.map(({ runtime }) => (
+                  <ModelRow
+                    key={runtime.id}
+                    runtime={runtime}
+                    selected={runtime.id === selectedRuntimeId}
+                    favorite={items.favoriteSet.has(runtime.id)}
+                    onChoose={() => choose(runtime)}
+                    onToggleFavorite={() => toggleFavorite(runtime.id)}
+                  />
+                ))}
+              </div>
+            ))}
+            {!items.groups.length ? <p className="model-picker__empty">无匹配模型</p> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// 思考强度是与模型选择解耦的独立工具行控件：当前模型不支持推理时整体消失。
+export function ModelEffortAction({ runtime, effort, explicit, disabled, onChange }: ModelEffortActionProps) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelStyle = useFixedPanelStyle(open, triggerRef, 176);
+  const closePicker = (restoreFocus: boolean) => {
+    setOpen(false);
+    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
+  };
+  useDismissLayer(open, rootRef, closePicker);
+
+  const supported = runtime.supportedReasoningEfforts;
+  if (!supported.length) return null;
+  const visibleEffort = compatibleEffort(runtime, effort);
+
+  return (
+    <div ref={rootRef} className={`model-effort ${open ? "is-open" : ""} ${visibleEffort ? "is-active" : ""}`}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="model-effort__trigger"
+        aria-expanded={open}
+        aria-label={`思考强度，当前 ${EFFORT_LABELS[visibleEffort] || visibleEffort}`}
+        disabled={disabled}
+        onClick={() => {
+          if (open) closePicker(false);
+          else setOpen(true);
+        }}
+      >
+        <Sparkles size={14} aria-hidden="true" />
+        {visibleEffort ? <span className="model-effort__tag">{EFFORT_LABELS[visibleEffort] || visibleEffort}</span> : null}
+      </button>
+      {open ? (
+        <div
+          className="model-effort__panel"
+          role="dialog"
+          aria-label={`${runtime.model} 支持的思考强度`}
+          style={panelStyle}
+          onKeyDown={moveRowFocus}
+        >
+          <div className="model-effort__list" role="listbox">
+            {supported.map((level) => {
+              const active = level === visibleEffort;
+              return (
+                <div
+                  key={level}
+                  className={`model-picker__option model-effort__option ${active ? "is-selected" : ""}`}
+                  role="option"
+                  aria-selected={active}
+                  tabIndex={-1}
+                  data-nav
+                  onClick={() => {
+                    onChange(runtime.id, level);
+                    closePicker(true);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onChange(runtime.id, level);
+                      closePicker(true);
+                    }
+                  }}
+                >
+                  <Check size={14} className="model-picker__check" aria-hidden="true" />
+                  <span className="model-picker__copy">
+                    <strong>{EFFORT_LABELS[level] || level}</strong>
+                    <span className="model-picker__meta"><em>{level}</em></span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {!explicit ? <p className="model-effort__hint">选择强度会把 {runtime.model} 固定到当前会话</p> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

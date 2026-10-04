@@ -47,16 +47,26 @@ export function desktopMessages(count = 100, { profile = "rich", sessionId = SES
 }
 
 export function desktopModels(count = 48) {
-  const runtimes = Array.from({ length: count }, (_, index) => ({
-    id: index === 0 ? "perf/runtime" : `perf/runtime-${index}`,
-    provider: index % 2 === 0 ? "fixture" : "openrouter",
-    model: index === 0 ? "fixture" : `fixture-${index}`,
-    sourceId: index % 2 === 0 ? "performance" : "catalog",
-    sourceName: index % 2 === 0 ? "性能夹具" : "OpenRouter",
-    reasoningEffort: "medium",
-    supportedReasoningEfforts: ["low", "medium", "high"],
-    roles: ["default"],
-  }));
+  const sources = [
+    { provider: "fixture", sourceId: "performance", sourceName: "性能夹具", prefix: "fixture", efforts: ["low", "medium", "high"] },
+    { provider: "openrouter", sourceId: "catalog", sourceName: "OpenRouter", prefix: "openrouter", efforts: ["low", "medium", "high", "xhigh"] },
+    { provider: "deepseek", sourceId: "deepseek-direct", sourceName: "DeepSeek 直连", prefix: "deepseek", efforts: ["medium", "high"] },
+    { provider: "codex", sourceId: "codex-oauth", sourceName: "Codex", prefix: "codex", efforts: [] },
+    { provider: "opencode-go", sourceId: "opencode-go", sourceName: "OpenCode Go", prefix: "opencode", efforts: ["low", "medium", "high", "max"] },
+  ];
+  const runtimes = Array.from({ length: count }, (_, index) => {
+    const source = sources[index % sources.length];
+    return {
+      id: index === 0 ? "perf/runtime" : `perf/runtime-${index}`,
+      provider: source.provider,
+      model: index === 0 ? "fixture" : `${source.prefix}-model-${Math.floor(index / sources.length)}`,
+      sourceId: source.sourceId,
+      sourceName: source.sourceName,
+      reasoningEffort: source.efforts[1] ?? "medium",
+      supportedReasoningEfforts: source.efforts,
+      roles: ["default"],
+    };
+  });
   return {
     generationId: 1,
     defaultRuntime: "perf/runtime",
