@@ -149,10 +149,10 @@
 
 .conversation-navigation__heading {
   color: var(--ak-color-text-secondary);
-  font-size: 0.875rem;
+  font-size: var(--chat-type-section, 0.8125rem);
   font-weight: 650;
-  line-height: 1.1;
-  letter-spacing: 0.02em;
+  line-height: 1rem;
+  letter-spacing: normal;
 }
 
 .conversation-navigation__heading--section {

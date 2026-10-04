@@ -83,7 +83,8 @@ input {
   --chat-rail-width: clamp(17rem, 23vw, 20rem);
   --chat-type-control: 0.875rem;
   --chat-type-caption: 0.75rem;
-  --chat-type-body: 0.875rem;
+  --chat-type-body: 0.9375rem;
+  --chat-type-section: 0.8125rem;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -544,7 +545,8 @@ input {
   justify-content: space-between;
   padding-inline: 10px 4px;
   color: var(--chat-muted);
-  font-size: 0.8125rem;
+  font-size: var(--chat-type-section);
+  line-height: 1rem;
   font-weight: 600;
 }
 
@@ -918,6 +920,10 @@ input {
 
 .chat-main {
   --chat-concept-columns: minmax(5.6rem, 0.38fr) minmax(0, 1fr);
+  --chat-response-leading: 1.5;
+  --chat-user-leading: calc(20 / 15);
+  --chat-paragraph-gap: 0.75em;
+  --chat-list-gap: 0.25em;
   position: relative;
   display: flex;
   min-width: 0;
@@ -1021,11 +1027,6 @@ input {
 
 .chat-sidebar--entry .conversation-session__title time {
   font-size: var(--chat-type-caption);
-}
-
-.chat-main .agent-content {
-  font-size: var(--chat-type-body);
-  line-height: 1.6;
 }
 
 .web-message-anchor .agent-content > :last-child > p:last-child,
@@ -2217,7 +2218,13 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 @media (max-width: 820px) {
   .chat-sidebar__search input { font-size: 1rem; }
-  .chat-main { --composer-compact-h: 56px; }
+  .chat-main {
+    --chat-type-body: 1rem;
+    --chat-response-leading: 1.65;
+    --chat-user-leading: 1.5;
+    --chat-list-gap: 0.375em;
+    --composer-compact-h: 56px;
+  }
   .chat-main .composer { --composer-control-size: 44px; }
   .chat-main .composer textarea { font-size: 1rem; }
   /* 窄屏：输入卡左右缘即阅读边界，卡内文字有自己的 inset。
@@ -2235,7 +2242,6 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main {
     --chat-dock-inset: 16px;
     --chat-concept-columns: minmax(0, 1fr);
-    --chat-type-body: 1rem;
     --composer-dock-end: max(8px, env(safe-area-inset-bottom, 0px));
     /* 顶 10 + 文字 44 + 间距 12 + 工具 44 + 底 6 + 边框 2 */
     --composer-compact-h: 7.375rem;
