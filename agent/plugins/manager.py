@@ -64,6 +64,7 @@ from agent.plugins.host import (
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.input_preparation import (
     PLUGIN_ARCHIVE_BINDING_API,
+    SOURCE_EXCLUDED_NAMES,
     _resolve_plugin_data_dir,
     _resolve_plugin_id,
     _source_revision,
@@ -81,7 +82,7 @@ from agent.plugins.manifest import (
     plugins_root,
     validate_workspace_plugin_data_path,
 )
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
+from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
     RecoveryActionName,
     RecoveryTarget,
@@ -886,7 +887,13 @@ class PluginManager:
         fibers = self._generation_fibers(generation)
         if root is None or not fibers:
             raise RuntimeError(f"目标 generation 未建立 Fiber: {generation.plugin_id}")
-        root.require_ready((*fibers, *affected, *root.consumers(fibers, declared=True)))
+        root.require_ready(fibers)
+        try:
+            root.require_ready((*affected, *root.consumers(fibers, declared=True)))
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"插件 {generation.plugin_id} 已就绪，但依赖消费者尚未就绪: {error}"
+            ) from error
 
     async def _start_local_generation(
         self,
@@ -1580,15 +1587,20 @@ class PluginManager:
             had_source_failure = (
                 _source_failure_key_for_mod(mod) in self._source_failures
             )
-            if (
+            same_input = (
                 active is not None
                 and active.state == "active"
                 and active.fiber is not None
                 and active.fiber.state in {FiberState.ACTIVE, FiberState.PENDING}
-                and active.source_revision == revision
                 and active.config_revision == config_revision
-                and not had_source_failure
-            ):
+                and (
+                    active.source_revision == revision
+                    # 旧归档的 digest 曾包含来源标签；按同一规则读取其
+                    # 固定代码，不改写旧 descriptor 或重新提交选择。
+                    or await run_file_io(lambda: _source_revision(active.code_dir)) == revision
+                )
+            )
+            if same_input and not had_source_failure:
                 if active.fiber.state is FiberState.PENDING:
                     readiness_ids.add(plugin_id)
                 continue
@@ -1602,14 +1614,7 @@ class PluginManager:
                     "selection_ref": selection_ref,
                 })
                 continue
-            if (
-                active is not None
-                and active.state == "active"
-                and active.fiber is not None
-                and active.fiber.state in {FiberState.ACTIVE, FiberState.PENDING}
-                and active.source_revision == revision
-                and active.config_revision == config_revision
-            ):
+            if same_input:
                 # A disappeared source can be revalidated without replacing an
                 # unrelated live generation merely to clear its old diagnostic.
                 await self._dispose_generation(generation, state="discarded")
@@ -2473,18 +2478,7 @@ def _source_failure_key_for_mod(mod: Mapping[str, str]) -> str:
 
 def _source_metadata_revision(plugin_dir: Path) -> bytes:
     digest = hashlib.sha256()
-    excluded = {
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".venv",
-        "__pycache__",
-        "node_modules",
-        ENVIRONMENT_FILE,
-        # 分发来源保留在完整归档中；来源标签不单独触发运行实例换代。
-        ".akashic-source.json",
-    }
+    excluded = SOURCE_EXCLUDED_NAMES
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
         current_path = Path(current)
