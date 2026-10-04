@@ -19,7 +19,7 @@ async function open(): Promise<void> {
     const notice = document.createElement("p");
     notice.className = "web-host-entry-error";
     notice.setAttribute("role", "alert");
-    notice.textContent = "设置界面正在更新或暂时不可用。请稍后重新加载界面；已提交的操作会继续执行。";
+    notice.textContent = "设置界面暂不可用，请重新加载。已提交操作的结果请在恢复后查看。";
     const retry = document.createElement("button");
     retry.type = "button";
     retry.textContent = "重新加载界面";

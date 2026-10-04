@@ -357,6 +357,11 @@ Dashboard 继续使用 `DashboardContext` 的 `require()`、`workspace_root()`�
 初次导入失败仅允许 dashboard-only 插件暂不可用；配套 Web/API 不能半发布。
 Web bootstrap 和 DashboardHost 从所选 Root 的 typed service 读取目录；
 宿主投影不复制 Web/UI 注册状态，Core compiler 不解释 UI 合同。
+目录只包含已初始化且 ACTIVE 的贡献方；无关安装或卸载不阻止 bootstrap。
+浏览器按 snapshot 与 catalog identity 判断目录是否变化，manager 的 `updating`
+只描述操作进行中，不使未变的 UI 失效。请求继续核对贡献方 generation 与权限。
+Channel 激活只声明启动实际需要的硬依赖；例如回复状态在请求中通过已声明的
+可选能力借用，缺失时该请求明确失败，设置与其他只读入口继续服务。
 
 ```text
 贡献插件 apply(ctx) ── UI.register ──┐

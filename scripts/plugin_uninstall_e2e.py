@@ -38,9 +38,13 @@ CONTRIBUTOR = """from agent.plugin_composition import ServiceKey
 api_version = 3
 name = 'annotation'
 version = '1'
-inject = (ServiceKey('e2e.registry'),)
+inject = (ServiceKey('e2e.registry'), ServiceKey('content.v2'))
+async def decode(source, references):
+    return (), {}
 async def apply(ctx):
     await ctx.require(inject[0]).register(ctx)
+    await ctx.require(inject[1]).register(ctx, {
+        'name': 'annotation', 'prompt': 'E2E annotation', 'decode': decode, 'content': {}})
 """
 PEER = """from agent.plugin_composition import ServiceKey
 api_version = 3
@@ -125,16 +129,100 @@ async def recover(manager, client, root, workspace, blocked=False):
             **({'blocked_consumer_report': 'passed', 'ready_provider_retained': 'passed'} if blocked else {})}
 
 
+NOTES = """from agent.plugin_composition.ui import UI
+api_version = 3
+name = 'notes-ui'
+version = '1'
+inject = (UI,)
+async def apply(ctx):
+    from . import dashboard
+    await ctx.require(UI).register(ctx, web='web_module.js', dashboard=lambda: dashboard,
+                                   requires=('shell.pages.v1',))
+"""
+NOTES_WEB = """export function activate(ctx) {
+  return ctx.ui.inject('shell.pages.v1', mount => mount.register({
+    id: 'e2e-notes', label: 'Notes', route: 'e2e-notes', iconSvg: '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>', section: 'settings',
+    render(host) {
+      const draft = document.createElement('textarea');
+      draft.setAttribute('aria-label', 'E2E draft');
+      draft.style.maxWidth = '100%';
+      host.append(draft);
+      return () => draft.remove();
+    }
+  }));
+}
+"""
+NOTES_DASHBOARD = """inject = ()
+def register(app, context):
+    @app.get('/api/dashboard/e2e/notes')
+    def read_note():
+        return {'note': (context.data_root / 'note.txt').read_text()}
+"""
+
+
+async def web_client_checks(workspace):
+    """通过实际 Unix HTTP listener 核对无回复能力时的独立读取。"""
+    import httpx
+    transport = httpx.AsyncHTTPTransport(uds=str(workspace / 'runtime/web-chat.sock'))
+    async with httpx.AsyncClient(transport=transport, base_url='http://localhost') as client:
+        for path in ['/api/chat/health', '/api/chat/web-ui/bootstrap', '/api/chat/web-ui/state']:
+            response = await client.get(path)
+            assert response.status_code == 200, (path, response.status_code, response.text)
+
+
+async def web_browser_checks(core, root, workspace, config):
+    """启动正式 Web Shell，验证实际 catalog 身份与 Chromium 中的草稿。"""
+    import socket
+    import httpx
+    import uvicorn
+    from bootstrap.web_shell import create_web_shell_app
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    url = f'http://127.0.0.1:{listener.getsockname()[1]}'
+    shell = uvicorn.Server(uvicorn.Config(create_web_shell_app(config, workspace), log_level='error'))
+    task = asyncio.create_task(shell.serve(sockets=[listener]))
+    try:
+        await wait_for(lambda: shell.started or task.done(), 'Web Shell startup')
+        if task.done():
+            task.result()
+            raise RuntimeError('Web Shell exited before startup')
+        async with httpx.AsyncClient(base_url=url) as client:
+            response = await client.get('/api/chat/web-ui/bootstrap')
+            assert response.status_code == 200, response.text
+            bootstrap = response.json()
+            module = next(item for item in bootstrap['modules'] if item['pluginId'] == 'notes-ui@lab')
+            headers = {'X-Akashic-Web-Snapshot': bootstrap['snapshotId'],
+                       'X-Akashic-Web-Catalog': bootstrap['catalogId'],
+                       'X-Akashic-Web-Module': module['pluginId'],
+                       'X-Akashic-Web-Generation': module['generationId']}
+            valid = await client.get('/api/dashboard/e2e/notes', headers=headers)
+            assert valid.status_code == 200 and valid.json()['note'] == 'kept-note', valid.text
+            invalid = await client.get('/api/dashboard/e2e/notes', headers={**headers, 'X-Akashic-Web-Catalog': '0' * 64})
+            assert invalid.status_code == 409 and invalid.json()['code'] == 'stale_catalog', invalid.text
+        process = await asyncio.create_subprocess_exec(
+            'node', str(ROOT / 'scripts/plugin_uninstall_browser.mjs'), url, str(root),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        output, _ = await asyncio.wait_for(process.communicate(), 40)
+        (root / 'browser.log').write_bytes(output)
+        assert process.returncode == 0, output.decode()
+    finally:
+        shell.should_exit = True
+        await task
+        listener.close()
+
+
 def git(path: Path, *args: str) -> str:
     return subprocess.check_output(['git', '-C', str(path), *args], text=True).strip()
 
 
-def install_fixture(root: Path, workspace: Path, home: Path, name: str, text: str) -> None:
+def install_fixture(root: Path, workspace: Path, home: Path, name: str, text: str, files: dict[str, str] | None = None) -> None:
     """按正式 Git 安装链准备普通插件，不编辑安装 cache。"""
     from agent.plugins.install import install_git_plugin
     source = root / 'sources' / name
     source.mkdir(parents=True)
     (source / 'plugin.py').write_text(text)
+    for filename, content in (files or {}).items():
+        (source / filename).write_text(content)
     git(source, 'init', '-q')
     git(source, 'add', '.')
     git(source, '-c', 'user.name=E2E', '-c', 'user.email=e2e@example.invalid',
@@ -179,8 +267,47 @@ async def check_provenance(app, manager, plugins, workspace):
             'archive_provenance_retained': 'passed', 'no_selection_rewrite': 'passed'}
 
 
+async def check_runtime_cli(root, core):
+    """实际启动 Host Bridge，再执行其生成的固定发行版 CLI。"""
+    token = root / 'token'
+    token.write_bytes(os.urandom(32).hex().encode())
+    token.chmod(0o600)
+    socket = root / 'bridge.sock'
+    artifacts = root / 'artifacts'
+    commit = git(core, 'rev-parse', 'HEAD')
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith('AKASHIC_') and key != 'PYTHONPATH'}
+    env.update(HOME=str(root), PYTHONPATH=str(core))
+    with (root / 'bridge.log').open('wb') as output:
+        bridge = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'agent.host_bridge.server', '--socket', str(socket),
+            '--token-file', str(token), '--artifact-root', str(artifacts),
+            '--release-commit', commit, '--runtime-checkout', str(core),
+            '--bridge-python', sys.executable, '--toolchain-digest',
+            hashlib.sha256((core / 'mise.toml').read_bytes()).hexdigest(),
+            cwd=root, env=env, stdout=output, stderr=output)
+        try:
+            await wait_for(lambda: socket.exists() or bridge.returncode is not None, 'Bridge startup')
+            assert bridge.returncode is None, (root / 'bridge.log').read_text()
+            launcher = artifacts / 'runtime-cli' / commit / 'akashic-runtime'
+            cli = await asyncio.create_subprocess_exec(
+                str(launcher), '--help', cwd=root, env={**env, 'PYTHONPATH': '/missing'},
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            output, _ = await asyncio.wait_for(cli.communicate(), 15)
+            (root / 'cli.log').write_bytes(output)
+            assert cli.returncode == 0, output.decode()
+            assert b'plugin-uninstall' in output, output.decode()
+        finally:
+            if bridge.returncode is None:
+                bridge.terminate()
+            await asyncio.wait_for(bridge.wait(), 10)
+    return {'host_bridge_runtime_cli': 'passed'}
+
+
 async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict[str, object]:
     """隔离全部路径并通过实际控制协议触发卸载和源码更新。"""
+    if case == 'cli':
+        return await check_runtime_cli(root, core)
     # 1. 初始化独占状态，复制候选源码，保留完整输入和报告。
     sys.path[:0] = [str(core), str(core / 'sdk/python/src')]
     for key in tuple(os.environ):
@@ -221,6 +348,10 @@ async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict
             'async def apply(ctx):', "async def apply(ctx):\n    if version == '2':\n        entered, release = ctx.require(inject[0])\n        entered.set()\n        await release.wait()")
     for name, source in [('z_registry', provider), *fixtures]:
         install_fixture(root, workspace, home, name, source)
+    if case in {'ui', 'client'}:
+        install_fixture(root, workspace, home, 'notes-ui', NOTES,
+                        {'web_module.js': NOTES_WEB, 'dashboard.py': NOTES_DASHBOARD})
+        (workspace / 'plugin-data/notes-ui-lab/note.txt').write_text('kept-note')
     if seed_core is not None:
         # 用旧版真实启动生成 selection，候选版直接读取其完整归档。
         seed = """import asyncio, sys
@@ -265,6 +396,10 @@ asyncio.run(run())
         # 2. 让 watcher 以已有漂移为基线；这正是部署后才卸载的现场条件。
         app.plugin_watcher.stop()
         await app.plugin_watcher_task
+        if case == 'client':
+            assert manager.generation('reply').fiber.state is FiberState.PENDING
+            await web_client_checks(workspace)
+            return {'web_without_reply': 'passed'}
         if case in {'recovery', 'recovery-blocked'}:
             async with await AsyncAkashic.connect(str(workspace / 'akashic.sock')) as client:
                 result = await recover(manager, client, root, workspace, blocked=case == 'recovery-blocked')
@@ -299,17 +434,30 @@ asyncio.run(run())
         target_data.write_bytes(b'user-owned-data')
         archive_before = (target.code_dir / 'plugin.py').read_bytes()
         registry = manager.live_root.context.require(ServiceKey('e2e.registry'))
+        if case == 'ui':
+            from agent.plugin_composition.ui import WEB_UI
+            ui = manager.live_root.context.require(WEB_UI)
+            bootstrap_before = await ui.bootstrap()
         async def hold_contribution():
-            async with registry.entries['annotation@lab'].runtime_scope():
+            content_service = manager.live_root.context.require(ServiceKey('content.v2'))
+            async with content_service.bind() as view:
+                assert 'E2E annotation' in view.prompts
                 held.set()
                 await release.wait()
         holder = asyncio.create_task(hold_contribution())
-        await held.wait()
+        await wait_for(lambda: held.is_set() or holder.done(), 'Content view acquisition')
+        if holder.done():
+            holder.result()
         async with await AsyncAkashic.connect(str(workspace / 'akashic.sock')) as client:
             accepted = await client.request('plugin/uninstall', {'plugin_id': 'annotation@lab'})
             assert accepted['state'] == 'accepted', accepted
             await wait_for(lambda: target.fiber.state is FiberState.UNLOADING, 'target draining')
             assert provider.fiber.state is FiberState.ACTIVE
+            if case == 'ui':
+                assert await ui.bootstrap() == bootstrap_before
+                assert (await ui.state())['updating'] is True
+                await web_client_checks(workspace)
+                await web_browser_checks(core, root, workspace, config)
             release.set()
             await holder
             await wait_for(lambda: manager.plugin_status()['operation']['state'] == 'done', 'uninstall done')
@@ -324,8 +472,11 @@ asyncio.run(run())
             assert (target.code_dir / 'plugin.py').read_bytes() == archive_before
             assert message_rows() == messages_before
             assert 'annotation@lab' not in registry.entries
+            async with manager.live_root.context.require(ServiceKey('content.v2')).bind() as view:
+                assert 'E2E annotation' not in view.prompts
             status = await client.request('plugin/status', {})
-            assert not any(p['plugin_id'] == 'annotation@lab' for p in status['plugins'])
+            assert all(p['selected_ref'] is None for p in status['plugins']
+                       if p['plugin_id'] == 'annotation@lab')
             assert not (home / 'cache/lab/annotation').exists()
             # 来源证据本身变化不会触发实例换代；真实代码和配置变化仍生效。
             content_marker.write_text(json.dumps({'commit': 'another-source-evidence'}))
@@ -348,9 +499,9 @@ asyncio.run(run())
             assert manager.generation('peer@lab').config_projection == {'label': 'changed'}
         return {'config_update': 'passed', 'uninstall_scope': 'passed', 'real_source_update': 'passed',
                 'provenance_only_change': 'passed', 'protected_messages': 'passed',
-                'retained_plugin_data': 'passed', 'core': git(core, 'rev-parse', 'HEAD'),
-                'source_sha256': {str(p.relative_to(core)): hashlib.sha256(p.read_bytes()).hexdigest()
-                                  for p in [core / 'agent/plugins/manager.py', core / 'agent/plugins/watcher.py']}}
+                'retained_plugin_data': 'passed',
+                **({'web_during_uninstall': 'passed', 'stale_identity_rejected': 'passed',
+                    'browser_draft_focus': 'passed'} if case == 'ui' else {})}
     finally:
         release.set()
         if holder is not None:
@@ -362,7 +513,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--core-root', type=Path, default=ROOT)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--case', choices=['uninstall', 'recovery', 'recovery-blocked', 'provenance'], default='uninstall')
+    parser.add_argument('--case', choices=['uninstall', 'recovery', 'recovery-blocked', 'provenance', 'ui', 'client', 'cli'], default='uninstall')
     parser.add_argument('--seed-core', type=Path)
     args = parser.parse_args()
     root = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='plugin-uninstall-e2e-'))
@@ -377,7 +528,10 @@ def main() -> None:
         raise
     result['core'] = git(args.core_root.resolve(), 'rev-parse', 'HEAD')
     result['source_sha256'] = {name: hashlib.sha256((args.core_root / name).read_bytes()).hexdigest()
-                               for name in ['agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py']}
+                               for name in ['agent/host_bridge/server.py', 'agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py',
+                                            'plugins/ui/plugin.py', 'plugins/akashic_clients/plugin.py',
+                                            'plugins/akashic_clients/capabilities.py', 'plugins/akashic_clients/channel.py',
+                                            'frontend/dashboard/src/webHost.ts', 'frontend/dashboard/src/main.tsx']}
     (root / 'result.json').write_text(json.dumps({'status': 'passed', **result}, indent=2))
     print(json.dumps(result), flush=True)
 
