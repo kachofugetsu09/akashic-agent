@@ -26,7 +26,6 @@ import {
 export interface ProjectSessionItem {
   id: string;
   title: string;
-  updatedLabel?: string;
   active: boolean;
 }
 

@@ -133,6 +133,46 @@ class OwnerState:
         return self._log.owner(f"plugin:{owner}:{scope}")
 
 
+class SessionDeleteResult:
+    """一次已提交的 Session 软删或恢复；消息与其他 owner 状态保持不变。"""
+
+    def __init__(self, session_key: str, deleted: bool, deleted_at: str | None) -> None:
+        self.session_key = session_key
+        self.deleted = deleted
+        self.deleted_at = deleted_at
+
+
+class SessionTitleResult:
+    """一次已提交的 Session 标题覆盖或清除；消息与属性保持不变。"""
+
+    def __init__(self, session_key: str, title: str | None) -> None:
+        self.session_key = session_key
+        self.title = title
+
+
+class SessionAdmin:
+    """用户显式的会话数据管理操作：软删/恢复与标题覆盖，不授予消息减少或其他 owner 权限。"""
+
+    def __init__(self, log: _MessageLog | None):
+        self._log = log
+
+    async def set_deleted(self, session_key: str, *, deleted: bool) -> SessionDeleteResult:
+        if self._log is None:
+            raise RuntimeError("candidate 验证期禁止管理正式 Session")
+        deleted_at = await run_file_io(
+            lambda: self._log.set_session_deleted(session_key, deleted=deleted)
+        )
+        return SessionDeleteResult(session_key, deleted=deleted_at is not None, deleted_at=deleted_at)
+
+    async def set_title(self, session_key: str, title: str | None) -> SessionTitleResult:
+        if self._log is None:
+            raise RuntimeError("candidate 验证期禁止管理正式 Session")
+        stored = await run_file_io(
+            lambda: self._log.set_session_title(session_key, title)
+        )
+        return SessionTitleResult(session_key, stored)
+
+
 class SessionAdmission:
     """仅授予固定属性的 create-once，不带元数据改写、删除或消息权限。"""
 
@@ -230,6 +270,8 @@ OWNER_STATE = ServiceKey[OwnerState]("core.owner_state")
 
 MESSAGE_CATALOG = ServiceKey[MessageCatalog]("core.message_catalog")
 
+SESSION_ADMIN = ServiceKey[SessionAdmin]("core.session_admin")
+
 MESSAGE_EMBEDDINGS = ServiceKey[MessageEmbeddings]("core.message_embeddings")
 SESSION_ADMISSION = ServiceKey[SessionAdmission]("core.session_admission")
 
@@ -252,7 +294,10 @@ __all__ = [
     "OwnerState",
     "OwnerStore",
     "OwnerTransaction",
+    "SESSION_ADMIN",
     "SESSION_ADMISSION",
+    "SessionAdmin",
     "SessionAdmission",
     "SessionAttributes",
+    "SessionDeleteResult",
 ]

@@ -799,7 +799,7 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 身份刷新都结束后允许释放桌面；面板打开、轮询和自动重连不延长占用或唤醒。下一次使用恢复
 已保存身份，JS 绑定和页面运行状态重新初始化。启停与主 profile 的单 writer 由 Computer
 插件内唯一 owner 保证；释放失败不能继续启动第二个 writer。见 [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)；显示选择见
-[0086](decisions/0086-computer-streams-h264-over-dashboard-websocket.md)。
+[0088](decisions/0088-computer-streams-h264-over-dashboard-websocket.md)。
 Agent 可另建匿名 BrowserContext 做 E2E，默认共享一份独立 headless Chromium。各 Context
 隔离身份和页面存储，不读取主 profile，不装 OpenCLI 扩展；主面板仍显示主浏览器。
 匿名实例属于创建它的 Turn，最多同时八个；主动关闭、Turn 结束、调用失败、Session

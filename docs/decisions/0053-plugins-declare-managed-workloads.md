@@ -2,7 +2,7 @@
 
 > [0071](0071-plugin-composition-and-whole-runtime-updates.md) 已调整目标：运行请求只由插件代码定义，Workload provider 与 Controller 校验执行，不再维护静态 manifest 对账。窄权限 Controller、数据与端口隔离仍保留。
 
-> 显示传输的后续选择见 [0086](0086-computer-streams-h264-over-dashboard-websocket.md)；本记录的 Workload、generation、权限与持久数据边界继续适用。
+> 显示传输的后续选择见 [0088](0088-computer-streams-h264-over-dashboard-websocket.md)；本记录的 Workload、generation、权限与持久数据边界继续适用。
 
 - 状态：accepted / implemented
 - 日期：2026-08-31
