@@ -378,6 +378,13 @@ input {
   flex: 1;
 }
 
+/* 手动排序拖拽：被拖源弱化；插入指示是上/下半处的一根发丝线。 */
+.conversation-session-row.session-row-drag-source > .conversation-session { opacity: 0.55; }
+.conversation-session-row.session-row-drop-before > .conversation-session { box-shadow: inset 0 1px 0 var(--ak-rule-focus); }
+.conversation-session-row.session-row-drop-after > .conversation-session { box-shadow: inset 0 -1px 0 var(--ak-rule-focus); }
+.conversation-session[draggable="true"] { cursor: grab; }
+.conversation-session[draggable="true"]:active { cursor: grabbing; }
+
 .navigation-menu-row {
   position: relative;
   min-width: 0;

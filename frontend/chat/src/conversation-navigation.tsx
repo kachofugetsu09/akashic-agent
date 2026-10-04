@@ -35,6 +35,26 @@ export interface ConversationAction {
   onActivate: () => void;
 }
 
+/** 会话行原生拖拽排序契约：由列表 owner 提供；marker 是本行的上/下半插入指示。 */
+export interface ConversationRowDrag {
+  /** 有同族行拖拽在进行。 */
+  active: boolean;
+  /** 本行是被拖源。 */
+  source: boolean;
+  /** 当前插入指示落在本行的哪一半。 */
+  marker?: "before" | "after";
+  start: () => void;
+  end: () => void;
+  hover: (half: "before" | "after") => void;
+  drop: (half: "before" | "after") => void;
+}
+
+/** 指针纵向位置 → 行内上/下半。 */
+function rowHalf(event: { clientY: number; currentTarget: HTMLElement }): "before" | "after" {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+}
+
 /** Render the shared navigation language while adapters provide platform capabilities. */
 export function ConversationNavigation({
   destinations,
@@ -52,6 +72,7 @@ export function ConversationNavigation({
   sessionHeadingAction,
   className = "",
   sessionActions,
+  sessionDrag,
   onSessionDelete,
   onSessionRename,
 }: {
@@ -71,6 +92,8 @@ export function ConversationNavigation({
   sessionHeadingAction?: ReactNode;
   className?: string;
   sessionActions?: (session: ConversationSession) => NavigationRowAction[];
+  /** 提供后会话行可拖拽排序；返回 undefined 的行不参与拖拽。 */
+  sessionDrag?: (session: ConversationSession) => ConversationRowDrag | undefined;
   /** 提供后会话行获得就地两步删除；Promise 拒绝时行保持原位。 */
   onSessionDelete?: (session: ConversationSession) => Promise<void>;
   /** 提供后会话行获得双击/菜单行内重命名；Promise 拒绝时编辑态保留。 */
@@ -116,6 +139,7 @@ export function ConversationNavigation({
             onActivate={onSessionActivate}
             onPrefetch={onSessionPrefetch}
             actions={sessionActions?.(session)}
+            drag={sessionDrag?.(session)}
             onDelete={onSessionDelete ? () => onSessionDelete(session) : undefined}
             onRename={onSessionRename ? (title: string) => onSessionRename(session, title) : undefined}
           />)}
@@ -146,12 +170,14 @@ export function ConversationNavigation({
   );
 }
 
-export function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions, onDelete, onRename }: {
+export function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions, drag, onDelete, onRename }: {
   session: ConversationSession;
   pendingSessionId?: string;
   onActivate: (sessionId: string) => void;
   onPrefetch?: (sessionId: string) => void;
   actions?: NavigationRowAction[];
+  /** 提供后行可拖拽排序并在落点上/下半给出插入指示。 */
+  drag?: ConversationRowDrag;
   onDelete?: () => Promise<void>;
   onRename?: (title: string) => Promise<void>;
 }) {
@@ -276,6 +302,24 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
       aria-busy={pendingSessionId === session.id || undefined}
       disabled={session.unavailable}
       title={session.preview ? `${session.title} · ${session.preview}` : session.title}
+      draggable={drag !== undefined}
+      onDragStart={drag === undefined ? undefined : (event) => {
+        event.dataTransfer.setData("text/plain", session.id);
+        event.dataTransfer.effectAllowed = "move";
+        drag.start();
+      }}
+      onDragEnd={drag?.end}
+      onDragOver={drag === undefined ? undefined : (event) => {
+        if (!drag.active) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        drag.hover(rowHalf(event));
+      }}
+      onDrop={drag === undefined ? undefined : (event) => {
+        if (!drag.active) return;
+        event.preventDefault();
+        drag.drop(rowHalf(event));
+      }}
       onClick={() => onActivate(session.id)}
       onPointerEnter={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
       onFocus={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
@@ -290,7 +334,7 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
     </button>;
 
   return <NavigationRowMenu title={session.title} actions={rowActions}
-    className={`conversation-session-row ${session.active ? "active" : ""}`}
+    className={`conversation-session-row ${session.active ? "active" : ""}${drag?.source ? " session-row-drag-source" : ""}${drag?.marker ? ` session-row-drop-${drag.marker}` : ""}`}
     onOpenChange={(open) => { if (!open) disarm(); }}>
     {body}
   </NavigationRowMenu>;

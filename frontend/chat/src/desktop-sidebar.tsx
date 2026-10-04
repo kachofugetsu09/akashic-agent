@@ -12,7 +12,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ConversationNavigation, ConversationSessionRow, type ConversationSession } from "./conversation-navigation";
+import { ConversationNavigation, ConversationSessionRow, type ConversationRowDrag, type ConversationSession } from "./conversation-navigation";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
 import { formatNavigationTime, sessionLabel } from "./web-chat-message-data";
@@ -35,14 +35,16 @@ export interface DesktopSidebarSession extends Omit<ConversationSession, "active
 }
 
 /** 会话排序是客户端展示投影：只作用于最近会话区与项目内子列表，置顶区保持服务端顺序。 */
-type SessionSortId = "activity" | "created" | "title";
+type SessionSortId = "activity" | "created" | "title" | "manual";
 
 const SESSION_SORT_CHOICES: readonly { id: SessionSortId; label: string }[] = [
   { id: "activity", label: "最近活动" },
   { id: "created", label: "最近创建" },
   { id: "title", label: "标题" },
+  { id: "manual", label: "手动排序" },
 ];
 const SESSION_SORT_KEY = "akashic.chat.session-sort";
+const SESSION_ORDER_KEY = "akashic.chat.session-order";
 
 function readSessionSort(): SessionSortId {
   try {
@@ -53,6 +55,24 @@ function readSessionSort(): SessionSortId {
   }
 }
 
+function readSessionOrder(): string[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(SESSION_ORDER_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 把持久化顺序与当前全集合并：新出现（未排序过）的会话按现有展示序排到最前。 */
+function mergeSessionOrder(stored: readonly string[], ids: readonly string[]): string[] {
+  const display = new Set(ids);
+  const kept = stored.filter((id) => display.has(id));
+  const ordered = new Set(kept);
+  const fresh = ids.filter((id) => !ordered.has(id));
+  return [...fresh, ...kept];
+}
+
 /** 时间倒序；缺失时间戳的行（如置顶解析补齐的目录外会话）稳定排到末尾。 */
 function compareSessionTime(a: string | undefined, b: string | undefined): number {
   if (!a && !b) return 0;
@@ -61,9 +81,13 @@ function compareSessionTime(a: string | undefined, b: string | undefined): numbe
   return Date.parse(b) - Date.parse(a);
 }
 
-function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId): DesktopSidebarSession[] {
+function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId, order: readonly string[]): DesktopSidebarSession[] {
   if (sort === "title") return [...rows].sort((a, b) => a.title.localeCompare(b.title, "zh-Hans-CN"));
   if (sort === "created") return [...rows].sort((a, b) => compareSessionTime(a.createdAt, b.createdAt));
+  if (sort === "manual") {
+    const rank = new Map(order.map((id, index) => [id, index]));
+    return [...rows].sort((a, b) => (rank.get(a.id) ?? -1) - (rank.get(b.id) ?? -1));
+  }
   return [...rows].sort((a, b) => compareSessionTime(a.updatedAt, b.updatedAt));
 }
 
@@ -129,6 +153,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   const sidebarRef = useRef<HTMLElement>(null);
   const [directoryProjectId, setDirectoryProjectId] = useState("");
   const [sessionSort, setSessionSort] = useState(readSessionSort);
+  const [sessionOrder, setSessionOrder] = useState(readSessionOrder);
+  // 行拖拽的瞬态：被拖源 id + 当前插入指示（目标行 id 与上/下半）。提交时写入
+  // sessionOrder 并把排序切到「手动排序」——拖拽本身就是选择手动模式的意图。
+  const [drag, setDrag] = useState<{ id: string; over: { id: string; half: "before" | "after" } | null } | null>(null);
   const directoryProject = projects?.items.find((project) => project.id === directoryProjectId);
   const directoryAction = (project: ProjectRow): NavigationRowAction => ({
     label: project.directory ? "查看固定目录" : "选择目录",
@@ -151,11 +179,61 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     ? allSessions.filter((session) => `${session.title} ${session.preview}`.toLowerCase().includes(needle))
     : allSessions, [allSessions, needle]);
   // 排序只重排展示顺序：最近会话区与项目内子列表共享同一份投影，置顶区不经过它。
-  const sortedSessions = useMemo(() => sortSessions(filteredSessions, sessionSort), [filteredSessions, sessionSort]);
+  const mergedOrder = useMemo(
+    () => mergeSessionOrder(sessionOrder, allSessions.map((session) => session.id)),
+    [sessionOrder, allSessions],
+  );
+  const sortedSessions = useMemo(() => sortSessions(filteredSessions, sessionSort, mergedOrder), [filteredSessions, sessionSort, mergedOrder]);
   useEffect(() => {
     try { localStorage.setItem(SESSION_SORT_KEY, sessionSort); }
     catch { /* 禁用存储时仍允许本次浏览的排序选择。 */ }
   }, [sessionSort]);
+  useEffect(() => {
+    try { localStorage.setItem(SESSION_ORDER_KEY, JSON.stringify(sessionOrder)); }
+    catch { /* 禁用存储时仍允许本次浏览的手动排序。 */ }
+  }, [sessionOrder]);
+  // 行拖拽期间在 document 层接受 dragover/drop：行外不显示"禁止"光标，
+  // dragend 的提交仍由行自己的 onDrop 完成。
+  useEffect(() => {
+    if (!drag) return;
+    const acceptDrag = (event: DragEvent) => {
+      event.preventDefault();
+      if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "move";
+    };
+    const acceptDrop = (event: DragEvent) => { event.preventDefault(); };
+    document.addEventListener("dragover", acceptDrag);
+    document.addEventListener("drop", acceptDrop);
+    return () => {
+      document.removeEventListener("dragover", acceptDrag);
+      document.removeEventListener("drop", acceptDrop);
+    };
+  }, [drag]);
+  const commitManualDrop = (targetId: string, half: "before" | "after") => {
+    if (!drag || drag.id === targetId) return;
+    const order = mergedOrder.filter((id) => id !== drag.id);
+    const targetIndex = order.indexOf(targetId);
+    if (targetIndex === -1) return;
+    order.splice(targetIndex + (half === "after" ? 1 : 0), 0, drag.id);
+    // 当前分页外的会话保留顺序尾巴，不因为本次可见提交丢掉位置。
+    const offscreen = sessionOrder.filter((id) => !mergedOrder.includes(id));
+    setSessionOrder([...order, ...offscreen]);
+    setSessionSort("manual");
+  };
+  const sessionDrag = searching ? undefined : (session: ConversationSession): ConversationRowDrag => ({
+    active: drag !== null,
+    source: drag?.id === session.id,
+    marker: drag?.over?.id === session.id ? drag.over.half : undefined,
+    start: () => setDrag({ id: session.id, over: null }),
+    end: () => setDrag(null),
+    hover: (half) => setDrag((current) => current
+      && (current.over?.id !== session.id || current.over.half !== half)
+      ? { ...current, over: { id: session.id, half } }
+      : current),
+    drop: (half) => {
+      commitManualDrop(session.id, half);
+      setDrag(null);
+    },
+  });
   // 目录未解析/归档不改变 Session.scope；回退到最近会话也不获得置顶资格。
   const knownProjects = useMemo(() => new Map(projects?.items.map((project) => [project.id, project])), [projects?.items]);
   const sessionsByProject = useMemo(() => {
@@ -297,6 +375,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         destinations={[]}
         actions={[]}
         sessions={recentSessions.map(sessionView)}
+        sessionDrag={sessionDrag}
         onSessionDelete={deleteHandler}
         onSessionRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined}
         sessionActions={(session) => {
