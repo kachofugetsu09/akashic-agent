@@ -20,7 +20,6 @@ export interface ConversationSession {
   id: string;
   title: string;
   preview: string;
-  updatedLabel?: string;
   active: boolean;
   unavailable?: boolean;
   state?: ReactNode;

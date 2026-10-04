@@ -1836,19 +1836,19 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .model-picker__trigger:focus-visible {
-  outline: 2px solid var(--md-sys-color-primary);
+  outline: 2px solid var(--ak-rule-focus);
   outline-offset: 2px;
 }
 
 .model-picker__trigger:active { scale: 0.96; }
 
 .model-picker__trigger:disabled {
-  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+  color: color-mix(in oklch, var(--ak-ink-primary) 38%, transparent);
   cursor: default;
 }
 
 .model-picker.is-pinned .model-picker__name {
-  color: var(--md-sys-color-on-surface);
+  color: var(--ak-ink-primary);
   font-weight: 600;
 }
 
@@ -1886,7 +1886,7 @@ form.composer:focus-within [data-slot="input-group"] {
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: 12px;
   background: var(--md-sys-color-surface-container-high);
-  scrollbar-color: var(--ak-color-border-strong) transparent;
+  scrollbar-color: var(--ak-rule-strong) transparent;
   scrollbar-width: thin;
 }
 
@@ -1898,16 +1898,16 @@ form.composer:focus-within [data-slot="input-group"] {
   height: 2.5rem;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  border-bottom: 1px solid var(--ak-rule-default);
   padding: 0 12px;
-  color: var(--md-sys-color-on-surface-variant);
-  background: var(--md-sys-color-surface-container-high);
+  color: var(--ak-ink-secondary);
+  background: var(--ak-paper-raised);
 }
 
 .model-picker__search input {
   width: 100%;
   border: 0;
-  color: var(--md-sys-color-on-surface);
+  color: var(--ak-ink-primary);
   background: transparent;
   font: inherit;
   font-size: 0.8125rem;
@@ -1928,7 +1928,7 @@ form.composer:focus-within [data-slot="input-group"] {
   align-items: center;
   gap: 6px;
   padding: 0.15rem 8px;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
   font-size: var(--chat-type-caption);
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -1941,8 +1941,8 @@ form.composer:focus-within [data-slot="input-group"] {
   place-items: center;
   margin-inline-start: auto;
   border-radius: var(--md-sys-shape-corner-full);
-  color: var(--md-sys-color-on-surface-variant);
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 6%, transparent);
+  color: var(--ak-ink-secondary);
+  background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
 }
 
 .model-picker__option {
@@ -1962,17 +1962,17 @@ form.composer:focus-within [data-slot="input-group"] {
 
 .model-picker__option:hover,
 .model-picker__option:focus-visible {
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 5%, transparent);
+  background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
 .model-picker__option.is-selected:not(:hover):not(:focus-visible) {
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 6%, transparent);
+  background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
 }
 
 .model-picker__check {
   flex: 0 0 auto;
   margin-block-start: 3px;
-  color: var(--md-sys-color-on-surface);
+  color: var(--ak-ink-primary);
   opacity: 0;
 }
 
@@ -2019,7 +2019,7 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .model-picker__meta svg {
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
   opacity: 0.55;
 }
 
@@ -2078,7 +2078,7 @@ form.composer:focus-within [data-slot="input-group"] {
   border: 0;
   border-radius: 8px;
   padding: 0 8px;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
   font-size: 11px;
@@ -2097,19 +2097,19 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .model-effort__trigger:focus-visible {
-  outline: 2px solid var(--md-sys-color-primary);
+  outline: 2px solid var(--ak-rule-focus);
   outline-offset: 2px;
 }
 
 .model-effort__trigger:active { scale: 0.96; }
 
 .model-effort__trigger:disabled {
-  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+  color: color-mix(in oklch, var(--ak-ink-primary) 38%, transparent);
   cursor: default;
 }
 
 .model-effort.is-active .model-effort__trigger {
-  color: color-mix(in oklch, var(--md-sys-color-on-surface) 85%, transparent);
+  color: color-mix(in oklch, var(--ak-ink-primary) 85%, transparent);
 }
 
 .model-effort__panel {
@@ -2119,9 +2119,9 @@ form.composer:focus-within [data-slot="input-group"] {
   width: 176px;
   max-height: min(20rem, calc(100vh - 1.5rem));
   overflow: hidden;
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: 1px solid var(--ak-rule-default);
   border-radius: 12px;
-  background: var(--md-sys-color-surface-container-high);
+  background: var(--ak-paper-raised);
 }
 
 .model-effort__list {
@@ -2133,9 +2133,9 @@ form.composer:focus-within [data-slot="input-group"] {
 
 .model-effort__hint {
   margin: 0;
-  border-top: 1px solid var(--md-sys-color-outline-variant);
+  border-top: 1px solid var(--ak-rule-default);
   padding: 8px 10px;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
   font-size: var(--chat-type-caption);
 }
 

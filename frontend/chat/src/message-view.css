@@ -592,7 +592,7 @@
   align-items: center;
   gap: 12px;
   margin: 18px 0 6px;
-  color: var(--ak-color-text-secondary);
+  color: var(--ak-ink-secondary);
   font-size: 0.6875rem;
   line-height: 1;
   user-select: none;
@@ -1173,7 +1173,7 @@ button.tool-step-summary:active {
   border-radius: calc(var(--shared-action-inset) + 5px);
   padding: 0;
   box-sizing: border-box;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
   background: transparent;
   /* hover 墨底只落在 padding-box（24px 视觉区），不外溢到透明热区。 */
   background-clip: padding-box;
@@ -1204,8 +1204,8 @@ button.tool-step-summary:active {
 
 .shared-message-actions button:hover,
 .shared-message-actions button:active {
-  color: var(--md-sys-color-on-surface);
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent);
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
 }
 
 .shared-message-meta {

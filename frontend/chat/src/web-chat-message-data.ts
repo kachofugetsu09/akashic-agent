@@ -67,17 +67,6 @@ export function sessionLabel(session: SessionRow): string {
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
 }
 
-const navigationTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
-  month: "numeric",
-  day: "numeric",
-});
-
-export function formatNavigationTime(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : navigationTimeFormatter.format(date);
-}
-
 function mediaUrl(path: string): string {
   return `/api/chat/media?path=${encodeURIComponent(path)}`;
 }

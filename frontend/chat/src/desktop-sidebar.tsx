@@ -15,7 +15,7 @@ import {
 import { ConversationNavigation, ConversationSessionRow, type ConversationRowDrag, type ConversationSession } from "./conversation-navigation";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
-import { formatNavigationTime, sessionLabel } from "./web-chat-message-data";
+import { sessionLabel } from "./web-chat-message-data";
 import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
 import {
   SIDEBAR_RAIL_MAX_REM, SIDEBAR_RAIL_MIN_REM, SIDEBAR_RAIL_STEP_REM,
@@ -168,7 +168,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   const allSessions = useMemo(() => {
     const rows = new Map<string, DesktopSidebarSession>(navigationPins.sessions.map((session) => [session.key, {
       id: session.key, title: sessionLabel(session), preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
-      updatedLabel: formatNavigationTime(session.updated_at), active: activeSessionId === session.key,
+      active: activeSessionId === session.key,
       projectId: session.scope?.project, projectScoped: Object.hasOwn(session.scope ?? {}, "project"),
     }]));
     // 目录里的新鲜 metadata 优先；置顶解析补齐不在最近分页内的会话。
@@ -242,7 +242,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       if (!session.projectId || !knownProjects.has(session.projectId)) continue;
       const group = groups.get(session.projectId) ?? [];
       group.push({
-        id: session.id, title: session.title, updatedLabel: session.updatedLabel,
+        id: session.id, title: session.title,
         active: surface === "chat" && session.active,
       });
       groups.set(session.projectId, group);

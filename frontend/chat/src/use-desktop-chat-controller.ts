@@ -39,7 +39,6 @@ import {
   type WebShellState,
 } from "./web-chat-data";
 import {
-  formatNavigationTime,
   sessionLabel,
   uploadedFileToAttachment,
 } from "./web-chat-message-data";
@@ -971,7 +970,6 @@ export function useDesktopChatController() {
       id: session.key,
       title: sessionLabel(session),
       preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
-      updatedLabel: formatNavigationTime(session.updated_at),
       updatedAt: session.updated_at,
       createdAt: session.created_at,
       active: activeSessionId === session.key,
