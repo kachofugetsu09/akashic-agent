@@ -27,3 +27,19 @@ if (util.split(storage).length !== 2) {
 }
 await writeFile(utilPath, util.replace(storage,
   'const urlForKey = window.__SELKIES_STORAGE_URL__ || window.location.origin + window.location.pathname;'));
+
+// Ctrl+V 必须等待分块文字发送完毕，不能只等待 postMessage 入队。
+const clipboard = 'sendExplicitClipboard(message.text);';
+const current = await readFile(path, "utf8");
+if (current.split(clipboard).length !== 2) {
+  throw new Error("Selkies 2.0.0 clipboard entry changed; check the integration patch");
+}
+await writeFile(path, current.replace(clipboard, `
+      let clipboardError = "";
+      sendExplicitClipboard(message.text, undefined, (reason, code) => {
+        if (code !== "clipboardSkipUnchanged") clipboardError = reason;
+      }).then(() => window.parent.postMessage({
+        type: "computerClipboardSent", id: message.requestId, error: clipboardError
+      }, window.location.origin)).catch(error => window.parent.postMessage({
+        type: "computerClipboardSent", id: message.requestId, error: String(error)
+      }, window.location.origin));`));
