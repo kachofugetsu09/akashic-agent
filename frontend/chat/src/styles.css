@@ -1366,12 +1366,24 @@ form.composer:focus-within [data-slot="input-group"] {
   padding-inline-start: var(--composer-text-inset, 16px);
   color: color-mix(in oklch, var(--chat-faint, var(--ak-ink-muted)) 78%, transparent);
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 0.625rem;
+  font-size: var(--chat-type-caption);
   font-weight: 450;
   line-height: 1.2;
   letter-spacing: 0.01em;
   user-select: none;
   pointer-events: none;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+/* 终态摘要 3 秒后淡出收纳；reduced-motion 下过渡归零，直接隐藏。 */
+.composer-stats-line.is-fading {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-stats-line {
+    transition-duration: 0ms;
+  }
 }
 
 .composer-stats-line__hint {

@@ -68,6 +68,14 @@
 - 触控目标：窄屏可点区域 ≥44px；桌面行内图标按钮 40px。hit area 的视觉中心必须与图形中心重合。
 - 滚动容器不得私自添加 `scrollbar-gutter`、`padding-inline` 或额外的 `%` 基准——阅读列的百分比基准必须与 composer 相同（这是曾导致两侧竖线错位 7.5px 的真实事故）。
 
+### 3.6 次要操作显现合同
+
+消息操作等次要操作默认 `opacity: 0`，父消息容器 `:hover` / `:focus-within` 时在 `--ak-sys-duration-short` 内显现；时间戳等阅读信息常驻。触控断点（≤820px 或 `hover: none`）hover 不存在，次要操作常驻可见。透明状态不得把按钮移出 Tab 序（禁用 `visibility: hidden` / `display: none`），键盘 Tab 到达时经 `focus-within` 必然可见。
+
+### 3.7 遥测收纳合同
+
+composer 统计行活动期只显示静态文案（不逐秒更新可见文本），结束只显示一条终态摘要，并在 `--ak-sys-duration-short` 淡出后移出（`prefers-reduced-motion` 下直接隐藏）。`aria-live` 不得挂在逐秒轮询更新的元素上：live 区域只在活动状态切换时更新一次性文案，逐秒数据放 `aria-hidden="true"` 呈现层。
+
 ## 4. 排版
 
 - 阅读正文：LXGW WenKai GB Screen，正文 ≥16px，三行以上正文行高 ≥1.4。
