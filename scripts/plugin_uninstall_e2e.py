@@ -88,11 +88,7 @@ async def check_provenance(app, manager, plugins, workspace):
     archived_marker = (target.code_dir / '.akashic-source.json').read_bytes()
     marker = plugins / 'aa_marker/.akashic-source.json'
     marker.write_text(json.dumps({'commit': 'new-source-evidence'}))
-    try:
-        await manager.reconcile_changed()
-    except RuntimeError as error:
-        # 无模型的隔离组合允许既有消费者 PENDING，但不能换代目标。
-        assert '未 ACTIVE' in str(error), str(error)
+    await manager.reconcile_changed()
     assert manager.generation('aa_marker') is target
     assert target.fiber.context.fiber.activation_token is token
     assert (workspace / 'runtime/plugin-stable.json').read_bytes() == selected
@@ -137,6 +133,11 @@ async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict
     with (root / 'init.log').open('w') as output:
         subprocess.run([sys.executable, str(core / 'main.py'), 'init', '--config', str(config),
                         '--workspace', str(workspace)], env=env, check=True, stdout=output, stderr=output)
+    if case == 'provenance':
+        # 全量检查使用独立且就绪的普通组合，避免无模型默认配置的其他失败。
+        from agent.plugins.static_manifest import load_static_plugin_manifest
+        names = {load_static_plugin_manifest(path.parent).name for path in plugins.glob('*/plugin.py')}
+        config.write_text('[agent.plugins]\ndisabled_builtin = ' + json.dumps(sorted(names - {'channels', 'content', 'aa_marker'})) + '\n')
     for name, source in [('z_registry', PROVIDER), ('annotation', CONTRIBUTOR), ('peer', PEER)]:
         install_fixture(root, workspace, home, name, source)
     if seed_core is not None:
