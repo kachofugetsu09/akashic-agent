@@ -1171,6 +1171,69 @@ input {
   line-height: 1.5;
 }
 
+/* 空态 hero：时段问候小字 + 主标题 + 一行提示，推荐项只填草稿不代发。 */
+.home-hero {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  max-width: 30rem;
+}
+
+.home-hero__greeting {
+  margin: 0;
+  color: var(--chat-muted);
+  font-size: 0.8125rem;
+  letter-spacing: 0.04em;
+}
+
+.home-hero__title {
+  margin: 0;
+  color: var(--chat-ink);
+  font-family: var(--md-ref-typeface-brand);
+  font-size: clamp(1.6rem, 3.2vw, 2.1rem);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.home-hero__hint {
+  max-width: 24rem;
+  margin: 0;
+  color: var(--chat-muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.home-hero__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.home-hero__suggestions button {
+  min-height: 34px;
+  border: 1px solid color-mix(in oklch, var(--ak-ink-primary) 14%, transparent);
+  border-radius: var(--md-sys-shape-corner-full);
+  padding: 0 16px;
+  color: var(--chat-ink);
+  background: transparent;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.home-hero__suggestions button:hover {
+  border-color: color-mix(in oklch, var(--ak-ink-primary) 28%, transparent);
+  background: color-mix(in oklch, var(--ak-ink-primary) 4%, transparent);
+}
+
+.home-hero__suggestions button:focus-visible {
+  outline: 2px solid var(--ak-ink-primary);
+  outline-offset: 2px;
+}
+
 .home-state h1 {
   margin: 0;
   color: var(--chat-ink, var(--md-sys-color-on-surface));
