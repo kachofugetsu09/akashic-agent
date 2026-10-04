@@ -41,6 +41,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
     canSend, modelProblem, modelsError, retryModels, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
+    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
@@ -80,6 +81,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat} rail={rail}
+            onDeleteSession={deleteSession} deletedNotice={deletedNotice}
+            onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
           />
 
         <section className="chat-main">
@@ -90,6 +93,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat}
+            onDeleteSession={deleteSession} deletedNotice={deletedNotice}
+            onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
           />
           <h1 title={headingTitle}>{headingTitle}</h1>
         </header>
@@ -127,6 +132,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
 
         <div className={`composer-wrap ${!hasMessages ? "home" : ""}`}>
           {status === "uploading" ? <p className="reply-unavailable" role="status">正在上传附件…</p> : null}
+          {activeSessionDeleted ? <p className="reply-unavailable" role="status">
+            此会话已删除，内容只读保留。
+            <button type="button" className="session-restore-button" onClick={() => { void restoreSession(activeSessionId); }}>恢复会话</button>
+          </p> : null}
           {chatReady && (modelProblem || modelsError) ? <div className="chat-model-notice" role="status">
             {modelProblem ? <p id="chat-model-reason">{modelProblem}</p> : null}
             {modelsError ? <p>{modelsError}</p> : null}

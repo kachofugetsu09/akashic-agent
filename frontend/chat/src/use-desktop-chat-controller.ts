@@ -30,6 +30,7 @@ import {
   fetchChatJson,
   isAbortError,
   sessionPage,
+  setChatSessionDeleted,
   uploadFiles,
   webShellState,
   type ChatModelState,
@@ -50,11 +51,14 @@ interface SessionTail {
   throughSeq: number;
   beforeSeq: number | null;
   hasMore: boolean;
+  deleted: boolean;
   fetchedAt: number;
 }
 
 const SESSION_TAIL_CACHE_LIMIT = 8;
 const RECONNECT_MAX_DELAY_MS = 30_000;
+// 软删后的恢复入口：窗口关闭后 UI 不再提供恢复路径（无回收站视图）。
+const DELETED_NOTICE_MS = 10_000;
 // 新鲜快照激活时不再重复拉尾页；超过窗口或实时跟随断档仍回到权威分页。
 const SESSION_TAIL_FRESH_MS = 30_000;
 
@@ -114,6 +118,9 @@ export function useDesktopChatController() {
   const [messages, setMessagesState] = useState<ChatMessage[]>([]);
   const [historyBeforeSeq, setHistoryBeforeSeq] = useState<number | null>(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [activeSessionDeleted, setActiveSessionDeleted] = useState(false);
+  const [deletedNotice, setDeletedNotice] = useState<{ key: string; title: string } | null>(null);
+  const deletedNoticeTimerRef = useRef(0);
   const [historyLoadingOlder, setHistoryLoadingOlder] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -232,7 +239,7 @@ export function useDesktopChatController() {
         const page = chatHistoryPage(payload, endpoint);
         if (page.items.some((row) => row.session_id !== sessionId)) throw new Error("历史页属于其他会话");
         const tail = { items: page.items, throughSeq: page.throughSeq,
-          beforeSeq: page.beforeSeq, hasMore: page.hasMore, fetchedAt: Date.now() };
+          beforeSeq: page.beforeSeq, hasMore: page.hasMore, deleted: page.deleted, fetchedAt: Date.now() };
         if (!controller.signal.aborted && tailCacheRef.current.get(sessionId) === previous) {
           cacheSessionTail(sessionId, tail);
         }
@@ -294,6 +301,7 @@ export function useDesktopChatController() {
       const saved = new Set(page.items.map((item) => item.id));
       setMessages((current) => sendRequestRef.current ? current.filter((item) => !saved.has(item.id)) : []);
       setTimelineMessages(page.items);
+      setActiveSessionDeleted(page.deleted);
       setTimelineRefresh((revision) => revision + 1);
       if (statusLiveRef.current !== "uploading") setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length,
         page.items, replyAvailableRef.current));
@@ -431,7 +439,7 @@ export function useDesktopChatController() {
     : modelState?.runtimes.length ? "还没选择默认对话模型。请在下方选择模型，或在模型设置中设为默认。"
     : modelState?.unavailableRuntimes.length ? "已保存的对话连接当前不可用，请在模型设置中恢复连接。"
     : "先连接一个对话模型，之后就可以发送消息。你可以先写下想说的话。";
-  const canSend = chatReady && !modelProblem;
+  const canSend = chatReady && !modelProblem && !activeSessionDeleted;
   const retryModels = useCallback(() => { void loadModels(activeSessionRef.current, true); }, [loadModels]);
 
   const closeConnection = useCallback(() => {
@@ -597,6 +605,7 @@ export function useDesktopChatController() {
       sendRequestRef.current?.abort();
       stopRequestRef.current?.abort();
       tailRequestsRef.current.forEach((request) => request.controller.abort());
+      window.clearTimeout(deletedNoticeTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -770,6 +779,7 @@ export function useDesktopChatController() {
     setPendingSessionId("");
     setMessages([]);
     setTimelineMessages([]);
+    setActiveSessionDeleted(false);
     followAfterRef.current = null;
     replyActivitiesRef.current = [];
     setReplyActivities([]);
@@ -858,6 +868,7 @@ export function useDesktopChatController() {
     setActiveSessionId(sessionId);
     setPendingSessionId(sessionId);
     setTimelineMessages(cached?.items ?? []);
+    setActiveSessionDeleted(cached?.deleted ?? false);
     setMessages([]);
     setHistoryThroughSeq(cached?.throughSeq ?? null);
     setHistoryBeforeSeq(cached?.beforeSeq ?? null);
@@ -884,6 +895,45 @@ export function useDesktopChatController() {
     setRequestedSessionId("");
     activateSession(requestedSessionId);
   }, [activateSession, chatReady, requestedSessionId]);
+
+  /** 软删只移除目录呈现；撤销窗口内可经 undelete 恢复，超窗后 UI 不再提供恢复入口。 */
+  const deleteSession = useCallback(async (sessionId: string, title: string) => {
+    try {
+      await setChatSessionDeleted(sessionId, true);
+    } catch (error) {
+      reportError(error);
+      throw error;
+    }
+    setSessions((current) => current.filter((session) => session.key !== sessionId));
+    window.clearTimeout(deletedNoticeTimerRef.current);
+    setDeletedNotice({ key: sessionId, title });
+    deletedNoticeTimerRef.current = window.setTimeout(() => setDeletedNotice(null), DELETED_NOTICE_MS);
+    void loadSessionsSafely();
+    void navigationPins.reload();
+    // 删除当前会话等于离开它：回到新会话草稿；消息仍在服务端只读保留。
+    if (activeSessionRef.current === sessionId) startNewChat();
+  }, [loadSessionsSafely, navigationPins, reportError, startNewChat]);
+
+  const restoreSession = useCallback(async (sessionId: string) => {
+    try {
+      await setChatSessionDeleted(sessionId, false);
+    } catch (error) {
+      reportError(error);
+      return;
+    }
+    setDeletedNotice((notice) => {
+      if (notice?.key === sessionId) window.clearTimeout(deletedNoticeTimerRef.current);
+      return notice?.key === sessionId ? null : notice;
+    });
+    void loadSessionsSafely();
+    void navigationPins.reload();
+    if (activeSessionRef.current === sessionId) setActiveSessionDeleted(false);
+  }, [loadSessionsSafely, navigationPins, reportError]);
+
+  const dismissDeletedNotice = useCallback(() => {
+    window.clearTimeout(deletedNoticeTimerRef.current);
+    setDeletedNotice(null);
+  }, []);
 
 
   const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
@@ -939,6 +989,7 @@ export function useDesktopChatController() {
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     canSend, modelProblem, modelsPhase, modelsError, retryModels, draftKey: activeSessionId || `new:${newChatProjectId}`,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
+    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
