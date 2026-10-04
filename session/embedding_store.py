@@ -5,7 +5,7 @@ import math
 import sqlite3
 import struct
 import threading
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -208,57 +208,6 @@ class MessageEmbeddingStore:
             )
             self._db.commit()
         return int(cursor.rowcount or 0)
-
-    def import_legacy_rows_once(
-        self,
-        rows: Iterable[tuple[str, str, str, bytes, int, str, str]],
-    ) -> int:
-        source_id = "akasha_embedding_cache:v1"
-        with self._lock:
-            _ = self._db.execute("BEGIN IMMEDIATE")
-            try:
-                completed = self._db.execute(
-                    "SELECT 1 FROM message_embedding_migrations WHERE source_id = ?",
-                    (source_id,),
-                ).fetchone()
-                if completed is not None or not self._messages_table_exists_locked():
-                    self._db.commit()
-                    return 0
-                messages = {
-                    str(row["id"]): _content_hash(str(row["content"] or ""))
-                    for row in self._db.execute(
-                        "SELECT id, content FROM messages"
-                    ).fetchall()
-                }
-                valid_rows = [
-                    row
-                    for row in rows
-                    if messages.get(str(row[0])) == str(row[1])
-                    and int(row[4]) > 0
-                    and len(row[3]) == int(row[4]) * 4
-                ]
-                cursor = self._db.executemany(
-                    """
-                    INSERT OR IGNORE INTO message_embeddings
-                        (message_id, content_hash, model, embedding, dim, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    valid_rows,
-                )
-                imported = int(cursor.rowcount or 0)
-                _ = self._db.execute(
-                    """
-                    INSERT INTO message_embedding_migrations
-                        (source_id, completed_at, imported_count)
-                    VALUES (?, ?, ?)
-                    """,
-                    (source_id, datetime.now(timezone.utc).isoformat(), imported),
-                )
-                self._db.commit()
-            except Exception:
-                self._db.rollback()
-                raise
-            return imported
 
 
 def _content_hash(content: str) -> str:

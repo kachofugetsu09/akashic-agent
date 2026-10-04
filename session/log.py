@@ -335,14 +335,6 @@ class WriterExpired(RuntimeError):
     """任务已释放写入权，不能再提交新的输出。"""
 
 
-def read_persisted_messages(path: str | Path, session_id: str) -> tuple[Message, ...]:
-    """只读已有库的原消息，不初始化 schema；缺失或损坏直接报错。"""
-    with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute("SELECT * FROM messages WHERE session_key = ? ORDER BY seq", (session_id,))
-        return tuple(_message(row) for row in rows)
-
-
 @dataclass
 class _ReadConnection:
     connection: sqlite3.Connection
@@ -443,27 +435,6 @@ class MessageLog:
         with self._read():
             identities = self._connection.execute("SELECT binding_id FROM bindings ORDER BY binding_id").fetchall()
             return tuple(self.read_binding(row[0]) for row in identities)
-
-    def validate_attachment_bindings(self) -> None:
-        """只读核对消息附件外键与连续顺序，不解释插件内容或推断缺少的引用。"""
-        with self._lock, self._connection:
-            # 1. 同一读快照检查外键，避免跨连接提交造成假漂移。
-            _ = self._connection.execute("BEGIN")
-            errors = self._connection.execute("PRAGMA foreign_key_check(message_attachments)").fetchall()
-            if errors:
-                raise ValueError(f"message attachment foreign key check 失败: {len(errors)}")
-            # 2. writer 的 enumerate 顺序不能被外部写入变成带孔的 ordinal。
-            rows = self._connection.execute(
-                "SELECT message_id, ordinal FROM message_attachments ORDER BY message_id, ordinal"
-            )
-            previous = None
-            expected = 0
-            for row in rows:
-                if row["message_id"] != previous:
-                    previous, expected = row["message_id"], 0
-                if row["ordinal"] != expected:
-                    raise ValueError(f"message attachment ordinal 不连续: {previous}")
-                expected += 1
 
     def owner(self, name: str) -> OwnerStore:
         """组合只向 owner 授予自身的记录空间，不授予 SQL 或其他空间。"""

@@ -790,30 +790,6 @@ class MessageBus:
             raise RuntimeError("durable session admission owner 未绑定")
         owner.release_admission(admission.admission_id)
 
-    def durable_session_admission_id(self, envelope: InboundEnvelope) -> str:
-        """Return the Bus-owned admission already retained for this envelope."""
-
-        handoff_id = self._durable_handoffs.get(id(envelope))
-        if handoff_id is None:
-            raise RuntimeError("durable exact envelope 缺少 Bus handoff owner")
-        admission = self._durable_admissions.get(handoff_id)
-        if admission is None or admission.envelope is not envelope:
-            raise RuntimeError("durable exact envelope 缺少 Session admission")
-        return admission.admission_id
-
-    def durable_inbound_cleanup_pending(self, envelope: InboundEnvelope) -> bool:
-        """Report the cleanup-only owner that must not be converted to recovery."""
-
-        handoff_id = self._durable_handoffs.get(id(envelope))
-        if handoff_id is None:
-            return False
-        admission = self._durable_admissions.get(handoff_id)
-        return bool(
-            admission is not None
-            and admission.envelope is envelope
-            and admission.cleanup_pending
-        )
-
     async def _publish_inbound(
         self,
         msg: InboundItem,
@@ -881,14 +857,6 @@ class MessageBus:
             await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
             raise
         self._inbound_accepted[id(msg)] = _InboundOwner(item=msg)
-
-    async def consume_inbound(self) -> InboundItem | InboundEnvelope:
-        """Transfer one queued Channel envelope to the lane owner."""
-
-        item = await self._inbound.get()
-        if isinstance(item, InboundEnvelope):
-            item.handoff(InboundOwner.BUS, InboundOwner.LANE)
-        return item
 
     async def complete_inbound(self, msg: InboundItem | InboundEnvelope) -> None:
         self._raise_inbound_cleanup_error()
@@ -1247,10 +1215,6 @@ class MessageBus:
                 owner.release_admission(admission.admission_id)
                 self._durable_admissions.pop(handoff_id)
                 self._recovery_claimed.discard(handoff_id)
-
-    @property
-    def inbound_size(self) -> int:
-        return self._inbound.qsize()
 
 
 async def _await_cleanup_after_cancellation(task: asyncio.Task[_T]) -> _T:
