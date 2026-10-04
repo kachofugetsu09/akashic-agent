@@ -575,6 +575,37 @@
   min-width: 0;
 }
 
+/* 连续完成的工具收成一行摘要；展开后成员恢复普通行距。 */
+.tool-group {
+  min-width: 0;
+}
+
+.tool-group-items {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 跨天分隔：居中日期两侧各一条发丝线，与消息行同色阶。 */
+.day-separator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 6px;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.6875rem;
+  line-height: 1;
+  user-select: none;
+}
+
+.day-separator::before,
+.day-separator::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklch, var(--ak-ink-primary) 10%, transparent);
+}
+
 /* Reasoning 根节点自带 mb-4；逐行排列不需要段距。 */
 .thinking-row {
   margin: 0;
