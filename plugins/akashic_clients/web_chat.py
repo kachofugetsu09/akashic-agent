@@ -511,16 +511,6 @@ class WebChatChannel:
             await self._remove_connection(websocket)
             logger.info("[web_chat] websocket closed id=%s", socket_id)
 
-    def save_upload(self, data: bytes, filename: str) -> dict[str, Any]:
-        if len(data) > MAX_UPLOAD_BYTES:
-            raise UploadTooLargeError("上传内容超过 50MB 限制")
-        suffix = Path(filename).suffix
-        if not suffix:
-            guessed = mimetypes.guess_extension(mimetypes.guess_type(filename)[0] or "")
-            suffix = guessed or ".bin"
-        path = self._require_attachment_store().write_bytes(data, prefix="web_", suffix=suffix)
-        return self._upload_result(filename, path)
-
     async def save_upload_stream(
         self,
         chunks: AsyncIterable[bytes],
@@ -675,50 +665,6 @@ class WebChatChannel:
 
     def has_media(self, path: Path) -> bool:
         return str(path.resolve()) in self._media_paths
-
-    async def send(self, chat_id: str, message: str) -> None:
-        session_key = self._session_key(chat_id)
-        await self._broadcast(session_key, {
-            "type": "message.final",
-            "session_id": session_key,
-            "turn_id": "",
-            "content": message,
-            "media": [],
-            "metadata": {"source": "message_push"},
-        })
-
-    async def send_stream(self, chat_id: str, message: str) -> None:
-        await self.send(chat_id, message)
-
-    async def send_file(
-        self,
-        chat_id: str,
-        file_path: str,
-        name: str | None = None,
-    ) -> None:
-        session_key = self._session_key(chat_id)
-        content = name or Path(file_path).name
-        self.remember_media([file_path])
-        await self._broadcast(session_key, {
-            "type": "message.final",
-            "session_id": session_key,
-            "turn_id": "",
-            "content": content,
-            "media": [file_path],
-            "metadata": {"source": "message_push", "kind": "file"},
-        })
-
-    async def send_image(self, chat_id: str, image: str) -> None:
-        session_key = self._session_key(chat_id)
-        self.remember_media([image])
-        await self._broadcast(session_key, {
-            "type": "message.final",
-            "session_id": session_key,
-            "turn_id": "",
-            "content": "",
-            "media": [image],
-            "metadata": {"source": "message_push", "kind": "image"},
-        })
 
     async def deliver_v3(
         self,

@@ -158,18 +158,6 @@ class Runtime:
             return config
         return Config.model_validate(config.model_dump(mode="python"))
 
-    def dashboard_view(self) -> DashboardView:
-        """Build a dashboard view from narrow read-only callbacks."""
-        catalog = self.ctx.require(MESSAGE_CATALOG)
-        history = self.ctx.require(DELIVERY_READ)
-
-        def read_message(session_id: str, message_id: str) -> Message | None:
-            return catalog.reader(session_id).get(message_id)
-
-        return DashboardView(
-            self.state.read_only(), self.source.read, read_message, history.status,
-        )
-
     async def capture(self, flow_id: str, admission: Admission, now: datetime) -> Request | None:
         """先固定归档程序、工具、出站目标与上下文，随后才允许领取领域条目。"""
         owner = admission.owner

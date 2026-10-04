@@ -720,31 +720,6 @@ def _verify(connection: sqlite3.Connection) -> None:
         raise sqlite3.IntegrityError(f"foreign key violations: {violations[:3]}")
 
 
-def check_memory_schema(path: Path) -> None:
-    """切换前核对真实 schema 谱系与完整性，版本号相同不代表可迁移。"""
-    expected = sqlite3.connect(":memory:")
-    actual = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        _ = expected.executescript(_SCHEMA)
-        query = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name"
-        def schema(connection: sqlite3.Connection) -> tuple[tuple[str, ...], ...]:
-            return tuple(
-                (kind, name, table, " ".join(sql.split()))
-                for kind, name, table, sql in connection.execute(query)
-            )
-        if schema(actual) != schema(expected):
-            raise ValueError("Akasha schema lineage 不匹配")
-        for pragma in ("application_id", "user_version"):
-            if actual.execute(f"PRAGMA {pragma}").fetchone() != expected.execute(f"PRAGMA {pragma}").fetchone():
-                raise ValueError(f"Akasha {pragma} 不匹配")
-        if actual.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-            raise ValueError("Akasha integrity_check 失败")
-        _verify(actual)
-    finally:
-        actual.close()
-        expected.close()
-
-
 def _validate_snapshot_identity(
     connection: sqlite3.Connection,
     turns: list[Turn],

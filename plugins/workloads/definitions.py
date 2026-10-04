@@ -211,7 +211,3 @@ def _name(value: str, label: str) -> str:
     if not isinstance(value, str) or not _NAME.fullmatch(value):
         raise ValueError(f"{label} 无效: {value}")
     return value
-
-
-def _binding_key(owner: str, name: str) -> str:
-    return f"{owner}/{name}"
