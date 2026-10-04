@@ -128,7 +128,7 @@ export function ConversationNavigation({
         </div>
       ) : null}
 
-      <div className="conversation-navigation__actions">
+      {actions.length ? <div className="conversation-navigation__actions">
         {actions.map((action) => (
           <button
             className={`conversation-navigation__action ${action.primary ? "primary" : ""}`}
@@ -141,7 +141,7 @@ export function ConversationNavigation({
             <span>{action.label}</span>
           </button>
         ))}
-      </div>
+      </div> : null}
     </aside>
   );
 }
