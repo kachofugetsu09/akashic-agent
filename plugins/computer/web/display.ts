@@ -1,4 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
+import { AgentCursor } from "./agent-cursor";
 
 interface StreamWindow extends Window {
   computerInputHandlers?: InputHandlers;
@@ -32,6 +33,7 @@ export class ComputerDisplay extends EventTarget {
   private inputReady = false;
   private transportWatched = false;
   private clipboardId = 0;
+  private cursor: AgentCursor | null = null;
   private readonly clipboardRequests = new Map<number, {
     resolve(): void;
     reject(error: Error): void;
@@ -126,6 +128,22 @@ export class ComputerDisplay extends EventTarget {
     }
   };
 
+  private readonly touch = (event: Event) => {
+    if (event.isTrusted) this.cursor?.hide();
+    this.handlers.touch(event);
+  };
+
+  private viewport(): DOMRect | null {
+    for (const element of this.frame.contentDocument?.querySelectorAll("video, #videoCanvas, #videoWorkerCanvas") ?? []) {
+      const rect = element.getBoundingClientRect();
+      if (getComputedStyle(element).display !== "none" && rect.width > 0 && rect.height > 0) {
+        const frame = this.frame.getBoundingClientRect();
+        return new DOMRect(frame.x + rect.x, frame.y + rect.y, rect.width, rect.height);
+      }
+    }
+    return null;
+  }
+
   /** 首帧和输入一起就绪才报告连接；断线交给面板的唯一重连 owner。 */
   private watch() {
     if (this.closed || this.timer) return;
@@ -153,9 +171,9 @@ export class ComputerDisplay extends EventTarget {
       const document = this.frame.contentDocument;
       if (input && document && !this.inputReady) {
         this.inputReady = true;
-        stream!.computerInputHandlers = this.handlers;
+        stream!.computerInputHandlers = { ...this.handlers, touch: this.touch };
         for (const name of ["pointerdown", "pointermove", "pointerup", "wheel"]) {
-          document.addEventListener(name, this.handlers.touch, true);
+          document.addEventListener(name, this.touch, true);
         }
         stream?.addEventListener("blur", this.handlers.blur);
       }
@@ -167,6 +185,7 @@ export class ComputerDisplay extends EventTarget {
         || (canvas && getComputedStyle(canvas).display !== "none" && (stream?.fps ?? 0) > 0);
       if (!this.connected && transport?.readyState === WebSocket.OPEN && input && hasFrame) {
         this.connected = true;
+        this.cursor = new AgentCursor(this.host, this.ctx, () => this.viewport());
         this.dispatchEvent(new Event("connect"));
       }
       if (transport?.readyState === WebSocket.CLOSED || (!this.connected && Date.now() > deadline)) {
@@ -182,6 +201,7 @@ export class ComputerDisplay extends EventTarget {
   }
 
   blur() {
+    this.cursor?.hide();
     this.stream?.webrtcInput?.detach_context();
   }
 
@@ -224,6 +244,7 @@ export class ComputerDisplay extends EventTarget {
     this.clipboardRequests.clear();
     window.clearInterval(this.timer);
     window.removeEventListener("message", this.onMessage);
+    this.cursor?.destroy();
     this.blur();
     this.stream?.selkiesTransport?.close();
     this.frame.remove();
