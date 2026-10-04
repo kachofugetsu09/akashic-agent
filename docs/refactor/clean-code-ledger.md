@@ -2,6 +2,18 @@
 
 本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
 
+## 2026-10-05 熵清理第 1 层：删除无消费者的 `agent/turn_events`、`agent/prompting` 与 `agent/control` 旧 DTO
+
+- 基线：`b13be081`（origin/main），分支 `refactor/entropy-pr1-agent-dead-packages`，stacked 清理系列第 1 层，base = main。生产 source set 587 文件 / Python 98,919 SLOC；候选 580 文件 / 98,726 SLOC（-7 文件、-193 SLOC）。恢复点为本 PR 单提交 revert；只改独立 worktree，未操作正式 workspace、服务、数据库、安装 cache 或 Git refs。
+- 删除对象：`agent/turn_events/`（`__init__.py` + `proactive_feedback.py`）、`agent/prompting/`（`__init__.py` + `assembler.py` + `section_names.py`）、`agent/control/events.py`（`TurnEvent` DTO）与 `agent/control/ids.py`（四个 id 工厂），共 7 文件、248 行。`docs/INDEX.md` 路由表把 Prompt 行实现入口从 `agent/prompting/` 更正为现行 owner `plugins/prompt/`。
+- 可达性证据：三个对象的模块路径、全部导出符号（`ProactiveFeedbackCommitted`、`PROACTIVE_FEEDBACK_COMMITTED*`、`PromptSectionRender`、`SYSTEM/LEGACY_CONTEXT_FRAME_*`、`build_context_frame_*`、五个 section name 常量、`TurnEvent`、`new_*_id`）与 wire 字符串 `proactive.feedback.committed` 在 Git 跟踪源码、tests、benchmark、eval、docker、plans、scripts、配置与 TOML 中的 import/字符串命中均为零；`agent/control/__init__.py` 不存在，无 re-export；`importlib`/`getattr` 动态入口为零。`plugins/wake` 的 `new_item_ids` 是参数名，不是 `new_item_id` 工厂。`agent.control` 现存 import 只指向 `client`/`timer`/`scoped_turn`，当前 `agent/control/protocol/` 模型把 `threadId`/`turnId` 作为输入字段，id 由各 owner 内联生成。
+- 外部插件复核：`citation`、`meme`、`plugin_undo`、`status_commands` 的当前 `origin/main` 与 `deploy-20261002` 均已不再 import `agent.prompting`（本机旧 checkout 是过期快照）；外部 `proactive_feedback` 插件源码对 Core DTO 与 wire 字符串零引用；本机无 `~/.akashic-plugin/cache`。唯一残留引用是外部自测 canary `recursive-hello-canary`（独立仓库、单提交、`api_version = 2`），当前插件管理器只接受 `api_version = 3`，该 canary 在现行 runtime 本就无法装载，且其依赖的 `prompt_render.emit` slot 与 `agent.lifecycle.types.PromptRenderCtx` 均不存在于本基线；Core 仓库对它零引用。2026-09-28 条目保留 `agent/prompting/` 的理由（durable delivery 概念测试）在本基线已不成立，全树 grep 无测试消费者。
+- 能力不变：语义不变。Turn 事件投影由 `agent/control/protocol/` 与现有 owner 承担；Prompt 人格与行为规则由 `plugins/prompt/`（api v3）承担；feedback 链路归外部 `proactive_feedback` 插件自有 DB 与 dashboard，Core 本就不读取插件 DB。无运行时行为、持久 schema、迁移内容、外部发送或插件生命周期变化。
+- 登记联动：2026-09-10 先例中的 `tests_scenarios/contracts/impact.toml`、`coverage-baseline.json` 已随目录在本基线移除，`plugin_boundary_baseline.toml` 已清零，三个被删路径均不在任何现存 registry 中，无需登记更新；`plugin_boundary.toml` 规则无这些路径。
+- Gate：`.venv/bin/pytest -q tests/` 108 passed；pyright `--level error` 前后均为 3 errors（同一组 `agent/control/client.py` 的 `akashic_sdk` 解析错误，与删除无关）；`plugin_boundary.py check --base origin/main` 通过（R1/R2/R3 均 0/0）；`check_yoyo_migrations.py --base origin/main` 通过；`git diff --check` 干净。不回填 gate digest。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。
+- 残余风险：历史 checkpoint、过期工作 checkout 与上述 api v2 canary 仍保留旧模块文本；检查只覆盖本机可见快照与当前 origin/main，不声称远端生产 fleet 或所有历史归档无消费者。若 canary 需要继续维护，应在它自己的仓库按现行 api v3 重写，不属于本仓库边界。
+
 ## 2026-09-28 · Kimi 正交化报告的无行为变化清理
 
 - 基线：`65cb97bfb714bbb00e6ccd1574050c34543d81f1`。维护者确认本批只修复误扫描、保护本地文件和删除已证明无消费者的代码；业务合同、路由、跨插件字符串及持久 schema 另行评估。
