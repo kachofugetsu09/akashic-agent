@@ -1,33 +1,39 @@
-import { Plus } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Paperclip } from "lucide-react";
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
 } from "@/components/ai-elements/attachments";
 import {
-  PromptInput, PromptInputActionAddAttachments, PromptInputActionMenu, PromptInputActionMenuContent,
-  PromptInputActionMenuTrigger, PromptInputBody, PromptInputFooter, PromptInputTextarea, PromptInputTools,
+  PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputTextarea, PromptInputTools,
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import type { TimelineReply } from "./message-timeline";
 import { nextComposerExpanded } from "./composer-layout";
 import { ComposerActionButton } from "./composer-action";
 import { ComposerReply } from "./message-actions";
-import { ModelCapsulePicker } from "./model-capsule-picker";
-import type { ChatModelRuntime } from "./model-capsule-data";
+import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./model-capsule-picker";
+import { compatibleEffort, type ChatModelRuntime } from "./model-capsule-data";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string };
 
+/** 空态推荐等外部入口写入草稿的窄接口。 */
+export interface ComposerApi {
+  insertDraft: (text: string) => void;
+}
+
 /** Own transient editor state while the app controller owns transport and durable chat state. */
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, canSend, modelProblem, draftKey, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
-  onModelChange, onCancelReply, onSend, onStop,
+  chatReady, canSend, modelProblem, draftKey, autoFocus = false, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
+  onModelChange, onCancelReply, onSend, onStop, ref,
 }: {
   chatReady: boolean;
   canSend: boolean;
   modelProblem: string;
   draftKey: string;
+  /** 空态（新会话/无消息）时输入框接收焦点。 */
+  autoFocus?: boolean;
   status: ChatStatus;
   stopPending: boolean;
   modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] } | null;
@@ -38,6 +44,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   onCancelReply: () => void;
   onSend: (text: string, files: ComposerFile[]) => Promise<string | undefined>;
   onStop: () => void;
+  ref?: Ref<ComposerApi>;
 }) {
   // 标签页文本草稿是展示状态，既不上传，也不创建 Message。
   const drafts = useRef(new Map<string, string>());
@@ -61,6 +68,22 @@ export const DesktopComposer = memo(function DesktopComposer({
     setDraftVersion((version) => version + 1);
   }, []);
   const setInput = useCallback((text: string) => setDraft(draftKey, text), [draftKey, setDraft]);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useImperativeHandle(ref, () => ({
+    // 写入后把焦点与光标放到草稿末尾，用户接着补完即可。
+    insertDraft: (text) => {
+      setDraft(draftKey, text);
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
+    },
+  }), [draftKey, setDraft]);
+  useEffect(() => {
+    if (autoFocus && chatReady) textareaRef.current?.focus();
+  }, [autoFocus, chatReady, draftKey]);
   const [expanded, setExpanded] = useState(false);
   const [hasAttachments, setHasAttachments] = useState(false);
   const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string) => {
@@ -97,19 +120,53 @@ export const DesktopComposer = memo(function DesktopComposer({
     }
   }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey]);
   const shellExpanded = expanded || hasAttachments || Boolean(replyTarget);
+  // 文件拖拽强调态：dragenter/dragleave 用深度计数去抖，子元素间移动不成对出入时也不会闪烁。
+  const dragDepth = useRef(0);
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const isFileDrag = useCallback((event: DragEvent<HTMLFormElement>) =>
+    Array.from(event.dataTransfer?.types ?? []).includes("Files"), []);
+  const onDragEnter = useCallback((event: DragEvent<HTMLFormElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth.current += 1;
+    setFileDragActive(true);
+  }, [isFileDrag]);
+  const onDragOver = useCallback((event: DragEvent<HTMLFormElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, [isFileDrag]);
+  const onDragLeave = useCallback((event: DragEvent<HTMLFormElement>) => {
+    if (!isFileDrag(event)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setFileDragActive(false);
+  }, [isFileDrag]);
+  const onDrop = useCallback((event: DragEvent<HTMLFormElement>) => {
+    dragDepth.current = 0;
+    setFileDragActive(false);
+    // 附件入列由 PromptInput 内部共享的 drop 处理（与粘贴/选择器同一条 add 路径）；这里只防浏览器直接打开文件。
+    if (isFileDrag(event)) event.preventDefault();
+  }, [isFileDrag]);
   return (
     <>
     {draftStorageError ? <p role="status">浏览器无法保存本页草稿。刷新前请复制已输入的文字。</p> : null}
     <PromptInput
-      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}`}
+      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}${fileDragActive ? " is-drop-target" : ""}`}
       multiple
       data-draft-version={draftVersion}
       onSubmit={(message) => submit(message.text, message.files)}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
+      {fileDragActive ? <div className="composer-drop-hint" aria-hidden="true">松开以添加文件</div> : null}
       <PromptInputBody>
         <ComposerAttachments onPresenceChange={setHasAttachments} />
         <PromptInputTextarea
+          ref={textareaRef}
+          autoFocus={autoFocus}
           className="composer__textarea !min-h-0"
           value={input}
           onChange={onInputChange}
@@ -121,21 +178,28 @@ export const DesktopComposer = memo(function DesktopComposer({
       </PromptInputBody>
       <PromptInputFooter className="composer__bar">
         <PromptInputTools className="composer__lead">
-          {modelState ? <ModelCapsulePicker
-            compact
-            defaultRuntime={modelState.defaultRuntime}
-            runtimes={modelState.runtimes}
-            selectedRuntimeId={selectedRuntimeId}
-            selectedEffort={selectedEffort}
-            disabled={isGeneratingChatStatus(status)}
-            onChange={onModelChange}
-          /> : null}
+          {modelState ? (
+            <>
+              <ModelCapsulePicker
+                defaultRuntime={modelState.defaultRuntime}
+                runtimes={modelState.runtimes}
+                selectedRuntimeId={selectedRuntimeId}
+                selectedEffort={selectedEffort}
+                disabled={isGeneratingChatStatus(status)}
+                onChange={onModelChange}
+              />
+              <ComposerEffortAction
+                modelState={modelState}
+                selectedRuntimeId={selectedRuntimeId}
+                selectedEffort={selectedEffort}
+                disabled={isGeneratingChatStatus(status)}
+                onChange={onModelChange}
+              />
+            </>
+          ) : null}
         </PromptInputTools>
         <PromptInputTools className="composer__trail">
-          <PromptInputActionMenu>
-            <PromptInputActionMenuTrigger aria-label="添加文件" className="composer-tool" tooltip="添加文件"><Plus size={18} /></PromptInputActionMenuTrigger>
-            <PromptInputActionMenuContent><PromptInputActionAddAttachments label="上传文件" /></PromptInputActionMenuContent>
-          </PromptInputActionMenu>
+          <ComposerAttachmentButton />
           <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={onStop} disabled={!canSend} />
         </PromptInputTools>
       </PromptInputFooter>
@@ -143,6 +207,40 @@ export const DesktopComposer = memo(function DesktopComposer({
     </>
   );
 });
+
+function ComposerEffortAction({ modelState, selectedRuntimeId, selectedEffort, disabled, onChange }: {
+  modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] };
+  selectedRuntimeId: string;
+  selectedEffort: string;
+  disabled: boolean;
+  onChange: (runtimeId: string, effort: string) => void;
+}) {
+  const { visibleModel, explicitModel } = resolveVisibleRuntime(modelState.runtimes, selectedRuntimeId, modelState.defaultRuntime);
+  if (!visibleModel) return null;
+  return (
+    <ModelEffortAction
+      runtime={visibleModel}
+      effort={compatibleEffort(visibleModel, selectedEffort)}
+      explicit={Boolean(explicitModel)}
+      disabled={disabled}
+      onChange={onChange}
+    />
+  );
+}
+
+function ComposerAttachmentButton() {
+  const attachments = usePromptInputAttachments();
+  return (
+    <PromptInputButton
+      aria-label="添加文件"
+      className="composer-tool"
+      tooltip="添加文件"
+      onClick={() => attachments.openFileDialog()}
+    >
+      <Paperclip size={18} />
+    </PromptInputButton>
+  );
+}
 
 function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttachments: boolean) => void }) {
   const attachments = usePromptInputAttachments();
