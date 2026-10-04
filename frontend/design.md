@@ -84,6 +84,14 @@ composer 统计行活动期只显示静态文案（不逐秒更新可见文本�
 
 弹出选择器默认单面板直达：首屏即完整可选项，跨来源分组平铺，不要求先选来源再选项；来源筛选只作为次级手段（如来源数 ≥3 才出现的小筛选行）。次级设置（如思考强度）在同一面板内联展开收起，不换屏、不设返回键。确需两级才能承载的内容，先证明单面板无法表达。
 
+### 3.10 侧栏宽度拖拽合同
+
+宽屏（>820px）侧栏右缘提供 8px 透明拖拽热区，hover/drag/focus 显 1px `var(--ak-rule-strong)` 竖向强调线。拖拽只写 `--chat-rail-width` 一个值，写在被消费的 grid 容器（`.chat-shell-body`）inline style 上，范围钳制 15–26rem；双击复位（移除 inline 覆盖，回到 CSS clamp 默认）。拖拽柄同时是键盘 separator（`role="separator"`、`aria-orientation="vertical"`、左右方向键步进 0.5rem）。偏好持久化 localStorage（`akashic.chat.rail-width`），首次渲染前同步读取。窄屏（≤820px）与抽屉内不渲染拖拽柄。
+
+### 3.11 会话排序投影合同
+
+会话排序（最近活动 / 最近创建 / 标题）是纯客户端展示投影：只重排"最近会话"区与项目内会话子列表，不改变服务端权威顺序，置顶区始终跟随服务端顺序。时间倒序中缺失时间戳的行稳定排到末尾。选中项持久化 localStorage（`akashic.chat.session-sort`），入口是"最近会话"分组标题行右侧的幽灵图标钮，复用行菜单浮层与键盘模式。
+
 ## 4. 排版
 
 - 阅读正文：LXGW WenKai GB Screen，正文 ≥16px，三行以上正文行高 ≥1.4。

@@ -907,6 +907,8 @@ export function useDesktopChatController() {
       title: sessionLabel(session),
       preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
       updatedLabel: formatNavigationTime(session.updated_at),
+      updatedAt: session.updated_at,
+      createdAt: session.created_at,
       active: activeSessionId === session.key,
       projectId: session.scope?.[PROJECT_DIMENSION] ?? "",
       projectScoped: Object.hasOwn(session.scope ?? {}, PROJECT_DIMENSION),

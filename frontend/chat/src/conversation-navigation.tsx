@@ -49,6 +49,7 @@ export function ConversationNavigation({
   dialog,
   destinationHeading,
   sessionHeading,
+  sessionHeadingAction,
   className = "",
   sessionActions,
 }: {
@@ -64,6 +65,8 @@ export function ConversationNavigation({
   dialog?: boolean;
   destinationHeading?: string | false;
   sessionHeading?: string;
+  /** 分组标题行右侧的展示态操作（如会话排序），不参与标题语义。 */
+  sessionHeadingAction?: ReactNode;
   className?: string;
   sessionActions?: (session: ConversationSession) => NavigationRowAction[];
 }) {
@@ -92,7 +95,11 @@ export function ConversationNavigation({
         <DestinationList destinations={featuredDestinations} featured />
       ) : null}
       <DestinationList destinations={standardDestinations} />
-      {sessionHeading || featuredDestinations.length > 0 ? <div className="conversation-navigation__heading conversation-navigation__heading--section">{sessionHeading || "会话"}</div> : null}
+      {sessionHeading || featuredDestinations.length > 0 ? <div
+        className={`conversation-navigation__heading conversation-navigation__heading--section${sessionHeadingAction ? " conversation-navigation__heading--row" : ""}`}>
+        <span>{sessionHeading || "会话"}</span>
+        {sessionHeadingAction}
+      </div> : null}
 
       <section className="conversation-navigation__sessions">
         <nav className="conversation-session-list" aria-label="最近会话">

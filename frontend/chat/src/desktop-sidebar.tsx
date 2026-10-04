@@ -4,13 +4,22 @@ import {
   Search,
   Pin,
   PinOff,
+  ArrowUpDown,
 } from "lucide-react";
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
+  DropdownMenuRadioItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ConversationNavigation, ConversationSessionRow, type ConversationSession } from "./conversation-navigation";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
 import { formatNavigationTime, sessionLabel } from "./web-chat-message-data";
 import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
+import {
+  SIDEBAR_RAIL_MAX_REM, SIDEBAR_RAIL_MIN_REM, SIDEBAR_RAIL_STEP_REM,
+  type SidebarRailControl,
+} from "./use-sidebar-rail";
 import type { NavigationRowAction } from "./navigation-row-menu";
 import type { PendingProjectRow, ProjectMemory, ProjectRow } from "./web-projects";
 import { ProjectDirectoryDialog } from "./project-directory-dialog";
@@ -20,6 +29,41 @@ export interface DesktopSidebarSession extends Omit<ConversationSession, "active
   active: boolean;
   projectId?: string;
   projectScoped?: boolean;
+  updatedAt?: string;
+  createdAt?: string;
+}
+
+/** 会话排序是客户端展示投影：只作用于最近会话区与项目内子列表，置顶区保持服务端顺序。 */
+type SessionSortId = "activity" | "created" | "title";
+
+const SESSION_SORT_CHOICES: readonly { id: SessionSortId; label: string }[] = [
+  { id: "activity", label: "最近活动" },
+  { id: "created", label: "最近创建" },
+  { id: "title", label: "标题" },
+];
+const SESSION_SORT_KEY = "akashic.chat.session-sort";
+
+function readSessionSort(): SessionSortId {
+  try {
+    const value = localStorage.getItem(SESSION_SORT_KEY);
+    return SESSION_SORT_CHOICES.some((choice) => choice.id === value) ? value as SessionSortId : "activity";
+  } catch {
+    return "activity";
+  }
+}
+
+/** 时间倒序；缺失时间戳的行（如置顶解析补齐的目录外会话）稳定排到末尾。 */
+function compareSessionTime(a: string | undefined, b: string | undefined): number {
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  return Date.parse(b) - Date.parse(a);
+}
+
+function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId): DesktopSidebarSession[] {
+  if (sort === "title") return [...rows].sort((a, b) => a.title.localeCompare(b.title, "zh-Hans-CN"));
+  if (sort === "created") return [...rows].sort((a, b) => compareSessionTime(a.createdAt, b.createdAt));
+  return [...rows].sort((a, b) => compareSessionTime(a.updatedAt, b.updatedAt));
 }
 
 export interface DesktopSidebarProjects {
@@ -50,6 +94,8 @@ export interface DesktopSidebarProps {
   onPrefetchSession?: (sessionId: string) => void;
   onCycleTheme: () => void;
   onNewChat: () => void;
+  /** 宽屏侧栏的宽度控制；抽屉（compact）不带此 prop，因此不渲染拖拽柄。 */
+  rail?: SidebarRailControl;
 }
 
 /** Session-only vertical rail — product destinations live on the L-shape top band. */
@@ -63,10 +109,12 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onSelectSession,
   onPrefetchSession,
   onNewChat,
+  rail,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
   const sidebarRef = useRef<HTMLElement>(null);
   const [directoryProjectId, setDirectoryProjectId] = useState("");
+  const [sessionSort, setSessionSort] = useState(readSessionSort);
   const directoryProject = projects?.items.find((project) => project.id === directoryProjectId);
   const directoryAction = (project: ProjectRow): NavigationRowAction => ({
     label: project.directory ? "查看固定目录" : "选择目录",
@@ -88,11 +136,17 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   const filteredSessions = useMemo(() => needle
     ? allSessions.filter((session) => `${session.title} ${session.preview}`.toLowerCase().includes(needle))
     : allSessions, [allSessions, needle]);
+  // 排序只重排展示顺序：最近会话区与项目内子列表共享同一份投影，置顶区不经过它。
+  const sortedSessions = useMemo(() => sortSessions(filteredSessions, sessionSort), [filteredSessions, sessionSort]);
+  useEffect(() => {
+    try { localStorage.setItem(SESSION_SORT_KEY, sessionSort); }
+    catch { /* 禁用存储时仍允许本次浏览的排序选择。 */ }
+  }, [sessionSort]);
   // 目录未解析/归档不改变 Session.scope；回退到最近会话也不获得置顶资格。
   const knownProjects = useMemo(() => new Map(projects?.items.map((project) => [project.id, project])), [projects?.items]);
   const sessionsByProject = useMemo(() => {
     const groups = new Map<string, ProjectSessionItem[]>();
-    for (const session of filteredSessions) {
+    for (const session of sortedSessions) {
       if (!session.projectId || !knownProjects.has(session.projectId)) continue;
       const group = groups.get(session.projectId) ?? [];
       group.push({
@@ -102,10 +156,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       groups.set(session.projectId, group);
     }
     return groups;
-  }, [filteredSessions, knownProjects, surface]);
+  }, [sortedSessions, knownProjects, surface]);
   const pinnedProjects = new Set(navigationPins.pins.filter((pin) => pin.kind === "project").map((pin) => pin.id));
   const pinnedSessions = new Set(navigationPins.pins.filter((pin) => pin.kind === "session").map((pin) => pin.id));
-  const recentSessions = filteredSessions.filter((session) => !pinnedSessions.has(session.id)
+  const recentSessions = sortedSessions.filter((session) => !pinnedSessions.has(session.id)
     && (!session.projectId || !knownProjects.has(session.projectId)));
   const visibleProject = (project: ProjectRow) => !needle || project.name.toLowerCase().includes(needle)
     || Boolean(sessionsByProject.get(project.id)?.length);
@@ -213,6 +267,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       <ConversationNavigation
         destinationHeading={false}
         sessionHeading="最近会话"
+        sessionHeadingAction={<SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
         destinations={[]}
         actions={[]}
         sessions={recentSessions.map(sessionView)}
@@ -229,6 +284,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         ) : undefined}
       />
       </div>
+      {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
       {directoryProject && projects ? <ProjectDirectoryDialog project={directoryProject}
         onClose={() => setDirectoryProjectId("")} onChoose={(path) => projects.onBindDirectory(directoryProject.id, path)}
         onCloseFocus={() => Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>("[data-project-id]") ?? [])
@@ -236,3 +292,76 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     </aside>
   );
 });
+
+/** "最近会话"分组标题行的排序入口；选中项持久化，菜单复用行菜单的浮层样式。 */
+function SessionSortMenu({ sort, onSort }: { sort: SessionSortId; onSort: (sort: SessionSortId) => void }) {
+  const current = SESSION_SORT_CHOICES.find((choice) => choice.id === sort) ?? SESSION_SORT_CHOICES[0];
+  return <DropdownMenu modal={false}>
+    <DropdownMenuTrigger asChild>
+      <button type="button" className="project-navigation__icon conversation-sort-trigger"
+        aria-label={`会话排序：${current.label}`} title="会话排序">
+        <ArrowUpDown size={15} aria-hidden="true" />
+      </button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent className="navigation-row-menu" align="end" sideOffset={4} collisionPadding={12} aria-label="会话排序">
+      <DropdownMenuRadioGroup value={sort} aria-label="会话排序">
+        {SESSION_SORT_CHOICES.map((choice) => <DropdownMenuRadioItem key={choice.id} value={choice.id}
+          className="session-sort-menu__choice" onSelect={() => onSort(choice.id)}>
+          <span>{choice.label}</span>
+        </DropdownMenuRadioItem>)}
+      </DropdownMenuRadioGroup>
+    </DropdownMenuContent>
+  </DropdownMenu>;
+}
+
+/** 侧栏右缘拖拽柄：只写 --chat-rail-width；双击复位，方向键以 0.5rem 步进。 */
+function SidebarRailResizer({ rail, sidebarRef }: {
+  rail: SidebarRailControl;
+  sidebarRef: RefObject<HTMLElement | null>;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const [nowRem, setNowRem] = useState(SIDEBAR_RAIL_MIN_REM);
+  useLayoutEffect(() => {
+    const aside = sidebarRef.current;
+    if (!aside) return;
+    const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    setNowRem(aside.getBoundingClientRect().width / rootPx);
+  }, [rail.widthRem, sidebarRef]);
+  const widthPx = () => sidebarRef.current?.getBoundingClientRect().width ?? 0;
+  return <div
+    className="chat-sidebar__resizer"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="侧栏宽度"
+    aria-valuemin={SIDEBAR_RAIL_MIN_REM}
+    aria-valuemax={SIDEBAR_RAIL_MAX_REM}
+    aria-valuenow={Math.round(nowRem * 2) / 2}
+    tabIndex={0}
+    data-dragging={dragging || undefined}
+    onPointerDown={(event) => {
+      if (!event.isPrimary || event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      rail.dragStart(event.clientX, widthPx());
+      setDragging(true);
+    }}
+    onPointerMove={(event) => {
+      if (dragging) rail.dragTo(event.clientX);
+    }}
+    onPointerUp={(event) => {
+      if (!dragging) return;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      setDragging(false);
+    }}
+    onPointerCancel={() => setDragging(false)}
+    onDoubleClick={(event) => {
+      event.preventDefault();
+      rail.reset();
+    }}
+    onKeyDown={(event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      rail.stepBy(event.key === "ArrowRight" ? SIDEBAR_RAIL_STEP_REM : -SIDEBAR_RAIL_STEP_REM, widthPx());
+    }}
+  />;
+}

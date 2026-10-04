@@ -115,13 +115,54 @@ input {
 }
 
 .chat-sidebar {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
   gap: 0;
-  overflow: hidden;
+  /* 纵向滚动由 .chat-sidebar__navigation 承担；这里放开让右缘拖拽热区跨到阅读列 4px。 */
+  overflow: visible;
   border-inline-end: 1px solid var(--chat-line);
+}
+
+/* 右缘拖拽热区：透明 8px，hover/drag/focus 时显 1px 竖向强调线；写入只发生在 --chat-rail-width。 */
+.chat-sidebar__resizer {
+  position: absolute;
+  z-index: 3;
+  inset-block: 0;
+  inset-inline-end: -4px;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.chat-sidebar__resizer::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 50%;
+  width: 1px;
+  translate: -0.5px 0;
+  background: var(--ak-rule-strong);
+  opacity: 0;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.chat-sidebar__resizer:hover::after,
+.chat-sidebar__resizer:focus-visible::after,
+.chat-sidebar__resizer[data-dragging]::after {
+  opacity: 1;
+}
+
+.chat-sidebar__resizer:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}
+
+/* 抽屉（窄屏 dialog）里的侧栏宽度由抽屉 token 决定，不出现拖拽柄。 */
+.compact-navigation-dialog .chat-sidebar__resizer {
+  display: none;
 }
 
 .chat-sidebar__toolbar {
@@ -224,6 +265,34 @@ input {
 /* 侧栏只有一条左竖线：rail-inline + 10px。分组标题、目的地、底部动作都落到它。 */
 .chat-sidebar--entry .conversation-navigation__heading--section {
   padding-inline: calc(var(--chat-rail-inline) + 10px);
+}
+
+/* 带操作钮的分组标题行：标题落左竖线，操作贴右缘。 */
+.conversation-navigation__heading--row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.conversation-navigation__heading--row > span {
+  min-width: 0;
+}
+
+.conversation-sort-trigger {
+  margin-inline-end: -6px;
+}
+
+.session-sort-menu__choice {
+  min-height: 40px;
+  border-radius: 8px;
+  padding-block: 8px;
+  font-size: 0.875rem;
+}
+
+.session-sort-menu__choice[data-highlighted] {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
 }
 
 .chat-sidebar--entry .conversation-destinations,
