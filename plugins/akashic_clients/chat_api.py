@@ -69,6 +69,14 @@ class WebPluginUiQueryPayload(BaseModel):
     turn_id: str | None = Field(default=None, max_length=128)
 
 
+class RenameSessionRequest(BaseModel):
+    """标题覆盖请求：空串或全空白清除覆盖；长度上限与服务端合同一致。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    title: str = Field(default="", max_length=512)
+
+
 class WebUiProvider(Protocol):
     async def bootstrap(self) -> bytes: ...
 
@@ -243,6 +251,20 @@ def create_chat_app(
         """恢复已软删的会话；幂等，只清除 deleted_at 标记。"""
 
         return await _set_session_deleted(session_key, deleted=False)
+
+    @app.post("/api/chat/sessions/{session_key:path}/rename")
+    async def rename_session(session_key: str, payload: RenameSessionRequest) -> dict[str, object]:
+        """覆盖会话显示标题；空标题清除覆盖回到首条消息推导，幂等。"""
+        if not session_key.startswith(f"{channel.name}:"):
+            raise HTTPException(status_code=400, detail="只能管理当前聊天目录中的会话")
+        try:
+            async with open_session_admin() as admin:
+                result = await admin.set_title(session_key, payload.title)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="会话不存在") from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"key": result.session_key, "title": result.title}
 
     @app.post("/api/chat/notifications/stream")
     async def notification_stream(payload: NotificationRequest) -> StreamingResponse:

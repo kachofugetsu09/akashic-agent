@@ -9,6 +9,8 @@ export interface SessionRow {
   created_at?: string;
   message_count?: number;
   first_message_content?: string;
+  /** 显式标题覆盖；null/缺失时按 first_message_content 推导。 */
+  title?: string | null;
   /** Session 接纳时固定的宽键；缺失维度即 default。 */
   scope?: Record<string, string>;
 }
@@ -90,6 +92,7 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
     typeof item.key !== "string"
     || !item.key.trim()
     || (item.first_message_content !== undefined && typeof item.first_message_content !== "string")
+    || (item.title !== undefined && item.title !== null && typeof item.title !== "string")
     || (item.updated_at !== undefined && typeof item.updated_at !== "string")
     || (item.created_at !== undefined && typeof item.created_at !== "string")
     || (item.message_count !== undefined && (typeof item.message_count !== "number" || !Number.isFinite(item.message_count)))
@@ -200,6 +203,21 @@ export async function setChatSessionDeleted(sessionKey: string, deleted: boolean
   if (!body || body.key !== sessionKey || body.deleted !== deleted) {
     throw new Error(`${endpoint} 返回了不一致的删除结果`);
   }
+}
+
+/** 标题覆盖与软删同属显式数据管理操作；空标题清除覆盖，返回值即服务端落库结果。 */
+export async function renameChatSession(sessionKey: string, title: string): Promise<string | null> {
+  const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionKey)}/rename`;
+  const payload = await fetchChatJson<unknown>(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  const body = recordValue(payload);
+  if (!body || body.key !== sessionKey || (body.title !== null && typeof body.title !== "string")) {
+    throw new Error(`${endpoint} 返回了不一致的标题结果`);
+  }
+  return typeof body.title === "string" ? body.title : null;
 }
 
 export async function uploadFiles(files: ComposerFile[], signal: AbortSignal): Promise<UploadedFile[]> {

@@ -87,7 +87,8 @@ def session_pin_row(catalog: MessageCatalogPort, session_id: str) -> dict[str, o
     text = "" if first is None or isinstance(first.body, Control) else "\n".join(
         str(part.value) for part in first.body.parts if isinstance(part, ContentPart) and part.kind == "text"
     )
-    return {"key": session_id, "first_message_content": text, "scope": dict(attributes.scope)}
+    return {"key": session_id, "first_message_content": text, "scope": dict(attributes.scope),
+            "title": reader.title}
 
 
 async def check_project_pin(provider: PluginUiProvider, project_id: str) -> None:

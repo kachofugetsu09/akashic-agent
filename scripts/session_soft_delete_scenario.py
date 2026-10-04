@@ -1,4 +1,4 @@
-"""Manual acceptance: session soft delete over real HTTP (curl) and real Akasha paths."""
+"""Manual acceptance: session soft delete + title override over real HTTP (curl) and real Akasha paths."""
 from __future__ import annotations
 
 import argparse
@@ -42,9 +42,11 @@ def check(condition: bool, description: str) -> None:
     checks.append(description)
 
 
-def curl(method: str, url: str) -> tuple[int, dict[str, object]]:
-    raw = subprocess.run(["curl", "-sS", "-X", method, "-w", "\n%{http_code}", url],
-                         capture_output=True, text=True, check=True).stdout
+def curl(method: str, url: str, data: dict[str, object] | None = None) -> tuple[int, dict[str, object]]:
+    command = ["curl", "-sS", "-X", method, "-w", "\n%{http_code}", url]
+    if data is not None:
+        command += ["-H", "Content-Type: application/json", "-d", json.dumps(data)]
+    raw = subprocess.run(command, capture_output=True, text=True, check=True).stdout
     body, status = raw.rsplit("\n", 1)
     http_log.append({"method": method, "url": url, "status": int(status), "body": body[:400]})
     return int(status), json.loads(body) if body else {}
@@ -60,8 +62,9 @@ def run_real_migration(workspace: Path) -> None:
     backend = get_backend(f"sqlite:///{workspace / 'migrations.sqlite3'}")
     with backend, bind_migration_context(config_path=workspace / "config.toml", workspace=workspace):
         loaded = read_migrations(str(args.source / "migrations" / "core"))
-        selected = [m for m in loaded if m.id == "20261004_03_session_soft_delete"]
-        assert len(selected) == 1, "migration not found"
+        selected = [m for m in loaded
+                    if m.id in {"20261004_03_session_soft_delete", "20261004_04_session_title"}]
+        assert len(selected) == 2, "migration not found"
         backend.apply_migrations(backend.to_apply(type(loaded)(selected, loaded.post_apply)))
 
 
@@ -142,19 +145,24 @@ def main() -> None:
     messages_before = table_snapshot(path, "messages")
     log.close()
 
-    # 1. 旧库形态（无 deleted_at 列）可直接读取；真实 yoyo 迁移只加列、不改数据。
+    # 1. 旧库形态（无 deleted_at/title 列）可直接读取；真实 yoyo 迁移只加列、不改数据。
     with sqlite3.connect(path) as db:
         db.execute("ALTER TABLE sessions DROP COLUMN deleted_at")
+        db.execute("ALTER TABLE sessions DROP COLUMN title")
     log = MessageLog(path)
     catalog = log.catalog()
     check({e.session_id for e in catalog.sessions(prefix="akashic:").items}
           == {"akashic:alpha", "akashic:beta"}, "无 deleted_at 的旧库仍可读且全量列出")
     check(not catalog.reader("akashic:alpha").deleted, "旧库按未软删读取")
+    check(catalog.reader("akashic:alpha").title is None, "旧库标题按未覆盖读取")
+    check(all(e.title is None for e in catalog.sessions(prefix="akashic:").items),
+          "旧库目录标题投影回退为推导态")
     log.close()
     run_real_migration(workspace)
     with sqlite3.connect(path) as db:
-        check("deleted_at" in [row[1] for row in db.execute("PRAGMA table_info(sessions)")],
-              "yoyo 迁移只增加 deleted_at 列")
+        columns = [row[1] for row in db.execute("PRAGMA table_info(sessions)")]
+        check("deleted_at" in columns and "title" in columns,
+              "yoyo 迁移只增加 deleted_at 与 title 列")
         check(table_snapshot(path, "messages") == messages_before, "迁移不改写 messages 数据")
 
     # 2. 真实 uvicorn + curl 验证软删/恢复语义。
@@ -211,6 +219,36 @@ def main() -> None:
         check(status == 404, "删除不存在的会话返回 404")
         status, _ = curl("POST", f"{base}/api/chat/sessions/telegram:foreign/delete")
         check(status == 400, "删除非本聊天目录会话返回 400")
+
+        # 3. 标题覆盖：行内重命名的服务端语义（窄接口、幂等、清空回推导）。
+        status, body = curl("GET", f"{base}/api/chat/sessions")
+        updated_before = next(row["updated_at"] for row in body["items"] if row["key"] == "akashic:alpha")
+        check(all(row["title"] is None for row in body["items"]), "初始目录无标题覆盖")
+        status, body = curl("POST", f"{base}/api/chat/sessions/akashic:alpha/rename",
+                            {"title": "  晨间巡检  "})
+        check(status == 200 and body["title"] == "晨间巡检", "rename 规范化空白后落库")
+        status, body = curl("GET", f"{base}/api/chat/sessions")
+        alpha = next(row for row in body["items"] if row["key"] == "akashic:alpha")
+        check(alpha["title"] == "晨间巡检" and alpha["first_message_content"] == "正文 akashic:alpha",
+              "目录行携带标题覆盖且推导字段仍在")
+        check(alpha["updated_at"] == updated_before, "重命名不改变 updated_at 排序事实")
+        status, body = curl("POST", f"{base}/api/chat/sessions/akashic:alpha/rename",
+                            {"title": "晨间巡检"})
+        check(status == 200 and body["title"] == "晨间巡检", "重复 rename 幂等")
+        status, body = curl("GET", f"{base}/api/chat/navigation/pins")
+        check(body["sessions"] and body["sessions"][0]["title"] == "晨间巡检",
+              "置顶解析的会话行携带标题覆盖")
+        status, body = curl("POST", f"{base}/api/chat/sessions/akashic:alpha/rename", {"title": "x" * 201})
+        check(status == 422, "超长标题返回 422")
+        status, _ = curl("POST", f"{base}/api/chat/sessions/akashic:missing/rename", {"title": "a"})
+        check(status == 404, "重命名不存在的会话返回 404")
+        status, _ = curl("POST", f"{base}/api/chat/sessions/telegram:foreign/rename", {"title": "a"})
+        check(status == 400, "重命名非本聊天目录会话返回 400")
+        status, body = curl("POST", f"{base}/api/chat/sessions/akashic:alpha/rename", {"title": "   "})
+        check(status == 200 and body["title"] is None, "空白标题清除覆盖")
+        status, body = curl("GET", f"{base}/api/chat/sessions")
+        check(next(row for row in body["items"] if row["key"] == "akashic:alpha")["title"] is None,
+              "清除后目录回到推导标题")
     finally:
         server.should_exit = True
         thread.join(timeout=20)

@@ -97,6 +97,8 @@ export interface DesktopSidebarProps {
   onNewChat: () => void;
   /** 会话软删：行内两步确认后调用；Promise 拒绝时行保持原位。 */
   onDeleteSession?: (sessionId: string, title: string) => Promise<void>;
+  /** 会话重命名：双击或菜单进入行内编辑；Promise 拒绝时编辑态保留。 */
+  onRenameSession?: (sessionId: string, title: string) => Promise<void>;
   /** 最近一次删除的撤销窗口；null 时不在导航区展示提示行。 */
   deletedNotice?: { key: string; title: string } | null;
   onRestoreSession?: (sessionId: string) => void;
@@ -117,6 +119,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onPrefetchSession,
   onNewChat,
   onDeleteSession,
+  onRenameSession,
   deletedNotice,
   onRestoreSession,
   onDismissDeletedNotice,
@@ -255,6 +258,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
                 onActivate={onSelectSession} onPrefetch={onPrefetchSession}
                 actions={pinAction(pin, true)}
                 onDelete={onDeleteSession ? () => onDeleteSession(session.id, session.title) : undefined}
+                onRename={onRenameSession ? (title: string) => onRenameSession(session.id, title) : undefined}
               /> : null;
           }
           if (needle && !pin.id.toLowerCase().includes(needle)) return null;
@@ -294,6 +298,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         actions={[]}
         sessions={recentSessions.map(sessionView)}
         onSessionDelete={deleteHandler}
+        onSessionRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined}
         sessionActions={(session) => {
           const row = allSessions.find((item) => item.id === session.id);
           return row && !row.projectId && !row.projectScoped

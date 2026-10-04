@@ -63,7 +63,7 @@ export function blocksWithFinalThinking(blocks: AgentBlock[], thinking: string |
 }
 
 export function sessionLabel(session: SessionRow): string {
-  const title = session.first_message_content?.trim() || "未命名对话";
+  const title = session.title?.trim() || session.first_message_content?.trim() || "未命名对话";
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
 }
 

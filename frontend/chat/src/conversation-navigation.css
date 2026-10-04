@@ -252,6 +252,31 @@
   white-space: nowrap;
 }
 
+/* 行内重命名：输入框沿用标题排版，只以发丝底线标示编辑态。 */
+.conversation-session.editing {
+  cursor: default;
+}
+
+.conversation-session.editing:active {
+  scale: none;
+}
+
+.conversation-session-title-input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-block-end: 1px solid var(--ak-ink-secondary, currentColor);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.4;
+  outline: none;
+}
+
 .conversation-session__title time {
   flex: 0 0 auto;
   color: var(--ak-color-text-secondary);

@@ -142,8 +142,16 @@ class SessionDeleteResult:
         self.deleted_at = deleted_at
 
 
+class SessionTitleResult:
+    """一次已提交的 Session 标题覆盖或清除；消息与属性保持不变。"""
+
+    def __init__(self, session_key: str, title: str | None) -> None:
+        self.session_key = session_key
+        self.title = title
+
+
 class SessionAdmin:
-    """用户显式的会话数据管理操作：软删或恢复，不授予消息减少或其他 owner 权限。"""
+    """用户显式的会话数据管理操作：软删/恢复与标题覆盖，不授予消息减少或其他 owner 权限。"""
 
     def __init__(self, log: _MessageLog | None):
         self._log = log
@@ -155,6 +163,14 @@ class SessionAdmin:
             lambda: self._log.set_session_deleted(session_key, deleted=deleted)
         )
         return SessionDeleteResult(session_key, deleted=deleted_at is not None, deleted_at=deleted_at)
+
+    async def set_title(self, session_key: str, title: str | None) -> SessionTitleResult:
+        if self._log is None:
+            raise RuntimeError("candidate 验证期禁止管理正式 Session")
+        stored = await run_file_io(
+            lambda: self._log.set_session_title(session_key, title)
+        )
+        return SessionTitleResult(session_key, stored)
 
 
 class SessionAdmission:

@@ -1,4 +1,4 @@
-import { ChevronRight, Trash2, X } from "lucide-react";
+import { ChevronRight, PenLine, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import "./conversation-navigation.css";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
@@ -53,6 +53,7 @@ export function ConversationNavigation({
   className = "",
   sessionActions,
   onSessionDelete,
+  onSessionRename,
 }: {
   destinations: ConversationDestination[];
   sessions: ConversationSession[];
@@ -72,6 +73,8 @@ export function ConversationNavigation({
   sessionActions?: (session: ConversationSession) => NavigationRowAction[];
   /** 提供后会话行获得就地两步删除；Promise 拒绝时行保持原位。 */
   onSessionDelete?: (session: ConversationSession) => Promise<void>;
+  /** 提供后会话行获得双击/菜单行内重命名；Promise 拒绝时编辑态保留。 */
+  onSessionRename?: (session: ConversationSession, title: string) => Promise<void>;
 }) {
   const featuredDestinations = destinations.filter((destination) => destination.featured);
   const standardDestinations = destinations.filter((destination) => !destination.featured);
@@ -114,6 +117,7 @@ export function ConversationNavigation({
             onPrefetch={onSessionPrefetch}
             actions={sessionActions?.(session)}
             onDelete={onSessionDelete ? () => onSessionDelete(session) : undefined}
+            onRename={onSessionRename ? (title: string) => onSessionRename(session, title) : undefined}
           />)}
         </nav>
       </section>
@@ -142,21 +146,57 @@ export function ConversationNavigation({
   );
 }
 
-export function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions, onDelete }: {
+export function ConversationSessionRow({ session, pendingSessionId, onActivate, onPrefetch, actions, onDelete, onRename }: {
   session: ConversationSession;
   pendingSessionId?: string;
   onActivate: (sessionId: string) => void;
   onPrefetch?: (sessionId: string) => void;
   actions?: NavigationRowAction[];
   onDelete?: () => Promise<void>;
+  onRename?: (title: string) => Promise<void>;
 }) {
   const [armed, setArmed] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
   const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deleteRef = useRef<HTMLButtonElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const renameCancelledRef = useRef(false);
   useEffect(() => () => {
     if (armTimer.current !== null) clearTimeout(armTimer.current);
   }, []);
+
+  const startRename = () => {
+    if (!onRename || session.unavailable) return;
+    renameCancelledRef.current = false;
+    setRenameValue(session.title);
+    setRenaming(true);
+    window.setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+  };
+  const cancelRename = () => {
+    renameCancelledRef.current = true;
+    setRenaming(false);
+  };
+  const commitRename = async () => {
+    if (renameCancelledRef.current || !renaming || !onRename) return;
+    const title = renameValue.trim();
+    if (title === session.title.trim()) {
+      setRenaming(false);
+      return;
+    }
+    setRenameBusy(true);
+    try {
+      await onRename(title);
+      setRenaming(false);
+    } finally {
+      setRenameBusy(false);
+    }
+  };
 
   // 3 秒未确认自动还原；确认提交由 onDelete 的拒绝与否决定是否保留原位。
   const disarm = () => {
@@ -184,8 +224,13 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
     }
   };
 
+  const renameAction: NavigationRowAction[] = onRename && !session.unavailable ? [{
+    label: "重命名",
+    icon: <PenLine size={18} aria-hidden="true" />,
+    onSelect: startRename,
+  }] : [];
   const rowActions = onDelete
-    ? [...(actions ?? []), {
+    ? [...renameAction, ...(actions ?? []), {
       label: "删除", danger: true,
       icon: <Trash2 size={18} aria-hidden="true" />,
       // 菜单删除不直接执行：就地亮起确认药丸，并把焦点送过去完成第二次点击。
@@ -194,11 +239,36 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
         window.setTimeout(() => deleteRef.current?.focus(), 0);
       },
     } satisfies NavigationRowAction]
-    : actions;
+    : [...renameAction, ...(actions ?? [])];
 
-  return <NavigationRowMenu title={session.title} actions={rowActions}
-    className={`conversation-session-row ${session.active ? "active" : ""}`}>
-    <button
+  const body = renaming ? <div
+    className={`conversation-session editing ${session.active ? "active" : ""}`}
+    onClick={(event) => event.stopPropagation()}>
+    <span className="conversation-session__copy">
+      <span className="conversation-session__title">
+        <input
+          ref={renameInputRef}
+          className="conversation-session-title-input"
+          value={renameValue}
+          maxLength={200}
+          aria-label={`重命名 ${session.title}`}
+          disabled={renameBusy}
+          onChange={(event) => setRenameValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void commitRename();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              cancelRename();
+            }
+          }}
+          onBlur={() => void commitRename()}
+        />
+      </span>
+      <small>{session.preview}</small>
+    </span>
+  </div> : <button
       className={`conversation-session ${session.active ? "active" : ""} ${session.unavailable ? "unavailable" : ""}`}
       type="button"
       aria-current={session.active ? "true" : undefined}
@@ -207,7 +277,8 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
       title={session.preview ? `${session.title} · ${session.preview}` : session.title}
       onClick={() => onActivate(session.id)}
       onPointerEnter={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
-      onFocus={() => { if (!session.unavailable) onPrefetch?.(session.id); }}>
+      onFocus={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
+      onDoubleClick={startRename}>
       <span className="conversation-session__copy">
         <span className="conversation-session__title">
           <strong>{session.title}</strong>
@@ -215,7 +286,11 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
         <small>{session.preview}</small>
       </span>
       {session.state ? <span className="conversation-session__state">{session.state}</span> : null}
-    </button>
+    </button>;
+
+  return <NavigationRowMenu title={session.title} actions={rowActions}
+    className={`conversation-session-row ${session.active ? "active" : ""}`}>
+    {body}
     {onDelete ? <button
       ref={deleteRef}
       type="button"

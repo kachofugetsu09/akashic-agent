@@ -104,6 +104,8 @@ class SessionEntry:
     head_seq: int
     message_count: int
     first_message: Message | None
+    """显式标题覆盖；None 表示由表示边界按首条消息推导。"""
+    title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +170,9 @@ _SESSION_ATTRIBUTES_COLUMN = (
 )
 # 软删除标记：NULL 表示正常，时间戳表示已逻辑失效；由 yoyo 只增加列接纳。
 _SESSION_DELETED_COLUMN = "deleted_at TEXT"
+# 标题覆盖：NULL 表示沿用首条消息推导，非空为显式管理状态；由 yoyo 只增加列接纳。
+_SESSION_TITLE_COLUMN = "title TEXT"
+_SESSION_TITLE_MAX = 200
 
 _MESSAGE_METADATA_COLUMN = "metadata TEXT NOT NULL DEFAULT '{}'"
 
@@ -200,7 +205,8 @@ _SCHEMA = {
                         metadata TEXT,
                         next_seq INTEGER NOT NULL DEFAULT 0,
                         {_SESSION_ATTRIBUTES_COLUMN},
-                        {_SESSION_DELETED_COLUMN}
+                        {_SESSION_DELETED_COLUMN},
+                        {_SESSION_TITLE_COLUMN}
                     );""",
     "messages": f"""CREATE TABLE IF NOT EXISTS messages (
                         id TEXT PRIMARY KEY,
@@ -266,14 +272,19 @@ def _sql(value: str) -> str:
 
 
 def _session_schemas() -> Mapping[str, bool]:
-    """保留两条已知旧表 lineage，已加 deleted_at 的同形库同样是已知身份。"""
+    """保留两条已知旧表 lineage，已加管理列的同形库同样是已知身份。"""
     values = {_sql(_SCHEMA["sessions"]): True}
     for old in (_LEGACY_SESSION_SCHEMA, _OLD_SESSION_SCHEMA):
         values[_sql(old)] = False
         base = old.rstrip().rstrip(";").rstrip()
-        values[_sql(base[:-1] + ", " + _SESSION_ATTRIBUTES_COLUMN + ")")] = True
-        values[_sql(base[:-1] + ", " + _SESSION_ATTRIBUTES_COLUMN + ", "
-                     + _SESSION_DELETED_COLUMN + ")")] = True
+        for suffix in (
+            ", " + _SESSION_ATTRIBUTES_COLUMN,
+            ", " + _SESSION_ATTRIBUTES_COLUMN + ", " + _SESSION_DELETED_COLUMN,
+            ", " + _SESSION_ATTRIBUTES_COLUMN + ", " + _SESSION_TITLE_COLUMN,
+            ", " + _SESSION_ATTRIBUTES_COLUMN + ", " + _SESSION_DELETED_COLUMN
+            + ", " + _SESSION_TITLE_COLUMN,
+        ):
+            values[_sql(base[:-1] + suffix + ")")] = True
     return values
 
 
@@ -382,6 +393,9 @@ class MessageLog:
                 row["name"] for row in self._connection.execute("PRAGMA table_info(messages)")
             }
             self._has_deleted = "deleted_at" in {
+                row["name"] for row in self._connection.execute("PRAGMA table_info(sessions)")
+            }
+            self._has_title = "title" in {
                 row["name"] for row in self._connection.execute("PRAGMA table_info(sessions)")
             }
         except BaseException:
@@ -541,6 +555,37 @@ class MessageLog:
                 "UPDATE sessions SET deleted_at=? WHERE key=?", (stamp, session_id),
             )
             return stamp
+
+        return self._write(change)
+
+    def set_session_title(self, session_id: str, title: str | None) -> str | None:
+        """用户显式的数据管理操作：覆盖或清除会话显示标题，消息与属性不动。
+
+        规范化：去首尾空白，空值清除覆盖、回到首条消息推导标题；长度上限
+        `_SESSION_TITLE_MAX`；`updated_at` 不变——重命名不改变目录排序事实。
+        幂等：与当前值相同不产生写操作。返回落库后的覆盖值或 None。
+        """
+        normalized = None if title is None else title.strip() or None
+        if normalized is not None and len(normalized) > _SESSION_TITLE_MAX:
+            raise ValueError(f"会话标题不能超过 {_SESSION_TITLE_MAX} 个字符")
+
+        def change() -> str | None:
+            column = "title" if self._has_title else "NULL AS title"
+            row = self._connection.execute(
+                f"SELECT {column} FROM sessions WHERE key=?", (session_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            if not self._has_title:
+                if normalized is not None:
+                    raise RuntimeError("sessions 缺少 title，请先完成 yoyo 迁移")
+                return None
+            if row["title"] == normalized:
+                return normalized
+            self._connection.execute(
+                "UPDATE sessions SET title=? WHERE key=?", (normalized, session_id),
+            )
+            return normalized
 
         return self._write(change)
 
@@ -788,7 +833,7 @@ class MessageCatalog:
         # 1. CROSS JOIN 固定 page 为外层，避免 SQLite 为 GROUP BY 扫描全部消息。
         sql = """
             WITH page AS MATERIALIZED (
-                SELECT s.* FROM sessions s WHERE %s
+                SELECT s.*, %s AS title FROM sessions s WHERE %s
                 ORDER BY julianday(s.updated_at) DESC, s.key ASC LIMIT ?
             ), stats AS (
                 SELECT m.session_key, COUNT(*) AS message_count,
@@ -805,7 +850,11 @@ class MessageCatalog:
             FROM page p LEFT JOIN stats t ON t.session_key=p.key
             LEFT JOIN messages m ON m.session_key=p.key AND m.seq=t.first_seq
             ORDER BY julianday(p.updated_at) DESC, p.key ASC
-        """ % (" AND ".join(where), "m.metadata" if self._log._has_metadata else "'{}'")
+        """ % (
+            "s.title" if self._log._has_title else "NULL",
+            " AND ".join(where),
+            "m.metadata" if self._log._has_metadata else "'{}'",
+        )
         with self._log._read() as connection:
             total = connection.execute("SELECT COUNT(*) FROM sessions s WHERE " + base_where, values).fetchone()[0]
             rows = connection.execute(sql, [*page_values, limit + 1]).fetchall()
@@ -936,6 +985,18 @@ class MessageReader:
         if row is None:
             raise ValueError("Session 尚未接纳")
         return row["deleted_at"] is not None
+
+    @property
+    def title(self) -> str | None:
+        """显式标题覆盖；None 表示沿用首条消息推导。"""
+        column = "title" if self._log._has_title else "NULL AS title"
+        with self._log._read():
+            row = self._log._connection.execute(
+                f"SELECT {column} FROM sessions WHERE key=?", (self._session_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Session 尚未接纳")
+        return row["title"]
 
     def read(
         self,
@@ -1906,7 +1967,7 @@ def _session_entry(row: sqlite3.Row) -> SessionEntry:
         key, _timestamp(row["created_at"], key), _timestamp(row["updated_at"], key),
         decode_attributes(row["attributes"]),
         None if row["metadata"] is None else _json_object(row["metadata"], f"Session {key} metadata"),
-        row["head_seq"], row["message_count"], first,
+        row["head_seq"], row["message_count"], first, row["title"],
     )
 
 
