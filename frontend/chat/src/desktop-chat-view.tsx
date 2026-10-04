@@ -1,5 +1,5 @@
 import { timelineReplyGroups, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
-import React, { useMemo } from "react";
+import React, { useMemo, useRef } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
@@ -14,7 +14,7 @@ import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
-import { DesktopComposer } from "./desktop-composer";
+import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey } from "./desktop-conversation";
 import { ReplyActivityView } from "./message-view";
 import { CompactNavigation } from "./compact-navigation";
@@ -31,6 +31,7 @@ interface DesktopChatViewProps {
 export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewProps) {
   const theme = useTheme();
   const rail = useSidebarRail();
+  const composerApi = useRef<ComposerApi | null>(null);
   const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
   const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
   const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);
@@ -102,7 +103,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
-            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} modelProblem={modelProblem} /> : (
+            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} modelProblem={modelProblem}
+              onSuggest={(text) => composerApi.current?.insertDraft(text)} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
                   firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
@@ -148,7 +150,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             </div>
           </div> : null}
           <DesktopComposer
-            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} status={status} stopPending={stopPending} modelState={modelState}
+            ref={composerApi}
+            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!hasMessages && chatReady} status={status} stopPending={stopPending} modelState={modelState}
             selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}
@@ -202,7 +205,22 @@ function DesktopHistoryLoader({
   >{loading ? "正在加载更早消息…" : "加载更早消息"}</button>;
 }
 
-function DesktopEmptyState({ shellStatus, loadingSession, modelProblem }: { shellStatus: string | null; loadingSession: boolean; modelProblem: string }) {
+/** 时段问候只做一行小字；主标题保持"布置下一件事"的任务口吻。 */
+function greetingFor(hour: number): string {
+  if (hour < 5) return "夜深了";
+  if (hour < 11) return "早上好";
+  if (hour < 14) return "中午好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+}
+
+const EMPTY_SUGGESTIONS = [
+  { label: "总结近况", prompt: "总结一下我最近关注的内容更新。" },
+  { label: "整理待办", prompt: "整理我们最近几次对话里还没完成的事。" },
+  { label: "起草文字", prompt: "帮我起草一段简短的文字：" },
+] as const;
+
+function DesktopEmptyState({ shellStatus, loadingSession, modelProblem, onSuggest }: { shellStatus: string | null; loadingSession: boolean; modelProblem: string; onSuggest?: (text: string) => void }) {
   return <ConversationEmptyState className="home-state">
     {loadingSession ? <div className="home-state__ready" role="status"><strong>正在读取消息</strong></div> : shellStatus === "needs_setup" ? <div className="model-connection-state">
       <span>对话尚未就绪</span><h1>请完成所需配置</h1>
@@ -224,9 +242,14 @@ function DesktopEmptyState({ shellStatus, loadingSession, modelProblem }: { shel
     ) : modelProblem ? (
       <div className="home-state__ready"><strong>准备对话</strong><span>下方会说明模型状态；你可以先写下想说的话</span></div>
     ) : (
-      <div className="home-state__ready">
-        <strong>布置下一件事</strong>
-        <span>在下方输入；模型与附件都在同一条输入条里</span>
+      <div className="home-hero">
+        <p className="home-hero__greeting">{greetingFor(new Date().getHours())}</p>
+        <h1 className="home-hero__title">布置下一件事</h1>
+        <p className="home-hero__hint">在下方输入；模型与附件都在同一条输入条里。</p>
+        <div className="home-hero__suggestions">
+          {EMPTY_SUGGESTIONS.map((item) => <button key={item.label} type="button"
+            onClick={() => onSuggest?.(item.prompt)}>{item.label}</button>)}
+        </div>
       </div>
     )}
   </ConversationEmptyState>;

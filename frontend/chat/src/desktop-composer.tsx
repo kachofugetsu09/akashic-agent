@@ -1,5 +1,5 @@
 import { Paperclip } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
@@ -18,15 +18,22 @@ import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string };
 
+/** 空态推荐等外部入口写入草稿的窄接口。 */
+export interface ComposerApi {
+  insertDraft: (text: string) => void;
+}
+
 /** Own transient editor state while the app controller owns transport and durable chat state. */
 export const DesktopComposer = memo(function DesktopComposer({
-  chatReady, canSend, modelProblem, draftKey, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
-  onModelChange, onCancelReply, onSend, onStop,
+  chatReady, canSend, modelProblem, draftKey, autoFocus = false, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
+  onModelChange, onCancelReply, onSend, onStop, ref,
 }: {
   chatReady: boolean;
   canSend: boolean;
   modelProblem: string;
   draftKey: string;
+  /** 空态（新会话/无消息）时输入框接收焦点。 */
+  autoFocus?: boolean;
   status: ChatStatus;
   stopPending: boolean;
   modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] } | null;
@@ -37,6 +44,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   onCancelReply: () => void;
   onSend: (text: string, files: ComposerFile[]) => Promise<string | undefined>;
   onStop: () => void;
+  ref?: Ref<ComposerApi>;
 }) {
   // 标签页文本草稿是展示状态，既不上传，也不创建 Message。
   const drafts = useRef(new Map<string, string>());
@@ -60,6 +68,22 @@ export const DesktopComposer = memo(function DesktopComposer({
     setDraftVersion((version) => version + 1);
   }, []);
   const setInput = useCallback((text: string) => setDraft(draftKey, text), [draftKey, setDraft]);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useImperativeHandle(ref, () => ({
+    // 写入后把焦点与光标放到草稿末尾，用户接着补完即可。
+    insertDraft: (text) => {
+      setDraft(draftKey, text);
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
+    },
+  }), [draftKey, setDraft]);
+  useEffect(() => {
+    if (autoFocus && chatReady) textareaRef.current?.focus();
+  }, [autoFocus, chatReady, draftKey]);
   const [expanded, setExpanded] = useState(false);
   const [hasAttachments, setHasAttachments] = useState(false);
   const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string) => {
@@ -141,6 +165,8 @@ export const DesktopComposer = memo(function DesktopComposer({
       <PromptInputBody>
         <ComposerAttachments onPresenceChange={setHasAttachments} />
         <PromptInputTextarea
+          ref={textareaRef}
+          autoFocus={autoFocus}
           className="composer__textarea !min-h-0"
           value={input}
           onChange={onInputChange}
