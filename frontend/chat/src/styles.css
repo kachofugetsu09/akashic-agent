@@ -312,7 +312,9 @@ input {
 }
 
 .chat-sidebar--entry .conversation-session:hover,
-.chat-sidebar--entry .conversation-session:focus-visible {
+.chat-sidebar--entry .conversation-session:focus-visible,
+.chat-sidebar--entry .navigation-menu-row:hover > .conversation-session:not(.active),
+.chat-sidebar--entry .navigation-menu-row[data-menu-open] > .conversation-session:not(.active) {
   background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
 }
 
@@ -419,7 +421,8 @@ input {
 }
 
 .navigation-menu-trigger:focus-visible { outline: 2px solid var(--ak-rule-focus); }
-.navigation-menu-trigger:hover { background: var(--ak-paper-sheet); }
+/* ⋯ 是行的从属动作：悬停只加深图标，不再给自己铺一块独立的纸色瓷砖。 */
+.navigation-menu-trigger:hover { color: var(--ak-ink-primary); }
 
 .navigation-row-menu {
   min-width: min(11rem, calc(100vw - 24px));
