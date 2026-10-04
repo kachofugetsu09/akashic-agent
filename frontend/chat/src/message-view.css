@@ -14,7 +14,7 @@
   color: var(--chat-ink, var(--ak-ink-primary));
   background: var(--chat-chip, var(--ak-paper-sheet));
   font-size: 0.9375rem;
-  line-height: 1.45;
+  line-height: var(--chat-user-leading, calc(20 / 15));
   overflow-wrap: break-word;
 }
 
@@ -27,7 +27,7 @@
   width: min(100%, var(--chat-column, 52rem));
   color: var(--ak-ink-primary);
   font-size: max(1rem, var(--chat-type-body, 1rem));
-  line-height: 1.75;
+  line-height: var(--chat-response-leading, 1.5);
   overflow-wrap: break-word;
   user-select: text;
 }
@@ -51,11 +51,17 @@
 .agent-content h4 { font-size: 1em; }
 
 .agent-content p {
-  margin-block: 0 0.9em;
+  margin-block: 0 var(--chat-paragraph-gap, 0.75em);
+  line-height: inherit;
 }
 
-.agent-content :where(ul, ol) {
-  margin-block: 0 0.9em;
+.agent-content :where(ul, ol) + p,
+.agent-content .markstream-react [data-node-type="list"] + [data-node-type="paragraph"] p {
+  margin-block-start: 1.5em;
+}
+
+.agent-content .markdown-reading :is(ul, ol) {
+  margin-block: 0 var(--chat-paragraph-gap, 0.75em);
   padding-inline-start: 1.5em;
 }
 
@@ -72,12 +78,13 @@
   padding-inline-start: 1.25em;
 }
 
-.agent-content li {
+.agent-content .markdown-reading li {
+  margin-block: 0;
   padding-inline-start: 0.2em;
 }
 
-.agent-content li + li {
-  margin-block-start: 0.35em;
+.agent-content .markdown-reading li + li {
+  margin-block-start: var(--chat-list-gap, 0.25em);
 }
 
 .agent-content li::marker {
@@ -353,11 +360,11 @@
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li {
   margin: 0;
-  padding: 0.1rem 0 0.65rem 0.4rem;
+  padding: 0 0 0 0.4rem;
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li + li {
-  padding-block-start: 0.65rem;
+  padding-block-start: calc(var(--chat-list-gap, 0.25em) - 1px);
   border-block-start: 1px dashed var(--ak-rule-subtle);
 }
 
