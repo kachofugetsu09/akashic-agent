@@ -47,6 +47,10 @@ WebSocket 压缩，沿已有取消与关闭路径结束双方连接。只开放�
 
 `plugins/computer/web/display.ts` 拥有当前 iframe、transport、Blob URL、发送回执和
 超时请求。它将 native 鼠标输入交给 Selkies，把可信键盘事件交给既有面板映射。
+正式 Web Shell 的 CSP 允许同源 Blob iframe、Blob 视频缓冲区和 Blob 解码 Worker；
+客户端仍由当前 generation 的 Dashboard 资源入口提供。只有插件夹具通过，不能证明
+正式 Web Shell 的响应头也允许该显示链路。部署前先拉取目标插件指定的固定镜像，
+镜像缺失会让正式 Workload 初始化失败。
 先释放输入，再移除 iframe、关闭 transport、取消请求和释放 Blob。面板继续拥有
 连接/休眠显示、后台 hold、唯一重连计时器和剪贴板草稿；发送失败不宣称成功。
 
