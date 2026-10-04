@@ -171,6 +171,56 @@ async def manager(workspace, home, dist=None):
     return m
 
 
+def seed_and_check_preflight(core, root, distribution, work, home, config):
+    """旧 Core 生成真实选择，新发布 CLI 接受它并拒绝归档损坏。"""
+    seed = """import asyncio, sys
+from pathlib import Path
+from agent.plugins.manager import PluginManager
+from bus.event_bus import EventBus
+async def run():
+    m = PluginManager([], event_bus=EventBus(), workspace=Path(sys.argv[1]),
+                      installed_cache_root=Path(sys.argv[2]) / 'cache')
+    await m.load_all()
+    await m.terminate_all()
+asyncio.run(run())
+"""
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(core), str(core / "sdk/python/src")))}
+    with (root / "seed.log").open("w") as output:
+        subprocess.run([sys.executable, "-c", seed, str(work), str(home)], cwd=root,
+                       env=env, stdout=output, stderr=output, check=True, timeout=60)
+    plan = root / "seed-plan.json"
+    plan.write_text(json.dumps({"schema_version": 1,
+                               "expected_root_ref": PluginSelection(work).read(), "targets": []}))
+    command = [sys.executable, str(ROOT / "scripts/install_plugin_distribution.py"),
+               "--publish", "--preflight-only", "--distribution", str(distribution),
+               "--profile", str(distribution / "profiles/default.json"),
+               "--workspace", str(work), "--plugins-home", str(home),
+               "--config", str(config), "--plan", str(plan), "--inputs", str(root)]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(ROOT), str(ROOT / "sdk/python/src")))}
+    before = snapshot(work.parent)
+    with (root / "seed-preflight.log").open("w") as output:
+        subprocess.run(command, env=env, stdout=output, stderr=output, check=True, timeout=60)
+    assert snapshot(work.parent) == before
+    selection = PluginSelection(work)
+    descriptor = selected(work)["alpha@release"][1]
+    code = selection.archive.open(descriptor["code"])
+    # 运行代码和来源证据的损坏都必须被同一个完整归档校验拒绝。
+    for filename in ("plugin.py", ".akashic-source.json"):
+        path = code / filename
+        content = path.read_bytes()
+        mode = path.stat().st_mode & 0o777
+        path.chmod(mode | 0o200)
+        try:
+            path.write_bytes(content + b"\n# altered archive\n")
+            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=60)
+            (root / f"corrupt-{filename.lstrip('.')}.log").write_text(result.stdout + result.stderr)
+            assert result.returncode != 0 and "selected 源码身份不一致: alpha@release" in result.stderr
+        finally:
+            path.write_bytes(content)
+            path.chmod(mode)
+        assert snapshot(work.parent) == before
+
+
 async def run(args):
     if args.output is None:
         root = Path(tempfile.mkdtemp(prefix="akashic-builtin-transitions-"))
@@ -226,7 +276,9 @@ async def run(args):
         config_path=config,
         workspace=work,
     ).run()
-    # Real legacy Manager creates the durable old selection.
+    if args.seed_core:
+        seed_and_check_preflight(args.seed_core.resolve(), root, old, work, home, config)
+    # Real Manager reads the durable selection and applies a config update.
     m = await manager(work, home)
     await m.apply_config_input(
         "alpha@release",
@@ -604,6 +656,8 @@ step(upgrade)
                 "candidate_checkout": str(ROOT),
                 "source_identity": identity,
                 "with_wheels": args.with_wheels,
+                "seed_core": str(args.seed_core.resolve()) if args.seed_core else None,
+                "cross_version_preflight": bool(args.seed_core),
                 "scenarios": 24,
             },
             indent=2,
@@ -615,5 +669,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--with-wheels", action="store_true")
+    parser.add_argument("--seed-core", type=Path, help="用旧 Core 生成已选归档后验证新发布 CLI")
     args = parser.parse_args()
     asyncio.run(run(args))
