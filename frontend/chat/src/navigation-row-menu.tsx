@@ -10,21 +10,28 @@ export interface NavigationRowAction {
   disabled?: boolean;
   /** 破坏性动作以 error 墨色呈现，仍走各自的就地确认。 */
   danger?: boolean;
-  onSelect: () => void;
+  /** event.preventDefault() 保持菜单开启——就地两段确认使用。 */
+  onSelect: (event: Event) => void;
 }
 
 /** 导航行共享操作菜单；长按不打开会话，滑动仍交给目录滚动。 */
-export function NavigationRowMenu({ title, actions = [], className, children }: {
+export function NavigationRowMenu({ title, actions = [], className, children, onOpenChange }: {
   title: string;
   actions?: NavigationRowAction[];
   className: string;
   children: ReactNode;
+  /** 菜单开合通知；行内确认态等在菜单关闭时复位。 */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const press = useRef<{ id: number; x: number; y: number } | null>(null);
   const held = useRef(false);
+  const setMenuOpen = (next: boolean) => {
+    setOpen(next);
+    if (!next) onOpenChange?.(next);
+  };
   const cancelPress = () => {
     if (timer.current !== null) clearTimeout(timer.current);
     timer.current = null;
@@ -32,7 +39,7 @@ export function NavigationRowMenu({ title, actions = [], className, children }: 
   };
   useEffect(() => cancelPress, []);
 
-  return <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
+  return <DropdownMenu open={open} onOpenChange={setMenuOpen} modal={false}>
     <div ref={rowRef} className={`navigation-menu-row ${className}`} data-menu-open={open || undefined}
       onPointerDown={(event) => {
         // 1. 一次新触摸开始计时；第二根手指、鼠标和菜单按钮不参与长按。
