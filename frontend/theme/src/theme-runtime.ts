@@ -212,6 +212,9 @@ function applySelection(next: ThemeSelection): void {
   const theme = THEME_BY_ID.get(next.effectiveThemeId);
   if (!theme) throw new Error(`Theme catalog 缺少有效主题: ${next.effectiveThemeId}`);
   document.documentElement.dataset.theme = theme.id;
+  // markstream/shiki 与 tailwind darkMode:["class"] 都按根元素 .dark 判暗色；
+  // 与 data-theme 同步切换，否则暗色下代码块与 dark: 工具类永远落在亮色分支。
+  document.documentElement.classList.toggle("dark", theme.colorScheme === "dark");
   document.documentElement.style.colorScheme = theme.colorScheme;
   document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", theme.colorScheme);
   window.dispatchEvent(new CustomEvent(THEME_EVENT));

@@ -115,6 +115,7 @@ def session_row(entry: SessionEntry) -> dict[str, object]:
         "head_seq": entry.head_seq,
         "first_message_content": text,
         "scope": dict(entry.attributes.scope),
+        "title": entry.title,
     }
 
 

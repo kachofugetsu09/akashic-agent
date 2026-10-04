@@ -5,6 +5,7 @@ import { configureKaomojiMarkdown } from "@/kaomoji-markdown";
 import { cn } from "@/lib/utils";
 import { canBatchStreamingMarkdown } from "@/message-rendering-policy";
 import { memo, type ComponentProps, useEffect } from "react";
+import { useTheme } from "../../../../theme/src/theme-runtime";
 import MarkdownRender, {
   MathBlockNode,
   MathInlineNode,
@@ -80,10 +81,13 @@ export const MessageResponse = memo(function MessageResponse({
   isAnimating = false,
 }: MessageResponseProps) {
   const reducedMotion = useReducedMotion();
+  // markstream 的代码高亮按 isDark 选 light/dark 主题；不接入时暗色下代码块永远落在亮色分支。
+  const theme = useTheme();
   return (
     <div className={cn("message-response-markstream markdown-reading size-full", isAnimating && "is-streaming", className)}>
       <MarkdownRender
         content={children}
+        isDark={theme.colorScheme === "dark"}
         final={!isAnimating}
         fade={false}
         typewriter={false}

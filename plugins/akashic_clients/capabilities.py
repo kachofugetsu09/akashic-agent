@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agent.plugin_composition import MODEL_CATALOG
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMIN
 from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.runtime_catalog import (
     RUNTIME_CATALOG as RUNTIME_CATALOG,
@@ -66,6 +66,7 @@ CLIENT_CAPABILITIES = (
     MODEL_CATALOG,
     MODEL_SELECTION,
     REPLY_STATUS,
+    SESSION_ADMIN,
 )
 
 
@@ -81,6 +82,7 @@ __all__ = [
     "MODEL_SELECTION",
     "MESSAGE_DISPLAY",
     "PLUGIN_UI",
+    "SESSION_ADMIN",
     "WEB_UI",
     "ReplyStatusReader",
     "ModelSelectionReader",

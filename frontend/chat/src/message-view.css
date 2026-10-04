@@ -14,7 +14,7 @@
   color: var(--chat-ink, var(--ak-ink-primary));
   background: var(--chat-chip, var(--ak-paper-sheet));
   font-size: 0.9375rem;
-  line-height: 1.45;
+  line-height: var(--chat-user-leading, calc(20 / 15));
   overflow-wrap: break-word;
 }
 
@@ -27,7 +27,7 @@
   width: min(100%, var(--chat-column, 52rem));
   color: var(--ak-ink-primary);
   font-size: max(1rem, var(--chat-type-body, 1rem));
-  line-height: 1.75;
+  line-height: var(--chat-response-leading, 1.5);
   overflow-wrap: break-word;
   user-select: text;
 }
@@ -51,11 +51,17 @@
 .agent-content h4 { font-size: 1em; }
 
 .agent-content p {
-  margin-block: 0 0.9em;
+  margin-block: 0 var(--chat-paragraph-gap, 0.75em);
+  line-height: inherit;
 }
 
-.agent-content :where(ul, ol) {
-  margin-block: 0 0.9em;
+.agent-content :where(ul, ol) + p,
+.agent-content .markstream-react [data-node-type="list"] + [data-node-type="paragraph"] p {
+  margin-block-start: 1.5em;
+}
+
+.agent-content .markdown-reading :is(ul, ol) {
+  margin-block: 0 var(--chat-paragraph-gap, 0.75em);
   padding-inline-start: 1.5em;
 }
 
@@ -72,12 +78,13 @@
   padding-inline-start: 1.25em;
 }
 
-.agent-content li {
+.agent-content .markdown-reading li {
+  margin-block: 0;
   padding-inline-start: 0.2em;
 }
 
-.agent-content li + li {
-  margin-block-start: 0.35em;
+.agent-content .markdown-reading li + li {
+  margin-block-start: var(--chat-list-gap, 0.25em);
 }
 
 .agent-content li::marker {
@@ -353,11 +360,11 @@
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li {
   margin: 0;
-  padding: 0.1rem 0 0.65rem 0.4rem;
+  padding: 0 0 0 0.4rem;
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading :where(ol):not(li ol) > li + li {
-  padding-block-start: 0.65rem;
+  padding-block-start: calc(var(--chat-list-gap, 0.25em) - 1px);
   border-block-start: 1px dashed var(--ak-rule-subtle);
 }
 
@@ -573,6 +580,37 @@
 
 .flow-item {
   min-width: 0;
+}
+
+/* 连续完成的工具收成一行摘要；展开后成员恢复普通行距。 */
+.tool-group {
+  min-width: 0;
+}
+
+.tool-group-items {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 跨天分隔：居中日期两侧各一条发丝线，与消息行同色阶。 */
+.day-separator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 6px;
+  color: var(--ak-ink-secondary);
+  font-size: var(--chat-type-caption, 0.75rem);
+  line-height: 1;
+  user-select: none;
+}
+
+.day-separator::before,
+.day-separator::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklch, var(--ak-ink-primary) 10%, transparent);
 }
 
 /* Reasoning 根节点自带 mb-4；逐行排列不需要段距。 */
@@ -1119,8 +1157,7 @@ button.tool-step-summary:active {
   white-space: nowrap;
 }
 
-.composer-reply > button,
-.shared-message-actions button {
+.composer-reply > button {
   display: grid;
   width: 40px;
   height: 40px;
@@ -1133,18 +1170,49 @@ button.tool-step-summary:active {
   transition: scale 150ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
+/* 次要操作幽灵钮：默认透明，父消息 hover/focus-within 显现；透明边撑热区，视觉保持 24px 见方。 */
+.shared-message-actions button {
+  display: grid;
+  width: var(--shared-action-hit);
+  height: var(--shared-action-hit);
+  place-items: center;
+  border: var(--shared-action-inset) solid transparent;
+  border-radius: calc(var(--shared-action-inset) + 5px);
+  padding: 0;
+  box-sizing: border-box;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  /* hover 墨底只落在 padding-box（24px 视觉区），不外溢到透明热区。 */
+  background-clip: padding-box;
+  opacity: 0;
+  transition:
+    opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+/* 消息容器 hover/focus-within 显现次要操作；focus-within 同时保证键盘 Tab 到达时可见。 */
+.web-message-anchor:hover .shared-message-actions button,
+.web-message-anchor:focus-within .shared-message-actions button {
+  opacity: 1;
+}
+
 .shared-message-actions .lucide-reply,
 .composer-reply > .lucide-reply {
   translate: 0.5px -0.25px;
 }
 
 .composer-reply > button:hover,
-.composer-reply > button:active,
-.shared-message-actions button:hover,
-.shared-message-actions button:active {
+.composer-reply > button:active {
   scale: 0.96;
   color: var(--md-sys-color-on-surface);
   background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+}
+
+.shared-message-actions button:hover,
+.shared-message-actions button:active {
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
 }
 
 .shared-message-meta {
@@ -1164,15 +1232,32 @@ button.tool-step-summary:active {
   flex-direction: row-reverse;
 }
 
+/* 热区与视觉尺寸的唯一 owner；窄屏断点只改这两个变量（触控目标 ≥44px，视觉仍 24px）。 */
 .shared-message-actions {
+  --shared-action-hit: 40px;
+  --shared-action-inset: 8px;
   display: flex;
   align-items: center;
   gap: 2px;
 }
 
+/* 复制成功反馈短暂常驻：即使鼠标已移开也保持可见，复位节奏由 copiedMessageId 状态控制。 */
 .shared-message-actions button.copied {
+  opacity: 1;
   color: var(--ak-sys-color-success);
   background: color-mix(in srgb, var(--ak-sys-color-success) 12%, transparent);
+}
+
+/* 触控断点没有 hover：次要操作常驻可见；热区扩到 44px，图形不变。 */
+@media (max-width: 820px), (hover: none) {
+  .shared-message-actions {
+    --shared-action-hit: 44px;
+    --shared-action-inset: 10px;
+  }
+
+  .shared-message-actions button {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
