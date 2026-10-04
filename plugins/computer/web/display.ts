@@ -96,8 +96,8 @@ export class ComputerDisplay extends EventTarget {
         }, true);
       }
       </script><script type="module" src="${moduleUrl}"></script></body></html>`;
-    // 3. 每次连接独占 iframe 与 Blob；dispose 统一释放。
-    this.frame.src = this.blob(html, "text/html");
+    // 3. srcdoc 保持同源，也支持阻止 Blob 页面导航的内置浏览器。
+    this.frame.srcdoc = html;
     window.addEventListener("message", this.onMessage);
     this.host.replaceChildren(this.frame);
   }

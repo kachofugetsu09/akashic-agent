@@ -79,8 +79,8 @@ _WEB_CONTENT_SECURITY_POLICY = "; ".join((
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "connect-src 'self'",
-    # Computer 的同源 Blob 客户端需要 iframe、视频缓冲区和解码 Worker。
-    "frame-src 'self' blob:",
+    "frame-src 'self'",
+    # Computer 的当前客户端创建 Blob 视频缓冲区和解码 Worker。
     "media-src blob:",
     "worker-src blob:",
     "object-src 'none'",
