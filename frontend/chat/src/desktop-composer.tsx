@@ -1,12 +1,11 @@
-import { Plus } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Paperclip } from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
 } from "@/components/ai-elements/attachments";
 import {
-  PromptInput, PromptInputActionAddAttachments, PromptInputActionMenu, PromptInputActionMenuContent,
-  PromptInputActionMenuTrigger, PromptInputBody, PromptInputFooter, PromptInputTextarea, PromptInputTools,
+  PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputTextarea, PromptInputTools,
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import type { TimelineReply } from "./message-timeline";
@@ -97,16 +96,48 @@ export const DesktopComposer = memo(function DesktopComposer({
     }
   }, [canSend, modelProblem, expanded, onSend, setInput, setDraft, draftKey]);
   const shellExpanded = expanded || hasAttachments || Boolean(replyTarget);
+  // 文件拖拽强调态：dragenter/dragleave 用深度计数去抖，子元素间移动不成对出入时也不会闪烁。
+  const dragDepth = useRef(0);
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const isFileDrag = useCallback((event: DragEvent<HTMLFormElement>) =>
+    Array.from(event.dataTransfer?.types ?? []).includes("Files"), []);
+  const onDragEnter = useCallback((event: DragEvent<HTMLFormElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth.current += 1;
+    setFileDragActive(true);
+  }, [isFileDrag]);
+  const onDragOver = useCallback((event: DragEvent<HTMLFormElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, [isFileDrag]);
+  const onDragLeave = useCallback((event: DragEvent<HTMLFormElement>) => {
+    if (!isFileDrag(event)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setFileDragActive(false);
+  }, [isFileDrag]);
+  const onDrop = useCallback((event: DragEvent<HTMLFormElement>) => {
+    dragDepth.current = 0;
+    setFileDragActive(false);
+    // 附件入列由 PromptInput 内部共享的 drop 处理（与粘贴/选择器同一条 add 路径）；这里只防浏览器直接打开文件。
+    if (isFileDrag(event)) event.preventDefault();
+  }, [isFileDrag]);
   return (
     <>
     {draftStorageError ? <p role="status">浏览器无法保存本页草稿。刷新前请复制已输入的文字。</p> : null}
     <PromptInput
-      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}`}
+      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}${fileDragActive ? " is-drop-target" : ""}`}
       multiple
       data-draft-version={draftVersion}
       onSubmit={(message) => submit(message.text, message.files)}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
+      {fileDragActive ? <div className="composer-drop-hint" aria-hidden="true">松开以添加文件</div> : null}
       <PromptInputBody>
         <ComposerAttachments onPresenceChange={setHasAttachments} />
         <PromptInputTextarea
@@ -132,10 +163,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           /> : null}
         </PromptInputTools>
         <PromptInputTools className="composer__trail">
-          <PromptInputActionMenu>
-            <PromptInputActionMenuTrigger aria-label="添加文件" className="composer-tool" tooltip="添加文件"><Plus size={18} /></PromptInputActionMenuTrigger>
-            <PromptInputActionMenuContent><PromptInputActionAddAttachments label="上传文件" /></PromptInputActionMenuContent>
-          </PromptInputActionMenu>
+          <ComposerAttachmentButton />
           <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={onStop} disabled={!canSend} />
         </PromptInputTools>
       </PromptInputFooter>
@@ -143,6 +171,20 @@ export const DesktopComposer = memo(function DesktopComposer({
     </>
   );
 });
+
+function ComposerAttachmentButton() {
+  const attachments = usePromptInputAttachments();
+  return (
+    <PromptInputButton
+      aria-label="添加文件"
+      className="composer-tool"
+      tooltip="添加文件"
+      onClick={() => attachments.openFileDialog()}
+    >
+      <Paperclip size={18} />
+    </PromptInputButton>
+  );
+}
 
 function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttachments: boolean) => void }) {
   const attachments = usePromptInputAttachments();

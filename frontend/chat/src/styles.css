@@ -1092,6 +1092,7 @@ input {
 
 .composer {
   /* Stadium shell: height H → end radius H/2 (true semicircles + flat middle). */
+  position: relative;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--ak-rule-default);
@@ -1126,6 +1127,43 @@ input {
 .composer:focus-within {
   border-color: var(--ak-rule-focus);
   box-shadow: none;
+}
+
+/* 文件拖拽强调态：焦点色虚线边框 + 容器内轻提示；深浅计数去抖在 desktop-composer 侧。
+   放在 :focus-within 之后，同特异性下拖拽态优先于聚焦态。 */
+.composer.is-drop-target {
+  border-color: var(--ak-rule-focus);
+  border-style: dashed;
+}
+
+.composer .composer-drop-hint {
+  position: absolute;
+  /* 与 1px 边框内缘对齐，不遮盖虚线强调。 */
+  inset: 1px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in oklch, var(--chat-lift, var(--ak-paper-editing)) 86%, transparent);
+  color: var(--chat-faint, var(--ak-ink-muted));
+  font-size: var(--chat-type-caption);
+  line-height: 1.2;
+  pointer-events: none;
+  user-select: none;
+}
+
+.composer.is-compact .composer-drop-hint {
+  border-radius: var(--composer-compact-radius);
+}
+
+.composer.is-expanded .composer-drop-hint {
+  border-radius: var(--composer-expanded-radius);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer {
+    transition-duration: 0ms;
+  }
 }
 
 .composer .composer-tool,

@@ -10,10 +10,7 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
   HoverCard,
@@ -43,9 +40,7 @@ import { cn } from "@/lib/utils";
 import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
 import {
   CornerDownLeftIcon,
-  ImageIcon,
   Monitor,
-  PlusIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
@@ -387,33 +382,6 @@ export const usePromptInputReferencedSources = () => {
     );
   }
   return ctx;
-};
-
-export type PromptInputActionAddAttachmentsProps = ComponentProps<
-  typeof DropdownMenuItem
-> & {
-  label?: string;
-};
-
-export const PromptInputActionAddAttachments = ({
-  label = "Add photos or files",
-  ...props
-}: PromptInputActionAddAttachmentsProps) => {
-  const attachments = usePromptInputAttachments();
-
-  const handleSelect = useCallback(
-    (e: Event) => {
-      e.preventDefault();
-      attachments.openFileDialog();
-    },
-    [attachments]
-  );
-
-  return (
-    <DropdownMenuItem {...props} onSelect={handleSelect}>
-      <ImageIcon className="mr-2 size-4" /> {label}
-    </DropdownMenuItem>
-  );
 };
 
 export type PromptInputActionAddScreenshotProps = ComponentProps<
@@ -1137,45 +1105,6 @@ export const PromptInputButton = ({
     </Tooltip>
   );
 };
-
-export type PromptInputActionMenuProps = ComponentProps<typeof DropdownMenu>;
-export const PromptInputActionMenu = (props: PromptInputActionMenuProps) => (
-  <DropdownMenu {...props} />
-);
-
-export type PromptInputActionMenuTriggerProps = PromptInputButtonProps;
-
-export const PromptInputActionMenuTrigger = ({
-  className,
-  children,
-  ...props
-}: PromptInputActionMenuTriggerProps) => (
-  <DropdownMenuTrigger asChild>
-    <PromptInputButton className={className} {...props}>
-      {children ?? <PlusIcon className="size-4" />}
-    </PromptInputButton>
-  </DropdownMenuTrigger>
-);
-
-export type PromptInputActionMenuContentProps = ComponentProps<
-  typeof DropdownMenuContent
->;
-export const PromptInputActionMenuContent = ({
-  className,
-  ...props
-}: PromptInputActionMenuContentProps) => (
-  <DropdownMenuContent align="start" className={cn(className)} {...props} />
-);
-
-export type PromptInputActionMenuItemProps = ComponentProps<
-  typeof DropdownMenuItem
->;
-export const PromptInputActionMenuItem = ({
-  className,
-  ...props
-}: PromptInputActionMenuItemProps) => (
-  <DropdownMenuItem className={cn(className)} {...props} />
-);
 
 // Note: Actions that perform side-effects (like opening a file dialog)
 // are provided in opt-in modules (e.g., prompt-input-attachments).
