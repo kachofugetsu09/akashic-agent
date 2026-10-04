@@ -253,6 +253,7 @@ function fixtureApiResponse(url, messageCount) {
   const { pathname } = url;
   if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true };
   if (pathname === "/api/chat/sessions") return desktopSessions(messageCount);
+  if (pathname === "/api/chat/navigation/pins") return { pins: [], sessions: [] };
   if (pathname === "/api/chat/models") return desktopModels();
   if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };
   if (pathname === "/api/runtime/host-bridge") return { state: "healthy" };
