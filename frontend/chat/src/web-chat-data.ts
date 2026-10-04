@@ -5,8 +5,12 @@ import type { ChatModelRuntime } from "./model-capsule-data";
 export interface SessionRow {
   key: string;
   updated_at?: string;
+  /** 服务端 session_row 提供；置顶解析补齐的目录外会话可能缺失。 */
+  created_at?: string;
   message_count?: number;
   first_message_content?: string;
+  /** 显式标题覆盖；null/缺失时按 first_message_content 推导。 */
+  title?: string | null;
   /** Session 接纳时固定的宽键；缺失维度即 default。 */
   scope?: Record<string, string>;
 }
@@ -16,6 +20,8 @@ export interface ChatHistoryPage {
   throughSeq: number;
   hasMore: boolean;
   beforeSeq: number | null;
+  /** 会话已软删时为 true；消息仍物理保留，按只读展示。 */
+  deleted: boolean;
 }
 
 export interface ChatModelState {
@@ -86,7 +92,9 @@ export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor
     typeof item.key !== "string"
     || !item.key.trim()
     || (item.first_message_content !== undefined && typeof item.first_message_content !== "string")
+    || (item.title !== undefined && item.title !== null && typeof item.title !== "string")
     || (item.updated_at !== undefined && typeof item.updated_at !== "string")
+    || (item.created_at !== undefined && typeof item.created_at !== "string")
     || (item.message_count !== undefined && (typeof item.message_count !== "number" || !Number.isFinite(item.message_count)))
     || (item.scope !== undefined && !isStringRecord(item.scope))
   ))) {
@@ -119,7 +127,7 @@ export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistory
     throw new Error(`${endpoint} 返回了不一致的历史游标`);
   }
   return { items, throughSeq: Number(body.through_seq), hasMore: body.has_more,
-    beforeSeq: body.before_seq as number | null };
+    beforeSeq: body.before_seq as number | null, deleted: body.deleted === true };
 }
 
 export function webShellState(payload: unknown): WebShellState {
@@ -153,6 +161,10 @@ export function chatModelState(payload: unknown): ChatModelState {
       || !item.roles.every((role) => typeof role === "string")) {
       throw new Error("/api/chat/models 返回了无效 runtime");
     }
+    const contextWindow = typeof item.contextWindow === "number" && Number.isFinite(item.contextWindow)
+      ? item.contextWindow : 0;
+    const inputModalities = Array.isArray(item.inputModalities)
+      ? item.inputModalities.filter((modality): modality is string => typeof modality === "string") : [];
     return {
       id: item.id,
       provider: item.provider,
@@ -162,6 +174,8 @@ export function chatModelState(payload: unknown): ChatModelState {
       reasoningEffort: item.reasoningEffort,
       supportedReasoningEfforts: item.supportedReasoningEfforts as string[],
       roles: item.roles as string[],
+      contextWindow,
+      inputModalities,
     };
   });
   const unavailableRuntimes = body.unavailableRuntimes.map<ChatModelState["unavailableRuntimes"][number]>((value) => {
@@ -185,6 +199,31 @@ export function chatModelState(payload: unknown): ChatModelState {
     runtimes,
     unavailableRuntimes,
   };
+}
+
+/** 软删/恢复是显式数据管理操作；返回值校验 key 与结果标记一致，防止对错会话生效。 */
+export async function setChatSessionDeleted(sessionKey: string, deleted: boolean): Promise<void> {
+  const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionKey)}/${deleted ? "delete" : "undelete"}`;
+  const payload = await fetchChatJson<unknown>(endpoint, { method: "POST" });
+  const body = recordValue(payload);
+  if (!body || body.key !== sessionKey || body.deleted !== deleted) {
+    throw new Error(`${endpoint} 返回了不一致的删除结果`);
+  }
+}
+
+/** 标题覆盖与软删同属显式数据管理操作；空标题清除覆盖，返回值即服务端落库结果。 */
+export async function renameChatSession(sessionKey: string, title: string): Promise<string | null> {
+  const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionKey)}/rename`;
+  const payload = await fetchChatJson<unknown>(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  const body = recordValue(payload);
+  if (!body || body.key !== sessionKey || (body.title !== null && typeof body.title !== "string")) {
+    throw new Error(`${endpoint} 返回了不一致的标题结果`);
+  }
+  return typeof body.title === "string" ? body.title : null;
 }
 
 export async function uploadFiles(files: ComposerFile[], signal: AbortSignal): Promise<UploadedFile[]> {

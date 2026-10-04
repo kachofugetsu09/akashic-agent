@@ -63,19 +63,8 @@ export function blocksWithFinalThinking(blocks: AgentBlock[], thinking: string |
 }
 
 export function sessionLabel(session: SessionRow): string {
-  const title = session.first_message_content?.trim() || "未命名对话";
+  const title = session.title?.trim() || session.first_message_content?.trim() || "未命名对话";
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
-}
-
-const navigationTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
-  month: "numeric",
-  day: "numeric",
-});
-
-export function formatNavigationTime(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : navigationTimeFormatter.format(date);
 }
 
 function mediaUrl(path: string): string {

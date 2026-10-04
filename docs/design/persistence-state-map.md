@@ -110,7 +110,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
 | `sessions.db/messages` | 每次持久化一批新消息时 INSERT；同一 session 的 `seq` 单调增加且不复用 | 正常收发不改旧正文；当前代码存在显式 `update_message`，但它是否属于获授权产品语义仍待确认 | 只有用户主动撤销消息或删除会话/线程，管理命令才能 DELETE；带 `control_turn_id` 的显式 interaction 只能整组原子撤销，并声明目标、cascade、备份和审计 |
-| `sessions.db/sessions` | 新 session INSERT，并由 Session admission 固定 attributes；已有 session 的新消息仍追加到 `messages` | `visibility` 与 `learning` 创建后不变，同 ID 属性冲突失败；其余允许更新的名称、时间、高水位、当前 compaction generation 和主动流程时间等 metadata 沿既有 owner；`last_consolidated` 只能由 checkpoint 提交事务推进 | 只有用户主动删除 session/thread 时，由 session 管理边界级联删除 |
+| `sessions.db/sessions` | 新 session INSERT，并由 Session admission 固定 attributes；已有 session 的新消息仍追加到 `messages` | `visibility` 与 `learning` 创建后不变，同 ID 属性冲突失败；其余允许更新的名称、时间、高水位、当前 compaction generation 和主动流程时间等 metadata 沿既有 owner；`last_consolidated` 只能由 checkpoint 提交事务推进；`deleted_at` 只由用户显式软删/恢复原位写（yoyo 只增加列），软删是逻辑失效、消息物理保留，见 [0086](../decisions/0086-session-soft-delete-and-akasha-replay.md)；`title` 只由用户显式重命名/清除原位写（yoyo 只增加列），空值回到首条消息推导、不改变 `updated_at`，见 [0087](../decisions/0087-session-title-override.md) | 只有用户主动删除 session/thread 时，由 session 管理边界级联删除 |
 | `sessions.db/channel_identities` | `ChannelIdentities` 在首次渠道接纳时 INSERT 唯一 recipient；显式 yoyo 只为已知旧渠道迁移 metadata | provider identity move 只替换同一行的 `chat_id/updated_at`；不创建或改写 Session。失败接纳按精确版本恢复原路由，其他接纳已覆盖时不回滚 | 失败且尚未提交 Input 的接纳可按 receipt 删除本次新行；用户显式删除 Session 时，由原 Session 删除审计事务调用 identity owner 的窄函数删除对应 recipient。整库 backup 同时保存路由；普通 turn、卸载和 candidate discard 无清理权 |
 | `sessions.db/channel_identity_migrations` | 已知旧渠道的显式 yoyo 或首次正式 identity write INSERT durable marker | marker 不更新；即使失败接纳撤销路由或身份表为空，旧 Session metadata 也不再拥有路由裁决权 | 普通 Session 删除、失败接纳、插件卸载和维护不得删除；只随用户明确删除/恢复整个 workspace 而减少，整库 backup 是恢复证据 |
 | `sessions.db/attachments` + `attachment_imports` | Core Channel artifact import 先固定 intent，再以不可覆盖文件发布和 ready row 增加 immutable artifact | import 只按 `prepared → file_published → artifact_committed` 推进；ready metadata、hash、size 与 storage key 不原位改写 | 当前没有普通自动减少协议；Session/插件删除只减少 binding，不删除 artifact；物理减少必须是用户明确的数据管理操作并先做引用扫描、备份与 hash 验证 |
@@ -241,7 +241,9 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 `plugin:akashic_clients` 的 `owner_records` 中，`navigation:pins` 是 WEBUI-009 的唯一服务端置顶
 记录。显式置顶追加类型与稳定身份引用，显式取消只移除指定引用；整个有序列表在既有 OwnerStore
 事务内原位更新，不另存标题、成员、rank 或 pinned 字段。首次读取不创建记录。目标失联、项目
-归档、插件停用、分页缺席都不自动减少引用。没有自动删除记录或 Session/Message cascade。
+归档、插件停用、分页缺席都不自动减少引用。目标已软删（[0086](../decisions/0086-session-soft-delete-and-akasha-replay.md)）
+同样不自动减少引用：pins 接口继续返回引用，但不再返回该会话的 pin 行，恢复后原样可用。
+没有自动删除记录或 Session/Message cascade。
 恢复依赖原 sessions.db/OwnerState；重新打开数据库保留准确顺序。代码回滚不删除这一记录。
 浏览器的项目展开状态是独立本地呈现偏好，不参与服务端备份、scope 或学习路由。
 

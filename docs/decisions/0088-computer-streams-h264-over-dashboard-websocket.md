@@ -1,4 +1,4 @@
-# 0086 Computer 经 Dashboard WebSocket 传输 H.264
+# 0088 Computer 经 Dashboard WebSocket 传输 H.264
 
 - 状态：proposed（实现随 stacked Draft PR 提交，待维护者评审）
 - 依据：维护者要求调查公网浏览器接管卡顿，以现状为基线尝试并提交 stacked PR。

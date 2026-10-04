@@ -1,7 +1,7 @@
 # Computer H.264 显示：结构和验收
 
 - 状态：stacked Draft PR 的实现与隔离验收；尚未正式部署。
-- 选择理由：[0086](../decisions/0086-computer-streams-h264-over-dashboard-websocket.md)。
+- 选择理由：[0088](../decisions/0088-computer-streams-h264-over-dashboard-websocket.md)。
 - 生命周期：[0084](../decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)。
 
 ## 当前问题与基线

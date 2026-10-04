@@ -1,5 +1,5 @@
 import { timelineReplyGroups, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
@@ -14,11 +14,12 @@ import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
-import { DesktopComposer } from "./desktop-composer";
-import { DesktopConversationMessages, DesktopTimelineMessages } from "./desktop-conversation";
+import { DesktopComposer, type ComposerApi } from "./desktop-composer";
+import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey } from "./desktop-conversation";
 import { ReplyActivityView } from "./message-view";
 import { CompactNavigation } from "./compact-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
+import { useSidebarRail } from "./use-sidebar-rail";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
 import { SessionDirectory } from "./session-directory";
 
@@ -29,6 +30,8 @@ interface DesktopChatViewProps {
 
 export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewProps) {
   const theme = useTheme();
+  const rail = useSidebarRail();
+  const composerApi = useRef<ComposerApi | null>(null);
   const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
   const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
   const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);
@@ -39,6 +42,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error,
     canSend, modelProblem, modelsError, retryModels, draftKey,
     historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
+    activeSessionDeleted, deletedNotice, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     activateSession, prefetchSessionTail, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     projects, pendingProjects, pendingProjectsError, projectsInstalled, memoryInstalled, activeProject,
@@ -71,16 +75,19 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
         />
       ) : null}
 
-      <div className="chat-shell-body">
+      <div className="chat-shell-body" style={rail.style}>
         <DesktopSidebar
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
             themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
-            onCycleTheme={cycleTheme} onNewChat={startNewChat}
+            onCycleTheme={cycleTheme} onNewChat={startNewChat} rail={rail}
+            onDeleteSession={deleteSession} deletedNotice={deletedNotice}
+            onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
+            onRenameSession={renameSession}
           />
 
-        <section className="chat-main">
+        <section className={`chat-main${hasMessages ? "" : " is-empty"}`}>
         <header className="conversation-heading">
           <CompactNavigation
             embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
@@ -88,8 +95,12 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             themeLabel={theme.label} projects={sidebarProjects} navigationPins={controller.navigationPins} onSelectSession={activateSession}
             onPrefetchSession={prefetchSessionTail}
             onCycleTheme={cycleTheme} onNewChat={startNewChat}
+            onDeleteSession={deleteSession} deletedNotice={deletedNotice}
+            onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
+            onRenameSession={renameSession}
           />
-          <h1 title={headingTitle}>{headingTitle}</h1>
+          <SessionHeadingTitle key={activeSessionId} heading={headingTitle} value={activeTitle}
+            onRename={activeSessionId && !activeSessionDeleted ? (title) => renameSession(activeSessionId, title) : undefined} />
         </header>
         {activeSessionId ? <SessionDirectory key={activeSessionId} sessionId={activeSessionId}
           refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
@@ -108,6 +119,9 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
                   onReply={handleReplyMessage} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages
                   messages={messages} status={status}
+                  carryDayKey={timelineMessages.length
+                    ? messageDayKey(timelineMessages[timelineMessages.length - 1].timestamp)
+                    : undefined}
                   copiedMessageId={copiedMessageId} streamStore={streamStore}
                   messageElementsRef={messageElementsRef}
                   onCopied={handleCopiedMessage} onError={reportError}
@@ -125,6 +139,10 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
 
         <div className={`composer-wrap ${!hasMessages ? "home" : ""}`}>
           {status === "uploading" ? <p className="reply-unavailable" role="status">正在上传附件…</p> : null}
+          {activeSessionDeleted ? <p className="reply-unavailable" role="status">
+            此会话已删除，内容只读保留。
+            <button type="button" className="session-restore-button" onClick={() => { void restoreSession(activeSessionId); }}>恢复会话</button>
+          </p> : null}
           {chatReady && (modelProblem || modelsError) ? <div className="chat-model-notice" role="status">
             {modelProblem ? <p id="chat-model-reason">{modelProblem}</p> : null}
             {modelsError ? <p>{modelsError}</p> : null}
@@ -134,7 +152,8 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
             </div>
           </div> : null}
           <DesktopComposer
-            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} status={status} stopPending={stopPending} modelState={modelState}
+            ref={composerApi}
+            chatReady={chatReady} canSend={canSend} modelProblem={modelProblem} draftKey={draftKey} autoFocus={!hasMessages && chatReady} status={status} stopPending={stopPending} modelState={modelState}
             selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}
@@ -188,6 +207,15 @@ function DesktopHistoryLoader({
   >{loading ? "正在加载更早消息…" : "加载更早消息"}</button>;
 }
 
+/** 时段问候只做一行小字；主标题保持"布置下一件事"的任务口吻。 */
+function greetingFor(hour: number): string {
+  if (hour < 5) return "夜深了";
+  if (hour < 11) return "早上好";
+  if (hour < 14) return "中午好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+}
+
 function DesktopEmptyState({ shellStatus, loadingSession, modelProblem }: { shellStatus: string | null; loadingSession: boolean; modelProblem: string }) {
   return <ConversationEmptyState className="home-state">
     {loadingSession ? <div className="home-state__ready" role="status"><strong>正在读取消息</strong></div> : shellStatus === "needs_setup" ? <div className="model-connection-state">
@@ -210,12 +238,68 @@ function DesktopEmptyState({ shellStatus, loadingSession, modelProblem }: { shel
     ) : modelProblem ? (
       <div className="home-state__ready"><strong>准备对话</strong><span>下方会说明模型状态；你可以先写下想说的话</span></div>
     ) : (
-      <div className="home-state__ready">
-        <strong>布置下一件事</strong>
-        <span>在下方输入；模型与附件都在同一条输入条里</span>
+      <div className="home-hero">
+        <p className="home-hero__greeting">{greetingFor(new Date().getHours())}</p>
+        <h1 className="home-hero__title">布置下一件事</h1>
       </div>
     )}
   </ConversationEmptyState>;
+}
+
+/** 会话标题：双击进入行内编辑；只编辑会话名，项目前缀是展示拼接、不参与提交。 */
+function SessionHeadingTitle({ heading, value, onRename }: {
+  heading: string;
+  value: string;
+  onRename?: (title: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
+  if (!onRename) return <h1 title={heading}>{heading}</h1>;
+  const start = () => {
+    cancelledRef.current = false;
+    setDraft(value);
+    setEditing(true);
+    window.setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 0);
+  };
+  const commit = async () => {
+    if (cancelledRef.current) return;
+    const title = draft.trim();
+    if (title === value.trim()) {
+      setEditing(false);
+      return;
+    }
+    try {
+      await onRename(title);
+      setEditing(false);
+    } catch {
+      // 错误已由 controller 上报；编辑态保留，用户可再试或按 Esc 放弃。
+    }
+  };
+  if (!editing) return <h1 title={heading} onDoubleClick={start}>{heading}</h1>;
+  return <input
+    ref={inputRef}
+    className="conversation-heading-input"
+    value={draft}
+    maxLength={200}
+    aria-label="重命名会话"
+    onChange={(event) => setDraft(event.target.value)}
+    onKeyDown={(event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void commit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancelledRef.current = true;
+        setEditing(false);
+      }
+    }}
+    onBlur={() => void commit()}
+  />;
 }
 
 class MessageRendererErrorBoundary extends React.Component<

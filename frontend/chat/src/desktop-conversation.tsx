@@ -43,6 +43,8 @@ export interface DesktopConversationMessagesProps {
   messages: ChatMessage[];
   status: ChatStatus;
   copiedMessageId: string;
+  /** 时间线列表末条消息的日期键；实时消息延续该日不重复分隔。 */
+  carryDayKey?: string;
   streamStore: StreamProjectionStore<ChatMessage>;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   onReply?: (message: ChatMessage) => void;
@@ -55,6 +57,7 @@ export function DesktopConversationMessages({
   messages,
   status,
   copiedMessageId,
+  carryDayKey,
   streamStore,
   messageElementsRef,
   onReply,
@@ -63,6 +66,17 @@ export function DesktopConversationMessages({
 }: DesktopConversationMessagesProps) {
   const { stopScroll } = useStickToBottomContext();
   const messageIds = useMemo(() => new Set(messages.map((message) => message.id)), [messages]);
+  const dayBreaks = useMemo(() => {
+    const breaks = new Map<string, string>();
+    let previous = carryDayKey ?? "";
+    for (const message of messages) {
+      const key = messageDayKey(message.createdAt);
+      if (!key) continue;
+      if (key !== previous) breaks.set(message.id, messageDayLabel(message.createdAt));
+      previous = key;
+    }
+    return breaks;
+  }, [carryDayKey, messages]);
 
   return (
     <>
@@ -70,6 +84,7 @@ export function DesktopConversationMessages({
         <DesktopMessageRow
           key={message.id}
           message={message}
+          dayBreak={dayBreaks.get(message.id)}
           initiallyVisible={index >= messages.length - 8}
           replySourceUnavailable={Boolean(message.reply && !messageIds.has(message.reply.messageId))}
           canReply={Boolean(onReply && message.canonical) && status === "idle"}
@@ -90,6 +105,7 @@ export function DesktopConversationMessages({
 
 const DesktopMessageRow = React.memo(function DesktopMessageRow({
   message,
+  dayBreak,
   initiallyVisible,
   replySourceUnavailable,
   canReply,
@@ -104,6 +120,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   stopScroll,
 }: {
   message: ChatMessage;
+  dayBreak?: string;
   initiallyVisible: boolean;
   replySourceUnavailable: boolean;
   canReply: boolean;
@@ -144,6 +161,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   const renderFullMessage = nearViewport || message.streaming === true;
   return (
     <>
+      {dayBreak ? <DaySeparator label={dayBreak} /> : null}
       <div
         className={`web-message-anchor ${message.role} ${message.streaming === true ? "streaming" : "history-isolated"}`}
         data-message-id={message.id}
@@ -255,6 +273,38 @@ function formatMessageTime(value: string) {
   return Number.isNaN(date.getTime()) ? "" : chatMessageTimeFormatter.format(date);
 }
 
+const daySeparatorFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "numeric",
+  day: "numeric",
+});
+
+const daySeparatorYearFormatter = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+});
+
+/** 按本地日历日聚合；无效时间返回空串，不产生分隔。 */
+export function messageDayKey(value: string | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+/** 同年只标月日，跨年补全年份。 */
+function messageDayLabel(value: string | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.getFullYear() === new Date().getFullYear()
+    ? daySeparatorFormatter.format(date)
+    : daySeparatorYearFormatter.format(date);
+}
+
+function DaySeparator({ label }: { label: string }) {
+  return <div className="day-separator" role="separator" aria-label={label}><span>{label}</span></div>;
+}
+
 /** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
 export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
   messages: TimelineMessage[];
@@ -275,6 +325,17 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   const inputStarts = useMemo(() => timelineInputStarts(messages), [messages]);
   const refreshTokens = useMemo(() => timelineSourceRefreshTokens(messages, activities, refresh), [messages, activities, refresh]);
   const visibleMessages = useMemo(() => timelineVisibleMessages(messages, groups), [messages, groups]);
+  const dayBreaks = useMemo(() => {
+    const breaks = new Map<string, string>();
+    let previous = "";
+    for (const message of visibleMessages) {
+      const key = messageDayKey(message.timestamp);
+      if (!key) continue;
+      if (key !== previous) breaks.set(message.id, messageDayLabel(message.timestamp));
+      previous = key;
+    }
+    return breaks;
+  }, [visibleMessages]);
   const anchorIndexes = useMemo(() => timelineAnchorIndexes(messages, groups), [messages, groups]);
   const onNavigate = useCallback((id: string, partIndex?: number) => {
     stopScroll();
@@ -284,7 +345,9 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
       ?? (activity ? document.querySelector<HTMLElement>(`[data-reply-handle="${CSS.escape(activity.handle)}"]`) : null);
     if (row) focusMessagePart(row, id, partIndex);
   }, [activities, anchorIndexes, messageElementsRef, stopScroll, visibleMessages]);
-  return <>{visibleMessages.map((message) => <div key={message.id}
+  return <>{visibleMessages.map((message) => <React.Fragment key={message.id}>
+    {dayBreaks.has(message.id) ? <DaySeparator label={dayBreaks.get(message.id)!} /> : null}
+    <div
     className={`web-message-anchor history-isolated timeline-${message.body.kind}`}
     tabIndex={-1} data-message-id={message.id} data-message-kind={message.body.kind} data-message-seq={message.seq}
     ref={(element) => {
@@ -313,7 +376,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         sessionId={message.session_id} messageId={message.id} block={{ source: message.source }}
         refreshToken={refreshTokens.get(timelineSourceKey(message))} /></div>
     </div> : null}
-  </div>)}</>;
+  </div>
+  </React.Fragment>)}</>;
 }, (previous, next) => {
   // 草稿正文只更新活动行；身份/活动阶段变化才让稳定输入槽位重新读取事实。
   return previous.messages === next.messages
