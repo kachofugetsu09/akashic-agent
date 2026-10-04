@@ -1,7 +1,8 @@
 # 0086 · 会话软删除：逻辑失效可恢复，Akasha 学习与会话数据继续参与
 
-- 状态：proposed
-- 日期：2026-10-04
+- 状态：accepted
+- 日期：2026-10-04（2026-10-04 维护者裁定确认：软删会话数据允许继续存在于
+  Akasha，只是不再在左侧栏显示——与本决策“软删不等于遗忘、目录排除”一致）
 - 关联条款：SES-003、SES-005、STA-003、MEM-009、WEBUI-009、MIG-001、WSP-003
 - 补充：[0073](0073-session-scope-routes-akasha-graphs.md)、[持久化状态地图](../design/persistence-state-map.md)
 

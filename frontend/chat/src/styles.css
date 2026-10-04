@@ -1646,7 +1646,6 @@ form.composer:focus-within [data-slot="input-group"] {
   line-height: 1.2;
   letter-spacing: 0.01em;
   user-select: none;
-  pointer-events: none;
   transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
@@ -1659,11 +1658,6 @@ form.composer:focus-within [data-slot="input-group"] {
   .composer-stats-line {
     transition-duration: 0ms;
   }
-}
-
-.composer-stats-line__hint {
-  font-size: 0.5625rem;
-  opacity: 0.65;
 }
 
 .composer-wrap > .error-line {
