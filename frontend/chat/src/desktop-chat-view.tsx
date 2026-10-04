@@ -106,8 +106,7 @@ export function DesktopChatView({ embeddedShell, controller }: DesktopChatViewPr
           refreshKey={Array.from(toolResults.keys()).join("|")} /> : null}
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
-            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} modelProblem={modelProblem}
-              onSuggest={(text) => composerApi.current?.insertDraft(text)} /> : (
+            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={historyLoading} modelProblem={modelProblem} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
                   firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
@@ -217,13 +216,7 @@ function greetingFor(hour: number): string {
   return "晚上好";
 }
 
-const EMPTY_SUGGESTIONS = [
-  { label: "总结近况", prompt: "总结一下我最近关注的内容更新。" },
-  { label: "整理待办", prompt: "整理我们最近几次对话里还没完成的事。" },
-  { label: "起草文字", prompt: "帮我起草一段简短的文字：" },
-] as const;
-
-function DesktopEmptyState({ shellStatus, loadingSession, modelProblem, onSuggest }: { shellStatus: string | null; loadingSession: boolean; modelProblem: string; onSuggest?: (text: string) => void }) {
+function DesktopEmptyState({ shellStatus, loadingSession, modelProblem }: { shellStatus: string | null; loadingSession: boolean; modelProblem: string }) {
   return <ConversationEmptyState className="home-state">
     {loadingSession ? <div className="home-state__ready" role="status"><strong>正在读取消息</strong></div> : shellStatus === "needs_setup" ? <div className="model-connection-state">
       <span>对话尚未就绪</span><h1>请完成所需配置</h1>
@@ -248,11 +241,6 @@ function DesktopEmptyState({ shellStatus, loadingSession, modelProblem, onSugges
       <div className="home-hero">
         <p className="home-hero__greeting">{greetingFor(new Date().getHours())}</p>
         <h1 className="home-hero__title">布置下一件事</h1>
-        <p className="home-hero__hint">在下方输入；模型与附件都在同一条输入条里。</p>
-        <div className="home-hero__suggestions">
-          {EMPTY_SUGGESTIONS.map((item) => <button key={item.label} type="button"
-            onClick={() => onSuggest?.(item.prompt)}>{item.label}</button>)}
-        </div>
       </div>
     )}
   </ConversationEmptyState>;

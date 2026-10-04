@@ -1,4 +1,4 @@
-import { ChevronRight, PenLine, Trash2, X } from "lucide-react";
+import { ChevronRight, PenLine, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import "./conversation-navigation.css";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
@@ -156,12 +156,10 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
   onRename?: (title: string) => Promise<void>;
 }) {
   const [armed, setArmed] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
   const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const deleteRef = useRef<HTMLButtonElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const renameCancelledRef = useRef(false);
   useEffect(() => () => {
@@ -215,11 +213,9 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
   const fire = async () => {
     if (!onDelete) return;
     disarm();
-    setDeleting(true);
     try {
       await onDelete();
     } finally {
-      setDeleting(false);
       setArmed(false);
     }
   };
@@ -229,17 +225,22 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
     icon: <PenLine size={18} aria-hidden="true" />,
     onSelect: startRename,
   }] : [];
-  const rowActions = onDelete
-    ? [...renameAction, ...(actions ?? []), {
-      label: "删除", danger: true,
-      icon: <Trash2 size={18} aria-hidden="true" />,
-      // 菜单删除不直接执行：就地亮起确认药丸，并把焦点送过去完成第二次点击。
-      onSelect: () => {
+  // 删除只存在于行菜单内：第一次选择保持菜单开启、该项就地变为「确认删除」，
+  // 第二次选择才执行；菜单关闭或 3 秒未确认自动还原。行上不再有独立的删除方块。
+  const deleteAction: NavigationRowAction[] = onDelete ? [{
+    label: armed ? "确认删除" : "删除",
+    danger: true,
+    icon: <Trash2 size={18} aria-hidden="true" />,
+    onSelect: (event) => {
+      if (!armed) {
+        event.preventDefault();
         arm();
-        window.setTimeout(() => deleteRef.current?.focus(), 0);
-      },
-    } satisfies NavigationRowAction]
-    : [...renameAction, ...(actions ?? [])];
+        return;
+      }
+      void fire();
+    },
+  }] : [];
+  const rowActions = [...renameAction, ...(actions ?? []), ...deleteAction];
 
   const body = renaming ? <div
     className={`conversation-session editing ${session.active ? "active" : ""}`}
@@ -289,22 +290,9 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
     </button>;
 
   return <NavigationRowMenu title={session.title} actions={rowActions}
-    className={`conversation-session-row ${session.active ? "active" : ""}`}>
+    className={`conversation-session-row ${session.active ? "active" : ""}`}
+    onOpenChange={(open) => { if (!open) disarm(); }}>
     {body}
-    {onDelete ? <button
-      ref={deleteRef}
-      type="button"
-      className={`conversation-session-delete${armed ? " is-armed" : ""}`}
-      aria-label={armed ? `确认删除 ${session.title}` : `删除 ${session.title}`}
-      title={armed ? "再次点击确认删除" : "删除会话"}
-      disabled={deleting}
-      aria-busy={deleting || undefined}
-      onClick={(event) => {
-        event.stopPropagation();
-        if (!armed) arm();
-        else void fire();
-      }}
-    >{armed ? <span>确认删除</span> : <X size={16} strokeWidth={1.75} aria-hidden="true" />}</button> : null}
   </NavigationRowMenu>;
 }
 
