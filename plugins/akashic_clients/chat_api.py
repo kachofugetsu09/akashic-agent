@@ -35,6 +35,7 @@ from .services import (
     PluginUiRpcExecutionError,
     PluginUiRpcInvalidRequest,
     PluginUiStaleRevision,
+    SessionAdminPort,
     default_chat_model_id,
     project_chat_runtimes,
     project_unavailable_chat_runtimes,
@@ -92,6 +93,7 @@ def create_chat_app(
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     message_scope: Callable[[], Any] | None = None,
+    session_admin_scope: Callable[[], Any] | None = None,
     attachment_store: AttachmentStore | None = None,
     artifact_store: ChannelAttachmentArtifactStore | None = None,
 ) -> FastAPI:
@@ -127,6 +129,15 @@ def create_chat_app(
         if messages is None:
             raise HTTPException(status_code=503, detail="会话日志不可用")
         yield messages
+
+    @asynccontextmanager
+    async def open_session_admin() -> AsyncGenerator[SessionAdminPort, None]:
+        """会话软删/恢复是显式数据管理操作，只在一次 HTTP 操作内借用窄端口。"""
+
+        if session_admin_scope is None:
+            raise HTTPException(status_code=503, detail="会话管理暂不可用")
+        async with session_admin_scope() as admin:
+            yield cast(SessionAdminPort, admin)
 
     project_root = Path(__file__).resolve().parent.parent
     static_dir = project_root / "static" / "chat"
@@ -209,6 +220,29 @@ def create_chat_app(
         return {"items": [session_row(cast(Any, entry)) for entry in page.items], "total": page.total,
                 "next_cursor": None if page.next_cursor is None else {
                     "updated_at": page.next_cursor[0], "session_id": page.next_cursor[1]}}
+
+    async def _set_session_deleted(session_key: str, *, deleted: bool) -> dict[str, object]:
+        if not session_key.startswith(f"{channel.name}:"):
+            raise HTTPException(status_code=400, detail="只能管理当前聊天目录中的会话")
+        try:
+            async with open_session_admin() as admin:
+                result = await admin.set_deleted(session_key, deleted=deleted)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="会话不存在") from error
+        return {"key": result.session_key, "deleted": result.deleted,
+                "deleted_at": result.deleted_at}
+
+    @app.post("/api/chat/sessions/{session_key:path}/delete")
+    async def delete_session(session_key: str) -> dict[str, object]:
+        """软删当前聊天目录中的会话；幂等，消息物理保留，可随时恢复。"""
+
+        return await _set_session_deleted(session_key, deleted=True)
+
+    @app.post("/api/chat/sessions/{session_key:path}/undelete")
+    async def undelete_session(session_key: str) -> dict[str, object]:
+        """恢复已软删的会话；幂等，只清除 deleted_at 标记。"""
+
+        return await _set_session_deleted(session_key, deleted=False)
 
     @app.post("/api/chat/notifications/stream")
     async def notification_stream(payload: NotificationRequest) -> StreamingResponse:
@@ -456,19 +490,22 @@ def create_chat_app(
     ) -> dict[str, object]:
         async with open_message_catalog() as catalog:
             try:
-                page = catalog.reader(session_key).read_tail(
+                reader = catalog.reader(session_key)
+                page = reader.read_tail(
                     before_seq=before_seq, through_seq=through_seq, limit=page_size)
                 items = await read_message_rows(
                     cast(Any, page),
                     display_only=True,
                     reader=channel.message_display,
                 )
+                # 软删会话仍物理存在：如实返回消息并标记 deleted，供前端只读展示。
+                deleted = reader.deleted
             except KeyError as error:
                 raise HTTPException(status_code=404, detail="会话不存在") from error
             except InvalidPage as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
         return {"version": 2, "items": items, "through_seq": page.through_seq,
-                "has_more": page.has_more,
+                "has_more": page.has_more, "deleted": deleted,
                 "before_seq": page.messages[0].seq if page.has_more else None}
 
     @app.websocket("/ws")
@@ -549,6 +586,7 @@ def build_chat_server(
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     message_scope: Callable[[], Any] | None = None,
+    session_admin_scope: Callable[[], Any] | None = None,
     attachment_store: AttachmentStore | None = None,
     artifact_store: ChannelAttachmentArtifactStore | None = None,
     uds: str,
@@ -569,6 +607,7 @@ def build_chat_server(
             messages=messages,
             reply_status=reply_status,
             message_scope=message_scope,
+            session_admin_scope=session_admin_scope,
             attachment_store=attachment_store,
             artifact_store=artifact_store,
         ),

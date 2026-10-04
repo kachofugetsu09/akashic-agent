@@ -166,6 +166,8 @@ _OLD_SESSION_SCHEMA = """CREATE TABLE sessions (
 _SESSION_ATTRIBUTES_COLUMN = (
     "attributes TEXT NOT NULL DEFAULT '{\"learning\": \"eligible\", \"visibility\": \"listed\"}'"
 )
+# 软删除标记：NULL 表示正常，时间戳表示已逻辑失效；由 yoyo 只增加列接纳。
+_SESSION_DELETED_COLUMN = "deleted_at TEXT"
 
 _MESSAGE_METADATA_COLUMN = "metadata TEXT NOT NULL DEFAULT '{}'"
 
@@ -197,7 +199,8 @@ _SCHEMA = {
                         updated_at TEXT NOT NULL,
                         metadata TEXT,
                         next_seq INTEGER NOT NULL DEFAULT 0,
-                        {_SESSION_ATTRIBUTES_COLUMN}
+                        {_SESSION_ATTRIBUTES_COLUMN},
+                        {_SESSION_DELETED_COLUMN}
                     );""",
     "messages": f"""CREATE TABLE IF NOT EXISTS messages (
                         id TEXT PRIMARY KEY,
@@ -263,12 +266,14 @@ def _sql(value: str) -> str:
 
 
 def _session_schemas() -> Mapping[str, bool]:
-    """保留两条已知旧表 lineage，属性列的身份只有存储 owner 定义。"""
+    """保留两条已知旧表 lineage，已加 deleted_at 的同形库同样是已知身份。"""
     values = {_sql(_SCHEMA["sessions"]): True}
     for old in (_LEGACY_SESSION_SCHEMA, _OLD_SESSION_SCHEMA):
         values[_sql(old)] = False
         base = old.rstrip().rstrip(";").rstrip()
         values[_sql(base[:-1] + ", " + _SESSION_ATTRIBUTES_COLUMN + ")")] = True
+        values[_sql(base[:-1] + ", " + _SESSION_ATTRIBUTES_COLUMN + ", "
+                     + _SESSION_DELETED_COLUMN + ")")] = True
     return values
 
 
@@ -375,6 +380,9 @@ class MessageLog:
                     _ = self._connection.execute(statement)
             self._has_metadata = "metadata" in {
                 row["name"] for row in self._connection.execute("PRAGMA table_info(messages)")
+            }
+            self._has_deleted = "deleted_at" in {
+                row["name"] for row in self._connection.execute("PRAGMA table_info(sessions)")
             }
         except BaseException:
             self._connection.close()
@@ -501,6 +509,40 @@ class MessageLog:
         return await _run_commit(lambda: self.ensure_session(
             session_id, attributes, initializers=initializers,
         ), None)
+
+    def set_session_deleted(self, session_id: str, *, deleted: bool) -> str | None:
+        """用户显式的数据管理操作：软删或恢复 Session，消息与其他 owner 状态不动。
+
+        幂等：重复设置返回当前值且不产生写操作；返回软删时间戳或 None。
+        """
+        def change() -> str | None:
+            column = "deleted_at" if self._has_deleted else "NULL AS deleted_at"
+            row = self._connection.execute(
+                f"SELECT {column} FROM sessions WHERE key=?", (session_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            if not self._has_deleted:
+                if deleted:
+                    raise RuntimeError("sessions 缺少 deleted_at，请先完成 yoyo 迁移")
+                return None
+            current = row["deleted_at"]
+            if not deleted:
+                if current is None:
+                    return None
+                self._connection.execute(
+                    "UPDATE sessions SET deleted_at=NULL WHERE key=?", (session_id,),
+                )
+                return None
+            if current is not None:
+                return current
+            stamp = datetime.now(UTC).isoformat()
+            self._connection.execute(
+                "UPDATE sessions SET deleted_at=? WHERE key=?", (stamp, session_id),
+            )
+            return stamp
+
+        return self._write(change)
 
     def _check_async_operation(self) -> None:
         """线程工作不能离开调用者自己的未提交或只读事务。"""
@@ -721,13 +763,15 @@ class MessageCatalog:
         self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
         after: tuple[str, str] | None = None, limit: int = 50,
     ) -> SessionPage:
-        """按最近活跃时间读取 live 目录；续页期间更新的会话须刷新首页重新取得。"""
+        """按最近活跃时间读取 live 目录；软删会话默认排除，续页期间更新的会话须刷新首页重新取得。"""
         if not 1 <= limit <= 200:
             raise InvalidPage("目录 limit 必须在 1 到 200 之间")
         if visibility not in (None, "listed", "internal"):
             raise InvalidPage("目录 visibility 无效")
         where = ["substr(s.key,1,?)=?"]
         values: list[object] = [len(prefix), prefix]
+        if self._log._has_deleted:
+            where.append("s.deleted_at IS NULL")
         if visibility is not None:
             where.append("json_extract(s.attributes,'$.visibility')=?")
             values.append(visibility)
@@ -880,6 +924,18 @@ class MessageReader:
         if row is None:
             raise ValueError("Session 尚未接纳")
         return decode_attributes(row["attributes"])
+
+    @property
+    def deleted(self) -> bool:
+        """软删只是目录与导航的呈现状态；直接读取仍返回原消息。"""
+        column = "deleted_at" if self._log._has_deleted else "NULL AS deleted_at"
+        with self._log._read():
+            row = self._log._connection.execute(
+                f"SELECT {column} FROM sessions WHERE key=?", (self._session_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Session 尚未接纳")
+        return row["deleted_at"] is not None
 
     def read(
         self,

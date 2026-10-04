@@ -81,7 +81,7 @@ def session_pin_row(catalog: MessageCatalogPort, session_id: str) -> dict[str, o
     except KeyError:
         return None
     attributes = reader.attributes
-    if attributes.visibility != "listed" or any(name == "project" for name, _ in attributes.scope):
+    if reader.deleted or attributes.visibility != "listed" or any(name == "project" for name, _ in attributes.scope):
         return None
     first = first_page.messages[0] if first_page.messages else None
     text = "" if first is None or isinstance(first.body, Control) else "\n".join(

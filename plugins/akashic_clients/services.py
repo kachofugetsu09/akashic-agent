@@ -12,7 +12,12 @@ from typing import Protocol, runtime_checkable
 
 from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.message_view import MessageDisplayReader
-from agent.plugin_composition.messages import InvalidPage, MessageConflict, SessionAttributes
+from agent.plugin_composition.messages import (
+    InvalidPage,
+    MessageConflict,
+    SessionAttributes,
+    SessionDeleteResult,
+)
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from agent.plugin_composition.models import (
     ChatModelSelection,
@@ -95,6 +100,8 @@ class MessageReaderPort(Protocol):
     @property
     def attributes(self) -> SessionAttributes: ...
     @property
+    def deleted(self) -> bool: ...
+    @property
     def session_id(self) -> str: ...
     def head(self) -> int: ...
     def follow(self, *, after_seq: int = -1) -> AsyncGenerator[Message, None]: ...
@@ -102,6 +109,12 @@ class MessageReaderPort(Protocol):
     def get(self, message_id: str) -> Message | None: ...
     def read_tail(self, *, before_seq: int | None, through_seq: int | None, limit: int) -> MessagePagePort: ...
     def read_page(self, *, after_seq: int = -1, through_seq: int | None = None, limit: int = 50) -> MessagePagePort: ...
+
+
+class SessionAdminPort(Protocol):
+    """用户显式的会话数据管理操作；只有软删/恢复，没有消息或物理删除权限。"""
+
+    async def set_deleted(self, session_key: str, *, deleted: bool) -> SessionDeleteResult: ...
 
 
 class MessageCatalogPort(Protocol):
@@ -193,7 +206,8 @@ def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, obje
 __all__ = [
     "ArtifactReadLeasePort", "ArtifactStorePort", "AttachmentStorePort",
     "InvalidPage", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
-    "MessagePagePort", "MessageReaderPort", "SessionEntryPort", "SessionPagePort", "Message",
+    "MessagePagePort", "MessageReaderPort", "SessionAdminPort",
+    "SessionEntryPort", "SessionPagePort", "Message",
     "ModelCatalogReader", "ModelCatalogSnapshot", "ModelControlUnavailable",
     "ModelSelectionReader", "RuntimeInspectionError", "RuntimeInspectionService",
     "default_chat_model_id", "project_chat_runtimes",

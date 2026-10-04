@@ -49,9 +49,11 @@ from agent.plugin_composition.messages import (
     MESSAGE_EMBEDDINGS,
     MESSAGE_WRITERS,
     OWNER_STATE,
+    SESSION_ADMIN,
     SESSION_ADMISSION,
     MessageWriters,
     OwnerState,
+    SessionAdmin,
     SessionAdmission,
 )
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG, PluginConfig
@@ -308,6 +310,7 @@ async def provide_host_services(
         MESSAGE_EMBEDDINGS,
         MESSAGE_WRITERS,
         OWNER_STATE,
+        SESSION_ADMIN,
         SESSION_ADMISSION,
         BINDINGS,
     }
@@ -325,6 +328,7 @@ async def provide_host_services(
         _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
         _ = await root.context.provide(OWNER_STATE, OwnerState(log))
         _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
+        _ = await root.context.provide(SESSION_ADMIN, SessionAdmin(log))
         _ = await root.context.provide(
             BINDINGS, Bindings(log, archive, root, generation_for_context)
         )
@@ -416,6 +420,7 @@ def check_host_dependencies(
         MESSAGE_EMBEDDINGS,
         MESSAGE_WRITERS,
         OWNER_STATE,
+        SESSION_ADMIN,
         SESSION_ADMISSION,
         BINDINGS,
         TASKS,
