@@ -12,8 +12,8 @@ import type { TimelineReply } from "./message-timeline";
 import { nextComposerExpanded } from "./composer-layout";
 import { ComposerActionButton } from "./composer-action";
 import { ComposerReply } from "./message-actions";
-import { ModelCapsulePicker } from "./model-capsule-picker";
-import type { ChatModelRuntime } from "./model-capsule-data";
+import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./model-capsule-picker";
+import { compatibleEffort, type ChatModelRuntime } from "./model-capsule-data";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string };
@@ -178,15 +178,25 @@ export const DesktopComposer = memo(function DesktopComposer({
       </PromptInputBody>
       <PromptInputFooter className="composer__bar">
         <PromptInputTools className="composer__lead">
-          {modelState ? <ModelCapsulePicker
-            compact
-            defaultRuntime={modelState.defaultRuntime}
-            runtimes={modelState.runtimes}
-            selectedRuntimeId={selectedRuntimeId}
-            selectedEffort={selectedEffort}
-            disabled={isGeneratingChatStatus(status)}
-            onChange={onModelChange}
-          /> : null}
+          {modelState ? (
+            <>
+              <ModelCapsulePicker
+                defaultRuntime={modelState.defaultRuntime}
+                runtimes={modelState.runtimes}
+                selectedRuntimeId={selectedRuntimeId}
+                selectedEffort={selectedEffort}
+                disabled={isGeneratingChatStatus(status)}
+                onChange={onModelChange}
+              />
+              <ComposerEffortAction
+                modelState={modelState}
+                selectedRuntimeId={selectedRuntimeId}
+                selectedEffort={selectedEffort}
+                disabled={isGeneratingChatStatus(status)}
+                onChange={onModelChange}
+              />
+            </>
+          ) : null}
         </PromptInputTools>
         <PromptInputTools className="composer__trail">
           <ComposerAttachmentButton />
@@ -197,6 +207,26 @@ export const DesktopComposer = memo(function DesktopComposer({
     </>
   );
 });
+
+function ComposerEffortAction({ modelState, selectedRuntimeId, selectedEffort, disabled, onChange }: {
+  modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] };
+  selectedRuntimeId: string;
+  selectedEffort: string;
+  disabled: boolean;
+  onChange: (runtimeId: string, effort: string) => void;
+}) {
+  const { visibleModel, explicitModel } = resolveVisibleRuntime(modelState.runtimes, selectedRuntimeId, modelState.defaultRuntime);
+  if (!visibleModel) return null;
+  return (
+    <ModelEffortAction
+      runtime={visibleModel}
+      effort={compatibleEffort(visibleModel, selectedEffort)}
+      explicit={Boolean(explicitModel)}
+      disabled={disabled}
+      onChange={onChange}
+    />
+  );
+}
 
 function ComposerAttachmentButton() {
   const attachments = usePromptInputAttachments();
