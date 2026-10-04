@@ -64,6 +64,9 @@ export function desktopModels(count = 48) {
       sourceName: source.sourceName,
       reasoningEffort: source.efforts[1] ?? "medium",
       supportedReasoningEfforts: source.efforts,
+      contextWindow: index % 3 === 0 ? 1000000 : 128000 + index * 1000,
+      maxOutputTokens: 8192,
+      inputModalities: index % 4 === 1 ? ["text", "image"] : ["text"],
       roles: ["default"],
     };
   });

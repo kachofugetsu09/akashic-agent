@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Search, Sparkles, Star } from "lucide-react";
+import { Check, ChevronDown, Eye, Search, Sparkles, Star } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import codexIcon from "./assets/provider-icons/codex.svg";
 import deepseekIcon from "./assets/provider-icons/deepseek.svg";
@@ -48,12 +48,27 @@ function sourceIcon(runtime: ChatModelRuntime): string {
   return PROVIDER_ICONS[provider] || "";
 }
 
-function ModelMark({ runtime, small = false }: { runtime: ChatModelRuntime; small?: boolean }) {
+// 分组头只放真实品牌 SVG；未知来源不留字母占位块，避免与来源名重复表达。
+function GroupIcon({ runtime }: { runtime: ChatModelRuntime }) {
   const icon = sourceIcon(runtime);
+  if (!icon) return null;
+  return <img className="model-picker__group-icon" src={icon} alt="" aria-hidden="true" />;
+}
+
+// Alma 式能力徽标：多模态（图像输入）/ 推理 / 上下文窗口。
+function CapabilityMarks({ runtime }: { runtime: ChatModelRuntime }) {
+  const vision = runtime.inputModalities.some((modality) => modality === "image" || modality === "video");
+  const reasoning = runtime.supportedReasoningEfforts.length > 0;
+  const ctx = runtime.contextWindow >= 1e6
+    ? `${Math.round(runtime.contextWindow / 1e6)}M`
+    : runtime.contextWindow >= 1e3 ? `${Math.round(runtime.contextWindow / 1e3)}K` : "";
+  if (!vision && !reasoning && !ctx) return null;
   return (
-    <span className={`model-picker__mark ${small ? "model-picker__mark--small" : ""}`} aria-hidden="true">
-      {icon ? <img src={icon} alt="" /> : <span>{runtime.sourceName.slice(0, 1).toUpperCase()}</span>}
-    </span>
+    <>
+      {vision ? <Eye size={11} aria-label="多模态输入" /> : null}
+      {reasoning ? <Sparkles size={11} aria-label="支持思考强度" /> : null}
+      {ctx ? <i title={`${runtime.contextWindow.toLocaleString()} tokens`}>{ctx}</i> : null}
+    </>
   );
 }
 
@@ -102,10 +117,12 @@ function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | n
     }
     place();
     window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
+    // 非捕获：只跟随文档级滚动重定位。面板内部列表滚动不触发，
+    // 否则每个滚轮帧都 setState 重渲染，长列表里滚动会被打断。
+    window.addEventListener("scroll", place);
     return () => {
       window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("scroll", place);
     };
   }, [open, triggerRef, width]);
   return style;
@@ -170,7 +187,7 @@ function ModelRow({ runtime, selected, favorite, onChoose, onToggleFavorite }: M
       <span className="model-picker__copy">
         <strong>{runtime.model}</strong>
         <span className="model-picker__meta">
-          {runtime.supportedReasoningEfforts.length > 0 ? <Sparkles size={11} aria-label="支持思考强度" /> : null}
+          <CapabilityMarks runtime={runtime} />
           <em>{runtime.provider}</em>
         </span>
       </span>
@@ -277,7 +294,6 @@ export function ModelCapsulePicker({
           else setOpen(true);
         }}
       >
-        <ModelMark runtime={visibleModel} small />
         <span className="model-picker__name">{selectionLabel}</span>
         <ChevronDown size={11} aria-hidden="true" />
       </button>
@@ -342,7 +358,7 @@ export function ModelCapsulePicker({
             {items.groups.map(([source, models]) => (
               <div className="model-picker__group" aria-label={source} key={source}>
                 <div className="model-picker__group-title">
-                  <ModelMark runtime={models[0].runtime} small />
+                  <GroupIcon runtime={models[0].runtime} />
                   {source}
                   <span>{models.length}</span>
                 </div>

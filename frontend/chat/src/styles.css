@@ -1813,10 +1813,10 @@ form.composer:focus-within [data-slot="input-group"] {
   max-width: 12rem;
   height: 28px;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   border: 0;
   border-radius: 8px;
-  padding: 0 8px 0 6px;
+  padding: 0 8px;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
   font: inherit;
@@ -1864,45 +1864,11 @@ form.composer:focus-within [data-slot="input-group"] {
   translate: 0 0.5px;
 }
 
-.model-picker__mark {
-  display: grid;
-  width: 1.25rem;
-  height: 1.25rem;
+.model-picker__group-icon {
+  width: 14px;
+  height: 14px;
   flex: 0 0 auto;
-  place-items: center;
-  overflow: hidden;
-  border-radius: 5px;
-  background: var(--md-sys-color-surface-bright);
-  box-shadow: inset 0 0 0 1px var(--md-sys-color-outline-variant);
-  font-weight: 650;
-  line-height: 1;
-}
-
-.model-picker__mark--small {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  font-size: 9px;
-}
-
-.model-picker__trigger .model-picker__mark {
-  background: transparent;
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--md-sys-color-on-surface) 18%, transparent);
-  color: var(--md-sys-color-on-surface-variant);
-}
-
-.model-picker__mark img {
-  width: 70%;
-  height: 70%;
   object-fit: contain;
-}
-
-.model-picker__mark > span {
-  display: grid;
-  place-items: center;
-  line-height: 1;
-  letter-spacing: 0;
-  transform: translateY(0.02em);
 }
 
 .model-picker__panel {
@@ -2037,10 +2003,16 @@ form.composer:focus-within [data-slot="input-group"] {
   gap: 6px;
 }
 
-.model-picker__meta em {
+.model-picker__meta em,
+.model-picker__meta i {
   color: var(--md-sys-color-on-surface-variant);
   font-size: 11px;
   font-style: normal;
+}
+
+.model-picker__meta i {
+  font-weight: 500;
+  opacity: 0.8;
 }
 
 .model-picker__meta svg {

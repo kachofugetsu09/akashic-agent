@@ -161,6 +161,10 @@ export function chatModelState(payload: unknown): ChatModelState {
       || !item.roles.every((role) => typeof role === "string")) {
       throw new Error("/api/chat/models 返回了无效 runtime");
     }
+    const contextWindow = typeof item.contextWindow === "number" && Number.isFinite(item.contextWindow)
+      ? item.contextWindow : 0;
+    const inputModalities = Array.isArray(item.inputModalities)
+      ? item.inputModalities.filter((modality): modality is string => typeof modality === "string") : [];
     return {
       id: item.id,
       provider: item.provider,
@@ -170,6 +174,8 @@ export function chatModelState(payload: unknown): ChatModelState {
       reasoningEffort: item.reasoningEffort,
       supportedReasoningEfforts: item.supportedReasoningEfforts as string[],
       roles: item.roles as string[],
+      contextWindow,
+      inputModalities,
     };
   });
   const unavailableRuntimes = body.unavailableRuntimes.map<ChatModelState["unavailableRuntimes"][number]>((value) => {

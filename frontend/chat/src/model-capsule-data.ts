@@ -7,6 +7,9 @@ export interface ChatModelRuntime {
   reasoningEffort: string;
   supportedReasoningEfforts: string[];
   roles: string[];
+  /** 服务端能力目录投影；老后端缺省时为 0/空数组。 */
+  contextWindow: number;
+  inputModalities: string[];
 }
 
 export const EFFORT_LABELS: Record<string, string> = {
