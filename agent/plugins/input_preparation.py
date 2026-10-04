@@ -26,6 +26,11 @@ from agent.plugins.static_manifest import (
 )
 
 PLUGIN_ARCHIVE_BINDING_API = 3
+# 运行输入与 watcher 共用排除规则；完整归档和来源校验仍保留来源标签。
+SOURCE_EXCLUDED_NAMES = frozenset({
+    ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv",
+    "__pycache__", "node_modules", ENVIRONMENT_FILE, ".akashic-source.json",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,13 +159,10 @@ def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
 
 
 def _source_revision(plugin_dir: Path) -> str:
-    """Hash the plugin source tree with the existing exclusion and path rules."""
+    """比较运行源码；纯来源标签不改变运行输入。"""
     digest = hashlib.sha256()
     root = plugin_dir.resolve(strict=False)
-    excluded = {
-        ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-        ".venv", "__pycache__", "node_modules", ENVIRONMENT_FILE,
-    }
+    excluded = SOURCE_EXCLUDED_NAMES
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
         current_path = Path(current)

@@ -78,7 +78,41 @@ async def wait_for(check, message: str) -> None:
             await asyncio.sleep(0.02)
 
 
-async def run(root: Path, core: Path) -> dict[str, object]:
+async def check_provenance(app, manager, plugins, workspace):
+    """来源标签变更后执行真实全量检查与手动 watcher 唤醒。"""
+    from agent.plugins.watcher import PluginWatcher
+    target = manager.generation('aa_marker')
+    token = target.fiber.context.fiber.activation_token
+    selected = (workspace / 'runtime/plugin-stable.json').read_bytes()
+    effects = (target.data_dir / 'activations.txt').read_bytes()
+    archived_marker = (target.code_dir / '.akashic-source.json').read_bytes()
+    marker = plugins / 'aa_marker/.akashic-source.json'
+    marker.write_text(json.dumps({'commit': 'new-source-evidence'}))
+    try:
+        await manager.reconcile_changed()
+    except RuntimeError as error:
+        # 无模型的隔离组合允许既有消费者 PENDING，但不能换代目标。
+        assert '未 ACTIVE' in str(error), str(error)
+    assert manager.generation('aa_marker') is target
+    assert target.fiber.context.fiber.activation_token is token
+    assert (workspace / 'runtime/plugin-stable.json').read_bytes() == selected
+    assert (target.code_dir / '.akashic-source.json').read_bytes() == archived_marker
+    app.plugin_watcher = PluginWatcher(manager, baseline_revision=manager.watch_revision(), interval_seconds=1)
+    app.plugin_watcher_task = asyncio.create_task(app.plugin_watcher.run())
+    previous = manager._operation
+    app.plugin_watcher.wake()
+    await wait_for(lambda: manager._operation is not previous and manager._operation.task.done(), 'manual full check')
+    app.plugin_watcher.stop()
+    await app.plugin_watcher_task
+    assert manager.generation('aa_marker') is target
+    assert target.fiber.context.fiber.activation_token is token
+    assert (target.data_dir / 'activations.txt').read_bytes() == effects
+    assert (workspace / 'runtime/plugin-stable.json').read_bytes() == selected
+    return {'full_provenance_check': 'passed', 'manual_wake_provenance': 'passed',
+            'archive_provenance_retained': 'passed', 'no_selection_rewrite': 'passed'}
+
+
+async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict[str, object]:
     """隔离全部路径并通过实际控制协议触发卸载和源码更新。"""
     # 1. 初始化独占状态，复制候选源码，保留完整输入和报告。
     sys.path[:0] = [str(core), str(core / 'sdk/python/src')]
@@ -91,6 +125,12 @@ async def run(root: Path, core: Path) -> dict[str, object]:
     (root / 'home').mkdir()
     plugins = root / 'plugins'
     shutil.copytree(core / 'plugins', plugins, ignore=shutil.ignore_patterns('__pycache__'))
+    if case == 'provenance':
+        marker_plugin = plugins / 'aa_marker'
+        marker_plugin.mkdir()
+        (marker_plugin / 'plugin.py').write_text(PEER.replace("name = 'peer'", "name = 'aa_marker'")
+                                                .replace('e2e.peer', 'e2e.marker'))
+        (marker_plugin / '.akashic-source.json').write_text(json.dumps({'commit': 'original-source-evidence'}))
     os.environ['AKASHIC_EXTRA_PLUGIN_DIRS'] = str(plugins)
     config = root / 'config.toml'
     env = {**os.environ, 'PYTHONPATH': os.pathsep.join(sys.path[:2])}
@@ -99,6 +139,25 @@ async def run(root: Path, core: Path) -> dict[str, object]:
                         '--workspace', str(workspace)], env=env, check=True, stdout=output, stderr=output)
     for name, source in [('z_registry', PROVIDER), ('annotation', CONTRIBUTOR), ('peer', PEER)]:
         install_fixture(root, workspace, home, name, source)
+    if seed_core is not None:
+        # 用旧版真实启动生成 selection，候选版直接读取其完整归档。
+        seed = """import asyncio, sys
+from agent.config_models import Config
+from bootstrap.app import AppRuntime
+from pathlib import Path
+async def run():
+    app = AppRuntime(Config.load(Path(sys.argv[1]), workspace=Path(sys.argv[2])), Path(sys.argv[2]))
+    try:
+        await app.start()
+    finally:
+        await app.shutdown()
+asyncio.run(run())
+"""
+        seed_env = {**env, 'PYTHONPATH': os.pathsep.join([str(seed_core), str(seed_core / 'sdk/python/src')]),
+                    'AKASHIC_CORE_ROOT': str(seed_core)}
+        with (root / 'seed.log').open('w') as output:
+            subprocess.run([sys.executable, '-c', seed, str(config), str(workspace)], cwd=root,
+                           env=seed_env, check=True, stdout=output, stderr=output, timeout=60)
     from akashic_sdk import AsyncAkashic
     from agent.config_models import Config
     from agent.plugin_composition import FiberState, ServiceKey
@@ -124,6 +183,10 @@ async def run(root: Path, core: Path) -> dict[str, object]:
         # 2. 让 watcher 以已有漂移为基线；这正是部署后才卸载的现场条件。
         app.plugin_watcher.stop()
         await app.plugin_watcher_task
+        if case == 'provenance':
+            result = await check_provenance(app, manager, plugins, workspace)
+            assert message_rows() == messages_before
+            return result
         peer_source = root / 'sources/peer'
         (peer_source / 'plugin.py').write_text(PEER.replace("'old'", "'new'"))
         git(peer_source, 'add', '.')
@@ -212,13 +275,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--core-root', type=Path, default=ROOT)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--case', choices=['uninstall', 'provenance'], default='uninstall')
+    parser.add_argument('--seed-core', type=Path)
     args = parser.parse_args()
     root = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='plugin-uninstall-e2e-'))
     if args.output:
         root.mkdir(parents=True, exist_ok=False)
     print(f'EVIDENCE {root}', flush=True)
     try:
-        result = asyncio.run(run(root, args.core_root.resolve()))
+        result = asyncio.run(run(root, args.core_root.resolve(), args.case,
+                                 args.seed_core.resolve() if args.seed_core else None))
     except BaseException as error:
         (root / 'result.json').write_text(json.dumps({'status': 'failed', 'error': repr(error)}, indent=2))
         raise
