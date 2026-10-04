@@ -1595,9 +1595,11 @@ class PluginManager:
                 and active.config_revision == config_revision
                 and (
                     active.source_revision == revision
-                    # 旧归档的 digest 曾包含来源标签；按同一规则读取其
-                    # 固定代码，不改写旧 descriptor 或重新提交选择。
-                    or await run_file_io(lambda: _source_revision(active.code_dir)) == revision
+                    # 完整摘要保留来源证据；运行变化只比较代码，不改写旧归档。
+                    or await run_file_io(lambda: (
+                        _source_revision(active.code_dir, runtime_only=True)
+                        == _source_revision(Path(mod["plugin_root"]), runtime_only=True)
+                    ))
                 )
             )
             if same_input and not had_source_failure:
