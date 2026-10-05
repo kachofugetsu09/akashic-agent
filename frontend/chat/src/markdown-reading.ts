@@ -1,5 +1,7 @@
 import type { MarkdownIt, MarkdownToken } from "stream-markdown-parser";
 
+import { copyText } from "./copy-text";
+
 /** 只识别显式的纯文本语言，不把未知代码语言降为说明文字。 */
 export function isPlainTextLanguage(language: string) {
   return /^(?:text|txt|plaintext)?$/iu.test(language.trim());
@@ -60,6 +62,5 @@ function alignNumericTableTokens(tokens: MarkdownToken[]) {
 
 /** 异步边界统一报告 Clipboard API 缺失与浏览器拒绝复制。 */
 export async function copyReadingCode(code: string) {
-  if (!navigator.clipboard) throw new Error("Clipboard API is unavailable");
-  await navigator.clipboard.writeText(code);
+  await copyText(code);
 }
