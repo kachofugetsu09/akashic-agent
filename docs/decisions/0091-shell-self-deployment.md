@@ -24,6 +24,8 @@ Guardian 的进程管理不再叠加 Docker/systemd；容器使用 init。应用
 
 工具和消息仍由原 owner 追加。宿主请求按原调用去重，保存目标与任务状态，不减少旧记录。
 发布器在同一 release.lock 下准备、预检、等待、停止、迁移、发布和验收。
+在线准备完成后，同一个 worker 用目标 Bridge 解释器 exec 目标发布器；准备和激活
+分别取得既有发布锁，不让旧版本实现新版本的发布规则，也不增加第二个状态 writer。
 正常关闭回执不等于部署成功；Core/Controller 回执、容器退出与 Bridge service
 结果必须同时成立。清理或迁移失败保留维护现场，不能盲目回滚旧镜像。
 
@@ -34,4 +36,4 @@ Guardian 的进程管理不再叠加 Docker/systemd；容器使用 init。应用
 备份由该次授权决定，默认关闭。共享 SQLite/plugin-data 维持单写入者，接受短暂维护窗口。
 电源故障或外部强杀不能保证回合完成；缺失证据明确失败，不生成假交接。
 
-操作流程由 [部署 Skill](../../plugins/plugin_update/skills/deploy-akashic/SKILL.md) 拥有。
+操作流程由 [部署 Skill](../../plugins/standard_tools/skills/deploy-akashic/SKILL.md) 拥有；随默认 Shell 插件加载。

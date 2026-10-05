@@ -171,6 +171,7 @@ def _parser() -> argparse.ArgumentParser:
     status_parser.set_defaults(handler=status)
     worker_parser = subparsers.add_parser("self-deploy-worker", help=argparse.SUPPRESS)
     worker_parser.add_argument("--request", type=Path, required=True)
+    worker_parser.add_argument("--prepared", action="store_true", help=argparse.SUPPRESS)
     worker_parser.set_defaults(handler=worker)
     return parser
 

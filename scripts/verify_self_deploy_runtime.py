@@ -28,7 +28,7 @@ def prepare_workspace() -> tuple[Path, Path, Path]:
     sources = sandbox / "plugins"
     work = sandbox / "state/workspace"
     config = sandbox / "state/config.toml"
-    names = "channels commands sources content context tools conversation react turn_projection reply_program reply tool_search assets standard_tools models openai_compatible delivery delivery_policy programmatic plugin_update message_push".split()
+    names = "channels commands sources content context tools conversation react turn_projection reply_program reply tool_search assets standard_tools models openai_compatible delivery delivery_policy programmatic message_push".split()
     for name in names:
         shutil.copytree(
             ROOT / "plugins" / name,
@@ -63,9 +63,12 @@ def prepare_workspace() -> tuple[Path, Path, Path]:
     return sandbox, work, config
 
 
-async def start_model_server(sandbox: Path) -> tuple[web.AppRunner, int]:
+async def start_model_server(
+    sandbox: Path, *, command: str | None = None, host: str = "127.0.0.1", port: int = 0
+) -> tuple[web.AppRunner, int]:
     """控制外部 HTTP 模型响应；内部组件使用真实实现。"""
     requests = []
+    shell_command = command or f"{sys.executable} {sandbox}/arm.py"
 
     async def models(request):
         return web.json_response({"data": [{"id": "fixture", "object": "model"}]})
@@ -88,7 +91,6 @@ async def start_model_server(sandbox: Path) -> tuple[web.AppRunner, int]:
                 for t in tools
                 if t["function"]["name"].endswith("shell")
             )
-            command = f"{sys.executable} {sandbox}/arm.py"
             message = {
                 "role": "assistant",
                 "content": None,
@@ -100,7 +102,7 @@ async def start_model_server(sandbox: Path) -> tuple[web.AppRunner, int]:
                             "name": shell,
                             "arguments": json.dumps(
                                 {
-                                    "command": command,
+                                    "command": shell_command,
                                     "description": "Submit local deployment",
                                     "login": False,
                                     "yield_time_ms": 10000,
@@ -149,13 +151,15 @@ async def start_model_server(sandbox: Path) -> tuple[web.AppRunner, int]:
     app.router.add_post("/chat/completions", chat)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
+    site = web.TCPSite(runner, host, port)
     await site.start()
     port = site._server.sockets[0].getsockname()[1]
     return runner, port
 
 
-async def configure_model(client: AsyncAkashic, port: int) -> None:
+async def configure_model(
+    client: AsyncAkashic, port: int, *, host: str = "127.0.0.1"
+) -> None:
     """通过正式 RPC 创建并选择本地 HTTP 模型。"""
     result = cast(
         dict[str, Any],
@@ -168,7 +172,7 @@ async def configure_model(client: AsyncAkashic, port: int) -> None:
                     "connection_id": "fixture",
                     "name": "Fixture",
                     "driver_id": "openai-compatible",
-                    "endpoint": f"http://127.0.0.1:{port}",
+                    "endpoint": f"http://{host}:{port}",
                     "auth_identity": "fixture",
                     "credential": {"api_key": "fixture"},
                 },

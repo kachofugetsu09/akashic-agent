@@ -55,7 +55,7 @@ attempt 重放、Session 模型历史投影及 compaction prepare/persist 链已
 消息与工具回执仍只正常追加，部署等待不改写既有正文或终态。
 宿主 `run/self-deploy/<request>.json` 由提交入口创建、worker 更新状态；目标与原调用身份
 固定，同调用不同目标拒绝。Core 的 `workspace/runtime/closed/<boot>.json` 和 Controller
-的 `workload-runtime/closed/<controller>.json` 由各生命周期 owner 在正常清理后增加。
+的 `workload-controller/closed/<controller>.json` 由各生命周期 owner 在正常清理后增加。
 旧记录不覆盖、不自动删除；身份失配或证据缺失只阻断部署。正式迁移仍由原 Yoyo owner
 在维护锁下执行，恢复沿现有 activation receipt，不把源码回退当作数据回滚。
 

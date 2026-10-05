@@ -191,7 +191,8 @@ def verify_closed(ack: dict[str, object], current: dict[str, str]) -> None:
     ):
         raise RuntimeError("旧 Core 缺少正常关闭证据")
     controller = read_json(
-        Path(current["AKASHIC_WORKLOAD_RUNTIME_DIR"])
+        Path(current["AKASHIC_EXPERIMENT_ROOT"])
+        / "workload-controller"
         / "closed"
         / f"{ack['controllerId']}.json"
     )
@@ -236,6 +237,66 @@ def verify_closed(ack: dict[str, object], current: dict[str, str]) -> None:
             raise RuntimeError(f"旧服务未正常停止: {unit}: {state}")
 
 
+def _exec_target(path: Path, request: dict[str, Any]) -> None:
+    """准备目标产物后用其解释器替换当前 worker，保持同一 job 和 writer。"""
+    source = path.with_suffix(".source")
+    root = Path(request["root"])
+    origin = "https://github.com/kachofugetsu09/akashic-agent.git"
+    source.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", origin], cwd=source, check=True)
+    subprocess.run(
+        [
+            "git",
+            "fetch",
+            "--quiet",
+            "--depth=1",
+            "origin",
+            request["targetCommit"],
+        ],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "--quiet", "--detach", request["targetCommit"]],
+        cwd=source,
+        check=True,
+    )
+    target_cli = source / "scripts/akashic_release/cli.py"
+    subprocess.run(
+        [
+            sys.executable,
+            str(target_cli),
+            "install",
+            "--no-activate",
+            "--yes",
+            "--source-checkout",
+            str(source),
+            "--commit",
+            request["targetCommit"],
+            "--root",
+            str(root),
+            "--runtime-env",
+            request["runtimeEnv"],
+            "--mise",
+            request["mise"],
+        ],
+        check=True,
+    )
+    python = root / "bridge-venvs" / request["targetCommit"] / "bin/python"
+    os.execv(
+        str(python),
+        [
+            str(python),
+            str(target_cli),
+            "self-deploy-worker",
+            "--request",
+            str(path),
+            "--prepared",
+        ],
+    )
+
+
 def worker(args: argparse.Namespace) -> dict[str, object]:
     """保留任务错误，调用既有发布器；不合并 PR、不发送新模型消息。"""
     from scripts.akashic_release.cli import install
@@ -244,7 +305,8 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
     path = args.request.resolve(strict=True)
     with release_lock(path.with_suffix(".lock"), wait=True):
         record = read_json(path)
-        if record["status"] != "accepted":
+        expected_status = "running" if args.prepared else "accepted"
+        if record["status"] != expected_status:
             raise RuntimeError("任务未接纳或已执行，不自动重放")
         record["recordPath"] = str(path)
         record["status"] = "running"
@@ -261,21 +323,8 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
         if ready["bootId"] != request["stop"]["boot_id"]:
             raise RuntimeError("原 boot 已被替换，不停止新实例")
         origin = "https://github.com/kachofugetsu09/akashic-agent.git"
-        source.mkdir()
-        subprocess.run(["git", "init", "--quiet", str(source)], check=True)
-        subprocess.run(
-            ["git", "remote", "add", "origin", origin], cwd=source, check=True
-        )
-        subprocess.run(
-            ["git", "fetch", "--quiet", "--depth=1", "origin", request["targetCommit"]],
-            cwd=source,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "checkout", "--quiet", "--detach", request["targetCommit"]],
-            cwd=source,
-            check=True,
-        )
+        if not args.prepared:
+            _exec_target(path, request)
         result = install(
             argparse.Namespace(
                 root=root,
