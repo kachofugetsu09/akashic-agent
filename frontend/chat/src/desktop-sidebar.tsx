@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ConversationNavigation, ConversationSessionRow, type ConversationRowDrag, type ConversationSession } from "./conversation-navigation";
 import { PluginUiSlot } from "./plugin-ui-runtime";
+import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
 import { ProjectNavigation, ProjectNavigationRow, type ProjectSessionItem } from "./project-navigation";
 import { sessionLabel } from "./web-chat-message-data";
 import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
@@ -281,6 +282,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   const deleteHandler = onDeleteSession
     ? (session: ConversationSession) => onDeleteSession(session.id, session.title)
     : undefined;
+  const railActions = useShellRailActions();
 
   return (
     <aside ref={sidebarRef} className="chat-sidebar chat-sidebar--entry">
@@ -391,6 +393,16 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         ) : undefined}
       />
       </div>
+      {railActions.length ? <div className="chat-sidebar__footer">
+        {railActions.map((action) => (
+          <button key={action.id} type="button" className="chat-sidebar__action"
+            onClick={() => activateShellRailAction(action.id)}>
+            <span className="chat-sidebar__action-icon" aria-hidden="true"
+              dangerouslySetInnerHTML={{ __html: action.iconSvg }} />
+            <span>{action.label}</span>
+          </button>
+        ))}
+      </div> : null}
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
       {directoryProject && projects ? <ProjectDirectoryDialog project={directoryProject}
         onClose={() => setDirectoryProjectId("")} onChoose={(path) => projects.onBindDirectory(directoryProject.id, path)}

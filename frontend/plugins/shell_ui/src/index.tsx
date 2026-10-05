@@ -9,6 +9,7 @@ import type {
   WebMountView,
   WebUiDisposer,
 } from "@akashic/web-ui-v1";
+import type { ShellRailAction } from "@akashic/shell-ui-v1";
 import { cycleTheme, themes, useTheme } from "@akashic/web-ui-v1";
 
 type ShellPage = WebEntry & {
@@ -18,21 +19,47 @@ type ShellPage = WebEntry & {
   section?: string;
 };
 
+const RAIL_ACTIONS_MOUNT = "shell.rail-actions.v1";
+
+const SETTINGS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
+
+/** 对话框留在 Shell 组件内；底栏动作与快捷键经这个模块级入口打开它。 */
+const settingsLauncher = { open: () => {} };
+
 /** Register the ordinary Shell plugin as the only owner of the outer frame. */
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
-  return ctx.ui.inject("web.root.v1", (mount) => mount.register({
-    id: "shell",
-    children: [{ id: "shell.pages.v1", cardinality: "list" }],
-    render(host, view) {
-      const root = createRoot(host);
-      root.render(<Shell pages={view.child("shell.pages.v1")} />);
-      return () => root.unmount();
-    },
-  }));
+  const disposers = [
+    ctx.ui.inject("web.root.v1", (mount) => mount.register({
+      id: "shell",
+      children: [
+        { id: "shell.pages.v1", cardinality: "list" },
+        { id: RAIL_ACTIONS_MOUNT, cardinality: "list" },
+      ],
+      render(host, view) {
+        const root = createRoot(host);
+        root.render(<Shell
+          pages={view.child("shell.pages.v1")}
+          railActions={view.child(RAIL_ACTIONS_MOUNT)}
+        />);
+        return () => root.unmount();
+      },
+    })),
+    ctx.ui.inject(RAIL_ACTIONS_MOUNT, (mount) => mount.register({
+      id: "shell.settings",
+      order: 100,
+      label: "功能设置",
+      iconSvg: SETTINGS_ICON,
+      onActivate: () => settingsLauncher.open(),
+    })),
+  ];
+  return () => {
+    for (const dispose of disposers.reverse()) dispose();
+  };
 }
 
-function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
+function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMountView }): React.ReactElement {
   const entries = useMemo(() => checkPages(pages.entries), [pages.entries]);
+  const railActionEntries = useMemo(() => checkRailActions(railActions.entries), [railActions.entries]);
   const bandEntries = useMemo(() => entries.filter((entry) => entry.section !== "settings"), [entries]);
   const settingsEntries = useMemo(() => entries.filter((entry) => entry.section === "settings"), [entries]);
   const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0] ?? entries[0];
@@ -41,7 +68,6 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
   const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const settingsDialog = useRef<HTMLDialogElement>(null);
-  const settingsTrigger = useRef<HTMLButtonElement>(null);
   const bandTrack = useRef<HTMLDivElement>(null);
   const focusAfterNavigation = useRef(false);
 
@@ -90,20 +116,38 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
     if (!focusAfterNavigation.current) return;
     focusAfterNavigation.current = false;
     // 页面可见性已提交；弹窗不能在旧页面上猜测导航后的焦点。
-    const current = document.querySelector<HTMLButtonElement>('.product-band__track button[aria-current="page"]');
-    (current ?? settingsTrigger.current)?.focus();
+    document.querySelector<HTMLButtonElement>('.product-band__track button[aria-current="page"]')?.focus();
   }, [activeId]);
+
+  // 底栏动作入口与 Ctrl/Cmd+, 都打开同一个设置目录；触发按钮在页面 iframe 内，
+  // 宿主不直接管理它的焦点，对话框关闭后焦点回到触发侧是页面自己的职责。
+  useEffect(() => {
+    settingsLauncher.open = () => settingsDialog.current?.showModal();
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+        event.preventDefault();
+        const dialog = settingsDialog.current;
+        if (dialog?.open) dialog.close();
+        else dialog?.showModal();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      settingsLauncher.open = () => {};
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const disposers: WebUiDisposer[] = [];
     for (const entry of entries) {
       const target = pageHosts.current.get(entry.id);
-      if (target) disposers.push(pages.render(entry.id, target, { pages }));
+      if (target) disposers.push(pages.render(entry.id, target, { pages, railActions: railActionEntries }));
     }
     return () => {
       for (const dispose of disposers.reverse()) dispose();
     };
-  }, [entries, pages]);
+  }, [entries, pages, railActionEntries]);
 
   // 页面切换的进入感：150ms 淡入并上浮 4px。插件样式不得声明全局 @keyframes，
   // 用 WAAPI 表达；时长与曲线仍读 motion token，reduced-motion 下 token 归零即瞬时。
@@ -191,7 +235,6 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
         </div>
       </nav>
       <div className="product-band__footer">
-        <button ref={settingsTrigger} type="button" className="theme-cycle-button" onClick={() => settingsDialog.current?.showModal()}>功能设置</button>
         <dialog ref={settingsDialog} className="shell-settings-dialog" aria-label="功能设置">
           <header><h2>功能设置</h2><button type="button" onClick={() => settingsDialog.current?.close()} aria-label="关闭设置目录">关闭</button></header>
           <nav>{settingsEntries.map((entry) => <button key={entry.id} type="button" onClick={() => openPage(entry)}>
@@ -232,6 +275,24 @@ function checkPages(entries: readonly WebEntry[]): ShellPage[] {
     throw new Error("Shell 页面 route 不能重复");
   }
   return pages;
+}
+
+function checkRailActions(entries: readonly WebEntry[]): ShellRailAction[] {
+  const actions = entries.map((entry) => {
+    if (
+      typeof entry.label !== "string"
+      || typeof entry.iconSvg !== "string"
+      || !entry.iconSvg.startsWith("<svg")
+      || typeof entry.onActivate !== "function"
+    ) {
+      throw new Error(`Shell 底栏动作合同无效: ${entry.id}`);
+    }
+    return entry as ShellRailAction;
+  });
+  if (new Set(actions.map((entry) => entry.id)).size !== actions.length) {
+    throw new Error("Shell 底栏动作 id 不能重复");
+  }
+  return actions;
 }
 
 function pageFromLocation(entries: ShellPage[], fallback: ShellPage | undefined): ShellPage | undefined {
