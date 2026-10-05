@@ -106,21 +106,29 @@ class SkillTool:
 
 
 async def register_skills(ctx: Context) -> ToolRef:
-    """解析当前 generation 的固定资产，并让工具绑定独自保存恢复材料。"""
+    """解析当前 generation 的固定资产与本地目录，并让工具绑定独自保存恢复材料。"""
     archive_path = ctx.data_root / "skill-files"
     read_assets = ctx.require(INSTALLED_ASSETS)
     parser = SkillCatalogParser()
     cached_assets: tuple[InstalledAsset, ...] | None = None
+    cached_signature: tuple[tuple[object, ...], ...] | None = None
     cached_catalog: tuple[SkillRecord, ...] | None = None
 
     io_lock = asyncio.Lock()
 
     async def read_catalog(assets: tuple[InstalledAsset, ...]) -> tuple[SkillRecord, ...]:
         """目录已被调用方租约固定；解析与同步能力检查在文件线程完成。"""
-        nonlocal cached_assets, cached_catalog
-        if cached_catalog is None or assets != cached_assets:
-            cached_catalog = await run_file_io(lambda: parser.parse(assets))
+        nonlocal cached_assets, cached_signature, cached_catalog
+        workspace_dir = ctx.runtime.workspace
+        signature = await run_file_io(
+            lambda: parser.local_signature(workspace_dir=workspace_dir, user_dir=None)
+        )
+        if cached_catalog is None or assets != cached_assets or signature != cached_signature:
+            cached_catalog = await run_file_io(
+                lambda: parser.parse(assets, workspace_dir=workspace_dir)
+            )
             cached_assets = assets
+            cached_signature = signature
         return cached_catalog
 
     @ctx.entrypoint

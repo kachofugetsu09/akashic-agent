@@ -50,4 +50,4 @@
 
 - 发布内置技能：放入所属插件的制品，通过 `INSTALLED_ASSETS.register` 注册，并验证目录及 `load_skill` 正文；只放顶层目录不算交付。
 - 删除内置技能：移除条目，避免索引悬空。
-- 本索引仅用于源码导航；运行时实际可用性以 Skill provider 的目录和读取结果为准，不扫描 workspace 手工技能目录。
+- 本索引仅用于源码导航；运行时实际可用性以 Skill provider 的目录和读取结果为准。运行时另外按来源分层发现本地目录中的 Skill（见 [0091](../docs/decisions/0091-skill-sources-are-layered-providers.md)），本索引不列举这些目录。
