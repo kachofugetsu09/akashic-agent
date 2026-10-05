@@ -244,7 +244,8 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
     path = args.request.resolve(strict=True)
     with release_lock(path.with_suffix(".lock"), wait=True):
         record = read_json(path)
-        if record["status"] != "accepted":
+        expected_status = "running" if args.prepared else "accepted"
+        if record["status"] != expected_status:
             raise RuntimeError("任务未接纳或已执行，不自动重放")
         record["recordPath"] = str(path)
         record["status"] = "running"
@@ -261,21 +262,63 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
         if ready["bootId"] != request["stop"]["boot_id"]:
             raise RuntimeError("原 boot 已被替换，不停止新实例")
         origin = "https://github.com/kachofugetsu09/akashic-agent.git"
-        source.mkdir()
-        subprocess.run(["git", "init", "--quiet", str(source)], check=True)
-        subprocess.run(
-            ["git", "remote", "add", "origin", origin], cwd=source, check=True
-        )
-        subprocess.run(
-            ["git", "fetch", "--quiet", "--depth=1", "origin", request["targetCommit"]],
-            cwd=source,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "checkout", "--quiet", "--detach", request["targetCommit"]],
-            cwd=source,
-            check=True,
-        )
+        if not args.prepared:
+            # 准备由目标版本实现；exec 后仍是同一个 systemd job 和状态 writer。
+            source.mkdir()
+            subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", origin], cwd=source, check=True
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "fetch",
+                    "--quiet",
+                    "--depth=1",
+                    "origin",
+                    request["targetCommit"],
+                ],
+                cwd=source,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "checkout", "--quiet", "--detach", request["targetCommit"]],
+                cwd=source,
+                check=True,
+            )
+            target_cli = source / "scripts/akashic_release/cli.py"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(target_cli),
+                    "install",
+                    "--no-activate",
+                    "--yes",
+                    "--source-checkout",
+                    str(source),
+                    "--commit",
+                    request["targetCommit"],
+                    "--root",
+                    str(root),
+                    "--runtime-env",
+                    request["runtimeEnv"],
+                    "--mise",
+                    request["mise"],
+                ],
+                check=True,
+            )
+            python = root / "bridge-venvs" / request["targetCommit"] / "bin/python"
+            os.execv(
+                str(python),
+                [
+                    str(python),
+                    str(target_cli),
+                    "self-deploy-worker",
+                    "--request",
+                    str(path),
+                    "--prepared",
+                ],
+            )
         result = install(
             argparse.Namespace(
                 root=root,
