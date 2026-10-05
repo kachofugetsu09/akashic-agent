@@ -136,20 +136,23 @@ export class ComputerDriver extends EventEmitter {
     } else if (input.kind === "key") {
       if (!["keyDown", "keyUp"].includes(input.type) || typeof input.key !== "string"
           || typeof input.code !== "string" || input.key.length > 64 || input.code.length > 64
+          || !Number.isInteger(input.keyCode) || input.keyCode < 0 || input.keyCode > 255
           || !Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)
         throw new TypeError("Invalid key input");
       method = "Input.dispatchKeyEvent";
       commandParams = { type: input.type, key: input.key, code: input.code, modifiers: input.modifiers,
+        windowsVirtualKeyCode: input.keyCode,
         text: input.type === "keyDown" && input.key.length === 1 && !(input.modifiers & 6) ? input.key : "" };
     } else if (input.kind === "mouse") {
       if (!["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"].includes(input.type)
           || !["none", "left", "middle", "right"].includes(input.button)
+          || !Number.isInteger(input.buttons) || input.buttons < 0 || input.buttons > 7
           || ![input.x, input.y, input.deltaX, input.deltaY].every(Number.isFinite)
           || Math.abs(input.x) > 16384 || Math.abs(input.y) > 16384
           || Math.abs(input.deltaX) > 100000 || Math.abs(input.deltaY) > 100000)
         throw new TypeError("Invalid pointer input");
       method = "Input.dispatchMouseEvent";
-      commandParams = { type: input.type, x: input.x, y: input.y, button: input.button,
+      commandParams = { type: input.type, x: input.x, y: input.y, button: input.button, buttons: input.buttons,
         clickCount: input.type === "mouseMoved" || input.type === "mouseWheel" ? 0 : 1,
         deltaX: input.deltaX, deltaY: input.deltaY };
     } else throw new TypeError("Unknown browser input");
