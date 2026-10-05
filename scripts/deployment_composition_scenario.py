@@ -26,6 +26,7 @@ from scripts.install_plugin_distribution import (
 from agent.plugins.install import install_git_plugin
 from agent.migrations.runner import MigrationRunner
 from agent.plugins.manager import PluginManager
+from agent.plugin_composition.config_input import load_config
 from agent.plugins.manifest import (
     load_plugin_manifest,
     set_plugin_enabled,
@@ -582,8 +583,8 @@ step(upgrade)
                    config_path=config, receipt_path=receipt)
     assert "disabled@release" not in selected(work)
     assert selected(work)["outside@thirdparty"][0] == external_before
-    from agent.plugin_composition.archive import decode_config
-    assert decode_config(selected(work)["alpha@release"][1]["config"])["upgraded"] is True
+    from agent.plugin_composition.config_input import decode_config
+    assert load_config(work / "plugin-data/alpha-release")[0]["upgraded"] is True
     with sqlite3.connect(work / "migrations.sqlite3") as ledger:
         assert ledger.execute("SELECT COUNT(*) FROM scenario_alpha_done").fetchone() == (1,)
         assert ledger.execute("SELECT COUNT(*) FROM scenario_disabled_done").fetchone() == (0,)
@@ -591,7 +592,7 @@ step(upgrade)
     PluginSelection(work).path.write_bytes(expected_bytes)
     ensure_profile(migrated, migrated / "profiles/default.json", workspace=work, plugins_home=home,
                    config_path=config, receipt_path=receipt)
-    assert decode_config(selected(work)["alpha@release"][1]["config"])["upgraded"] is True
+    assert load_config(work / "plugin-data/alpha-release")[0]["upgraded"] is True
     # 正常 runtime 启动也只检查当前发行版，不解析外置 catalog。
     previous_distribution = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
     os.environ["AKASHIC_PLUGIN_DISTRIBUTION"] = str(migrated)

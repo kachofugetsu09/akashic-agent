@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import json
 import importlib.util
 import logging
 import os
@@ -53,7 +54,8 @@ from agent.plugins._operation import (
     observe_operation,
     run_operation,
 )
-from agent.plugin_composition.archive import PluginArchive, decode_config, encode_config
+from agent.plugin_composition.archive import PluginArchive
+from agent.plugin_composition.config_input import decode_config, encode_config
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
@@ -81,6 +83,7 @@ from agent.plugins.manifest import (
     load_plugin_manifest,
     plugins_root,
     validate_workspace_plugin_data_path,
+    workspace_plugin_data_dir,
 )
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
@@ -757,7 +760,7 @@ class PluginManager:
             runnable_items: list[PluginGeneration] = []
             for generation in generations:
                 if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
-                    self._publish_config_input(self._generation_input_ref(generation))
+                    save_config(generation.data_dir, generation.config_projection)
                 try:
                     await self._load_live_generation(generation)
                 except Exception:
@@ -1126,8 +1129,7 @@ class PluginManager:
         if previous_request is not None:
             if previous_request["plugin_id"] != plugin_id or previous_request["previous_input"] != expected_input:
                 raise ValueError("配置请求 ID 已被其他输入使用")
-            saved = self._archive.read_descriptor(cast(str, previous_request["input_ref"]))
-            if saved["config_revision"] != revision:
+            if previous_request["config_revision"] != revision:
                 raise ValueError("同一请求 ID 不允许修改配置")
             return self.read_config_update(plugin_id, request_id)
         try:
@@ -1143,9 +1145,10 @@ class PluginManager:
                 raise ValueError("凭据版本无效或不属于当前插件")
         # 2. 固定同一制品的新输入，不先改可见配置文件。
         record = dict(self._archive.read_descriptor(expected_input))
-        record.update(config=encode_config(config), config_revision=revision)
+        record.update(config_revision=revision)
         input_ref = self._archive.save_descriptor(record)
-        self._reload_journal.create_config_update(request_id, plugin_id, expected_input, input_ref)
+        self._reload_journal.create_config_update(request_id, plugin_id, expected_input, input_ref,
+                                                 revision, json.dumps(encode_config(config), ensure_ascii=False, allow_nan=False))
         self._start_operation(lambda: self._apply_config_update(request_id), background=True)
         return self.read_config_update(plugin_id, request_id)
 
@@ -1165,18 +1168,24 @@ class PluginManager:
         elif row["state"] == "active":
             row["state"] = "superseded" if not selected else "failed"
         row["selected"] = selected
+        row.pop("pending_config")
         return row
 
-    def _publish_config_input(self, input_ref: str) -> None:
-        record = self._archive.read_descriptor(input_ref)
-        config = decode_config(record["config"])
+    def _publish_config_update(self, request_id: str) -> None:
+        """发布已选请求的当前配置；临时正文只保留到文件耐久写入。"""
+        row = self._reload_journal.config_update(request_id)
+        if row["pending_config"] is None:
+            return
+        config = decode_config(json.loads(cast(str, row["pending_config"])))
         if not isinstance(config, dict):
-            raise ValueError("配置输入不是映射")
-        data_dir = self._workspace / cast(str, record["data_dir"])
-        validate_workspace_plugin_data_path(data_dir, self._workspace)
+            raise ValueError("配置请求不是映射")
+        plugin_id = cast(str, row["plugin_id"])
+        name, _, marketplace = plugin_id.partition("@")
+        data_dir = workspace_plugin_data_dir(self._workspace, name, marketplace or "builtin")
         _, revision = load_config(data_dir)
-        if revision != record["config_revision"]:
+        if revision != row["config_revision"]:
             save_config(data_dir, config)
+        self._reload_journal.clear_pending_config(request_id)
 
     async def _apply_config_update(self, request_id: str) -> dict[str, object]:
         """沿既有 selection CAS 与局部换代路径应用自身配置。"""
@@ -1191,6 +1200,11 @@ class PluginManager:
                 raise RuntimeError("运行图尚未建立")
             generation = self._selected_generations((cast(str, row["input_ref"]),), root,
                 workspace=self._workspace, sources={plugin_id: previous}, register_live=False)[plugin_id]
+            projection = decode_config(json.loads(cast(str, row["pending_config"])))
+            if not isinstance(projection, dict):
+                raise ValueError("配置请求不是映射")
+            generation.config_projection = projection
+            generation.config_revision = cast(str, row["config_revision"])
             await self._update_live_generation(generation, previous, expected_ref=self._selection.read(),
                                                config_request_id=request_id)
             self._reload_journal.finish_config_update(request_id, "active")
@@ -1207,10 +1221,12 @@ class PluginManager:
             request_id = cast(str, row["request_id"])
             input_ref = cast(str, row["input_ref"])
             if input_ref in components:
-                self._publish_config_input(input_ref)
+                self._publish_config_update(request_id)
                 self._reload_journal.finish_config_update(request_id, "selected")
-            elif row["state"] != "failed":
-                self._reload_journal.finish_config_update(request_id, "failed", "配置应用中断，正式选择未采用；请重新提交")
+            else:
+                self._reload_journal.clear_pending_config(request_id)
+                if row["state"] != "failed":
+                    self._reload_journal.finish_config_update(request_id, "failed", "配置应用中断，正式选择未采用；请重新提交")
 
     def _finish_recovered_config_updates(self) -> None:
         """配置投影已恢复且实际选中实例 ready 后，才结算原请求。"""
@@ -1694,7 +1710,7 @@ class PluginManager:
             operation.committed = selection_ref
             if config_request_id is not None:
                 self._reload_journal.finish_config_update(config_request_id, "selected")
-                self._publish_config_input(replacement_ref)
+                self._publish_config_update(config_request_id)
             if update_id is not None and accepted is not None and not accepted.done():
                 accepted.set_result(self.read_update(update_id))
             if not self._operation_can_continue():
@@ -2127,12 +2143,18 @@ class PluginManager:
             manifest = load_static_plugin_manifest(code_dir)
             if manifest.name != plugin_id.split("@", 1)[0]:
                 raise ValueError(f"已安装插件身份改变: {plugin_id}")
-            projection = decode_config(record["config"])
-            if not isinstance(projection, dict):
-                raise ValueError("插件配置必须是对象")
+            projection, config_revision = load_config(data_dir)
+            defaults = code_dir / "initial_config.json"
+            if not (data_dir / CONFIG_INPUT).exists() and defaults.exists():
+                if defaults.is_symlink():
+                    raise ValueError("初始配置不能是符号链接")
+                projection = json.loads(defaults.read_bytes())
+                if not isinstance(projection, dict):
+                    raise ValueError("初始配置必须是映射")
+                config_revision = hashlib.sha256(config_bytes(projection)).hexdigest()
             generation = PluginGeneration(
                 plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
-                source_revision=revision, config_revision=cast(str, record["config_revision"]),
+                source_revision=revision, config_revision=config_revision,
                 plugin_dir=code_dir if source is None else source.plugin_dir,
                 data_dir=data_dir, config_projection=cast(dict[str, object], projection),
                 instance=None, scope=scope,

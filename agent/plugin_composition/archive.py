@@ -9,7 +9,6 @@ import shutil
 import stat
 import tempfile
 from collections.abc import Mapping
-from datetime import date, datetime, time
 from pathlib import Path
 from typing import cast
 from utils.timing import measure
@@ -17,7 +16,6 @@ from agent.plugins.files import tree_entries, encode_tree, sync_directory
 
 from session.message import freeze_json
 from session.message_codec import json_value
-from agent.plugin_composition.channels import CredentialRef
 
 _CACHE_NAMES = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 
@@ -149,61 +147,3 @@ class PluginArchive:
         if not isinstance(value, dict):
             raise ValueError("插件归档 descriptor 必须是对象")
         return cast(Mapping[str, object], freeze_json(cast(dict[str, object], value)))
-
-
-def encode_config(value: object) -> object:
-    """保存 TOML 值与不含密钥的凭据引用，不借助 pickle 或可执行对象。"""
-    if isinstance(value, CredentialRef):
-        return ["credential", list(value.path)]
-    if isinstance(value, datetime):
-        return ["datetime", value.isoformat()]
-    if isinstance(value, date):
-        return ["date", value.isoformat()]
-    if isinstance(value, time):
-        return ["time", value.isoformat()]
-    if isinstance(value, Mapping):
-        mapping = cast(Mapping[str, object], value)
-        return ["map", {key: encode_config(item) for key, item in mapping.items()}]
-    if isinstance(value, (list, tuple)):
-        return [
-            "list",
-            [
-                encode_config(item)
-                for item in cast(list[object] | tuple[object, ...], value)
-            ],
-        ]
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    raise TypeError(f"插件归档不接受配置类型: {type(value).__name__}")
-
-
-def decode_config(value: object) -> object:
-    """按固定标签还原配置；配置字典和列表不会与类型标签碰撞。"""
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    if not isinstance(value, (tuple, list)):
-        raise ValueError("插件归档配置结构无效")
-    items = cast(list[object] | tuple[object, ...], value)
-    if len(items) != 2:
-        raise ValueError("插件归档配置结构无效")
-    kind, payload = items
-    if kind == "map" and isinstance(payload, Mapping):
-        return {
-            key: decode_config(item)
-            for key, item in cast(Mapping[str, object], payload).items()
-        }
-    if kind == "list" and isinstance(payload, (tuple, list)):
-        return [
-            decode_config(item)
-            for item in cast(list[object] | tuple[object, ...], payload)
-        ]
-    if kind == "credential" and isinstance(payload, (tuple, list)):
-        return CredentialRef(tuple(cast(list[str] | tuple[str, ...], payload)))
-    if isinstance(payload, str):
-        if kind == "date":
-            return date.fromisoformat(payload)
-        if kind == "datetime":
-            return datetime.fromisoformat(payload)
-        if kind == "time":
-            return time.fromisoformat(payload)
-    raise ValueError("插件归档配置标签无效")

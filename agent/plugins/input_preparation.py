@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from agent.plugin_composition.config_input import load_config, config_bytes, CONFIG_INPUT
-from agent.plugin_composition.archive import PluginArchive, encode_config
+from agent.plugin_composition.archive import PluginArchive
 from agent.plugins.manifest import (
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
@@ -110,7 +110,7 @@ def prepare_plugin_input(
     ref = archive.save_descriptor({
         "version": 5, "code": str(code_dir), "python_environments": environments,
         "plugin_id": plugin_id, "source_revision": revision,
-        "config_revision": config_revision, "config": encode_config(config),
+        "config_revision": config_revision,
         "source_type": mod["source_type"],
         **({"distribution_source": mod["distribution_source"]} if "distribution_source" in mod else {}),
         "data_dir": data_dir.resolve().relative_to(workspace.resolve()).as_posix(),
