@@ -237,6 +237,11 @@
   transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 .settings-provider-head[aria-expanded="true"] > .lucide-chevron-right { rotate: 90deg; }
+/* 展开时头部底部圆角清零：hover 底色与卡片本体不再把圆角压到编辑器分隔线上。 */
+.settings-provider-head[aria-expanded="true"] {
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+}
 
 .settings-provider-status {
   display: inline-flex;
@@ -718,7 +723,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .embedding-form h2,.embedding-form p { margin: 0; }
 .embedding-form label { display: grid; min-width: 0; gap: 8px; }
 .embedding-form input,.embedding-form select { min-width: 0; width: 100%; }
-.embedding-form input,.embedding-form select,.embedding-form button,.settings-add-embedding { font: inherit; min-height: 44px; padding: 10px 12px; border: 1px solid var(--md-sys-color-outline); border-radius: 8px; background: var(--md-sys-color-surface); color: inherit; }
+.embedding-form input,.embedding-form select,.embedding-form button { font: inherit; min-height: 44px; padding: 10px 12px; border: 1px solid var(--md-sys-color-outline); border-radius: 8px; background: var(--md-sys-color-surface); color: inherit; }
 .embedding-form footer { display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
 
 /* 短屏和大字下让标题随表单一起滚动，避免把正文压到可视区之外。 */
@@ -742,7 +747,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-dialog-actions { min-width: 0; }
   .settings-dialog-actions button,
   .settings-dialog-footer button { min-width: 0; height: auto; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
-  .settings-card-copy strong { white-space: normal; overflow-wrap: anywhere; }
+  .settings-card-copy strong { white-space: normal; overflow-wrap: break-word; }
   .settings-header p,
   .settings-dialog-description,
   .settings-model-discovery > p { font-size: 1rem; line-height: 1.5; }

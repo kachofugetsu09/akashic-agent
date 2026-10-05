@@ -16,6 +16,7 @@ type ShellPage = WebEntry & {
   iconSvg: string;
   section?: string;
   group?: string;
+  family?: string;
 };
 
 const RAIL_ACTIONS_MOUNT = "shell.rail-actions.v1";
@@ -25,10 +26,40 @@ const SETTINGS_GROUP_LABELS: Record<string, string> = { plugins: "插件" };
 const SETTINGS_GROUP_ICONS: Record<string, string> = {
   plugins: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 7V4a2 2 0 0 0-4 0v3"/><path d="M17 7h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-1"/><path d="M7 7H4a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1"/><path d="M14 21v-3a2 2 0 0 0-4 0v3"/><rect x="7" y="7" width="10" height="10" rx="2"/></svg>',
 };
+/** 同组内 ≥2 个分节声明同一 family 时折叠为一个组合页；family 标签由 Shell 拥有，插件只声明归属。 */
+const SETTINGS_FAMILY_LABELS: Record<string, string> = { telegram: "Telegram" };
 
 type SettingsNavItem =
   | { kind: "entry"; entry: ShellPage }
   | { kind: "group"; id: string; entries: ShellPage[] };
+
+type SettingsTab =
+  | { kind: "entry"; entry: ShellPage }
+  | { kind: "family"; id: string; entries: ShellPage[] };
+
+/** 组内分节折叠成 tab：≥2 个成员的 family 合成一个组合 tab，单成员 family 与普通分节一样独立成 tab。 */
+function buildSettingsTabs(entries: ShellPage[]): SettingsTab[] {
+  const familyCount = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.family) familyCount.set(entry.family, (familyCount.get(entry.family) ?? 0) + 1);
+  }
+  const tabs: SettingsTab[] = [];
+  const familyAt = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.family && (familyCount.get(entry.family) ?? 0) > 1) {
+      const at = familyAt.get(entry.family);
+      if (at === undefined) {
+        familyAt.set(entry.family, tabs.length);
+        tabs.push({ kind: "family", id: entry.family, entries: [entry] });
+      } else {
+        (tabs[at] as { kind: "family"; entries: ShellPage[] }).entries.push(entry);
+      }
+    } else {
+      tabs.push({ kind: "entry", entry });
+    }
+  }
+  return tabs;
+}
 
 const SETTINGS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
 
@@ -202,25 +233,64 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     else if (!settingsOpen && dialog.open) dialog.close();
   }, [settingsOpen]);
 
+  const currentSettingsEntry = settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
+  const currentSettingsGroup = currentSettingsEntry?.group
+    ? settingsNav.find((item): item is Extract<SettingsNavItem, { kind: "group" }> => item.kind === "group" && item.id === currentSettingsEntry.group)
+    : undefined;
+  const settingsTabs = useMemo(() => buildSettingsTabs(currentSettingsGroup?.entries ?? []), [currentSettingsGroup]);
+  const activeSettingsTab = settingsTabs.find((tab) =>
+    tab.kind === "entry" ? tab.entry.id === currentSettingsEntry?.id : tab.entries.some((entry) => entry.id === currentSettingsEntry?.id));
+  // 组合页渲染成员列表：family tab 渲染全部成员，普通 tab 只渲染当前分节。
+  const settingsMembers = useMemo(
+    () => activeSettingsTab?.kind === "family" ? activeSettingsTab.entries : currentSettingsEntry ? [currentSettingsEntry] : [],
+    [activeSettingsTab, currentSettingsEntry],
+  );
+
   // 分节页面就地渲染进对话框；关闭或换节即销毁，同一页面不会同时挂载在两处。
+  // family 组合页把成员表单挂进同一滚动页，成员间切换不重挂载，各自草稿与守卫独立。
   // 每个分节挂进独立 wrapper，dispose 延迟到 microtask：layout cleanup 阶段 React 无法
   // 同步 flush 子 root 的卸载提交，同步 dispose 会与渲染器自身的 replaceChildren 竞争而崩。
   useLayoutEffect(() => {
     if (!settingsOpen) return;
     const container = settingsContent.current;
-    const entry = settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
-    if (!container || !entry) return;
-    const host = document.createElement("div");
-    host.className = "shell-settings-entry";
-    container.replaceChildren(host);
-    const dispose = pages.render(entry.id, host, { pages, railActions: railActionEntries, embedded: true });
+    if (!container || settingsMembers.length === 0) return;
+    const mounts = settingsMembers.map((entry) => {
+      const wrapper = document.createElement(settingsMembers.length > 1 ? "section" : "div");
+      wrapper.className = settingsMembers.length > 1 ? "shell-settings-family-member" : "shell-settings-entry";
+      wrapper.dataset.settingsMember = entry.id;
+      if (settingsMembers.length > 1) {
+        const heading = document.createElement("h3");
+        heading.className = "shell-settings-member-title";
+        heading.textContent = entry.label;
+        wrapper.append(heading);
+      }
+      const host = document.createElement("div");
+      wrapper.append(host);
+      return { entry, wrapper, host };
+    });
+    container.replaceChildren(...mounts.map((item) => item.wrapper));
+    const disposers = mounts.map((item) => pages.render(item.entry.id, item.host, { pages, railActions: railActionEntries, embedded: true }));
     return () => {
       queueMicrotask(() => {
-        dispose();
-        host.remove();
+        for (const dispose of disposers) dispose();
+        for (const item of mounts) item.wrapper.remove();
       });
     };
-  }, [settingsOpen, settingsEntryId, settingsEntries, pages, railActionEntries]);
+  }, [settingsOpen, settingsMembers, pages, railActionEntries]);
+
+  // 组合页内深链（如 #telegram_sender-settings）滚动到对应成员；单成员页天然在顶部。
+  // 必须等 showModal 的被动 effect 之后执行：对话框未 open 时没有可滚动的布局。
+  // 成员表单异步加载后才撑开高度，首帧滚动会被钳制；内容稳定后再对齐一次。
+  useEffect(() => {
+    if (!settingsOpen || settingsMembers.length < 2) return;
+    const scroll = () => {
+      const target = settingsContent.current?.querySelector(`[data-settings-member="${CSS.escape(settingsEntryId)}"]`);
+      target?.scrollIntoView({ block: "start" });
+    };
+    scroll();
+    const timer = window.setTimeout(scroll, 800);
+    return () => window.clearTimeout(timer);
+  }, [settingsOpen, settingsEntryId, settingsMembers]);
 
   useLayoutEffect(() => {
     const disposers: WebUiDisposer[] = [];
@@ -289,10 +359,16 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     buttons[next].focus();
   };
 
-  const currentSettingsEntry = settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
-  const currentSettingsGroup = currentSettingsEntry?.group
-    ? settingsNav.find((item): item is Extract<SettingsNavItem, { kind: "group" }> => item.kind === "group" && item.id === currentSettingsEntry.group)
-    : undefined;
+  // 设置组内 tab 条与顶栏同一套方向键漫游；tab 只是导航钮，不持有分节状态。
+  const onTabsKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
+    const current = buttons.indexOf(event.target as HTMLButtonElement);
+    if (current < 0) return;
+    event.preventDefault();
+    const next = (current + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+  };
 
   return <div className="unified-shell">
     {withdrawn && <p role="status" className="config-hint">原页面已撤回或暂不可用，已打开当前可用页面。可以从功能设置查看已安装功能。</p>}
@@ -363,15 +439,24 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
         <header>
           <button type="button" onClick={closeSettings} aria-label="关闭设置">关闭</button>
         </header>
-        {currentSettingsGroup && currentSettingsGroup.entries.length > 1 && (
-          <div className="shell-settings-tabs" role="tablist" aria-label={SETTINGS_GROUP_LABELS[currentSettingsGroup.id] ?? currentSettingsGroup.id}>
-            {currentSettingsGroup.entries.map((entry) => <button
-              key={entry.id}
-              type="button"
-              role="tab"
-              aria-selected={entry.id === currentSettingsEntry?.id}
-              onClick={() => openSettings(entry)}
-            >{entry.label}</button>)}
+        {settingsTabs.length > 1 && currentSettingsGroup && (
+          <div className="shell-settings-tabs" role="group" aria-label={SETTINGS_GROUP_LABELS[currentSettingsGroup.id] ?? currentSettingsGroup.id} onKeyDown={onTabsKeyDown}>
+            {settingsTabs.map((tab) => {
+              if (tab.kind === "entry") {
+                return <button
+                  key={tab.entry.id}
+                  type="button"
+                  aria-current={tab.entry.id === currentSettingsEntry?.id ? "true" : undefined}
+                  onClick={() => openSettings(tab.entry)}
+                >{tab.entry.label}</button>;
+              }
+              return <button
+                key={`family:${tab.id}`}
+                type="button"
+                aria-current={tab.entries.some((entry) => entry.id === currentSettingsEntry?.id) ? "true" : undefined}
+                onClick={() => openSettings(tab.entries[0])}
+              >{SETTINGS_FAMILY_LABELS[tab.id] ?? tab.id}</button>;
+            })}
           </div>
         )}
         <div ref={settingsContent} className="shell-settings-page" />
@@ -398,6 +483,7 @@ function checkPages(entries: readonly WebEntry[]): ShellPage[] {
       || typeof entry.route !== "string"
       || typeof entry.iconSvg !== "string"
       || !entry.iconSvg.startsWith("<svg")
+      || (entry.family !== undefined && typeof entry.family !== "string")
     ) {
       throw new Error(`Shell 页面合同无效: ${entry.id}`);
     }
