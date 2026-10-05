@@ -224,6 +224,8 @@ def create_web_shell_server(
         port=port,
         log_level="warning",
         access_log=False,
+        # 流式代理没有读取期限；停止时不能让旧浏览器请求无限阻止 Core 关闭。
+        timeout_graceful_shutdown=10,
     )
     return SettingsServer(config)
 
@@ -290,6 +292,10 @@ async def _proxy_http(
     except ClientDisconnect:
         await client.aclose()
         return Response(status_code=499)
+    except asyncio.CancelledError:
+        # 停止可能发生在 upstream 响应头之前，此时还没有 Response owner 收尾。
+        await client.aclose()
+        raise
     except httpx.HTTPError:
         await client.aclose()
         return _runtime_unavailable()
