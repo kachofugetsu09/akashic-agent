@@ -45,10 +45,12 @@ export class ComputerDisplay extends EventTarget {
     private readonly host: HTMLElement,
     private readonly ctx: WebHostContextV1,
     private readonly handlers: InputHandlers,
+    private readonly control = "",
   ) {
     super();
     this.frame.className = "computer-stream";
     this.frame.title = "Computer 远程桌面";
+    this.frame.style.pointerEvents = this.control ? "auto" : "none";
     this.frame.allow = "clipboard-read; clipboard-write; fullscreen";
     this.frame.addEventListener("load", () => this.watch());
     // 获取脚本、iframe 启动和首帧共用一个期限，避免卡在 load 事件之前。
@@ -95,7 +97,9 @@ export class ComputerDisplay extends EventTarget {
     if (!response.ok) throw new Error(`Computer 显示客户端不可用（${response.status}）`);
     const source = await response.text();
     if (this.closed) return;
-    const socket = this.ctx.http.webSocketUrl("/api/dashboard/computer/stream");
+    const socketUrl = new URL(this.ctx.http.webSocketUrl("/api/dashboard/computer/stream"));
+    if (this.control) socketUrl.searchParams.set("control", this.control);
+    const socket = socketUrl.href;
     // srcdoc 的 location.origin 是 "null"；客户端消息使用真实的窗口 origin。
     const moduleUrl = this.blob(source.replaceAll("window.location.origin", "window.origin"), "text/javascript");
     const settingsUrl = `${location.origin}/api/dashboard/computer/stream`;
@@ -233,11 +237,12 @@ export class ComputerDisplay extends EventTarget {
   }
 
   sendKey(keysym: number, code: string, down: boolean) {
-    this.stream?.webrtcInput?._sendKeyEvent(keysym, code, down);
+    if (this.control) this.stream?.webrtcInput?._sendKeyEvent(keysym, code, down);
   }
 
   /** 回执到达后才允许发送粘贴按键，断线或超时明确失败。 */
   clipboardPasteFrom(text: string): Promise<void> {
+    if (!this.control) return Promise.reject(new Error("请先接管操作"));
     if (!this.connected || this.closed) return Promise.reject(new Error("Computer 尚未连接"));
     const requestId = ++this.clipboardId;
     return new Promise((resolve, reject) => {
