@@ -50,6 +50,7 @@ export class ComputerDisplay extends EventTarget {
     super();
     this.frame.className = "computer-stream";
     this.frame.title = "Computer 远程桌面";
+    this.frame.tabIndex = this.control ? 0 : -1;
     this.frame.style.pointerEvents = this.control ? "auto" : "none";
     this.frame.allow = "clipboard-read; clipboard-write; fullscreen";
     this.frame.addEventListener("load", () => this.watch());

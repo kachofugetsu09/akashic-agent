@@ -91,6 +91,7 @@ export class BrowserDisplay extends EventTarget {
     const button = event.type === "wheel" || event.type === "pointermove" ? "none"
       : ["left", "middle", "right"][event.button];
     void this.send({ kind: "mouse", type, x, y, button,
+      buttons: event.buttons,
       deltaX: event instanceof WheelEvent ? event.deltaX : 0,
       deltaY: event instanceof WheelEvent ? event.deltaY : 0 }).catch(error => this.fail(String(error)));
   }
@@ -101,7 +102,7 @@ export class BrowserDisplay extends EventTarget {
     const modifiers = (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0)
       | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
     void this.send({ kind: "key", type: event.type === "keydown" ? "keyDown" : "keyUp",
-      key: event.key, code: event.code, modifiers }).catch(error => this.fail(String(error)));
+      key: event.key, code: event.code, modifiers, keyCode: event.keyCode }).catch(error => this.fail(String(error)));
   }
 
   clipboardPasteFrom(text: string) { return this.send({ kind: "text", text }); }

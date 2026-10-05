@@ -9,7 +9,7 @@
 .computer-view {
   position: relative;
   display: grid;
-  grid-template-rows: 40px minmax(0, 1fr);
+  grid-template-rows: auto 44px minmax(0, 1fr);
   color: var(--ak-ink-primary);
   background: rgb(18 18 18);
 }
@@ -312,4 +312,45 @@
 .computer-agent-cursor[hidden],
 .computer-cursor-notice[hidden] {
   display: none;
+}
+
+.computer-target-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 4px;
+  background: var(--ak-paper-sheet);
+  border-bottom: 1px solid var(--ak-rule-default);
+}
+.computer-target-tabs button {
+  min-height: 44px;
+  max-width: 15rem;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.computer-view button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 6px;
+  padding-inline: 8px;
+  cursor: pointer;
+}
+.computer-view button:disabled { opacity: .5; cursor: default; }
+.computer-target-tabs [aria-selected="true"] {
+  background: var(--ak-paper-raised);
+  border-color: var(--ak-rule-strong);
+}
+.computer-view button:focus-visible { outline: 2px solid var(--ak-rule-focus); }
+.computer-browser-screen { width: 100%; height: 100%; object-fit: contain; outline: 0; }
+.computer-toolbar { gap: 4px; }
+.computer-actions button { min-height: 40px; }
+
+@media (max-width: 68rem) {
+  .computer-actions button { min-height: 44px; }
+  .computer-toolbar { min-height: 88px; flex-wrap: wrap; }
+  .computer-view { grid-template-rows: auto auto minmax(0, 1fr); }
 }
