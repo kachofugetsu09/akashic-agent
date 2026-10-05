@@ -31,13 +31,21 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
     id: "onboarding", label: "初始配置", route: "onboarding", iconSvg: settingsIcon, section: "settings", order: -10,
     render(host, _view, props) {
       const pages = (props as {pages: WebMountView}).pages;
-      const root = createRoot(host); root.render(<Onboarding ctx={ctx} pages={pages} />);
-      return () => root.unmount();
+      // 页面隐藏时首跑邀请仍需显示；独立容器复用本 entry 的样式归属。
+      const invitationHost = document.createElement("div");
+      const releaseStyle = pages.style("onboarding", invitationHost);
+      document.body.appendChild(invitationHost);
+      const root = createRoot(host); root.render(<Onboarding ctx={ctx} pages={pages} invitationHost={invitationHost} />);
+      return () => {
+        root.unmount();
+        releaseStyle();
+        invitationHost.remove();
+      };
     },
   }));
 }
 
-function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) {
+function Onboarding({ctx, pages, invitationHost}: {ctx: WebHostContextV1; pages: WebMountView; invitationHost: HTMLElement}) {
   const [steps, setSteps] = useState<Step[]>([]);
   const [states, setStates] = useState<Record<string, StepStatus>>({});
   const [selected, setSelected] = useState(() => sessionStorage.getItem("onboarding-page") ?? "");
@@ -205,6 +213,6 @@ function Onboarding({ctx, pages}: {ctx: WebHostContextV1; pages: WebMountView}) 
         void refresh(true).finally(() => { confirmRead.current = false; if (alive.current) { setCheckingRemoval(false); setLeave(null); } });
       } else { setLeave(null); markDirty(false); pending.go(); }
     }} cancel={() => setLeave(null)}>{checkingRemoval ? "正在核对当前安装组合，请稍等。原草稿保留，核对完成前不能继续编辑；读取失败后可继续填写。" : "本页尚有未保存的修改。离开不会改变已保存的配置。"}</Confirm>}
-    {createPortal(<dialog ref={invitation} className="config-dialog onboarding-invite" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, document.body)}
+    {createPortal(<dialog ref={invitation} className="config-dialog onboarding-invite" aria-labelledby="onboarding-welcome"><h2 id="onboarding-welcome">欢迎使用 Akashic</h2><p>先连接模型，再选择渠道、情景记忆和主动联系。每一项由你决定是否开启。</p><footer><button type="button" onClick={() => invitation.current?.close()}>稍后再说</button><button autoFocus className="config-primary" type="button" onClick={() => { invitation.current?.close(); window.location.hash = "onboarding"; }}>开始配置</button></footer></dialog>, invitationHost)}
   </main>;
 }
