@@ -5,7 +5,6 @@ import asyncio
 import argparse
 import json
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 import shutil
 import sqlite3
@@ -46,21 +45,19 @@ DRIVER = '''        async def complete(self, request):
                 return LLMResponse(None, [ToolCall("long", "write_evidence", {})])
             if step == 2:
                 assert LONG in contents and "short result" in contents
+                message_id, part_index = next(ref for ref in request.content_refs
+                                              if ref[0].startswith("tool-result:") and ref[1] == 0)
+                self.reference = {"message_id": message_id, "part_index": part_index}
                 return LLMResponse(None, [ToolCall("short-1", "write_evidence", {"short": True})])
             if step == 3:
-                assert LONG not in contents
-                folded = json.loads(contents[0])
-                self.reference = folded["read_content"]
-                self.placeholder = contents[0]
+                assert LONG in contents
+                # 模拟旧会话已有的回读参数；新结果无需回读才能继续查看。
                 return LLMResponse(None, [ToolCall("read-full", "read_content", self.reference)])
             if step == 4:
-                assert contents[0] == self.placeholder and contents[-1] == LONG
+                assert contents[0] == LONG and contents[-1] == LONG
                 return LLMResponse(None, [ToolCall("short-2", "write_evidence", {"short": True})])
             if step == 5:
-                assert LONG not in contents and contents[0] == self.placeholder
-                folded_reads = [json.loads(text) for text in contents if text.startswith('{"status":')]
-                assert len(folded_reads) == 2
-                assert folded_reads[0]["read_content"] == folded_reads[1]["read_content"]
+                assert contents.count(LONG) == 2
                 return LLMResponse(None, [ToolCall("read-range", "read_content", {**self.reference,"start":2,"end":27})])
             assert step == 6 and contents[-1] == LONG[2:27]
             return LLMResponse("finished")
@@ -153,12 +150,12 @@ async def check(directory: Path) -> dict[str, object]:
             return MessageProjection(model, source=original.source, render_content=lambda p: render_content(p, artifacts={}),
                                      tool_name=lambda _: 'fixture-tool', read_call=store.read_call,
                                      check_summary=lambda _: None,
-                                     prepare_content=prepare or partial(prepare_view, fold_after_chars=8192),
+                                     prepare_content=prepare or prepare_view,
                                      tool_names=tools)
         restored = projection().render(rows, after_seq=-1)
         restored_text = [block.get('text') for row in restored.messages for block in row.get('content', ())]
-        assert LONG not in restored_text and LONG[2:27] in restored_text
-        # 无回读工具时不折叠，原始和回读内容都能完整展开。
+        assert restored_text.count(LONG) == 2 and LONG[2:27] in restored_text
+        # 无回读工具时，旧回读内容也必须完整展开。
         unfolded = projection(tools=frozenset()).render(rows, after_seq=-1)
         assert any(block.get('text') == LONG for row in unfolded.messages for block in row.get('content', ()))
         # 首次请求之后尚无成功 Output：多次估算/渲染不会抢先折叠。
@@ -192,8 +189,8 @@ async def check(directory: Path) -> dict[str, object]:
         log.close()
         store.close()
     return {'requests':len(requests), 'messages':len(saved_rows), 'original_characters':len(LONG),
-            'checks':['renamed installed plugin', 'first full exposure', 'stable fold', 'full readback',
-                      'readback folds', 'range readback', 'no reference chains', 'session scope',
+            'checks':['renamed installed plugin', 'first full exposure', 'full text after successful outputs', 'full readback',
+                      'readback stays visible', 'range readback', 'no reference chains', 'session scope',
                       'invalid range', 'request freeze', 'disk reopen', 'no tool no fold',
                       'render is not exposure', 'summary boundary', 'unrelated content view', 'removed view resets opaque',
                       'original rows unchanged', 'external tool not rerun']}
@@ -227,7 +224,7 @@ async def check_failure(directory: Path) -> None:
                 model, source=original.source, render_content=lambda p: render_content(p, artifacts={}),
                 tool_name=lambda _: 'write_evidence', read_call=root.context.require(MODEL_CALLS),
                 check_summary=lambda _: None,
-                prepare_content=partial(prepare_view, fold_after_chars=8192), tool_names=frozenset({'read_content'}))
+                prepare_content=prepare_view, tool_names=frozenset({'read_content'}))
             request = projection.render(rows, after_seq=-1)
             assert (original.message_id, 0) in request.content_refs
             assert any(block.get('text') == LONG for row in request.messages for block in row.get('content', ()))
