@@ -85,6 +85,23 @@ async def wait_reply(client: AsyncAkashic, session: str, message_id: str) -> dic
         await subscription.close()
 
 
+async def wait_job(request_path: Path, expected: dict[str, object]) -> dict:
+    """外部观察者等待真实任务终态，同时持续检查无关运行对象。"""
+    deadline = time.monotonic() + 1800
+    last_status = None
+    while True:
+        record = json.loads(request_path.read_text())
+        if record["status"] != last_status:
+            print("JOB", record["status"], flush=True)
+            last_status = record["status"]
+        assert read_sentinels() == expected, "更新影响了无关运行对象"
+        if record["status"] in {"failed", "active"}:
+            return record
+        if time.monotonic() >= deadline:
+            raise TimeoutError("宿主更新未在期限内完成")
+        await asyncio.sleep(0.5)
+
+
 async def verify(args: argparse.Namespace) -> None:
     """发起真实宿主部署，比较最终消息、运行身份和无关服务。"""
     environment = read_environment(args.runtime_env)
@@ -127,19 +144,7 @@ async def verify(args: argparse.Namespace) -> None:
         print("ACCEPTED", accepted, flush=True)
 
         # 2. 只由外部观察者等待；Agent 没有追加 Shell 或 load_tools。
-        deadline = time.monotonic() + 1800
-        last_status = None
-        while True:
-            record = json.loads(request_path.read_text())
-            if record["status"] != last_status:
-                print("JOB", record["status"], flush=True)
-                last_status = record["status"]
-            assert read_sentinels() == before_sentinels, "更新影响了无关运行对象"
-            if record["status"] in {"failed", "active"}:
-                break
-            if time.monotonic() >= deadline:
-                raise TimeoutError("宿主更新未在期限内完成")
-            await asyncio.sleep(0.5)
+        record = await wait_job(request_path, before_sentinels)
         (args.evidence / "job.json").write_text(
             json.dumps(record, ensure_ascii=False, indent=2)
         )
