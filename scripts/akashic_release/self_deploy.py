@@ -25,6 +25,11 @@ def _request_path(root: Path, identity: str) -> Path:
     return root / "run/self-deploy" / f"{identity}.json"
 
 
+def _user_environment() -> dict[str, str]:
+    # Host Bridge 是系统 service；不能依赖桌面登录注入用户 bus 路径。
+    return {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
+
+
 def submit(args: argparse.Namespace) -> dict[str, object]:
     """持久接纳原调用，并确认独立 worker 的 exec；不等待更新。"""
     from bootstrap.runtime_stop import StopParams
@@ -83,6 +88,9 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
                     "--property=KillMode=control-group",
                     "--property=TimeoutStartSec=infinity",
                     f"--working-directory={Path(__file__).resolve().parents[2]}",
+                    request["mise"],
+                    "exec",
+                    "--",
                     sys.executable,
                     "-m",
                     "scripts.akashic_release.cli",
@@ -93,6 +101,7 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
                 check=True,
                 capture_output=True,
                 text=True,
+                env=_user_environment(),
             )
         except Exception as error:
             detail = (
@@ -310,5 +319,6 @@ def status(args: argparse.Namespace) -> dict[str, object]:
             "ExecMainStatus",
         ],
         text=True,
+        env=_user_environment(),
     ).strip()
     return record
