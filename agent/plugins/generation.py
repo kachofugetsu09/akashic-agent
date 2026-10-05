@@ -16,6 +16,7 @@ class PluginGeneration:
     generation_id: str
     module_path: str
     source_revision: str
+    runtime_revision: str
     config_revision: str
     plugin_dir: Path
     data_dir: Path

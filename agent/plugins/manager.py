@@ -1602,11 +1602,9 @@ class PluginManager:
                 and active.config_revision == config_revision
                 and (
                     active.source_revision == revision
-                    # 完整摘要保留来源证据；运行变化只比较代码，不改写旧归档。
-                    or await run_file_io(lambda: (
-                        _source_revision(active.code_dir, runtime_only=True)
-                        == _source_revision(Path(mod["plugin_root"]), runtime_only=True)
-                    ))
+                    # 安装路径可原位变化；与加载时的摘要比较，不能将同一路径重读两遍。
+                    or active.runtime_revision == await run_file_io(lambda:
+                        _source_revision(Path(mod["plugin_root"]), runtime_only=True))
                 )
             )
             if same_input and not had_source_failure:
@@ -2082,6 +2080,7 @@ class PluginManager:
         source = PluginGeneration(
             plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
             source_revision=prepared.source_revision, config_revision=prepared.config_revision,
+            runtime_revision=prepared.runtime_revision,
             plugin_dir=prepared.plugin_dir, data_dir=prepared.data_dir, instance=None, scope=scope,
             config_projection=prepared.config, input_ref=prepared.input_ref,
             static_manifest=prepared.static_manifest,
@@ -2114,7 +2113,7 @@ class PluginManager:
         for index, (ref, record) in enumerate(zip(components, records, strict=True)):
             code_dir = Path(cast(str, record["code"])).resolve(strict=True)
             is_distribution_input(record, code_dir)
-            revision = cast(str, record["source_revision"])
+            revision = _source_revision(code_dir)
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id in generations:
                 raise ValueError(f"选择重复包含插件: {plugin_id}")
@@ -2133,6 +2132,7 @@ class PluginManager:
             generation = PluginGeneration(
                 plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
                 source_revision=revision, config_revision=cast(str, record["config_revision"]),
+                runtime_revision=_source_revision(code_dir, runtime_only=True),
                 plugin_dir=code_dir if source is None else source.plugin_dir,
                 data_dir=data_dir, config_projection=cast(dict[str, object], projection),
                 instance=None, scope=scope,
