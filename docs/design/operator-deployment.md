@@ -1,7 +1,7 @@
 # 部署操作手册
 
 状态：实现已完成，本地验证通过。下文验证记录来自部署前；正式部署以目标机 release/active 回执为准。
-依据：[0092](../decisions/0092-plugin-runtime-uses-installed-files.md)；安装归属沿用 [0082](../decisions/0082-distribution-owned-plugin-composition.md)；备份与失败恢复沿用 [0074](../decisions/0074-deployment-policy-belongs-to-operator.md)。
+依据：[0094](../decisions/0094-plugin-runtime-uses-installed-files.md)；安装归属沿用 [0082](../decisions/0082-distribution-owned-plugin-composition.md)；备份与失败恢复沿用 [0074](../decisions/0074-deployment-policy-belongs-to-operator.md)。
 
 ## 职责与主流程
 
