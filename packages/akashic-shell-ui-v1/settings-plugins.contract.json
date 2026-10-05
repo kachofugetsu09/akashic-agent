@@ -1,0 +1,15 @@
+{
+  "contract": "shell.settings-plugins.v1",
+  "entry": {
+    "required": ["id", "label", "route"],
+    "optional": ["order", "family", "familyLabel", "children"],
+    "render": {
+      "arguments": ["host", "view", "props"],
+      "returns": "dispose"
+    },
+    "family": "≥2 个成员声明同一 family 时折叠为一个组合页；familyLabel 由成员自带且同一 family 必须一致"
+  },
+  "props": {
+    "required": ["pages", "railActions", "embedded"]
+  }
+}
