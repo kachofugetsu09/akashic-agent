@@ -53,12 +53,9 @@ def wait_for_core_health(container_name: str, timeout_sec: float) -> None:
                 raise RuntimeError(
                     f"Docker inspect 返回非法状态: {result.stdout.strip()!r}"
                 ) from error
-            status = (
-                "starting"
-                if health_status == "missing"
-                and container_status in {"created", "restarting"}
-                else health_status
-            )
+            # 保留的旧容器可能还未被 Compose 启动，旧 health 不能作为新 boot 证据。
+            status = (health_status if container_status == "running"
+                      else f"waiting_for_start({container_status},{health_status})")
         elif "No such object" in result.stderr or "No such container" in result.stderr:
             status = "starting"
         else:
