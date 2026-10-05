@@ -1,0 +1,27 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script type="importmap">{"imports":{"@akashic/web-ui-v1":"/theme.js"}}</script>
+<link rel="stylesheet" href="/modules/conversation_ui/web_module.css">
+<link rel="stylesheet" href="/modules/computer/web_module.css">
+<style>
+:root { --ak-paper-canvas:#f7f5ee; --ak-paper-sheet:#fffdf7; --ak-paper-raised:#eeece5;
+--ak-paper-editing:#fffdf7; --ak-ink-primary:#292923; --ak-ink-secondary:#68665e;
+--ak-rule-default:#d4d1c6; --ak-rule-subtle:#e2dfd5; --ak-rule-strong:#88867e; --ak-rule-focus:#6b7a62; }
+body { margin:0; height:100dvh; font:14px system-ui; } #host {height:100%;}
+</style><div id="host"></div>
+<script type="module">
+import { activate as computer } from '/modules/computer/web_module.js';
+import { activate as conversation } from '/modules/conversation_ui/web_module.js';
+let entry, page;
+const ctx = { http: {
+  request: (path, options) => fetch(path, options),
+  webSocketUrl: path => location.origin.replace(/^http/, 'ws') + path,
+}, ui: { inject: (point, mount) => mount({ register: value => {
+  if (point === 'conversation.tools.v1') entry = value; else page = value;
+  return () => {};
+} }) } };
+computer(ctx); conversation(ctx);
+page.render(document.querySelector('#host'), {child: () => ({ entries:[entry],
+  render: (_id, host, view) => entry.render(host, {}, view), })});
+window.e2eReady = true;
+</script></html>

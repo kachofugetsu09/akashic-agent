@@ -26,7 +26,6 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
     """Expose the exact generation's private Computer endpoint to its web tab."""
 
     gateway = context.workload_url("computer", "gateway")
-    display = _websocket_url(context.workload_url("computer", "display"))
     stream_http = context.workload_url("computer", "stream")
     stream = _websocket_url(stream_http).rstrip("/") + "/api/websockets"
     client = httpx.Client(base_url=gateway, timeout=125.0)
@@ -48,6 +47,11 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
     @app.get("/api/dashboard/computer/activity")
     def activity() -> Response:
         result = forward("GET", "/activity")
+        return Response(result.content, media_type="application/json")
+
+    @app.get("/api/dashboard/computer/targets")
+    def targets() -> Response:
+        result = forward("GET", "/targets")
         return Response(result.content, media_type="application/json")
 
     @app.post("/api/dashboard/computer/wake")
@@ -111,10 +115,21 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             if socket.client_state is WebSocketState.CONNECTED:
                 await socket.close(code=1013, reason="Computer cursor is unavailable")
 
+    @app.websocket("/api/dashboard/computer/browser-stream")
     @app.websocket("/api/dashboard/computer/stream")
-    @app.websocket("/api/dashboard/computer/display")
     async def computer_display(socket: WebSocket) -> None:
         """把当前 generation 的浏览器连接转发到私有显示服务。"""
+
+        browser_view = socket.url.path.endswith("/browser-stream")
+        target = socket.query_params.get("target", "") if browser_view else "desktop"
+        control_id = socket.query_params.get("control", "")
+        if control_id and (len(control_id) > 128 or not control_id.isascii()):
+            await socket.close(code=1008, reason="Invalid control identity")
+            return
+        reader = httpx.AsyncClient(base_url=gateway, timeout=40.0)
+        async def control_request(action: str) -> None:
+            result = await reader.post("/control/" + action, json={"id": control_id, "target": target})
+            result.raise_for_status()
 
         requested = {
             item.strip()
@@ -122,9 +137,53 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             if item.strip()
         }
         protocols = [Subprotocol("binary")] if "binary" in requested else None
+        controlled = False
         try:
+            if control_id:
+                await control_request("take")
+                controlled = True
+            if browser_view:
+                await socket.accept()
+
+                async def send_frames() -> None:
+                    while True:
+                        response = await reader.get("/view/frame", params={"target": target})
+                        response.raise_for_status()
+                        await socket.send_bytes(response.content)
+                        await asyncio.sleep(0.15)
+
+                async def receive_input() -> None:
+                    while True:
+                        message = await socket.receive_json()
+                        if not control_id:
+                            await socket.close(code=1008, reason="Browser view is read-only")
+                            return
+                        response = await reader.post("/view/input", json={
+                            "target": target, "owner": control_id, "input": message["input"]})
+                        response.raise_for_status()
+                        await socket.send_json({"id": message["id"], "sent": True})
+
+                async def renew_browser_control() -> None:
+                    while True:
+                        await asyncio.sleep(5)
+                        await control_request("renew")
+
+                tasks = {asyncio.create_task(send_frames()), asyncio.create_task(receive_input())}
+                if control_id:
+                    tasks.add(asyncio.create_task(renew_browser_control()))
+                try:
+                    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:
+                        await task
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    for task in tasks:
+                        with suppress(asyncio.CancelledError):
+                            await task
+                return
             upstream_context = connect(
-                stream if socket.url.path.endswith("/stream") else display,
+                stream + ("?role=controller" if control_id else "?role=viewer"),
                 subprotocols=protocols,
                 compression=None,
                 open_timeout=10,
@@ -158,10 +217,17 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                     except ConnectionClosed:
                         return
 
+                async def renew_control() -> None:
+                    while True:
+                        await asyncio.sleep(5)
+                        await control_request("renew")
+
                 tasks = {
                     asyncio.create_task(send_to_display()),
                     asyncio.create_task(send_to_browser()),
                 }
+                if control_id:
+                    tasks.add(asyncio.create_task(renew_control()))
                 done, pending = await asyncio.wait(
                     tasks,
                     return_when=asyncio.FIRST_COMPLETED,
@@ -173,10 +239,18 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                         await task
                 for task in done:
                     await task
-        except (OSError, TimeoutError, InvalidHandshake):
+        except WebSocketDisconnect:
+            return
+        except (OSError, TimeoutError, InvalidHandshake, httpx.HTTPError):
             if socket.client_state is WebSocketState.CONNECTING:
                 await socket.accept()
             if socket.client_state is WebSocketState.CONNECTED:
-                await socket.close(code=1013, reason="Computer display is unavailable")
+                await socket.close(code=1013, reason="Computer display or control is unavailable")
+        finally:
+            try:
+                if controlled:
+                    await control_request("release")
+            finally:
+                await reader.aclose()
 
     return client
