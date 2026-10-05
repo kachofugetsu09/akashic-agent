@@ -44,41 +44,6 @@
     overscroll-behavior: contain;
   }
 
-  .product-band__footer .theme-cycle-button {
-    min-height: 34px;
-    padding: 0 10px;
-    border: 0;
-    border-radius: 8px;
-    background: transparent;
-  }
-
-  .product-band__footer .theme-cycle-button span {
-    display: none;
-  }
-
-  .theme-cycle-button {
-    @apply flex h-11 flex-shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-border bg-transparent px-3 text-fg;
-    transition-property: background-color, border-color, color, scale;
-    transition-duration: var(--ak-sys-duration-short);
-    transition-timing-function: var(--ak-sys-motion-standard);
-  }
-
-  .theme-cycle-button:hover {
-    @apply border-border-strong bg-surface-2;
-  }
-
-  .theme-cycle-button:active {
-    scale: 0.96;
-  }
-
-  .theme-cycle-button:focus-visible {
-    @apply outline outline-2 -outline-offset-2 outline-accent;
-  }
-
-  .theme-cycle-button span {
-    @apply text-[12px] font-medium;
-  }
-
   /* 功能设置目录：模糊遮罩 + 上浮进入；窄屏贴底成动作面板。 */
   .shell-settings-dialog {
     width: min(460px, calc(100vw - 40px));
@@ -187,7 +152,6 @@
       gap: 0;
     }
     .product-band__brand { margin: 0; }
-    .product-band__footer { grid-column: 2; grid-row: 1; }
     .product-band__nav { grid-column: 1 / -1; grid-row: 2; }
     .product-band__item {
       min-width: max-content;
@@ -197,7 +161,6 @@
       border-radius: 0;
       font-size: 1rem;
     }
-    .product-band__footer .theme-cycle-button { min-width: 44px; min-height: 44px; }
     .shell-settings-dialog {
       width: 100%;
       max-width: none;
