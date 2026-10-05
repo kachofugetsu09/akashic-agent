@@ -269,3 +269,22 @@ PYTHONPATH=sdk/python/src:. .venv/bin/python scripts/verify_self_deploy_runtime.
 该脚本使用真实插件、HTTP 模型接口、Shell 和控制连接，一次性创建隔离 workspace。
 它验证正常 ToolResult/complete、最终 writer flush、旧 boot 拒绝及正常关闭证据；
 Docker 镜像发布和系统级服务切换应另在隔离宿主验证，不能由这条检查代替。
+
+完整自部署 E2E 必须在独立内核虚拟机中运行，不能用共享宿主 cgroup、设备或
+Docker socket 的 privileged systemd 容器。虚拟机内先完成正式初始化，设置
+`AKASHIC_ENVIRONMENT=isolated-vm-e2e`，运行独立的 `akashic-home-services.service`
+心跳（写入 `~/sentinel-heartbeat.log`）、用户 `unrelated-user.service` 和 Docker
+`unrelated-sentinel` 容器，再以实际 Bridge Python 执行：
+
+```sh
+<Bridge Python> scripts/verify_self_deploy_host.py \
+  --root /srv/data/services/akashic \
+  --runtime-env ~/.config/akashic-container/runtime.env \
+  --commit <目标完整SHA> --fixture-host <Core可访问的虚拟机IP> \
+  --evidence ~/self-deploy-evidence
+```
+
+该脚本通过真实 Host Bridge Shell 接单，等待独立 worker 完成正式发布，再核对
+新 boot/commit、原消息全文与顺序、下一回合和默认组合的 Skill 可见性。
+更新全程核对无关服务 PID、重启次数、容器身份、机器 boot 及连续心跳。
+外部 HTTP 模型响应受控；这证明执行协议，不证明真实模型总会遵守最后一次调用要求。

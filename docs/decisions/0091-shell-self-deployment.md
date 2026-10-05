@@ -34,4 +34,4 @@ Guardian 的进程管理不再叠加 Docker/systemd；容器使用 init。应用
 备份由该次授权决定，默认关闭。共享 SQLite/plugin-data 维持单写入者，接受短暂维护窗口。
 电源故障或外部强杀不能保证回合完成；缺失证据明确失败，不生成假交接。
 
-操作流程由 [部署 Skill](../../plugins/plugin_update/skills/deploy-akashic/SKILL.md) 拥有。
+操作流程由 [部署 Skill](../../plugins/standard_tools/skills/deploy-akashic/SKILL.md) 拥有；随默认 Shell 插件加载。
