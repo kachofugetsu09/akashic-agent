@@ -193,9 +193,12 @@ def _check_old_owners(workspace: Path, components: tuple[str, ...]) -> None:
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as source:
         if source.execute("PRAGMA integrity_check").fetchone() != ("ok",):
             raise RuntimeError("旧 journal 内容损坏")
-        pending = source.execute("SELECT tx_id FROM reload_transactions WHERE phase NOT IN ('complete','aborted','recovered')").fetchall()
-        armed = source.execute("SELECT update_id FROM plugin_updates WHERE phase='armed'").fetchall()
-        configs = source.execute("SELECT state,input_ref FROM config_updates WHERE state != 'active'").fetchall()
+        try:
+            pending = source.execute("SELECT tx_id FROM reload_transactions WHERE phase NOT IN ('complete','aborted','recovered')").fetchall()
+            armed = source.execute("SELECT update_id FROM plugin_updates WHERE phase='armed'").fetchall()
+            configs = source.execute("SELECT state,input_ref FROM config_updates WHERE state != 'active'").fetchall()
+        except sqlite3.OperationalError as error:
+            raise RuntimeError(f"旧 journal 无法读取 owner 状态: {path} ({error})；请先用原 Core 恢复后再升级，不会修改旧库") from error
         if pending or armed or any(state == "accepted" or ref in components for state, ref in configs):
             raise RuntimeError("旧安装、配置或 runtime owner 未结算；请先用原 Core 恢复，不会自动重放")
 
