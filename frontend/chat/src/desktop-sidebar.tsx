@@ -5,6 +5,7 @@ import {
   Pin,
   PinOff,
   ArrowUpDown,
+  SunMoon,
   X,
 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -132,16 +133,19 @@ export interface DesktopSidebarProps {
   rail?: SidebarRailControl;
 }
 
-/** Session-only vertical rail — product destinations live on the L-shape top band. */
+/** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发，主题行是 chat 域原生。 */
 export const DesktopSidebar = memo(function DesktopSidebar({
+  embeddedShell,
   surface,
   sessions,
   activeSessionId,
   pendingSessionId,
+  themeLabel,
   projects,
   navigationPins,
   onSelectSession,
   onPrefetchSession,
+  onCycleTheme,
   onNewChat,
   onDeleteSession,
   onRenameSession,
@@ -393,7 +397,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         ) : undefined}
       />
       </div>
-      {railActions.length ? <div className="chat-sidebar__footer">
+      {railActions.length || embeddedShell ? <div className="chat-sidebar__footer">
         {railActions.map((action) => (
           <button key={action.id} type="button" className="chat-sidebar__action"
             onClick={() => activateShellRailAction(action.id)}>
@@ -402,6 +406,13 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             <span>{action.label}</span>
           </button>
         ))}
+        {embeddedShell ? <button type="button" className="chat-sidebar__action"
+          onClick={() => onCycleTheme()}
+          title={`切换主题，当前为${themeLabel}`}
+          aria-label={`切换主题，当前为${themeLabel}`}>
+          <SunMoon size={18} aria-hidden="true" />
+          <span>主题 · {themeLabel}</span>
+        </button> : null}
       </div> : null}
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
       {directoryProject && projects ? <ProjectDirectoryDialog project={directoryProject}

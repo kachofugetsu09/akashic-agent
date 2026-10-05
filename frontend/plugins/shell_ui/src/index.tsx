@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { SunMoon } from "lucide-react";
 import "./style.css";
 import { akashicBrandIcon } from "./brand";
 import type {
@@ -10,7 +9,6 @@ import type {
   WebUiDisposer,
 } from "@akashic/web-ui-v1";
 import type { ShellRailAction } from "@akashic/shell-ui-v1";
-import { cycleTheme, themes, useTheme } from "@akashic/web-ui-v1";
 
 type ShellPage = WebEntry & {
   label: string;
@@ -234,17 +232,14 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
           <div className="product-band__indicator" aria-hidden="true" />
         </div>
       </nav>
-      <div className="product-band__footer">
-        <dialog ref={settingsDialog} className="shell-settings-dialog" aria-label="功能设置">
-          <header><h2>功能设置</h2><button type="button" onClick={() => settingsDialog.current?.close()} aria-label="关闭设置目录">关闭</button></header>
-          <nav>{settingsEntries.map((entry) => <button key={entry.id} type="button" onClick={() => openPage(entry)}>
-            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
-            <span>{entry.label}</span>
-          </button>)}</nav>
-        </dialog>
-        <ThemeToggle />
-      </div>
     </header>
+    <dialog ref={settingsDialog} className="shell-settings-dialog" aria-label="功能设置">
+      <header><h2>功能设置</h2><button type="button" onClick={() => settingsDialog.current?.close()} aria-label="关闭设置目录">关闭</button></header>
+      <nav>{settingsEntries.map((entry) => <button key={entry.id} type="button" onClick={() => openPage(entry)}>
+        <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
+        <span>{entry.label}</span>
+      </button>)}</nav>
+    </dialog>
     <div className="shell-view-stack">
       {entries.map((entry) => <section
         key={entry.id}
@@ -298,21 +293,4 @@ function checkRailActions(entries: readonly WebEntry[]): ShellRailAction[] {
 function pageFromLocation(entries: ShellPage[], fallback: ShellPage | undefined): ShellPage | undefined {
   const route = window.location.hash.slice(1);
   return entries.find((entry) => entry.route === route) ?? fallback;
-}
-
-function ThemeToggle(): React.ReactElement {
-  const theme = useTheme();
-  const options = themes();
-  const currentIndex = options.findIndex((option) => option.id === theme.id);
-  const nextTheme = options[(currentIndex + 1) % options.length];
-  return <button
-    type="button"
-    onClick={() => cycleTheme()}
-    title={`当前主题：${theme.label}；切换到${nextTheme.label}`}
-    aria-label={`切换主题，当前为${theme.label}，下一主题为${nextTheme.label}`}
-    className="theme-cycle-button"
-  >
-    <SunMoon size={20} strokeWidth={2} aria-hidden="true" />
-    <span>主题 · {theme.label}</span>
-  </button>;
 }
