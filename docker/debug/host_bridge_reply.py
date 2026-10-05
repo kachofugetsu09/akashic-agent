@@ -21,7 +21,6 @@ sys.path.insert(0, str(ROOT))
 import grpc
 from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.monitor import HostBridgeStatus, _monitor
-from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.config_input import save_config
@@ -84,7 +83,7 @@ async def check_lifecycle(base: Path, log, host) -> list[str]:
     tools = root.context.require(TOOLS)
     bindings = root.context.require(BINDINGS)
     ref = next(item for item in root.context.require(ALL_TOOLS)().refs if item.name == "load_skill")
-    # 1. 并发捕获保存同一内容身份，恢复工具可读取原正文。
+    # 1. 并发绑定保持同一注册身份，工具读取当前正文。
     identities = await asyncio.gather(*(tools.bind(ref, bindings) for _ in range(3)))
     assert len(set(identities)) == 1
     metadata = bindings.describe(identities[0], TOOLS)
@@ -97,44 +96,48 @@ async def check_lifecycle(base: Path, log, host) -> list[str]:
     started = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
-    save = PluginArchive.save
+    # fixture 是独立加载的插件模块，必须协调实际运行的 parser。
+    module = host._active_generations["skill_probe"].module_path
+    parser_type = sys.modules[f"{module}.skill_catalog"].SkillCatalogParser
+    parse = parser_type.parse
 
-    def held_save(archive, source, **kwargs):
+    def held_parse(parser, assets, *, workspace_dir):
         loop.call_soon_threadsafe(started.set)
         if not release.wait(30):
             raise TimeoutError("实验文件线程未被释放")
-        return save(archive, source, **kwargs)
+        return parse(parser, assets, workspace_dir=workspace_dir)
 
     before = log.read_bindings()
-    with patch.object(PluginArchive, "save", held_save), patch.object(bindings, "bind", wraps=bindings.bind) as commit:
-        capture = asyncio.create_task(tools.bind(ref, bindings))
-        disposal = None
-        try:
-            await asyncio.wait_for(started.wait(), 5)
-            capture.cancel()
-            await asyncio.sleep(0)
-            assert not capture.done()
-            owner = host._active_generations["skill_bundle"].fiber
-            disposal = asyncio.create_task(owner.dispose())
-            await asyncio.wait_for(owner._admission_closed.wait(), 5)
-            assert not disposal.done() and not capture.done()
-            release.set()
+    with patch.object(parser_type, "parse", held_parse):
+        async with tools.open(metadata) as tool:
+            capture = asyncio.create_task(tool.invoke("cancel-local-read", arguments))
+            disposal = None
             try:
-                await capture
-            except asyncio.CancelledError:
-                pass
-            else:
-                raise AssertionError("取消后仍提交了工具绑定")
-            await asyncio.wait_for(disposal, 30)
-            assert log.read_bindings() == before and commit.call_count == 0
-        finally:
-            release.set()
-            if not capture.done():
+                await asyncio.wait_for(started.wait(), 5)
                 capture.cancel()
-            await asyncio.gather(capture, return_exceptions=True)
-            if disposal is not None:
-                await disposal
-    results.append("cancel_drains_files_before_asset_disposal_without_binding_commit")
+                await asyncio.sleep(0)
+                assert not capture.done()
+                owner = host._active_generations["skill_bundle"].fiber
+                disposal = asyncio.create_task(owner.dispose())
+                await asyncio.wait_for(owner._admission_closed.wait(), 5)
+                assert not disposal.done() and not capture.done()
+                release.set()
+                try:
+                    await capture
+                except asyncio.CancelledError:
+                    pass
+                else:
+                    raise AssertionError("取消后仍提交了工具绑定")
+                await asyncio.wait_for(disposal, 30)
+                assert log.read_bindings() == before
+            finally:
+                release.set()
+                if not capture.done():
+                    capture.cancel()
+                await asyncio.gather(capture, return_exceptions=True)
+                if disposal is not None:
+                    await disposal
+    results.append("cancel_drains_live_skill_reads_before_asset_disposal")
     return results
 
 
