@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import type { WebHostContextV1, WebMountView, WebUiDisposer } from "@akashic/web-ui-v1";
-import { Confirm, request, settingsIcon, type Status } from "../../shared/src/configuration";
+import { Confirm, request, type Status } from "../../shared/src/configuration";
 import "./style.css";
+
+/** 初始配置是引导清单：勾选列表图标，不复用通用设置齿轮。 */
+const onboardingIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg>';
 
 interface Step { id: string; title: string; group: string; group_title: string; route: string; }
 interface StepStatus extends Partial<Status> { fault?: string; }
@@ -28,7 +31,7 @@ function label(status?: StepStatus): string {
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("shell.pages.v1", mount => mount.register({
     // 初始配置不是常驻目的地：收进功能设置目录，由首跑邀请和深链接进入。
-    id: "onboarding", label: "初始配置", route: "onboarding", iconSvg: settingsIcon, section: "settings", order: -10,
+    id: "onboarding", label: "初始配置", route: "onboarding", iconSvg: onboardingIcon, section: "settings", order: -10,
     render(host, _view, props) {
       const pages = (props as {pages: WebMountView}).pages;
       // 页面隐藏时首跑邀请仍需显示；独立容器复用本 entry 的样式归属。
