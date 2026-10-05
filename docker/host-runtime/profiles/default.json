@@ -98,6 +98,11 @@
       "reason": "提供可由 models 选择的 OpenAI-compatible 驱动；不包含凭据。"
     },
     {
+      "name": "gemini",
+      "depends_on": ["models"],
+      "reason": "提供原生 Gemini GenerateContent 驱动；不包含凭据。"
+    },
+    {
       "name": "content",
       "depends_on": [],
       "reason": "拥有消息正文与附件内容边界。"

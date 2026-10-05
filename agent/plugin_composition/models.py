@@ -89,6 +89,14 @@ class LLMResponse:
     continuation: ModelContinuation | None = None
     usage: ModelUsage | None = None
     call_record_id: str | None = None
+    # 原生响应部件由调用账本保存，随同一 binding 的消息重放。
+    provider_metadata: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider_metadata is not None:
+            if not isinstance(self.provider_metadata, Mapping):
+                raise TypeError("响应协议 metadata 必须是 JSON 对象")
+            self.provider_metadata = _freeze_json_mapping(self.provider_metadata)
 
 
 StreamCallback: TypeAlias = Callable[[dict[str, str]], Awaitable[None]]

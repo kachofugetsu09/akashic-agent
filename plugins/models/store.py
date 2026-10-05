@@ -167,20 +167,31 @@ class ModelCallReader:
             yield read
 
     def replay(self, call_ids: tuple[str, ...]) -> Mapping[str, Mapping[str, Any]]:
-        """一次读取历史重放所需的结算和 binding；每次调用都看当前账本。"""
+        """读取结算、binding 和调用协议扩展，不向投影提供完整响应。"""
         if not call_ids:
             return {}
         with self._connect() as connection:
             require_model_calls_schema(connection)
+            # 旧账本没有响应正文，无法提供尚未保存的协议扩展。
+            response_metadata = (
+                "json_extract(response_json,'$.provider_metadata')"
+                if "response_json" in _columns(connection, "model_calls") else "NULL"
+            )
             rows = connection.execute(
-                "SELECT id,state,json_extract(binding_json,'$.binding_id') AS binding_id "
+                "SELECT id,state,json_extract(binding_json,'$.binding_id') AS binding_id, "
+                f"{response_metadata} AS provider_metadata "
                 "FROM model_calls WHERE id IN (SELECT value FROM json_each(?))",
                 (json.dumps(call_ids),),
             ).fetchall()
-        records: dict[str, Mapping[str, Any]] = {
-            row["id"]: {"state": row["state"], "binding": {"binding_id": row["binding_id"]}}
-            for row in rows
-        }
+        records: dict[str, Mapping[str, Any]] = {}
+        for row in rows:
+            records[row["id"]] = {
+                "state": row["state"], "binding": {"binding_id": row["binding_id"]},
+                "provider_metadata": (
+                    None if row["provider_metadata"] is None
+                    else _freeze_json(json.loads(row["provider_metadata"]))
+                ),
+            }
         for identity in call_ids:
             if identity not in records:
                 raise KeyError(identity)
@@ -1761,6 +1772,8 @@ def _response_payload(response: LLMResponse) -> dict[str, Any]:
         "content": response.content,
         "thinking": response.thinking,
         "finish_reason": response.finish_reason,
+        **({"provider_metadata": response.provider_metadata}
+           if response.provider_metadata is not None else {}),
         "tool_calls": [
             {"id": call.id, "name": call.name, "arguments": call.arguments}
             for call in response.tool_calls
