@@ -44,14 +44,22 @@
     overscroll-behavior: contain;
   }
 
-  /* 功能设置目录：模糊遮罩 + 上浮进入；窄屏贴底成动作面板。 */
+  /* 功能设置工作区：模糊遮罩 + 上浮进入；左栏分节导航、右栏就地渲染分节页面，
+     层级参考 DSH 设置面板。窄屏贴底成动作面板，分节导航转为顶部横排。 */
   .shell-settings-dialog {
-    width: min(460px, calc(100vw - 40px));
-    padding: 24px;
+    width: min(1040px, calc(100vw - 48px));
+    height: min(680px, calc(100dvh - 48px));
+    padding: 0;
     border: 1px solid var(--ak-rule-default);
     border-radius: 14px;
     background: var(--ak-paper-sheet);
     color: var(--ak-ink-primary);
+    overflow: hidden;
+  }
+
+  .shell-settings-dialog[open] {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 
   .shell-settings-dialog::backdrop {
@@ -59,32 +67,30 @@
     backdrop-filter: blur(3px);
   }
 
-  .shell-settings-dialog header {
+  .shell-settings-nav {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 2px;
+    padding: 20px 12px;
+    border-inline-end: 1px solid var(--ak-rule-subtle);
+    overflow-y: auto;
   }
 
-  .shell-settings-dialog h2 {
-    margin: 0;
-    font-size: 17px;
+  .shell-settings-nav h2 {
+    margin: 0 0 12px;
+    padding-inline: 10px;
+    font-size: 15px;
   }
 
-  .shell-settings-dialog nav {
-    display: grid;
-    gap: 8px;
-    margin-top: 16px;
-  }
-
-  .shell-settings-dialog button {
+  .shell-settings-nav button {
     display: flex;
-    min-height: 44px;
+    min-height: 40px;
     align-items: center;
     gap: 10px;
+    padding: 6px 10px;
     font: inherit;
-    border: 1px solid var(--ak-rule-default);
+    border: 0;
     border-radius: 8px;
-    padding: 8px 14px;
     background: transparent;
     color: inherit;
     text-align: left;
@@ -92,19 +98,56 @@
     transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
 
-  .shell-settings-dialog button:hover {
+  .shell-settings-nav button:hover {
     background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
   }
 
-  .shell-settings-dialog header button {
-    border: 0;
-    min-height: 36px;
+  .shell-settings-nav button[aria-current="true"] {
+    background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
   }
 
-  .shell-settings-dialog svg {
+  .shell-settings-nav svg {
     width: 16px;
     height: 16px;
     stroke-width: 1.75;
+    flex: 0 0 auto;
+  }
+
+  .shell-settings-body {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .shell-settings-body > header {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 12px;
+    border-block-end: 1px solid var(--ak-rule-subtle);
+  }
+
+  .shell-settings-body > header button {
+    min-height: 32px;
+    padding: 4px 12px;
+    font: inherit;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  }
+
+  .shell-settings-body > header button:hover {
+    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+  }
+
+  .shell-settings-page {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 20px 24px 32px;
   }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -164,10 +207,36 @@
     .shell-settings-dialog {
       width: 100%;
       max-width: none;
+      height: calc(100dvh - 24px);
       margin: auto 0 0;
       border-radius: 16px 16px 0 0;
       border-inline: 0;
       border-block-end: 0;
-      padding-bottom: max(24px, env(safe-area-inset-bottom, 0px));
+    }
+    .shell-settings-dialog[open] {
+      grid-template-columns: none;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .shell-settings-nav {
+      flex-direction: row;
+      align-items: center;
+      gap: 4px;
+      padding: 12px 12px 8px;
+      border-inline-end: 0;
+      border-block-end: 1px solid var(--ak-rule-subtle);
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .shell-settings-nav h2 {
+      flex: 0 0 auto;
+      margin: 0 8px 0 0;
+      padding-inline: 0;
+    }
+    .shell-settings-nav button {
+      flex: 0 0 auto;
+      min-height: 44px;
+    }
+    .shell-settings-page {
+      padding-bottom: max(32px, env(safe-area-inset-bottom, 0px));
     }
 }
