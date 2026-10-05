@@ -76,6 +76,7 @@ export class ComputerDriver extends EventEmitter {
       if (this.control !== control) throw new Error("Computer control owner changed during release");
       this.control = null;
       if (control.instance) this.anonymous.unhold(control.instance);
+      control.releaseWorkload?.();
       control.resume();
       this.resumeClock();
     })();
@@ -501,11 +502,10 @@ export class ComputerDriver extends EventEmitter {
   }
   async close() {
     this.closed = true;
-    if (this.active) {
-      const active = this.active;
-      active.reject(new Error("Computer driver is stopping"));
-      await active.done;
-    }
+    const active = this.active;
+    active?.reject(new Error("Computer driver is stopping"));
+    if (this.control) await this.releaseControl(this.control.id);
+    if (active) await active.done;
     for (const session of this.sessions.values())
       await session.worker.terminate();
     await this.anonymous.cleanup(() => true);

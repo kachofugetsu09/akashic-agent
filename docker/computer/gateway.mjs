@@ -897,7 +897,12 @@ const server = createServer(async (request, response) => {
         };
         response.once("close", disconnected);
         if (response.destroyed) disconnected();
-        try { await driver.takeControl(payload.id, target, controller.signal); }
+        const releaseWorkload = await computer.acquire();
+        try {
+          await driver.takeControl(payload.id, target, controller.signal);
+          if (driver.control?.id !== payload.id) throw new Error("Control connection has ended");
+          driver.control.releaseWorkload = releaseWorkload;
+        } catch (error) { releaseWorkload(); throw error; }
         finally { response.removeListener("close", disconnected); }
       } else if (url.pathname === "/control/release") {
         if (driver) await driver.releaseControl(payload.id);
