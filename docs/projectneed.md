@@ -293,6 +293,8 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 不存在、空结果、合法跳过、明确降级、输入错误、数据损坏和内部故障必须可区分。只有拥有正确恢复动作的边界才能捕获异常并降级；其余错误 fail-fast、fail-loud。
 
+模型长度截断不等于空响应、quiet 或完成；截断批次的工具不得执行。默认回复预算包含推理，显式预算保留，缺省跟随固定模型能力；选择与未知能力策略见 [0089](decisions/0089-reply-output-budget-includes-reasoning.md)。
+
 工具结果使用 `success / denied / error / interrupted`。error 和 interrupted 不证明外部效果为零；模型获得原错误与先检查现场的提示，不能自动重复原操作。Tools/Delivery 仅在原 key 查询或 provider 幂等合同下恢复；后台发送失败必须关闭本次业务等待，不保留 unknown 未决状态。数据库、binding 和内部契约异常仍向上传播。完整自愈、跳过、重试和中断规则见 [0063](decisions/0063-execution-failures-have-terminal-results.md)。
 
 ## 7. 上下文和会话

@@ -26,6 +26,8 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
     sources = tmp_path / "plugins"
     workspace = tmp_path / "workspace"
     initialize_plugin_workspace(workspace)
+    # 夹具模型只有 10K 上下文；预算由配置固定，不依赖产品默认值。
+    save_config(workspace / "plugin-data/reply-builtin", {"max_output_tokens": output_tokens})
     for name in (
         "commands",
         "sources",
@@ -62,8 +64,6 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         save_config(settings, {"summary_source": ["compaction", "compaction"]})
         module = sources / "compaction/plugin.py"
         module.write_text(module.read_text().replace('Field(default=20_000,', f'Field(default={keep_recent_tokens},'))
-        reply = sources / 'reply/plugin.py'
-        reply.write_text(reply.read_text().replace('Field(default=4096,', f'Field(default={output_tokens},'))
     if missing_tool:
         settings = tmp_path / "workspace/plugin-data/reply-builtin"
         settings.parent.mkdir(parents=True, exist_ok=True)
