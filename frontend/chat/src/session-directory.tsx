@@ -55,17 +55,15 @@ export function SessionDirectory({ sessionId, refreshKey }: { sessionId: string;
   if (!installed) return null;
   return <div className="session-directory">
     <details>
-      <summary><span aria-hidden="true">▾</span><span>工作目录</span><span className="directory-path" title={current?.path ?? undefined}>{current?.path ?? (current ? "未设置" : "正在读取…")}</span>
+      <summary><span className="session-directory__arrow" aria-hidden="true">▾</span><span>工作目录</span><span className="directory-path" title={current?.path ?? undefined}>{current?.path ?? (current ? "未设置" : "正在读取…")}</span>
         <small>{error ? "状态未能刷新" : current && current.status !== "unset" ? directoryStatus(current.status) : ""}</small></summary>
       <div className="session-directory__details">
-        {current?.path ? <p className="directory-path">{current.path}</p> : null}
-        {current?.path ? <p>当前对话独立使用此目录。Agent 可通过工具切换，Project 默认目录保持固定。</p>
-          : <p>当前对话未指定目录，Shell 和文件保持既有默认目录。之后绑定 Project 不会改变这个对话。</p>}
-        {current?.agents.status === "ready" ? <>
+        {current?.path ? <p>当前对话独立使用此目录。Agent 可通过工具切换，项目默认目录保持固定。</p>
+          : <p>当前对话未指定目录，Shell 和文件保持既有默认目录。之后绑定项目不会改变这个对话。</p>}
+        {current?.agents.status === "ready" && current.agents.sources.length ? <>
           <strong>AGENTS 来源</strong>
-          {current.agents.sources.length ? <ul>{current.agents.sources.map((path) => <li className="directory-path" key={path}>{path}</li>)}</ul>
-            : <p>当前目录链没有规则文件。</p>}
-        </> : current?.path ? <p role="status">仓库规则不可用：{current?.agents.error}</p> : null}
+          <ul>{current.agents.sources.map((path) => <li className="directory-path" key={path}>{path}</li>)}</ul>
+        </> : current?.path && current?.agents.status !== "ready" ? <p role="status">仓库规则不可用：{current?.agents.error}</p> : null}
         {error ? <p className="directory-error" role="status">{error}</p> : null}
         <button type="button" onClick={() => setRetry((value) => value + 1)}>刷新状态</button>
       </div>

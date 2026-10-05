@@ -1,6 +1,16 @@
 /* Shell owns the outer page, primary navigation behavior, and theme control.
    顶栏的几何与视觉由 theme/src/product-band.css 统一拥有。 */
 
+  /* 滚动条与 chat 保持一致:细轨、透明轨道、墨色 thumb。 */
+  * {
+    scrollbar-color: color-mix(in oklch, var(--ak-ink-primary) 22%, transparent) transparent;
+    scrollbar-width: thin;
+  }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { border-radius: 4px; background: color-mix(in oklch, var(--ak-ink-primary) 22%, transparent); }
+  *::-webkit-scrollbar-thumb:hover { background: color-mix(in oklch, var(--ak-ink-primary) 34%, transparent); }
+
   .unified-shell {
     display: grid;
     width: 100%;
