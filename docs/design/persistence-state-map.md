@@ -13,7 +13,7 @@
 
 ## 2026-10-06：取消强快照的授权边界
 
-[0092](../decisions/0092-plugin-runtime-uses-installed-files.md) 取代下文普通运行所需的代码、
+[0094](../decisions/0094-plugin-runtime-uses-installed-files.md) 取代下文普通运行所需的代码、
 配置与 Skill 归档要求。Skill 使用时热读取，不增加 skill-files；旧目录、绑定、消息和
 回执均保留，不在本次 refactor 中物理减少。文件修改由原文件 owner 负责，后续读取使用
 当前内容；缺失或旧未完成绑定不兼容时明确失败。源码以 Git 基线为恢复点，验证仅使用
