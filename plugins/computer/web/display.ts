@@ -28,6 +28,7 @@ export class ComputerDisplay extends EventTarget {
   private readonly abort = new AbortController();
   private readonly urls: string[] = [];
   private timer = 0;
+  private startupTimer = 0;
   private connected = false;
   private closed = false;
   private inputReady = false;
@@ -50,11 +51,26 @@ export class ComputerDisplay extends EventTarget {
     this.frame.title = "Computer 远程桌面";
     this.frame.allow = "clipboard-read; clipboard-write; fullscreen";
     this.frame.addEventListener("load", () => this.watch());
+    // 获取脚本、iframe 启动和首帧共用一个期限，避免卡在 load 事件之前。
+    this.startupTimer = window.setTimeout(() => {
+      const transport = this.stream?.selkiesTransport;
+      const reason = !transport
+        ? "显示客户端启动超时，请刷新页面或检查浏览器是否阻止了脚本"
+        : transport.readyState !== WebSocket.OPEN
+          ? "远程桌面连接超时，请检查网络后重试"
+          : "远程桌面首帧超时，请重新连接";
+      this.fail(reason);
+    }, 15_000);
     void this.load().catch((error: unknown) => {
       if (this.closed) return;
-      this.dispatchEvent(new CustomEvent("error", { detail: { reason: String(error) } }));
-      this.disconnect();
+      this.fail(String(error));
     });
+  }
+
+  private fail(reason: string) {
+    if (this.closed) return;
+    this.dispatchEvent(new CustomEvent("error", { detail: { reason } }));
+    this.disconnect();
   }
 
   private get stream(): StreamWindow | null {
@@ -63,6 +79,9 @@ export class ComputerDisplay extends EventTarget {
 
   /** 只从当前 generation 读取客户端，再交入同一身份的完整 WebSocket 地址。 */
   private async load() {
+    if (!window.isSecureContext) {
+      throw new Error("Computer 需要安全连接。请通过 HTTPS 地址打开 Akashic；局域网 HTTP 地址无法显示桌面。");
+    }
     // 1. 资源与 WebSocket 必须来自同一 activation。
     const response = await this.ctx.http.request("/api/dashboard/computer/stream-client", {
       signal: this.abort.signal,
@@ -148,7 +167,6 @@ export class ComputerDisplay extends EventTarget {
   /** 首帧和输入一起就绪才报告连接；断线交给面板的唯一重连 owner。 */
   private watch() {
     if (this.closed || this.timer) return;
-    const deadline = Date.now() + 15_000;
     this.timer = window.setInterval(() => {
       const stream = this.stream;
       const transport = stream?.selkiesTransport;
@@ -164,8 +182,14 @@ export class ComputerDisplay extends EventTarget {
         });
         transport.addEventListener("close", (event) => {
           if (this.closed) return;
-          if (/superseded/i.test(event.reason ?? "")) this.dispatchEvent(new Event("superseded"));
-          this.disconnect();
+          if (/superseded/i.test(event.reason ?? "")) {
+            this.dispatchEvent(new Event("superseded"));
+            this.disconnect();
+          } else if (!this.connected) {
+            this.fail("远程桌面在显示首帧前断开，请重新连接");
+          } else {
+            this.disconnect();
+          }
         });
       }
       const input = stream?.webrtcInput;
@@ -186,11 +210,13 @@ export class ComputerDisplay extends EventTarget {
         || (canvas && getComputedStyle(canvas).display !== "none" && (stream?.fps ?? 0) > 0);
       if (!this.connected && transport?.readyState === WebSocket.OPEN && input && hasFrame) {
         this.connected = true;
+        window.clearTimeout(this.startupTimer);
         this.cursor = new AgentCursor(this.host, this.ctx, () => this.viewport());
         this.dispatchEvent(new Event("connect"));
       }
-      if (transport?.readyState === WebSocket.CLOSED || (!this.connected && Date.now() > deadline)) {
-        this.disconnect();
+      if (transport?.readyState === WebSocket.CLOSED) {
+        if (this.connected) this.disconnect();
+        else this.fail("远程桌面在显示首帧前断开，请重新连接");
       }
     }, 100);
   }
@@ -244,6 +270,7 @@ export class ComputerDisplay extends EventTarget {
     }
     this.clipboardRequests.clear();
     window.clearInterval(this.timer);
+    window.clearTimeout(this.startupTimer);
     window.removeEventListener("message", this.onMessage);
     this.cursor?.destroy();
     this.blur();

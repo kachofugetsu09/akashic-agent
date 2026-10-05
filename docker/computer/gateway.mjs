@@ -960,11 +960,18 @@ async function refreshIdentity() {
     );
     const sites = JSON.parse(stdout);
     if (!Array.isArray(sites) || sites.length === 0) throw new Error("OpenCLI returned no refresh results");
-    const failed = sites.filter(site => !["refreshed", "touched"].includes(site.status));
+    const needsLogin = sites.filter(site => site.status === "not_logged_in");
+    if (needsLogin.length) {
+      console.warn(`OpenCLI login required: ${needsLogin.map(site => site.site).join(", ")}`);
+    }
+    const failed = sites.filter(site => !["refreshed", "touched", "not_logged_in"].includes(site.status));
     if (failed.length) throw new Error(`OpenCLI refresh incomplete: ${failed.map(site => `${site.site}:${site.status}`).join(", ")}`);
-    await writeFile("/data/state/auth-refresh.ok", new Date().toISOString(), {
-      mode: 0o600,
-    });
+    // 未登录需要人工处理；按正常周期再检查，但不能写成整批刷新成功。
+    if (!needsLogin.length) {
+      await writeFile("/data/state/auth-refresh.ok", new Date().toISOString(), {
+        mode: 0o600,
+      });
+    }
     refreshTimer = setTimeout(refreshIdentity, 43200000);
   } catch (error) {
     console.error("OpenCLI login refresh failed:", error.message);

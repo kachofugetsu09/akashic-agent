@@ -185,6 +185,7 @@ function renderComputer(
   let catalogStale = false;
   let sleeping = false;
   let failed = false;
+  let connectionFailed = false;
   let waking = false;
   let lastTouch = 0;
   const heldKeys = new Map<string, { keysym: number; code: string }>();
@@ -227,7 +228,7 @@ function renderComputer(
   }
 
   function scheduleReconnect() {
-    if (disposed || catalogStale || superseded || sleeping || failed || !active || reconnectTimer || display) return;
+    if (disposed || catalogStale || superseded || sleeping || failed || connectionFailed || !active || reconnectTimer || display) return;
     const delay = reconnectDelay(reconnectAttempt++);
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = 0;
@@ -236,7 +237,7 @@ function renderComputer(
   }
 
   function connect() {
-    if (disposed || catalogStale || superseded || sleeping || failed || !active || display) return;
+    if (disposed || catalogStale || superseded || sleeping || failed || connectionFailed || !active || reconnectTimer || display) return;
     if (backgroundTimer) window.clearTimeout(backgroundTimer);
     backgroundTimer = 0;
     screen.replaceChildren();
@@ -252,10 +253,10 @@ function renderComputer(
         touch,
         blur: onWindowBlur,
       });
-    } catch {
-      showConnection("无法连接 Computer", "请检查插件是否正在运行", true);
+    } catch (error) {
+      connectionFailed = true;
+      showConnection("无法连接 Computer", String(error), true);
       setStatus("failed");
-      scheduleReconnect();
       return;
     }
     display = next;
@@ -282,6 +283,10 @@ function renderComputer(
       void receiveRemoteClipboard((event as CustomEvent<{ text: string }>).detail.text);
     });
     next.addEventListener("error", (event) => {
+      if (display !== next) return;
+      connectionFailed = true;
+      clearTimers();
+      setStatus("failed");
       showConnection(
         "无法连接 Computer",
         (event as CustomEvent<{ reason: string }>).detail.reason || "远程显示连接失败",
@@ -304,6 +309,8 @@ function renderComputer(
         setStatus("waiting");
         return;
       }
+      // 启动失败保留原因，轮询和断线事件不能改写成无限自动重连。
+      if (connectionFailed) return;
       if (!active) {
         showConnection("Computer 已暂停", "重新展开时会恢复连接", false);
         setStatus("waiting");
@@ -365,7 +372,7 @@ function renderComputer(
         showConnection("Computer 启动或停止失败", activity.browser.error, true);
         setStatus("failed");
       } else if (!display && active && !waking && activity.browser.state === "ready") {
-        connect();
+        scheduleReconnect();
       }
       agentActive = activity.active;
       if (shouldOpenForActivity(lastNotice, activity.noticeId, activity.active)) {
@@ -381,6 +388,7 @@ function renderComputer(
   async function wake() {
     if (waking || disposed || catalogStale) return;
     waking = true;
+    connectionFailed = false;
     superseded = false;
     showConnection("正在唤醒 Computer", "正在打开你的主浏览器", false);
     setStatus("connecting");
@@ -640,6 +648,7 @@ function renderComputer(
   window.addEventListener("blur", onWindowBlur);
   document.addEventListener("visibilitychange", onVisibilityChange);
   retry.addEventListener("click", () => {
+    clearTimers();
     reconnectAttempt = 0;
     display?.disconnect();
     if (!display) void wake();
