@@ -70,6 +70,7 @@ class Bindings:
         pending: list[Context] = []
         services: set[ServiceKey[Any]] = set()
         contexts: dict[int, Context] = {}
+        origins: dict[str, str | None] = {}
 
         def provider_for(key: ServiceKey[Any], requester: Context):
             frozen = requester._fiber.dependency_store.get(  # pyright: ignore[reportPrivateUsage]
@@ -83,16 +84,17 @@ class Bindings:
             return provider
 
         def include_context(context: Context) -> None:
+            identity = id(context)
+            if identity in contexts:
+                return
             if self._generation_lookup is not None:
                 generation = self._generation_lookup(context)
                 contributor = generation.plugin_id
+                origins[contributor] = generation.generation_id
             else:
                 contributor = root.context_owner(context)
                 if contributor is None:
                     raise ValueError("注册 Context 不属于当前 active Root")
-            identity = id(context)
-            if identity in contexts:
-                return
             contexts[identity] = context
             selected.add(contributor)
             pending.append(context)
@@ -122,10 +124,8 @@ class Bindings:
             for key in context._fiber.dependencies:  # pyright: ignore[reportPrivateUsage]
                 include_service(key, context)
         # 2. 仅记录实际参与的插件身份，恢复时仍由当前 provider 校验业务选择。
-        origins = {
-            self._generation_lookup(context).plugin_id: self._generation_lookup(context).generation_id
-            for context in contexts.values()
-        } if self._generation_lookup is not None else {name: None for name in sorted(selected)}
+        if self._generation_lookup is None:
+            origins = {name: None for name in sorted(selected)}
         descriptor: dict[str, object] = {
             "version": 2,
             "origins": origins,
