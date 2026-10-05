@@ -99,8 +99,8 @@
     },
     {
       "name": "gemini",
-      "depends_on": ["models"],
-      "reason": "提供原生 Gemini GenerateContent 驱动；不包含凭据。"
+      "depends_on": ["models", "ui"],
+      "reason": "提供原生 Gemini GenerateContent 驱动和连接设置；不包含凭据。"
     },
     {
       "name": "content",
