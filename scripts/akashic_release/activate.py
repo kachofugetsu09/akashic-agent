@@ -352,6 +352,7 @@ def activate_release(
     mise: Path, run: Run, plan: Path | None = None,
     inputs: Path | None = None, backup: bool = False,
     unit_root: Path = Path("/etc/systemd/system"), cli_path: Path = Path.home() / ".local/bin/akashic-release",
+    self_deploy: dict[str, object] | None = None,
 ) -> str:
     """按部署者清单停机发布；默认只更新 Core/Bridge，不执行待迁移。"""
 
@@ -392,17 +393,35 @@ def activate_release(
                  digest=digest, backup_dir=None, preflight=True, run=run)
     backup_dir = paths.backups / attempt_path.stem if backup else None
     attempt = activation_receipt(status="pending", target_commit=target, previous_commit=previous)
-    attempt.update(phase="stopping", imageId=manifest["imageId"],
+    attempt.update(phase="waiting_for_turn" if self_deploy is not None else "stopping", imageId=manifest["imageId"],
                    attemptPath=str(attempt_path), publication=None,
                    backupDir=None if backup_dir is None else str(backup_dir),
                    planPath=None if root_ref is None else str(fixed_plan),
                    previousActivationSha256=(hashlib.sha256((paths.activation / "active.json").read_bytes()).hexdigest()
                                              if (paths.activation / "active.json").exists() else None))
     write_json(attempt_path, attempt)
+    if self_deploy is not None:
+        self_deploy["activationAttempt"] = str(attempt_path)
+        write_json(Path(str(self_deploy["recordPath"])), self_deploy)
+    stop_ack = None
+    if self_deploy is not None:
+        from scripts.akashic_release.self_deploy import wait_for_stop
+        # 在线预检完成以后才关闭准入；失败不执行 stop_runtime。
+        try:
+            stop_ack = wait_for_stop(self_deploy, current)
+        except Exception as error:
+            attempt.update(status="failed", phase="waiting_for_turn", detail=str(error))
+            write_json(attempt_path, attempt)
+            raise
+    attempt["phase"] = "stopping"
+    write_json(attempt_path, attempt)
     # 2. 从停机开始保留失败现场；安装、迁移、Root CAS 由目标镜像统一执行。
     try:
         with measure("release.stop"):
             stop_runtime(run=run)
+        if stop_ack is not None:
+            from scripts.akashic_release.self_deploy import verify_closed
+            verify_closed(stop_ack, current)
         attempt["phase"] = "publishing"
         write_json(attempt_path, attempt)
         if root_ref is not None:

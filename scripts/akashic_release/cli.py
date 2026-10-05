@@ -46,7 +46,7 @@ def _confirm(commit: str, subject: str, current: str | None, *, yes: bool) -> No
         raise RuntimeError("operator 取消安装")
 
 
-def install(args: argparse.Namespace) -> dict[str, object]:
+def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None = None) -> dict[str, object]:
     paths = ReleasePaths(args.root.resolve())
     checkout = args.source_checkout.resolve(strict=True)
     commit = resolve_target(args.origin, args.commit, run=_run)
@@ -90,6 +90,7 @@ def install(args: argparse.Namespace) -> dict[str, object]:
                 inputs=args.inputs,
                 backup=args.backup,
                 unit_root=args.unit_root, cli_path=args.cli_path,
+                self_deploy=self_deploy,
             )
     return {
         "status": status,
@@ -155,6 +156,22 @@ def _parser() -> argparse.ArgumentParser:
     migrate_parser.set_defaults(
         handler=lambda args: migration_plan(args.snapshot_manifest)
     )
+    from scripts.akashic_release.self_deploy import submit, status, worker
+    submit_parser = subparsers.add_parser("submit", help="在本次 Shell 回合正常结束并送达后部署")
+    submit_parser.add_argument("--commit", required=True)
+    submit_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
+    submit_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
+    submit_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)
+    submit_parser.add_argument("--timeout", type=int, default=600)
+    submit_parser.add_argument("--backup", action="store_true")
+    submit_parser.set_defaults(handler=submit)
+    status_parser = subparsers.add_parser("status", help="查询宿主部署任务，不启动模型回合")
+    status_parser.add_argument("request_id")
+    status_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
+    status_parser.set_defaults(handler=status)
+    worker_parser = subparsers.add_parser("self-deploy-worker", help=argparse.SUPPRESS)
+    worker_parser.add_argument("--request", type=Path, required=True)
+    worker_parser.set_defaults(handler=worker)
     return parser
 
 
