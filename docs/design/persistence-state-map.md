@@ -50,6 +50,15 @@ attempt 重放、Session 模型历史投影及 compaction prepare/persist 链已
 
 运行 workspace 与代码目录分离；外部 worktree 由显式 Shell/Git 操作创建和删除，本功能不获得 prune、reset 或历史删除权限。正式数据与部署未在源码实现任务中操作。
 
+## 2026-10-06：Docker 自部署运行证据
+
+消息与工具回执仍只正常追加，部署等待不改写既有正文或终态。
+宿主 `run/self-deploy/<request>.json` 由提交入口创建、worker 更新状态；目标与原调用身份
+固定，同调用不同目标拒绝。Core 的 `workspace/runtime/closed/<boot>.json` 和 Controller
+的 `workload-runtime/closed/<controller>.json` 由各生命周期 owner 在正常清理后增加。
+旧记录不覆盖、不自动删除；身份失配或证据缺失只阻断部署。正式迁移仍由原 Yoyo owner
+在维护锁下执行，恢复沿现有 activation receipt，不把源码回退当作数据回滚。
+
 ## 1. 这份地图怎样使用
 
 这份文件不只回答“落了哪些文件”，还回答每类数据怎样增加、怎样原位更新、怎样逻辑失效、什么条件才允许物理减少。它先陈述代码事实，再提出设计意图推断。两者不能混用：
