@@ -6,8 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Protocol
+from collections.abc import Mapping
 
 from agent.plugin_contracts.delivery import (
     DELIVERY_GUARDED_START as DELIVERY,
@@ -27,9 +26,3 @@ from agent.plugin_contracts.sources import (
 )
 
 SinkInput = Mapping[str, object]
-
-
-class DeliveryTask(Protocol):
-    """Delivery 返回的真实发送任务句柄。"""
-
-    def on_done(self, callback: Callable[[], None]) -> None: ...

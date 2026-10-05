@@ -109,15 +109,6 @@ class DynamicMemoryGraph:
             raise ValueError("memory graph turn capacity cannot shrink")
         self._resize_turn_capacity(turn_count)
 
-    def restore_turn_capacity(self, turn_count: int) -> None:
-        """Undo speculative capacity growth before the graph is published."""
-
-        if turn_count > self.turn_count:
-            raise ValueError("restored memory graph capacity cannot grow")
-        if self.current_event >= turn_count:
-            raise ValueError("cannot remove a committed memory turn slot")
-        self._resize_turn_capacity(turn_count)
-
     def _resize_turn_capacity(self, turn_count: int) -> None:
         """Remap the disjoint turn and engram namespaces to one capacity."""
 

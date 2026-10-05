@@ -27,17 +27,6 @@ from apscheduler.triggers.cron import CronTrigger
 SCHEDULE_MAX_ACTIVE_JOBS = 10
 
 
-class ScheduleCapacityError(RuntimeError):
-    """表示新增任务会超过 workspace 全局活动任务上限。"""
-
-    code = "schedule_capacity_reached"
-
-    def __init__(self, *, active_jobs: int, max_active_jobs: int) -> None:
-        self.active_jobs = active_jobs
-        self.max_active_jobs = max_active_jobs
-        super().__init__(self.code)
-
-
 # ── LatencyTracker ───────────────────────────────────────────────
 
 

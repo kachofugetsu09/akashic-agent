@@ -373,16 +373,6 @@ class ModelsStore:
             ).fetchall()
         return tuple(_decode_call(row) for row in rows)
 
-    def request_identity(
-        self, descriptor: BoundModelDescriptor, request: ModelRequest
-    ) -> str:
-        """稳定请求身份：显式 key 优先；否则同一 binding 的同一冻结材料共享 digest。"""
-        if request.request_key is not None:
-            return request.request_key
-        return "digest:" + hashlib.sha256(
-            (descriptor.binding_id + ":" + _request_digest(request)).encode()
-        ).hexdigest()
-
     def resume_call(
         self,
         descriptor: BoundModelDescriptor,

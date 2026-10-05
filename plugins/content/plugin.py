@@ -349,17 +349,5 @@ class Content:
                     view.close()
 
 
-@asynccontextmanager
-async def open_content(
-    bindings: Bindings, binding_id: str
-) -> AsyncGenerator[ContentView]:
-    """打开已固定的内容协议；动态配置改变时明确拒绝不同的解析选择。"""
-    async with bindings.open(binding_id, CONTENT) as (content, metadata):
-        if content.describe() != metadata:
-            raise ValueError("归档内容协议与固定描述不一致")
-        async with content.bind() as view:
-            yield view
-
-
 async def apply(ctx: Context) -> None:
     _ = await ctx.provide(CONTENT, Content(ctx))

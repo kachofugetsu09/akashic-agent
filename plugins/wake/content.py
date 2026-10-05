@@ -56,15 +56,6 @@ def _candidate_id(ref: Mapping[str, object]) -> str:
     return "candidate_" + hashlib.sha256(payload).hexdigest()[:16]
 
 
-def _delivery_metadata(receipt: Mapping[str, object]) -> dict[str, object]:
-    raw = receipt.get("message_metadata")
-    if raw is None:
-        return {}
-    if not isinstance(raw, Mapping):
-        raise TypeError("Wake delivery message_metadata 必须是 Mapping")
-    return dict(cast(Mapping[str, object], raw))
-
-
 def _message_with_source_links(message: str, metadata: Mapping[str, object]) -> str:
     """Append selected source links so the user and later Turns retain provenance."""
 
@@ -111,15 +102,6 @@ def _pool_detail(
         f"pool_mass={result.pool_mass:.6f}, threshold={result.threshold:.6f}, "
         f"below_floor={result.below_floor}, "
         f"driver={result.driver_item_id or '-'}"
-    )
-
-
-def _proposal_next_due(
-    proposals: Sequence[Mapping[str, object]], proposal: DutyProposal
-) -> bool:
-    return any(
-        item.get("ref") == proposal.ref and item.get("next_due") is not None
-        for item in proposals
     )
 
 

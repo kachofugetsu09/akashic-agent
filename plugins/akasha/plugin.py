@@ -263,9 +263,6 @@ async def run(ctx: Context, interest: Interest) -> None:
     def records() -> RecallRecords:
         return RecallRecords(record_state)
 
-    def records_read() -> RecallRecordsRead:
-        return RecallRecordsRead(record_state)
-
     # 公开读取函数不暴露 owner transaction；归档 apply 也不会读取正式数据库。
     def read_recall(identity: str) -> Recall | None:
         return records().read(identity)
