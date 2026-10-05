@@ -17,6 +17,79 @@ export class ComputerDriver extends EventEmitter {
   active = null;
   closed = false;
   cancelledCalls = new Map();
+  control = null;
+  agentJobs = new Set();
+
+  /** 人工接管先阻止新操作，再等待已发操作和输入释放。 */
+  async takeControl(id) {
+    if (this.closed) throw new Error("Computer driver is stopped");
+    if (this.control) throw new Error("Another viewer controls this Computer");
+    const control = { id, ready: false };
+    control.done = new Promise((resolve) => { control.resume = resolve; });
+    this.control = control;
+    this.pauseClock();
+    try {
+      await Promise.allSettled([...this.agentJobs]);
+      await this.desktop.call("release");
+      await this.browser.releaseInputs();
+      await this.anonymous.releaseInputs(this.active?.context ?? { session_id: "" });
+      if (this.control !== control) throw new Error("Control request was cancelled");
+      control.ready = true;
+    } catch (error) {
+      await this.releaseControl(id);
+      throw error;
+    }
+  }
+
+  async releaseControl(id) {
+    const control = this.control;
+    if (control?.id !== id) return;
+    // CDP 人工输入与 Agent 共用同一个输入记录，先释放再恢复。
+    await this.browser.releaseInputs();
+    for (const instance of this.anonymous.instances.values())
+      if (instance.backend && !instance.closing) await instance.backend.releaseInputs();
+    this.control = null;
+    control.resume();
+    this.resumeClock();
+  }
+
+  async waitForControl(signal) {
+    while (this.control) {
+      signal?.throwIfAborted();
+      const control = this.control;
+      let abort;
+      try {
+        await Promise.race([control.done, new Promise((_, reject) => {
+          abort = () => reject(signal.reason);
+          signal?.addEventListener("abort", abort, { once: true });
+        })]);
+      } finally { if (abort) signal?.removeEventListener("abort", abort); }
+    }
+    signal?.throwIfAborted();
+  }
+
+  /** 通用 CDP 可能执行脚本，所有 Agent RPC 都经过同一个权限边界。 */
+  async agentOperation(task, signal) {
+    do { await this.waitForControl(signal); } while (this.control);
+    const work = task();
+    this.agentJobs.add(work);
+    try { return await work; } finally { this.agentJobs.delete(work); }
+  }
+
+  pauseClock() {
+    const active = this.active;
+    if (!active?.timer) return;
+    clearTimeout(active.timer);
+    active.remaining = Math.max(1, active.remaining - (Date.now() - active.startedAt));
+    active.timer = null;
+  }
+
+  resumeClock() {
+    const active = this.active;
+    if (!active || this.control || active.timer || active.cancelled) return;
+    active.startedAt = Date.now();
+    active.timer = setTimeout(() => active.reject(new Error("Computer call timed out")), active.remaining);
+  }
   async start() {
     this.desktop.on("cursor", (state) => this.emit("cursor", state));
     this.browser.on("cursor", (state) => this.emit("cursor", state));
@@ -87,10 +160,11 @@ export class ComputerDriver extends EventEmitter {
       });
       return;
     }
-    const work =
+    const work = this.agentOperation(() =>
       message.kind === "browser"
         ? this.browserCall(session, message, active.context)
-        : this.desktop.call(message.method, message.params, active.context);
+        : this.desktop.call(message.method, message.params, active.context),
+      active.controller.signal);
     active.pending.add(work);
     work
       .then(
@@ -162,6 +236,8 @@ export class ComputerDriver extends EventEmitter {
       pending: new Set(),
       cancelled: false,
       controller: new AbortController(),
+      remaining: timeoutMs,
+      timer: null,
     };
     this.active = active;
     active.done = new Promise((resolve) => {
@@ -170,21 +246,23 @@ export class ComputerDriver extends EventEmitter {
     const result = new Promise((resolve, reject) =>
       Object.assign(active, { resolve, reject }),
     );
-    let timer;
-    const abort = () =>
-      active.reject(signal.reason ?? new Error("Computer caller disconnected"));
+    // 接管等待期间取消也会拒绝 result，立即安装观察者，避免未处理拒绝。
+    void result.catch(() => {});
+    const abort = () => {
+      const error = signal.reason ?? new Error("Computer caller disconnected");
+      active.controller.abort(error);
+      active.reject(error);
+    };
     let content = [],
       failure;
     try {
       if (!task) active.session = await this.session(context.session_id);
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      timer = setTimeout(
-        () => active.reject(new Error("Computer call timed out")),
-        timeoutMs,
-      );
+      this.resumeClock();
+      await this.waitForControl(active.controller.signal);
       if (task) {
-        const work = task(active.controller.signal);
+        const work = this.agentOperation(() => task(active.controller.signal), active.controller.signal);
         active.pending.add(work);
         work
           .then(active.resolve, active.reject)
@@ -198,13 +276,14 @@ export class ComputerDriver extends EventEmitter {
         });
       }
       content = await result;
+      await this.waitForControl(active.controller.signal);
     } catch (error) {
       failure = error;
       active.cancelled = true;
       active.controller.abort(error);
       if (active.session) await active.session.worker.terminate();
     } finally {
-      clearTimeout(timer);
+      clearTimeout(active.timer);
       signal?.removeEventListener("abort", abort);
       // Native 先响应取消；浏览器已送出的 CDP 命令有自己的有界超时。
       try {

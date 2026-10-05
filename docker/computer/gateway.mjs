@@ -865,7 +865,30 @@ const server = createServer(async (request, response) => {
       cursorClients.add(response);
       response.once("close", () => cursorClients.delete(response));
     } else if (request.method === "GET" && url.pathname === "/activity") {
-      json(response, 200, { ...activity, browser: computer.status() });
+      json(response, 200, { ...activity, browser: computer.status(), control: driver?.control ? { active: true } : { active: false } });
+    } else if (request.method === "POST" && url.pathname.startsWith("/control/")) {
+      const payload = await body(request);
+      requiredString(payload.id, "id", 128);
+      if (url.pathname === "/control/take") {
+        if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
+        await driver.takeControl(payload.id);
+      } else if (url.pathname === "/control/release") {
+        if (driver) await driver.releaseControl(payload.id);
+      } else if (url.pathname !== "/control/renew") {
+        throw new InputError("Unknown control operation");
+      }
+      if (url.pathname !== "/control/release") {
+        if (driver?.control?.id !== payload.id || !driver.control.ready)
+          throw new InputError("Control connection has ended");
+        clearTimeout(controlTimer);
+        const owner = driver;
+        controlTimer = setTimeout(() => owner.releaseControl(payload.id).catch(error => {
+          owner.closed = true;
+          owner.active?.reject(error);
+          console.error("Computer control release failed:", error.message);
+        }), 30000);
+      }
+      json(response, 200, { controlled: url.pathname !== "/control/release" });
     } else if (request.method === "POST" && url.pathname === "/wake") {
       json(response, 200, computer.status());
     } else if (request.method === "POST" && url.pathname === "/touch") {
@@ -936,6 +959,7 @@ const server = createServer(async (request, response) => {
 const openCliServer = createServer(proxyOpenCli).listen(19826, "0.0.0.0");
 let stopping = false;
 let refreshTimer;
+let controlTimer;
 /** 一次刷新持有完整占用；失败回执与下一次计划均保留在控制服务。 */
 async function refreshIdentity() {
   try {
