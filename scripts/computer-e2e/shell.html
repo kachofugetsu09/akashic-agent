@@ -1,0 +1,26 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/product-band.css"><link rel="stylesheet" href="/modules/shell_ui/web_module.css">
+<style>:root {--ak-paper-sheet:#fffdf7;--ak-ink-primary:#292923;--ak-ink-secondary:#68665e;--ak-rule-subtle:#d4d1c6;--ak-rule-focus:#6b7a62;} body{margin:0;font:14px system-ui;}</style>
+<div id="host"></div><script type="module">
+import {activate} from '/shell.js';
+let root;
+const entries = new Map();
+activate({ui:{inject:(point,mount)=>mount({register:entry=>{
+  if(point==='web.root.v1')root=entry;
+  else entries.set(point,[...(entries.get(point)??[]),entry]);
+  return ()=>{};
+}})}});
+const iconSvg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>';
+// 页面目录是 fixture；外框、设置路由、dialog 与交互均来自实际 Shell。
+entries.set('shell.pages.v1',[{id:'chat',label:'对话',route:'',iconSvg,render:host=>{
+  host.innerHTML='<iframe title="对话页面" src="/chat"></iframe>';return ()=>{};
+}},{id:'workbench',label:'工作台',route:'workbench',iconSvg,render:host=>{host.textContent='工作台';return ()=>{};}}]);
+entries.set('shell.settings.v1',[{id:'models',label:'模型',route:'settings/models',iconSvg,render:host=>{
+  host.innerHTML='<h1>模型设置入口</h1>';return ()=>{};
+}}]);
+const view = point => ({entries:entries.get(point)??[],render:(id,host,options)=>{
+  const entry=(entries.get(point)??[]).find(entry=>entry.id===id);
+  return entry.render(host,options,{child:view});
+}});
+root.render(document.querySelector('#host'),{child:view});
+</script></html>

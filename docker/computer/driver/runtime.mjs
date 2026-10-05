@@ -11,12 +11,186 @@ import { AnonymousBrowsers } from "./anonymous.mjs";
 /** 一个容器拥有一份输入状态；各 Session 仅隔离 JS 绑定，不复制浏览器 profile。 */
 export class ComputerDriver extends EventEmitter {
   browser = new BrowserBackend();
-  anonymous = new AnonymousBrowsers();
+  constructor({ anonymousIdleMs = 600000 } = {}) {
+    super();
+    this.anonymous = new AnonymousBrowsers(anonymousIdleMs);
+    this.anonymous.on("closed", ({ browserId, reason, context }) => {
+      this.sessions.get(context.session_id)?.worker.postMessage({ kind: "browserClosed", browserId, reason });
+    });
+    this.anonymous.on("cleanupError", error => {
+      this.closed = true;
+      this.active?.reject(error);
+      console.error("Anonymous browser cleanup failed:", error.message);
+    });
+  }
   desktop = new DesktopBackend();
   sessions = new Map();
   active = null;
   closed = false;
   cancelledCalls = new Map();
+  control = null;
+  agentJobs = new Set();
+
+  /** 人工接管先阻止新操作，再等待已发操作和输入释放。 */
+  async takeControl(id, target = "desktop", signal) {
+    if (this.closed) throw new Error("Computer driver is stopped");
+    if (this.control) throw new Error("Another viewer controls this Computer");
+    const control = { id, target, ready: false, jobs: new Set() };
+    control.done = new Promise((resolve) => { control.resume = resolve; });
+    control.instance = this.anonymous.instances.get(target.split(":")[0]);
+    if (control.instance) this.anonymous.hold(control.instance);
+    this.control = control;
+    this.pauseClock();
+    try {
+      await waitForSignal(Promise.allSettled([...this.agentJobs]), signal);
+      if (this.control !== control || control.release) throw new Error("Control request was cancelled");
+      control.preparing = (async () => {
+        await this.desktop.call("release");
+        await this.browser.releaseInputs();
+        await this.anonymous.releaseInputs(this.active?.context ?? { session_id: "" });
+      })();
+      await waitForSignal(control.preparing, signal);
+      if (this.control !== control || control.release) throw new Error("Control request was cancelled");
+      control.ready = true;
+    } catch (error) {
+      await this.releaseControl(id);
+      throw error;
+    }
+  }
+
+  /** 先禁止新输入，排空人工已发操作，再恢复 Agent；并发释放共用同一结果。 */
+  async releaseControl(id) {
+    const control = this.control;
+    if (control?.id !== id) return;
+    if (control.release) return control.release;
+    const hadInput = control.ready || control.preparing;
+    control.ready = false;
+    control.release = (async () => {
+      if (hadInput) {
+        await control.preparing;
+        await Promise.allSettled([...control.jobs]);
+        await this.browser.releaseInputs();
+        for (const instance of this.anonymous.instances.values())
+          if (instance.backend && !instance.closing) await instance.backend.releaseInputs();
+      }
+      if (this.control !== control) throw new Error("Computer control owner changed during release");
+      this.control = null;
+      if (control.instance) this.anonymous.unhold(control.instance);
+      control.releaseWorkload?.();
+      control.resume();
+      this.resumeClock();
+    })();
+    try { await control.release; }
+    catch (error) { this.closed = true; this.active?.reject(error); throw error; }
+  }
+
+  async waitForControl(signal) {
+    while (this.control) {
+      signal?.throwIfAborted();
+      const control = this.control;
+      await waitForSignal(control.done, signal);
+    }
+    signal?.throwIfAborted();
+  }
+
+  /** 通用 CDP 可能执行脚本，所有 Agent RPC 都经过同一个权限边界。 */
+  async agentOperation(task, signal) {
+    do { await this.waitForControl(signal); } while (this.control);
+    const work = task();
+    this.agentJobs.add(work);
+    try { return await work; } finally { this.agentJobs.delete(work); }
+  }
+
+  pauseClock() {
+    const active = this.active;
+    if (!active?.timer) return;
+    clearTimeout(active.timer);
+    active.remaining = Math.max(1, active.remaining - (Date.now() - active.startedAt));
+    active.timer = null;
+  }
+
+  resumeClock() {
+    const active = this.active;
+    if (!active || this.control || active.timer || active.cancelled) return;
+    active.startedAt = Date.now();
+    active.timer = setTimeout(() => active.reject(new Error("Computer call timed out")), active.remaining);
+  }
+  /** 目录直接来自存活 Context 和页面，不复用个人 profile 或缓存旧目标。 */
+  async targets() {
+    const targets = [{ id: "desktop", label: "主桌面", kind: "desktop" }];
+    for (const instance of this.anonymous.instances.values()) {
+      if (!instance.backend || instance.closing) continue;
+      for (const tab of await instance.backend.listTabs())
+        targets.push({ id: `${instance.id}:${tab.id}`, kind: "browser",
+          browserId: instance.id, tabId: tab.id, title: tab.title, url: tab.url,
+          sessionId: instance.context.session_id, turnId: instance.context.turn_id,
+          label: `匿名 ${instance.id.slice(0, 4)} · ${tab.title || tab.url || "空白页"}` });
+    }
+    return targets;
+  }
+
+  async viewTarget(id) {
+    if (typeof id !== "string" || id.length > 128) throw new TypeError("Invalid view target");
+    const [browserId, tabText] = id.split(":");
+    const instance = this.anonymous.instances.get(browserId);
+    if (!instance?.backend || instance.closing) throw new Error("Browser target has closed");
+    const tabId = Number(tabText);
+    const tabs = await instance.backend.listTabs();
+    if (!tabs.some(tab => tab.id === tabId)) throw new Error("Browser page has closed");
+    return { backend: instance.backend, tabId };
+  }
+
+  async viewFrame(id) {
+    const { backend, tabId } = await this.viewTarget(id);
+    const connection = await backend.attach(tabId);
+    const { data } = await connection.send("Page.captureScreenshot", {
+      format: "jpeg", quality: 70, captureBeyondViewport: false });
+    return Buffer.from(data, "base64");
+  }
+
+  /** 人工输入只接受键鼠和文字，不能透传任意 CDP 或执行脚本。 */
+  async viewInput(id, owner, input) {
+    if (!this.control?.ready || this.control.id !== owner || this.control.target !== id)
+      throw new Error("This viewer does not control this target");
+    const control = this.control;
+    if (!input || typeof input !== "object") throw new TypeError("Invalid browser input");
+    let method, commandParams;
+    if (input.kind === "text") {
+      if (typeof input.text !== "string" || input.text.length > 65536) throw new TypeError("Invalid text input");
+      method = "Input.insertText";
+      commandParams = { text: input.text };
+    } else if (input.kind === "key") {
+      if (!["keyDown", "keyUp"].includes(input.type) || typeof input.key !== "string"
+          || typeof input.code !== "string" || input.key.length > 64 || input.code.length > 64
+          || !Number.isInteger(input.keyCode) || input.keyCode < 0 || input.keyCode > 255
+          || !Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)
+        throw new TypeError("Invalid key input");
+      method = "Input.dispatchKeyEvent";
+      commandParams = { type: input.type, key: input.key, code: input.code, modifiers: input.modifiers,
+        windowsVirtualKeyCode: input.keyCode,
+        text: input.type === "keyDown" && input.key.length === 1 && !(input.modifiers & 6) ? input.key : "" };
+    } else if (input.kind === "mouse") {
+      if (!["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"].includes(input.type)
+          || !["none", "left", "middle", "right"].includes(input.button)
+          || !Number.isInteger(input.buttons) || input.buttons < 0 || input.buttons > 7
+          || ![input.x, input.y, input.deltaX, input.deltaY].every(Number.isFinite)
+          || Math.abs(input.x) > 16384 || Math.abs(input.y) > 16384
+          || Math.abs(input.deltaX) > 100000 || Math.abs(input.deltaY) > 100000)
+        throw new TypeError("Invalid pointer input");
+      method = "Input.dispatchMouseEvent";
+      commandParams = { type: input.type, x: input.x, y: input.y, button: input.button, buttons: input.buttons,
+        clickCount: input.type === "mouseMoved" || input.type === "mouseWheel" ? 0 : 1,
+        deltaX: input.deltaX, deltaY: input.deltaY };
+    } else throw new TypeError("Unknown browser input");
+    const work = (async () => {
+      const { backend, tabId } = await this.viewTarget(id);
+      if (this.control !== control || !control.ready) throw new Error("Control connection has ended");
+      return backend.execute({ target: { tabId }, method, commandParams });
+    })();
+    control.jobs.add(work);
+    try { return await work; } finally { control.jobs.delete(work); }
+  }
+
   async start() {
     this.desktop.on("cursor", (state) => this.emit("cursor", state));
     this.browser.on("cursor", (state) => this.emit("cursor", state));
@@ -62,13 +236,14 @@ export class ComputerDriver extends EventEmitter {
     if (message.kind === "ready" || message.kind === "metadata") return;
     if (message.kind === "result") {
       if (active?.session === session) {
-        if (message.error)
+        if (message.error) {
+          active.scriptError = message.scriptError === true;
           active.reject(
             Object.assign(new Error(message.error), {
               content: message.content,
             }),
           );
-        else active.resolve(message.content);
+        } else active.resolve(message.content);
       }
       return;
     }
@@ -87,10 +262,11 @@ export class ComputerDriver extends EventEmitter {
       });
       return;
     }
-    const work =
+    const work = this.agentOperation(() =>
       message.kind === "browser"
         ? this.browserCall(session, message, active.context)
-        : this.desktop.call(message.method, message.params, active.context);
+        : this.desktop.call(message.method, message.params, active.context),
+      active.controller.signal);
     active.pending.add(work);
     work
       .then(
@@ -119,7 +295,7 @@ export class ComputerDriver extends EventEmitter {
       return this.browser.call(message.method, params, context);
     return this.anonymous.call(browserId, message.method, params, context);
   }
-  /** 调用结束时先 drain 再 release；异常会使本 Session 的 JS 对象失效。 */
+  /** 调用结束先 drain 和释放输入；完整结算的脚本错误保留 Session。 */
   async run(
     { context, code = "", endTurn = false, timeoutMs = 60_000, task },
     signal,
@@ -162,6 +338,8 @@ export class ComputerDriver extends EventEmitter {
       pending: new Set(),
       cancelled: false,
       controller: new AbortController(),
+      remaining: timeoutMs,
+      timer: null,
     };
     this.active = active;
     active.done = new Promise((resolve) => {
@@ -170,21 +348,23 @@ export class ComputerDriver extends EventEmitter {
     const result = new Promise((resolve, reject) =>
       Object.assign(active, { resolve, reject }),
     );
-    let timer;
-    const abort = () =>
-      active.reject(signal.reason ?? new Error("Computer caller disconnected"));
+    // 接管等待期间取消也会拒绝 result，立即安装观察者，避免未处理拒绝。
+    void result.catch(() => {});
+    const abort = () => {
+      const error = signal.reason ?? new Error("Computer caller disconnected");
+      active.controller.abort(error);
+      active.reject(error);
+    };
     let content = [],
-      failure;
+      failure, reset = false;
     try {
       if (!task) active.session = await this.session(context.session_id);
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      timer = setTimeout(
-        () => active.reject(new Error("Computer call timed out")),
-        timeoutMs,
-      );
+      this.resumeClock();
+      await this.waitForControl(active.controller.signal);
       if (task) {
-        const work = task(active.controller.signal);
+        const work = this.agentOperation(() => task(active.controller.signal), active.controller.signal);
         active.pending.add(work);
         work
           .then(active.resolve, active.reject)
@@ -198,32 +378,35 @@ export class ComputerDriver extends EventEmitter {
         });
       }
       content = await result;
+      await this.waitForControl(active.controller.signal);
     } catch (error) {
       failure = error;
+      reset = !active.scriptError || endTurn || active.controller.signal.aborted;
       active.cancelled = true;
       active.controller.abort(error);
-      if (active.session) await active.session.worker.terminate();
+      if (reset && active.session) await active.session.worker.terminate();
     } finally {
-      clearTimeout(timer);
+      clearTimeout(active.timer);
       signal?.removeEventListener("abort", abort);
       // Native 先响应取消；浏览器已送出的 CDP 命令有自己的有界超时。
       try {
-        if (failure) await this.desktop.cancel();
+        if (reset) await this.desktop.cancel();
         await Promise.allSettled([...active.pending]);
-        if (!failure)
+        if (!reset)
           await deadline(this.desktop.call("release"), 4000, "Native release");
         await deadline(this.browser.releaseInputs(), 11000, "Browser release");
         await deadline(this.anonymous.releaseInputs(context), 11000, "Anonymous input release");
         if (endTurn)
           await deadline(this.browser.endTurn(context), 11000, "Turn cleanup");
-        if (endTurn || failure)
+        if (endTurn || reset)
           await this.anonymous.cleanup(
             (instance) =>
               instance.context.session_id === context.session_id &&
-              (failure || instance.context.turn_id === context.turn_id),
+              (reset || instance.context.turn_id === context.turn_id),
           );
       } catch (error) {
         this.closed = true;
+        reset = true;
         await this.desktop.cancel().catch(() => {});
         this.browser.close();
         failure = new AggregateError(
@@ -231,12 +414,12 @@ export class ComputerDriver extends EventEmitter {
           "Computer input release is uncertain; restart the workload",
         );
       }
-      if (failure && active.session) {
+      if (reset && active.session) {
         await active.session.worker.terminate();
         this.sessions.delete(context.session_id);
         await rm(active.session.directory, { recursive: true, force: true });
       }
-      if (failure && !this.closed) {
+      if (reset && !this.closed) {
         try {
           await deadline(this.desktop.start(), 4000, "Native restart");
         } catch (error) {
@@ -253,7 +436,8 @@ export class ComputerDriver extends EventEmitter {
     if (failure) {
       this.emit("cursor", { point: null, error: "操作中断，位置标记已清除" });
       failure.message +=
-        "; earlier effects may remain; JS bindings for this session were reset";
+        reset ? "; earlier effects may remain; JS bindings for this session were reset"
+          : "; earlier effects may remain; JS bindings and browser pages were kept; inspect the current page before retrying";
       throw failure;
     }
     return { content, call_id: context.call_id };
@@ -318,11 +502,10 @@ export class ComputerDriver extends EventEmitter {
   }
   async close() {
     this.closed = true;
-    if (this.active) {
-      const active = this.active;
-      active.reject(new Error("Computer driver is stopping"));
-      await active.done;
-    }
+    const active = this.active;
+    active?.reject(new Error("Computer driver is stopping"));
+    if (this.control) await this.releaseControl(this.control.id);
+    if (active) await active.done;
     for (const session of this.sessions.values())
       await session.worker.terminate();
     await this.anonymous.cleanup(() => true);
@@ -349,4 +532,16 @@ async function deadline(work, ms, label) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** 等待期间上游取消立即退出；已送出的操作仍由原 owner 结算。 */
+async function waitForSignal(work, signal) {
+  signal?.throwIfAborted();
+  let abort;
+  try {
+    return await Promise.race([work, new Promise((_, reject) => {
+      abort = () => reject(signal.reason);
+      signal?.addEventListener("abort", abort, { once: true });
+    })]);
+  } finally { if (abort) signal?.removeEventListener("abort", abort); }
 }
