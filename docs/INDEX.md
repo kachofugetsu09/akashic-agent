@@ -34,7 +34,7 @@
 | 涉及的行为或状态 | 需求与设计入口 | 真实实现入口 |
 |---|---|---|
 | 窗口、摘要、裁切、历史加载、重试 | CTX、SES-005 → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md)、[上下文设计](design/session-context-compaction-ledger.md) | `plugins/context/`、`plugins/compaction/`、`session/` |
-| Prompt 人格与主动消息上下文 | CTX、PRM → [人格设计](design/veda-persona.md)、[Wake 最近送达](design/wake-recent-delivery-context.md) | `agent/prompting/`、`plugins/wake/` |
+| Prompt 人格与主动消息上下文 | CTX、PRM → [人格设计](design/veda-persona.md)、[Wake 最近送达](design/wake-recent-delivery-context.md) | `plugins/prompt/`、`plugins/wake/` |
 | 长工具结果折叠、原文回读 | CTX-008 → [0081](decisions/0081-content-views-keep-original-messages.md) | `plugins/content/`、`plugins/context/` |
 | Message、Turn、来源、回复和送达 | SES、OUT → [消息设计](design/0902-reviewed-v4.md)、[故障恢复](design/interrupt-and-fault-model.md) | `session/`、`plugins/sources/`、`plugins/reply/`、`plugins/delivery/` |
 | 同 Turn 输入、打断、撤销 | SES、CTRL → [0025](decisions/0025-codex-style-same-turn-input.md)、[同 Turn 设计](design/codex-style-same-turn-input.md) | `plugins/conversation/`、`plugins/turn_projection/` |
