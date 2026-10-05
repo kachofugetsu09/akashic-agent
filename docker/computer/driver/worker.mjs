@@ -196,6 +196,7 @@ const { setupBrowserRuntime } =
   await import("./reference/browser/scripts/browser-client.mjs");
 
 const services = new Map();
+const closedBrowsers = new Map();
 
 /** 每个匿名 service 属于可终止的 worker，关闭后连同模块缓存一起释放。 */
 async function createBrowser() {
@@ -275,7 +276,13 @@ async function createBrowser() {
         await call("browser", "closeBrowser", { browserId, params: {} });
         await dispose();
       };
-      return browser;
+      const exposed = new Proxy(browser, { get(target, key) {
+        if (key === "browserId") return browserId;
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+      services.get(browserId).browser = exposed;
+      return exposed;
     });
   } catch (error) {
     await dispose();
@@ -406,6 +413,11 @@ parentPort.on("message", (message) => {
             params: message.event,
           }),
         );
+  } else if (message.kind === "browserClosed") {
+    closedBrowsers.set(message.browserId, message.reason === "idle" ? "was released after idle timeout" : "was closed");
+    if (closedBrowsers.size > 64) closedBrowsers.delete(closedBrowsers.keys().next().value);
+    const service = services.get(message.browserId);
+    if (service) void service.dispose().catch(error => { throw error; });
   } else if (message.kind === "run") {
     callScope
       .run(message.context, () => run(message))
@@ -416,6 +428,7 @@ parentPort.on("message", (message) => {
             kind: "result",
             content: output,
             error: error.stack ?? String(error),
+            scriptError: error.scriptError === true,
           }),
       );
   }
@@ -434,9 +447,28 @@ async function run(message) {
       );
       for (const doc of docs)
         if (doc.requiredFor?.length) await agent.documentation.get(doc.name);
-      repl.context.agent = agent;
-      agent.browsers.create = createBrowser;
-      repl.context.browser = await agent.browsers.get("cdp");
+      const getBrowser = agent.browsers.get.bind(agent.browsers);
+      const listBrowsers = agent.browsers.list.bind(agent.browsers);
+      const browsers = Object.create(agent.browsers);
+      browsers.get = async (id) => {
+        const service = services.get(id);
+        if (service) {
+          requireCall();
+          if (service.turn !== context.turn_id) throw new Error("Anonymous browser belongs to another Turn");
+          return service.browser;
+        }
+        if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(id))
+          throw new Error(`Anonymous browser ${closedBrowsers.get(id) ?? "is closed or unknown"}; list browsers before creating a replacement`);
+        return getBrowser(id);
+      };
+      browsers.list = async () => [...await listBrowsers(), ...[...services].map(([id]) =>
+        ({ id, name: `Anonymous ${id.slice(0, 4)}`, type: "cdp" }))];
+      browsers.create = createBrowser;
+      // 参考 SDK 缓存方法包装，扩展放在外层，不覆盖已缓存的方法。
+      repl.context.agent = new Proxy(agent, { get(target, key) {
+        return key === "browsers" ? browsers : Reflect.get(target, key, target);
+      } });
+      repl.context.browser = await getBrowser("cdp");
       await repl.context.browser.documentation();
       initialized = true;
     }
@@ -449,14 +481,19 @@ async function run(message) {
       for (const service of [...services.values()])
         if (service.turn === context.turn_id) await service.dispose();
     } else {
-      const value = await evaluate(message.code);
-      if (value !== undefined) nodeRepl.write(value);
+      let scriptError;
+      try {
+        const value = await evaluate(message.code);
+        if (value !== undefined) nodeRepl.write(value);
+      } catch (error) { scriptError = error; }
+      // 脚本失败也运行参考客户端的结算 hook；hook 失败不能保留绑定。
       for (const hook of hooks) await hook.run();
+      if (scriptError) { scriptError.scriptError = true; throw scriptError; }
     }
     return output;
   } finally {
-    for (const handle of handles) await handle.end();
-    context = undefined;
+    try { for (const handle of handles) await handle.end(); }
+    finally { context = undefined; }
   }
 }
 /** 顺序处理 service RPC，输出与 backend 调用始终绑定发起它的 Computer call。 */

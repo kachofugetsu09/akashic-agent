@@ -16,11 +16,13 @@ container, using its logged-in Chromium profile. `browser`, `agent`, `sky`, and 
 If the tool is not visible, call `load_tools` with `{"plugin":"computer"}`. Its exact tool name is
 `computer`.
 
-Bindings persist within this Akashic Session while Computer is awake; a timeout, error, reset,
+Bindings persist within this Akashic Session while Computer is awake; a timeout, cancellation, reset,
 idle sleep, or workload restart invalidates them. First use wakes the saved personal profile.
 An active Turn prevents sleep. After the Turn and identity refresh finish, 10 minutes without
 actual input releases the desktop. A panel left open does not keep it alive.
-After a tool error, read the error and API, then re-list tabs and acquire fresh bindings.
+After a script error, bindings and pages remain if input release was confirmed. Read the error and
+API, inspect the current page, and reuse the existing browser. Acquire fresh bindings only when the
+receipt says they were reset or the browser was closed.
 Earlier actions may have taken effect: inspect the current page before retrying an action.
 Correct an invalid method and continue; do not treat a script error as task completion.
 
@@ -92,7 +94,13 @@ For anonymous E2E, use the managed extension `await agent.browsers.create()`. It
 Browser API with an empty, isolated Context in a separate shared headless Chromium. It never copies
 the personal profile, login state, or OpenCLI extension. `browser` still refers to the main browser.
 At most eight anonymous browsers can be open. Close them with `await testBrowser.close()`;
-ending the Turn, a tool error, Session reset, or sleep also closes them. Another Turn cannot use them.
+ending the Turn, an interrupted call, Session reset, or sleep also closes them. Ordinary script errors
+keep them when cleanup was confirmed. Another Turn cannot use them. Each instance has a stable
+`browserId`: `await agent.browsers.get(testBrowser.browserId)` returns that same browser; use
+`await agent.browsers.list()` to find live instances before creating another. Reuse the browser and tab
+across tool calls instead of restarting the E2E for every step. An instance idle for 10 minutes is
+released; running operations and explicit human takeover prevent idle release. Watching does not.
+A closed or expired ID fails explicitly and never selects the main browser.
 The last Context releases the headless process and its temporary data. A process crash affects all
 anonymous Contexts; close them and acquire fresh bindings. Saved screenshots keep their normal owner.
 

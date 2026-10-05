@@ -7,6 +7,7 @@
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
 | [0091](0091-skill-sources-are-layered-providers.md) | proposed | Skill 来源是分层 Provider，本地目录不必打包成插件 | PLG-009、PLG-014、PLG-016、CTX-004 |
+| [0092](0092-computer-viewing-and-control.md) | proposed | Computer 多目标观看与人工接管分开 | PLG-017、WEBUI-008 |
 | [0088](0088-computer-streams-h264-over-dashboard-websocket.md) | proposed | Computer 经现有 Dashboard WebSocket 传输 H.264 | PLG-017、RUN-016、WEBUI-008 |
 | [0086](0086-session-soft-delete-and-akasha-replay.md) | accepted | 会话软删除：逻辑失效可恢复，Akasha 学习与重放继续参与 | SES-003、SES-005、STA-003、MEM-009、WEBUI-009 |
 | [0087](0087-session-title-override.md) | proposed | 会话标题覆盖：显式管理状态，空值回到推导标题 | SES-003、WEBUI-009 |
@@ -110,4 +111,5 @@
 
 | [0091](0091-shell-self-deployment.md) | accepted | Shell 提交宿主部署，正常回合与排空之后更新 Docker | RUN-004、SH-001、OUT-001、MIG-001 |
 
-| [0092](0092-plugin-runtime-uses-installed-files.md) | accepted | 插件使用安装文件与当前配置，取消强快照归档 | PLG-002、PLG-003、PLG-010、PLG-013、STA-003 |
+| [0094](0094-plugin-runtime-uses-installed-files.md) | accepted | 插件使用安装文件与当前配置，取消强快照归档 | PLG-002、PLG-003、PLG-010、PLG-013、STA-003 |
+| [0093](0093-computer-reuses-anonymous-browsers.md) | proposed | 匿名实例稳定 ID、错误保留进度与闲置回收 | PLG-017 |
