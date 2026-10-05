@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from agent.plugin_composition.model import ServiceKey
 from session.log import MessagePage
+from agent.plugin_contracts.message import ContentPart, Message
+
+# 工具内容 owner 提供派生展示；读取回调只允许当前消息之前的同 Session 内容。
+ToolResultDisplayProvider = Callable[
+    [ContentPart, Callable[[str], Awaitable[Message | None]]], Awaitable[object]
+]
 
 
 class MessageDisplayReader(Protocol):

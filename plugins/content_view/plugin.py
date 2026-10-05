@@ -1,7 +1,7 @@
 """工具原文持续展示；回读只保存原文范围。"""
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import cast
 
@@ -12,6 +12,8 @@ from agent.plugin_contracts import ContentPart, ContentReferences, Message, Tool
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.models import CONTENT_VIEWS, ContentTransform, RenderedContent
 from agent.plugin_contracts.tools import TOOLS, CallSource, ProviderBoundTool, Result
+from agent.plugin_contracts.ui import ToolResultDisplayProvider
+from agent.plugin_composition import ServiceKey
 
 api_version = 3
 name = "content_view"
@@ -21,6 +23,7 @@ inject = (CONTENT, CONTENT_VIEWS, TOOLS)
 
 READ_KIND = "content_view.read"
 READ_TOOL = "read_content"
+READ_DISPLAY = ServiceKey[ToolResultDisplayProvider]("message.result_display:content_view.read")
 
 
 class Config(BaseModel):
@@ -71,6 +74,15 @@ def read_text(messages: Mapping[str, Message], ref: ReadReference) -> str:
     if not 0 <= ref.start <= ref.end <= len(text):
         raise ValueError("回读范围超出原文；未返回部分结果")
     return text[ref.start:ref.end]
+
+
+async def display_read(part: ContentPart, read_message: Callable[[str], Awaitable[Message | None]]) -> object:
+    """只读原文范围；缺失引用明确展示原因，不重跑工具或改写历史。"""
+    ref = ReadReference.model_validate(json_value(part.value))
+    target = await read_message(ref.message_id)
+    if target is None:
+        return {"error": "引用的原始内容不可用", "reference": ref.model_dump()}
+    return read_text({target.message_id: target}, ref)
 
 
 class ReadContent:
@@ -140,6 +152,7 @@ def prepare_view(messages: tuple[Message, ...], source: str, tools: frozenset[st
 async def apply(ctx: Context) -> None:
     """通过普通内容声明、投影注册和工具目录接入；不申请任何写入或存储权限。"""
     Config.model_validate(ctx.config)
+    await ctx.provide(READ_DISPLAY, display_read)
     await ctx.require(CONTENT).register(ctx, {"name": "read_content", "content": {READ_KIND: check_read}})
     catalog = ctx.require(TOOLS)
     await catalog.declare_group(ctx, always_on=True, description=desc)

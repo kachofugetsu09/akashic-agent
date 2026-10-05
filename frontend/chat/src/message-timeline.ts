@@ -1,3 +1,5 @@
+import { toolDataText } from "./message-rendering-policy";
+
 export interface TimelineAttachment {
   artifact_id: string;
   kind: "file" | "image";
@@ -12,7 +14,8 @@ export type TimelinePart =
   | { kind: "tool_call"; binding_id: string; name: string; arguments: Record<string, unknown> }
   | { kind: "model.facts"; value: { call_record_id: string; thinking: string | null } }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
-  | { kind: string; display: "unavailable" };
+  | { kind: string; display: "unavailable" }
+  | { kind: string; display: "data"; value: unknown; rendered?: unknown };
 
 export type TimelineBody =
   | { kind: "input"; parts: TimelinePart[] }
@@ -129,6 +132,9 @@ export function readTimelineMessage(value: unknown): TimelineMessage {
       if (!ref || !nonempty(ref.message_id) || !integer(ref.part_index)
         || !["success", "denied", "error", "interrupted"].includes(String(body.outcome))) throw new Error("工具结果引用或状态无效");
     }
+    if (body.kind !== "tool_result" && body.parts.some((part) => object(part)?.display === "data")) {
+      throw new Error("通用工具数据只能出现在工具结果中");
+    }
     // 2. 附件引用必须能从本行元数据解析，不猜存储路径。
     const ids = new Set(row.attachments.map((item) => (item as TimelineAttachment).artifact_id));
     if (body.parts.some((part) => object(part)?.kind === "artifact_ref" && !ids.has(object(part)?.value as string))) {
@@ -150,7 +156,7 @@ export function mergeTimelineMessages(current: TimelineMessage[], incoming: Time
     if (prior) {
       const { metadata: before, ...oldFacts } = prior;
       const { metadata: after, ...newFacts } = row;
-      if (JSON.stringify(oldFacts) !== JSON.stringify(newFacts) || JSON.stringify(before) !== JSON.stringify(after)) {
+      if (JSON.stringify(messageFacts(oldFacts)) !== JSON.stringify(messageFacts(newFacts)) || JSON.stringify(before) !== JSON.stringify(after)) {
         throw new Error("历史消息正文发生变化");
       }
     }
@@ -160,9 +166,35 @@ export function mergeTimelineMessages(current: TimelineMessage[], incoming: Time
   return [...byId.values()].sort((left, right) => left.seq - right.seq);
 }
 
+/** 引用展示可以随可用性刷新；原内容、身份与顺序仍必须一致。 */
+function messageFacts(message: Omit<TimelineMessage, "metadata">) {
+  if (message.body.kind !== "tool_result") return message;
+  return { ...message, body: { ...message.body, parts: message.body.parts.map((part) => {
+    if (!("display" in part) || part.display !== "data") return part;
+    const { rendered, ...facts } = part;
+    return facts;
+  }) } };
+}
+
 export function timelineText(message: TimelineMessage): string {
+  if (message.body.kind === "tool_result") return toolResultValues(message).map(toolDataText).join("\n");
   return message.body.kind === "control" ? message.body.reason ?? "" : message.body.parts
     .flatMap((part) => !("display" in part) && part.kind === "text" ? [part.value] : []).join("\n");
+}
+
+/** 工具数据只交给通用结果视图，不把结构化内容伪装成聊天正文。 */
+export function timelineToolOutput(message: TimelineMessage): unknown {
+  if (message.body.kind !== "tool_result") return undefined;
+  const values = toolResultValues(message);
+  return values.length === 1 ? values[0] : values;
+}
+
+function toolResultValues(message: TimelineMessage): unknown[] {
+  if (message.body.kind !== "tool_result") return [];
+  return message.body.parts.flatMap((part): unknown[] => {
+    if ("display" in part) return part.display === "data" ? ["rendered" in part ? part.rendered : part.value] : [];
+    return part.kind === "text" ? [part.value] : [];
+  });
 }
 
 export function timelineReply(message: TimelineMessage): TimelineReply {
@@ -174,6 +206,7 @@ export function timelineReply(message: TimelineMessage): TimelineReply {
 function validPart(value: unknown): boolean {
   const part = object(value);
   if (!part || !nonempty(part.kind)) return false;
+  if (part.display === "data") return "value" in part && part.kind !== "tool_call";
   if (part.display === "unavailable") return !["text", "artifact_ref", "reply_ref", "tool_call", "model.facts"].includes(part.kind);
   switch (part.kind) {
     case "text": return typeof part.value === "string";
@@ -242,7 +275,7 @@ export function historyTranscript(archive: unknown): HistoryTranscriptGroup[] | 
 
 /** 聊天可见性只影响布局，原始 Message、part index 和同步 seq 不变。 */
 export function isTimelinePartVisible(part: TimelinePart): boolean {
-  if ("display" in part) return !["channel.origin", "context.summary", "tool.selection", "model.selection", "command.result", "akasha.recall", "akasha.feedback"].includes(part.kind);
+  if ("display" in part) return part.display === "data" || !["channel.origin", "context.summary", "tool.selection", "model.selection", "command.result", "akasha.recall", "akasha.feedback"].includes(part.kind);
   if ("archive" in part) {
     if (part.kind !== "history.transcript") return false;
     const groups = historyTranscript(part.archive);
@@ -377,7 +410,8 @@ export function timelineVisibleMessages(messages: TimelineMessage[], groups = ti
     if (groups.hiddenBodies.has(message.id) && !message.attachments.length && message.body.kind === "output"
       && !message.body.parts.some((part) => part.kind !== "text" && isTimelinePartVisible(part))) return false;
     if (message.body.kind !== "tool_result" || message.attachments.length) return true;
-    if (message.body.parts.some((part) => isTimelinePartVisible(part) && part.kind !== "text")) return true;
+    if (message.body.parts.some((part) => isTimelinePartVisible(part) && part.kind !== "text"
+      && !("display" in part && part.display === "data"))) return true;
     const call = byId.get(message.body.call_ref.message_id);
     return call?.body.kind !== "output" || call.body.parts[message.body.call_ref.part_index]?.kind !== "tool_call";
   });

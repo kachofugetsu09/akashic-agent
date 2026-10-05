@@ -16,22 +16,25 @@ from types import SimpleNamespace
 from agent.plugin_composition import CompositionRoot, ServiceKey
 from agent.plugin_composition.model import PluginRuntime
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolResult
+from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall, ToolResult, json_value
 from agent.plugin_contracts.models import CONTENT_VIEWS, MODEL_CALLS, RenderedContent
 from agent.plugin_contracts.tools import CallSource
 from agent.host_bridge.filesystem import ListDirOperation
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from plugins.content_view.plugin import ReadContent, prepare_view
+from plugins.content_view.plugin import ReadContent, check_read, prepare_view
 from plugins.models.content import render_content
 from plugins.models.projection import MessageProjection
 from plugins.models.store import ModelsStore
 from plugins.models.views import ContentViews
 from plugins.react.plugin import _decode_request, _encode_request
 from session.log import MessageLog
+from agent.plugin_composition.message_view import project_message_rows
 from session.artifact_store import ArtifactStore
 from tests.test_default_reply import application, live_root
+
+DISPLAY_SAMPLE: Path | None = None
 
 LONG = '完整结果🙂汉字\n' * 3000 + 'END_OF_RESULT'
 DRIVER = '''        async def complete(self, request):
@@ -77,11 +80,13 @@ def sources(directory: Path) -> None:
     end = text.index('    descriptor = BoundModelDescriptor(', start)
     text = text[:start] + DRIVER + text[end:]
     text = text.replace('from contextlib import asynccontextmanager',
+                        'from plugins.models.projection import MODEL_DISPLAY, display_facts\n'
                         'import json\nfrom plugins.models.views import CONTENT_VIEWS, ContentViews\n'
                         + f'LONG = {LONG!r}\nfrom contextlib import asynccontextmanager')
     text = text.replace('await ctx.provide(MODEL_CONTENT, ContentOwner())',
                         'await ctx.provide(MODEL_CONTENT, ContentOwner())\n'
-                        '    await ctx.provide(CONTENT_VIEWS, ContentViews(ctx))')
+                        '    await ctx.provide(CONTENT_VIEWS, ContentViews(ctx))\n'
+                        '    await ctx.provide(MODEL_DISPLAY, display_facts)')
     text = text.replace('return Result("success", (ContentPart("text", "written"),))',
                         'return Result("success", (ContentPart("text", "small"),)) if args.get("short") else '
                         'Result("success", (ContentPart("text", LONG), ContentPart("text", "short result")))')
@@ -132,6 +137,19 @@ async def check(directory: Path) -> dict[str, object]:
             restored = _decode_request(_encode_request(request))
             assert restored.content_refs == request.content_refs and restored.messages == request.messages
             assert restored.content_transformed == request.content_transformed
+        # 实际页面投影展开不在当前页中的原文，且不重跑工具或改写消息。
+        async with live_root(host) as root:
+            reader = log.reader('test:room')
+            display_rows = await project_message_rows(root, reader.read_page(limit=50), display_only=True)
+            tails = []
+            for message, expected in zip(reads, (LONG, LONG[2:27])):
+                page = reader.read_page(after_seq=message.seq - 1, through_seq=message.seq, limit=1)
+                tail = await project_message_rows(root, page, display_only=True)
+                assert tail[0]['body']['parts'][0]['rendered'] == expected
+                tails.extend(tail)
+            assert reader.snapshot() == rows
+            if DISPLAY_SAMPLE is not None:
+                DISPLAY_SAMPLE.write_text(json.dumps({'messages': display_rows, 'tail': tails}, ensure_ascii=False))
         saved_rows = rows
     assert (directory / 'effect.txt').read_text() == 'once\nonce\nonce\n'
     assert not any('messages' in statement.lower() and statement.lstrip().lower().startswith(
@@ -193,7 +211,70 @@ async def check(directory: Path) -> dict[str, object]:
                       'readback stays visible', 'range readback', 'no reference chains', 'session scope',
                       'invalid range', 'request freeze', 'disk reopen', 'no tool no fold',
                       'render is not exposure', 'summary boundary', 'unrelated content view', 'removed view resets opaque',
-                      'original rows unchanged', 'external tool not rerun']}
+                      'original rows unchanged', 'external tool not rerun', 'read-only display with paged reference']}
+
+
+async def check_data_display(directory: Path) -> list[dict[str, object]]:
+    """真实调用引用和消息存储经页面协议输出未知工具数据。"""
+    async with application(directory, replying=True, extra_sources=sources) as (log, host):
+        async with live_root(host) as root:
+            await root.context.require(CHANNEL_INPUT)(
+                'test:room', 'u1', ChannelInboundMessage('test', 'user', 'room', 'data display',
+                                                       datetime(2026, 9, 5, tzinfo=UTC), {}))
+        async def completed():
+            async for _ in log.catalog().follow():
+                rows = log.reader('test:room').snapshot()
+                if any(isinstance(row.body, Output) and row.body.finish == 'complete' for row in rows):
+                    return rows
+        original = await asyncio.wait_for(completed(), 30)
+        call = next(part for row in original if isinstance(row.body, Output)
+                    for part in row.body.parts if isinstance(part, ToolCall))
+        output = log.writer('test:room', author='assistant', source='display-fixture',
+                            body_types=(Output,), content={}, check_call=lambda _: None)
+        request = output.append('data-call', Output((call,), 'continue'))
+        ref = CallRef(request.message_id, 0)
+        writer = log.writer('test:room', author='tool', source='display-fixture', body_types=(ToolResult,),
+                            content={'fixture.data': lambda _: ContentReferences()}, call_ref=ref)
+        value = {'output': 'line one\n**literal** <script>literal</script>', 'empty': '',
+                 'zero': 0, 'false': False, 'null': None, 'nested': {'items': [1, 2]}}
+        result = writer.append('data-result', ToolResult(ref, 'error', (ContentPart('fixture.data', value),)))
+        before = log.reader('test:room').snapshot()
+        async with live_root(host) as root:
+            page = log.reader('test:room').read_page(after_seq=request.seq - 1, limit=50)
+            displayed = await project_message_rows(root, page, display_only=True)
+        assert displayed[-1]['body']['outcome'] == 'error'
+        assert displayed[-1]['body']['parts'][0]['value'] == value
+        assert log.reader('test:room').snapshot() == before
+        assert before[:len(original)] == original and json_value(result.body.parts[0].value) == value
+        # 同一个真实展示入口覆盖缺失引用、跨 Session 引用与未来消息引用。
+        foreign_call = log.writer('test:other', author='assistant', source='display-fixture',
+                                  body_types=(Output,), content={}, check_call=lambda _: None).append(
+                                      'foreign-call', Output((call,), 'continue'))
+        foreign_ref = CallRef(foreign_call.message_id, 0)
+        log.writer('test:other', author='tool', source='display-fixture', body_types=(ToolResult,),
+                   content={'text': lambda _: ContentReferences()}, call_ref=foreign_ref).append(
+                       'foreign-result', ToolResult(foreign_ref, 'success', (ContentPart('text', 'private'),)))
+        for index, target in enumerate(('missing-result', 'foreign-result', 'future-result')):
+            request = output.append(f'reference-call-{index}', Output((call,), 'continue'))
+            ref = CallRef(request.message_id, 0)
+            log.writer('test:room', author='tool', source='display-fixture', body_types=(ToolResult,),
+                       content={'content_view.read': check_read}, call_ref=ref).append(
+                           f'reference-result-{index}', ToolResult(ref, 'success', (ContentPart('content_view.read',
+                           {'message_id': target, 'part_index': 0, 'start': 0, 'end': 3}),)))
+        request = output.append('future-call', Output((call,), 'continue'))
+        ref = CallRef(request.message_id, 0)
+        log.writer('test:room', author='tool', source='display-fixture', body_types=(ToolResult,),
+                   content={'text': lambda _: ContentReferences()}, call_ref=ref).append(
+                       'future-result', ToolResult(ref, 'success', (ContentPart('text', 'future'),)))
+        before = log.reader('test:room').snapshot()
+        async with live_root(host) as root:
+            page = log.reader('test:room').read_page(after_seq=result.seq, limit=50)
+            references = await project_message_rows(root, page, display_only=True)
+        failures = [row for row in references if row['id'].startswith('reference-result-')]
+        assert len(failures) == 3
+        assert all(row['body']['parts'][0]['rendered']['error'] == '引用的原始内容不可用' for row in failures)
+        assert log.reader('test:room').snapshot() == before
+        return displayed
 
 
 async def check_failure(directory: Path) -> None:
@@ -279,6 +360,12 @@ async def check_lifecycle(directory: Path) -> None:
 
 async def run(directory: Path) -> dict[str, object]:
     result = await check(directory / 'normal')
+    data_rows = await check_data_display(directory / 'data-display')
+    if DISPLAY_SAMPLE is not None:
+        sample = json.loads(DISPLAY_SAMPLE.read_text())
+        sample['data'] = data_rows
+        DISPLAY_SAMPLE.write_text(json.dumps(sample, ensure_ascii=False))
+    result['checks'] += ['generic data display', 'failed result keeps body', 'missing, foreign and future display references']
     await check_failure(directory / 'failure')
     await check_lifecycle(directory / 'lifecycle')
     result['checks'] += ['failed provider is not exposure', 'contributor drain', 'closed view', 'conflicting views']
@@ -366,10 +453,13 @@ async def check_directory(directory: Path) -> dict[str, object]:
 def main() -> None:
     """默认跑原文场景；可选目录页，恢复模式只供已创建场景的子进程。"""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--display-sample', type=Path)
     parser.add_argument('--directory-page', action='store_true')
     parser.add_argument('--restart', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--failed', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    global DISPLAY_SAMPLE
+    DISPLAY_SAMPLE = args.display_sample
     if args.restart is not None:
         print(json.dumps(asyncio.run(restart(args.restart, failed=args.failed)), ensure_ascii=False))
         return

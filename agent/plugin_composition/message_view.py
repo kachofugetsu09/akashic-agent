@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, aclosing
 from dataclasses import asdict, dataclass, field
 from types import MappingProxyType
@@ -11,9 +11,11 @@ from agent.plugin_composition.model import ServiceKey
 from agent.plugin_contracts.tools import TOOL_DISPLAY_NAME
 from agent.plugin_contracts.ui import (
     MessageDisplayReader as MessageDisplayReader,
+    ToolResultDisplayProvider,
 )
+from agent.plugin_composition.messages import MESSAGE_CATALOG
 from session.log import MessagePage, MessageReader, SessionEntry
-from session.message import ContentPart, Control, Input, Message, Output, ToolCall
+from session.message import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from session.message_codec import json_value
 
 PartDisplayProvider = Callable[[ContentPart], Mapping[str, object]]
@@ -25,9 +27,11 @@ class MessageDisplayProviders:
 
     tool_name: Callable[[str], str] | None = None
     part_display: Mapping[str, PartDisplayProvider] = field(default_factory=dict)
+    result_values: Mapping[tuple[str, int], object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "part_display", MappingProxyType(dict(self.part_display)))
+        object.__setattr__(self, "result_values", MappingProxyType(dict(self.result_values)))
 
 
 
@@ -55,20 +59,22 @@ async def project_message_rows(
                 has_tool_call = True
 
     providers: dict[str, PartDisplayProvider] = {}
+    result_providers: dict[str, ToolResultDisplayProvider] = {}
     tool_name: Callable[[str], str] | None = None
     entered_contexts: set[int] = set()
 
     async with AsyncExitStack() as scopes:
         for kind in kinds:
-            key = ServiceKey[PartDisplayProvider](f"message.display:{kind}")
-            value = root.service_value(key)
-            if value is None or not callable(value):
-                continue
-            context, provider = root._service_provider(key)
-            if id(context) not in entered_contexts:
-                await scopes.enter_async_context(context.runtime_scope())
-                entered_contexts.add(id(context))
-            providers[kind] = cast(PartDisplayProvider, provider)
+            for prefix, target in (("message.display", providers), ("message.result_display", result_providers)):
+                key = ServiceKey(f"{prefix}:{kind}")
+                value = root.service_value(key)
+                if value is None or not callable(value):
+                    continue
+                context, provider = root._service_provider(key)
+                if id(context) not in entered_contexts:
+                    await scopes.enter_async_context(context.runtime_scope())
+                    entered_contexts.add(id(context))
+                target[kind] = provider
 
         if has_tool_call:
             key = TOOL_DISPLAY_NAME
@@ -80,14 +86,35 @@ async def project_message_rows(
                     entered_contexts.add(id(context))
                 tool_name = cast(Callable[[str], str], provider)
 
+        # 读取离开事件循环；插件回调和既有投影仍在原执行线程中调用。
+        result_values: dict[tuple[str, int], object] = {}
+        if result_providers:
+            catalog = root.service_value(MESSAGE_CATALOG)
+            if catalog is None:
+                raise RuntimeError("消息展示缺少只读目录")
+            for message in page.messages:
+                if not isinstance(message.body, ToolResult):
+                    continue
+                read_message = _read_before(catalog.reader(message.session_id), message)
+                for index, part in enumerate(message.body.parts):
+                    provider = result_providers.get(part.kind)
+                    if provider is not None:
+                        result_values[message.message_id, index] = await provider(part, read_message)
         return message_rows(
-            page,
-            display_only=display_only,
-            providers=MessageDisplayProviders(
-                tool_name=tool_name,
-                part_display=providers,
-            ),
+            page, display_only=display_only,
+            providers=MessageDisplayProviders(tool_name=tool_name, part_display=providers, result_values=result_values),
         )
+
+
+def _read_before(reader: MessageReader, message: Message) -> Callable[[str], Awaitable[Message | None]]:
+    """把查询权限固定在一条消息的 Session 与顺序范围内。"""
+    async def read_message(message_id: str) -> Message | None:
+        target = await reader.read_async(lambda current: current.get(message_id))
+        if target is None or target.session_id != message.session_id or target.seq >= message.seq:
+            return None
+        return target
+
+    return read_message
 
 
 async def read_message_rows(
@@ -170,6 +197,7 @@ def _message_row(
     """保留真实类型、顺序和引用，页面不推断执行结果或重新分配作者。"""
     # 1. 身份和消息用途分别呈现；Control 与晚到结果仍是独立行。
     body = message.body
+
     row: dict[str, object] = {
         "id": message.message_id,
         "session_id": message.session_id,
@@ -185,10 +213,13 @@ def _message_row(
                        "through_seq": body.through_seq, "reason": body.reason}
         return row
     parts = [
-        _part(part, display_only=display_only, providers=providers)
+        {"kind": part.kind, "display": "data", "value": json_value(part.value),
+         "rendered": json_value(providers.result_values[message.message_id, index])}
+        if isinstance(part, ContentPart) and (message.message_id, index) in providers.result_values
+        else _part(part, display_only=display_only, providers=providers, tool_result=isinstance(body, ToolResult))
         if isinstance(part, ContentPart)
         else _tool_call(part, providers=providers)
-        for part in body.parts
+        for index, part in enumerate(body.parts)
     ]
     if isinstance(body, Input):
         row["body"] = {"kind": "input", "parts": parts}
@@ -222,12 +253,14 @@ def _part(
     *,
     display_only: bool,
     providers: MessageDisplayProviders,
+    tool_result: bool,
 ) -> dict[str, object]:
-    """只公开展示合同允许的字段，未知内容保留类型与不可展示的明确状态。"""
+    """工具结果保留通用数据；其他内部内容只公开 owner 允许的字段。"""
     # 1. 业务字段由插件 callback 选择；Core 不识别模型或工具的字段名。
     provider = providers.part_display.get(part.kind)
     if provider is not None:
-        return {"kind": part.kind, "value": json_value(provider(part))}
+        value = json_value(provider(part))
+        return {"kind": part.kind, "value": value, **({"display": "data"} if tool_result else {})}
     # 2. 展示端保留原 part 下标；不可展示的归档只传类型，权威正文不变。
     if display_only and part.kind in {"history.provenance", "history.record", "history.turn_input"}:
         return {"kind": part.kind, "display": "unavailable"}
@@ -236,4 +269,7 @@ def _part(
         return {"kind": part.kind, "archive": json_value(part.value)}
     if part.kind in {"text", "artifact_ref", "reply_ref"}:
         return {"kind": part.kind, "value": json_value(part.value)}
+    # 工具输出有通用数据展示；Input/Output 的内部执行材料仍须 owner 明确公开。
+    if tool_result:
+        return {"kind": part.kind, "display": "data", "value": json_value(part.value)}
     return {"kind": part.kind, "display": "unavailable"}

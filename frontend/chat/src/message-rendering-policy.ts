@@ -48,3 +48,17 @@ export function canBatchStreamingMarkdown(
     && next.startsWith(previous)
     && next.length - previous.length < batchCharacters;
 }
+
+/** 工具值只解析完整 JSON 对象或数组；普通字符串保持字面含义。 */
+export function readToolData(value: unknown): unknown {
+  if (typeof value !== "string" || !/^\s*[\[{]/u.test(value)) return value;
+  try { return JSON.parse(value) as unknown; }
+  catch (error) { if (error instanceof SyntaxError) return value; throw error; }
+}
+
+/** 复制保留原字符串；结构化工具值使用完整 JSON，不把空值丢掉。 */
+export function toolDataText(value: unknown): string {
+  if (value === undefined) return "";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
