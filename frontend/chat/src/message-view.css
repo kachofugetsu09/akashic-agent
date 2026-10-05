@@ -1376,3 +1376,18 @@ button.tool-step-summary:active {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 1; }
 }
+
+/* 工具数据与聊天正文分开排版；字符串保留换行，窄屏在结果内部滚动。 */
+.tool-result-data { min-width: 0; }
+.tool-result-fields { margin: 0; }
+.tool-result-fields > div { margin-block: 0.5rem; }
+.tool-result-fields dt,
+.tool-result-fields summary {
+  color: var(--ak-ink-secondary);
+  font-family: var(--ak-type-technical);
+  font-size: var(--chat-type-caption);
+  overflow-wrap: anywhere;
+}
+.tool-result-fields dd { margin: 0.25rem 0 0; min-width: 0; }
+.tool-result-fields details { padding-inline-start: 0.75rem; border-inline-start: 1px solid var(--ak-rule-subtle); }
+.tool-result-data.error .tool-result { color: var(--ak-color-status-error); }

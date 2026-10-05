@@ -14,7 +14,7 @@ import {
   Message,
   MessageContent,
 } from "@/components/ai-elements/message";
-import { detectMessageRenderingFeatures, messageNeedsMarkdown } from "@/message-rendering-policy";
+import { detectMessageRenderingFeatures, messageNeedsMarkdown, readToolData, toolDataText } from "@/message-rendering-policy";
 import {
   Reasoning,
   ReasoningTrigger,
@@ -46,7 +46,7 @@ import type {
   ToolBlock,
 } from "./chat-message";
 import type { ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
-import { timelineReply, timelineText, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
+import { timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
 
@@ -229,7 +229,7 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
         const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
         return [{ kind: "tool", key, origin, index, part, block: {
           kind: "tool", callId: key, name: part.name, input: part.arguments,
-          output: result ? timelineText(result) : undefined,
+          output: result ? timelineToolOutput(result) : undefined,
           status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
           errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
       }
@@ -412,7 +412,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
           - Number(left.part.kind === "model.facts" || left.part.kind === "history.transcript"))
           .map(({ part, index }) => isTimelinePartVisible(part) && !(hideBody && part.kind === "text") && !(hideProcess && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index, message)}
-          <TimelinePartView part={part} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
+          <TimelinePartView part={part} toolResult={body.kind === "tool_result"} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
         </div> : null)}
       </>}
@@ -423,8 +423,9 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   </div>;
 }
 
-function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError, processStartContent, canLoadReferences }: {
+function TimelinePartView({ part, toolResult = false, attachment, lookupMessage, onNavigate, onError, processStartContent, canLoadReferences }: {
   canLoadReferences: boolean;
+  toolResult?: boolean;
   processStartContent?: ReactNode;
   part: TimelinePart;
   attachment: (id: string) => ReactNode;
@@ -432,10 +433,12 @@ function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError
   onNavigate: (id: string, partIndex?: number) => void;
   onError?: (error: unknown) => void;
 }) {
-  if ("display" in part) return <p className="timeline-state">无法展示此内容</p>;
+  if ("display" in part) return part.display === "data"
+    ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} />
+    : <p className="timeline-state">无法展示此内容</p>;
   if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} startContent={processStartContent} onError={onError} /> : null;
   switch (part.kind) {
-    case "text": return <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
+    case "text": return toolResult ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} /> : <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
     case "artifact_ref": return attachment(part.value);
     case "reply_ref": {
       const source = lookupMessage(part.value);
@@ -687,7 +690,7 @@ const ToolStep = memo(function ToolStep({
   onCopyDetail?: (text: string) => void;
 }) {
   const description = toolDescription(block.input);
-  const resultValue = block.status === "output-error" ? block.errorText : block.output;
+  const resultValue = block.output === undefined ? block.errorText : block.output;
   const hasDetails = toolHasParameters(block.input) || toolHasValue(resultValue);
   const [open, setOpen] = useState(false);
   const parameters = useMemo(
@@ -695,7 +698,7 @@ const ToolStep = memo(function ToolStep({
     [block.input, open],
   );
   const result = useMemo(
-    () => open ? toolValue(resultValue) : "",
+    () => open ? toolDataText(resultValue) : "",
     [open, resultValue],
   );
   const parameterCopyText = useMemo(
@@ -779,14 +782,14 @@ const ToolStep = memo(function ToolStep({
                     </dl>
                   </section>
                 ) : null}
-                {result ? (
+                {open && toolHasValue(resultValue) ? (
                   <section className="tool-detail-section" aria-label={block.status === "output-error" ? "工具错误" : "工具结果"}>
                     <ToolDetailHeading
                       label={block.status === "output-error" ? "错误" : "结果"}
                       copied={copiedDetail?.section === "result" && copiedDetail.text === result}
                       onCopy={onCopyDetail ? () => copyDetail("result", result) : undefined}
                     />
-                    <pre className={block.status === "output-error" ? "tool-result error" : "tool-result"}>{result}</pre>
+                    <ToolResultContent value={resultValue} error={block.status === "output-error"} />
                   </section>
                 ) : null}
               </div>
@@ -797,6 +800,27 @@ const ToolStep = memo(function ToolStep({
     </div>
   );
 });
+
+/** 所有工具共用字面文本和数据展示；复制仍使用原始值。 */
+function ToolResultContent({ value, error = false }: { value: unknown; error?: boolean }) {
+  const parsed = useMemo(() => readToolData(value), [value]);
+  return <div className={`tool-result-data${error ? " error" : ""}`}><ToolDataValue value={parsed} /></div>;
+}
+
+/** 结构可以展开；标量始终保留原始文字，不解释 Markdown 或 HTML。 */
+function ToolDataValue({ value }: { value: unknown }) {
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (!entries.length) return <pre className="tool-result">{Array.isArray(value) ? "[]" : "{}"}</pre>;
+    return <dl className="tool-result-fields">{entries.map(([name, item]) => <div key={name}>
+      <dt>{name}</dt>
+      <dd>{Array.isArray(value) ? <ToolResultContent value={item} /> : item !== null && typeof item === "object"
+        ? <details><summary>展开数据</summary><ToolDataValue value={item} /></details>
+        : <pre className="tool-result">{item === null ? "null" : String(item)}</pre>}</dd>
+    </div>)}</dl>;
+  }
+  return <pre className="tool-result">{value === null ? "null" : String(value)}</pre>;
+}
 
 function ToolDetailHeading({
   label,
@@ -883,11 +907,12 @@ function toolHasParameters(input: unknown): boolean {
 }
 
 function toolHasValue(value: unknown): boolean {
-  return value !== undefined && value !== null && (typeof value !== "string" || value.length > 0);
+  return value !== undefined;
 }
 
 function toolValue(value: unknown): string {
-  if (value === undefined || value === null) return "";
+  if (value === undefined) return "";
+  if (value === null) return "null";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value, null, 2) ?? String(value);

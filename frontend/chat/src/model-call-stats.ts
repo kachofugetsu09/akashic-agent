@@ -47,7 +47,7 @@ export function selectModelCall(messages: readonly TimelineMessage[], activities
     const body = messages[index].body;
     if (body.kind !== "output") continue;
     for (const part of body.parts) {
-      if (part.kind === "model.facts" && "value" in part && typeof part.value !== "string") {
+      if (!("display" in part) && part.kind === "model.facts" && "value" in part && typeof part.value !== "string") {
         return { callId: part.value.call_record_id, active: false };
       }
     }
