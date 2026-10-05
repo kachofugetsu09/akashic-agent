@@ -144,9 +144,9 @@ export class AnonymousBrowsers extends EventEmitter {
     );
   }
 
-  get(id, context) {
+  get(id, context, allowClosing = false) {
     const instance = this.instances.get(id);
-    if (!instance || instance.closing)
+    if (!instance || (instance.closing && !allowClosing))
       throw new Error("Anonymous browser is closed or unknown");
     if (
       instance.context.session_id !== context.session_id ||
@@ -195,32 +195,36 @@ export class AnonymousBrowsers extends EventEmitter {
 
   /** 关闭 Context 不影响其他 Context；最后一个关闭时释放 headless 进程。 */
   async close(id, context, reason = "closed") {
-    const instance = this.get(id, context);
+    const instance = this.get(id, context, true);
+    if (instance.closing) return instance.done;
     instance.closing = true;
     clearTimeout(instance.idleTimer);
     this.emit("closed", { browserId: id, reason, context: instance.context });
-    try {
-      if (instance.backend && !this.exited())
-        await instance.backend.releaseInputs();
-    } finally {
+    instance.done = (async () => {
       try {
-        instance.backend?.close();
+        if (instance.backend && !this.exited())
+          await instance.backend.releaseInputs();
       } finally {
         try {
-          if (instance.contextId && !this.exited())
-            await this.engine.backend.browser.send(
-              "Target.disposeBrowserContext",
-              { browserContextId: instance.contextId },
-            );
+          instance.backend?.close();
         } finally {
-          this.instances.delete(id);
-          if (!this.instances.size && this.engine) {
-            this.stopping = this.stopEngine().finally(() => { this.stopping = null; });
-            await this.stopping;
+          try {
+            if (instance.contextId && !this.exited())
+              await this.engine.backend.browser.send(
+                "Target.disposeBrowserContext",
+                { browserContextId: instance.contextId },
+              );
+          } finally {
+            this.instances.delete(id);
+            if (!this.instances.size && this.engine) {
+              this.stopping = this.stopEngine().finally(() => { this.stopping = null; });
+              await this.stopping;
+            }
           }
         }
       }
-    }
+    })();
+    return instance.done;
   }
 
   async stopEngine() {

@@ -695,10 +695,14 @@ async function proxyOpenCli(request, response) {
     });
     return;
   }
+  const controller = new AbortController();
+  response.once("close", () => {
+    if (!response.writableFinished) controller.abort(new Error("OpenCLI caller disconnected"));
+  });
   try {
-    await computer.use(
-      () =>
-        new Promise((resolve, reject) => {
+    await computer.use(async () => {
+      await readyDriver();
+      return driver.agentOperation(() => new Promise((resolve, reject) => {
           if (response.destroyed) {
             resolve();
             return;
@@ -732,8 +736,8 @@ async function proxyOpenCli(request, response) {
           });
           response.once("close", () => upstream.destroy());
           request.pipe(upstream);
-        }),
-    );
+        }), controller.signal);
+    });
   } catch (error) {
     if (!response.headersSent && !response.destroyed)
       json(response, 502, { error: error.message });
@@ -887,7 +891,14 @@ const server = createServer(async (request, response) => {
         if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
         const target = payload.target ?? "desktop";
         if (target !== "desktop") await driver.viewTarget(target);
-        await driver.takeControl(payload.id, target);
+        const controller = new AbortController();
+        const disconnected = () => {
+          if (!response.writableFinished) controller.abort(new Error("Control caller disconnected"));
+        };
+        response.once("close", disconnected);
+        if (response.destroyed) disconnected();
+        try { await driver.takeControl(payload.id, target, controller.signal); }
+        finally { response.removeListener("close", disconnected); }
       } else if (url.pathname === "/control/release") {
         if (driver) await driver.releaseControl(payload.id);
       } else if (url.pathname !== "/control/renew") {
@@ -979,8 +990,9 @@ let controlTimer;
 /** 一次刷新持有完整占用；失败回执与下一次计划均保留在控制服务。 */
 async function refreshIdentity() {
   try {
-    const { stdout } = await computer.use(() =>
-      exec(
+    const { stdout } = await computer.use(async () => {
+      await readyDriver();
+      return driver.agentOperation(() => exec(
         "opencli",
         [
           "auth",
@@ -996,8 +1008,8 @@ async function refreshIdentity() {
           "json",
         ],
         { timeout: 120000 },
-      ),
-    );
+      ));
+    });
     const sites = JSON.parse(stdout);
     if (!Array.isArray(sites) || sites.length === 0) throw new Error("OpenCLI returned no refresh results");
     const needsLogin = sites.filter(site => site.status === "not_logged_in");
