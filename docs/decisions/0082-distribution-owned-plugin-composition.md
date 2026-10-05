@@ -5,7 +5,7 @@
 - 关联条款：ONB-002、PLG-003、PLG-007、PLG-013、PLG-016、PLG-019、MIG-001、STA-001～STA-003
 - supersedes：0074 第 1、3 项的内置组合与逐 ID 迁移审批策略；0080 中源码退役不会改变下一次部署组合的限制
 
-> 运行输入的归档方式由 [0092](0092-plugin-runtime-uses-installed-files.md) 取代；内置来源、外置选择、数据身份与迁移顺序继续有效。
+> 运行输入的归档方式由 [0094](0094-plugin-runtime-uses-installed-files.md) 取代；内置来源、外置选择、数据身份与迁移顺序继续有效。
 
 ## 决定与理由
 
