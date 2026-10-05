@@ -728,7 +728,7 @@ Scope 唯一持有资源关闭责任，provider 实现实际关闭。消费者�
 
 ### PLG-009 Skill 和 MCP 通过插件安装发布
 
-Skill、Drift skill 和 MCP server 由固定插件制品中的代码通过对应 provider 注册。插件底座不解释 `akashic.plugin.toml`，不保留静态资产导出与 `apply` 并行的注册路径。安装只准备代码与运行环境；资源请求只定义一次，由拥有该资源的 provider 验证和执行。Core 固定制品与组合，不解释 Skill 格式、MCP 命令或 Workload 端点关联。历史 skill 目录、软链接和 ownership journal 保留，不自动减少；未完成外部效果仍由原 owner 负责。
+普通 Skill 按 workspace、用户目录、插件来源的顺序选择，使用时热读取；来源分层不授予额外权限。Drift skill 和 MCP server 由已安装插件代码通过对应 provider 注册。插件底座不解释 `akashic.plugin.toml`，不保留静态资产导出与 `apply` 并行的注册路径。安装只准备代码与运行环境；资源请求只定义一次，由拥有该资源的 provider 验证和执行。Core 固定制品与组合，不解释 Skill 格式、MCP 命令或 Workload 端点关联。Skill 不复制资源目录或永久保存历史文件树；相对资源使用实际目录。历史 skill 目录、归档、软链接和 ownership journal 保留，不自动减少；未完成外部效果仍由原 owner 负责。
 
 ### PLG-010 卸载插件默认保留 plugin-data
 

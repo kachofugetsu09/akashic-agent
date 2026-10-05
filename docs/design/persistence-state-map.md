@@ -11,6 +11,14 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-10-06：取消强快照的授权边界
+
+[0092](../decisions/0092-plugin-runtime-uses-installed-files.md) 取代下文普通运行所需的代码、
+配置与 Skill 归档要求。Skill 使用时热读取，不增加 skill-files；旧目录、绑定、消息和
+回执均保留，不在本次 refactor 中物理减少。文件修改由原文件 owner 负责，后续读取使用
+当前内容；缺失或旧未完成绑定不兼容时明确失败。源码以 Git 基线为恢复点，验证仅使用
+隔离 fixture。当前安装选择、配置、环境与操作回执的转换由显式升级 owner 完成。
+
 ## 2026-09-12：插件资产归属修订
 
 用户授权正交插件重构后，当前实现停止由 Core 同步 `skills/`、`drift/skills/`

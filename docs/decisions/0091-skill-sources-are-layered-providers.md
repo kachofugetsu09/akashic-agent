@@ -1,6 +1,6 @@
 # 0091 · Skill 来源是分层 Provider，本地目录不必打包成插件
 
-- 状态：proposed
+- 状态：accepted（来源分层）；资源归档与 mtime 缓存由 [0092](0092-plugin-runtime-uses-installed-files.md) 取代
 - 日期：2026-10-06
 - 关联条款：PLG-009、PLG-014、PLG-016、CTX-004、WKS-001
 - 变更范围：显式调整 [PLG-009](../projectneed.md) 对 Skill 来源的表述，并重议 [持久化状态地图](../design/persistence-state-map.md) 的 G-004A
