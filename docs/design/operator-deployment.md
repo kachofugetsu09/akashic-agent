@@ -235,3 +235,37 @@ cat /srv/data/services/akashic/activation/active.json
 不是新 release image、完整 systemd 升级或正式业务验收。未新增或改写单元测试。
 
 Source body-kind reads also use `message_source_kind_seq` on Session, source, `json_extract(body, '$.kind')`, sequence, and finish. The next stopped Yoyo step builds this derived index once for existing stores; fresh stores create it through MessageLog. Latest Input/Control queries can seek the exact kind without reading unrelated bodies. Message format, rows, prefix order and previous reader compatibility stay unchanged. Both index migrations emit their own wall time.
+
+## Shell 自部署
+
+Docker 默认执行 `gateway`；AppRuntime 拥有 Web Shell、readiness 和关闭顺序，
+Docker init 负责回收子进程，systemd 负责服务生命周期。原生直接运行模式仍使用 Supervisor。
+首次启用需由部署者用既有安装流程启动支持 [0091](../decisions/0091-shell-self-deployment.md)
+的版本，并重新安装宿主 CLI；旧实例不能自行调用尚不存在的停止协议。
+
+运行用户需要持续的 user manager（部署者执行 `loginctl enable-linger <user>`），
+`systemd-run --user`、Docker、Git、mise 和既有发布器的非交互 sudo 权限。
+不要给 Agent 增加新的重启工具。使用 `deploy-akashic` Skill，从现有 Shell 执行
+`akashic-release submit --commit <40位SHA>`。命令根据当前 ToolCall 和 boot 自动去重。
+返回 accepted 后 Agent 正常最终回复；宿主预检完成才等待该回合、原渠道送达及现有工作排空。
+未启动的已持久 Input 留待新 boot 处理；停止准备不删除历史，也不伪造 complete。
+
+任务记录位于 `<release-root>/run/self-deploy/<requestId>.json`，其中
+`activationAttempt` 引用既有发布回执。后续回合用 `akashic-release status <requestId>`
+及 `journalctl --user -u akashic-deploy-<requestId>.service` 读取实际结果；
+任务记录的 running 必须结合实际 unit 状态解释，worker 死亡不代表更新成功。
+宿主不自动重放失败任务。备份由本次部署者明确选择 `--backup`，默认不备份。
+
+正常关闭证据包括同一 boot/Root 的 Core receipt、同一 Controller 的租约清理 receipt、
+旧容器退出状态和 systemd 停止结果。任何证据缺失都阻止发布。等待失败恢复旧实例准入；
+停止后失败沿既有发布器保留维护现场与发布回执，由部署者审计恢复。
+
+本地停止协议 E2E：
+
+```sh
+PYTHONPATH=sdk/python/src:. .venv/bin/python scripts/verify_self_deploy_runtime.py
+```
+
+该脚本使用真实插件、HTTP 模型接口、Shell 和控制连接，一次性创建隔离 workspace。
+它验证正常 ToolResult/complete、最终 writer flush、旧 boot 拒绝及正常关闭证据；
+Docker 镜像发布和系统级服务切换应另在隔离宿主验证，不能由这条检查代替。
