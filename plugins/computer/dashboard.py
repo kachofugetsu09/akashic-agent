@@ -159,8 +159,9 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
                             await socket.close(code=1008, reason="Browser view is read-only")
                             return
                         response = await reader.post("/view/input", json={
-                            "target": target, "owner": control_id, "input": message})
+                            "target": target, "owner": control_id, "input": message["input"]})
                         response.raise_for_status()
+                        await socket.send_json({"id": message["id"], "sent": True})
 
                 async def renew_browser_control() -> None:
                     while True:
