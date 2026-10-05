@@ -941,7 +941,6 @@ def _generation_evidence(
     *,
     generation: Any,
     artifact: Path,
-    workspace: Path,
     repo_root: Path,
     source_checkout: Path | None,
 ) -> dict[str, Any]:
@@ -957,11 +956,10 @@ def _generation_evidence(
     if not isinstance(module_file, str):
         return evidence
     module_path = Path(module_file).resolve(strict=True)
-    archive_root = (workspace / "runtime" / "plugin-archives").resolve(strict=False)
     installed_entrypoint = (artifact / "plugin.py").resolve(strict=True)
     evidence["module_file_sha256"] = _sha256(module_path)
     evidence["installed_entrypoint_sha256"] = _sha256(installed_entrypoint)
-    checks["module_file_is_core_archive"] = _under(module_path, archive_root)
+    checks["module_file_is_installed_entrypoint"] = module_path == installed_entrypoint
     checks["module_file_not_checkout"] = not any(
         _under(module_path, root)
         for root in (repo_root / "plugins", source_checkout)
@@ -1110,7 +1108,6 @@ async def _exercise(
                 _generation_evidence(
                     generation=generation,
                     artifact=artifact,
-                    workspace=workspace,
                     repo_root=repo_root,
                     source_checkout=source_checkout,
                 )
@@ -1319,7 +1316,6 @@ async def _exercise_fleet(
                     _generation_evidence(
                         generation=generation,
                         artifact=row["artifact"],
-                        workspace=workspace,
                         repo_root=repo_root,
                         source_checkout=row.get("source_checkout"),
                     )
@@ -1628,7 +1624,6 @@ async def _exercise_business_composition(
             row["generation"] = _generation_evidence(
                 generation=generation,
                 artifact=Path(str(row["installed_artifact"])),
-                workspace=workspace,
                 repo_root=repo_root,
                 source_checkout=source_checkout,
             )
@@ -1636,7 +1631,7 @@ async def _exercise_business_composition(
                 {
                     key: bool(row["generation"]["checks"].get(key, False))
                     for key in (
-                        "module_file_is_core_archive",
+                        "module_file_is_installed_entrypoint",
                         "module_file_not_checkout",
                         "module_bytes_match_installed_artifact",
                     )
