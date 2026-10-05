@@ -78,6 +78,8 @@ def prepare_plugin_input(
             raise ValueError("初始配置必须是映射")
         config_revision = hashlib.sha256(config_bytes(config)).hexdigest()
 
+    # 环境准备不再顺带创建归档根；本层仍写归档，由输入 owner 明确创建。
+    archive.path.mkdir(mode=0o700, parents=True, exist_ok=True)
     # 2. Fix the code tree, read its manifest, and compile every Python file.
     code_ref = archive.save(
         plugin_dir, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
