@@ -85,7 +85,7 @@ def build_control_service(
         """控制边界保留可诊断的停止拒绝，不把领域失败藏成 Internal error。"""
         try:
             return await prepare_stop(core, cast(StopParams, params))
-        except (RuntimeError, ValueError, TimeoutError) as error:
+        except (RuntimeError, ValueError, TimeoutError, ConnectionError) as error:
             detail = str(error) or "等待回合、送达或活动工作超时"
             raise JsonRpcError(SERVER_OVERLOADED, detail) from error
 

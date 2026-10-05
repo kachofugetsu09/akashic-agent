@@ -64,7 +64,7 @@ def prepare_workspace() -> tuple[Path, Path, Path]:
 
 
 async def start_model_server(
-    sandbox: Path, *, command: str | None = None, host: str = "127.0.0.1"
+    sandbox: Path, *, command: str | None = None, host: str = "127.0.0.1", port: int = 0
 ) -> tuple[web.AppRunner, int]:
     """控制外部 HTTP 模型响应；内部组件使用真实实现。"""
     requests = []
@@ -151,7 +151,7 @@ async def start_model_server(
     app.router.add_post("/chat/completions", chat)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, host, 0)
+    site = web.TCPSite(runner, host, port)
     await site.start()
     port = site._server.sockets[0].getsockname()[1]
     return runner, port

@@ -115,23 +115,25 @@ async def verify(args: argparse.Namespace) -> None:
     args.evidence.mkdir(parents=True, exist_ok=False)
     command = f"{shlex.quote(str(Path.home() / '.local/bin/akashic-release'))} submit --commit {shlex.quote(args.commit)} --timeout 1800"
     runner, port = await start_model_server(
-        args.evidence, command=command, host="0.0.0.0"
+        args.evidence, command=command, host="0.0.0.0", port=args.fixture_port
     )
     config = Config.load(environment["AKASHIC_CONFIG"], workspace=work)
     endpoint = resolve_app_server_endpoint(config.app_server.listen, work)
-    session = "programmatic:host-self-deploy-e2e"
+    session = "programmatic:host-self-deploy-e2e:" + args.evidence.name
+    client = None
     try:
         # 1. 真正的 Docker Core → Host Bridge Shell → 独立用户 systemd worker。
-        async with await AsyncAkashic.connect(endpoint) as client:
+        client = await AsyncAkashic.connect(endpoint)
+        if not args.reuse_model:
             await configure_model(client, port, host=args.fixture_host)
-            await client.request(
-                "programmatic/session/admit",
-                {"session_id": session, "persist_memory": False},
-            )
-            first = await wait_reply(client, session, "host-update-input")
-            (args.evidence / "before-messages.json").write_text(
-                json.dumps(first, ensure_ascii=False)
-            )
+        await client.request(
+            "programmatic/session/admit",
+            {"session_id": session, "persist_memory": False},
+        )
+        first = await wait_reply(client, session, "host-update-input")
+        (args.evidence / "before-messages.json").write_text(
+            json.dumps(first, ensure_ascii=False)
+        )
         results = [
             item for item in first["items"] if item["body"]["kind"] == "tool_result"
         ]
@@ -156,10 +158,10 @@ async def verify(args: argparse.Namespace) -> None:
         assert "agent_restart" not in requests, "Docker runtime 暴露了旧重启工具"
 
         # 3. 新 boot 读取原消息，再执行下一回合；原正文、身份和顺序不减少。
-        async with await AsyncAkashic.connect(endpoint) as client:
-            reloaded = await client.message_read(session, limit=100)
+        async with await AsyncAkashic.connect(endpoint) as after_client:
+            reloaded = await after_client.message_read(session, limit=100)
             assert reloaded["items"] == first["items"], "停止/迁移改写了原消息"
-            second = await wait_reply(client, session, "host-after-update-input")
+            second = await wait_reply(after_client, session, "host-after-update-input")
             assert (
                 second["items"][: len(first["items"])] == first["items"]
             ), "新回合改写了原消息"
@@ -188,6 +190,8 @@ async def verify(args: argparse.Namespace) -> None:
             flush=True,
         )
     finally:
+        if client is not None:
+            await client.close()
         await runner.cleanup()
 
 
@@ -200,6 +204,12 @@ def main() -> None:
         "--fixture-host", required=True, help="Docker Core 可访问的虚拟机 IP"
     )
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--fixture-port", type=int, default=0)
+    parser.add_argument(
+        "--reuse-model",
+        action="store_true",
+        help="复用已有 fixture 模型；同时指定原 fixture port",
+    )
     asyncio.run(verify(parser.parse_args()))
 
 

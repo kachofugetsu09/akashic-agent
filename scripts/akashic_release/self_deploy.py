@@ -191,7 +191,8 @@ def verify_closed(ack: dict[str, object], current: dict[str, str]) -> None:
     ):
         raise RuntimeError("旧 Core 缺少正常关闭证据")
     controller = read_json(
-        Path(current["AKASHIC_WORKLOAD_RUNTIME_DIR"])
+        Path(current["AKASHIC_EXPERIMENT_ROOT"])
+        / "workload-controller"
         / "closed"
         / f"{ack['controllerId']}.json"
     )
