@@ -8,37 +8,46 @@ import type {
   WebMountView,
   WebUiDisposer,
 } from "@akashic/web-ui-v1";
-import type { ShellRailAction } from "@akashic/shell-ui-v1";
+import type {
+  RenderSettingsRoute,
+  ShellRailAction,
+  ShellSettingsPlugin,
+  ShellSettingsSection,
+} from "@akashic/shell-ui-v1";
 
 type ShellPage = WebEntry & {
   label: string;
   route: string;
   iconSvg: string;
-  section?: string;
-  group?: string;
-  family?: string;
 };
 
+const PAGES_MOUNT = "shell.pages.v1";
 const RAIL_ACTIONS_MOUNT = "shell.rail-actions.v1";
+const SETTINGS_MOUNT = "shell.settings.v1";
+const SETTINGS_PLUGINS_MOUNT = "shell.settings-plugins.v1";
 
-/** 设置分节声明 group 即归入对应分组；分组标签与图标由 Shell 拥有，插件不各自起名。 */
-const SETTINGS_GROUP_LABELS: Record<string, string> = { plugins: "插件" };
-const SETTINGS_GROUP_ICONS: Record<string, string> = {
-  plugins: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z"/></svg>',
-};
-/** 同组内 ≥2 个分节声明同一 family 时折叠为一个组合页；family 标签由 Shell 拥有，插件只声明归属。 */
-const SETTINGS_FAMILY_LABELS: Record<string, string> = { telegram: "Telegram" };
+/** “插件”是设置工作区的内置配置区：条目来自 settings-plugins 目录，导航位置固定在初始配置（-10）与模型（30）之间。 */
+const SETTINGS_PLUGINS_ORDER = 20;
+const SETTINGS_PLUGINS_LABEL = "插件";
+const SETTINGS_PLUGINS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z"/></svg>';
+
+const SETTINGS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
+
+/** 设置工作区的当前位置：要么停在某个顶层分节，要么停在插件配置区的某个成员。 */
+type SettingsTarget =
+  | { kind: "section"; id: string }
+  | { kind: "plugins"; memberId: string };
 
 type SettingsNavItem =
-  | { kind: "entry"; entry: ShellPage }
-  | { kind: "group"; id: string; entries: ShellPage[] };
+  | { kind: "section"; entry: ShellSettingsSection }
+  | { kind: "plugins" };
 
 type SettingsTab =
-  | { kind: "entry"; entry: ShellPage }
-  | { kind: "family"; id: string; entries: ShellPage[] };
+  | { kind: "entry"; entry: ShellSettingsPlugin }
+  | { kind: "family"; id: string; label: string; entries: ShellSettingsPlugin[] };
 
-/** 组内分节折叠成 tab：≥2 个成员的 family 合成一个组合 tab，单成员 family 与普通分节一样独立成 tab。 */
-function buildSettingsTabs(entries: ShellPage[]): SettingsTab[] {
+/** 插件配置区分节折叠成 tab：≥2 个成员的 family 合成一个组合 tab，标签取自成员自带的 familyLabel。 */
+function buildSettingsTabs(entries: ShellSettingsPlugin[]): SettingsTab[] {
   const familyCount = new Map<string, number>();
   for (const entry of entries) {
     if (entry.family) familyCount.set(entry.family, (familyCount.get(entry.family) ?? 0) + 1);
@@ -50,9 +59,9 @@ function buildSettingsTabs(entries: ShellPage[]): SettingsTab[] {
       const at = familyAt.get(entry.family);
       if (at === undefined) {
         familyAt.set(entry.family, tabs.length);
-        tabs.push({ kind: "family", id: entry.family, entries: [entry] });
+        tabs.push({ kind: "family", id: entry.family, label: entry.familyLabel ?? entry.family, entries: [entry] });
       } else {
-        (tabs[at] as { kind: "family"; entries: ShellPage[] }).entries.push(entry);
+        (tabs[at] as { kind: "family"; entries: ShellSettingsPlugin[] }).entries.push(entry);
       }
     } else {
       tabs.push({ kind: "entry", entry });
@@ -61,7 +70,17 @@ function buildSettingsTabs(entries: ShellPage[]): SettingsTab[] {
   return tabs;
 }
 
-const SETTINGS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
+function settingsTargetForRoute(
+  sections: readonly ShellSettingsSection[],
+  plugins: readonly ShellSettingsPlugin[],
+  route: string,
+): SettingsTarget | undefined {
+  const section = sections.find((entry) => entry.route === route);
+  if (section) return { kind: "section", id: section.id };
+  const member = plugins.find((entry) => entry.route === route);
+  if (member) return { kind: "plugins", memberId: member.id };
+  return undefined;
+}
 
 /** 对话框留在 Shell 组件内；底栏动作与快捷键经这个模块级入口打开它。 */
 const settingsLauncher = { open: () => {} };
@@ -72,14 +91,18 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
     ctx.ui.inject("web.root.v1", (mount) => mount.register({
       id: "shell",
       children: [
-        { id: "shell.pages.v1", cardinality: "list" },
+        { id: PAGES_MOUNT, cardinality: "list" },
         { id: RAIL_ACTIONS_MOUNT, cardinality: "list" },
+        { id: SETTINGS_MOUNT, cardinality: "list" },
+        { id: SETTINGS_PLUGINS_MOUNT, cardinality: "list" },
       ],
       render(host, view) {
         const root = createRoot(host);
         root.render(<Shell
-          pages={view.child("shell.pages.v1")}
+          pages={view.child(PAGES_MOUNT)}
           railActions={view.child(RAIL_ACTIONS_MOUNT)}
+          settings={view.child(SETTINGS_MOUNT)}
+          settingsPlugins={view.child(SETTINGS_PLUGINS_MOUNT)}
         />);
         return () => root.unmount();
       },
@@ -97,35 +120,41 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
   };
 }
 
-function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMountView }): React.ReactElement {
-  const entries = useMemo(() => checkPages(pages.entries), [pages.entries]);
+function Shell({ pages, railActions, settings, settingsPlugins }: {
+  pages: WebMountView;
+  railActions: WebMountView;
+  settings: WebMountView;
+  settingsPlugins: WebMountView;
+}): React.ReactElement {
+  const bandEntries = useMemo(() => checkPages(pages.entries), [pages.entries]);
   const railActionEntries = useMemo(() => checkRailActions(railActions.entries), [railActions.entries]);
-  const bandEntries = useMemo(() => entries.filter((entry) => entry.section !== "settings"), [entries]);
-  const settingsEntries = useMemo(() => entries.filter((entry) => entry.section === "settings"), [entries]);
-  // 顶层分节与分组按声明顺序混排；组内分节保持注册顺序，在内容区以 tab 呈现。
+  const sectionEntries = useMemo(() => checkSettingsSections(settings.entries), [settings.entries]);
+  const pluginEntries = useMemo(() => checkSettingsPlugins(settingsPlugins.entries), [settingsPlugins.entries]);
+  // 三个目录共用同一个 hash 路由命名空间，跨目录撞 route 是合同错误。
+  useMemo(() => {
+    const routes = [...bandEntries, ...sectionEntries, ...pluginEntries].map((entry) => entry.route);
+    if (new Set(routes).size !== routes.length) throw new Error("Shell 页面与设置分节的 route 不能重复");
+  }, [bandEntries, sectionEntries, pluginEntries]);
+
+  // 左栏导航是顶层分节按 order 排列；插件配置区有条目时按固定 order 插入。
   const settingsNav = useMemo(() => {
-    const items: SettingsNavItem[] = [];
-    const groupAt = new Map<string, number>();
-    for (const entry of settingsEntries) {
-      if (!entry.group) { items.push({ kind: "entry", entry }); continue; }
-      const at = groupAt.get(entry.group);
-      if (at === undefined) {
-        groupAt.set(entry.group, items.length);
-        items.push({ kind: "group", id: entry.group, entries: [entry] });
-      } else {
-        (items[at] as { kind: "group"; entries: ShellPage[] }).entries.push(entry);
-      }
-    }
-    return items;
-  }, [settingsEntries]);
-  const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0] ?? entries[0];
+    const items: { order: number; item: SettingsNavItem }[] = sectionEntries.map((entry) => ({
+      order: typeof entry.order === "number" ? entry.order : 0,
+      item: { kind: "section", entry },
+    }));
+    if (pluginEntries.length > 0) items.push({ order: SETTINGS_PLUGINS_ORDER, item: { kind: "plugins" } });
+    return items.sort((left, right) => left.order - right.order).map(({ item }) => item);
+  }, [sectionEntries, pluginEntries]);
+  const settingsTabs = useMemo(() => buildSettingsTabs(pluginEntries), [pluginEntries]);
+
+  const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0];
   const requestedRoute = window.location.hash.slice(1);
-  const requestedEntry = entries.find((entry) => entry.route === requestedRoute);
-  const initialSettings = requestedEntry?.section === "settings" ? requestedEntry : undefined;
-  const [withdrawn, setWithdrawn] = useState(() => !!requestedRoute && !entries.some(entry => entry.route === requestedRoute));
-  const [activeId, setActiveId] = useState(() => (initialSettings ? defaultPage : pageFromLocation(entries, defaultPage))?.id ?? "");
-  const [settingsOpen, setSettingsOpen] = useState(!!initialSettings);
-  const [settingsEntryId, setSettingsEntryId] = useState(initialSettings?.id ?? "");
+  const requestedTarget = settingsTargetForRoute(sectionEntries, pluginEntries, requestedRoute);
+  const [withdrawn, setWithdrawn] = useState(() =>
+    !!requestedRoute && !bandEntries.some((entry) => entry.route === requestedRoute) && !requestedTarget);
+  const [settingsOpen, setSettingsOpen] = useState(!!requestedTarget);
+  const [settingsTarget, setSettingsTarget] = useState<SettingsTarget | undefined>(requestedTarget);
+  const [activeId, setActiveId] = useState(() => (requestedTarget ? defaultPage : pageFromLocation(bandEntries, defaultPage))?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const settingsDialog = useRef<HTMLDialogElement>(null);
   const settingsContent = useRef<HTMLDivElement>(null);
@@ -151,7 +180,31 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     observer.observe(track);
     track.querySelectorAll<HTMLElement>("[data-band-item]").forEach((item) => observer.observe(item));
     return () => observer.disconnect();
-  }, [activeId, entries]);
+  }, [activeId, bandEntries]);
+
+  // 已卸载插件的分节不留在当前位置：落回导航第一项。
+  const firstTarget = useMemo<SettingsTarget | undefined>(() => {
+    const first = settingsNav[0];
+    if (!first) return undefined;
+    return first.kind === "section"
+      ? { kind: "section", id: first.entry.id }
+      : { kind: "plugins", memberId: pluginEntries[0].id };
+  }, [settingsNav, pluginEntries]);
+  const currentTarget = useMemo<SettingsTarget | undefined>(() => {
+    if (settingsTarget?.kind === "section" && sectionEntries.some((entry) => entry.id === settingsTarget.id)) return settingsTarget;
+    if (settingsTarget?.kind === "plugins" && pluginEntries.some((entry) => entry.id === settingsTarget.memberId)) return settingsTarget;
+    return firstTarget;
+  }, [settingsTarget, sectionEntries, pluginEntries, firstTarget]);
+
+  const activeSettingsTab = currentTarget?.kind === "plugins"
+    ? settingsTabs.find((tab) =>
+      tab.kind === "entry" ? tab.entry.id === currentTarget.memberId : tab.entries.some((entry) => entry.id === currentTarget.memberId))
+    : undefined;
+  // 组合 tab 渲染全部成员，普通 tab 只渲染当前分节。
+  const settingsMembers = useMemo(
+    () => activeSettingsTab ? (activeSettingsTab.kind === "family" ? activeSettingsTab.entries : [activeSettingsTab.entry]) : [],
+    [activeSettingsTab],
+  );
 
   const openPage = useCallback((entry: ShellPage): void => {
     if (entry.id === activeId) { setWithdrawn(false); setSettingsOpen(false); return; }
@@ -172,17 +225,20 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     return entry?.route ? `${base}#${entry.route}` : base;
   }, [bandEntries, activeId, defaultPage]);
 
-  const openSettings = useCallback((entry?: ShellPage): void => {
-    const target = entry ?? settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
-    if (!target) return;
+  const openSettings = useCallback((target?: SettingsTarget): void => {
+    const next = target ?? currentTarget;
+    if (!next) return;
+    const route = next.kind === "section"
+      ? sectionEntries.find((entry) => entry.id === next.id)?.route
+      : pluginEntries.find((entry) => entry.id === next.memberId)?.route;
     const go = () => {
-      setSettingsEntryId(target.id);
+      setSettingsTarget(next);
       setSettingsOpen(true);
       const base = `${window.location.pathname}${window.location.search}`;
-      window.history.replaceState(null, "", target.route ? `${base}#${target.route}` : base);
+      window.history.replaceState(null, "", route ? `${base}#${route}` : base);
     };
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
-  }, [settingsEntries, settingsEntryId]);
+  }, [currentTarget, sectionEntries, pluginEntries]);
 
   const closeSettings = useCallback((): void => {
     const go = () => {
@@ -194,7 +250,7 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
 
   useLayoutEffect(() => {
     if (withdrawn) {
-      const entry = entries.find(item => item.id === activeId);
+      const entry = bandEntries.find(item => item.id === activeId);
       const base = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(window.history.state, "", entry?.route ? `${base}#${entry.route}` : base);
     }
@@ -233,27 +289,33 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     else if (!settingsOpen && dialog.open) dialog.close();
   }, [settingsOpen]);
 
-  const currentSettingsEntry = settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
-  const currentSettingsGroup = currentSettingsEntry?.group
-    ? settingsNav.find((item): item is Extract<SettingsNavItem, { kind: "group" }> => item.kind === "group" && item.id === currentSettingsEntry.group)
-    : undefined;
-  const settingsTabs = useMemo(() => buildSettingsTabs(currentSettingsGroup?.entries ?? []), [currentSettingsGroup]);
-  const activeSettingsTab = settingsTabs.find((tab) =>
-    tab.kind === "entry" ? tab.entry.id === currentSettingsEntry?.id : tab.entries.some((entry) => entry.id === currentSettingsEntry?.id));
-  // 组合页渲染成员列表：family tab 渲染全部成员，普通 tab 只渲染当前分节。
-  const settingsMembers = useMemo(
-    () => activeSettingsTab?.kind === "family" ? activeSettingsTab.entries : currentSettingsEntry ? [currentSettingsEntry] : [],
-    [activeSettingsTab, currentSettingsEntry],
-  );
+  // 设置工作区内的跨目录渲染：初始配置按 route 内嵌任意分节的表单，不关心它属于哪个目录。
+  const renderSettingsRoute = useCallback<RenderSettingsRoute>((route, host, props) => {
+    const section = settings.entries.find((entry) => entry.route === route);
+    if (section) return settings.render(section.id, host, props);
+    const member = settingsPlugins.entries.find((entry) => entry.route === route);
+    if (member) return settingsPlugins.render(member.id, host, props);
+    return null;
+  }, [settings, settingsPlugins]);
 
-  // 分节页面就地渲染进对话框；关闭或换节即销毁，同一页面不会同时挂载在两处。
-  // family 组合页把成员表单挂进同一滚动页，成员间切换不重挂载，各自草稿与守卫独立。
-  // 每个分节挂进独立 wrapper，dispose 延迟到 microtask：layout cleanup 阶段 React 无法
-  // 同步 flush 子 root 的卸载提交，同步 dispose 会与渲染器自身的 replaceChildren 竞争而崩。
+  // 分节内容就地渲染进对话框；关闭或换节即销毁，同一分节不会同时挂载在两处。
+  // 顶层分节由 settings 目录渲染；插件配置区把当前 tab 的成员挂进同一滚动页，
+  // 成员间切换不重挂载，各自草稿与守卫独立。dispose 延迟到 microtask：layout cleanup
+  // 阶段 React 无法同步 flush 子 root 的卸载提交，同步 dispose 会与渲染器竞争而崩。
   useLayoutEffect(() => {
-    if (!settingsOpen) return;
+    if (!settingsOpen || !currentTarget) return;
     const container = settingsContent.current;
-    if (!container || settingsMembers.length === 0) return;
+    if (!container) return;
+    if (currentTarget.kind === "section") {
+      const host = document.createElement("div");
+      host.className = "shell-settings-entry";
+      container.replaceChildren(host);
+      const dispose = settings.render(currentTarget.id, host, {
+        pages: settings, railActions: railActionEntries, embedded: true, renderRoute: renderSettingsRoute,
+      });
+      return () => queueMicrotask(() => { dispose(); host.remove(); });
+    }
+    if (settingsMembers.length === 0) return;
     const mounts = settingsMembers.map((entry) => {
       const wrapper = document.createElement(settingsMembers.length > 1 ? "section" : "div");
       wrapper.className = settingsMembers.length > 1 ? "shell-settings-family-member" : "shell-settings-entry";
@@ -269,28 +331,30 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
       return { entry, wrapper, host };
     });
     container.replaceChildren(...mounts.map((item) => item.wrapper));
-    const disposers = mounts.map((item) => pages.render(item.entry.id, item.host, { pages, railActions: railActionEntries, embedded: true }));
+    const disposers = mounts.map((item) => settingsPlugins.render(item.entry.id, item.host, {
+      pages: settingsPlugins, railActions: railActionEntries, embedded: true,
+    }));
     return () => {
       queueMicrotask(() => {
         for (const dispose of disposers) dispose();
         for (const item of mounts) item.wrapper.remove();
       });
     };
-  }, [settingsOpen, settingsMembers, pages, railActionEntries]);
+  }, [settingsOpen, currentTarget, settingsMembers, settings, settingsPlugins, railActionEntries, renderSettingsRoute]);
 
   // 组合页内深链（如 #telegram_sender-settings）滚动到对应成员；单成员页天然在顶部。
   // 必须等 showModal 的被动 effect 之后执行：对话框未 open 时没有可滚动的布局。
   // 成员表单异步加载后才撑开高度，首帧滚动会被钳制；内容稳定后再对齐一次。
   useEffect(() => {
-    if (!settingsOpen || settingsMembers.length < 2) return;
+    if (!settingsOpen || currentTarget?.kind !== "plugins" || settingsMembers.length < 2) return;
     const scroll = () => {
-      const target = settingsContent.current?.querySelector(`[data-settings-member="${CSS.escape(settingsEntryId)}"]`);
+      const target = settingsContent.current?.querySelector(`[data-settings-member="${CSS.escape(currentTarget.memberId)}"]`);
       target?.scrollIntoView({ block: "start" });
     };
     scroll();
     const timer = window.setTimeout(scroll, 800);
     return () => window.clearTimeout(timer);
-  }, [settingsOpen, settingsEntryId, settingsMembers]);
+  }, [settingsOpen, currentTarget, settingsMembers]);
 
   useLayoutEffect(() => {
     const disposers: WebUiDisposer[] = [];
@@ -321,17 +385,18 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
 
   useEffect(() => {
     const syncLocation = (): void => {
-      const entry = pageFromLocation(entries, defaultPage);
-      if (!entry) return;
       const requested = window.location.hash.slice(1);
-      const missing = !!requested && !entries.some(item => item.route === requested);
       // 深链接（如首次配置的"开始配置"、刷新的 #models）落到设置工作区对应分节。
-      if (entry.section === "settings") { setWithdrawn(missing); openSettings(entry); return; }
+      const target = settingsTargetForRoute(sectionEntries, pluginEntries, requested);
+      if (target) { setWithdrawn(false); openSettings(target); return; }
+      const entry = pageFromLocation(bandEntries, defaultPage);
+      if (!entry) return;
+      const missing = !!requested && !bandEntries.some((item) => item.route === requested);
       if (entry.id === activeId) {
         if (missing) window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}${entry.route ? `#${entry.route}` : ""}`);
         setWithdrawn(missing); return;
       }
-      const previous = entries.find(item => item.id === activeId);
+      const previous = bandEntries.find(item => item.id === activeId);
       const base = `${window.location.pathname}${window.location.search}`;
       const restore = () => window.history.replaceState(window.history.state, "", previous?.route ? `${base}#${previous.route}` : base);
       const go = () => {
@@ -347,7 +412,7 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     return () => {
       window.removeEventListener("hashchange", syncLocation);
     };
-  }, [activeId, defaultPage, entries, openSettings]);
+  }, [activeId, defaultPage, bandEntries, sectionEntries, pluginEntries, openSettings]);
 
   const onBandKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
@@ -359,7 +424,7 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     buttons[next].focus();
   };
 
-  // 设置组内 tab 条与顶栏同一套方向键漫游；tab 只是导航钮，不持有分节状态。
+  // 插件配置区 tab 条与顶栏同一套方向键漫游；tab 只是导航钮，不持有分节状态。
   const onTabsKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
     const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
@@ -411,27 +476,26 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
       <nav className="shell-settings-nav" aria-label="设置分节">
         <h2>功能设置</h2>
         {settingsNav.map((item) => {
-          if (item.kind === "entry") {
-            const entry = item.entry;
+          if (item.kind === "plugins") {
             return <button
-              key={entry.id}
+              key="plugins"
               type="button"
-              aria-current={entry.id === currentSettingsEntry?.id ? "true" : undefined}
-              onClick={() => openSettings(entry)}
+              aria-current={currentTarget?.kind === "plugins" ? "true" : undefined}
+              onClick={() => openSettings({ kind: "plugins", memberId: pluginEntries[0].id })}
             >
-              <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
-              <span>{entry.label}</span>
+              <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_PLUGINS_ICON }} />
+              <span>{SETTINGS_PLUGINS_LABEL}</span>
             </button>;
           }
-          const active = item.entries.some((entry) => entry.id === currentSettingsEntry?.id);
+          const entry = item.entry;
           return <button
-            key={item.id}
+            key={entry.id}
             type="button"
-            aria-current={active ? "true" : undefined}
-            onClick={() => openSettings(item.entries[0])}
+            aria-current={currentTarget?.kind === "section" && currentTarget.id === entry.id ? "true" : undefined}
+            onClick={() => openSettings({ kind: "section", id: entry.id })}
           >
-            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_GROUP_ICONS[item.id] ?? SETTINGS_ICON }} />
-            <span>{SETTINGS_GROUP_LABELS[item.id] ?? item.id}</span>
+            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
+            <span>{entry.label}</span>
           </button>;
         })}
       </nav>
@@ -439,23 +503,23 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
         <header>
           <button type="button" onClick={closeSettings} aria-label="关闭设置">关闭</button>
         </header>
-        {settingsTabs.length > 1 && currentSettingsGroup && (
-          <div className="shell-settings-tabs" role="group" aria-label={SETTINGS_GROUP_LABELS[currentSettingsGroup.id] ?? currentSettingsGroup.id} onKeyDown={onTabsKeyDown}>
+        {currentTarget?.kind === "plugins" && settingsTabs.length > 1 && (
+          <div className="shell-settings-tabs" role="group" aria-label={SETTINGS_PLUGINS_LABEL} onKeyDown={onTabsKeyDown}>
             {settingsTabs.map((tab) => {
               if (tab.kind === "entry") {
                 return <button
                   key={tab.entry.id}
                   type="button"
-                  aria-current={tab.entry.id === currentSettingsEntry?.id ? "true" : undefined}
-                  onClick={() => openSettings(tab.entry)}
+                  aria-current={currentTarget.memberId === tab.entry.id ? "true" : undefined}
+                  onClick={() => openSettings({ kind: "plugins", memberId: tab.entry.id })}
                 >{tab.entry.label}</button>;
               }
               return <button
                 key={`family:${tab.id}`}
                 type="button"
-                aria-current={tab.entries.some((entry) => entry.id === currentSettingsEntry?.id) ? "true" : undefined}
-                onClick={() => openSettings(tab.entries[0])}
-              >{SETTINGS_FAMILY_LABELS[tab.id] ?? tab.id}</button>;
+                aria-current={tab.entries.some((entry) => entry.id === currentTarget.memberId) ? "true" : undefined}
+                onClick={() => openSettings({ kind: "plugins", memberId: tab.entries[0].id })}
+              >{tab.label}</button>;
             })}
           </div>
         )}
@@ -478,12 +542,14 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
 
 function checkPages(entries: readonly WebEntry[]): ShellPage[] {
   const pages = entries.map((entry) => {
+    if ("section" in entry || "group" in entry || "family" in entry) {
+      throw new Error(`Shell 页面合同无效: ${entry.id} 仍使用已退役的 section/group/family 字段`);
+    }
     if (
       typeof entry.label !== "string"
       || typeof entry.route !== "string"
       || typeof entry.iconSvg !== "string"
       || !entry.iconSvg.startsWith("<svg")
-      || (entry.family !== undefined && typeof entry.family !== "string")
     ) {
       throw new Error(`Shell 页面合同无效: ${entry.id}`);
     }
@@ -493,6 +559,51 @@ function checkPages(entries: readonly WebEntry[]): ShellPage[] {
     throw new Error("Shell 页面 route 不能重复");
   }
   return pages;
+}
+
+function checkSettingsSections(entries: readonly WebEntry[]): ShellSettingsSection[] {
+  const sections = entries.map((entry) => {
+    if (
+      typeof entry.label !== "string"
+      || typeof entry.route !== "string"
+      || typeof entry.iconSvg !== "string"
+      || !entry.iconSvg.startsWith("<svg")
+    ) {
+      throw new Error(`Shell 设置分节合同无效: ${entry.id}`);
+    }
+    return entry as ShellSettingsSection;
+  });
+  if (new Set(sections.map((entry) => entry.route)).size !== sections.length) {
+    throw new Error("Shell 设置分节 route 不能重复");
+  }
+  return sections;
+}
+
+function checkSettingsPlugins(entries: readonly WebEntry[]): ShellSettingsPlugin[] {
+  const members = entries.map((entry) => {
+    if (
+      typeof entry.label !== "string"
+      || typeof entry.route !== "string"
+      || (entry.family !== undefined && typeof entry.family !== "string")
+      || (entry.familyLabel !== undefined && typeof entry.familyLabel !== "string")
+      || (entry.family !== undefined && !entry.familyLabel)
+    ) {
+      throw new Error(`Shell 插件配置分节合同无效: ${entry.id}`);
+    }
+    return entry as ShellSettingsPlugin;
+  });
+  // family 组合标签由成员自带，同一 family 的 familyLabel 必须一致。
+  const familyLabels = new Map<string, string>();
+  for (const entry of members) {
+    if (!entry.family) continue;
+    const label = familyLabels.get(entry.family);
+    if (label === undefined) familyLabels.set(entry.family, entry.familyLabel!);
+    else if (label !== entry.familyLabel) throw new Error(`Shell 插件配置组合 ${entry.family} 的 familyLabel 不一致`);
+  }
+  if (new Set(members.map((entry) => entry.route)).size !== members.length) {
+    throw new Error("Shell 插件配置分节 route 不能重复");
+  }
+  return members;
 }
 
 function checkRailActions(entries: readonly WebEntry[]): ShellRailAction[] {

@@ -33,6 +33,7 @@ inject = (BINDINGS, TASKS, TOOLS, PROCESSES, ARTIFACT_IMPORT, MATERIALS, INSTALL
 
 async def apply(ctx: Context) -> None:
     """注册既有工具的普通入口；安装和归档装配不访问文件、进程或网络。"""
+    _ = await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")
     catalog = ctx.require(TOOLS)
     directories = WorkingDirectories(ctx.require(OWNER_STATE).open(ctx))
     _ = await ctx.provide(WORKING_DIRECTORY, directories)

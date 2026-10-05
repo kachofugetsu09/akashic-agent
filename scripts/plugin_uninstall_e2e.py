@@ -137,11 +137,12 @@ inject = (UI,)
 async def apply(ctx):
     from . import dashboard
     await ctx.require(UI).register(ctx, web='web_module.js', dashboard=lambda: dashboard,
-                                   requires=('shell.pages.v1',))
+                                   requires=('shell.settings.v1',),
+                                   contract_digests={'shell.settings.v1': 'a5040165b28b8126a1d55c1a80c8cc707ad55dd0e53cb337fce8c4c721272736'})
 """
 NOTES_WEB = """export function activate(ctx) {
-  return ctx.ui.inject('shell.pages.v1', mount => mount.register({
-    id: 'e2e-notes', label: 'Notes', route: 'e2e-notes', iconSvg: '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>', section: 'settings',
+  return ctx.ui.inject('shell.settings.v1', mount => mount.register({
+    id: 'e2e-notes', label: 'Notes', route: 'e2e-notes', iconSvg: '<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>',
     render(host) {
       const draft = document.createElement('textarea');
       draft.setAttribute('aria-label', 'E2E draft');

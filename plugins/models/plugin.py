@@ -102,9 +102,10 @@ async def _register_ui(ctx: Context) -> None:
     await ctx.require(UI).register(
         ctx, web="web_module.js",
         dashboard=lambda: import_module(".dashboard", __package__),
-        requires=("shell.pages.v1",),
+        requires=("shell.settings.v1",),
         provides=("models.connection-types.v1",),
         contract_digests={
             "models.connection-types.v1": "8c304d85090a65a4a66cd777a5c2a88e6908de147964dc91e7f84336979ea561",
+            "shell.settings.v1": "a5040165b28b8126a1d55c1a80c8cc707ad55dd0e53cb337fce8c4c721272736",
         },
     )

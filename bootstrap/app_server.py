@@ -4,6 +4,9 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
+from pydantic import BaseModel
+from agent.control.protocol.errors import JsonRpcError, SERVER_OVERLOADED
 
 from agent.config_models import Config
 from agent.control.errors import RuntimeClosedError
@@ -19,6 +22,8 @@ from core.net.http import SharedHttpResources
 from infra.control.stdio import StdioAppServer
 from session.log import MessageCatalog, MessagePage
 from session.message import Message
+from agent.plugin_contracts import CallRef
+from bootstrap.runtime_stop import CancelStopParams, StopParams, prepare_stop
 
 
 def build_control_service(
@@ -76,6 +81,25 @@ def build_control_service(
             raise RuntimeClosedError("正式 live Root 不可用")
         return RuntimeReplyStatus(root).follow(session_id)
 
+    async def stop(params: BaseModel) -> object:
+        """控制边界保留可诊断的停止拒绝，不把领域失败藏成 Internal error。"""
+        try:
+            return await prepare_stop(core, cast(StopParams, params))
+        except (RuntimeError, ValueError, TimeoutError, ConnectionError) as error:
+            detail = str(error) or "等待回合、送达或活动工作超时"
+            raise JsonRpcError(SERVER_OVERLOADED, detail) from error
+
+    async def cancel_stop(params: BaseModel) -> object:
+        request = cast(CancelStopParams, params)
+        gate = core.restart_gate
+        if gate is None or gate.boot_id != request.boot_id:
+            raise JsonRpcError(SERVER_OVERLOADED, "取消请求不属于当前 boot")
+        claim = core.control_frames.claim_for(request.session_id, CallRef(request.call_message_id, request.call_part_index))
+        if claim is not None:
+            claim.abort()
+        gate.abort(request.request_id)
+        return {"accepting": gate.accepting}
+
     return ControlService(
         MessageCatalog(core.message_log), core.workspace, accept=accept,
         attachments=core.channel_attachment_store.resolve_refs,
@@ -88,6 +112,8 @@ def build_control_service(
         boot_id=boot_id, ready=ready,
         control_frames=core.control_frames,
         resolve_method=resolve_method,
+        methods={"runtime/prepare-stop": RpcMethod(StopParams, stop),
+                 "runtime/cancel-stop": RpcMethod(CancelStopParams, cancel_stop)},
     )
 
 

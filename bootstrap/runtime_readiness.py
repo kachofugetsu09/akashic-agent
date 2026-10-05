@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from agent.restart import SupervisorCommitChannel
@@ -66,3 +67,23 @@ class RuntimeReadiness:
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         if payload.get("bootId") == self.boot_id and payload.get("pid") == self.pid:
             self.path.unlink()
+
+    def mark_closed(self, root_identity: str | None) -> None:
+        """正常释放资源后保存当前 boot 的关闭证据，不覆盖旧 boot。"""
+        path = self.path.parent / "runtime" / "closed" / f"{self.boot_id}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"bootId": self.boot_id, "pid": self.pid, "state": "closed", "rootIdentity": root_identity}
+        descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".closed-")
+        try:
+            with os.fdopen(descriptor, "w") as stream:
+                json.dump(payload, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            os.unlink(temporary)

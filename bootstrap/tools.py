@@ -99,8 +99,9 @@ class CoreRuntime:
             if errors:
                 raise ExceptionGroup("Core storage close 失败", errors)
 
+        # 插件仍持有资源时不能释放 provider、发布锁或数据库。
+        await self.plugin_manager.terminate_all()
         await run_cleanup_steps(
-            ("plugin_manager.terminate_all", self.plugin_manager.terminate_all),
             ("control_frames.close", close_control_frames),
             ("event_bus.aclose", self.event_bus.aclose),
             ("plugin_publication_lock.release", self._release_plugin_publication),

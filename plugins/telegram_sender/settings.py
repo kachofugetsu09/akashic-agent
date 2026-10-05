@@ -97,7 +97,8 @@ async def mount(ctx: Context, model: type[BaseModel], function: FiberHandle) -> 
     async def contribute(child: Context):
         await child.require(ONBOARDING).register(child, Step("configure", "Telegram 发送", "channels", "telegram_sender-settings", settings.read, (function.fiber_id,)))
     async def ui(child: Context):
-        await child.require(UI).register(child, web="web_module.js", dashboard=lambda: import_module(".dashboard", __package__), requires=("shell.pages.v1",))
+        await child.require(UI).register(child, web="web_module.js", dashboard=lambda: import_module(".dashboard", __package__), requires=("shell.settings-plugins.v1",),
+                                         contract_digests={"shell.settings-plugins.v1": "a1762d8d7286d3f221181e2e427c0da062d63800179afe2788430268456de14b"})
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
     await ctx.inject((UI, SETTINGS), ui, name="settings-ui")
     from agent.plugin_contracts.delivery import DELIVERY_SENDERS

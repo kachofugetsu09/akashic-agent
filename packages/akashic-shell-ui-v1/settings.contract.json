@@ -1,0 +1,18 @@
+{
+  "contract": "shell.settings.v1",
+  "entry": {
+    "required": ["id", "label", "route", "iconSvg"],
+    "optional": ["order", "children"],
+    "render": {
+      "arguments": ["host", "view", "props"],
+      "returns": "dispose"
+    }
+  },
+  "props": {
+    "required": ["pages", "railActions", "embedded", "renderRoute"],
+    "renderRoute": {
+      "arguments": ["route", "host", "props"],
+      "returns": "dispose | null"
+    }
+  }
+}

@@ -53,13 +53,13 @@ def write_json(path: Path, document: Mapping[str, object]) -> None:
 
 
 @contextmanager
-def release_lock(path: Path) -> Iterator[None]:
-    """Reject a second release transaction instead of silently queueing it."""
+def release_lock(path: Path, *, wait: bool = False) -> Iterator[None]:
+    """默认拒绝并发发布；只有接单与 worker 交接可显式等待。"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as stream:
         try:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
         except BlockingIOError as error:
             raise RuntimeError(f"已有 Akashic release transaction: {path}") from error
         stream.seek(0)

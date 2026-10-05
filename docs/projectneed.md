@@ -560,6 +560,8 @@ default 图沿用 `memory/akasha.db`，不迁移已有数据；独立图位于 `
 
 ### RUN-004 Linux 正式入口由 Supervisor 托管
 
+Docker 分发是本条的明确例外：容器直接启动 Gateway，由 AppRuntime 拥有公网 Web、boot 与 readiness；Docker init 收割容器子进程，systemd 管理 Compose。容器不注册 `agent_restart`。自部署通过现有 Shell 提交独立宿主任务，指定回合正常结束且最终回复确认送达、关闭新工作准入并排空后才停止；正常关闭证据与实际旧写入者退出成立后才能迁移。失败不伪造成功，也不自动续跑原回合。直接 Python 启动仍遵循下述 Supervisor 合同。见 [0091](decisions/0091-shell-self-deployment.md)。
+
 Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮获授工具 view、回复持久化与送达、boot-scoped 私有提交证据和约定退出码；`agent_restart` 由 `message_push` 的 supervised-only child 提供，不以工具搜索结果作为授权。旧 boot 清理尽力执行并记录未清空目标，但清理失败不阻止已合法提交的下一代。普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
 
 ### RUN-005 Provider 插件拥有协议边界
