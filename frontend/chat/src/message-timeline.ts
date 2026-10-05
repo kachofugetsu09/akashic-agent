@@ -44,7 +44,7 @@ export interface ReplyActivity {
   source: string;
   handle: string;
   active: boolean;
-  preview: { message_id: string; text: string; thinking: string; call_record_id?: string | null; truncated?: boolean } | null;
+  preview: { message_id: string; text: string; thinking: string; call_record_id?: string | null; retry_status?: string; truncated?: boolean } | null;
 }
 
 export type MessageLogFrame =
@@ -91,6 +91,7 @@ export function readMessageLogFrame(value: unknown): MessageLogFrame | null {
       handles.add(item.handle);
       if (item.preview !== null) {
         const preview = object(item.preview);
+        if (preview?.retry_status !== undefined && typeof preview.retry_status !== "string") throw new Error("模型重试状态无效");
         if (!item.active || !preview || !nonempty(preview.message_id) || typeof preview.text !== "string"
           || typeof preview.thinking !== "string" || (preview.call_record_id !== undefined && preview.call_record_id !== null && !nonempty(preview.call_record_id)) || (preview.truncated !== undefined && typeof preview.truncated !== "boolean") || previews.has(preview.message_id)) throw new Error("回复草稿无效");
         previews.add(preview.message_id);

@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import httpx
 
-from core.net.http import HttpClient, StreamProgress, finish_response
+from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
 
 from agent.plugin_composition import (
     AuthenticationError,
@@ -116,7 +116,7 @@ class CodexResponses:
             # parser 已携带进展期限和部分响应事实，不再包装丢失信息。
             raise
         except (httpx.TimeoutException, TimeoutError) as exc:
-            error = ModelTimeoutError("Codex Responses 请求超时")
+            error = ModelTimeoutError(describe_transport_error(exc))
             if isinstance(exc, httpx.ConnectTimeout):
                 # 连接建立失败可证明请求未发出。
                 error.send_evidence = "unsent"
@@ -124,7 +124,7 @@ class CodexResponses:
                 setattr(error, "retryable", False)
             raise error from exc
         except httpx.TransportError as exc:
-            error = TransportError("Codex Responses 连接失败")
+            error = TransportError(describe_transport_error(exc))
             if isinstance(exc, httpx.ConnectError):
                 error.send_evidence = "unsent"
             elif getattr(exc, "response_delta_seen", False):
@@ -651,26 +651,29 @@ def _status_error(response: httpx.Response, secret: str) -> ModelError | None:
         return None
     text = response.text.replace(secret, "[REDACTED]") if secret else response.text
     lowered = text.lower()
+    detail = f"。服务返回：{text[:500]}"
     if response.status_code in {401, 403}:
-        return AuthenticationError("Codex 请求认证失败，请重新登录")
+        return AuthenticationError("Codex 请求认证失败，请重新登录" + detail)
     if response.status_code >= 500:
         # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
         # （context_length 等）不得把错误提升为可证明的容量拒绝。
-        return TransportError(f"Codex 服务失败 (HTTP {response.status_code})")
+        return TransportError(f"Codex 服务失败 (HTTP {response.status_code}){detail}")
     if "context_length" in lowered or "context window" in lowered:
-        return ContextLengthError("Codex 请求超过上下文窗口")
+        return ContextLengthError("Codex 请求超过上下文窗口" + detail)
     if any(marker in lowered for marker in ("bio_policy", "cyber_policy", "policy_violation")):
-        return ContentSafetyError("Codex 请求被安全策略拒绝")
+        return ContentSafetyError("Codex 请求被安全策略拒绝" + detail)
     if response.status_code == 402 or (
         response.status_code == 429
         and any(marker in lowered for marker in ("quota", "billing", "usage limit"))
     ):
-        return QuotaError("Codex 账号额度不足")
+        return QuotaError("Codex 账号额度不足" + detail)
     if response.status_code == 429:
-        return RateLimitError("Codex 请求被限流")
+        error = RateLimitError("Codex 请求被限流（HTTP 429）" + detail)
+        error.retry_at = retry_after_time(response.headers.get("retry-after"))
+        return error
     if 400 <= response.status_code < 500:
-        return InvalidRequestError(f"Codex 请求失败 (HTTP {response.status_code})")
-    return TransportError(f"Codex 服务失败 (HTTP {response.status_code})")
+        return InvalidRequestError(f"Codex 请求失败 (HTTP {response.status_code}){detail}")
+    return TransportError(f"Codex 服务失败 (HTTP {response.status_code}){detail}")
 
 
 def _raise_stream_error(error: object) -> None:

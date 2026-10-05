@@ -7,16 +7,18 @@ import asyncio
 from collections import deque
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import time
+from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
 import socket
 import sqlite3
 import sys
 import tempfile
 import threading
-from unittest.mock import patch
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -39,8 +41,10 @@ class Handler(BaseHTTPRequestHandler):
             {"choices": [{"message": {"role": "assistant", "content": "local-result"},
                           "finish_reason": "stop"}],
              "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
-            if status == 200 else {"error": {"message": "scenario failure"}}
+            if status == 200 else {"error": {"code": "scenario_error", "message": "scenario failure local-scenario"}}
         )
+        if status == 400:
+            value = {"detail": "scenario failure " + "x" * 475 + " local-scenario"}
         streaming = status == 200 and request.get("stream")
         if streaming:
             chunks: list[dict[str, object]] = [
@@ -53,7 +57,7 @@ class Handler(BaseHTTPRequestHandler):
             body = ("".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
                     + ("" if delay == "stream-error" else "data: [DONE]\n\n")).encode()
         else:
-            body = json.dumps(value).encode()
+            body = ("scenario failure local-scenario".encode() if status == 502 else json.dumps(value).encode())
         self.send_response(status)
         self.send_header("Content-Type", "text/event-stream" if streaming else "application/json")
         # 声明更多字节后关闭连接，制造真实的 HTTP 流中断。
@@ -100,6 +104,11 @@ async def run(args: argparse.Namespace) -> dict:
     from plugins.models.state import ModelsState
     from agent.plugin_composition.tasks import Tasks
     from plugins.reply.status import ReplyState
+    from plugins.sources.session import SourceSession
+    from plugins.content.plugin import check_text
+    from agent.plugin_contracts import ContentPart, Control, Input
+    from session.log import MessageLog, SessionAttributes
+    from agent.plugin_composition.message_view import read_message_rows
 
     descriptor = BoundModelDescriptor(
         binding_id="scenario", plugin_snapshot_id="scenario", model_revision=0,
@@ -120,9 +129,9 @@ async def run(args: argparse.Namespace) -> dict:
         driver._ConnectionConfig(endpoint, 1, 1, 0, False),
         Credential(), descriptor, driver._ModelConfig(None, 16), http,
     )
-    report = {"source": str(args.source), "checks": []}
+    report = {"source": str(args.source), "checks": [], "retry_previews": [], "errors": [], "failure_messages": []}
 
-    async def complete_with_preview(bound, request, on_attempt=None):
+    async def complete_with_preview(bound, request, on_attempt=None, on_retry=None):
         """通过真实 Task、Reply 预览、Models 和 HTTP，观察同一草稿的尝试切换。"""
         tasks, status = Tasks(), ReplyState()
         snapshots = []
@@ -132,7 +141,16 @@ async def run(args: argparse.Namespace) -> dict:
                 with preview("scenario-output") as publish:
                     async def delta(value):
                         await publish(value)
-                        snapshots.append(status.snapshot("scenario")[0].preview)
+                        draft = status.snapshot("scenario")[0].preview
+                        snapshots.append(draft)
+                        if value.get("retry_status"):
+                            assert draft.retry_status == value["retry_status"]
+                            assert "local-scenario" not in draft.retry_status
+                            report["retry_previews"].append(asdict(draft))
+                            if on_retry is not None:
+                                on_retry()
+                        if "call_record_id" in value:
+                            assert not draft.retry_status, "下一次尝试没有清除旧错误提示"
                         if on_attempt is not None and "call_record_id" in value:
                             on_attempt()
 
@@ -162,6 +180,36 @@ async def run(args: argparse.Namespace) -> dict:
 
     with tempfile.TemporaryDirectory(prefix="model-retry-check-") as temporary:
         root = Path(temporary)
+
+        async def save_visible_failure(name, error):
+            """通过真实来源 owner 追加 failure，重开消息库核对原输入与完整原因。"""
+            path = root / f"{name}-messages.db"
+            log, tasks = MessageLog(path), Tasks()
+            log.ensure_session("scenario", SessionAttributes())
+            reader = log.reader("scenario")
+            source = SourceSession(
+                reader=reader,
+                inputs=log.writer("scenario", author="user", source="conversation",
+                                  body_types=(Input,), content={"text": check_text}),
+                controls=log.writer("scenario", author="system", source="conversation",
+                                    body_types=(Control,), content={}),
+                tasks=tasks,
+            )
+            try:
+                original = await source.accept("scenario-input", Input((ContentPart("text", "scenario"),)))
+                await source.record_failure(error)
+                rows = reader.snapshot()
+                assert rows[0] == original and len(rows) == 2
+                assert rows[1].body.reason == str(error)
+                report["failure_messages"].append((await read_message_rows(reader.read_page(), display_only=True))[1])
+            finally:
+                await tasks.close()
+                log.close()
+            reopened = MessageLog(path)
+            try:
+                assert reopened.reader("scenario").snapshot() == rows
+            finally:
+                reopened.close()
 
         async def public_configuration():
             """从公开设置持久化空连接配置，再通过真实插件注册和 execution 绑定。"""
@@ -224,9 +272,9 @@ async def run(args: argparse.Namespace) -> dict:
             finally:
                 await composition.dispose()
 
-        async def case(name, config, statuses, count, success):
+        async def case(name, config, statuses, count, success, retry_after=0):
             """真实 HTTP 结果进入生产 driver，再观察 Models 的账本和回放。"""
-            server.replies = deque((status, 0) for status in statuses)
+            server.replies = deque((status, retry_after) for status in statuses)
             server.received = []
             store = ModelsStore(root / f"{name}.db", root / "backups")
             store.initialize()
@@ -235,8 +283,17 @@ async def run(args: argparse.Namespace) -> dict:
             try:
                 try:
                     response = await complete_with_preview(bound, request)
-                except ModelError:
+                except ModelError as error:
                     assert not success, name
+                    assert "scenario failure" in str(error)
+                    if statuses[0] not in (400, 502):
+                        assert "scenario_error" in str(error)
+                    if statuses[0] == 400:
+                        assert "local-" not in str(error), "截断泄漏了部分凭据"
+                    assert "local-scenario" not in str(error)
+                    assert f"已尝试 {count}/" in str(error)
+                    report["errors"].append({"case": name, "message": str(error)})
+                    await save_visible_failure(name, error)
                 else:
                     assert success and response.content == "local-result", name
                 records = store.calls_for_key(name)
@@ -244,6 +301,13 @@ async def run(args: argparse.Namespace) -> dict:
                 assert records[-1]["state"] == ("success" if success else "error"), records
                 if statuses[0] == 429:
                     assert records[0]["send_evidence"] == "rejected", records
+                    if retry_after == 3600:
+                        assert records[0]["next_attempt_at"] is None
+                        assert "至少再等待" in records[0]["failure"]
+                    elif isinstance(retry_after, str) and "," in retry_after:
+                        expected = parsedate_to_datetime(retry_after).timestamp()
+                        assert records[0]["next_attempt_at"] == expected
+                        assert records[1]["started_at"] >= datetime.fromtimestamp(expected, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                 if statuses[0] >= 500:
                     assert records[0]["send_evidence"] is None, records
                     assert records[0]["next_attempt_at"] is None, records
@@ -273,14 +337,21 @@ async def run(args: argparse.Namespace) -> dict:
             await case("default", {}, [429, 200], 1 if args.baseline else 2, not args.baseline)
             if args.baseline:
                 return report
-            await case("default-exhausted", {}, [429] * 4, 3, False)
+            await case("default-exhausted", {}, [429] * 7, 6, False)
             await case("explicit-one", {"max_attempts": 1}, [429, 200], 1, False)
             await case("legacy-zero", {"max_retries": 0}, [429, 200], 1, False)
             await case("legacy-one", {"max_retries": 1}, [429, 200], 2, True)
             await case("explicit-precedence", {"max_attempts": 1, "max_retries": 3},
                        [429, 200], 1, False)
             await case("uncertain-5xx", {}, [503, 200], 1, False)
+            await case("gateway-plain-error", {}, [502, 200], 1, False)
+            await case("long-diagnostic-redaction", {}, [400, 200], 1, False)
             await case("auth-no-retry", {}, [401, 200], 1, False)
+            await case("quota-no-retry", {}, [402, 200], 1, False)
+            await case("long-retry-after", {}, [429, 200], 1, False, retry_after=3600)
+            await case("invalid-retry-after", {}, [429, 200], 2, True, retry_after="NaN")
+            await case("date-retry-after", {}, [429, 200], 2, True, retry_after=
+                       format_datetime(datetime.fromtimestamp(time.time() + 2, timezone.utc), usegmt=True))
 
             # HTTP 200 已产生思考和正文后报错，仍终结本次调用，不自动重试。
             server.replies = deque([(200, "stream-error"), (200, None)])
@@ -382,62 +453,115 @@ async def run(args: argparse.Namespace) -> dict:
                     bound = _BoundChat(descriptor, refused_driver, store, max_attempts=_retry_budget({}))
                     try:
                         await bound.complete(ModelRequest([], request_key="unsent"))
-                    except ModelError:
-                        pass
+                    except ModelError as error:
+                        assert "ConnectError" in str(error) and "已尝试 6/6" in str(error)
+                        assert "自动重试次数已用完" in str(error)
+                        report["errors"].append({"case": "real-connect-refused", "message": str(error)})
+                        await save_visible_failure("real-connect-refused", error)
                     else:
                         raise AssertionError("未监听的 socket 返回了成功")
                     records = store.calls_for_key("unsent")
-                    assert len(records) == 3
+                    assert len(records) == 6
+                    for index, record in enumerate(records[:-1]):
+                        finished = datetime.fromisoformat(record["finished_at"]).replace(tzinfo=timezone.utc).timestamp()
+                        base = min(20, 2 * 2 ** index)
+                        assert base * 0.9 <= record["next_attempt_at"] - finished <= base * 1.1 + 1
                     assert all(record["send_evidence"] == "unsent" for record in records)
                     assert records[-1]["next_attempt_at"] is None
                 finally:
                     store.close()
                     await refused_http.aclose()
-            report["checks"].append({"case": "real-connect-refused", "attempts": 3, "posts": 0})
+            report["checks"].append({"case": "real-connect-refused", "attempts": 6, "posts": 0})
 
-            # 3. 在已提交的退避记录处取消，重新开库后按剩余额度继续。
-            server.replies = deque([(429, 3600), (200, None)])
+            # 3. 真实等待期间取消，重新开库按同一允许时间和剩余额度继续。
+            server.replies = deque([(429, 2), (200, None)])
             server.received = []
             store = ModelsStore(root / "cancel.db", root / "backups")
             store.initialize()
             request = ModelRequest([{"role": "user", "content": "scenario"}], request_key="cancel")
             bound = _BoundChat(descriptor, physical, store, max_attempts=_retry_budget({}))
             backoff = asyncio.Event()
-            original_sleep = asyncio.sleep
-
-            async def wait_backoff(delay):
-                if delay > 3000:
-                    backoff.set()
-                await original_sleep(delay)
-
             try:
-                with patch("plugins.models.state.asyncio.sleep", wait_backoff):
-                    task = asyncio.create_task(complete_with_preview(bound, request))
-                    await asyncio.wait_for(backoff.wait(), 5)
-                    record = store.calls_for_key("cancel")[0]
-                    assert record["next_attempt_at"] is not None and record["state"] == "error"
-                    assert len(server.received) == 1
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                    else:
-                        raise AssertionError("退避取消未传播")
+                task = asyncio.create_task(complete_with_preview(bound, request, on_retry=backoff.set))
+                await asyncio.wait_for(backoff.wait(), 5)
+                record = store.calls_for_key("cancel")[0]
+                assert record["next_attempt_at"] is not None and record["state"] == "error"
+                assert len(server.received) == 1
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                else:
+                    raise AssertionError("退避取消未传播")
             finally:
                 store.close()
             resumed_store = ModelsStore(root / "cancel.db", root / "backups")
             resumed_store.initialize()
             try:
                 resumed = _BoundChat(descriptor, physical, resumed_store, max_attempts=_retry_budget({}))
-                # 确定性推进耐久退避的墙钟；网络请求仍穿过真实 HTTP/driver。
-                with patch("plugins.models.state.time.time", return_value=record["next_attempt_at"] + 1):
-                    assert (await complete_with_preview(resumed, request)).content == "local-result"
-                assert len(server.received) == 2
-                assert len(resumed_store.calls_for_key("cancel")) == 2
+                assert (await complete_with_preview(resumed, request)).content == "local-result"
+                records = resumed_store.calls_for_key("cancel")
+                assert len(server.received) == 2 and len(records) == 2
+                assert records[0] == record, "恢复改写了原失败或等待期限"
             finally:
                 resumed_store.close()
             report["checks"].append({"case": "cancel-backoff-reopen", "posts": 2})
+
+            # SQLite 真实拒写回执时，保留 provider 错误并公开保存失败，不重发。
+            server.replies = deque([(429, 0), (200, None)])
+            server.received = []
+            store = ModelsStore(root / "receipt-failure.db", root / "backups")
+            store.initialize()
+            with sqlite3.connect(store.path) as connection:
+                connection.execute("CREATE TRIGGER reject_receipt BEFORE UPDATE OF state ON model_calls BEGIN SELECT RAISE(ABORT, 'receipt write rejected'); END")
+            try:
+                bound = _BoundChat(descriptor, physical, store, max_attempts=6)
+                try:
+                    await bound.complete(ModelRequest([], request_key="receipt-failure"))
+                except ModelError as error:
+                    assert "HTTP 429" in str(error) and "回执保存失败" in str(error)
+                    assert "自动重试已停止" in str(error)
+                    await save_visible_failure("receipt-failure", error)
+                else:
+                    raise AssertionError("回执保存失败被报告为成功")
+                assert server.received == [429]
+                records = store.calls_for_key("receipt-failure")
+                assert len(records) == 1 and records[0]["state"] == "started"
+            finally:
+                store.close()
+            report["checks"].append({"case": "receipt-failure-visible", "posts": 1})
+
+            # 4. 装载超过恢复窗口的旧回执；重开不能刷新窗口或再次付费。
+            store = ModelsStore(root / "expired.db", root / "backups")
+            store.initialize()
+            request = ModelRequest([], request_key="expired")
+            call_id = store.resume_call(descriptor, request, request_key="expired",
+                                        owner_id="fixture", max_attempts=6)
+            store.finish_call(call_id, usage=None, failure="TransportError: old connection failure",
+                              send_evidence="unsent", next_attempt_at=time.time() - 1)
+            with sqlite3.connect(store.path) as connection:
+                connection.execute("UPDATE model_calls SET started_at=datetime('now','-91 seconds') WHERE id=?", (call_id,))
+            before = store.calls_for_key("expired")
+            store.close()
+            reopened = ModelsStore(root / "expired.db", root / "backups")
+            reopened.initialize()
+            received = list(server.received)
+            try:
+                bound = _BoundChat(descriptor, physical, reopened, max_attempts=6)
+                try:
+                    await bound.complete(request)
+                except ModelUnavailableError as error:
+                    assert "恢复窗口已结束" in str(error) and "old connection failure" in str(error)
+                else:
+                    raise AssertionError("重开刷新了恢复窗口")
+                assert bound.key_recovery("expired") == "answered", "过期窗口仍被当作可自动恢复"
+                assert reopened.calls_for_key("expired") == before
+                assert server.received == received
+            finally:
+                reopened.close()
+            report["checks"].append({"case": "expired-window-reopen", "posts": 0})
+
         finally:
             await http.aclose()
             await asyncio.to_thread(server.shutdown)
@@ -451,9 +575,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--baseline", action="store_true")
+    parser.add_argument("--output", type=Path, help="保存真实错误与预览供浏览器重放")
     args = parser.parse_args()
     args.source = args.source.resolve()
-    print(json.dumps(asyncio.run(run(args)), ensure_ascii=False, indent=2))
+    report = json.dumps(asyncio.run(run(args)), ensure_ascii=False, indent=2)
+    if args.output is not None:
+        args.output.write_text(report + "\n")
+    print(report)
 
 
 if __name__ == "__main__":
