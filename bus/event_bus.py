@@ -36,9 +36,6 @@ class EventBus:
         handlers.append(raw_handler)
         return EventSubscription(self, raw_event_type, raw_handler)
 
-    def handler_count(self) -> int:
-        return sum(len(handlers) for handlers in self._handlers.values())
-
     def off(
         self,
         event_type: type[object],

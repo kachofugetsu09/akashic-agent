@@ -117,13 +117,6 @@ class ChannelIdentities:
             ).fetchone()
         return None if row is None else row["chat_id"]
 
-    def migration_completed(self, channel: str) -> bool:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT 1 FROM channel_identity_migrations WHERE channel=?", (channel,),
-            ).fetchone()
-        return row is not None
-
     def seed(self, channel: str, mapping: Mapping[str, tuple[str, str]]) -> None:
         """一次性接收来源已裁决的历史映射，保留永久迁移标记。"""
         with self._lock, self._conn:

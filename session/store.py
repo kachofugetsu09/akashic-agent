@@ -464,14 +464,6 @@ def _validate_source_plan_digest(value: object) -> str:
     return value
 
 
-def _validate_source_mutation_digest(value: object) -> str:
-    """Validate the authorized source-mutation snapshot identity."""
-
-    if not isinstance(value, str) or _SOURCE_PLAN_DIGEST_RE.fullmatch(value) is None:
-        raise ValueError("compaction source_mutation_digest 必须是 64 位小写 SHA-256")
-    return value
-
-
 def _required_source_plan_digest(value: object, *, identifier: str) -> str:
     """Decode one persisted source-plan digest without normalizing corrupted state."""
 

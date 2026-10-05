@@ -136,29 +136,4 @@ class OutboundMessage:
     )
 
 
-def channel_message_from_outbound(
-    message: OutboundMessage,
-    *,
-    media_kind: AttachmentKind = AttachmentKind.IMAGE,
-) -> ChannelMessage:
-    """把已提交 Turn 的字符串媒体投影转换为渠道边界类型。"""
-
-    return ChannelMessage(
-        channel=message.channel,
-        chat_id=message.chat_id,
-        content=message.content,
-        attachments=tuple(
-            ChannelAttachment(media_kind, source) for source in message.media
-        ),
-        attachment_refs=message.attachment_refs,
-        thinking=message.thinking,
-        reply_to=message.reply_to,
-        metadata=dict(message.metadata),
-        session_message_id=message.session_message_id,
-        control_turn_id=message.control_turn_id,
-        execution_attempt_id=message.execution_attempt_id,
-        terminal_status=message.terminal_status,
-    )
-
-
 InboundItem = InboundMessage
