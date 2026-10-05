@@ -14,6 +14,7 @@ async def run_cleanup_steps(
 
     first_error: BaseException | None = None
     for name, step in steps:
+        logger.info("cleanup step started: %s", name)
         error: BaseException | None
         try:
             cleanup_task = asyncio.ensure_future(step())
@@ -24,6 +25,7 @@ async def run_cleanup_steps(
         else:
             error = await _wait_for_cleanup(name, cleanup_task)
         if error is None:
+            logger.info("cleanup step complete: %s", name)
             continue
         if first_error is None:
             first_error = error

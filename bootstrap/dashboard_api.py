@@ -145,6 +145,7 @@ def _build_dashboard_uvicorn_config(
         port=port or 2236,
         uds=uds,
         log_level="info",
+        timeout_graceful_shutdown=10,
     )
     _install_dashboard_access_log_filter()
     return config
