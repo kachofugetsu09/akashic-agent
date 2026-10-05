@@ -1,4 +1,4 @@
-"""用本地 HTTP 对端和临时 Models 账本验证安全重试，不访问真实 provider。"""
+"""用本地 HTTP 对端和临时 Models 账本验证模型生成恢复，不访问真实 provider。"""
 
 from __future__ import annotations
 
@@ -37,6 +37,24 @@ class Handler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         status, delay = self.server.replies.popleft()
         self.server.received.append(status)
+        if ':streamGenerateContent' in self.path:
+            part = {"text": "local-result"}
+            if delay == "gemini-invalid":
+                part = {"text": 123}
+            value = {"candidates": [{"content": {"role": "model", "parts": [part]},
+                                      "finishReason": "STOP"}]}
+            if delay == "gemini-length":
+                value["candidates"][0]["content"]["parts"] = []
+                value["candidates"][0]["finishReason"] = "MAX_TOKENS"
+            body = ("data: " + json.dumps(value) + "\n\n").encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            if status in (429, 503):
+                self.send_header("Retry-After", "0")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         value = (
             {"choices": [{"message": {"role": "assistant", "content": "local-result"},
                           "finish_reason": "stop"}],
@@ -49,7 +67,7 @@ class Handler(BaseHTTPRequestHandler):
         if streaming:
             chunks: list[dict[str, object]] = [
                 {"choices": [{"delta": {"reasoning_content": "local-thinking"}}]},
-                {"choices": [{"delta": {"content": "local-result"}}]},
+                {"choices": [{"delta": {"content": "" if delay == "empty" else "local-result"}}]},
             ]
             if delay != "stream-error":
                 chunks.append({"choices": [{"delta": {}, "finish_reason": "stop"}],
@@ -83,6 +101,11 @@ class Credential:
 
     def exclusive(self) -> AbstractAsyncContextManager[None]:
         raise AssertionError("本地固定凭据不支持认证轮换")
+
+
+class GeminiCredential(Credential):
+    async def read(self) -> dict[str, str]:
+        return {"access_token": "local-scenario"}
 
 
 async def run(args: argparse.Namespace) -> dict:
@@ -157,8 +180,8 @@ async def run(args: argparse.Namespace) -> dict:
                     response = await bound.complete(replace(request, on_delta=delta))
                     draft = status.snapshot("scenario")[0].preview
                     assert draft.message_id == "scenario-output"
-                    assert draft.text == response.content == "local-result"
-                    assert draft.thinking == response.thinking == "local-thinking"
+                    assert draft.text == (response.content or "")
+                    assert draft.thinking == (response.thinking or "")
                     assert draft.call_record_id == response.call_record_id
                     return response
 
@@ -272,6 +295,43 @@ async def run(args: argparse.Namespace) -> dict:
             finally:
                 await composition.dispose()
 
+        async def gemini_protocol():
+            """真实原生 HTTP 响应必须区分暂时故障、协议失败和长度上限。"""
+            from plugins.gemini.driver import _Chat
+            native = replace(descriptor, driver_id="gemini")
+            async with httpx.AsyncClient(base_url=endpoint + '/', trust_env=False) as client:
+                physical = _Chat(client, GeminiCredential(), native)
+                for name, replies in (
+                    ("gemini-invalid", [(200, "gemini-invalid"), (200, None)]),
+                    ("gemini-length", [(200, "gemini-length"), (200, None)]),
+                    ("gemini-recover", [(503, None), (200, None)]),
+                ):
+                    server.replies, server.received = deque(replies), []
+                    store = ModelsStore(root / f"{name}.db", root / "backups")
+                    store.initialize()
+                    try:
+                        bound = _BoundChat(native, physical, store, max_attempts=None)
+                        request = ModelRequest([{"role": "user", "content": "scenario"}], request_key=name)
+                        try:
+                            response = await asyncio.wait_for(complete_with_preview(bound, request), 10)
+                        except ModelError as error:
+                            assert name == "gemini-invalid" and not error.retryable
+                        else:
+                            assert name != "gemini-invalid"
+                            assert response.finish_reason == ("length" if name == "gemini-length" else "stop")
+                            if name == "gemini-recover":
+                                assert response.content == "local-result" and response.provider_metadata is not None
+                                assert (await bound.complete(request)).provider_metadata == response.provider_metadata
+                        expected = 2 if name == "gemini-recover" else 1
+                        assert len(server.received) == expected and len(store.calls_for_key(name)) == expected
+                        if name == "gemini-recover":
+                            assert store.calls_for_key(name)[0]["next_attempt_at"] is not None
+                        if name == "gemini-invalid":
+                            assert store.calls_for_key(name)[0]["next_attempt_at"] is None
+                        report["checks"].append({"case": name, "posts": expected})
+                    finally:
+                        store.close()
+
         async def case(name, config, statuses, count, success, retry_after=0):
             """真实 HTTP 结果进入生产 driver，再观察 Models 的账本和回放。"""
             server.replies = deque((status, retry_after) for status in statuses)
@@ -291,7 +351,7 @@ async def run(args: argparse.Namespace) -> dict:
                     if statuses[0] == 400:
                         assert "local-" not in str(error), "截断泄漏了部分凭据"
                     assert "local-scenario" not in str(error)
-                    assert f"已尝试 {count}/" in str(error)
+                    assert f"已尝试 {count}" in str(error)
                     report["errors"].append({"case": name, "message": str(error)})
                     await save_visible_failure(name, error)
                 else:
@@ -310,7 +370,7 @@ async def run(args: argparse.Namespace) -> dict:
                         assert records[1]["started_at"] >= datetime.fromtimestamp(expected, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                 if statuses[0] >= 500:
                     assert records[0]["send_evidence"] is None, records
-                    assert records[0]["next_attempt_at"] is None, records
+                    assert records[0]["next_attempt_at"] is not None, records
             finally:
                 store.close()
             # 关掉 owner 再打开同一真实数据库；既有成功回放，终结失败不新建额度。
@@ -334,45 +394,115 @@ async def run(args: argparse.Namespace) -> dict:
         try:
             # 1. 同一场景先在主线复现默认单次失败，再在候选核对失败后成功。
             await public_configuration()
+            if not args.baseline:
+                await gemini_protocol()
             await case("default", {}, [429, 200], 1 if args.baseline else 2, not args.baseline)
             if args.baseline:
                 return report
-            await case("default-exhausted", {}, [429] * 7, 6, False)
+            await case("explicit-exhausted", {"max_attempts": 6}, [429] * 7, 6, False)
+            await case("default-past-six", {}, [429] * 7 + [200], 8, True)
             await case("explicit-one", {"max_attempts": 1}, [429, 200], 1, False)
             await case("legacy-zero", {"max_retries": 0}, [429, 200], 1, False)
             await case("legacy-one", {"max_retries": 1}, [429, 200], 2, True)
             await case("explicit-precedence", {"max_attempts": 1, "max_retries": 3},
                        [429, 200], 1, False)
-            await case("uncertain-5xx", {}, [503, 200], 1, False)
-            await case("gateway-plain-error", {}, [502, 200], 1, False)
+            await case("server-recovery", {}, [503, 200], 2, True)
+            await case("gateway-recovery", {}, [502, 200], 2, True)
             await case("long-diagnostic-redaction", {}, [400, 200], 1, False)
             await case("auth-no-retry", {}, [401, 200], 1, False)
             await case("quota-no-retry", {}, [402, 200], 1, False)
-            await case("long-retry-after", {}, [429, 200], 1, False, retry_after=3600)
             await case("invalid-retry-after", {}, [429, 200], 2, True, retry_after="NaN")
             await case("date-retry-after", {}, [429, 200], 2, True, retry_after=
                        format_datetime(datetime.fromtimestamp(time.time() + 2, timezone.utc), usegmt=True))
 
-            # HTTP 200 已产生思考和正文后报错，仍终结本次调用，不自动重试。
+            # HTTP 200 已产生思考和正文后断流：撤销旧草稿，原模型步恢复成功。
             server.replies = deque([(200, "stream-error"), (200, None)])
             server.received = []
             store = ModelsStore(root / "stream-error.db", root / "backups")
             store.initialize()
             try:
                 bound = _BoundChat(descriptor, physical, store, max_attempts=3)
-                try:
-                    await complete_with_preview(bound, ModelRequest([], request_key="stream-error"))
-                except ModelError:
-                    pass
-                else:
-                    raise AssertionError("流内错误被报告为成功")
+                await complete_with_preview(bound, ModelRequest([], request_key="stream-error"))
                 records = store.calls_for_key("stream-error")
-                assert len(records) == 1 and server.received == [200]
+                assert len(records) == 2 and server.received == [200, 200]
                 assert records[0]["partial_response"] and records[0]["state"] == "error"
-                assert records[0]["next_attempt_at"] is None
-                report["checks"].append({"case": "reply-stream-error-no-retry", "posts": 1})
+                assert records[0]["usage"] is None and records[0]["send_evidence"] is None
+                assert records[0]["next_attempt_at"] is not None
+                report["checks"].append({"case": "reply-stream-error-recovered", "posts": 2})
             finally:
                 store.close()
+
+            # 完整 HTTP 空生成仍消耗实际 attempt，已知 usage 保留，再生成完整正文。
+            server.replies = deque([(200, "empty"), (200, None)])
+            server.received = []
+            store = ModelsStore(root / "empty.db", root / "backups")
+            store.initialize()
+            try:
+                bound = _BoundChat(descriptor, physical, store, max_attempts=None)
+                await complete_with_preview(bound, ModelRequest([], request_key="empty"))
+                records = store.calls_for_key("empty")
+                assert len(records) == 2 and records[0]["state"] == "error"
+                assert records[0]["usage"] is not None and records[0]["partial_response"]
+            finally:
+                store.close()
+            report["checks"].append({"case": "empty-generation-recovered", "posts": 2})
+
+            # 回调即使抛出 ModelTimeoutError，也不是 provider 故障，不能自动重复请求。
+            from agent.plugin_composition.models import ModelTimeoutError
+            server.replies = deque([(200, None), (200, None)])
+            server.received = []
+            store = ModelsStore(root / "callback.db", root / "backups")
+            store.initialize()
+            async def rejected_preview(value):
+                if value.get("thinking_delta"):
+                    raise ModelTimeoutError("preview callback failed")
+            try:
+                bound = _BoundChat(descriptor, physical, store, max_attempts=None)
+                try:
+                    await bound.complete(ModelRequest([], request_key="callback", on_delta=rejected_preview))
+                except ModelTimeoutError as error:
+                    assert "preview callback failed" in str(error)
+                else:
+                    raise AssertionError("回调失败被伪装成功")
+                assert len(server.received) == 1
+                assert store.calls_for_key("callback")[0]["next_attempt_at"] is None
+            finally:
+                store.close()
+            report["checks"].append({"case": "callback-failure-no-retry", "posts": 1})
+
+            # 已确认旧 owner 死亡后恢复生成；同纪元身份不明的 owner 仍阻断。
+            path = root / "orphan.db"
+            store = ModelsStore(path, root / "backups")
+            store.initialize()
+            request = ModelRequest([], request_key="orphan")
+            store.resume_call(descriptor, request, request_key="orphan",
+                              owner_id=f"{store.host_epoch}:old-process:old-root:old-attempt", max_attempts=6)
+            before = store.calls_for_key("orphan")[0]
+            store.close()
+            reopened = ModelsStore(path, root / "backups")
+            reopened.initialize()
+            server.replies = deque([(200, None)])
+            server.received = []
+            try:
+                bound = _BoundChat(descriptor, physical, reopened, max_attempts=None)
+                await complete_with_preview(bound, request)
+                records = reopened.calls_for_key("orphan")
+                assert len(records) == 2 and records[0]["state"] == "error"
+                assert records[0]["usage"] is None and records[0]["response"] is None
+                assert all(records[0][key] == before[key] for key in ("id", "request_digest", "binding", "attempt", "started_at", "owner_id"))
+                unknown = ModelRequest([], request_key="unknown-owner")
+                reopened.resume_call(descriptor, unknown, request_key="unknown-owner",
+                    owner_id=f"{reopened.host_epoch}:another-process:another-root:attempt", max_attempts=6)
+                try:
+                    await bound.complete(unknown)
+                except ModelUnavailableError as error:
+                    assert "无法确认" in str(error)
+                else:
+                    raise AssertionError("身份不明的 owner 被接管")
+                assert server.received == [200]
+            finally:
+                reopened.close()
+            report["checks"].append({"case": "confirmed-orphan-recovered", "posts": 1})
 
             # 首次连接确实被拒绝，第二个 attempt 发布时才让同一端口开始监听。
             recovery = ThreadingHTTPServer(("127.0.0.1", 0), Handler, bind_and_activate=False)
@@ -450,7 +580,7 @@ async def run(args: argparse.Namespace) -> dict:
                 store = ModelsStore(root / "unsent.db", root / "backups")
                 store.initialize()
                 try:
-                    bound = _BoundChat(descriptor, refused_driver, store, max_attempts=_retry_budget({}))
+                    bound = _BoundChat(descriptor, refused_driver, store, max_attempts=6)
                     try:
                         await bound.complete(ModelRequest([], request_key="unsent"))
                     except ModelError as error:
@@ -532,7 +662,32 @@ async def run(args: argparse.Namespace) -> dict:
                 store.close()
             report["checks"].append({"case": "receipt-failure-visible", "posts": 1})
 
-            # 4. 装载超过恢复窗口的旧回执；重开不能刷新窗口或再次付费。
+            # Retry-After 很长时保持可取消等待，不提前请求、不终结成要求新输入。
+            server.replies = deque([(429, 3600), (200, None)])
+            server.received = []
+            store = ModelsStore(root / "long-wait.db", root / "backups")
+            store.initialize()
+            waiting = asyncio.Event()
+            try:
+                bound = _BoundChat(descriptor, physical, store, max_attempts=None)
+                request = ModelRequest([], request_key="long-wait")
+                task = asyncio.create_task(complete_with_preview(bound, request, on_retry=waiting.set))
+                await asyncio.wait_for(waiting.wait(), 5)
+                records = store.calls_for_key("long-wait")
+                assert records[0]["next_attempt_at"] > time.time() + 3500
+                assert bound.key_recovery("long-wait") == "open"
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                assert server.received == [429]
+                assert store.calls_for_key("long-wait") == records
+            finally:
+                store.close()
+            report["checks"].append({"case": "long-retry-after-cancellable", "posts": 1})
+
+            # 旧退避的时间不会因经过 90 秒变成终态；重开保留原请求与失败记录。
             store = ModelsStore(root / "expired.db", root / "backups")
             store.initialize()
             request = ModelRequest([], request_key="expired")
@@ -545,22 +700,17 @@ async def run(args: argparse.Namespace) -> dict:
             before = store.calls_for_key("expired")
             store.close()
             reopened = ModelsStore(root / "expired.db", root / "backups")
-            reopened.initialize()
-            received = list(server.received)
+            server.replies = deque([(200, None)])
+            server.received = []
             try:
-                bound = _BoundChat(descriptor, physical, reopened, max_attempts=6)
-                try:
-                    await bound.complete(request)
-                except ModelUnavailableError as error:
-                    assert "恢复窗口已结束" in str(error) and "old connection failure" in str(error)
-                else:
-                    raise AssertionError("重开刷新了恢复窗口")
-                assert bound.key_recovery("expired") == "answered", "过期窗口仍被当作可自动恢复"
-                assert reopened.calls_for_key("expired") == before
-                assert server.received == received
+                bound = _BoundChat(descriptor, physical, reopened, max_attempts=None)
+                assert bound.key_recovery("expired") == "open"
+                assert (await complete_with_preview(bound, request)).content == "local-result"
+                assert reopened.calls_for_key("expired")[0] == before[0]
+                assert server.received == [200]
             finally:
                 reopened.close()
-            report["checks"].append({"case": "expired-window-reopen", "posts": 0})
+            report["checks"].append({"case": "old-backoff-reopen", "posts": 1})
 
         finally:
             await http.aclose()

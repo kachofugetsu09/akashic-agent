@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0092](0092-model-generation-recovers-until-output.md) | accepted | 模型生成持续恢复，工具效果按原回执处理 | OBJ-005、ERR-001、RUN-012 |
 | [0091](0091-skill-sources-are-layered-providers.md) | proposed | Skill 来源是分层 Provider，本地目录不必打包成插件 | PLG-009、PLG-014、PLG-016、CTX-004 |
 | [0088](0088-computer-streams-h264-over-dashboard-websocket.md) | proposed | Computer 经现有 Dashboard WebSocket 传输 H.264 | PLG-017、RUN-016、WEBUI-008 |
 | [0086](0086-session-soft-delete-and-akasha-replay.md) | accepted | 会话软删除：逻辑失效可恢复，Akasha 学习与重放继续参与 | SES-003、SES-005、STA-003、MEM-009、WEBUI-009 |
