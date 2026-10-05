@@ -56,5 +56,3 @@ def sync_directory(path: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
-
-
