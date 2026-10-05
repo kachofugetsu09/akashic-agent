@@ -10,7 +10,10 @@ from pathlib import Path
 import sqlite3
 from collections.abc import Mapping
 import re
+import sys
 from typing import cast
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.plugins.files import sync_directory
 from agent.plugins.manifest import load_plugin_manifest, validate_workspace_plugin_data_path
