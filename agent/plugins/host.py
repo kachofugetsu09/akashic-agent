@@ -73,7 +73,6 @@ from agent.plugin_composition.runtime_catalog import (
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from agent.plugin_composition.ui import DASHBOARD_ROUTES
 from agent.plugin_contracts.ui import MESSAGE_DISPLAY, PLUGIN_UI
-from agent.plugin_composition.archive import PluginArchive
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
@@ -102,7 +101,6 @@ async def provide_host_services(
     workload_controller: WorkloadController | None,
     workspace_id: str,
     message_log: MessageLog | None,
-    archive: PluginArchive,
     generation_for_context: Callable[[Context], PluginGeneration],
     runtime_generations: Callable[
         [], tuple[Mapping[str, PluginGeneration], Mapping[str, list[PluginGeneration]]]
@@ -330,7 +328,7 @@ async def provide_host_services(
         _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
         _ = await root.context.provide(SESSION_ADMIN, SessionAdmin(log))
         _ = await root.context.provide(
-            BINDINGS, Bindings(log, archive, root, generation_for_context)
+            BINDINGS, Bindings(log, root, generation_for_context)
         )
     if TASKS in requested or message_log is not None:
         _ = await root.context.provide(TASKS, tasks)

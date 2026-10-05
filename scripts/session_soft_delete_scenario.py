@@ -71,7 +71,6 @@ def run_real_migration(workspace: Path) -> None:
 async def akasha_participation(root: Path, deleted_session: str) -> None:
     """软删会话仍被在线学习与全量重建消费：同一 MessageConsumer、同一输入。"""
     from agent.plugin_composition import CompositionRoot, Context
-    from agent.plugin_composition.archive import PluginArchive
     from agent.plugin_composition.bindings import Bindings
     from plugins.akasha.application.rebuild import rebuild_from_catalog
     from plugins.akasha.application.consumer import MessageConsumer
@@ -100,7 +99,7 @@ async def akasha_participation(root: Path, deleted_session: str) -> None:
     await SessionAdmin(log).set_deleted(deleted_session, deleted=True)
 
     root_cm = CompositionRoot("soft-delete-akasha")
-    bindings = Bindings(log, PluginArchive(root / "archives"), root_cm)
+    bindings = Bindings(log, root_cm)
 
     async def provide(ctx: Context) -> None:
         await ctx.provide(AKASHA_LEARNING, learning)

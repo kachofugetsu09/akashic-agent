@@ -2186,7 +2186,7 @@ class PluginManager:
             channel_identities=self._channel_identities, attachments=self._channel_attachment_store,
             resolve_command=self._resolve_runtime_command,
             workload_controller=self._workload_controller, workspace_id=self._workload_workspace_id,
-            message_log=self._message_log, archive=self._archive,
+            message_log=self._message_log,
             generation_for_context=self._generation_for_context,
             runtime_generations=lambda: (self._active_generations, self._draining_generations),
             runtime_updating=lambda: self._operation is not None and not self._operation.task.done(),

@@ -22,7 +22,6 @@ from unittest.mock import patch
 from docker.debug import source_reply_boundaries as fixture
 from agent.plugin_composition import CHAT_MODELS, CompositionRoot, PluginRuntime
 from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.restart import RESTART_GATE, RestartGate
@@ -72,7 +71,7 @@ async def check(directory: Path, stage: str, control: bool, *, boundary_source: 
     reached, proceed = asyncio.Event(), asyncio.Event()
     committed, notify = asyncio.Event(), asyncio.Event()
     rejected = asyncio.Event()
-    bindings = Bindings(log, PluginArchive(directory / "archives"), root)
+    bindings = Bindings(log, root)
 
     async def hold():
         reached.set()
