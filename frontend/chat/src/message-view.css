@@ -615,6 +615,7 @@
 
 /* Reasoning 根节点自带 mb-4；逐行排列不需要段距。 */
 .thinking-row {
+  min-width: 0;
   margin: 0;
 }
 
@@ -664,6 +665,8 @@
 }
 
 .process-trigger.is-streaming .process-trigger-summary {
+  /* 参考 dsh:流式摘要槽位定宽，右缘渐变淡出代替生硬截断。 */
+  mask-image: linear-gradient(to right, black calc(100% - 48px), transparent);
   animation: process-trace-breathe 1.6s ease-in-out infinite;
 }
 
@@ -702,6 +705,7 @@
 
 /* 展开的思考正文缩进到行标签之下，字色保持第三级。 */
 .process-content {
+  min-width: 0;
   padding-left: 19px;
   color: var(--ak-color-text-secondary);
   outline: none;
@@ -725,6 +729,7 @@
   color: color-mix(in oklch, var(--ak-color-text-primary) 46%, transparent);
   font-size: 0.75rem;
   line-height: 1.55;
+  overflow-wrap: break-word;
   white-space: pre-wrap;
   user-select: text;
 }
@@ -736,10 +741,12 @@
 
 .process-markdown {
   min-width: 0;
+  overflow-wrap: break-word;
   white-space: normal;
 }
 
 .process-markdown-fallback {
+  overflow-wrap: break-word;
   white-space: pre-wrap;
 }
 

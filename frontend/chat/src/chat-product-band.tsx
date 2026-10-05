@@ -1,4 +1,4 @@
-import { Bot, Gauge, Palette, SlidersHorizontal } from "lucide-react";
+import { Cpu, Gauge, MessageSquare, Palette } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { akashicBrandIcon } from "./akashic-brand";
 
@@ -19,7 +19,7 @@ interface BandItem {
 /** 顶部目的地：普通横排链接导航，视觉与工作台顶栏共用 theme/src/product-band.css。 */
 export function ChatProductBand({ chatReady, themeLabel, onCycleTheme }: ChatProductBandProps) {
   const items: BandItem[] = [
-    { id: "chat", label: "对话", icon: <Bot size={16} aria-hidden="true" />, href: "/chat" },
+    { id: "chat", label: "对话", icon: <MessageSquare size={16} aria-hidden="true" />, href: "/chat" },
     {
       id: "workbench",
       label: "工作台",
@@ -27,7 +27,7 @@ export function ChatProductBand({ chatReady, themeLabel, onCycleTheme }: ChatPro
       href: chatReady ? "/" : undefined,
       disabled: !chatReady,
     },
-    { id: "models", label: "模型", icon: <SlidersHorizontal size={16} aria-hidden="true" />, href: "/#models" },
+    { id: "models", label: "模型", icon: <Cpu size={16} aria-hidden="true" />, href: "/#models" },
   ];
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {

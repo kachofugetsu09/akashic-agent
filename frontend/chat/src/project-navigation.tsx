@@ -183,7 +183,8 @@ export function ProjectNavigationRow({
         <ChevronRight size={14} aria-hidden="true" className="project-group__chevron" />
       </button>
       <button type="button" className="project-group__open" onClick={onToggle}
-        aria-expanded={open} disabled={searching} title={`${open ? "收起" : "展开"} ${project.name}`}>
+        aria-expanded={open} disabled={searching}
+        title={`${open ? "收起" : "展开"} ${project.name}${project.directory ? ` · ${project.directory}` : ""}`}>
         <Folder size={18} strokeWidth={1.75} aria-hidden="true" />
         <span className="project-group__name">{project.name}</span>
         {project.memory && project.memory !== "global" ? (
@@ -195,7 +196,7 @@ export function ProjectNavigationRow({
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>
-    {open && project.directory ? <p className="project-directory-path" title={project.directory}>{project.directory}</p> : null}
+    {open && active && project.directory ? <p className="project-directory-path" title={project.directory}>{project.directory}</p> : null}
     {open ? <nav className="project-group__sessions" aria-label={`${project.name} 的对话`}>
       {items.length === 0 ? <small className="project-group__hint">{searching ? "没有匹配的对话" : "还没有对话"}</small> : null}
       {items.map((session) => <button key={session.id} type="button"

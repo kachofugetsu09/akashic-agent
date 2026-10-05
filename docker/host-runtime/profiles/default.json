@@ -78,6 +78,11 @@
       "reason": "提供 Web 对话页面和可撤销的工具区。"
     },
     {
+      "name": "projects",
+      "depends_on": ["conversation-ui"],
+      "reason": "拥有项目记录与会话归属，提供侧栏项目分组和工作目录绑定。"
+    },
+    {
       "name": "models",
       "depends_on": [
         "ui"

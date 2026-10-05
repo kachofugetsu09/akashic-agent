@@ -22,7 +22,6 @@ export interface ConversationSession {
   preview: string;
   active: boolean;
   unavailable?: boolean;
-  state?: ReactNode;
 }
 
 export interface ConversationAction {
@@ -329,7 +328,6 @@ export function ConversationSessionRow({ session, pendingSessionId, onActivate, 
         </span>
         <small>{session.preview}</small>
       </span>
-      {session.state ? <span className="conversation-session__state">{session.state}</span> : null}
     </button>;
 
   return <NavigationRowMenu title={session.title} actions={rowActions}

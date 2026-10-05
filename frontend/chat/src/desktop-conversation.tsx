@@ -1,4 +1,5 @@
 import { focusMessagePart } from "./message-actions";
+import { copyText } from "./copy-text";
 import { timelineVisibleMessages, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, type ReplyActivity } from "./message-timeline";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -194,7 +195,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
                 />
               ) : undefined}
               onCopyToolDetail={(text) => {
-                void navigator.clipboard.writeText(text).catch(onError);
+                void copyText(text).catch(onError);
               }}
               onError={onError}
             />
@@ -204,7 +205,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
               canReply={canReply}
               onReply={() => onReply?.(message)}
               onCopy={() => {
-                void navigator.clipboard.writeText(message.content).then(() => onCopied(message.id)).catch(onError);
+                void copyText(message.content).then(() => onCopied(message.id)).catch(onError);
               }}
             />
           </>
@@ -369,7 +370,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
         canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}
         onReply={() => onReply(timelineReply(message))}
-        onCopy={() => { void navigator.clipboard.writeText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }} />
+        onCopy={() => { void copyText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }} />
     </div> : null}
     {message.body.kind === "input" && message.author === "user" ? <div className="message-row agent-row">
       <div className="agent-content"><PluginUiSlot name="turn.before_reasoning"
