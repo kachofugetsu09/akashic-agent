@@ -183,9 +183,28 @@
     color: inherit;
   }
 
-  .shell-settings-tabs button[aria-selected="true"] {
+  .shell-settings-tabs button:focus-visible {
+    outline: 2px solid var(--ak-rule-focus);
+    outline-offset: -2px;
+  }
+
+  .shell-settings-tabs button[aria-current="true"] {
     color: inherit;
     border-block-end-color: var(--ak-ink-primary);
+  }
+
+  /* family 组合页：成员表单上下排进同一滚动页，小标题标示成员，发丝线分隔。 */
+  .shell-settings-family-member + .shell-settings-family-member {
+    margin-block-start: 24px;
+    border-block-start: 1px solid var(--ak-rule-subtle);
+    padding-block-start: 20px;
+  }
+
+  .shell-settings-member-title {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ak-ink-secondary);
   }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -276,5 +295,8 @@
     }
     .shell-settings-page {
       padding-bottom: max(32px, env(safe-area-inset-bottom, 0px));
+    }
+    .shell-settings-tabs {
+      flex-wrap: wrap;
     }
 }
