@@ -40,6 +40,7 @@ class PreparedPluginInput:
     plugin_id: str
     input_ref: str
     source_revision: str
+    runtime_revision: str
     config_revision: str
     config: dict[str, object]
     static_manifest: StaticPluginManifest
@@ -118,7 +119,8 @@ def prepare_plugin_input(
     })
     return PreparedPluginInput(
         plugin_id=plugin_id, input_ref=ref,
-        source_revision=revision, config_revision=config_revision, config=config,
+        source_revision=revision, runtime_revision=_source_revision(code_dir, runtime_only=True),
+        config_revision=config_revision, config=config,
         static_manifest=identity, plugin_dir=plugin_dir, code_dir=code_dir,
         data_dir=data_dir,
         source_type=cast(Literal["builtin", "installed"], mod["source_type"]),
