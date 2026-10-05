@@ -577,7 +577,8 @@ function activationOrder(modules: WebModulePayload[]): WebModulePayload[] {
   while (pending.size) {
     const ready = modules.filter((module) => pending.has(module) && module.requires.every((mountId) => {
       const dependency = provider.get(mountId);
-      return dependency === undefined || !pending.has(dependency);
+      // 模块先声明再使用自己的子挂载点，不构成跨模块依赖。
+      return dependency === module || dependency === undefined || !pending.has(dependency);
     }));
     if (!ready.length) throw new Error("Web UI mount dependencies contain a cycle");
     for (const module of ready) {
