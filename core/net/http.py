@@ -3,6 +3,12 @@ from __future__ import annotations
 import asyncio
 import random
 import logging
+import math
+import socket
+import ssl
+import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -13,6 +19,64 @@ import httpx
 
 
 logger = logging.getLogger(__name__)
+
+
+def retry_after_time(value: str | None) -> float | None:
+    """在收到响应时把秒数或 HTTP 日期转换成固定的下一次允许时间。"""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            date = parsedate_to_datetime(value)
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
+        return max(time.time(), date.timestamp())
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return time.time() + seconds
+
+
+def describe_transport_error(error: Exception) -> str:
+    """展示网络阶段与已知底层原因；不包含请求正文、URL 路径或凭据。"""
+    # 1. 异常类型说明失败阶段，未发送证据仍由 driver 单独给出。
+    if isinstance(error, httpx.ConnectTimeout):
+        reason = "连接模型服务超时，请检查网络、代理或节点"
+    elif isinstance(error, httpx.ConnectError):
+        reason = "无法连接模型服务，请检查网络、代理或节点"
+    elif isinstance(error, httpx.ReadTimeout):
+        reason = "等待模型服务响应超时"
+    elif isinstance(error, httpx.RemoteProtocolError):
+        reason = "模型服务提前关闭连接或返回了无效 HTTP 响应"
+    elif isinstance(error, httpx.ReadError):
+        reason = "读取模型响应失败，连接已中断"
+    elif isinstance(error, httpx.WriteError):
+        reason = "发送模型请求失败，连接已中断"
+    elif isinstance(error, httpx.WriteTimeout):
+        reason = "向模型服务发送请求超时"
+    elif isinstance(error, httpx.PoolTimeout):
+        reason = "等待可用 HTTP 连接超时"
+    elif isinstance(error, (httpx.TimeoutException, TimeoutError)):
+        reason = "模型请求超时"
+    else:
+        reason = "与模型服务的传输中断"
+    # 2. 只透传系统网络诊断，不直接打印可能含 token 的异常文本。
+    details = [type(error).__name__]
+    cause: BaseException | None = error
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            details.append(f"TLS 证书校验失败：{cause.verify_message}")
+        elif isinstance(cause, socket.gaierror):
+            details.append(f"DNS 解析失败：{cause.strerror}")
+        elif isinstance(cause, OSError) and cause.strerror:
+            details.append(f"{type(cause).__name__}: {cause.strerror}")
+        cause = cause.__cause__ or cause.__context__
+    return f"{reason}（{'；'.join(dict.fromkeys(details))}）"
 
 
 class HttpClient:

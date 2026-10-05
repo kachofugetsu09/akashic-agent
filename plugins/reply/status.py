@@ -103,6 +103,7 @@ class ReplyState:
                     draft, text=draft.text + value.get("content_delta", ""),
                     thinking=draft.thinking + value.get("thinking_delta", ""),
                     call_record_id=call_id,
+                    retry_status=value.get("retry_status", draft.retry_status),
                 ))
                 self._notify()
 

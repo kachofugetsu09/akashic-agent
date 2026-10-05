@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from core.net.http import HttpClient, StreamProgress, finish_response
+from core.net.http import HttpClient, StreamProgress, describe_transport_error, finish_response, retry_after_time
 
 from agent.plugin_composition import (
     AuthenticationError,
@@ -1124,7 +1124,7 @@ def _raise_status(response: httpx.Response, *, secret: str) -> None:
 def _status_error(response: httpx.Response, *, secret: str) -> ModelError | None:
     if response.status_code < 400:
         return None
-    message = _redact_secret(_response_error_message(response), secret)
+    message = _response_error_message(response, secret=secret)
     lowered = message.lower()
     if response.status_code in {401, 403}:
         return AuthenticationError(
@@ -1136,45 +1136,41 @@ def _status_error(response: httpx.Response, *, secret: str) -> ModelError | None
         # （context_length 等）不得把错误提升为可证明的容量拒绝。
         return TransportError(f"模型服务暂不可用（HTTP {response.status_code}），请稍后重试。服务返回：{message}")
     if any(code in lowered for code in _CONTEXT_CODES):
-        return ContextLengthError(message)
+        return ContextLengthError(f"模型上下文超过限制（HTTP {response.status_code}）。服务返回：{message}")
     if any(code in lowered for code in _SAFETY_CODES):
-        return ContentSafetyError(message)
+        return ContentSafetyError(f"模型安全策略拒绝请求（HTTP {response.status_code}）。服务返回：{message}")
     if response.status_code == 402 or (
         response.status_code == 429
         and any(value in lowered for value in ("quota", "usage limit", "credit"))
     ):
-        return QuotaError(message)
+        return QuotaError(f"模型账号额度不足（HTTP {response.status_code}）。服务返回：{message}")
     if response.status_code == 429:
-        error = RateLimitError(message)
+        error = RateLimitError(f"模型服务限流（HTTP 429）。服务返回：{message}")
         # Retry-After 必须随错误传给 Models，由独占重试预算决定何时再付。
-        retry_after = response.headers.get("retry-after")
-        if retry_after is not None:
-            try:
-                setattr(error, "retry_after", max(0.0, float(retry_after)))
-            except ValueError:
-                pass
+        error.retry_at = retry_after_time(response.headers.get("retry-after"))
         return error
     if 400 <= response.status_code < 500:
         return InvalidRequestError(
-            f"provider rejected the request with HTTP {response.status_code}: {message}"
+            f"模型服务拒绝请求（HTTP {response.status_code}）。服务返回：{message}"
         )
     error = TransportError(f"provider returned HTTP {response.status_code}: {message}")
     return error
 
 
-def _response_error_message(response: httpx.Response) -> str:
+def _response_error_message(response: httpx.Response, *, secret: str = "") -> str:
     try:
         payload = response.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return f"HTTP {response.status_code}"
+        return _redact_secret(response.text, secret)[:500] or f"HTTP {response.status_code}"
     if isinstance(payload, Mapping):
-        raw = payload.get("error")
+        raw = payload.get("error", payload.get("detail", payload))
         if isinstance(raw, Mapping):
-            message = raw.get("message") or raw.get("code")
-            if isinstance(message, str) and message:
-                return message[:500]
+            message, code = raw.get("message"), raw.get("code")
+            details = [value for value in (code, message) if isinstance(value, str) and value]
+            if details:
+                return _redact_secret(": ".join(dict.fromkeys(details)), secret)[:500]
         if isinstance(raw, str) and raw:
-            return raw[:500]
+            return _redact_secret(raw, secret)[:500]
     return f"HTTP {response.status_code}"
 
 
@@ -1201,19 +1197,21 @@ def _map_error(error: Exception) -> Exception:
         return error
     if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
         # 连接建立失败可证明请求未发出：这是允许重试的正面证据。
-        mapped = TransportError(f"model transport failed: {type(error).__name__}")
+        mapped = TransportError(describe_transport_error(error))
         mapped.send_evidence = "unsent"
         setattr(mapped, "retry_safe", True)
         return mapped
     if isinstance(error, (httpx.TimeoutException, TimeoutError)):
-        return ModelTimeoutError("model request timed out")
+        return ModelTimeoutError(describe_transport_error(error))
     if isinstance(error, httpx.TransportError):
         # 请求发出后的读/写失败不携带任何安全证据。
-        return TransportError(f"model transport failed: {type(error).__name__}")
+        return TransportError(describe_transport_error(error))
     if isinstance(error, _StreamReadError):
         # 已进入 HTTP 200 流：无论是否观察到 delta，远端效果都不可证。
         mapped = _map_error(error.error)
         setattr(mapped, "response_delta_seen", error.response_delta_seen)
+        if isinstance(mapped, ModelError):
+            mapped.send_evidence = None
         return mapped
     return error
 

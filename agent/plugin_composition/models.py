@@ -551,6 +551,8 @@ MODEL_DRIVERS = ServiceKey[ModelDrivers]("models.drivers.v1")
 
 class ModelError(RuntimeError):
     retryable = False
+    # driver 在收到响应时固定服务端等待期限，Models 不重新起算。
+    retry_at: float | None = None
     # 发送边界证据，driver 在产生错误处显式置位：
     # "rejected" = provider 以 HTTP 错误应答明确拒绝了请求（未进入流处理）；
     # "unsent"   = 连接建立失败或发送前本地校验失败，可证明请求未发出；

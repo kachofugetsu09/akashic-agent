@@ -115,7 +115,8 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <PluginUiSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
-      {activity.active && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}
+      {activity.active && draft?.retry_status ? <p className="plain-message-response" role="status">{draft.retry_status}</p> : null}
+      {activity.active && !draft?.retry_status && !text && !draft?.thinking && !flow.length ? <ThinkingPlaceholder /> : null}
       {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
     </div>
   </div>;

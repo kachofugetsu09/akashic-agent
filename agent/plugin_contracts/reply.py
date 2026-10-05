@@ -73,6 +73,7 @@ class ReplyPreview:
     text: str = ""
     thinking: str = ""
     call_record_id: str | None = None
+    retry_status: str = ""
 
 
 @dataclass(frozen=True, slots=True)

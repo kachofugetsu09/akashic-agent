@@ -5,12 +5,14 @@ import hashlib
 import json
 import logging
 import math
+import random
 import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timezone
 from functools import partial
 from time import monotonic_ns
 from types import MappingProxyType
@@ -55,6 +57,7 @@ from agent.plugin_composition import (
     ModelDescriptor,
     ModelDriverDefinition,
     ModelExecution,
+    ModelError,
     ModelKind,
     ModelRequest,
     ModelUnavailableError,
@@ -108,6 +111,7 @@ _SETTINGS_MODEL_PROBE_SECONDS = 60
 _DEFAULT_ROLE = "default"
 _AGENT_ROLE = "agent"
 _VISION_ROLE = "vision"
+_RETRY_WINDOW_SECONDS = 90
 
 
 class _CapabilityCatalog(Protocol):
@@ -247,13 +251,14 @@ class _BoundChat:
         last = records[-1]
         if last["state"] != "error":
             return "open"
-        if last.get("next_attempt_at") is not None and len(records) < self._max_attempts:
+        if (last.get("next_attempt_at") is not None and len(records) < self._max_attempts
+                and time.time() < _retry_deadline(cast(str, records[0]["started_at"]))):
             return "open"
         evidence = last.get("send_evidence")
         failure = last.get("failure")
         if evidence == "rejected":
             # provider 明确拒绝应答是可证明失败；容量拒绝额外保留有界缩减。
-            return "rejected" if failure == "ContextLengthError" else "answered"
+            return "rejected" if str(failure).split(":", 1)[0] == "ContextLengthError" else "answered"
         if evidence == "unsent":
             # 连接未建立/发送前校验失败：可证明请求从未到达 provider。
             return "answered"
@@ -361,8 +366,13 @@ class _BoundChat:
             # 预算是耐久事实：连续 complete、关闭重开、进程重启都不刷新；
             # 显式恢复只能以新准备身份（新 key）进入，同 key 重入不重新付费。
             if len(records) >= budget:
-                raise ModelUnavailableError("模型调用重试预算耗尽")
+                raise ModelUnavailableError(f"模型调用重试预算耗尽。上次失败：{records[-1]['failure']}")
             last = records[-1] if records else None
+            # 恢复窗口从首条耐久调用的开始时间起算，重启不能重新领取 90 秒。
+            deadline = (
+                _retry_deadline(cast(str, records[0]["started_at"]))
+                if records else time.time() + _RETRY_WINDOW_SECONDS
+            )
             if (
                 last is not None
                 and last["state"] == "error"
@@ -372,14 +382,23 @@ class _BoundChat:
                 # 不能证明 provider 未接收或未计费；同 key 重调不得再发送，
                 # 恢复只能由调用方以新请求身份（新业务边界）显式进入。
                 raise ModelUnavailableError(
-                    "该请求 key 的最近调用已终结失败，同 key 不得重新付费"
+                    f"该请求已终结失败，同一请求不会自动重发。上次失败：{last['failure']}"
                 )
             next_at = None if last is None else last.get("next_attempt_at")
             if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
                 delay = float(next_at) - time.time()
                 if delay > 0:
-                    # 退避可取消；取消后 attempt 记录保持 started，结果不确定。
+                    if float(next_at) > deadline:
+                        raise ModelUnavailableError(f"服务要求的等待超过 {_RETRY_WINDOW_SECONDS} 秒恢复窗口。上次失败：{last['failure']}")
+                    if request.on_delta is not None:
+                        await request.on_delta({"retry_status": (
+                            f"模型调用失败，第 {len(records) + 1}/{budget} 次尝试将在约 {math.ceil(delay)} 秒后开始。"
+                            f"可以取消等待。上次失败：{last['failure']}"
+                        )})
+                    # 等待可取消；已结算的失败与允许时间保留，恢复按剩余额度继续。
                     await asyncio.sleep(delay)
+                if time.time() >= deadline:
+                    raise ModelUnavailableError(f"模型连接恢复窗口已结束（{_RETRY_WINDOW_SECONDS} 秒）。上次失败：{last['failure']}")
             owner_id = (
                 f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
                 f":{self._root_instance}:{secrets.token_hex(8)}"
@@ -437,7 +456,7 @@ class _BoundChat:
                         request_key=request_key,
                     )
                     if request.on_delta is not None:
-                        await request.on_delta({"call_record_id": call_id})
+                        await request.on_delta({"call_record_id": call_id, "retry_status": ""})
                     started = monotonic_ns()
                     response = await self._driver.complete(driver_request)
                 except BaseException as failure:
@@ -449,22 +468,46 @@ class _BoundChat:
                     # 无论是否观察到 delta 都不得重发同一请求。
                     partial_response = bool(getattr(failure, "response_delta_seen", False))
                     evidence = getattr(failure, "send_evidence", None)
-                    retryable = evidence in ("rejected", "unsent") and bool(
+                    retryable = not partial_response and evidence in ("rejected", "unsent") and bool(
                         getattr(failure, "retry_safe", False)
                         or getattr(failure, "retryable", False)
                     )
                     retry_at = None
+                    stop_reason = ""
                     if retryable and len(records) + 1 < budget:
                         # Retry-After 优先于本地退避，且随失败记录耐久保存。
+                        allowed_at = getattr(failure, "retry_at", None)
                         hint = getattr(failure, "retry_after", None)
-                        retry_at = time.time() + (
-                            float(hint)
-                            if isinstance(hint, (int, float)) and not isinstance(hint, bool)
-                            else min(8.0, 0.5 * (2 ** (len(records) + 1)))
+                        now = time.time()
+                        if allowed_at is not None:
+                            candidate = float(allowed_at)
+                        elif isinstance(hint, (int, float)) and not isinstance(hint, bool):
+                            candidate = now + float(hint)
+                        else:
+                            candidate = now + min(20.0, 2.0 * (2 ** min(len(records), 4))) * random.uniform(0.9, 1.1)
+                        if candidate <= deadline and now < deadline:
+                            retry_at = candidate
+                        else:
+                            stop_reason = f"自动恢复窗口已用完或所需等待超过 {_RETRY_WINDOW_SECONDS} 秒"
+                            if allowed_at is not None or hint is not None:
+                                stop_reason += f"；服务要求至少再等待 {math.ceil(max(0, candidate - now))} 秒"
+                    elif retryable:
+                        stop_reason = "自动重试次数已用完"
+                    elif evidence not in ("rejected", "unsent") or partial_response:
+                        stop_reason = "请求可能已被服务处理，为避免重复调用或计费，未自动重发"
+                    else:
+                        stop_reason = "此错误不适合自动重试，请根据原因处理后重试"
+                    if isinstance(failure, ModelError):
+                        failure.args = (
+                            f"模型 {descriptor.model} 调用失败：{failure}\n"
+                            f"已尝试 {len(records) + 1}/{budget} 次。{stop_reason}",
                         )
                     try:
                         await self._finish_call(partial(self._store.finish_call,
-                            call_id, usage=None, failure=type(failure).__name__,
+                            call_id, usage=None, failure=(
+                                f"{type(failure).__name__}: {failure}"
+                                if isinstance(failure, ModelError) else type(failure).__name__
+                            ),
                             duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
                             next_attempt_at=retry_at,
                             partial_response=partial_response,
@@ -475,9 +518,14 @@ class _BoundChat:
                             raise
                         # 真实 provider 错误不能被后来的取消或回执拒写覆盖。
                         raise BaseExceptionGroup(
-                            "模型请求失败且回执结算被取消", [failure, record_failure]
+                            f"模型请求失败且回执结算被取消。原请求错误：{failure}", [failure, record_failure]
                         ) from None
                     except Exception as record_failure:
+                        if isinstance(failure, ModelError):
+                            failure.args = (
+                                f"{failure}\n调用回执保存失败（{type(record_failure).__name__}），"
+                                "自动重试已停止。请检查服务日志。",
+                            )
                         raise failure from record_failure
                     if retry_at is None:
                         raise
@@ -2128,10 +2176,15 @@ def _driver_connection_descriptor(
     )
 
 
+def _retry_deadline(started_at: str) -> float:
+    """沿用账本的 SQLite UTC 时间起算恢复窗口。"""
+    return datetime.fromisoformat(started_at).replace(tzinfo=timezone.utc).timestamp() + _RETRY_WINDOW_SECONDS
+
+
 def _retry_budget(config: Mapping[str, Any]) -> int:
     """连接配置中的 Models 重试预算：max_attempts 显式优先，旧 max_retries
     迁移为 N+1 次 attempt（N 次重试 = 首次 + N 次重试）；
-    未配置时最多 3 次尝试，非法值直接报错。"""
+    未配置时最多 6 次尝试，非法值直接报错。"""
     configured = config.get("max_attempts")
     if configured is not None:
         if not isinstance(configured, int) or isinstance(configured, bool) or configured < 1:
@@ -2139,7 +2192,7 @@ def _retry_budget(config: Mapping[str, Any]) -> int:
         return configured
     legacy = config.get("max_retries")
     if legacy is None:
-        return 3
+        return 6
     if not isinstance(legacy, int) or isinstance(legacy, bool) or legacy < 0:
         raise ValueError("max_retries must be a non-negative integer")
     return legacy + 1
