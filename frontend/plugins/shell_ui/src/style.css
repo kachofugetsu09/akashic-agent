@@ -150,6 +150,10 @@
     padding: 20px 24px 32px;
   }
 
+  .shell-settings-entry {
+    display: contents;
+  }
+
 @media (prefers-reduced-motion: no-preference) {
   .shell-settings-dialog {
     opacity: 0;

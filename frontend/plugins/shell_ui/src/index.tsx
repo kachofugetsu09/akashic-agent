@@ -176,12 +176,23 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
   }, [settingsOpen]);
 
   // 分节页面就地渲染进对话框；关闭或换节即销毁，同一页面不会同时挂载在两处。
+  // 每个分节挂进独立 wrapper，dispose 延迟到 microtask：layout cleanup 阶段 React 无法
+  // 同步 flush 子 root 的卸载提交，同步 dispose 会与渲染器自身的 replaceChildren 竞争而崩。
   useLayoutEffect(() => {
     if (!settingsOpen) return;
-    const host = settingsContent.current;
+    const container = settingsContent.current;
     const entry = settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
-    if (!host || !entry) return;
-    return pages.render(entry.id, host, { pages, railActions: railActionEntries, embedded: true });
+    if (!container || !entry) return;
+    const host = document.createElement("div");
+    host.className = "shell-settings-entry";
+    container.replaceChildren(host);
+    const dispose = pages.render(entry.id, host, { pages, railActions: railActionEntries, embedded: true });
+    return () => {
+      queueMicrotask(() => {
+        dispose();
+        host.remove();
+      });
+    };
   }, [settingsOpen, settingsEntryId, settingsEntries, pages, railActionEntries]);
 
   useLayoutEffect(() => {
