@@ -79,6 +79,9 @@ export class ComputerDisplay extends EventTarget {
 
   /** 只从当前 generation 读取客户端，再交入同一身份的完整 WebSocket 地址。 */
   private async load() {
+    if (!window.isSecureContext) {
+      throw new Error("Computer 需要安全连接。请通过 HTTPS 地址打开 Akashic；局域网 HTTP 地址无法显示桌面。");
+    }
     // 1. 资源与 WebSocket 必须来自同一 activation。
     const response = await this.ctx.http.request("/api/dashboard/computer/stream-client", {
       signal: this.abort.signal,

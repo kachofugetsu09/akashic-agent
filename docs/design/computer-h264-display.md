@@ -59,6 +59,11 @@ generation 的 Dashboard 资源入口提供。只有插件夹具通过，不能�
 外部应用完成粘贴的证明。人工操作和 Agent 操作沿各自既有 owner 到同一 display，
 两者不另建主 profile writer。
 
+WebCodecs 需要浏览器安全上下文。显示客户端启动前检查 `window.isSecureContext`；
+局域网 IP 的 HTTP 页面立即提示改用 HTTPS，不下载流客户端或等待首帧。沿用已有
+HTTPS 入口，不猜测同一 IP / 端口提供 TLS，也不把 localhost 改写成远端服务器。
+直接在本机使用可信 loopback HTTP 的浏览器仍按其实际安全上下文判断。
+
 连接启动的 15 秒期限包含客户端请求、iframe 启动和首帧。启动失败保留具体原因，
 由用户重新连接或重新展开面板后再尝试；已有画面后的普通断线继续自动退避重连。
 activity 轮询只请求同一重连计时器，不绕过退避。另一窗口接管、休眠和 generation
