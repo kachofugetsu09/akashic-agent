@@ -288,7 +288,7 @@ class PythonEnvironments:
         """按安装引用读取环境目录，不扫描内容或探测解释器。"""
         if self.path.is_symlink() or not self.path.is_dir():
             raise FileNotFoundError("Python 环境根缺失或是符号链接")
-        if re.fullmatch(r"[0-9a-f]{64}", ref) is None:
+        if re.fullmatch(r"(?:[0-9a-f]{32}|[0-9a-f]{64})", ref) is None:
             raise ValueError("Python 环境路径身份无效")
         location = ref
         root = self.path / location
@@ -335,7 +335,7 @@ def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[st
         raise ValueError("Python 环境引用与 manifest 不一致")
     if any(
         not isinstance(ref, str)
-        or len(ref) != 64
+        or len(ref) not in {32, 64}
         or any(char not in "0123456789abcdef" for char in ref)
         for ref in refs.values()
     ):

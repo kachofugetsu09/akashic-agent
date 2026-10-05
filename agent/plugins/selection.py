@@ -207,18 +207,31 @@ def _input(value: object) -> Mapping[str, object]:
               "python_environments", "source_type", "data_dir", "runtime"}
     if not isinstance(value, Mapping) or set(value) not in (fields, fields | {"distribution_source"}):
         raise SelectionFormatError("插件输入结构无效")
-    if value["version"] != 5 or value["source_type"] not in {"builtin", "installed"}:
+    if type(value["version"]) is not int or value["version"] != 5 or value["source_type"] not in {"builtin", "installed"}:
         raise SelectionFormatError("插件输入版本或来源类型无效")
     for key in ("code", "plugin_id", "data_dir"):
         if not isinstance(value[key], str) or not value[key]:
             raise SelectionFormatError(f"插件输入缺少 {key}")
+    plugin_id = cast(str, value["plugin_id"])
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", plugin_id) is None:
+        raise SelectionFormatError("插件输入身份无效")
+    name, _, marketplace = plugin_id.partition("@")
+    if value["source_type"] == "installed" and not marketplace:
+        raise SelectionFormatError("已安装来源缺少 marketplace")
     if not Path(cast(str, value["code"])).is_absolute():
         raise SelectionFormatError("插件代码路径必须是绝对路径")
     data = Path(cast(str, value["data_dir"]))
-    if data.is_absolute() or data.parts[:1] != ("plugin-data",) or ".." in data.parts:
-        raise SelectionFormatError("插件数据路径必须位于 workspace/plugin-data")
+    if data.parts != ("plugin-data", f"{name}-{marketplace or 'builtin'}"):
+        raise SelectionFormatError("插件数据路径与来源身份不一致")
     for key in ("source_revision", "config_revision"):
         _reference(value[key])
-    if not isinstance(value["runtime"], Mapping) or not isinstance(value["python_environments"], Mapping):
+    runtime, environments = value["runtime"], value["python_environments"]
+    if (not isinstance(runtime, Mapping) or set(runtime) != {"python_tag", "binding_api"}
+        or not isinstance(runtime["python_tag"], str) or type(runtime["binding_api"]) is not int
+        or not isinstance(environments, Mapping)):
         raise SelectionFormatError("插件运行环境元数据无效")
+    for key, ref in environments.items():
+        if (not isinstance(key, str) or not key or Path(key).is_absolute() or ".." in Path(key).parts
+            or not isinstance(ref, str) or re.fullmatch(r"(?:[0-9a-f]{32}|[0-9a-f]{64})", ref) is None):
+            raise SelectionFormatError("插件环境引用无效")
     return cast(Mapping[str, object], freeze_json(dict(value)))
