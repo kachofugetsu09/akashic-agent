@@ -1,4 +1,5 @@
 from agent.plugin_composition import MODEL_DRIVERS, Context
+from agent.plugin_composition.ui import UI
 
 from .driver import definition
 
@@ -12,6 +13,16 @@ workspace_roots = ()
 workspace_files = ()
 
 
+async def _register_ui(ctx: Context) -> None:
+    await ctx.require(UI).register(
+        ctx, web="web_module.js", requires=("models.connection-types.v1",),
+        provides=(), contract_digests={
+            "models.connection-types.v1": "8c304d85090a65a4a66cd777a5c2a88e6908de147964dc91e7f84336979ea561",
+        },
+    )
+
+
 async def apply(ctx: Context) -> None:
-    """注册原生 Gemini 对话驱动。"""
+    """注册原生模型驱动和可选设置界面。"""
     _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())
+    _ = await ctx.inject((UI,), _register_ui, name="ui")
