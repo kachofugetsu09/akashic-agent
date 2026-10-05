@@ -1,5 +1,4 @@
 import {
-  Check,
   MessageSquarePlus,
   Search,
   Pin,
@@ -281,7 +280,6 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   }];
   const sessionView = (session: DesktopSidebarSession): ConversationSession => ({
     ...session, active: surface === "chat" && session.active,
-    state: surface === "chat" && session.active ? <Check size={18} /> : null,
   });
   const deleteHandler = onDeleteSession
     ? (session: ConversationSession) => onDeleteSession(session.id, session.title)
