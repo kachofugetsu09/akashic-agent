@@ -130,7 +130,7 @@ async def verify(args: argparse.Namespace) -> None:
             "programmatic/session/admit",
             {"session_id": session, "persist_memory": False},
         )
-        first = await wait_reply(client, session, "host-update-input")
+        first = await wait_reply(client, session, session + ":update-input")
         (args.evidence / "before-messages.json").write_text(
             json.dumps(first, ensure_ascii=False)
         )
@@ -161,7 +161,7 @@ async def verify(args: argparse.Namespace) -> None:
         async with await AsyncAkashic.connect(endpoint) as after_client:
             reloaded = await after_client.message_read(session, limit=100)
             assert reloaded["items"] == first["items"], "停止/迁移改写了原消息"
-            second = await wait_reply(after_client, session, "host-after-update-input")
+            second = await wait_reply(after_client, session, session + ":after-update-input")
             assert (
                 second["items"][: len(first["items"])] == first["items"]
             ), "新回合改写了原消息"
