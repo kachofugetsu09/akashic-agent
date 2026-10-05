@@ -1,5 +1,8 @@
 # 0072 · 单张运行图与局部插件换代
 
+2026-10-06：[0092](0092-plugin-runtime-uses-installed-files.md) 取代下文运行输入的持久归档方式。
+单张运行图、局部换代和排空责任保留；旧 archive 仅作历史数据，不再是调用前提。
+
 T-d80010 → T-673b11 是 Reply/Source owner R2/R3 的最小取消结算收口。R1 整体概念/测试合同
 不接受；只保留 `TaskServiceClosed`、`formal=False` 普通拒绝、typed 接纳窄边界和 owner
 capture 事实。R2 用 `Task.on_done` + 局部 Event 等待 physical finally，再用公开 `Task.join()`

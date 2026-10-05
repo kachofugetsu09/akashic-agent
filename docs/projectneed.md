@@ -732,7 +732,7 @@ Scope 唯一持有资源关闭责任，provider 实现实际关闭。消费者�
 
 ### PLG-010 卸载插件默认保留 plugin-data
 
-插件制品、安装选择和 workspace 内 `plugin-data` 使用不同生命周期。普通卸载在同一运行图上局部移除该插件节点，释放旧运行资源，但保留数据、历史 binding 与恢复仍引用的制品。不把物理制品 GC 混入换代。永久删除插件数据需要名称不同的用户操作、影响预览、独立备份和再次确认，不能作为卸载的隐式 cascade。
+插件代码、安装选择和 workspace 内 `plugin-data` 使用不同生命周期。普通卸载在同一运行图上局部移除该插件节点，排空实际 owner 后删除外置安装代码；内置只停用。不保留历史代码作为恢复调用的前提，旧归档仍不自动删除。数据、配置、历史 binding 与回执保留。永久删除插件数据需要名称不同的用户操作、影响预览、独立备份和再次确认，不能作为卸载的隐式 cascade。
 
 ### PLG-011 插件 UI 投影返回有界语义结果
 
@@ -742,13 +742,13 @@ Core 只负责通用传输、revision、运行实例引用、调度、取消和�
 
 ### PLG-012 安装请求由宿主持有异步应用任务
 
-发起安装、更新或卸载的调用只登记请求并先返回 accepted，accepted 不等于 active；宿主接管后续应用任务，调用不得同步等待自身引用的释放，不得在调用内停 endpoint 或删除代码。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败保留实际 owner 并报告残留，不能假报完成。
+发起安装、更新或卸载的调用只登记请求并先返回 accepted，accepted 不等于 active；宿主接管后续应用任务，调用不得同步等待自身引用的释放，不得在调用内停 endpoint 或删除代码。普通卸载保留 plugin-data、SessionDB、memory、journal 和外部源码仓库，安装目录按 PLG-010 在排空后移除；停止或清理失败保留实际 owner 并报告残留，不能假报完成。
 
 ### PLG-013 安装选择是唯一持久输入选择
 
-运行时只有一张图，普通请求使用当前运行实例。安装增加不可变制品，并由唯一 owner 持锁原子更新已选输入记录；选择与运行状态明确分离，accepted 不等于 active。不存在 latest 候选、候选授权、晋升或 revert 撤销：新版本应用失败只使实际硬依赖分支不可用，不自动恢复旧版本；选择提交后进程退出时下次正常启动读取新选择，不续跑未完成的应用，不猜测旧版本安全。显式安装旧版本也是一次普通安装，仍由该版本解释现有数据，不承诺数据恢复。选择写入结果不确定时停止本次应用并报告不确定，不回写旧值。operator 显式更新仍固定精确制品、独占应用并记录真实验证来源，不伪造测试成功。旧状态格式只在带备份、锁与完整性检查的显式升级中转换，不在普通启动路径维持双读双写。
+运行时只有一张图，普通请求使用当前运行实例。安装发布实际代码目录，由唯一 owner 持锁原子更新唯一当前选择；运行时读取已安装文件和当前配置，不保存代码、配置或依赖图的历史闭包。版本和输入摘要只用于诊断与提交身份，不承诺外部环境不变。选择与运行状态明确分离，accepted 不等于 active。不存在 latest 候选、候选授权、晋升或 revert 撤销：新版本应用失败只使实际硬依赖分支不可用，不自动恢复旧版本；选择提交后进程退出时下次正常启动读取新选择，不续跑未完成的应用，不猜测旧版本安全。显式安装旧版本也是一次普通安装，仍由该版本解释现有数据，不承诺数据恢复。选择写入结果不确定时停止本次应用并报告不确定，不回写旧值。operator 显式更新仍固定精确版本、独占应用并记录真实验证来源，不伪造测试成功。旧状态格式只在带备份、锁与完整性检查的显式升级中转换，不在普通启动路径维持双读双写。见 [0092](decisions/0092-plugin-runtime-uses-installed-files.md)。
 
-首次 `PluginSelection.read()` 为 `None` 时，底座可对每个 source 做静态 identity 与源码 compile 准备；插件自身的内容错误只保留进程内 source diagnostic，并跳过该输入。一次且仅一次 CAS 提交完整成功子集，全失败提交 `()`；提交后的 import/apply/Fiber 错误仍由 selected generation owner 解释，不反向健康过滤 selection。共享配置、cache/pointer、权限、归档、身份、selection/CAS 与 host 错误必须 fail-loud。watcher/SIGHUP 只 reconcile 当前 selection：新增或修复但未选 source 不自动安装，源码暂失不自动停用；运行期新增选择成员须显式 install，移除成员须显式 disable/uninstall；产品部署按 ONB-002 组合固定分发来源，已选健康 source 的更新仍走既有受控 prepare/replacement/CAS 链。source diagnostic 不新增 durable owner/schema/writer，`plugin_status` 可单独投影它并与 generation/Fiber 错误区分。
+首次 `PluginSelection.read()` 为 `None` 时，底座可对每个 source 做静态 identity 与源码 compile 准备；插件自身的内容错误只保留进程内 source diagnostic，并跳过该输入。一次且仅一次 CAS 提交完整成功子集，全失败提交 `()`；提交后的 import/apply/Fiber 错误仍由 selected generation owner 解释，不反向健康过滤 selection。共享配置、cache/pointer、权限、安装环境、身份、selection/CAS 与 host 错误必须 fail-loud。watcher/SIGHUP 只 reconcile 当前 selection：新增或修复但未选 source 不自动安装，源码暂失不自动停用；运行期新增选择成员须显式 install，移除成员须显式 disable/uninstall；产品部署按 ONB-002 组合固定分发来源，已选健康 source 的更新仍走既有受控 prepare/replacement/CAS 链。source diagnostic 不新增 durable owner/schema/writer，`plugin_status` 可单独投影它并与 generation/Fiber 错误区分。
 
 ### PLG-014 新插件使用开放组合能力并由 Core 统一应用
 
@@ -815,7 +815,7 @@ Agent 可另建匿名 BrowserContext 做 E2E，默认共享一份独立 headless
 显式依赖 `ALL_TOOLS`。当前引用失效时 fail-loud；已提交 Message 中的 binding 保留不可变业务
 metadata、回执和历史事实，并在调用者本次 activation 选定的 scope 中打开实际 service，
 不把历史 `root_ref` 当作普通执行的永久 generation 锁。插件系统负责依赖与切换，不按代码 hash、
-generation 或 archive_ref 判断旧数据能否处理。当前插件负责自己的持久化数据与外部效果，
+generation 或 input_ref 判断旧数据能否处理。当前插件负责自己的持久化数据与外部效果，
 处理不了就明确报错；系统传播错误，不兜底重跑。见 [0070](decisions/0070-plugins-own-persisted-data.md)。
 
 `load_tools` 只在获授 view 内按准确插件 ID 展示完整 schema，并可把自身协议中的间接调用解码为唯一真实

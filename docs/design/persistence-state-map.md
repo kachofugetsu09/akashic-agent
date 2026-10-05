@@ -19,6 +19,20 @@
 当前内容；缺失或旧未完成绑定不兼容时明确失败。源码以 Git 基线为恢复点，验证仅使用
 隔离 fixture。当前安装选择、配置、环境与操作回执的转换由显式升级 owner 完成。
 
+以下旧段落涉及 PluginArchive、固定配置闭包和归档服务的描述均为历史事实；当前合同如下：
+
+| 对象与 owner | 正常增加与原位更新 | 失效、物理减少与恢复证据 |
+|---|---|---|
+| `runtime/plugin-stable.json` / PluginSelection | 显式初始化 v2 空选择；安装与发布 CAS 原子替换完整当前输入元数据、最后一次提交和原归属凭证。候选仅在内存 | 替换当前选择，不追加历史 Root。缺失/损坏明确失败；无自动删除。升级前元数据备份与安装来源是恢复证据，不承诺历史环境重放 |
+| 当前 `config.input.json` / 配置 owner | 首次默认配置、用户配置请求与声明迁移保存当前值；正常启动读取当前文件 | 普通卸载不删除；当前文件备份恢复，旧配置归档不参与运行 |
+| reload DB 的 `config_updates` / 配置请求 owner | 增加请求与配置 revision；未提交正文仅留在该请求的 `pending_config`。已提交请求恢复到当前配置文件后清空 pending 正文，启动恢复结算未选请求时清空 | receipt 与错误保留，不删除历史行。Core migration 先做 SQLite backup、校验后转换表，原行身份及原字段保留；备份与当前文件用于恢复 |
+| `runtime/plugin-python-environments/` / 安装 owner | 准备真实 venv、目录内 `environment.json` 与可替换缓存索引；本地构建需要的 source 留在该依赖环境内 | 无自动 GC；不是运行代码归档。旧 venv 原路径不移动，显式升级仅转换引用/元数据；解释器或依赖失效明确失败或显式重装 |
+| bindings、消息与工具 receipt / 原 owner | binding 记录来源 generation 和业务 metadata；实际调用取得当前服务与 scope。消息和已完成结果继续追加及原样回读 | 不恢复旧图，不重跑已完成结果；旧未完成 Skill 格式明确拒绝。无新增删除权，完整数据库备份是恢复证据 |
+| 旧 `plugin-archives/`、`skill-files/` | 已退役；普通运行无 reader/writer，不再增长。仅离线升级与 Core schema migration 读取必要旧元数据 | 不自动删除，升级验收逐文件校验原字节保留；旧实例恢复仍使用原备份与原 Core |
+
+外置安装代码仅由原安装 owner 在实际调用、文件线程与资源排空后移除；plugin-data、
+配置、消息和回执不级联减少。离线选择升级的写入范围与恢复步骤见 [操作手册](operator-deployment.md#从旧归档指针升级)。
+
 ## 2026-09-12：插件资产归属修订
 
 用户授权正交插件重构后，当前实现停止由 Core 同步 `skills/`、`drift/skills/`
@@ -26,7 +40,7 @@
 不再是现行恢复动作。已有目录、软链接、ownership journal 均保留，不自动迁移、
 重建或减少；旧 pending 外部效果没有实际恢复证据时继续阻断，不能伪造完成。
 
-当前普通安装只增加插件 artifact；每个 generation 准备自己的临时固定资产树，
+以下是被 0092 取代的 2026-09-12 历史协议：当时普通安装只增加插件 artifact；每个 generation 准备自己的临时固定资产树，
 在其全部快照租约排空后由 generation scope 清理。清理失败保留真实 owner 供重试。
 Skill 消费者按当前快照取得该代资产；持久工具绑定另存不可变 skill-files 归档，
 没有新增自动 GC、消息修改或 plugin-data 减少协议。历史源码和本次修改前的

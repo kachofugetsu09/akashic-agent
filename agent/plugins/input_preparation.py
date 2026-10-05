@@ -26,7 +26,7 @@ from agent.plugins.static_manifest import (
 )
 
 PLUGIN_INPUT_API = 3
-# watcher 与运行变化比较共用排除规则；完整归档摘要仍包含来源标签。
+# watcher 与运行变化比较共用排除规则；安装来源摘要仍包含来源标签。
 SOURCE_EXCLUDED_NAMES = frozenset({
     ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv",
     "__pycache__", "node_modules", ENVIRONMENT_FILE, ".akashic-source.json",
