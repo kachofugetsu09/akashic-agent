@@ -465,6 +465,17 @@ function Shell({ pages, railActions, settings, settingsPlugins }: {
           <div className="product-band__indicator" aria-hidden="true" />
         </div>
       </nav>
+      {currentTarget && <button
+        type="button"
+        className="product-band__item shell-settings-button"
+        aria-label="功能设置"
+        aria-haspopup="dialog"
+        aria-expanded={settingsOpen}
+        title="功能设置 (Ctrl+,)"
+        onClick={() => openSettings()}
+      >
+        <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_ICON }} />
+      </button>}
     </header>
     <dialog
       ref={settingsDialog}
