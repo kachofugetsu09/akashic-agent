@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
@@ -108,6 +109,7 @@ class PreparedCommand(BaseModel):
     yield_time_ms: int
     max_output_tokens: int
     timeout: int
+    call_context: dict[str, object] = Field(default_factory=dict)
 
 
 class PreparedStdin(Stdin):
@@ -215,6 +217,12 @@ class ShellTool:
             login=command.login, cwd=None if directory is None else str(directory), tty=command.tty,
             yield_time_ms=clamp_initial_yield_time(command.yield_time_ms),
             max_output_tokens=command.max_output_tokens, timeout=command.timeout,
+            call_context={} if source is None else {
+                "session_id": source.messages[-1].session_id,
+                "call_message_id": source.call_ref.message_id,
+                "call_part_index": source.call_ref.part_index,
+                "boot_id": os.environ.get("AKASHIC_BOOT_ID", ""),
+            },
         ).model_dump()
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
@@ -249,9 +257,11 @@ class ShellTool:
                 shell_kind=command.shell_kind, login=command.login, tty=command.tty, session=command.owner_key,
             )
             log("shell.execution_admitted")
+            env = _shell_env()
+            env["AKASHIC_CALL_CONTEXT"] = json.dumps(command.call_context)
             result = await processes.exec_command(
                 self._ctx, command.owner_key, command=command.command, argv=command.argv,
-                cwd=None if command.cwd is None else Path(command.cwd), env=_shell_env(), tty=command.tty,
+                cwd=None if command.cwd is None else Path(command.cwd), env=env, tty=command.tty,
                 yield_time_ms=command.yield_time_ms, max_output_tokens=command.max_output_tokens,
                 hard_timeout_s=command.timeout,
             )
