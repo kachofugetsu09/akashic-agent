@@ -55,14 +55,14 @@ export function activate(ctx) {
         </header>
         <label class="settings-search" data-search>${SEARCH_ICON}<span class="sr-only">搜索模型连接</span><input placeholder="搜索连接或模型"></label>
         <p class="settings-inline-error" data-error role="alert" hidden></p>
-        <section class="settings-section" data-connected>
-          <header><div><h2>已连接</h2><p>同一供应商可以添加多个账号，模型选择时按连接名称区分。</p></div><span data-count></span></header>
-          <div class="settings-gallery" data-connections></div>
-        </section>
-        <section class="settings-section settings-section--templates" data-templates-section>
-          <header><div><h2 data-templates-title>添加其他连接</h2><p data-templates-detail>可以继续添加另一个账号或服务。</p></div></header>
-          <div class="settings-gallery" data-providers></div>
-        </section>
+        <ul class="settings-provider-list" data-connections></ul>
+        <div class="settings-add-provider">
+          <button type="button" class="settings-add-button" data-add-toggle aria-expanded="false" disabled></button>
+          <div class="settings-add-panel" data-add-panel hidden>
+            <div class="settings-add-list" data-add-list></div>
+            <div class="settings-provider-editor" data-add-editor hidden></div>
+          </div>
+        </div>
         <section class="settings-section settings-roles" data-roles>
           <header><div><h2>系统模型</h2><p>修改后无需重启；移除的模型引用自动跟随默认模型。</p></div></header>
           <div class="settings-role-grid" data-bindings></div>
@@ -71,24 +71,33 @@ export function activate(ctx) {
       <div class="settings-toast-region" aria-live="polite" aria-atomic="true" data-toast-region></div>`;
       host.replaceChildren(page);
 
-      const shell = page.querySelector(".settings-shell");
       const title = page.querySelector("[data-title]");
       const description = page.querySelector("[data-description]");
       const search = page.querySelector("[data-search]");
       const searchInput = search.querySelector("input");
       const errorMessage = page.querySelector("[data-error]");
-      const connectedSection = page.querySelector("[data-connected]");
-      const connectionCount = page.querySelector("[data-count]");
       const connections = page.querySelector("[data-connections]");
-      const templatesSection = page.querySelector("[data-templates-section]");
-      const templatesTitle = page.querySelector("[data-templates-title]");
-      const templatesDetail = page.querySelector("[data-templates-detail]");
-      const providers = page.querySelector("[data-providers]");
+      const addToggle = page.querySelector("[data-add-toggle]");
+      const addPanel = page.querySelector("[data-add-panel]");
+      const addList = page.querySelector("[data-add-list]");
+      const addEditor = page.querySelector("[data-add-editor]");
       const roles = page.querySelector("[data-roles]");
       const bindings = page.querySelector("[data-bindings]");
       const toastRegion = page.querySelector("[data-toast-region]");
       let catalog = null;
       let query = "";
+      // 编辑器就地展开在连接卡片（编辑）或添加面板（新建）内，同一时刻只开一个。
+      let activeEditor = null;
+      const closeActiveEditor = (force = false) => {
+        const editor = activeEditor;
+        if (!editor) return true;
+        if (!force) {
+          if (editor.busy()) { showNotice("请求正在执行，请等待结果后再离开。关闭页面不会撤销已提交的操作。"); return false; }
+          if (editor.dirty() && !window.confirm("放弃尚未保存的修改？选择取消可继续填写。")) return false;
+        }
+        editor.dispose();
+        return true;
+      };
       let disposeDialog = () => {};
       let closed = false;
       let bindingSave = null;
@@ -180,19 +189,21 @@ export function activate(ctx) {
 
         title.textContent = "模型连接";
         description.textContent = hasConnections
-          ? "每套账号或 API Key 都是独立连接；探测目录后勾选开放的模型。"
-          : "选择登录方式或 API 服务。";
+          ? "每套账号或 API Key 都是独立连接；展开卡片管理其中的模型。"
+          : "选择登录方式或 API 服务，探测目录后勾选开放的模型。";
         search.hidden = !hasConnections;
-        connectedSection.hidden = !hasConnections;
         roles.hidden = false;
-
-        templatesTitle.textContent = hasConnections ? "添加其他连接" : "选择连接方式";
-        templatesDetail.textContent = hasConnections
-          ? "可以继续添加另一个账号或服务。"
-          : "登录或填写密钥后探测目录，勾选要开放的模型。";
+        addToggle.disabled = false;
+        addToggle.textContent = hasConnections ? "添加连接" : "选择连接方式";
+        // 首次配置没有连接时直接展开连接方式列表；编辑器打开期间不抢面板状态。
+        if (!hasConnections && !activeEditor) setAddPanel(true);
         renderConnections(chatConnections);
         renderBindings(chatModels);
-        for (const button of providers.querySelectorAll("button")) button.disabled = false;
+      }
+
+      function setAddPanel(open) {
+        addPanel.hidden = !open;
+        addToggle.setAttribute("aria-expanded", String(open));
       }
 
       function renderConnections(allConnections) {
@@ -205,44 +216,98 @@ export function activate(ctx) {
             .join(" ");
           return `${connection.name} ${connection.driverId} ${modelNames}`.toLocaleLowerCase().includes(normalizedQuery);
         });
-        connectionCount.textContent = `${filtered.length} 个`;
-        connections.replaceChildren();
-        for (const connection of filtered) {
-          const models = catalog.models.filter((model) => model.connectionId === connection.id);
-          const entry = providerEntries.find((candidate) => candidate.id === connection.driverId);
-          const item = document.createElement(entry ? "button" : "article");
-          if (entry) item.type = "button";
-          item.className = "settings-connection-card";
-          item.appendChild(connectionMark(entry, connection.name));
-          const copy = document.createElement("span");
-          copy.className = "settings-card-copy";
-          const name = document.createElement("strong");
-          const detail = document.createElement("small");
-          name.textContent = connection.name;
-          const openCount = models.filter((model) => model.availability !== "disabled").length;
-          detail.textContent = connection.availability === "disabled"
-            ? `${entry?.label ?? connection.driverId} · ${models.length} 个模型`
-            : `${entry?.label ?? connection.driverId} · ${openCount}/${models.length} 开放`;
-          copy.append(name, detail);
-          const meta = document.createElement("span");
-          meta.className = "settings-card-meta";
-          const available = document.createElement("i");
-          available.innerHTML = "<span></span>";
-          const AVAILABILITY_LABELS = { available: "已连接", disabled: "已停用", driver_unavailable: "驱动不可用" };
-          if (connection.availability !== "available") available.classList.add("is-unavailable");
-          available.append(AVAILABILITY_LABELS[connection.availability] ?? connection.availability);
-          const count = document.createElement("small");
-          count.textContent = capabilitySummary(models);
-          meta.append(available, count);
-          item.append(copy, meta);
-          item.insertAdjacentHTML("beforeend", CHEVRON_ICON);
-          if (connection.availability === "disabled") item.disabled = true;
-          if (entry) {
-            item.setAttribute("aria-label", `编辑连接 ${connection.name}`);
-            item.addEventListener("click", () => openProvider(entry, item, connection, editTemplate(entry)));
-          }
-          connections.appendChild(item);
+        // 编辑器就地展开在卡片内；目录刷新与搜索过滤都不能拆掉正在编辑的卡片，
+        // 只移除其余卡片并用 insertBefore 重排，编辑卡片始终不脱离文档（保住焦点与输入状态）。
+        const editing = activeEditor?.kind === "edit" ? activeEditor : null;
+        if (editing && !filtered.some((connection) => connection.id === editing.connectionId)) {
+          const current = allConnections.find((connection) => connection.id === editing.connectionId);
+          if (current) filtered.unshift(current);
         }
+        const editingCard = editing?.card ?? null;
+        for (const child of [...connections.children]) {
+          if (child !== editingCard) child.remove();
+        }
+        let next = connections.firstChild;
+        for (const connection of filtered) {
+          let element;
+          if (editing && connection.id === editing.connectionId) {
+            fillProviderHead(editing.head, providerEntries.find((candidate) => candidate.id === connection.driverId), connection);
+            element = editing.card;
+          } else {
+            element = providerCard(connection);
+          }
+          if (element === next) { next = next.nextSibling; continue; }
+          if (element === editingCard) {
+            // 编辑卡片不移动，insertBefore 的重挂会丢失焦点；顺序在编辑器关闭后的重渲染自然恢复。
+            next = element.nextSibling;
+            continue;
+          }
+          connections.insertBefore(element, next);
+        }
+      }
+
+      function providerCard(connection) {
+        const entry = providerEntries.find((candidate) => candidate.id === connection.driverId);
+        const card = document.createElement("li");
+        card.className = "settings-provider-card";
+        const head = document.createElement("button");
+        head.type = "button";
+        head.className = "settings-provider-head";
+        head.setAttribute("aria-expanded", "false");
+        const copy = document.createElement("span");
+        copy.className = "settings-card-copy";
+        copy.innerHTML = "<strong data-name></strong><small data-detail></small>";
+        const status = document.createElement("span");
+        status.className = "settings-provider-status";
+        status.dataset.status = "";
+        status.innerHTML = "<i aria-hidden=\"true\"></i><span></span>";
+        head.append(connectionMark(entry, connection.name), copy, status);
+        head.insertAdjacentHTML("beforeend", CHEVRON_ICON);
+        fillProviderHead(head, entry, connection);
+        if (!entry || connection.availability === "disabled") {
+          head.disabled = true;
+        } else {
+          head.setAttribute("aria-label", `编辑连接 ${connection.name}`);
+          head.addEventListener("click", () => toggleProviderEditor(entry, card, head, connection));
+        }
+        const editorRegion = document.createElement("div");
+        editorRegion.className = "settings-provider-editor";
+        editorRegion.hidden = true;
+        card.append(head, editorRegion);
+        return card;
+      }
+
+      function fillProviderHead(head, entry, connection) {
+        const models = catalog.models.filter((model) => model.connectionId === connection.id);
+        const openCount = models.filter((model) => model.availability !== "disabled").length;
+        head.querySelector("[data-name]").textContent = connection.name;
+        head.querySelector("[data-detail]").textContent = connection.availability === "disabled"
+          ? `${entry?.label ?? connection.driverId} · ${models.length} 个模型`
+          : `${entry?.label ?? connection.driverId} · ${openCount}/${models.length} 开放`;
+        const status = head.querySelector("[data-status]");
+        status.classList.toggle("is-unavailable", connection.availability !== "available");
+        const AVAILABILITY_LABELS = { available: "已连接", disabled: "已停用", driver_unavailable: "驱动不可用" };
+        status.querySelector("span").textContent = AVAILABILITY_LABELS[connection.availability] ?? connection.availability;
+      }
+
+      function toggleProviderEditor(entry, card, head, connection) {
+        if (activeEditor?.kind === "edit" && activeEditor.card === card) { closeActiveEditor(); return; }
+        if (bindingSave) { showNotice("请先等待模型选择保存或核对完成，再修改连接。"); return; }
+        if (!closeActiveEditor()) return;
+        openProvider(entry, head, connection, editTemplate(entry), {
+          kind: "edit", card, head,
+          host: card.querySelector(".settings-provider-editor"),
+        });
+      }
+
+      function startCreate(template, trigger) {
+        if (bindingSave) { showNotice("请先等待模型选择保存或核对完成，再添加连接。"); return; }
+        if (!closeActiveEditor()) return;
+        addList.hidden = true;
+        addEditor.hidden = false;
+        openProvider(template.owner, trigger, null, template, {
+          kind: "create", card: addPanel, head: addToggle, host: addEditor,
+        });
       }
 
       function renderBindings(chatModels) {
@@ -285,6 +350,7 @@ export function activate(ctx) {
 
       function openEmbedding(trigger) {
         if (bindingSave) { showNotice("请先等待模型选择保存或核对完成，再添加向量模型。"); return; }
+        if (!closeActiveEditor()) return;
         disposeDialog();
         const dialog = document.createElement("dialog");
         dialog.className = "settings-scrim";
@@ -1022,9 +1088,10 @@ export function activate(ctx) {
         return () => { dialog.removeEventListener("cancel", cancel); window.removeEventListener("akashic:before-navigate", navigate); window.removeEventListener("beforeunload", unload); };
       }
 
-      function openProvider(entry, trigger, connection = null, template = null) {
+      // 编辑器就地展开：session.host 是卡片（编辑）或添加面板（新建）内的挂载区。
+      // 与旧弹窗共用同一套操作、草稿汇总与 auth 生命周期；离开守卫直接监听路由与卸载。
+      function openProvider(entry, trigger, connection, template, session) {
         if (bindingSave) { showNotice("请先等待模型选择保存或核对完成，再修改连接。"); return; }
-        disposeDialog();
         const connectionId = connection?.id ?? `${entry.id}-${randomToken()}`;
         const auth = createDialogAuthOwner((attemptId) => request(
           "/api/dashboard/models/command",
@@ -1228,15 +1295,67 @@ export function activate(ctx) {
           }
           finally { busy = false; }
         }])));
-        const scrim = document.createElement("dialog");
-        scrim.className = "settings-scrim";
-        scrim.setAttribute("aria-label", entry.label);
         const dialogHost = document.createElement("section");
-        dialogHost.className = "settings-dialog";
-        scrim.appendChild(dialogHost);
-        page.appendChild(scrim);
-        const stopGuard = guardDialog(scrim, () => ({dirty: providerDirty || modelsDirty, busy}));
+        dialogHost.className = "settings-dialog settings-dialog--inline";
+        session.host.replaceChildren(dialogHost);
+        session.host.hidden = false;
+        session.head.setAttribute("aria-expanded", "true");
+        // 就地编辑器没有原生 cancel 事件；路由离开与页面卸载共享一次草稿/请求判断，
+        // 与 guardDialog 的语义保持一致，只是通知走页面 toast。
+        const navigate = (event) => {
+          if (event.defaultPrevented || auth.closed) return;
+          if (busy) {
+            event.preventDefault();
+            showNotice("请求正在执行，请等待结果后再离开。关闭页面不会撤销已提交的操作。");
+            return;
+          }
+          if ((providerDirty || modelsDirty) && !window.confirm("放弃尚未保存的修改？选择取消可继续填写。")) event.preventDefault();
+        };
+        const unload = (event) => {
+          if (providerDirty || modelsDirty || busy) { event.preventDefault(); event.returnValue = ""; }
+        };
+        window.addEventListener("akashic:before-navigate", navigate);
+        window.addEventListener("beforeunload", unload);
+        const stopGuard = () => {
+          window.removeEventListener("akashic:before-navigate", navigate);
+          window.removeEventListener("beforeunload", unload);
+        };
         let disposeEntry, modelManager;
+        let disposed = false;
+        const editor = {
+          kind: session.kind,
+          connectionId,
+          card: session.card,
+          head: session.head,
+          busy: () => busy,
+          dirty: () => providerDirty || modelsDirty,
+          dispose() {
+            if (disposed) return;
+            disposed = true;
+            if (activeEditor === editor) activeEditor = null;
+            closeOverlays();
+            stopGuard();
+            window.removeEventListener("pagehide", leaveDocument);
+            props.dirty?.(false);
+            report(auth.close());
+            disposeEntry();
+            session.head.setAttribute("aria-expanded", "false");
+            session.host.hidden = true;
+            session.host.replaceChildren();
+            if (session.kind === "create") {
+              addList.hidden = false;
+              // 新建成功后已有连接，添加面板收回虚线入口；取消则保留方式列表。
+              if (catalog?.connections.length) setAddPanel(false);
+            } else if (catalog) {
+              renderConnections(catalog.connections);
+            }
+            // 与旧弹窗 close 触发回读一致：关闭编辑器即核对权威目录，
+            // 覆盖「写入已提交但读取失败」后内存旧值的不确定性。
+            if (!closed) report(reads.run(canRefresh));
+            restoreFocus(trigger);
+          },
+        };
+        activeEditor = editor;
         try {
           disposeEntry = connectionTypes.render(entry.id, dialogHost, {
             get state() {
@@ -1249,19 +1368,22 @@ export function activate(ctx) {
             actions,
             ui,
             dirty(value) { if (!auth.closed) { providerDirty = value; reportDirty(); } },
-            close() { scrim.dispatchEvent(new Event("cancel", {cancelable:true})); },
+            close() { closeActiveEditor(); },
             changed(message) {
               if (auth.closed) return;
               providerDirty = false;
-              modelManager?.refresh();
               reportDirty();
               showNotice(message);
-              scrim.dispatchEvent(new Event("cancel", {cancelable: true}));
+              closeActiveEditor(true);
             },
           });
         } catch (error) {
+          activeEditor = null;
           stopGuard();
-          scrim.remove();
+          session.head.setAttribute("aria-expanded", "false");
+          session.host.hidden = true;
+          session.host.replaceChildren();
+          if (session.kind === "create") addList.hidden = false;
           showError(error);
           return;
         }
@@ -1277,38 +1399,19 @@ export function activate(ctx) {
               providerDirty = false; modelsDirty = false;
               props.dirty?.(false);
               showNotice("连接已停用，历史数据保留。请添加正确用途的新连接。");
-              scrim.close();
+              closeActiveEditor(true);
             },
           });
           dialogBody.appendChild(modelManager.element);
         }
         const leaveDocument = event => { if (!event.persisted) report(auth.close()); };
         window.addEventListener("pagehide", leaveDocument);
-        const close = () => disposeDialog();
-        scrim.addEventListener("close", close, {once: true});
-        // 背景点击不关闭；所有显式离开复用同一草稿和请求判断。
-        disposeDialog = () => {
-          closeOverlays();
-          stopGuard();
-          window.removeEventListener("pagehide", leaveDocument);
-          props.dirty?.(false);
-          report(auth.close());
-          scrim.removeEventListener("close", close);
-          disposeEntry();
-          scrim.close();
-          scrim.remove();
-          restoreFocus(trigger);
-          disposeDialog = () => {};
-        };
-        scrim.showModal();
       }
 
-      providers.replaceChildren();
       for (const template of providerTemplates) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "settings-connection-card";
-        button.disabled = true;
         button.appendChild(providerMark(template));
         const copy = document.createElement("span");
         copy.className = "settings-card-copy";
@@ -1320,10 +1423,15 @@ export function activate(ctx) {
         button.append(copy);
         button.insertAdjacentHTML("beforeend", CHEVRON_ICON);
         button.lastElementChild.classList.add("settings-template-action");
-        button.addEventListener("click", () => openProvider(template.owner, button, null, template));
-        providers.appendChild(button);
+        button.addEventListener("click", () => startCreate(template, button));
+        addList.appendChild(button);
       }
-      if (!providerTemplates.length) providers.textContent = "没有 Provider 插件提供连接方式。";
+      if (!providerTemplates.length) addList.textContent = "没有 Provider 插件提供连接方式。";
+      addToggle.addEventListener("click", () => {
+        if (addPanel.hidden) { setAddPanel(true); return; }
+        if (activeEditor?.kind === "create" && !closeActiveEditor()) return;
+        setAddPanel(false);
+      });
       searchInput.addEventListener("input", () => {
         query = searchInput.value;
         if (catalog) renderCatalog();
@@ -1336,6 +1444,7 @@ export function activate(ctx) {
         window.removeEventListener("focus", refreshVisible);
         page.removeEventListener("close", refreshVisible, true);
         reads.close();
+        closeActiveEditor(true);
         closeOverlays();
         disposeDialog();
         host.replaceChildren();

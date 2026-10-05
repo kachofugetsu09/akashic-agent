@@ -112,7 +112,7 @@ for (const activateProvider of [activateOpenCode, activateCodex]) {
   const provider = providerEntry(activateProvider);
   const fixture = await mount(provider);
   try {
-    document.querySelector("[data-providers] button").click();
+    document.querySelector("[data-add-list] button").click();
     await settle();
     if (provider.id === "codex") {
       document.querySelector("[data-start]").click();
@@ -143,7 +143,7 @@ for (const activateProvider of [activateOpenCode, activateCodex]) {
 for (const manual of [false, true]) {
   const fixture = await mount(providerEntry(activateOpenAI));
   try {
-    document.querySelector("[data-providers] button").click();
+    document.querySelector("[data-add-list] button").click();
     await settle();
     const form = document.querySelector(".settings-dialog-form");
     form.elements.name.value = "Fixture";
@@ -166,7 +166,7 @@ for (const manual of [false, true]) {
     assert.ok(saved);
     assert.equal(saved.model.discovery_owned, !manual, "known directory choices retain discovery ownership; manual choices do not");
     if (!manual) {
-      document.querySelector("[data-connections] button").click();
+      document.querySelector("[data-connections] .settings-provider-head").click();
       await settle();
       assert.ok(document.querySelector("[data-sync]"), "selected unknown-purpose directory entries support refresh");
       document.querySelector(".settings-model-toggle").click();
@@ -203,7 +203,7 @@ try {
   assert.equal(document.querySelector("dialog[open]"), null, "retained inactive pages must not own a modal");
   assert.deepEqual(roleFixture.commands, [], "abandoning the chooser never saves a selection");
   checks.push("Role chooser preserves cancelled navigation and releases accepted navigation without writing a binding");
-  document.querySelector("[data-connections] button").click();
+  document.querySelector("[data-connections] .settings-provider-head").click();
   await settle();
   const toggleTarget = document.querySelector(".settings-model-toggle");
   const toggle = toggleTarget.querySelector("input");
@@ -233,7 +233,7 @@ for (const hasAvailable of [true, false]) {
     roleBindings: {}, defaultEmbeddingModelId: null,
   });
   try {
-    document.querySelector("[data-connections] button").click();
+    document.querySelector("[data-connections] .settings-provider-head").click();
     await settle();
     document.querySelector("[data-sync]").click();
     await settle();
@@ -253,7 +253,7 @@ for (const action of ["cancel", "clear", "stale"]) {
     roleBindings: {default: "fixture-chat"}, defaultEmbeddingModelId: null,
   });
   try {
-    document.querySelector("[data-connections] button").click();
+    document.querySelector("[data-connections] .settings-provider-head").click();
     await settle();
     document.querySelector("[data-probe]").click();
     await settle();
@@ -285,7 +285,7 @@ const externalFixture = await mount({
   render(_host, _view, props) { externalUi = props.ui; return () => {}; },
 });
 try {
-  document.querySelector("[data-providers] button").click();
+  document.querySelector("[data-add-list] button").click();
   await settle();
   const candidates = Object.freeze([
     Object.freeze({kind: "chat", model: "locked"}),
@@ -338,8 +338,8 @@ const editFixture = await mount(providerEntry(activateCodex), editCatalog, {
   beforeRead: () => { if (failRead) throw new Error("fixture read failed"); },
 });
 try {
-  assert.ok(document.querySelector("[data-connections] button"), document.body.textContent);
-  document.querySelector("[data-connections] button").click();
+  assert.ok(document.querySelector("[data-connections] .settings-provider-head"), document.body.textContent);
+  document.querySelector("[data-connections] .settings-provider-head").click();
   await settle();
   const editors = [...document.querySelectorAll(".settings-model-entry")];
   for (const editor of editors) editor.querySelector(".settings-model-expand").click();
@@ -350,10 +350,12 @@ try {
   fill(context(editors[1]), "777K");
   const confirmations = [];
   window.confirm = message => { confirmations.push(message); return false; };
-  const dialog = document.querySelector("dialog[open]");
-  dialog.dispatchEvent(new Event("cancel", {cancelable: true}));
+  // 编辑器就地展开在卡片内，不再有 scrim cancel 事件；关闭走表单自己的守卫按钮。
+  const inlineEditor = () => document.querySelector(".settings-dialog--inline");
+  assert.ok(inlineEditor(), "the connection editor expands inline inside the card");
+  document.querySelector("[data-close]").click();
   assert.equal(confirmations.length, 1);
-  assert.ok(dialog.open);
+  assert.ok(inlineEditor(), "refusing to abandon the draft keeps the inline editor open");
   const navigate = new Event("akashic:before-navigate", {cancelable: true});
   window.dispatchEvent(navigate);
   assert.ok(navigate.defaultPrevented);
@@ -373,8 +375,8 @@ try {
   assert.equal(context(editors[1]).value, "888K");
   assert.equal(document.activeElement, context(editors[1]));
   assert.ok(editors.every(editor => editor.isConnected && !editor.querySelector('.settings-model-detail').hidden));
-  dialog.dispatchEvent(new Event("cancel", {cancelable: true}));
-  assert.ok(dialog.open, "saving one row must not clear another row's leave protection");
+  document.querySelector("[data-close]").click();
+  assert.ok(inlineEditor(), "saving one row must not clear another row's leave protection");
   checks.push("Model drafts survive partial saves and keep focus; close/navigation/unload and row removal protect unsaved inputs");
 
   failWrite = true;
@@ -393,9 +395,10 @@ try {
   assert.equal(editFixture.catalog.models[1].capabilities.contextWindow, 888000);
   failRead = false;
   window.confirm = () => true;
-  dialog.dispatchEvent(new Event("cancel", {cancelable: true}));
+  document.querySelector("[data-close]").click();
   await settle();
-  document.querySelector('[data-connections] button').click();
+  assert.equal(inlineEditor(), null, "accepting the confirm disposes the inline editor");
+  document.querySelector('[data-connections] .settings-provider-head').click();
   await settle();
   const reopened = document.querySelectorAll('.settings-model-entry')[1];
   assert.equal(context(reopened).value, "888K");
@@ -408,7 +411,7 @@ for (const activateProvider of [activateOpenAI, activateOpenCode]) {
   catalog.connections[0].driverId = provider.id;
   const fixture = await mount(provider, catalog);
   try {
-    document.querySelector('[data-connections] button').click();
+    document.querySelector('[data-connections] .settings-provider-head').click();
     await settle();
     const edit = async value => {
       const input = document.querySelector('[name="contextWindow"]');
@@ -422,17 +425,17 @@ for (const activateProvider of [activateOpenAI, activateOpenCode]) {
     window.confirm = () => { confirmations++; return false; };
     await edit('2M');
     assert.equal(fixture.catalog.models[0].capabilities.contextWindow, 2000000);
-    document.querySelector('dialog[open]').dispatchEvent(new Event('cancel', {cancelable: true}));
+    document.querySelector('[data-close]').click();
     await settle();
     assert.equal(confirmations, 0, 'model input must not mark the provider form dirty');
-    assert.equal(document.querySelector('dialog[open]'), null);
-    document.querySelector('[data-connections] button').click();
+    assert.equal(document.querySelector('.settings-dialog--inline'), null);
+    document.querySelector('[data-connections] .settings-provider-head').click();
     await settle();
     document.querySelector('form [name="name"]').dispatchEvent(new Event('input', {bubbles: true}));
     await edit('3M');
-    document.querySelector('dialog[open]').dispatchEvent(new Event('cancel', {cancelable: true}));
+    document.querySelector('[data-close]').click();
     assert.equal(confirmations, 1, 'saving a model must not clear an actual provider draft');
-    assert.ok(document.querySelector('dialog[open]'));
+    assert.ok(document.querySelector('.settings-dialog--inline'));
     checks.push(`${provider.id}: model/provider drafts remain independent; Enter saves parameters`);
   } finally { await fixture.close(); }
 }
