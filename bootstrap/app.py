@@ -209,6 +209,8 @@ class AppRuntime:
         self.event_bus: EventBus | None = None
         self.dashboard_server: uvicorn.Server | None = None
         self.dashboard_task: asyncio.Task[None] | None = None
+        self.web_shell: uvicorn.Server | None = None
+        self.web_shell_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
@@ -297,9 +299,24 @@ class AppRuntime:
                 self.dashboard_server.serve(),
                 name="dashboard_server",
             )
+            if os.environ.get("AKASHIC_SUPERVISED") != "1" and "AKASHIC_WEB_PORT" in os.environ:
+                from bootstrap.web_shell import create_web_shell_server
+                host = os.environ.get("AKASHIC_WEB_HOST", "127.0.0.1")
+                if host != "127.0.0.1" and os.environ.get("AKASHIC_WEB_ALLOW_NON_LOOPBACK") != "1":
+                    raise ValueError("公网 Web Shell 需要 AKASHIC_WEB_ALLOW_NON_LOOPBACK=1")
+                port = int(os.environ["AKASHIC_WEB_PORT"])
+                if not 1 <= port <= 65535:
+                    raise ValueError("AKASHIC_WEB_PORT 必须是 1 到 65535")
+                shell = create_web_shell_server(self.config.config_path, self.workspace, host=host, port=port)
+                self.web_shell = shell
+                self.web_shell_task = asyncio.create_task(shell.serve(), name="web_shell")
+                await asyncio.to_thread(shell.startup_event.wait, 5)
+                if not shell.started:
+                    raise RuntimeError("Web Shell 未完成启动")
             if plugin_manager is not None:
                 self.plugin_watcher = PluginWatcher(
                     plugin_manager,
+                    accepting=lambda: self.restart_gate is None or self.restart_gate.accepting,
                 )
                 self.plugin_watcher_task = asyncio.create_task(
                     self.plugin_watcher.run(),
@@ -334,6 +351,7 @@ class AppRuntime:
                 task
                 for task in (
                     self.dashboard_task,
+                    self.web_shell_task,
                     self.plugin_watcher_task,
                 )
                 if task is not None
@@ -356,7 +374,10 @@ class AppRuntime:
             if self._primary_task is not None and self._primary_task in done:
                 await self._primary_task
             else:
-                if self.dashboard_task is not None and self.dashboard_task in done:
+                if self.web_shell_task is not None and self.web_shell_task in done:
+                    watched_task = self.web_shell_task
+                    self.web_shell_task = None
+                elif self.dashboard_task is not None and self.dashboard_task in done:
                     watched_task = self.dashboard_task
                     self.dashboard_task = None
                 elif (
@@ -446,17 +467,22 @@ class AppRuntime:
     async def _request_server_shutdown(self) -> None:
         if self.dashboard_server is not None:
             self.dashboard_server.should_exit = True
+        if self.web_shell is not None:
+            self.web_shell.should_exit = True
 
     async def shutdown(self) -> None:
         if self._shutdown:
             return
         self._shutdown = True
+        closing_root = None if self.core is None else self.core.plugin_manager.live_root
         try:
             self._remove_plugin_reload_signal()
+            # 已排空业务后先关闭入站连接；插件释放前保留数据库和 HTTP provider。
             await _run_cleanup_steps(
                 ("plugin_candidate_tasks.cancel", self._cancel_plugin_candidate_tasks),
                 ("runtime_tasks.cancel", self._cancel_runtime_tasks),
                 ("servers.request_shutdown", self._request_server_shutdown),
+                ("web_shell.wait", _wait_server_task(self.web_shell_task)),
                 (
                     "dashboard_server.wait",
                     _wait_server_task(self.dashboard_task),
@@ -485,18 +511,20 @@ class AppRuntime:
                         else _noop_async
                     ),
                 ),
-                ("core.stop", self.core.stop if self.core else _noop_async),
+            )
+            if self.core is not None:
+                await self.core.stop()
+            await _run_cleanup_steps(
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
                     "runtime_readiness.clear",
                     _clear_readiness(self.readiness),
                 ),
-                (
-                    "workspace_lock.release",
-                    _release_workspace_lock(self._workspace_lock),
-                ),
             )
+            if self._started and self.readiness is not None:
+                self.readiness.mark_closed(None if closing_root is None else closing_root.generation_id)
         finally:
+            self._workspace_lock.release()
             clear_default_shared_http_resources(self.http_resources)
 
     def _install_plugin_reload_signal(self) -> None:
@@ -517,7 +545,7 @@ class AppRuntime:
 
     def _schedule_plugin_candidate_scan(self) -> None:
         manager = getattr(self.core, "plugin_manager", None)
-        if manager is None or self._shutdown:
+        if manager is None or self._shutdown or (self.restart_gate is not None and not self.restart_gate.accepting):
             return
         if self.plugin_watcher is not None:
             self.plugin_watcher.wake()

@@ -1,5 +1,6 @@
 services:
   akashic-core:
+    init: true
     image: "${AKASHIC_IMAGE:?AKASHIC_IMAGE is required}"
     container_name: "${AKASHIC_CONTAINER_NAME:?AKASHIC_CONTAINER_NAME is required}"
     user: "${AKASHIC_UID:-1000}:${AKASHIC_GID:-1000}"

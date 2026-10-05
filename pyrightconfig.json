@@ -3,6 +3,7 @@
   "pythonVersion": "3.12",
   "venvPath": ".",
   "venv": ".venv",
+  "extraPaths": ["sdk/python/src"],
   "include": [
     "main.py",
     "agent",

@@ -106,4 +106,4 @@ LABEL org.opencontainers.image.revision="${AKASHIC_SOURCE_COMMIT}"
 USER huashen:huashen
 ENV AKASHIC_PLUGIN_DISTRIBUTION=/opt/akashic/distribution
 ENTRYPOINT ["/opt/akashic/distribution-entrypoint.sh"]
-CMD ["supervise"]
+CMD ["gateway"]

@@ -48,7 +48,8 @@ mkdir -p "$WORKSPACE" "$PLUGIN_HOME"
     --ensure-profile \
     --receipt "$WORKSPACE/runtime/distribution-install.json"
 
-command="${1:-supervise}"
+command="${1:-gateway}"
+export AKASHIC_DOCKER_RUNTIME=1
 shift || true
 exec /opt/venv/bin/python /opt/akashic/source/main.py \
     "$command" \
