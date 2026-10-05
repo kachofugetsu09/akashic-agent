@@ -21,7 +21,6 @@ sys.path.insert(0, str(ROOT))
 import grpc
 from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.monitor import HostBridgeStatus, _monitor
-from plugins.standard_tools.skill_catalog import SkillCatalogParser
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.config_input import save_config
@@ -84,7 +83,7 @@ async def check_lifecycle(base: Path, log, host) -> list[str]:
     tools = root.context.require(TOOLS)
     bindings = root.context.require(BINDINGS)
     ref = next(item for item in root.context.require(ALL_TOOLS)().refs if item.name == "load_skill")
-    # 1. 并发捕获保存同一内容身份，恢复工具可读取原正文。
+    # 1. 并发绑定保持同一注册身份，工具读取当前正文。
     identities = await asyncio.gather(*(tools.bind(ref, bindings) for _ in range(3)))
     assert len(set(identities)) == 1
     metadata = bindings.describe(identities[0], TOOLS)
@@ -97,16 +96,19 @@ async def check_lifecycle(base: Path, log, host) -> list[str]:
     started = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
-    parse = SkillCatalogParser.parse
+    # fixture 是独立加载的插件模块，必须协调实际运行的 parser。
+    module = host._active_generations["skill_probe"].module_path
+    parser_type = sys.modules[f"{module}.skill_catalog"].SkillCatalogParser
+    parse = parser_type.parse
 
-    def held_parse(parser, workspace):
+    def held_parse(parser, assets, *, workspace_dir):
         loop.call_soon_threadsafe(started.set)
         if not release.wait(30):
             raise TimeoutError("实验文件线程未被释放")
-        return parse(parser, workspace)
+        return parse(parser, assets, workspace_dir=workspace_dir)
 
     before = log.read_bindings()
-    with patch.object(SkillCatalogParser, "parse", held_parse):
+    with patch.object(parser_type, "parse", held_parse):
         async with tools.open(metadata) as tool:
             capture = asyncio.create_task(tool.invoke("cancel-local-read", arguments))
             disposal = None
