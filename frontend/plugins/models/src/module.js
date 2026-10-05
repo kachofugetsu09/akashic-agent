@@ -32,13 +32,12 @@ export async function readJsonResponse(response) {
 }
 
 export function activate(ctx) {
-  return ctx.ui.inject("shell.pages.v1", (mount) => mount.register({
+  return ctx.ui.inject("shell.settings.v1", (mount) => mount.register({
     id: "models",
     label: "模型",
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>',
     route: "models",
     order: 30,
-    section: "settings",
     children: [{id: "models.connection-types.v1", cardinality: "list"}],
     render(host, view, props = {}) {
       const connectionTypes = view.child("models.connection-types.v1");

@@ -9,9 +9,8 @@ export interface Status {
   values: Record<string, unknown>; targets?: {channel: string; recipient: string; session_id: string; label: string}[];
 }
 export interface FormProps { values: Record<string, unknown>; change: (key: string, value: unknown) => void; status: Status; }
-export interface FormDefinition { id: string; title: string; description: string; family?: string; fields?: (props: FormProps) => ReactNode; }
+export interface FormDefinition { id: string; title: string; description: string; family?: string; familyLabel?: string; fields?: (props: FormProps) => ReactNode; }
 export interface EmbedProps { embedded?: boolean; changed?: () => void; dirty?: (value: boolean) => void; }
-export const settingsIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 5h14v14H5zM8 9h8M8 13h5"/></svg>';
 
 export class RequestError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
@@ -48,8 +47,8 @@ export function Field({label, name, value, change, type = "text", hint, required
 }
 
 export function registerForm(ctx: WebHostContextV1, definition: FormDefinition): WebUiDisposer {
-  return ctx.ui.inject("shell.pages.v1", mount => mount.register({
-    id: `${definition.id.replaceAll("_", "-")}-settings`, label: definition.title, route: `${definition.id}-settings`, section: "settings", group: "plugins", family: definition.family, iconSvg: settingsIcon,
+  return ctx.ui.inject("shell.settings-plugins.v1", mount => mount.register({
+    id: `${definition.id.replaceAll("_", "-")}-settings`, label: definition.title, route: `${definition.id}-settings`, family: definition.family, familyLabel: definition.familyLabel,
     render(host, _view, props) {
       const root = createRoot(host);
       root.render(<Configuration ctx={ctx} definition={definition} embed={(props ?? {}) as EmbedProps} />);

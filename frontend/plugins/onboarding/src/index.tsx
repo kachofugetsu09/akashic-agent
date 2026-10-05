@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
-import type { WebHostContextV1, WebMountView, WebUiDisposer } from "@akashic/web-ui-v1";
+import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
+import type { RenderSettingsRoute, ShellSettingsRenderProps } from "@akashic/shell-ui-v1";
 import { Confirm, request, type Status } from "../../shared/src/configuration";
 import "./style.css";
 
@@ -29,16 +30,16 @@ function label(status?: StepStatus): string {
 }
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
-  return ctx.ui.inject("shell.pages.v1", mount => mount.register({
+  return ctx.ui.inject("shell.settings.v1", mount => mount.register({
     // 初始配置不是常驻目的地：收进功能设置目录，由首跑邀请和深链接进入。
-    id: "onboarding", label: "初始配置", route: "onboarding", iconSvg: onboardingIcon, section: "settings", order: -10,
+    id: "onboarding", label: "初始配置", route: "onboarding", iconSvg: onboardingIcon, order: -10,
     render(host, _view, props) {
-      const pages = (props as {pages: WebMountView}).pages;
+      const { pages, renderRoute } = (props ?? {}) as ShellSettingsRenderProps;
       // 页面隐藏时首跑邀请仍需显示；独立容器复用本 entry 的样式归属。
       const invitationHost = document.createElement("div");
       const releaseStyle = pages.style("onboarding", invitationHost);
       document.body.appendChild(invitationHost);
-      const root = createRoot(host); root.render(<Onboarding ctx={ctx} pages={pages} invitationHost={invitationHost} />);
+      const root = createRoot(host); root.render(<Onboarding ctx={ctx} renderRoute={renderRoute} invitationHost={invitationHost} />);
       return () => {
         root.unmount();
         releaseStyle();
@@ -48,7 +49,7 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
   }));
 }
 
-function Onboarding({ctx, pages, invitationHost}: {ctx: WebHostContextV1; pages: WebMountView; invitationHost: HTMLElement}) {
+function Onboarding({ctx, renderRoute, invitationHost}: {ctx: WebHostContextV1; renderRoute?: RenderSettingsRoute; invitationHost: HTMLElement}) {
   const [steps, setSteps] = useState<Step[]>([]);
   const [states, setStates] = useState<Record<string, StepStatus>>({});
   const [selected, setSelected] = useState(() => sessionStorage.getItem("onboarding-page") ?? "");
@@ -137,13 +138,13 @@ function Onboarding({ctx, pages, invitationHost}: {ctx: WebHostContextV1; pages:
     // 步骤切换后才移动焦点，且等标题文本更新完，避免读出上一步标题。
     if (focusedStep.current === null) focusedStep.current = current.id;
     else if (focusedStep.current !== current.id) { focusedStep.current = current.id; heading.current?.focus(); }
-    const page = pages.entries.find(entry => entry.route === current.route);
     const host = formHost.current;
-    if (!page) { host.textContent = "此插件的设置页面尚未就绪，请刷新或检查插件状态。"; return; }
-    const dispose = pages.render(page.id, host, {embedded: true, changed, dirty: markDirty});
+    // 步骤表单按 route 内嵌对应分节，不关心它属于哪个设置目录。
+    const dispose = renderRoute?.(current.route, host, {embedded: true, changed, dirty: markDirty});
+    if (!dispose) { host.textContent = "此插件的设置页面尚未就绪，请刷新或检查插件状态。"; return; }
     // 子插件可能拥有独立 React root；等父页面提交结束后销毁，避免提前清空子节点。
     return () => queueMicrotask(dispose);
-  }, [current?.id, current?.route, pages, finished, changed, markDirty]);
+  }, [current?.id, current?.route, renderRoute, finished, changed, markDirty]);
   const navigate = (go: () => void) => { if (editing.current) setLeave({kind: "navigate", go}); else go(); };
   const choose = (step: Step) => navigate(() => { setSelected(step.id); setFinished(false); });
   const next = async () => {
