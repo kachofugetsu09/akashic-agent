@@ -90,11 +90,13 @@
 
 | [0080](0080-retire-qq-runtime-support.md) | accepted | 退役全部 QQ 运行支持，保留旧数据与历史证据 | ONB-001、PLG-003、STA-001～STA-003、SEC-001、SEC-002 |
 
-| [0081](0081-content-views-keep-original-messages.md) | accepted | 长结果折叠复用原消息与实际展示回执 | CTX-008、STA-001、CAP-001 |
+| [0081](0081-content-views-keep-original-messages.md) | superseded（折叠策略） | 长结果折叠复用原消息与实际展示回执 | CTX-008、STA-001、CAP-001 |
 
 | [0082](0082-distribution-owned-plugin-composition.md) | accepted | 内置代码随部署、外置选择保留，沿同一普通插件图提交 | ONB-002、PLG-007、PLG-013、PLG-016、MIG-001 |
 
 | [0089](0089-reply-output-budget-includes-reasoning.md) | accepted | 回复预算包含推理，长度截断不作为完成或工具执行 | ERR-001、RUN-005、SES-001、STA-002 |
+
+| [0090](0090-tool-results-stay-visible.md) | accepted | 移除自动折叠，工具原文持续可见，保留旧回读 | CTX-001、CTX-008、STA-002 |
 
 ## 新增规则
 
