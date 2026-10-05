@@ -864,6 +864,20 @@ const server = createServer(async (request, response) => {
       response.write(cursorEvent());
       cursorClients.add(response);
       response.once("close", () => cursorClients.delete(response));
+    } else if (request.method === "GET" && url.pathname === "/targets") {
+      json(response, 200, { targets: driver && computer.state === "ready" ? await driver.targets() : [],
+        control: Boolean(driver?.control) });
+    } else if (request.method === "GET" && url.pathname === "/view/frame") {
+      if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
+      const frame = await driver.viewFrame(url.searchParams.get("target"));
+      response.writeHead(200, { "content-type": "image/jpeg", "cache-control": "no-store" });
+      response.end(frame);
+    } else if (request.method === "POST" && url.pathname === "/view/input") {
+      const payload = await body(request);
+      if (!driver) throw new InputError("Computer is not awake");
+      await driver.viewInput(payload.target, payload.owner, payload.input);
+      computer.touch();
+      json(response, 200, { sent: true });
     } else if (request.method === "GET" && url.pathname === "/activity") {
       json(response, 200, { ...activity, browser: computer.status(), control: driver?.control ? { active: true } : { active: false } });
     } else if (request.method === "POST" && url.pathname.startsWith("/control/")) {
@@ -871,7 +885,9 @@ const server = createServer(async (request, response) => {
       requiredString(payload.id, "id", 128);
       if (url.pathname === "/control/take") {
         if (!driver || computer.state !== "ready") throw new InputError("Computer is not awake");
-        await driver.takeControl(payload.id);
+        const target = payload.target ?? "desktop";
+        if (target !== "desktop") await driver.viewTarget(target);
+        await driver.takeControl(payload.id, target);
       } else if (url.pathname === "/control/release") {
         if (driver) await driver.releaseControl(payload.id);
       } else if (url.pathname !== "/control/renew") {

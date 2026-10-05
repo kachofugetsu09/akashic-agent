@@ -21,10 +21,10 @@ export class ComputerDriver extends EventEmitter {
   agentJobs = new Set();
 
   /** 人工接管先阻止新操作，再等待已发操作和输入释放。 */
-  async takeControl(id) {
+  async takeControl(id, target = "desktop") {
     if (this.closed) throw new Error("Computer driver is stopped");
     if (this.control) throw new Error("Another viewer controls this Computer");
-    const control = { id, ready: false };
+    const control = { id, target, ready: false };
     control.done = new Promise((resolve) => { control.resume = resolve; });
     this.control = control;
     this.pauseClock();
@@ -90,6 +90,72 @@ export class ComputerDriver extends EventEmitter {
     active.startedAt = Date.now();
     active.timer = setTimeout(() => active.reject(new Error("Computer call timed out")), active.remaining);
   }
+  /** 目录直接来自存活 Context 和页面，不复用个人 profile 或缓存旧目标。 */
+  async targets() {
+    const targets = [{ id: "desktop", label: "主桌面", kind: "desktop" }];
+    for (const instance of this.anonymous.instances.values()) {
+      if (!instance.backend || instance.closing) continue;
+      for (const tab of await instance.backend.listTabs())
+        targets.push({ id: `${instance.id}:${tab.id}`, kind: "browser",
+          browserId: instance.id, tabId: tab.id, title: tab.title, url: tab.url,
+          sessionId: instance.context.session_id, turnId: instance.context.turn_id,
+          label: `匿名 ${instance.id.slice(0, 4)} · ${tab.title || tab.url || "空白页"}` });
+    }
+    return targets;
+  }
+
+  async viewTarget(id) {
+    if (typeof id !== "string" || id.length > 128) throw new TypeError("Invalid view target");
+    const [browserId, tabText] = id.split(":");
+    const instance = this.anonymous.instances.get(browserId);
+    if (!instance?.backend || instance.closing) throw new Error("Browser target has closed");
+    const tabId = Number(tabText);
+    const tabs = await instance.backend.listTabs();
+    if (!tabs.some(tab => tab.id === tabId)) throw new Error("Browser page has closed");
+    return { backend: instance.backend, tabId };
+  }
+
+  async viewFrame(id) {
+    const { backend, tabId } = await this.viewTarget(id);
+    const connection = await backend.attach(tabId);
+    const { data } = await connection.send("Page.captureScreenshot", {
+      format: "jpeg", quality: 70, captureBeyondViewport: false });
+    return Buffer.from(data, "base64");
+  }
+
+  /** 人工输入只接受键鼠和文字，不能透传任意 CDP 或执行脚本。 */
+  async viewInput(id, owner, input) {
+    if (!this.control?.ready || this.control.id !== owner || this.control.target !== id)
+      throw new Error("This viewer does not control this target");
+    const { backend, tabId } = await this.viewTarget(id);
+    let method, commandParams;
+    if (input.kind === "text") {
+      if (typeof input.text !== "string" || input.text.length > 65536) throw new TypeError("Invalid text input");
+      method = "Input.insertText";
+      commandParams = { text: input.text };
+    } else if (input.kind === "key") {
+      if (!["keyDown", "keyUp"].includes(input.type) || typeof input.key !== "string"
+          || typeof input.code !== "string" || input.key.length > 64 || input.code.length > 64
+          || !Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)
+        throw new TypeError("Invalid key input");
+      method = "Input.dispatchKeyEvent";
+      commandParams = { type: input.type, key: input.key, code: input.code, modifiers: input.modifiers,
+        text: input.type === "keyDown" && input.key.length === 1 && !(input.modifiers & 6) ? input.key : "" };
+    } else if (input.kind === "mouse") {
+      if (!["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"].includes(input.type)
+          || !["none", "left", "middle", "right"].includes(input.button)
+          || ![input.x, input.y, input.deltaX, input.deltaY].every(Number.isFinite)
+          || Math.abs(input.x) > 16384 || Math.abs(input.y) > 16384
+          || Math.abs(input.deltaX) > 100000 || Math.abs(input.deltaY) > 100000)
+        throw new TypeError("Invalid pointer input");
+      method = "Input.dispatchMouseEvent";
+      commandParams = { type: input.type, x: input.x, y: input.y, button: input.button,
+        clickCount: input.type === "mouseMoved" || input.type === "mouseWheel" ? 0 : 1,
+        deltaX: input.deltaX, deltaY: input.deltaY };
+    } else throw new TypeError("Unknown browser input");
+    return backend.execute({ target: { tabId }, method, commandParams });
+  }
+
   async start() {
     this.desktop.on("cursor", (state) => this.emit("cursor", state));
     this.browser.on("cursor", (state) => this.emit("cursor", state));
