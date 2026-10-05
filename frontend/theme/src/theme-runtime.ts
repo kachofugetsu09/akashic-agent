@@ -74,6 +74,7 @@ const THEME_COOKIE = "akashic_theme";
 const THEME_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i;
 const THEME_EVENT = "akashic-theme-change";
+const THEME_CHANNEL_NAME = "akashic.theme-sync";
 
 /** Validate the bundled catalog once and expose immutable theme definitions. */
 function validateCatalog(value: unknown): { defaultThemeId: string; themes: ThemeDefinition[] } {
@@ -239,8 +240,26 @@ function applySelectionWithCrossfade(next: ThemeSelection): void {
   void transition.ready.catch(() => {});
 }
 
+let themeChannel: BroadcastChannel | null = null;
+
+/** 外层 Shell 与 /chat iframe 是同源不同文档，主题在任一文档切换时经 BroadcastChannel
+    即时同步，不再等 focus 重读 cookie。接收方只 apply 不再广播，id 相同直接忽略，不会成环。 */
+function joinThemeChannel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === "undefined") return null;
+  if (themeChannel) return themeChannel;
+  themeChannel = new BroadcastChannel(THEME_CHANNEL_NAME);
+  themeChannel.addEventListener("message", (event) => {
+    if (typeof event.data !== "string" || !THEME_ID_PATTERN.test(event.data)) return;
+    const next = resolveSelection(event.data);
+    if (next.effectiveThemeId === selection.effectiveThemeId) return;
+    applySelection(next);
+  });
+  return themeChannel;
+}
+
 export function initializeTheme(): ThemeSelection {
   installThemeCss();
+  joinThemeChannel();
   applySelection(resolveSelection(readCookieTheme() ?? CATALOG.defaultThemeId));
   return selection;
 }
@@ -252,6 +271,7 @@ export function setTheme(requestedThemeId: string, persist = true): ThemeSelecti
   if (persist) {
     document.cookie = `${THEME_COOKIE}=${encodeURIComponent(requestedThemeId)}; Path=/; Max-Age=31536000; SameSite=Lax`;
   }
+  joinThemeChannel()?.postMessage(requestedThemeId);
   return next;
 }
 
