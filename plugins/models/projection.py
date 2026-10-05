@@ -351,6 +351,7 @@ class MessageProjection:
         continuation_transformed = False
         results: dict[CallRef, Message] = {}
         recorded_facts: dict[str, Mapping[str, Any]] = {}
+        response_metadata: dict[str, Mapping[str, Any]] = {}
         for message in messages:
             if not isinstance(message.body, Output):
                 continue
@@ -383,6 +384,10 @@ class MessageProjection:
             receipt = read_call(value["call_record_id"])
             if receipt["state"] != "success":
                 raise ValueError("已提交模型事实必须引用成功结算的真实调用")
+            if receipt["binding"]["binding_id"] == self._model.descriptor.binding_id:
+                metadata = receipt.get("provider_metadata")
+                if metadata is not None and not value.get("content_transformed", False):
+                    response_metadata[message.message_id] = metadata
             indices = {
                 str(index)
                 for index, part in enumerate(body.parts)
@@ -596,6 +601,9 @@ class MessageProjection:
                 }
                 if calls:
                     row["tool_calls"] = calls
+                if (message.message_id in response_metadata and model_facts is not None
+                        and len(calls) == len(model_facts["tool_ids"])):
+                    row["provider_metadata"] = response_metadata[message.message_id]
                 if model_facts is not None and model_facts["thinking"] is not None:
                     row["reasoning_content"] = model_facts["thinking"]
                 rows.append(row)

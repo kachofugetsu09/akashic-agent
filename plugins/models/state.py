@@ -145,6 +145,7 @@ def _decode_response(payload: object) -> LLMResponse:
         ],
         thinking=cast(str | None, data.get("thinking")),
         finish_reason=cast(str | None, data.get("finish_reason")),
+        provider_metadata=data.get("provider_metadata"),
         continuation=(
             None
             if continuation is None
