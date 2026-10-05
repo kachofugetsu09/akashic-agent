@@ -15,6 +15,7 @@ import stat
 import struct
 import sys
 import tempfile
+from uuid import uuid4
 from dataclasses import asdict
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import cache
@@ -174,6 +175,7 @@ class WorkloadControllerServer:
         self._leases = self._load_leases()
         self._stopped_path = self._state_path.with_suffix(".stopped.json")
         self._stopped = self._load_state(self._stopped_path)
+        self._controller_id = uuid4().hex
 
     @asynccontextmanager
     async def _plugin_access(self, plugin_id: str):
@@ -284,6 +286,11 @@ class WorkloadControllerServer:
                     ]
                     if errors:
                         raise BaseExceptionGroup("Controller request shutdown failed", errors)
+                # 进程退出前证明精确租约清空，不能仅靠 Docker exit code。
+                async with self._maintenance():
+                    await self._stop_owned_workloads()
+                self._save_state(self._state_path.parent / "closed" / f"{self._controller_id}.json",
+                                 {"controller": {"id": self._controller_id, "leases_empty": True}})
             finally:
                 try:
                     if owned_socket is not None:
@@ -414,6 +421,10 @@ class WorkloadControllerServer:
 
     async def _dispatch(self, action: object, body: dict[str, object]) -> dict[str, object]:
         """Keep accepted effects ordered by plugin, with exclusive maintenance."""
+        if action == "status":
+            if body:
+                raise ValueError("Controller status 不接受参数")
+            return {"controller_id": self._controller_id, "leases": len(self._leases)}
         if action == "start":
             request = _start_request(body)
             async with self._plugin_access(request.plugin_id):

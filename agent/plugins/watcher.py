@@ -19,11 +19,13 @@ class PluginWatcher:
         baseline_revision: dict[str, str] | None = None,
         interval_seconds: float = 1.0,
         after_reconcile: Callable[[], Awaitable[None]] | None = None,
+        accepting: Callable[[], bool] = lambda: True,
     ) -> None:
         self._manager = manager
         self._baseline_revision = baseline_revision
         self._interval_seconds = interval_seconds
         self._after_reconcile = after_reconcile
+        self._accepting = accepting
         self._wake = asyncio.Event()
         self._forced = False
         self._manual_wake_pending = False
@@ -48,6 +50,9 @@ class PluginWatcher:
             if not self._running:
                 return
             while self._running:
+                if not self._accepting():
+                    await asyncio.sleep(self._interval_seconds)
+                    continue
                 # 2. 等待定时轮询或外部唤醒
                 try:
                     _ = await asyncio.wait_for(

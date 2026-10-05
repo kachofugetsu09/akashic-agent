@@ -535,11 +535,11 @@ async def serve(config_path: str, workspace: Path) -> int:
         if commit_channel is not None
         else None
     )
-    readiness = (
-        RuntimeReadiness(workspace, commit_channel.boot_id, commit_channel)
-        if commit_channel is not None
-        else None
-    )
+    readiness = None
+    if commit_channel is not None or os.environ.get("AKASHIC_DOCKER_RUNTIME") == "1":
+        boot_id = commit_channel.boot_id if commit_channel else uuid4().hex
+        os.environ["AKASHIC_BOOT_ID"] = boot_id
+        readiness = RuntimeReadiness(workspace, boot_id, commit_channel)
     runtime = build_app_runtime(
         config,
         workspace=workspace,

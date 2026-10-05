@@ -236,6 +236,12 @@ class PluginManager:
         if self._operation is not None and not self._operation.task.done():
             raise OperationBusyError("PluginManager busy：原操作和资源尚未退出")
 
+    async def wait_idle(self) -> None:
+        """只等待已有操作物理退出，不取消或接纳新操作。"""
+        operation = self._operation
+        if operation is not None:
+            await asyncio.shield(operation.task)
+
     def _check_operation_commit(self) -> ManagerOperation:
         """耐久提交前同步调用；检查到实际同步提交之间不得 await。
 
@@ -294,6 +300,7 @@ class PluginManager:
         accepted: asyncio.Future[Any] | None = None,
     ) -> ManagerOperation:
         """Start one finite operation whose task retains cleanup ownership."""
+        self._restart_gate.check_open()
         self._require_operation_idle()
         if commit_timeout is None:
             commit_timeout = self.POST_PUBLISH_TIMEOUT_SECONDS

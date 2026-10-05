@@ -58,6 +58,10 @@ class UnixWorkloadController:
             raise RuntimeError("Workload Controller adopt 回执无效")
         return WorkloadStartReceipt(lease, endpoints, adopted)
 
+    async def status(self) -> dict[str, object]:
+        """读取当前 Controller 身份，供宿主核对精确停止证据。"""
+        return await self._call("status", {})
+
     async def stop(self, lease: WorkloadLease) -> WorkloadStopReceipt:
         payload = await self._call("stop", {"lease": _lease_dict(lease)})
         return WorkloadStopReceipt(
