@@ -21,6 +21,7 @@ from agent.plugin_composition.models import (
     BoundChatModel,
     ContextLengthError,
     EmptyResponseError,
+    OutputLengthError,
     LLMResponse,
     ModelContinuation,
     ModelError,
@@ -813,6 +814,12 @@ async def react(
                 f":{boundary_id}:{_steps(snapshot, writer.source)}"
             ),
         ) as (response, prepared, message_id, request):
+            # 先检查完整性：即使截断参数恰好是合法 JSON，也不能执行该批工具。
+            if response.finish_reason == "length":
+                raise OutputLengthError(
+                    f"模型生成达到长度限制（输出预算 {request.max_output_tokens} tokens，含推理）；"
+                    "回复未完成，本次返回的工具调用未执行。请检查输出预算与模型上下文容量后，用新输入继续。"
+                )
             decoded, metadata = await content.decode(response.content or "", cast(tuple[Mapping[str, object], ...], prepared.get("references", ())))
             parts: list[Part] = list(decoded)
             indices: list[int] = []

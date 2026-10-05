@@ -20,7 +20,7 @@ from agent.plugin_contracts.sources import SourceGuard
 
 
 class ReplyExecuteV4(Protocol):
-    """来源入口固定所有执行前提；程序在启动与输出事务中调用同一个检查。"""
+    """固定执行前提；输出预算 None 跟随模型上限，未知时用 32768，含推理。"""
 
     async def __call__(
         self,
@@ -33,7 +33,7 @@ class ReplyExecuteV4(Protocol):
         authorize: Callable[
             [str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]
         ],
-        max_output_tokens: int,
+        max_output_tokens: int | None,
         max_steps: int,
         render_content: ContentRenderer | None = None,
         tool_view: ToolView | None = None,

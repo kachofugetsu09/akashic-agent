@@ -592,6 +592,10 @@ class EmptyResponseError(ModelError):
     retryable = True
 
 
+class OutputLengthError(ModelError):
+    """模型达到生成长度限制；正文或工具参数可能不完整。"""
+
+
 class DriverUnavailableError(ModelError): ...
 
 

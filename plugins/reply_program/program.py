@@ -55,7 +55,7 @@ async def run_reply(
     prepare_content: PrepareContent | None = None,
     read_call: CallReader,
     authorize: Authorize,
-    max_output_tokens: int,
+    max_output_tokens: int | None,
     max_steps: int,
     max_parallel_calls: int = 4,
     tool_view: ToolView | None = None,
@@ -113,6 +113,9 @@ async def run_reply(
         materials as material_view,
     ):
         model = execution.chat("agent")
+        # 推理与正文共用输出额度；在冻结请求前确定预算，Context 同样预留它。
+        if max_output_tokens is None:
+            max_output_tokens = model.descriptor.capabilities.max_output_tokens or 32768
         menu = await tool_program.create_menu(
             reader, source, content=view.checks,
             check_start=check,

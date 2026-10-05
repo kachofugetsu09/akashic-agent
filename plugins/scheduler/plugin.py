@@ -57,7 +57,7 @@ _DISABLED_TOOLS = frozenset({"message_push", "recall_memory", "memorize", "remem
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_steps: int = Field(default=40, gt=0)
-    max_output_tokens: int = Field(default=4096, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
 
 
 async def apply(ctx: Context) -> None:

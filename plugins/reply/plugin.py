@@ -65,7 +65,7 @@ inject = (
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_steps: int = Field(default=40, strict=True, ge=0)
-    max_output_tokens: int = Field(default=4096, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
 
 
 async def _prepare_pending(

@@ -94,6 +94,8 @@
 
 | [0082](0082-distribution-owned-plugin-composition.md) | accepted | 内置代码随部署、外置选择保留，沿同一普通插件图提交 | ONB-002、PLG-007、PLG-013、PLG-016、MIG-001 |
 
+| [0089](0089-reply-output-budget-includes-reasoning.md) | accepted | 回复预算包含推理，长度截断不作为完成或工具执行 | ERR-001、RUN-005、SES-001、STA-002 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。
