@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -7,7 +8,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { BrowserBackend } from "./cdp.mjs";
 
 /** 匿名浏览器共享独立 headless 进程，各 Context 隔离身份与页面存储。 */
-export class AnonymousBrowsers {
+export class AnonymousBrowsers extends EventEmitter {
+  constructor(idleMs = 600000) {
+    super();
+    this.idleMs = idleMs;
+  }
   instances = new Map();
   engine = null;
   starting = null;
@@ -24,6 +29,8 @@ export class AnonymousBrowsers {
       backend: null,
       contextId: null,
       closing: false,
+      busy: 0,
+      idleTimer: null,
     };
     this.instances.set(id, instance);
     try {
@@ -48,6 +55,7 @@ export class AnonymousBrowsers {
       instance.backend = backend;
       await backend.start();
       backend.on("event", onEvent);
+      this.armIdle(instance);
       return id;
     } catch (error) {
       try {
@@ -153,7 +161,9 @@ export class AnonymousBrowsers {
     const instance = this.get(id, context);
     if (this.exited())
       throw new Error("Anonymous Chromium exited; close its browsers before recreating");
-    return instance.backend.call(method, params, context);
+    this.hold(instance);
+    try { return await instance.backend.call(method, params, context); }
+    finally { this.unhold(instance); }
   }
 
   async releaseInputs(context) {
@@ -163,10 +173,32 @@ export class AnonymousBrowsers {
         await instance.backend.releaseInputs();
   }
 
+  /** 输入或人工接管持有实例；观看画面和目录不刷新闲置期限。 */
+  hold(instance) {
+    clearTimeout(instance.idleTimer);
+    instance.busy++;
+  }
+
+  unhold(instance) {
+    instance.busy--;
+    this.armIdle(instance);
+  }
+
+  armIdle(instance) {
+    clearTimeout(instance.idleTimer);
+    if (instance.closing || instance.busy) return;
+    instance.idleTimer = setTimeout(() => {
+      this.close(instance.id, instance.context, "idle").catch(error => this.emit("cleanupError", error));
+    }, this.idleMs);
+    instance.idleTimer.unref();
+  }
+
   /** 关闭 Context 不影响其他 Context；最后一个关闭时释放 headless 进程。 */
-  async close(id, context) {
+  async close(id, context, reason = "closed") {
     const instance = this.get(id, context);
     instance.closing = true;
+    clearTimeout(instance.idleTimer);
+    this.emit("closed", { browserId: id, reason, context: instance.context });
     try {
       if (instance.backend && !this.exited())
         await instance.backend.releaseInputs();

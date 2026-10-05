@@ -808,8 +808,12 @@ Agent 可另建匿名 BrowserContext 做 E2E，默认共享一份独立 headless
 观看默认只读，多位观看者互不踢出。用户明确接管才获得输入权限，接管期间暂停 Computer Agent 操作；
 断开或主动释放后恢复。活动只提示，不打开工具区或改变用户当前标签，包括移动端。
 见 [0092](decisions/0092-computer-viewing-and-control.md)。
-匿名实例属于创建它的 Turn，最多同时八个；主动关闭、Turn 结束、调用失败、Session
-重置或休眠时释放。最后一个关闭后停止 headless 进程并删除其临时数据，既有截图由原 owner 保留。
+匿名实例属于创建它的 Turn，最多同时八个；稳定 ID 可找回同一实例，不得误选主浏览器。
+完整结算且输入释放确认的脚本错误保留页面与 JS 绑定；取消、调用中断、Session 重置、
+Turn 结束或休眠时释放。匿名实例连续闲置 10 分钟且无正在执行操作或人工接管时释放；
+观看和目录轮询不延长期限。回收原因明确可查，失效 ID 不自动重建或切换主浏览器。
+最后一个关闭后停止 headless 进程并删除其临时数据，既有截图由原 owner 保留。
+见 [0093](decisions/0093-computer-reuses-anonymous-browsers.md)。
 
 ### PLG-018 工具依赖传递实际注册引用
 

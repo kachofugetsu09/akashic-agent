@@ -47,7 +47,7 @@ const computer = new ComputerLifecycle({
       }
     }
     if (failure) throw failure;
-    driver = new ComputerDriver();
+    driver = new ComputerDriver({ anonymousIdleMs: duration("COMPUTER_ANONYMOUS_IDLE_MS", 600000) });
     driver.on("cursor", publishCursor);
     driverReady = driver.start();
     await driverReady;

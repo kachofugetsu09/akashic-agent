@@ -11,7 +11,18 @@ import { AnonymousBrowsers } from "./anonymous.mjs";
 /** 一个容器拥有一份输入状态；各 Session 仅隔离 JS 绑定，不复制浏览器 profile。 */
 export class ComputerDriver extends EventEmitter {
   browser = new BrowserBackend();
-  anonymous = new AnonymousBrowsers();
+  constructor({ anonymousIdleMs = 600000 } = {}) {
+    super();
+    this.anonymous = new AnonymousBrowsers(anonymousIdleMs);
+    this.anonymous.on("closed", ({ browserId, reason, context }) => {
+      this.sessions.get(context.session_id)?.worker.postMessage({ kind: "browserClosed", browserId, reason });
+    });
+    this.anonymous.on("cleanupError", error => {
+      this.closed = true;
+      this.active?.reject(error);
+      console.error("Anonymous browser cleanup failed:", error.message);
+    });
+  }
   desktop = new DesktopBackend();
   sessions = new Map();
   active = null;
@@ -26,6 +37,8 @@ export class ComputerDriver extends EventEmitter {
     if (this.control) throw new Error("Another viewer controls this Computer");
     const control = { id, target, ready: false };
     control.done = new Promise((resolve) => { control.resume = resolve; });
+    control.instance = this.anonymous.instances.get(target.split(":")[0]);
+    if (control.instance) this.anonymous.hold(control.instance);
     this.control = control;
     this.pauseClock();
     try {
@@ -49,6 +62,7 @@ export class ComputerDriver extends EventEmitter {
     for (const instance of this.anonymous.instances.values())
       if (instance.backend && !instance.closing) await instance.backend.releaseInputs();
     this.control = null;
+    if (control.instance) this.anonymous.unhold(control.instance);
     control.resume();
     this.resumeClock();
   }
@@ -204,13 +218,14 @@ export class ComputerDriver extends EventEmitter {
     if (message.kind === "ready" || message.kind === "metadata") return;
     if (message.kind === "result") {
       if (active?.session === session) {
-        if (message.error)
+        if (message.error) {
+          active.scriptError = message.scriptError === true;
           active.reject(
             Object.assign(new Error(message.error), {
               content: message.content,
             }),
           );
-        else active.resolve(message.content);
+        } else active.resolve(message.content);
       }
       return;
     }
@@ -262,7 +277,7 @@ export class ComputerDriver extends EventEmitter {
       return this.browser.call(message.method, params, context);
     return this.anonymous.call(browserId, message.method, params, context);
   }
-  /** 调用结束时先 drain 再 release；异常会使本 Session 的 JS 对象失效。 */
+  /** 调用结束先 drain 和释放输入；完整结算的脚本错误保留 Session。 */
   async run(
     { context, code = "", endTurn = false, timeoutMs = 60_000, task },
     signal,
@@ -323,7 +338,7 @@ export class ComputerDriver extends EventEmitter {
       active.reject(error);
     };
     let content = [],
-      failure;
+      failure, reset = false;
     try {
       if (!task) active.session = await this.session(context.session_id);
       signal?.addEventListener("abort", abort, { once: true });
@@ -348,30 +363,32 @@ export class ComputerDriver extends EventEmitter {
       await this.waitForControl(active.controller.signal);
     } catch (error) {
       failure = error;
+      reset = !active.scriptError || endTurn || active.controller.signal.aborted;
       active.cancelled = true;
       active.controller.abort(error);
-      if (active.session) await active.session.worker.terminate();
+      if (reset && active.session) await active.session.worker.terminate();
     } finally {
       clearTimeout(active.timer);
       signal?.removeEventListener("abort", abort);
       // Native 先响应取消；浏览器已送出的 CDP 命令有自己的有界超时。
       try {
-        if (failure) await this.desktop.cancel();
+        if (reset) await this.desktop.cancel();
         await Promise.allSettled([...active.pending]);
-        if (!failure)
+        if (!reset)
           await deadline(this.desktop.call("release"), 4000, "Native release");
         await deadline(this.browser.releaseInputs(), 11000, "Browser release");
         await deadline(this.anonymous.releaseInputs(context), 11000, "Anonymous input release");
         if (endTurn)
           await deadline(this.browser.endTurn(context), 11000, "Turn cleanup");
-        if (endTurn || failure)
+        if (endTurn || reset)
           await this.anonymous.cleanup(
             (instance) =>
               instance.context.session_id === context.session_id &&
-              (failure || instance.context.turn_id === context.turn_id),
+              (reset || instance.context.turn_id === context.turn_id),
           );
       } catch (error) {
         this.closed = true;
+        reset = true;
         await this.desktop.cancel().catch(() => {});
         this.browser.close();
         failure = new AggregateError(
@@ -379,12 +396,12 @@ export class ComputerDriver extends EventEmitter {
           "Computer input release is uncertain; restart the workload",
         );
       }
-      if (failure && active.session) {
+      if (reset && active.session) {
         await active.session.worker.terminate();
         this.sessions.delete(context.session_id);
         await rm(active.session.directory, { recursive: true, force: true });
       }
-      if (failure && !this.closed) {
+      if (reset && !this.closed) {
         try {
           await deadline(this.desktop.start(), 4000, "Native restart");
         } catch (error) {
@@ -401,7 +418,8 @@ export class ComputerDriver extends EventEmitter {
     if (failure) {
       this.emit("cursor", { point: null, error: "操作中断，位置标记已清除" });
       failure.message +=
-        "; earlier effects may remain; JS bindings for this session were reset";
+        reset ? "; earlier effects may remain; JS bindings for this session were reset"
+          : "; earlier effects may remain; JS bindings and browser pages were kept; inspect the current page before retrying";
       throw failure;
     }
     return { content, call_id: context.call_id };

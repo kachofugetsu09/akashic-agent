@@ -276,7 +276,10 @@ async def apply(ctx: Context) -> None:
             "Run JavaScript with the initialized browser and desktop APIs. "
             "Use browser.tabs, tab.ax, tab.playwright, tab.dom_cua or sky. "
             "Use agent.browsers.create() for an anonymous BrowserContext and close() to release it. "
-            "Bindings persist while awake; sleep, errors or reset invalidate them. Call nodeRepl.write(value) or "
+            "Reuse anonymous browser bindings across calls; browsers.get(browserId) reselects the same instance. "
+            "Ordinary script errors keep pages and bindings when cleanup succeeds; the receipt says when reset. "
+            "Use var for reusable bindings, browser.tabs.list() and browser.tabs.new(); read API documentation before actions. "
+            "Idle anonymous instances release after 10 minutes. Call nodeRepl.write(value) or "
             "nodeRepl.emitImage(bytes) for output. Read the computer skill first."
         ),
         parameters={

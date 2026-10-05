@@ -110,3 +110,5 @@
 - [0057 · Subagent 与 Wake 保留完整内部消息](0057-internal-source-messages.md)：独立内部 Session 的保存、展示、投递和学习边界。
 
 | [0091](0091-shell-self-deployment.md) | accepted | Shell 提交宿主部署，正常回合与排空之后更新 Docker | RUN-004、SH-001、OUT-001、MIG-001 |
+
+| [0093](0093-computer-reuses-anonymous-browsers.md) | proposed | 匿名实例稳定 ID、错误保留进度与闲置回收 | PLG-017 |
