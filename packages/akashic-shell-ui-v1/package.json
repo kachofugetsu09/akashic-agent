@@ -2,9 +2,9 @@
   "name": "@akashic/shell-ui-v1",
   "version": "1.0.0",
   "private": false,
-  "description": "Type-only contract for Shell rail action entries",
+  "description": "Type-only contract for Shell rail action and settings entries",
   "types": "index.d.ts",
-  "files": ["index.d.ts", "contract.json"],
+  "files": ["index.d.ts", "contract.json", "settings.contract.json", "settings-plugins.contract.json"],
   "peerDependencies": {
     "@akashic/web-ui-v1": "^1.0.0"
   },

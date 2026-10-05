@@ -18,16 +18,20 @@
 ```text
 Core Web Host
 └── web.root                            唯一原始 mount
-    └── shell-ui                        普通插件，拥有品牌顶栏和页面导航
-        └── shell.pages
-            ├── conversation-ui         普通插件，拥有会话侧栏与对话页
-            ├── workbench-ui            普通插件，拥有工作台页
-            │   └── workbench.panels    Dashboard 面板迁入
-            └── models                  普通插件，拥有模型页
-                └── models.connection-types
-                    ├── openai-compatible
-                    ├── codex
-                    └── opencode-go
+    └── shell-ui                        普通插件，拥有品牌顶栏、页面导航与设置工作区
+        ├── shell.pages                 顶带页面
+        │   ├── conversation-ui         普通插件，拥有会话侧栏与对话页
+        │   └── workbench-ui            普通插件，拥有工作台页
+        │       └── workbench.panels    Dashboard 面板迁入
+        ├── shell.rail-actions          底栏动作目录
+        ├── shell.settings              设置工作区顶层分节
+        │   ├── onboarding              初始配置
+        │   └── models                  普通插件，拥有模型分节
+        │       └── models.connection-types
+        │           ├── openai-compatible
+        │           ├── codex
+        │           └── opencode-go
+        └── shell.settings-plugins      普通插件配置分节（telegram、akasha、wake…）
 ```
 
 “知识与运行”独立 Web 页面已删除；MCP、Skill、job、runtime inspection、Akasha 和移动端能力仍由各自 owner 提供。
@@ -62,9 +66,11 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 
 ### 4.1 实现后的真实调用链
 
-`frontend/dashboard/src/main.tsx` 只启动通用 Web Host。`shell-ui` 注册顶栏、history 和
-`shell.pages.v1`；`conversation-ui`、`workbench-ui` 与 `models` 分别注册页面。删除任一普通插件，
-对应页面就不再进入 catalog，Core 没有页面名称分支。
+`frontend/dashboard/src/main.tsx` 只启动通用 Web Host。`shell-ui` 注册顶栏、history、
+`shell.pages.v1`、`shell.rail-actions.v1`、`shell.settings.v1` 与 `shell.settings-plugins.v1`；
+`conversation-ui` 与 `workbench-ui` 注册顶带页面，`onboarding` 与 `models` 注册设置分节，
+普通插件的配置表单注册进 `shell.settings-plugins.v1`。删除任一普通插件，
+对应页面或分节就不再进入 catalog，Core 没有页面名称分支。
 
 `models` 声明 `models.connection-types.v1` 并拥有模型状态、默认模型、Embedding 模型和 Connection
 布局；OpenAI-compatible、Codex 与 OpenCode Go 插件各自注册认证和连接 UI。Provider 的出现不再由
@@ -214,7 +220,7 @@ server Fiber dispose 只会让旧 catalog 变成 stale，不能隔空执行浏�
 
 ### 6.3 递归 mount registry
 
-Core Web Host 在浏览器启动时预声明唯一根 mount `web.root.v1`。`shell-ui` 注入它并声明 `shell.pages.v1`；每个已验证 module 获得窄 `ctx.ui`：
+Core Web Host 在浏览器启动时预声明唯一根 mount `web.root.v1`。`shell-ui` 注入它并声明 `shell.pages.v1`、`shell.rail-actions.v1`、`shell.settings.v1` 与 `shell.settings-plugins.v1`；每个已验证 module 获得窄 `ctx.ui`：
 
 ```ts
 ctx.ui.inject(MOUNT_KEY, (mount) =>
@@ -292,21 +298,26 @@ listener 和临时窗口；Workbench 在重绘、切换或卸载对应 DOM 时�
 
 ```text
 ┌──────────────────────────────────────────────────────┐
-│ Akashic │ 对话 │ 工作台 │ 模型    主题 │  shell-ui
+│ Akashic │ 对话 │ 工作台 │               shell-ui     │
 ├─────────┬────────────────────────────────────────────┤
 │         │                                            │
 │ page    │       active page plugin                   │  页面自己决定
 │ sidebar │                                            │  是否需要左栏
 │         │                                            │
 └─────────┴────────────────────────────────────────────┘
+功能设置是 Shell 拥有的对话框工作区：左栏为 shell.settings 顶层分节
+（初始配置、模型…）与内置“插件”配置区；配置区的条目来自
+shell.settings-plugins，分节自己声明子目录即可拥有更深层级。
 ```
 
 | 插件 | 注入 | 注册 | 自己拥有 |
 |---|---|---|---|
-| `shell-ui` | `web.root.v1` | 唯一 Shell；声明 `shell.pages.v1` 与 `shell.rail-actions.v1` | 品牌顶栏、页面导航、route/history、底栏动作目录 |
+| `shell-ui` | `web.root.v1` | 唯一 Shell；声明 `shell.pages.v1`、`shell.rail-actions.v1`、`shell.settings.v1` 与 `shell.settings-plugins.v1` | 品牌顶栏、页面导航、route/history、底栏动作目录、设置工作区 |
 | `conversation-ui` | `shell.pages.v1` | `conversation` page | 会话侧栏、消息、composer、desktop adapter |
 | `workbench-ui` | `shell.pages.v1` | `workbench` page；声明 `workbench.panels.v2` | Session/Plugin 工作台布局、最新读取与 panel adapter |
-| `models` | `shell.pages.v1` | `models` page；声明 `models.connection-types.v1` | catalog、Connection、Binding、默认 chat/embedding 的 UI |
+| `onboarding` | `shell.settings.v1` | `onboarding` 设置分节 | 初始配置清单与首跑邀请 |
+| `models` | `shell.settings.v1` | `models` 设置分节；声明 `models.connection-types.v1` | catalog、Connection、Binding、默认 chat/embedding 的 UI |
+| 普通插件配置 | `shell.settings-plugins.v1` | 自己的配置分节（如 `telegram_channel`、`wake`） | 各自的配置表单与凭据动作 |
 
 `shell.rail-actions.v1` 是 Shell 声明的底栏动作目录（合同包 `@akashic/shell-ui-v1`）。entry 由可序列化投影
 （`id`/`label`/`iconSvg`/`order`）和宿主域 `onActivate` 回调组成；Shell 把 entry 列表作为 props 传给每个页面，
@@ -314,12 +325,21 @@ listener 和临时窗口；Workbench 在重绘、切换或卸载对应 DOM 时�
 `onActivate`——函数不跨 realm。「功能设置」是第一个真实消费者；顶栏不再硬编码该入口。页面缺失时 Shell 不受影响，
 只是没有地方显示这些动作。
 
+`shell.settings.v1` 与 `shell.settings-plugins.v1` 是 Shell 声明的设置工作区目录（合同包同为
+`@akashic/shell-ui-v1`）。顶层分节（初始配置、模型）注册进前者，普通插件的配置表单注册进后者，
+在对话框内置的“插件”配置区以 tab 呈现；≥2 个成员声明同一 `family` 时折叠为一个组合 tab，
+组合标签由成员自带的 `familyLabel` 给出且必须一致——Shell 只拥有折叠机制，不拥有任何分组或
+family 词汇。设置分节与顶带页面共用 hash 路由命名空间；分节可以在自己的 `children` 里声明
+子目录（如 `models.connection-types.v1`），组合层级由分节 owner 拥有，Shell 不解释。Shell 渲染
+分节时经 props 提供 `renderRoute`，初始配置等分节按 route 内嵌其他分节的表单，不需要知道条目
+属于哪个目录。已退役的 `section`/`group`/`family` 页面标签字段在 `shell.pages.v1` 上 fail-loud。
+
 page 合同不包含 readiness、onboarding 或 redirect。首版迁移期间保留现有 `/api/shell/state → models` 跳转 adapter；它必须被标为模型特判删除点，并在硬编码 Shell 退场时一并删除，不等待 Onboarding。没有默认聊天模型时，对话插件显示自己的不可用状态，用户仍可手动进入模型页。将来 Onboarding 另做普通消费者，不能为了它先把“通用恢复目标”塞进所有页面合同。
 
-### 7.2 模型页面中的 Provider UI
+### 7.2 模型分节中的 Provider UI
 
 ```text
-models page
+models 设置分节
 ├── 已连接                    MODEL_CATALOG
 ├── 系统模型与 embedding      MODEL_CATALOG + MODEL_SETTINGS
 └── 添加连接                  models.connection-types.v1
@@ -446,7 +466,7 @@ HTTP/data ABI 继续由 `UI.register(..., dashboard=loader)` 拥有。
 
 ### 阶段 3：迁移模型页和 Provider 子 UI
 
-- `models` 注册 page、声明 `models.connection-types.v1`，拥有 catalog/default/embedding/Connection 布局。
+- `models` 注册设置分节、声明 `models.connection-types.v1`，拥有 catalog/default/embedding/Connection 布局。
 - 三个 Provider 插件分别注册 child UI；删除 `PROVIDER_TEMPLATES` 和 Provider 图标/表单分支。
 - 用卸载 Codex、安装第四 Provider、保留 unavailable Connection 做纵向 Gate。
 - Onboarding 以后可注入同一 Provider mount 或复用 Provider-neutral action，不复制 Provider 表。
