@@ -746,7 +746,7 @@ Core 只负责通用传输、revision、运行实例引用、调度、取消和�
 
 ### PLG-013 安装选择是唯一持久输入选择
 
-运行时只有一张图，普通请求使用当前运行实例。安装发布实际代码目录，由唯一 owner 持锁原子更新唯一当前选择；运行时读取已安装文件和当前配置，不保存代码、配置或依赖图的历史闭包。版本和输入摘要只用于诊断与提交身份，不承诺外部环境不变。选择与运行状态明确分离，accepted 不等于 active。不存在 latest 候选、候选授权、晋升或 revert 撤销：新版本应用失败只使实际硬依赖分支不可用，不自动恢复旧版本；选择提交后进程退出时下次正常启动读取新选择，不续跑未完成的应用，不猜测旧版本安全。显式安装旧版本也是一次普通安装，仍由该版本解释现有数据，不承诺数据恢复。选择写入结果不确定时停止本次应用并报告不确定，不回写旧值。operator 显式更新仍固定精确版本、独占应用并记录真实验证来源，不伪造测试成功。旧状态格式只在带备份、锁与完整性检查的显式升级中转换，不在普通启动路径维持双读双写。见 [0092](decisions/0092-plugin-runtime-uses-installed-files.md)。
+运行时只有一张图，普通请求使用当前运行实例。安装发布实际代码目录，由唯一 owner 持锁原子更新唯一当前选择；运行时读取已安装文件和当前配置，不保存代码、配置或依赖图的历史闭包。版本和输入摘要只用于诊断与提交身份，不承诺外部环境不变。选择与运行状态明确分离，accepted 不等于 active。不存在 latest 候选、候选授权、晋升或 revert 撤销：新版本应用失败只使实际硬依赖分支不可用，不自动恢复旧版本；选择提交后进程退出时下次正常启动读取新选择，不续跑未完成的应用，不猜测旧版本安全。显式安装旧版本也是一次普通安装，仍由该版本解释现有数据，不承诺数据恢复。选择写入结果不确定时停止本次应用并报告不确定，不回写旧值。operator 显式更新仍固定精确版本、独占应用并记录真实验证来源，不伪造测试成功。旧状态格式只在带备份、锁与完整性检查的显式升级中转换，不在普通启动路径维持双读双写。见 [0094](decisions/0094-plugin-runtime-uses-installed-files.md)。
 
 首次 `PluginSelection.read()` 为 `None` 时，底座可对每个 source 做静态 identity 与源码 compile 准备；插件自身的内容错误只保留进程内 source diagnostic，并跳过该输入。一次且仅一次 CAS 提交完整成功子集，全失败提交 `()`；提交后的 import/apply/Fiber 错误仍由 selected generation owner 解释，不反向健康过滤 selection。共享配置、cache/pointer、权限、安装环境、身份、selection/CAS 与 host 错误必须 fail-loud。watcher/SIGHUP 只 reconcile 当前 selection：新增或修复但未选 source 不自动安装，源码暂失不自动停用；运行期新增选择成员须显式 install，移除成员须显式 disable/uninstall；产品部署按 ONB-002 组合固定分发来源，已选健康 source 的更新仍走既有受控 prepare/replacement/CAS 链。source diagnostic 不新增 durable owner/schema/writer，`plugin_status` 可单独投影它并与 generation/Fiber 错误区分。
 

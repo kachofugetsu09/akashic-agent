@@ -1,6 +1,6 @@
 # Issue 750：单图插件系统与局部换代任务拆分
 
-2026-10-06 对账：[0092](../decisions/0092-plugin-runtime-uses-installed-files.md) 取消 PluginArchive。
+2026-10-06 对账：[0094](../decisions/0094-plugin-runtime-uses-installed-files.md) 取消 PluginArchive。
 下文代码、配置、环境 descriptor 和完整 Root 归档均为历史实现；当前唯一选择文件保存已安装
 目录与输入元数据，配置使用当前文件，binding 打开当前服务。局部换代、排空、异步接单与
 失败 owner 保留仍有效；历史归档保留，不参与普通运行。升级入口见 [部署手册](operator-deployment.md#从旧归档指针升级)。
