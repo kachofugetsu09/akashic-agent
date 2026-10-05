@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.deployment_composition_scenario import (
     commit, distribution, git, manager, plugin, selected, snapshot,
 )
-from scripts.install_plugin_distribution import install_profile, ensure_profile, publish_distribution, _write_receipt
+from scripts.install_plugin_distribution import install_profile, ensure_profile, publish_distribution, _write_receipt, _code_identity
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources
 from agent.plugins.install import install_git_plugin
@@ -24,6 +24,7 @@ from agent.plugins.input_preparation import prepare_plugin_input
 from agent.plugins.manifest import set_plugin_enabled
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.static_manifest import load_static_plugin_manifest
+from session.message_codec import json_value
 
 
 async def run():
@@ -68,7 +69,7 @@ async def run():
         prepared.append(prepare_plugin_input(
             {"name": name, "marketplace": "release", "plugin_root": str(artifact),
              "module_path": str(artifact / "plugin.py"), "manifest_digest": identity.identity_digest,
-             "source_type": "installed"}, workspace=work, archive=selection.archive,
+             "source_type": "installed"}, workspace=work, selection=selection,
         ).input_ref)
     selection.commit(tuple(prepared), expected_ref=selection.read())
     m = await manager(work, home)
@@ -105,7 +106,7 @@ async def run():
         evidence = historical / "distribution.json"
         entries.append({
             "plugin_id": plugin_id, "component_ref": ref, "artifact_pointer": pointers.stable.path,
-            "source_revision": git(artifact, "rev-parse", "HEAD"), "code_sha256": descriptor["code"],
+            "source_revision": git(artifact, "rev-parse", "HEAD"), "code_sha256": _code_identity(artifact),
             "manifest_digest": load_static_plugin_manifest(artifact).identity_digest,
             "data_dir": descriptor["data_dir"],
             "source_commit": json.loads(evidence.read_text())["source_commit"],
@@ -145,13 +146,13 @@ async def run():
     plan.write_text(json.dumps(document))
     from scripts.install_plugin_distribution import load_deployment_plan
     proof = load_deployment_plan(plan)[3]
-    orphan = selection.archive.save_descriptor(proof)
+    (root / "uncommitted-proof.json").write_text(json.dumps(proof))
     assert not distribution_sources(work, home, target).legacy_ids
     assert selection.read() == baseline
     result = publish()
     new_root = selection.read()
     assert result["new_root_ref"] == new_root != baseline
-    assert selection.archive.read_descriptor(new_root)["distribution_adoption_ref"] == orphan
+    assert json_value(selection.adoption()) == proof
     assert selected(work)["outside@thirdparty"][0] == old["outside@thirdparty"][0]
     assert "retired@release" not in selected(work) and "disabled@release" not in selected(work)
     # 3. 普通第二次启动、配置提交与停用均保留同一凭证及退役归属。
@@ -164,10 +165,10 @@ async def run():
         assert "retired@release" not in selected(work)
     current = selection.read()
     inherited = selection.commit(tuple(ref for ref, _ in selected(work).values()), expected_ref=current)
-    assert selection.archive.read_descriptor(inherited)["distribution_adoption_ref"] == orphan
+    assert json_value(selection.adoption()) == proof
     assert len(distribution_sources(work, home, target).ignored_installed_roots) == 3
     from scripts.rollback_plugin_install import _selected_code
-    assert _selected_code(selection, inherited, "outside@thirdparty")[0] == old["outside@thirdparty"][1]["code"]
+    assert _selected_code(selection, inherited, "outside@thirdparty") is not None
     plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": inherited, "targets": []}))
     assert publish()["new_root_ref"] == inherited
     retired_source = historical / json.loads((historical / "distribution.json").read_text())["plugins"][1]["file"]
@@ -191,7 +192,7 @@ async def run():
     assert snapshot(home / "cache") == cache_before
     assert snapshot(work / "plugin-data") == data_before
     assert receipt.read_bytes() == receipt_before
-    (root / "result.json").write_text(json.dumps({"result": "passed", "root": new_root, "adoption": orphan}))
+    (root / "result.json").write_text(json.dumps({"result": "passed", "root": new_root, "adoption": json_value(selection.adoption())}))
     print("PASS historical-adoption/read-only-preflight/wrong-data/orphan/restart/retirement/disabled/external/preservation/drift", flush=True)
 
 

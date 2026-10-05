@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from agent.plugin_composition.config_input import load_config, config_bytes, CONFIG_INPUT
-from agent.plugin_composition.archive import PluginArchive
+from agent.plugins.selection import PluginSelection
 from agent.plugins.manifest import (
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
@@ -50,7 +50,7 @@ class PreparedPluginInput:
 
 
 def prepare_plugin_input(
-    mod: Mapping[str, str], *, workspace: Path, archive: PluginArchive, initial: bool = False,
+    mod: Mapping[str, str], *, workspace: Path, selection: PluginSelection, initial: bool = False,
 ) -> PreparedPluginInput:
     """校验并编译已安装源码，不提前导入模块。"""
 
@@ -107,7 +107,7 @@ def prepare_plugin_input(
                     if (plugin_dir / runtime.requirements).read_text().strip() else "",
                 ) for runtime in identity.python
             }
-    ref = archive.save_descriptor({
+    ref = selection.prepare({
         "version": 5, "code": str(code_dir), "python_environments": environments,
         "plugin_id": plugin_id, "source_revision": revision,
         "config_revision": config_revision,

@@ -54,7 +54,6 @@ from agent.plugins._operation import (
     observe_operation,
     run_operation,
 )
-from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.config_input import decode_config, encode_config
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
@@ -173,7 +172,6 @@ class PluginManager:
         self._distribution_sources = distribution_sources
         self._ignored_installed_roots = ignored_installed_roots
         self._workspace = workspace
-        self._archive = PluginArchive(workspace / "runtime" / "plugin-archives")
         self._selection = PluginSelection(workspace)
         self._python_environments = PythonEnvironments(workspace)
         self._update_watchers: set[asyncio.Event] = set()
@@ -670,7 +668,7 @@ class PluginManager:
             raise
 
     def _selection_components(self, ref: str) -> tuple[str, ...]:
-        return cast(tuple[str, ...], self._archive.read_descriptor(ref)["components"])
+        return self._selection.components(ref)
 
     def _selection_for_plugin(
         self,
@@ -683,7 +681,7 @@ class PluginManager:
         result: list[str] = []
         replaced = False
         for ref in components:
-            record = self._archive.read_descriptor(ref)
+            record = self._selection.read_input(ref)
             current = record.get("plugin_id")
             if current != plugin_id:
                 result.append(ref)
@@ -809,7 +807,7 @@ class PluginManager:
             raise
 
     async def _load_selected_generation(self, generation: PluginGeneration) -> None:
-        """Load one already-selected archived module before its real mount."""
+        """正式挂载前加载当前已选安装模块。"""
         if generation.fiber is not None:
             raise RuntimeError("generation 已有 Fiber，不能重新执行 pre-Fiber load")
         if generation.instance is None:
@@ -965,13 +963,7 @@ class PluginManager:
         if intent is None:
             return None
         base, components = intent
-        ref = current_ref
-        while ref is not None and ref != base:
-            record = self._archive.read_descriptor(ref)
-            if record["previous"] == base and record["components"] == components:
-                return True
-            ref = cast(str | None, record["previous"])
-        return False
+        return self._selection.transition_committed(base, components)
 
     async def _prepare_boot_runtime_recovery(
         self,
@@ -1144,9 +1136,9 @@ class PluginManager:
             if path.is_symlink() or path.with_suffix(".revoked").exists() or hashlib.sha256(path.read_bytes()).hexdigest() != ref.path[1]:
                 raise ValueError("凭据版本无效或不属于当前插件")
         # 2. 固定同一制品的新输入，不先改可见配置文件。
-        record = dict(self._archive.read_descriptor(expected_input))
+        record = dict(self._selection.read_input(expected_input))
         record.update(config_revision=revision)
-        input_ref = self._archive.save_descriptor(record)
+        input_ref = self._selection.prepare(record)
         self._reload_journal.create_config_update(request_id, plugin_id, expected_input, input_ref,
                                                  revision, json.dumps(encode_config(config), ensure_ascii=False, allow_nan=False))
         self._start_operation(lambda: self._apply_config_update(request_id), background=True)
@@ -1531,7 +1523,7 @@ class PluginManager:
         if selection_ref is not None:
             selected_components = self._selection_components(selection_ref)
             selected_ids = {
-                cast(str, self._archive.read_descriptor(ref)["plugin_id"])
+                cast(str, self._selection.read_input(ref)["plugin_id"])
                 for ref in selected_components
             }
         explicitly_disabled = {
@@ -1544,7 +1536,7 @@ class PluginManager:
         # 阻止后面缺失的 provider 挂载。恢复读取已选归档，不另选当前源码。
         missing = tuple(
             ref for ref in selected_components
-            if (plugin_id := cast(str, self._archive.read_descriptor(ref)["plugin_id"]))
+            if (plugin_id := cast(str, self._selection.read_input(ref)["plugin_id"]))
             not in self._active_generations
             and plugin_id not in explicitly_disabled
             and (plugin_ids is None or plugin_id in plugin_ids)
@@ -1793,7 +1785,7 @@ class PluginManager:
         selected = False
         if selection_ref is not None:
             selected = any(
-                self._archive.read_descriptor(ref).get("plugin_id") == plugin_id
+                self._selection.read_input(ref).get("plugin_id") == plugin_id
                 for ref in self._selection_components(selection_ref)
             )
         if plugin_id in self._active_generations or selected:
@@ -1834,17 +1826,17 @@ class PluginManager:
         return await self._run_operation(lambda: self._retry_runtime_recovery(plugin_id))
 
     async def _retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
-        """Retry the selected archive after closing every retained local owner."""
+        """关闭保留的局部 owner 后重新加载当前已选安装模块。"""
         root = self._live_root
         selection_ref = self._selection.read()
         if root is None or selection_ref is None:
             raise RuntimeError("没有该插件的局部 live retry selection")
         selected = tuple(
             ref for ref in self._selection_components(selection_ref)
-            if self._archive.read_descriptor(ref)["plugin_id"] == plugin_id
+            if self._selection.read_input(ref)["plugin_id"] == plugin_id
         )
         if len(selected) != 1:
-            raise RuntimeError("selection 未提供该插件的唯一局部 retry archive")
+            raise RuntimeError("selection 未提供该插件的唯一局部重试输入")
         owners: list[PluginGeneration] = []
         active = self._active_generations.get(plugin_id)
         if active is not None:
@@ -1891,10 +1883,10 @@ class PluginManager:
         selected_refs: dict[str, str] = {}
         if selection_ref is not None:
             for input_ref in self._selection_components(selection_ref):
-                descriptor = self._archive.read_descriptor(input_ref)
+                descriptor = self._selection.read_input(input_ref)
                 plugin_id = descriptor.get("plugin_id")
                 if not isinstance(plugin_id, str):
-                    raise TypeError("selection archive descriptor 缺少 plugin_id")
+                    raise TypeError("selection 输入缺少 plugin_id")
                 if plugin_id in selected_refs:
                     raise RuntimeError(f"selection 重复包含插件: {plugin_id}")
                 selected_refs[plugin_id] = input_ref
@@ -2029,7 +2021,7 @@ class PluginManager:
                 "enabled": manifest.get(plugin_id),
                 "selected_ref": selected_refs.get(plugin_id),
                 "selected_distribution_source": (
-                    self._archive.read_descriptor(selected_refs[plugin_id]).get("distribution_source")
+                    self._selection.read_input(selected_refs[plugin_id]).get("distribution_source")
                     if plugin_id in selected_refs else None
                 ),
                 "distribution_available": any(
@@ -2078,16 +2070,16 @@ class PluginManager:
         self,
         mod: dict[str, str],
     ) -> PluginGeneration | None:
-        """Prepare one fixed archive input without importing or mounting plugin code."""
+        """准备当前安装输入，不导入或挂载插件代码。"""
         plugin_id = _resolve_plugin_id(mod)
         if load_plugin_manifest(_plugins_home(self._installed_cache_root)).get(plugin_id, True) is False:
             return None
         selection_ref = self._selection.read()
         selected_ids = set() if selection_ref is None else {
-            self._archive.read_descriptor(ref)["plugin_id"] for ref in self._selection_components(selection_ref)
+            self._selection.read_input(ref)["plugin_id"] for ref in self._selection_components(selection_ref)
         }
         prepared = await run_file_io(lambda: prepare_plugin_input(
-            mod, workspace=self._workspace, archive=self._archive, initial=plugin_id not in selected_ids,
+            mod, workspace=self._workspace, selection=self._selection, initial=plugin_id not in selected_ids,
         ))
         plugin_id = prepared.plugin_id
         # 1. Preparation owns only the returned generation; no candidate Root is built.
@@ -2118,7 +2110,7 @@ class PluginManager:
     ) -> dict[str, PluginGeneration]:
         """从固定输入创建只属于当前 Root 的模块、Scope 和 generation。"""
 
-        records = tuple(self._archive.read_descriptor(ref) for ref in components)
+        records = tuple(self._selection.read_input(ref) for ref in components)
         for record in records:
             if record["version"] != 5 or record["runtime"] != {
                 "python_tag": sys.implementation.cache_tag,
@@ -2130,7 +2122,7 @@ class PluginManager:
         for index, (ref, record) in enumerate(zip(components, records, strict=True)):
             code_dir = Path(cast(str, record["code"])).resolve(strict=True)
             is_distribution_input(record, code_dir)
-            revision = cast(str, record["source_revision"])
+            revision = _source_revision(code_dir)
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id in generations:
                 raise ValueError(f"选择重复包含插件: {plugin_id}")
@@ -2279,7 +2271,7 @@ class PluginManager:
         if runtime_root is not None:
             if generation.input_ref is None:
                 raise RuntimeError("外部 runtime 缺少代码归档")
-            record = self._archive.read_descriptor(generation.input_ref)
+            record = self._selection.read_input(generation.input_ref)
             refs = cast(Mapping[str, str], record["python_environments"])
             if runtime_root not in refs:
                 raise RuntimeError("插件命令缺少固定 Python 环境；请通过安装流程准备")

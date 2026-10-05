@@ -3,7 +3,6 @@ import ast
 from pathlib import Path
 import shutil
 import pytest
-from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.commands import COMMANDS, CommandResult
 from agent.plugins.manager import PluginManager
@@ -81,18 +80,13 @@ async def apply(ctx):
             registry = commands_context.require(COMMANDS).freeze()
             identity = registry.bind(bindings, "/probe")
         assert identity is not None
-        archive = PluginArchive(workspace / "runtime/plugin-archives", create=False)
-        root_ref = log.read_binding(identity)["root_ref"]
-        assert isinstance(root_ref, str)
-        descriptor = archive.read_descriptor(root_ref)
-        input_refs = []
+        descriptor = log.read_binding(identity)
+        expected = {}
         for name in ("human_actions", "command_owner", "dependency"):
             generation = host.generation(name)
             assert generation is not None
-            input_refs.append(generation.input_ref)
-        components = descriptor["components"]
-        assert isinstance(components, tuple)
-        assert set(components) == set(input_refs)
+            expected[name] = generation.generation_id
+        assert descriptor["origins"] == expected
         async with bindings.open(identity, COMMANDS) as (selected, metadata):
             assert selected is root.context.require(COMMANDS)
             assert metadata == {"name": "probe"}

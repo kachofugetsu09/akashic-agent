@@ -17,7 +17,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from agent.plugin_composition.archive import encode_tree, sync_directory, tree_entries
+from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers, pointer_state_path, read_pointers, resolve_pointer
 from agent.plugins.input_preparation import _source_revision
 from agent.plugins.manifest import load_plugin_manifest, manifest_path
@@ -74,8 +74,7 @@ def _selected_code(selection: PluginSelection, root_ref: str | None, plugin_id: 
     """Check every selected code closure and return only the target's code facts."""
     if root_ref is None:
         return None
-    root = selection.archive.read_descriptor(root_ref)
-    components = root.get("components")
+    components = selection.components(root_ref)
     if not isinstance(components, tuple):
         raise ValueError("stable 完整记录无效")
     found: set[str] = set()
@@ -83,7 +82,7 @@ def _selected_code(selection: PluginSelection, root_ref: str | None, plugin_id: 
     for ref in components:
         if not isinstance(ref, str):
             raise ValueError("stable component ref 无效")
-        descriptor = selection.archive.read_descriptor(ref)
+        descriptor = selection.read_input(ref)
         name = descriptor.get("plugin_id")
         code_ref = descriptor.get("code")
         revision = descriptor.get("source_revision")

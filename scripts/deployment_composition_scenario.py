@@ -153,8 +153,8 @@ def selected(workspace):
     s = PluginSelection(workspace)
     r = s.read()
     return {
-        s.archive.read_descriptor(c)["plugin_id"]: (c, s.archive.read_descriptor(c))
-        for c in s.archive.read_descriptor(r)["components"]
+        s.read_input(c)["plugin_id"]: (c, s.read_input(c))
+        for c in s.components(r)
     }
 
 
@@ -204,7 +204,7 @@ asyncio.run(run())
     assert snapshot(work.parent) == before
     selection = PluginSelection(work)
     descriptor = selected(work)["alpha@release"][1]
-    code = selection.archive.open(descriptor["code"])
+    code = Path(descriptor["code"])
     # 运行代码和来源证据的损坏都必须被同一个完整归档校验拒绝。
     for filename in ("plugin.py", ".akashic-source.json"):
         path = code / filename
@@ -450,7 +450,7 @@ async def run(args):
         )
         assert subprocess.check_output(command, text=True).strip() == "25.0"
     ref = m.generation("alpha@release").input_ref
-    assert m._archive.read_descriptor(ref)["python_environments"]
+    assert m._selection.read_input(ref)["python_environments"]
     await m.uninstall("newcomer@release")
     await m._operation.task
     assert load_plugin_manifest(home)["newcomer@release"] is False
@@ -650,6 +650,7 @@ step(upgrade)
     assert runner.check() == ("scenario_core_upgrade",)
     assert runner.run().migrations == ("scenario_core_upgrade",)
     assert runner.run().state == "current"
+    assert not (work / "runtime/plugin-archives").exists()
     print(
         "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry",
         flush=True,
