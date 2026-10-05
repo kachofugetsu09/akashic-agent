@@ -1,6 +1,7 @@
 # 0081 · 长结果折叠复用原消息与实际展示回执
 
-- 状态：accepted
+- 状态：superseded（自动折叠策略）
+- superseded by：[0090](0090-tool-results-stay-visible.md)；下文保留历史理由，回读与原文保留合同继续有效。
 - 日期：2026-09-29
 - 关联条款：CTX-001、CTX-003、CTX-008、STA-001～STA-003、CAP-001、PLG-003、PLG-006
 
