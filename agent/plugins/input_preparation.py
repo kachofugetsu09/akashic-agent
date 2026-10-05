@@ -111,7 +111,7 @@ def prepare_plugin_input(
             owner = PythonEnvironments(workspace)
             environments = {
                 runtime.runtime_root: owner.prepared(
-                    code_ref, runtime,
+                    plugin_dir, runtime,
                     wheel_digest=mod.get("wheel_tree_sha256", "")
                     if (plugin_dir / runtime.requirements).read_text().strip() else "",
                 ) for runtime in identity.python
