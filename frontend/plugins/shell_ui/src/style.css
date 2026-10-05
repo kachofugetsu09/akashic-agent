@@ -310,3 +310,16 @@
       flex-wrap: wrap;
     }
 }
+
+/* 根页面提供可见设置入口，复用对话框 owner 与导航按钮的纸张样式。 */
+.product-band > .shell-settings-button {
+  flex: 0 0 44px;
+  min-width: 44px;
+  min-height: 44px;
+  justify-content: center;
+  padding-inline: 0;
+}
+.product-band > .shell-settings-button svg { width: 20px; height: 20px; }
+@media (max-width: 760px) {
+  .product-band > .shell-settings-button { grid-column: 2; grid-row: 1; justify-self: end; width: 44px; }
+}
