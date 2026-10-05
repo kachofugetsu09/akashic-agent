@@ -115,7 +115,7 @@
 
   .shell-settings-body {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
   }
@@ -152,6 +152,40 @@
 
   .shell-settings-entry {
     display: contents;
+  }
+
+  /* 分组分节（如「插件」）在内容区顶部以 tab 呈现；只导航，不持有分节状态。 */
+  .shell-settings-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 4px 24px 0;
+    border-block-end: 1px solid var(--ak-rule-subtle);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .shell-settings-tabs button {
+    flex: 0 0 auto;
+    min-height: 36px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 13px;
+    border: 0;
+    border-block-end: 2px solid transparent;
+    background: transparent;
+    color: var(--ak-ink-secondary);
+    cursor: pointer;
+    transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+      border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  }
+
+  .shell-settings-tabs button:hover {
+    color: inherit;
+  }
+
+  .shell-settings-tabs button[aria-selected="true"] {
+    color: inherit;
+    border-block-end-color: var(--ak-ink-primary);
   }
 
 @media (prefers-reduced-motion: no-preference) {

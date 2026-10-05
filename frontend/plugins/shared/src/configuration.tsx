@@ -49,7 +49,7 @@ export function Field({label, name, value, change, type = "text", hint, required
 
 export function registerForm(ctx: WebHostContextV1, definition: FormDefinition): WebUiDisposer {
   return ctx.ui.inject("shell.pages.v1", mount => mount.register({
-    id: `${definition.id.replaceAll("_", "-")}-settings`, label: definition.title, route: `${definition.id}-settings`, section: "settings", iconSvg: settingsIcon,
+    id: `${definition.id.replaceAll("_", "-")}-settings`, label: definition.title, route: `${definition.id}-settings`, section: "settings", group: "plugins", iconSvg: settingsIcon,
     render(host, _view, props) {
       const root = createRoot(host);
       root.render(<Configuration ctx={ctx} definition={definition} embed={(props ?? {}) as EmbedProps} />);

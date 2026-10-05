@@ -15,9 +15,20 @@ type ShellPage = WebEntry & {
   route: string;
   iconSvg: string;
   section?: string;
+  group?: string;
 };
 
 const RAIL_ACTIONS_MOUNT = "shell.rail-actions.v1";
+
+/** 设置分节声明 group 即归入对应分组；分组标签与图标由 Shell 拥有，插件不各自起名。 */
+const SETTINGS_GROUP_LABELS: Record<string, string> = { plugins: "插件" };
+const SETTINGS_GROUP_ICONS: Record<string, string> = {
+  plugins: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 7V4a2 2 0 0 0-4 0v3"/><path d="M17 7h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-1"/><path d="M7 7H4a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1"/><path d="M14 21v-3a2 2 0 0 0-4 0v3"/><rect x="7" y="7" width="10" height="10" rx="2"/></svg>',
+};
+
+type SettingsNavItem =
+  | { kind: "entry"; entry: ShellPage }
+  | { kind: "group"; id: string; entries: ShellPage[] };
 
 const SETTINGS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
 
@@ -60,6 +71,22 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
   const railActionEntries = useMemo(() => checkRailActions(railActions.entries), [railActions.entries]);
   const bandEntries = useMemo(() => entries.filter((entry) => entry.section !== "settings"), [entries]);
   const settingsEntries = useMemo(() => entries.filter((entry) => entry.section === "settings"), [entries]);
+  // 顶层分节与分组按声明顺序混排；组内分节保持注册顺序，在内容区以 tab 呈现。
+  const settingsNav = useMemo(() => {
+    const items: SettingsNavItem[] = [];
+    const groupAt = new Map<string, number>();
+    for (const entry of settingsEntries) {
+      if (!entry.group) { items.push({ kind: "entry", entry }); continue; }
+      const at = groupAt.get(entry.group);
+      if (at === undefined) {
+        groupAt.set(entry.group, items.length);
+        items.push({ kind: "group", id: entry.group, entries: [entry] });
+      } else {
+        (items[at] as { kind: "group"; entries: ShellPage[] }).entries.push(entry);
+      }
+    }
+    return items;
+  }, [settingsEntries]);
   const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0] ?? entries[0];
   const requestedRoute = window.location.hash.slice(1);
   const requestedEntry = entries.find((entry) => entry.route === requestedRoute);
@@ -262,6 +289,11 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     buttons[next].focus();
   };
 
+  const currentSettingsEntry = settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
+  const currentSettingsGroup = currentSettingsEntry?.group
+    ? settingsNav.find((item): item is Extract<SettingsNavItem, { kind: "group" }> => item.kind === "group" && item.id === currentSettingsEntry.group)
+    : undefined;
+
   return <div className="unified-shell">
     {withdrawn && <p role="status" className="config-hint">原页面已撤回或暂不可用，已打开当前可用页面。可以从功能设置查看已安装功能。</p>}
     <header className="product-band" aria-label="Akashic 主导航">
@@ -302,16 +334,28 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     >
       <nav className="shell-settings-nav" aria-label="设置分节">
         <h2>功能设置</h2>
-        {settingsEntries.map((entry) => {
-          const current = (settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0])?.id;
+        {settingsNav.map((item) => {
+          if (item.kind === "entry") {
+            const entry = item.entry;
+            return <button
+              key={entry.id}
+              type="button"
+              aria-current={entry.id === currentSettingsEntry?.id ? "true" : undefined}
+              onClick={() => openSettings(entry)}
+            >
+              <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
+              <span>{entry.label}</span>
+            </button>;
+          }
+          const active = item.entries.some((entry) => entry.id === currentSettingsEntry?.id);
           return <button
-            key={entry.id}
+            key={item.id}
             type="button"
-            aria-current={entry.id === current ? "true" : undefined}
-            onClick={() => openSettings(entry)}
+            aria-current={active ? "true" : undefined}
+            onClick={() => openSettings(item.entries[0])}
           >
-            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
-            <span>{entry.label}</span>
+            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: SETTINGS_GROUP_ICONS[item.id] ?? SETTINGS_ICON }} />
+            <span>{SETTINGS_GROUP_LABELS[item.id] ?? item.id}</span>
           </button>;
         })}
       </nav>
@@ -319,6 +363,17 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
         <header>
           <button type="button" onClick={closeSettings} aria-label="关闭设置">关闭</button>
         </header>
+        {currentSettingsGroup && currentSettingsGroup.entries.length > 1 && (
+          <div className="shell-settings-tabs" role="tablist" aria-label={SETTINGS_GROUP_LABELS[currentSettingsGroup.id] ?? currentSettingsGroup.id}>
+            {currentSettingsGroup.entries.map((entry) => <button
+              key={entry.id}
+              type="button"
+              role="tab"
+              aria-selected={entry.id === currentSettingsEntry?.id}
+              onClick={() => openSettings(entry)}
+            >{entry.label}</button>)}
+          </div>
+        )}
         <div ref={settingsContent} className="shell-settings-page" />
       </div>
     </dialog>
