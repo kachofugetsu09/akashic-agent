@@ -185,6 +185,7 @@ function renderConversation(host, view, props) {
     useDefaultWidth: savedWidth === null,
   };
   const handled = new Set();
+  const attention = new Set();
   const buttons = new Map();
   const panels = new Map();
   const activeValues = new Map();
@@ -219,7 +220,8 @@ function renderConversation(host, view, props) {
     toggle.hidden = state.open;
     toggle.setAttribute("aria-expanded", String(state.open));
     const activeEntry = entries.find((entry) => entry.id === state.activeId) ?? entries[0];
-    const toggleLabel = `打开 ${activeEntry.label}`;
+    const toggleLabel = `打开 ${activeEntry.label}${attention.size ? ' · 有新活动' : ''}`;
+    toggle.classList.toggle("has-attention", attention.size > 0);
     toggle.title = toggleLabel;
     toggle.setAttribute("aria-label", toggleLabel);
     toggle.querySelector("span").textContent = activeEntry.label;
@@ -228,6 +230,7 @@ function renderConversation(host, view, props) {
       const button = buttons.get(entry.id);
       const child = panels.get(entry.id);
       button?.setAttribute("aria-selected", String(active));
+      button?.classList.toggle("has-attention", attention.has(entry.id));
       if (button) button.tabIndex = entry.id === state.activeId ? 0 : -1;
       if (child) child.hidden = entry.id !== state.activeId;
       if (activeValues.get(entry.id) === active) continue;
@@ -237,6 +240,7 @@ function renderConversation(host, view, props) {
   }
 
   function openTab(id, focusTab = false) {
+    attention.delete(id);
     state.activeId = id;
     state.open = true;
     update();
@@ -302,7 +306,9 @@ function renderConversation(host, view, props) {
       requestAttention(noticeId) {
         if (typeof noticeId !== "string" || !noticeId || handled.has(noticeId)) return;
         handled.add(noticeId);
-        openTab(entry.id);
+        // 活动只提示；打开、关闭与切换由用户决定，包括移动端。
+        if (!state.open || state.activeId !== entry.id) attention.add(entry.id);
+        update();
       },
     };
     disposers.push(tools.render(entry.id, child, tabView));

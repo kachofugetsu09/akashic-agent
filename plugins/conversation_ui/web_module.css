@@ -219,3 +219,12 @@
     transition: none;
   }
 }
+.conversation-tools-toggle.has-attention::after,
+.conversation-tools-tab.has-attention::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ak-accent);
+  flex-shrink: 0;
+}

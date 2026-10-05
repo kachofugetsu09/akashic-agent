@@ -804,7 +804,10 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 插件内唯一 owner 保证；释放失败不能继续启动第二个 writer。见 [0084](decisions/0084-computer-keeps-identity-without-an-idle-desktop.md)；显示选择见
 [0088](decisions/0088-computer-streams-h264-over-dashboard-websocket.md)。
 Agent 可另建匿名 BrowserContext 做 E2E，默认共享一份独立 headless Chromium。各 Context
-隔离身份和页面存储，不读取主 profile，不装 OpenCLI 扩展；主面板仍显示主浏览器。
+隔离身份和页面存储，不读取主 profile，不装 OpenCLI 扩展；面板按真实 Context 和页面显示独立标签。
+观看默认只读，多位观看者互不踢出。用户明确接管才获得输入权限，接管期间暂停 Computer Agent 操作；
+断开或主动释放后恢复。活动只提示，不打开工具区或改变用户当前标签，包括移动端。
+见 [0092](decisions/0092-computer-viewing-and-control.md)。
 匿名实例属于创建它的 Turn，最多同时八个；主动关闭、Turn 结束、调用失败、Session
 重置或休眠时释放。最后一个关闭后停止 headless 进程并删除其临时数据，既有截图由原 owner 保留。
 
