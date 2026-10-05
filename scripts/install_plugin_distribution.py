@@ -38,7 +38,7 @@ from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_d
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
-from agent.plugins.input_preparation import prepare_plugin_input, _source_revision, PLUGIN_ARCHIVE_BINDING_API
+from agent.plugins.input_preparation import prepare_plugin_input, _source_revision, PLUGIN_INPUT_API
 from agent.plugins.reload_journal import ReloadJournal, PendingPublicationError, check_pending_publication
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
@@ -198,7 +198,7 @@ def _stage_deployment_targets(
             raise ValueError(f"bundle provenance 与 distribution 不符: {plugin_id}")
         # 已安装目标版本可继续准备输入；第三种 cache 状态必须显式修复。
         target_code = _code_identity(code)
-        same_current = descriptor["code"] == current_code and _provenance(old_code) == current_source
+        same_current = old_code == artifact and _provenance(old_code) == current_source
         installed_target = current_code == target_code and _git("-C", str(artifact), "rev-parse", "HEAD") == commit
         if not same_current and not installed_target:
             raise SelectionConflictError(f"selection/cache 既不是原输入也不是本次目标: {plugin_id}")
@@ -469,12 +469,7 @@ def _distribution_code_identity(root: Path) -> str:
 def _distribution_input_source(
     source: ResolvedPluginSource, old: tuple[str, Mapping[str, object], Path] | None,
 ) -> tuple[Path, str]:
-    """Retain the existing provenance when the complete plugin content matches."""
-    if old is not None and old[1]["source_type"] == "builtin" and (
-        is_distribution_input(old[1], old[2])
-        and _distribution_code_identity(source.plugin_root) == _distribution_code_identity(old[2])
-    ):
-        return old[2], cast(str, old[1]["distribution_source"])
+    """发行版更新始终使用当前镜像路径，不保留旧版本的运行目录。"""
     return source.plugin_root, source.distribution_source
 
 
@@ -902,16 +897,14 @@ def _selected_components(selection: PluginSelection, root_ref: str) -> tuple[tup
             raise ValueError("stable component ref 无效")
         record = selection.archive.read_descriptor(ref)
         plugin_id, code_ref = record["plugin_id"], record["code"]
-        if record["version"] != 4 or not isinstance(plugin_id, str) or not isinstance(code_ref, str):
+        if record["version"] != 5 or not isinstance(plugin_id, str) or not isinstance(code_ref, str):
             raise ValueError(f"selected descriptor 格式无效: {ref}")
         if plugin_id in found:
             raise ValueError(f"stable 重复插件身份: {plugin_id}")
-        code = selection.archive.open(code_ref)
+        code = Path(code_ref).resolve(strict=True)
         identity = load_static_plugin_manifest(code)
         if identity.name != plugin_id.split("@", 1)[0]:
             raise ValueError(f"selected 静态身份不一致: {plugin_id}")
-        if record.get("source_revision") != _source_revision(code):
-            raise ValueError(f"selected 源码身份不一致: {plugin_id}")
         config_revision = record.get("config_revision")
         if not isinstance(config_revision, str) or _SHA256.fullmatch(config_revision) is None:
             raise ValueError(f"selected 配置身份无效: {plugin_id}")
@@ -972,8 +965,8 @@ def _distribution_candidate(
             if name in external_names:
                 raise SelectionConflictError(f"ambiguous selected distribution and installed name: {name}")
             if plugin_id in available.legacy_ids and descriptor["source_type"] == "installed":
-                _, current_code, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
-                if current_code != descriptor["code"]:
+                current_artifact, _, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
+                if current_artifact != Path(cast(str, descriptor["code"])):
                     raise SelectionConflictError(f"legacy distribution selection/cache drift: {plugin_id}")
             # No source in the current artifact means retirement, never data deletion.
             continue
@@ -981,11 +974,11 @@ def _distribution_candidate(
         # _stage_deployment_targets before any persistent mutation. They are not
         # preserved inputs: their old interpreter/code may be what is replaced.
         if descriptor["source_type"] == "installed" and plugin_id not in replacement_ids:
-            _, current_code, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
-            if current_code != descriptor["code"]:
+            current_artifact, _, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
+            if current_artifact != Path(cast(str, descriptor["code"])):
                 raise SelectionConflictError(f"external selection/cache drift: {plugin_id}")
         if (plugin_id not in replacement_ids and
-            descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API}):
+            descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_INPUT_API}):
             raise RuntimeError(f"preserved plugin runtime is incompatible with this Core: {plugin_id}; explicit reinstall required")
         if choices.get(plugin_id, True):
             candidate[plugin_id] = ResolvedPluginSource(code, cast(Literal["builtin", "installed"], descriptor["source_type"]), marketplace, name,
@@ -1035,7 +1028,7 @@ def _prepare_distribution_inputs(
                 old[1]["source_type"] == "builtin"
                 and is_distribution_input(old[1], old[2])
                 and old[1]["runtime"] == {"python_tag": sys.implementation.cache_tag,
-                                           "binding_api": PLUGIN_ARCHIVE_BINDING_API}
+                                           "binding_api": PLUGIN_INPUT_API}
                 and code == old[2]
                 and load_config(data_dir)[1] == old[1]["config_revision"]
                 and dict(cast(Mapping[str, str], old[1]["python_environments"])) == environments.get(plugin_id, {})
@@ -1050,9 +1043,9 @@ def _prepare_distribution_inputs(
                  "distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256},
                 workspace=workspace, archive=selection.archive, initial=old is None,
             )
-            timing.update(reused=False, ref=result.archive_ref)
+            timing.update(reused=False, ref=result.input_ref)
         # 停止期已结算配置 owner；读取迁移后的持久输入，也支持迁移成功后的发布重试。
-        prepared[plugin_id] = result.archive_ref
+        prepared[plugin_id] = result.input_ref
     # This is a user choice ledger, not another version pointer. Existing values never change.
     for source in available.sources:
         plugin_id = f"{source.plugin_name}@{source.marketplace}"
@@ -1072,12 +1065,12 @@ def _same_selected_sources(
     for plugin_id, source in candidate.items():
         descriptor = selected[plugin_id][1]
         if (descriptor["source_type"] != source.source_type
-            or (not source.distribution_source and descriptor["code"] != _code_identity(source.plugin_root))
+            or (not source.distribution_source and Path(cast(str, descriptor["code"])) != source.plugin_root.resolve())
             or (source.distribution_source and (
                 not is_distribution_input(descriptor, selected[plugin_id][2])
                 or _distribution_code_identity(selected[plugin_id][2]) != _distribution_code_identity(source.plugin_root)))
             or descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag,
-                                         "binding_api": PLUGIN_ARCHIVE_BINDING_API}):
+                                         "binding_api": PLUGIN_INPUT_API}):
             return False
     return True
 
@@ -1156,12 +1149,6 @@ def publish_distribution(
                     adoption=adoption,
                 )
                 _prepare_distribution_environments(available, distribution, workspace, selected)
-                # Changed code is durable before downtime; config is read only after migration.
-                for plugin_id, source in candidate.items():
-                    if source.distribution_source:
-                        code, _ = _distribution_input_source(source, selected.get(plugin_id))
-                        with measure("distribution.archive", plugin=plugin_id):
-                            selection.archive.save(code, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}))
                 external_requests = [item for item in requested if not (
                     item.get("bundled") and item["plugin_id"] in candidate
                     and candidate[item["plugin_id"]].source_type == "builtin")]
@@ -1223,9 +1210,9 @@ def publish_distribution(
                     )
                     if prepared.plugin_id != plugin_id:
                         raise RuntimeError(f"安装输入身份不符: {plugin_id}")
-                    ReloadJournal(workspace).set_input_ref(update_id, prepared.archive_ref)
+                    ReloadJournal(workspace).set_input_ref(update_id, prepared.input_ref)
                     prepared_selected[plugin_id] = (
-                        prepared.archive_ref, selection.archive.read_descriptor(prepared.archive_ref), prepared.code_dir,
+                        prepared.input_ref, selection.archive.read_descriptor(prepared.input_ref), prepared.code_dir,
                     )
                 new_components = _prepare_distribution_inputs(
                     available=available, candidate=candidate, selected=prepared_selected,

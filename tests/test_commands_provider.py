@@ -85,14 +85,14 @@ async def apply(ctx):
         root_ref = log.read_binding(identity)["root_ref"]
         assert isinstance(root_ref, str)
         descriptor = archive.read_descriptor(root_ref)
-        archive_refs = []
+        input_refs = []
         for name in ("human_actions", "command_owner", "dependency"):
             generation = host.generation(name)
             assert generation is not None
-            archive_refs.append(generation.archive_ref)
+            input_refs.append(generation.input_ref)
         components = descriptor["components"]
         assert isinstance(components, tuple)
-        assert set(components) == set(archive_refs)
+        assert set(components) == set(input_refs)
         async with bindings.open(identity, COMMANDS) as (selected, metadata):
             assert selected is root.context.require(COMMANDS)
             assert metadata == {"name": "probe"}

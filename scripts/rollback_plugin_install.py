@@ -87,19 +87,19 @@ def _selected_code(selection: PluginSelection, root_ref: str | None, plugin_id: 
         name = descriptor.get("plugin_id")
         code_ref = descriptor.get("code")
         revision = descriptor.get("source_revision")
-        if descriptor.get("version") != 4 or not isinstance(name, str) or not isinstance(code_ref, str) or not isinstance(revision, str):
+        if descriptor.get("version") != 5 or not isinstance(name, str) or not isinstance(code_ref, str) or not isinstance(revision, str):
             raise ValueError("selected descriptor 无效")
         if name in found:
             raise ValueError(f"stable 重复插件: {name}")
         found.add(name)
-        code = selection.archive.open(code_ref)
+        code = Path(code_ref).resolve(strict=True)
         identity = load_static_plugin_manifest(code)
-        if identity.name != name.split("@", 1)[0] or _source_revision(code) != revision:
+        if identity.name != name.split("@", 1)[0]:
             raise ValueError(f"selected code/source 身份不一致: {name}")
         if name == plugin_id:
             if descriptor.get("source_type") != "installed":
                 raise ValueError("目标 selected 输入不是 installed source")
-            selected = (code_ref, revision)
+            selected = _code_identity(code)
     return selected
 
 

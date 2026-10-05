@@ -126,7 +126,7 @@ def _plugin_items(
                 "id": plugin_id,
                 "revision": generation.source_revision,
                 "generation_id": generation.generation_id,
-                "archive_ref": generation.archive_ref,
+                "input_ref": generation.input_ref,
                 "state": generation.state,
                 "api_version": manifest.api_version,
                 "load_error": (

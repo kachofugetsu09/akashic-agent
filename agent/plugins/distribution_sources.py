@@ -137,7 +137,7 @@ def _adopted_distribution_roots(
         old = selection.archive.read_descriptor(row["component_ref"])
         data = workspace_plugin_data_dir(workspace, name, marketplace)
         if (row["component_ref"] not in base_components or old["plugin_id"] != plugin_id
-            or old["source_type"] != "installed" or old["code"] != row["code_sha256"]
+            or old["source_type"] != "installed"
             or old["data_dir"] != row["data_dir"]
             or base_data.count(row["data_dir"]) != 1
             or row["data_dir"] != data.relative_to(workspace).as_posix()
@@ -168,7 +168,7 @@ def _adopted_distribution_roots(
         active = selected.get(plugin_id)
         if active is not None:
             valid_source = (active == old if preparing else is_distribution_input(
-                active, selection.archive.open(cast(str, active["code"]))))
+                active, Path(cast(str, active["code"])).resolve(strict=True)))
             if not valid_source or active["data_dir"] != row["data_dir"]:
                 raise SelectionConflictError(f"历史归属已被其它选择占用: {plugin_id}")
         ignored.add(artifact)
@@ -299,8 +299,8 @@ def distribution_migration_sources(
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id not in by_id:
                 continue
-            if (is_distribution_input(record, selection.archive.open(cast(str, record["code"])))
-                or (plugin_id in available.legacy_ids and record["code"] == legacy_codes.get(plugin_id))):
+            if (is_distribution_input(record, Path(cast(str, record["code"])).resolve(strict=True))
+                or (plugin_id in available.legacy_ids and hashlib.sha256(encode_tree(tree_entries(Path(cast(str, record["code"])), exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})))).hexdigest() == legacy_codes.get(plugin_id))):
                 continue
             raise SelectionConflictError(f"已选外置输入占用内置数据身份，停止迁移: {plugin_id}")
     return sources

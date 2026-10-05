@@ -210,7 +210,7 @@ async def test_cold_selected_import_failure_retains_failed_generation_and_peer(
             if item["id"] == "cold_bad"
         )
         assert view["api_version"] == 3
-        assert view["archive_ref"] == failed.archive_ref
+        assert view["input_ref"] == failed.input_ref
         assert view["state"] == "failed"
         assert view["load_error"] == "cold import blocked"
         assert view["cleanup_pending"] is False
