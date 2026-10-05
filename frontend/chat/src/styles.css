@@ -1486,7 +1486,9 @@ input {
   overflow: hidden !important;
   border: 0;
   border-radius: 0;
-  background: transparent;
+  /* dark:bg-input/30 与 .dark 组合后特异性与本规则相同且源码序更靠后，
+     必须显式压掉，否则暗色下胶囊内会多一个直角矩形底色。 */
+  background: transparent !important;
   box-shadow: none;
 }
 

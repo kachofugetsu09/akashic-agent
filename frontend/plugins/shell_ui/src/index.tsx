@@ -62,10 +62,15 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
   const settingsEntries = useMemo(() => entries.filter((entry) => entry.section === "settings"), [entries]);
   const defaultPage = bandEntries.find((entry) => entry.route === "") ?? bandEntries[0] ?? entries[0];
   const requestedRoute = window.location.hash.slice(1);
+  const requestedEntry = entries.find((entry) => entry.route === requestedRoute);
+  const initialSettings = requestedEntry?.section === "settings" ? requestedEntry : undefined;
   const [withdrawn, setWithdrawn] = useState(() => !!requestedRoute && !entries.some(entry => entry.route === requestedRoute));
-  const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
+  const [activeId, setActiveId] = useState(() => (initialSettings ? defaultPage : pageFromLocation(entries, defaultPage))?.id ?? "");
+  const [settingsOpen, setSettingsOpen] = useState(!!initialSettings);
+  const [settingsEntryId, setSettingsEntryId] = useState(initialSettings?.id ?? "");
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const settingsDialog = useRef<HTMLDialogElement>(null);
+  const settingsContent = useRef<HTMLDivElement>(null);
   const bandTrack = useRef<HTMLDivElement>(null);
   const focusAfterNavigation = useRef(false);
 
@@ -91,16 +96,43 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
   }, [activeId, entries]);
 
   const openPage = useCallback((entry: ShellPage): void => {
-    if (entry.id === activeId) { setWithdrawn(false); settingsDialog.current?.close(); return; }
+    if (entry.id === activeId) { setWithdrawn(false); setSettingsOpen(false); return; }
     const go = () => {
       focusAfterNavigation.current = true;
-      setActiveId(entry.id); setWithdrawn(false);
+      setActiveId(entry.id); setWithdrawn(false); setSettingsOpen(false);
       const base = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(null, "", entry.route ? `${base}#${entry.route}` : base);
-      settingsDialog.current?.close();
     };
     if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
   }, [activeId]);
+
+  // 设置页不再整页切换:功能设置是对话框内的双栏工作区,左栏分节导航,右栏就地渲染。
+  // 打开、换节、关闭都先经 before-navigate,当前分节里未保存的表单可以拦截并走自己的确认。
+  const bandRoute = useCallback(() => {
+    const entry = bandEntries.find((item) => item.id === activeId) ?? defaultPage;
+    const base = `${window.location.pathname}${window.location.search}`;
+    return entry?.route ? `${base}#${entry.route}` : base;
+  }, [bandEntries, activeId, defaultPage]);
+
+  const openSettings = useCallback((entry?: ShellPage): void => {
+    const target = entry ?? settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
+    if (!target) return;
+    const go = () => {
+      setSettingsEntryId(target.id);
+      setSettingsOpen(true);
+      const base = `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState(null, "", target.route ? `${base}#${target.route}` : base);
+    };
+    if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
+  }, [settingsEntries, settingsEntryId]);
+
+  const closeSettings = useCallback((): void => {
+    const go = () => {
+      setSettingsOpen(false);
+      window.history.replaceState(null, "", bandRoute());
+    };
+    if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
+  }, [bandRoute]);
 
   useLayoutEffect(() => {
     if (withdrawn) {
@@ -117,16 +149,15 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     document.querySelector<HTMLButtonElement>('.product-band__track button[aria-current="page"]')?.focus();
   }, [activeId]);
 
-  // 底栏动作入口与 Ctrl/Cmd+, 都打开同一个设置目录；触发按钮在页面 iframe 内，
+  // 底栏动作入口与 Ctrl/Cmd+, 都打开同一个设置工作区；触发按钮在页面 iframe 内，
   // 宿主不直接管理它的焦点，对话框关闭后焦点回到触发侧是页面自己的职责。
   useEffect(() => {
-    settingsLauncher.open = () => settingsDialog.current?.showModal();
+    settingsLauncher.open = () => openSettings();
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === ",") {
         event.preventDefault();
-        const dialog = settingsDialog.current;
-        if (dialog?.open) dialog.close();
-        else dialog?.showModal();
+        if (settingsOpen) closeSettings();
+        else openSettings();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -134,18 +165,46 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
       settingsLauncher.open = () => {};
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, []);
+  }, [settingsOpen, openSettings, closeSettings]);
+
+  // React 状态是对话框唯一 owner；原生 Esc 经 onCancel 走 closeSettings 的守卫。
+  useEffect(() => {
+    const dialog = settingsDialog.current;
+    if (!dialog) return;
+    if (settingsOpen && !dialog.open) dialog.showModal();
+    else if (!settingsOpen && dialog.open) dialog.close();
+  }, [settingsOpen]);
+
+  // 分节页面就地渲染进对话框；关闭或换节即销毁，同一页面不会同时挂载在两处。
+  // 每个分节挂进独立 wrapper，dispose 延迟到 microtask：layout cleanup 阶段 React 无法
+  // 同步 flush 子 root 的卸载提交，同步 dispose 会与渲染器自身的 replaceChildren 竞争而崩。
+  useLayoutEffect(() => {
+    if (!settingsOpen) return;
+    const container = settingsContent.current;
+    const entry = settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0];
+    if (!container || !entry) return;
+    const host = document.createElement("div");
+    host.className = "shell-settings-entry";
+    container.replaceChildren(host);
+    const dispose = pages.render(entry.id, host, { pages, railActions: railActionEntries, embedded: true });
+    return () => {
+      queueMicrotask(() => {
+        dispose();
+        host.remove();
+      });
+    };
+  }, [settingsOpen, settingsEntryId, settingsEntries, pages, railActionEntries]);
 
   useLayoutEffect(() => {
     const disposers: WebUiDisposer[] = [];
-    for (const entry of entries) {
+    for (const entry of bandEntries) {
       const target = pageHosts.current.get(entry.id);
       if (target) disposers.push(pages.render(entry.id, target, { pages, railActions: railActionEntries }));
     }
     return () => {
       for (const dispose of disposers.reverse()) dispose();
     };
-  }, [entries, pages, railActionEntries]);
+  }, [bandEntries, pages, railActionEntries]);
 
   // 页面切换的进入感：150ms 淡入并上浮 4px。插件样式不得声明全局 @keyframes，
   // 用 WAAPI 表达；时长与曲线仍读 motion token，reduced-motion 下 token 归零即瞬时。
@@ -169,6 +228,8 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
       if (!entry) return;
       const requested = window.location.hash.slice(1);
       const missing = !!requested && !entries.some(item => item.route === requested);
+      // 深链接（如首次配置的"开始配置"、刷新的 #models）落到设置工作区对应分节。
+      if (entry.section === "settings") { setWithdrawn(missing); openSettings(entry); return; }
       if (entry.id === activeId) {
         if (missing) window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}${entry.route ? `#${entry.route}` : ""}`);
         setWithdrawn(missing); return;
@@ -179,8 +240,7 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
       const go = () => {
         window.history.replaceState(window.history.state, "", entry.route ? `${base}#${entry.route}` : base);
         focusAfterNavigation.current = true;
-        setActiveId(entry.id); setWithdrawn(missing);
-        settingsDialog.current?.close();
+        setActiveId(entry.id); setWithdrawn(missing); setSettingsOpen(false);
       };
       if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable:true, detail:{go}}))) go();
       else restore();
@@ -190,7 +250,7 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
     return () => {
       window.removeEventListener("hashchange", syncLocation);
     };
-  }, [activeId, defaultPage, entries]);
+  }, [activeId, defaultPage, entries, openSettings]);
 
   const onBandKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
@@ -233,15 +293,37 @@ function Shell({ pages, railActions }: { pages: WebMountView; railActions: WebMo
         </div>
       </nav>
     </header>
-    <dialog ref={settingsDialog} className="shell-settings-dialog" aria-label="功能设置">
-      <header><h2>功能设置</h2><button type="button" onClick={() => settingsDialog.current?.close()} aria-label="关闭设置目录">关闭</button></header>
-      <nav>{settingsEntries.map((entry) => <button key={entry.id} type="button" onClick={() => openPage(entry)}>
-        <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
-        <span>{entry.label}</span>
-      </button>)}</nav>
+    <dialog
+      ref={settingsDialog}
+      className="shell-settings-dialog"
+      aria-label="功能设置"
+      onCancel={(event) => { event.preventDefault(); closeSettings(); }}
+      onClose={() => setSettingsOpen(false)}
+    >
+      <nav className="shell-settings-nav" aria-label="设置分节">
+        <h2>功能设置</h2>
+        {settingsEntries.map((entry) => {
+          const current = (settingsEntries.find((item) => item.id === settingsEntryId) ?? settingsEntries[0])?.id;
+          return <button
+            key={entry.id}
+            type="button"
+            aria-current={entry.id === current ? "true" : undefined}
+            onClick={() => openSettings(entry)}
+          >
+            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
+            <span>{entry.label}</span>
+          </button>;
+        })}
+      </nav>
+      <div className="shell-settings-body">
+        <header>
+          <button type="button" onClick={closeSettings} aria-label="关闭设置">关闭</button>
+        </header>
+        <div ref={settingsContent} className="shell-settings-page" />
+      </div>
     </dialog>
     <div className="shell-view-stack">
-      {entries.map((entry) => <section
+      {bandEntries.map((entry) => <section
         key={entry.id}
         ref={(node) => {
           if (node) pageHosts.current.set(entry.id, node);
