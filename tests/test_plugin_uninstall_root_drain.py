@@ -90,8 +90,8 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
         peer_state = dict(peer.instance.module.STATE)
         input_ref = target.input_ref
         assert input_ref is not None
-        archive_source = target.code_dir / "plugin.py"
-        archive_source_before = archive_source.read_bytes()
+        installed_source = target.code_dir / "plugin.py"
+        installed_source_before = installed_source.read_bytes()
         archive_descriptor_before = host._archive.read_descriptor(input_ref)
 
         async def hold_peer_scope():
@@ -110,6 +110,7 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
             assert accepted["selection_ref"] == host._selection.read()
             assert operation is not None and not operation.task.done()
             assert cache.is_dir()
+            assert installed_source.read_bytes() == installed_source_before
             assert target.module_path in sys.modules
             target_status = status_for(host, "target@lab")
             assert target_status["installed"] is True
@@ -125,6 +126,8 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
         assert host.generation("peer@lab") is peer
         assert peer.fiber is peer_fiber
         assert peer_context.fiber.activation_token is peer_token
+
+        assert installed_source.read_bytes() == installed_source_before
 
         consumer_release.set()
         result = await asyncio.gather(operation.task, return_exceptions=True)
@@ -143,7 +146,7 @@ async def test_uninstall_accepts_before_target_owner_drains_and_preserves_peer(
         assert peer.instance.module.STATE == peer_state
         assert consumer.fiber.state is FiberState.PENDING
         assert consumer.fiber.dependency_store == {}
-        assert archive_source.read_bytes() == archive_source_before
+        assert not installed_source.exists()
         assert host._archive.read_descriptor(input_ref) == archive_descriptor_before
 
         target_status = status_for(host, "target@lab")
