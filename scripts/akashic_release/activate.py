@@ -259,7 +259,7 @@ def _read_selection(*, paths: ReleasePaths, candidate: Mapping[str, str], run: R
         "import json,sys; from pathlib import Path; "
         "from agent.plugins.selection import PluginSelection; "
         "s=PluginSelection(Path(sys.argv[1])); r=s.read(); "
-        "print(json.dumps({'root_ref':r,'components':list(s.archive.read_descriptor(r)['components']) if r else []}))"
+        "print(json.dumps({'root_ref':r,'components':list(s.components(r)) if r else []}))"
     )
     result = run([
         "docker", "run", "--rm", "--network", "none", "--read-only",
