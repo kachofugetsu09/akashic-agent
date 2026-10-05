@@ -67,7 +67,8 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
   const clipStatus = document.createElement("p");
   clipStatus.setAttribute("role", "status");
   clipboard.append(text, send, copy, clipStatus);
-  root.append(tabs, toolbar, desktop, clipboard);
+  desktop.append(clipboard);
+  root.append(tabs, toolbar, desktop);
   host.replaceChildren(root);
 
   let targets: Target[] = [];

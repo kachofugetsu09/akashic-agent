@@ -160,7 +160,7 @@
 .computer-clipboard {
   position: absolute;
   z-index: 4;
-  inset-block-start: 46px;
+  inset-block-start: 8px;
   inset-inline-end: 10px;
   display: grid;
   width: min(26rem, calc(100% - 20px));
