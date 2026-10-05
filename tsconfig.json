@@ -15,6 +15,7 @@
     "paths": {
       "@akashic/web-ui-v1": ["packages/akashic-web-ui-v1/index.d.ts"],
       "@akashic/workbench-ui-v2": ["packages/akashic-workbench-ui-v2/index.d.ts"],
+      "@akashic/shell-ui-v1": ["packages/akashic-shell-ui-v1/index.d.ts"],
       "@/*": ["frontend/chat/src/*"]
     },
     "noEmit": true,

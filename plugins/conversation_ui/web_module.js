@@ -40,6 +40,50 @@ function checkTabs(entries) {
     (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
 }
 
+// Shell 底栏动作：声明式投影跨 iframe 传给 chat 渲染，onActivate 留在宿主域。
+function checkRailActions(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("对话底栏动作必须是数组");
+  const actions = value.map((entry) => {
+    if (
+      !entry || typeof entry !== "object"
+      || typeof entry.id !== "string"
+      || typeof entry.label !== "string"
+      || typeof entry.iconSvg !== "string"
+      || !entry.iconSvg.startsWith("<svg")
+      || typeof entry.onActivate !== "function"
+    ) {
+      throw new Error(`对话底栏动作合同无效: ${String(entry?.id ?? "unknown")}`);
+    }
+    return entry;
+  });
+  if (new Set(actions.map((entry) => entry.id)).size !== actions.length) {
+    throw new Error("对话底栏动作 id 不能重复");
+  }
+  return [...actions].sort((left, right) =>
+    (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
+}
+
+function connectRailActions(frame, actions) {
+  const projection = actions.map(({ id, order, label, iconSvg }) => ({ id, order, label, iconSvg }));
+  const send = () => frame.contentWindow?.postMessage(
+    { type: "akashic.rail-actions", actions: projection }, window.location.origin,
+  );
+  frame.addEventListener("load", send);
+  const onMessage = (event) => {
+    if (event.source !== frame.contentWindow || event.origin !== window.location.origin) return;
+    const message = event.data;
+    if (!message || typeof message !== "object" || message.type !== "akashic.rail-action-activate") return;
+    if (typeof message.id !== "string") return;
+    actions.find((entry) => entry.id === message.id)?.onActivate();
+  };
+  window.addEventListener("message", onMessage);
+  return () => {
+    frame.removeEventListener("load", send);
+    window.removeEventListener("message", onMessage);
+  };
+}
+
 function storedWidth() {
   try {
     const value = Number.parseInt(window.localStorage.getItem(WIDTH_KEY) ?? "", 10);
@@ -80,9 +124,10 @@ function frameSource(sessionId) {
   return sessionId ? `/chat?embedded=1&session=${encodeURIComponent(sessionId)}` : "/chat?embedded=1";
 }
 
-function renderConversation(host, view) {
+function renderConversation(host, view, props) {
   const tools = view.child("conversation.tools.v1");
   const entries = checkTabs(tools.entries);
+  const railActions = checkRailActions(props?.railActions);
   const root = document.createElement("div");
   root.className = "conversation-page";
   const frame = document.createElement("iframe");
@@ -94,7 +139,9 @@ function renderConversation(host, view) {
   if (entries.length === 0) {
     host.replaceChildren(root);
     const stopThemeSync = syncFrameTheme(frame);
+    const stopRailActions = connectRailActions(frame, railActions);
     return () => {
+      stopRailActions();
       stopThemeSync();
       host.replaceChildren();
     };
@@ -312,6 +359,7 @@ function renderConversation(host, view) {
   );
   window.addEventListener("resize", resize);
   const stopThemeSync = syncFrameTheme(frame);
+  const stopRailActions = connectRailActions(frame, railActions);
   resize();
   update();
   return () => {
@@ -319,6 +367,7 @@ function renderConversation(host, view) {
     window.removeEventListener("resize", resize);
     activeListeners.clear();
     for (const dispose of disposers.reverse()) dispose();
+    stopRailActions();
     stopThemeSync();
     host.replaceChildren();
   };

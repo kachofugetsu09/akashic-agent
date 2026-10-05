@@ -276,10 +276,16 @@ listener 和临时窗口；Workbench 在重绘、切换或卸载对应 DOM 时�
 
 | 插件 | 注入 | 注册 | 自己拥有 |
 |---|---|---|---|
-| `shell-ui` | `web.root.v1` | 唯一 Shell；声明 `shell.pages.v1` | 品牌顶栏、页面导航、route/history |
+| `shell-ui` | `web.root.v1` | 唯一 Shell；声明 `shell.pages.v1` 与 `shell.rail-actions.v1` | 品牌顶栏、页面导航、route/history、底栏动作目录 |
 | `conversation-ui` | `shell.pages.v1` | `conversation` page | 会话侧栏、消息、composer、desktop adapter |
 | `workbench-ui` | `shell.pages.v1` | `workbench` page；声明 `workbench.panels.v2` | Session/Plugin 工作台布局、最新读取与 panel adapter |
 | `models` | `shell.pages.v1` | `models` page；声明 `models.connection-types.v1` | catalog、Connection、Binding、默认 chat/embedding 的 UI |
+
+`shell.rail-actions.v1` 是 Shell 声明的底栏动作目录（合同包 `@akashic/shell-ui-v1`）。entry 由可序列化投影
+（`id`/`label`/`iconSvg`/`order`）和宿主域 `onActivate` 回调组成；Shell 把 entry 列表作为 props 传给每个页面，
+页面自己决定是否在左栏底部渲染。对话页经 postMessage 桥把投影转给 chat iframe 渲染，激活消息回到宿主域后才调
+`onActivate`——函数不跨 realm。「功能设置」是第一个真实消费者；顶栏不再硬编码该入口。页面缺失时 Shell 不受影响，
+只是没有地方显示这些动作。
 
 page 合同不包含 readiness、onboarding 或 redirect。首版迁移期间保留现有 `/api/shell/state → models` 跳转 adapter；它必须被标为模型特判删除点，并在硬编码 Shell 退场时一并删除，不等待 Onboarding。没有默认聊天模型时，对话插件显示自己的不可用状态，用户仍可手动进入模型页。将来 Onboarding 另做普通消费者，不能为了它先把“通用恢复目标”塞进所有页面合同。
 

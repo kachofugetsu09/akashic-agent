@@ -1,0 +1,10 @@
+{
+  "contract": "shell.rail-actions.v1",
+  "entry": {
+    "required": ["id", "label", "iconSvg", "onActivate"],
+    "optional": ["order"]
+  },
+  "reads": {
+    "onActivate": []
+  }
+}

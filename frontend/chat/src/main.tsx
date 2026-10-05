@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { initializeTheme, setTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DesktopChatApp } from "./desktop-chat-app";
+import { setShellRailActions } from "./shell-rail-actions";
 import { WebUiErrorBoundary } from "./webui-error-boundary";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
@@ -20,6 +21,10 @@ if (embeddedShell) {
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
     if (!parentOrigins.has(event.origin) || typeof event.data !== "object" || event.data === null) return;
     const message = event.data as Record<string, unknown>;
+    if (message.type === "akashic.rail-actions") {
+      setShellRailActions(message.actions);
+      return;
+    }
     if (message.type !== "akashic.theme" || typeof message.themeId !== "string") return;
     setTheme(message.themeId, false);
   });

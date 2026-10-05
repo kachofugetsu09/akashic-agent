@@ -218,6 +218,61 @@ input {
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
+/* 底部动作：宿主 Shell 经桥下发的动作行，图标/文字落在同一条左竖线。 */
+.chat-sidebar__footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  border-block-start: 1px solid var(--chat-line);
+  padding-block: 8px max(8px, env(safe-area-inset-bottom, 0px));
+  padding-inline: var(--chat-rail-inline);
+}
+
+.chat-sidebar__action {
+  display: inline-flex;
+  min-height: 36px;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 8px;
+  padding-block: 0;
+  padding-inline: 10px;
+  color: var(--chat-ink);
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+.chat-sidebar__action svg {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  color: var(--chat-muted);
+}
+
+.chat-sidebar__action:hover,
+.chat-sidebar__action:focus-visible {
+  background: color-mix(in oklch, var(--md-sys-color-on-surface) 6%, transparent);
+}
+
+.chat-sidebar__action:hover svg,
+.chat-sidebar__action:focus-visible svg {
+  color: var(--chat-ink);
+}
+
+.chat-sidebar__action:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+.chat-sidebar__action:active {
+  background: color-mix(in oklch, var(--md-sys-color-on-surface) 8%, transparent);
+}
+
 .chat-sidebar__search {
   display: flex;
   min-height: 36px;
