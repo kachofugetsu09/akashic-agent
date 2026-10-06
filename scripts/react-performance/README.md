@@ -40,10 +40,12 @@ python scripts/react-performance/proxy.py \
 代理不改变请求正文和响应字节。原始请求/响应仅保存在私有目录，不能直接上传到 PR。
 客户端断开会取消代理的上游等待，记录 `client.disconnected`；不能让已放弃请求与重试重叠。
 首次模型配置探测必须在 benchmark 输入时刻之前完成。
+对齐两边的上游等待上限和重试次数；默认读超时可能不同，应记录实际配置与每次取消。
 
 客户端逐行记录 `{"mono_ns": <time.monotonic_ns()>, "event": <原生事件>}`。
-发出输入前记录 `event={"bench":"input"}`；Akashic 同时记录 `session_id`。
+发出输入前记录 `event={"bench":"input"}`；Akashic 同时记录 `session_id` 和请求的 `message_id`。
 持续排空事件，避免 stdout/WebSocket 背压造成假性慢。Pi 等到 `agent_settled` 后关闭 stdin。
+订阅确认后仍可能重放旧消息；Akashic 按本次 Input 的序号排除历史，首个最终输出结束测量。
 
 ```sh
 python scripts/react-performance/rounds.py --harness akashic --label akashic-r1 \
