@@ -1044,7 +1044,7 @@ class ReloadJournal:
                 "runtime/plugin-reloads.sqlite3 缺少 plugin_updates；"
                 "不会由普通启动补造历史表"
             )
-        config_updates.check_schema(conn)
+        config_updates.check_current_schema(conn)
         required = {
             "reload_transactions": {
                 "tx_id", "plugin_id", "base_snapshot_id", "candidate_snapshot_id",

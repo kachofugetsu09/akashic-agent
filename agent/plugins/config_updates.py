@@ -15,8 +15,21 @@ SCHEMA = """CREATE TABLE config_updates (
 )"""
 
 
+# 已发布的 20260928 migration 引用此入口；它必须识别尚未升级的旧表。
+_MIGRATION_SCHEMA = SCHEMA.replace("    config_revision TEXT NOT NULL,\n    pending_config TEXT,\n", "")
+
+
 def check_schema(conn: sqlite3.Connection) -> None:
-    """未知形状必须显式迁移，不在运行时自动补表。"""
+    """仅供已发布迁移核对已知旧/新表，运行期使用 check_current_schema。"""
+    _check(conn, (SCHEMA, _MIGRATION_SCHEMA))
+
+
+def check_current_schema(conn: sqlite3.Connection) -> None:
+    """正常运行只接受当前结构，旧表必须显式完成 Core 迁移。"""
+    _check(conn, (SCHEMA,))
+
+
+def _check(conn: sqlite3.Connection, schemas: tuple[str, ...]) -> None:
     row = conn.execute("SELECT sql FROM sqlite_master WHERE name='config_updates' AND type='table'").fetchone()
-    if row is None or ' '.join(str(row[0]).split()) != ' '.join(SCHEMA.split()):
+    if row is None or ' '.join(str(row[0]).split()) not in {' '.join(schema.split()) for schema in schemas}:
         raise RuntimeError("config_updates schema 不符；请执行 Core migration")
