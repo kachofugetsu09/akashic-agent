@@ -8,6 +8,8 @@ Long history reads use a private read-only SQLite transaction and connection. Ne
 
 OwnerRecord 也只在实际读取的版本和 JSON 正文完全相同时复用解码结果。弱引用不保留无人使用的大请求；SQL 读取、版本 CAS、固定快照与损坏记录报错保持不变。
 
+会话目录的 heads 快照只在同一只读连接的 SQLite `data_version` 未变时复用；不同连接的版本不能相互比较。每个连接只保留最近一份目录，外部或本地 writer 提交后重新读取；当前 writer 的未提交事务不使用此缓存。固定只读事务仍观察原快照，归还连接后下一次读取再观察新提交。
+
 普通 `MessageReader.snapshot_async` 与 `OwnerStore.snapshot` 的只读准入不等待另一个线程
 持有的 writer 锁。当前线程能重入的写事务仍使用原连接，读取自己的未提交行；其他读取
 直接打开独立只读事务。准入与 close 使用短锁：close 拒绝后来读者，已取得的只读连接

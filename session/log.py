@@ -339,6 +339,8 @@ class WriterExpired(RuntimeError):
 class _ReadConnection:
     connection: sqlite3.Connection
     lock: threading.RLock
+    heads_version: int | None = None
+    heads: Mapping[str, int] | None = None
 
 
 class _ReadLocal(threading.local):
@@ -352,7 +354,7 @@ class MessageLog:
     def __init__(self, path: str | Path):
         self._writer_lock = threading.RLock()
         self._read_admission = threading.Lock()
-        self._idle_reads: list[sqlite3.Connection] = []
+        self._idle_reads: list[_ReadConnection] = []
         self._listener_lock = threading.Lock()
         self._decode_lock = threading.RLock()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
@@ -630,9 +632,11 @@ class MessageLog:
         with self._read_admission:
             if self._closed:
                 raise RuntimeError("MessageLog is closed")
-            connection = self._idle_reads.pop() if self._idle_reads else sqlite3.connect(
-                self._path.as_uri() + "?mode=ro", uri=True, check_same_thread=False,
+            read = self._idle_reads.pop() if self._idle_reads else _ReadConnection(
+                sqlite3.connect(self._path.as_uri() + "?mode=ro", uri=True, check_same_thread=False),
+                threading.RLock(),
             )
+            connection = read.connection
             try:
                 connection.row_factory = sqlite3.Row
                 _ = connection.execute("PRAGMA query_only=ON")
@@ -641,7 +645,7 @@ class MessageLog:
                 connection.close()
                 raise
         # Callbacks may use other readers of this same log; all see this snapshot.
-        self._reads.current = _ReadConnection(connection, threading.RLock())
+        self._reads.current = read
         try:
             yield connection
         finally:
@@ -654,7 +658,7 @@ class MessageLog:
                 raise
             with self._read_admission:
                 if not self._closed and len(self._idle_reads) < 4:
-                    self._idle_reads.append(connection)
+                    self._idle_reads.append(read)
                 else:
                     connection.close()
 
@@ -741,8 +745,8 @@ class MessageLog:
                     return
                 self._closed = True
                 idle_reads, self._idle_reads = self._idle_reads, []
-            for connection in idle_reads:
-                connection.close()
+            for read in idle_reads:
+                read.connection.close()
             self._writer_connection.close()
             with self._listener_lock:
                 listeners = tuple(self._listeners.items())
@@ -769,13 +773,22 @@ class MessageCatalog:
 
     def snapshot_heads(self) -> Mapping[str, int]:
         """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。"""
-        with self._log._read():
-            rows = self._log._connection.execute(
+        with self._log._read() as connection:
+            # 1. data_version 只可在同一连接上比较；writer 未提交视图不能复用。
+            read = self._log._reads.current
+            version = None if read is None else connection.execute("PRAGMA data_version").fetchone()[0]
+            if read is not None and read.heads is not None and read.heads_version == version:
+                return read.heads
+            # 2. 每个只读连接只保留最近一份目录，其他连接提交后重新查询。
+            rows = connection.execute(
                 "SELECT s.key, COALESCE((SELECT m.seq FROM messages m "
                 "WHERE m.session_key=s.key ORDER BY m.seq DESC LIMIT 1), -1) AS head "
                 "FROM sessions s ORDER BY s.key"
             ).fetchall()
-        return MappingProxyType({row["key"]: row["head"] for row in rows})
+            heads = MappingProxyType({row["key"]: row["head"] for row in rows})
+            if read is not None:
+                read.heads_version, read.heads = version, heads
+            return heads
 
     def reader(self, session_id: str) -> MessageReader:
         return self._log.reader(session_id)
