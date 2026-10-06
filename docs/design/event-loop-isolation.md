@@ -281,7 +281,9 @@ Tool started、command intent 和 generation claim 把 Source 前提检查放进
 若新 Input/Control 先提交，旧首次 intent 回滚；若 started 先提交，原 owner 如实结算已开始效果，
 取消不伪称效果回滚。ToolResult 与 done 仍在原事务共同提交。
 
-生成请求继续使用既有准备记录和稳定 request key。`started_attempts` 只记录该准备已通过首次启动检查，
+生成请求的正文、材料与启动身份在同一次 owner transaction 内保存，来源检查在该事务内完成。
+不再先写冻结请求，再读写整份记录领取生成。模型 I/O 仍在提交之后；旧的已冻结但未领取记录
+在恢复时复用原内容，并通过来源检查补齐启动身份。`started_attempts` 只记录该准备已通过首次启动检查，
 不复制 Models 的调用事实。Models 仍拥有独立数据库和发送状态，按同 key 前向恢复；
 Core claim 不能证明远端有或没有效果。旧 v2/v3 准备和消息表示保留，不做 schema 迁移或历史改写。
 准备的纯 SQL 也离开 loop；Context 和模型句柄的读取保持在原 scope。
