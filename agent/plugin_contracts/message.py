@@ -12,8 +12,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from types import MappingProxyType
-from typing import Literal, cast
+from typing import Literal, Never, cast
 
 
 MAX_METADATA_BYTES = 64 * 1024
@@ -40,20 +39,31 @@ def _json_container(value: object) -> dict[str, object]:
     raise TypeError("消息 metadata 包含非 JSON 值")
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class _FrozenJson(Mapping[str, object]):
-    """本边界已经深冻结的 JSON 对象，可在内部传递时直接复用。"""
+class _FrozenJson(dict[str, object]):
+    """深冻结的 JSON 使用原生字典读取与编码，只禁止修改操作。"""
 
-    _data: Mapping[str, object]
+    __slots__ = ()
 
-    def __getitem__(self, key: str) -> object:
-        return self._data[key]
+    def __new__(cls, value: Mapping[str, object]) -> _FrozenJson:
+        result = dict.__new__(cls)
+        dict.update(result, value)
+        return result
 
-    def __iter__(self):
-        return iter(self._data)
+    def __init__(self, value: Mapping[str, object]) -> None:
+        # 仅在新建时填充；对既有对象再次调用 __init__ 不能修改内容。
+        pass
 
-    def __len__(self) -> int:
-        return len(self._data)
+    def _immutable(self: object, *args: object, **kwargs: object) -> Never:
+        raise TypeError("冻结的 JSON 对象不能修改")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
 
 
 def freeze_json(value: object) -> object:
@@ -82,7 +92,7 @@ def freeze_json(value: object) -> object:
                         if not isinstance(key, str):
                             raise TypeError("消息 JSON 对象的 key 必须是字符串")
                         frozen[key] = freeze(nested)
-                    return _FrozenJson(MappingProxyType(frozen))
+                    return _FrozenJson(frozen)
                 return tuple(freeze(nested) for nested in cast(list[object] | tuple[object, ...], item))
             finally:
                 active.remove(identity)
