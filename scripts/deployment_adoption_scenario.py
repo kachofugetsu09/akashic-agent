@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -178,6 +179,43 @@ async def run():
         assert "不能接管" in str(error)
     else:
         raise AssertionError("retired data identity reused")
+    # 4. 模拟下一镜像覆盖同一路径：旧选择只声明归属，新选择必须固定新发行版。
+    plugin(repo, "alpha", "4")
+    next_distribution = distribution(repo, root / "next-image", ["alpha", "disabled"], ["alpha", "disabled"])
+    next_commit = json.loads((next_distribution / "distribution.json").read_text())["source_commit"]
+    shutil.rmtree(target)
+    shutil.copytree(next_distribution, target)
+    try:
+        distribution_sources(work, home, target)
+    except ValueError as error:
+        assert "provenance mismatch" in str(error)
+    else:
+        raise AssertionError("ordinary runtime accepted old selection against next image")
+    before = snapshot(state)
+    assert publish(True)["status"] == "preflight_ok"
+    assert snapshot(state) == before
+    result = publish()
+    updated = selection.read()
+    assert updated != inherited and result["new_root_ref"] == updated
+    assert selected(work)["alpha@release"][1]["distribution_source"] == next_commit
+    assert selected(work)["outside@thirdparty"][0] == old["outside@thirdparty"][0]
+    ensure_profile(target, target / "profiles/default.json", workspace=work, plugins_home=home,
+                   config_path=config, receipt_path=receipt)
+    m = await manager(work, home, target)
+    assert m.generation("alpha@release").instance.version == "4"
+    await m.terminate_all()
+    plan.write_text(json.dumps({"schema_version": 1, "expected_root_ref": updated, "targets": []}))
+    assert publish()["new_root_ref"] == updated
+    # 新镜像退役已选内置插件时，旧代码目录缺失不阻止预检，也不删除数据。
+    plugin(repo, "disabled", "5")
+    retired_distribution = distribution(repo, root / "retired-image", ["disabled"], ["disabled"])
+    shutil.rmtree(target)
+    shutil.copytree(retired_distribution, target)
+    assert publish(True)["status"] == "preflight_ok"
+    updated = publish()["new_root_ref"]
+    assert "alpha@release" not in selected(work)
+    m = await manager(work, home, target)
+    await m.terminate_all()
     artifact = home / "cache/release/retired" / entries[1]["artifact_pointer"]
     source = artifact / "plugin.py"
     original = source.read_bytes()
@@ -192,8 +230,8 @@ async def run():
     assert snapshot(home / "cache") == cache_before
     assert snapshot(work / "plugin-data") == data_before
     assert receipt.read_bytes() == receipt_before
-    (root / "result.json").write_text(json.dumps({"result": "passed", "root": new_root, "adoption": json_value(selection.adoption())}))
-    print("PASS historical-adoption/read-only-preflight/wrong-data/orphan/restart/retirement/disabled/external/preservation/drift", flush=True)
+    (root / "result.json").write_text(json.dumps({"result": "passed", "root": updated, "adoption": json_value(selection.adoption())}))
+    print("PASS historical-adoption/read-only-preflight/wrong-data/orphan/restart/retirement/disabled/external/preservation/drift/next-image-at-same-path", flush=True)
 
 
 if __name__ == "__main__":

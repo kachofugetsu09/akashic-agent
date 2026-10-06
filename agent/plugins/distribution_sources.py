@@ -42,8 +42,8 @@ class DistributionSources:
     legacy_ids: frozenset[str] = frozenset()
 
 
-def is_distribution_input(record: Mapping[str, object], code: Path) -> bool:
-    """按已安装路径的来源标签核对当前发行版归属。"""
+def is_distribution_owned(record: Mapping[str, object]) -> bool:
+    """发行版归属由已提交选择声明，不从下一镜像的相同路径推断。"""
     if "distribution_source" not in record:
         return False
     commit = record["distribution_source"]
@@ -52,6 +52,14 @@ def is_distribution_input(record: Mapping[str, object], code: Path) -> bool:
         or re.fullmatch(r"[0-9a-f]{40}", commit) is None
         or not isinstance(plugin_id, str) or plugin_id.count("@") != 1):
         raise ValueError("invalid distribution source descriptor")
+    return True
+
+
+def is_distribution_input(record: Mapping[str, object], code: Path) -> bool:
+    """运行与复用输入时仍须核对实际代码的发行版身份。"""
+    if not is_distribution_owned(record):
+        return False
+    commit = record["distribution_source"]
     provenance = json.loads((code / ".akashic-source.json").read_text())
     if provenance.get("commit") != commit:
         raise ValueError("distribution selection/source provenance mismatch")
@@ -113,6 +121,7 @@ def check_distribution_adoption_format(record: Mapping[str, object]) -> None:
 
 def _adopted_distribution_roots(
     workspace: Path, plugins_home: Path, record: Mapping[str, object], *, preparing: bool,
+    replacing_distribution: bool = False,
 ) -> tuple[set[Path], set[str]]:
     """核对已批准的旧输入；任何 cache、选择或数据身份漂移都停止转换。"""
     check_distribution_adoption_format(record)
@@ -167,8 +176,12 @@ def _adopted_distribution_roots(
         # 2. 提交后只能是普通发行版输入或未加载；退役/停用也不释放原数据身份。
         active = selected.get(plugin_id)
         if active is not None:
-            valid_source = (active == old if preparing else is_distribution_input(
-                active, Path(cast(str, active["code"])).resolve(strict=True)))
+            if preparing:
+                valid_source = active == old
+            elif replacing_distribution:
+                valid_source = is_distribution_owned(active)
+            else:
+                valid_source = is_distribution_input(active, Path(cast(str, active["code"])).resolve(strict=True))
             if not valid_source or active["data_dir"] != row["data_dir"]:
                 raise SelectionConflictError(f"历史归属已被其它选择占用: {plugin_id}")
         ignored.add(artifact)
@@ -178,7 +191,7 @@ def _adopted_distribution_roots(
 
 def distribution_sources(
     workspace: Path, plugins_home: Path, distribution: Path | None = None,
-    *, adoption: Mapping[str, object] | None = None,
+    *, adoption: Mapping[str, object] | None = None, replacing_distribution: bool = False,
 ) -> DistributionSources:
     """The immutable first receipt proves old cache ownership, never current choice."""
     if distribution is None:
@@ -203,6 +216,7 @@ def distribution_sources(
     if proof is not None:
         adopted_roots, adopted_ids = _adopted_distribution_roots(
             workspace, plugins_home, proof, preparing=adoption is not None,
+            replacing_distribution=replacing_distribution,
         )
         ignored.update(adopted_roots)
         historical.update(adopted_ids)
@@ -265,7 +279,7 @@ def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSourc
 
 def distribution_migration_sources(
     workspace: Path, plugins_home: Path, distribution: Path | None = None,
-    *, adoption: Mapping[str, object] | None = None,
+    *, adoption: Mapping[str, object] | None = None, replacing_distribution: bool = False,
 ) -> tuple[ResolvedPluginSource, ...]:
     """只把归属明确的内置数据目录交给当前发行版的 Yoyo。"""
     if distribution is None:
@@ -273,7 +287,8 @@ def distribution_migration_sources(
         if not configured:
             return ()
         distribution = Path(configured)
-    available = distribution_sources(workspace, plugins_home, distribution, adoption=adoption)
+    available = distribution_sources(workspace, plugins_home, distribution, adoption=adoption,
+                                     replacing_distribution=replacing_distribution)
     sources = distribution_plugin_sources(distribution)
     by_id = {f"{source.plugin_name}@{source.marketplace}": source for source in sources}
     legacy_codes: dict[str, str] = {}
@@ -299,7 +314,9 @@ def distribution_migration_sources(
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id not in by_id:
                 continue
-            if (is_distribution_input(record, Path(cast(str, record["code"])).resolve(strict=True))
+            owned = (is_distribution_owned(record) if replacing_distribution else
+                     is_distribution_input(record, Path(cast(str, record["code"])).resolve(strict=True)))
+            if (owned
                 or (plugin_id in available.legacy_ids and hashlib.sha256(encode_tree(tree_entries(Path(cast(str, record["code"])), exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})))).hexdigest() == legacy_codes.get(plugin_id))):
                 continue
             raise SelectionConflictError(f"已选外置输入占用内置数据身份，停止迁移: {plugin_id}")

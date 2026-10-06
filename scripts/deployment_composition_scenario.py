@@ -111,7 +111,8 @@ def distribution(repo, out, names, defaults):
         "marketplace": "release",
         "description": "isolated",
         "initialization": {
-            "plugin_configs": [{"owner": "alpha", "config": {"user": "initial"}}]
+            "plugin_configs": ([{"owner": "alpha", "config": {"user": "initial"}}]
+                               if "alpha" in defaults else [])
         },
         "plugins": [
             {"name": n, "depends_on": [], "reason": "isolated"} for n in defaults
