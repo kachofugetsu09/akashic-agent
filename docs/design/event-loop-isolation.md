@@ -5,6 +5,9 @@ Related issues: #827 (stack), #828 (storage), #829 (interest), #836 (materials).
 Long history reads use a private read-only SQLite transaction and connection. Nested readers of the same MessageLog in that synchronous call share its read snapshot; they do not acquire the writer's connection or transaction lock. Reads inside an existing write transaction still see that transaction's uncommitted rows. Owner transaction callbacks remain synchronous and atomic, including when pure SQL runs in a drained worker. Listeners wake only after commit.
 
 同一 MessageLog 的连接共享弱引用解码缓存，只在完整数据库行相同时复用仍被调用者持有的不可变 Message。每次读取仍执行原 SQL，先由该连接的事务确定可见行；外部修改、撤销和回滚不能通过缓存隐藏。缓存使用独立短锁，不持有 writer 锁，也不延长 Message 的生命周期。
+活跃 ReAct Loop 持有当前历史直到下一份真实快照替换；不在轮间主动丢弃仍供下一轮使用的事实。
+这使超过 reader 有界缓存的长循环也能复用仍存活的 Message。每次读取继续查询原 SQL，
+按完整行区分外部修改；没有扩大全局缓存或跳过失效检查。Loop 结束、取消或失败后释放历史。
 
 OwnerRecord 也只在实际读取的版本和 JSON 正文完全相同时复用解码结果。弱引用不保留无人使用的大请求；SQL 读取、版本 CAS、固定快照与损坏记录报错保持不变。
 

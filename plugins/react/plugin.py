@@ -888,8 +888,9 @@ async def react(
             mark("output.committed", request_id=response.call_record_id or "", parent_operation_id=message.message_id, counts={"seq": message.seq, "tool_calls": len(indices)})
             if not indices:
                 return message
-        # 下一轮工具可能长时间等待；上一轮历史和准备材料不再有消费者。
-        del snapshot, frozen, commit, prepared, resumed, prepare
+        # Loop 保留当前历史，直到下轮真实快照替换它；弱解码缓存才能复用旧消息。
+        # 不再使用的准备材料与提交闭包立即释放，结束或取消时释放整个 Loop。
+        del commit, prepared, resumed, prepare
 
 
 async def apply(ctx: Context) -> None:
