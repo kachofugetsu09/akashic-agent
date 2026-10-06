@@ -29,7 +29,7 @@ from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.source_resolver import scan_plugin_sources
-from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input, check_distribution_adoption_format
+from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input, is_distribution_owned, check_distribution_adoption_format
 from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
@@ -158,7 +158,7 @@ def _stage_deployment_targets(
     # 1. Require each target to own a coherent selected installed input.
     report = verify_distribution(distribution)
     bundled = {row["name"]: row for row in report["plugins"]}
-    _, selected = _selected_components(selection, expected_root_ref)
+    _, selected = _selected_components(selection, expected_root_ref, replacing_distribution=True)
     manifest = load_plugin_manifest(plugins_home)
     result: list[dict[str, Any]] = []
     for index, target in enumerate(targets):
@@ -884,8 +884,8 @@ def _validate_current_plugins(
             raise ValueError(f"当前插件数据目录缺失: {data_path}")
 
 
-def _selected_components(selection: PluginSelection, root_ref: str) -> tuple[tuple[str, ...], dict[str, tuple[str, Mapping[str, object], Path]]]:
-    """Check every selected code closure before changing an install pointer."""
+def _selected_components(selection: PluginSelection, root_ref: str, *, replacing_distribution: bool = False) -> tuple[tuple[str, ...], dict[str, tuple[str, Mapping[str, object], Path]]]:
+    """外置输入检查实际目录；被替换的镜像输入只读原选择身份。"""
     components = selection.components(root_ref)
     if not isinstance(components, tuple):
         raise ValueError("stable 完整记录格式无效")
@@ -900,10 +900,12 @@ def _selected_components(selection: PluginSelection, root_ref: str) -> tuple[tup
             raise ValueError(f"selected descriptor 格式无效: {ref}")
         if plugin_id in found:
             raise ValueError(f"stable 重复插件身份: {plugin_id}")
-        code = Path(code_ref).resolve(strict=True)
-        identity = load_static_plugin_manifest(code)
-        if identity.name != plugin_id.split("@", 1)[0]:
-            raise ValueError(f"selected 静态身份不一致: {plugin_id}")
+        replacing = replacing_distribution and is_distribution_owned(record)
+        code = Path(code_ref).resolve(strict=not replacing)
+        if not replacing:
+            identity = load_static_plugin_manifest(code)
+            if identity.name != plugin_id.split("@", 1)[0]:
+                raise ValueError(f"selected 静态身份不一致: {plugin_id}")
         config_revision = record.get("config_revision")
         if not isinstance(config_revision, str) or _SHA256.fullmatch(config_revision) is None:
             raise ValueError(f"selected 配置身份无效: {plugin_id}")
@@ -945,7 +947,8 @@ def _distribution_candidate(
     adoption: Mapping[str, object] | None = None,
 ) -> tuple[DistributionSources, dict[str, ResolvedPluginSource]]:
     """Overlay fixed distribution sources while retaining exact external selections."""
-    available = distribution_sources(workspace, plugins_home, distribution, adoption=adoption)
+    available = distribution_sources(workspace, plugins_home, distribution, adoption=adoption,
+                                     replacing_distribution=True)
     scan = scan_plugin_sources(installed_cache_root=plugins_home / "cache",
                                ignored_installed_roots=available.ignored_installed_roots)
     if scan.failures:
@@ -958,7 +961,7 @@ def _distribution_candidate(
         name, separator, marketplace = plugin_id.rpartition("@")
         if not separator:
             name, marketplace = plugin_id, ""
-        if is_distribution_input(descriptor, code) or plugin_id in available.legacy_ids:
+        if is_distribution_owned(descriptor) or plugin_id in available.legacy_ids:
             if plugin_id in installed:
                 raise SelectionConflictError(f"distribution/installed selection drift: {plugin_id}")
             if name in external_names:
@@ -1025,6 +1028,7 @@ def _prepare_distribution_inputs(
         with measure("plugin.input", plugin=plugin_id) as timing:
             if old is not None and (
                 old[1]["source_type"] == "builtin"
+                and old[1].get("distribution_source") == source_commit
                 and is_distribution_input(old[1], old[2])
                 and old[1]["runtime"] == {"python_tag": sys.implementation.cache_tag,
                                            "binding_api": PLUGIN_INPUT_API}
@@ -1066,7 +1070,8 @@ def _same_selected_sources(
         if (descriptor["source_type"] != source.source_type
             or (not source.distribution_source and Path(cast(str, descriptor["code"])) != source.plugin_root.resolve())
             or (source.distribution_source and (
-                not is_distribution_input(descriptor, selected[plugin_id][2])
+                descriptor.get("distribution_source") != source.distribution_source
+                or not is_distribution_input(descriptor, selected[plugin_id][2])
                 or _distribution_code_identity(selected[plugin_id][2]) != _distribution_code_identity(source.plugin_root)))
             or descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag,
                                          "binding_api": PLUGIN_INPUT_API}):
@@ -1141,7 +1146,7 @@ def publish_distribution(
                 _check_distribution_sources(distribution, report)
                 if adoption is not None and adoption["distribution_source_commit"] != report["source_commit"]:
                     raise SelectionConflictError("历史归属转换的目标发行版不符")
-                components, selected = _selected_components(selection, expected_root)
+                components, selected = _selected_components(selection, expected_root, replacing_distribution=True)
                 available, candidate = _distribution_candidate(
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
                     replacement_ids=frozenset(item["plugin_id"] for item in requested),
@@ -1157,7 +1162,8 @@ def publish_distribution(
                     workspace=workspace, plugins_home=plugins_home,
                 )
                 replacements = {item["plugin_id"]: item["code"] for item in targets}
-                migration_sources = distribution_migration_sources(workspace, plugins_home, distribution, adoption=adoption)
+                migration_sources = distribution_migration_sources(workspace, plugins_home, distribution,
+                                                                    adoption=adoption, replacing_distribution=True)
                 reserved_ids = {f"{item.plugin_name}@{item.marketplace}" for item in migration_sources}
                 reserved_ids.update(available.legacy_ids)
                 if reserved_ids.intersection(replacements):
