@@ -251,7 +251,7 @@ class ModelsStore:
                 else:
                     connection.execute("BEGIN IMMEDIATE")
                     _require_base_schema(connection)
-                    additions = _missing_additive_columns(connection)
+                    additions = _missing_schema_additions(connection)
                     legacy_driver_ids = _legacy_openai_driver_ids(connection)
                     if additions or legacy_driver_ids:
                         self._backup_locked(connection, "upgrade-schema")
@@ -1340,7 +1340,8 @@ def _require_base_schema(connection: sqlite3.Connection) -> None:
         raise RuntimeError(f"model registry schema is incomplete: {', '.join(missing)}")
 
 
-def _missing_additive_columns(connection: sqlite3.Connection) -> tuple[str, ...]:
+def _missing_schema_additions(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """仅增加缺少的列和请求查询索引，既有调用事实保持不变。"""
     statements: list[str] = []
     if "driver_config_json" not in _columns(connection, "model_connections"):
         statements.append(
@@ -1371,6 +1372,8 @@ def _missing_additive_columns(connection: sqlite3.Connection) -> tuple[str, ...]
             for name in _MODEL_CALLS_ATTEMPT_COLUMNS
             if name not in call_columns
         )
+        if not any(row[1] == "model_calls_request_key" for row in connection.execute("PRAGMA index_list(model_calls)")):
+            statements.append(_MODEL_CALLS_REQUEST_INDEX)
     return tuple(statements)
 
 
@@ -1988,7 +1991,12 @@ def require_attempt_schema(connection: sqlite3.Connection) -> None:
         raise RuntimeError("model_calls 缺少 attempt 记账列，请先运行对应 yoyo 迁移")
 
 
-_SCHEMA = MODEL_CALLS_SCHEMA + ";\n" + """
+_MODEL_CALLS_REQUEST_INDEX = (
+    "CREATE INDEX model_calls_request_key ON model_calls(request_key, attempt, id)"
+)
+
+
+_SCHEMA = MODEL_CALLS_SCHEMA + ";\n" + _MODEL_CALLS_REQUEST_INDEX + ";\n" + """
 CREATE TABLE model_registry_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     revision INTEGER NOT NULL CHECK (revision >= 0),
