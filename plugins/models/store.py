@@ -7,7 +7,6 @@ import logging
 import math
 import os
 import sqlite3
-import stat
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
@@ -283,8 +282,6 @@ class ModelsStore:
             # 持有（同进程收养或别的宿主）不受影响。
             self.close()
             raise
-        finally:
-            self._secure_files()
 
     def read_snapshot(self) -> StoredSnapshot | None:
         """Read connections, models, bindings, and revision from one transaction."""
@@ -1137,8 +1134,6 @@ class ModelsStore:
             yield connection
         finally:
             connection.close()
-            if not read_only:
-                self._secure_files()
 
     def _acquire_host_lock(self) -> bool:
         """账本宿主的独占证据：flock 由持有者在整个生命周期持有。
@@ -1168,7 +1163,6 @@ class ModelsStore:
             ) from None
         _PROCESS_HOST_LOCKS[lock_path] = (descriptor, 1)
         self._host_lock_file = descriptor
-        os.chmod(lock_path, 0o600)
         return True
 
     @property
@@ -1194,24 +1188,11 @@ class ModelsStore:
 
     def _create_database_file(self) -> bool:
         if self.path.exists():
-            os.chmod(self.path, 0o600)
             return False
         descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
         return True
 
-    def _secure_files(self) -> None:
-        for candidate in (
-            self.path,
-            self.path.with_name(f"{self.path.name}-wal"),
-            self.path.with_name(f"{self.path.name}-shm"),
-        ):
-            try:
-                mode = stat.S_IMODE(candidate.stat().st_mode)
-            except FileNotFoundError:
-                continue
-            if mode != 0o600:
-                os.chmod(candidate, 0o600)
 
 
 def _revision(connection: sqlite3.Connection) -> int:
