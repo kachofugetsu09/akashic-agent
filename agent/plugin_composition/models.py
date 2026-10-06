@@ -133,8 +133,6 @@ class ModelRequest:
     # 本次完整展示、尚无成功展示回执的消息内容位置；不发送给 provider。
     content_refs: tuple[tuple[str, int], ...] = ()
     content_transformed: bool = False
-    # 临时材料不能留在供应商会话中；仍保留真实调用账与 assistant 协议元数据。
-    retain_continuation: bool = True
 
     def __post_init__(self) -> None:
         """在唯一调用边界冻结请求，adapter 和并行调用不能改写彼此输入。"""
@@ -147,8 +145,6 @@ class ModelRequest:
         object.__setattr__(self, "content_refs", read_content_refs(self.content_refs))
         if type(self.content_transformed) is not bool:
             raise ValueError("内容投影标记必须是 bool")
-        if type(self.retain_continuation) is not bool:
-            raise ValueError("continuation 保留策略必须是 bool")
         if isinstance(self.tool_choice, Mapping):
             object.__setattr__(
                 self, "tool_choice", _freeze_json_mapping(self.tool_choice)
