@@ -8,6 +8,7 @@ import importlib.util
 import logging
 import os
 import secrets
+import stat
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextvars import Context as TaskContext
@@ -2513,13 +2514,13 @@ def _source_metadata_revision(plugin_dir: Path) -> bytes:
             path = current_path / name
             relative = path.relative_to(plugin_dir)
             try:
-                stat = path.lstat()
+                metadata = path.lstat()
             except FileNotFoundError:
                 continue
             digest.update(str(relative).encode())
-            digest.update(str(stat.st_mtime_ns).encode())
-            digest.update(str(stat.st_size).encode())
-            if path.is_symlink():
+            digest.update(str(metadata.st_mtime_ns).encode())
+            digest.update(str(metadata.st_size).encode())
+            if stat.S_ISLNK(metadata.st_mode):
                 digest.update(os.readlink(path).encode())
     return digest.digest()
 
