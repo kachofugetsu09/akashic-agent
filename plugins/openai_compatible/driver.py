@@ -461,6 +461,11 @@ def _chat_body(
     if request.system_prompt and not (messages and messages[0].get("role") == "system"):
         messages.insert(0, {"role": "system", "content": request.system_prompt})
     messages = _merge_leading_system_messages(messages)
+    if connection.thinking_format == "deepseek" and not request.disable_reasoning:
+        # DeepSeek 的工具续接要求此字段，即使此前响应没有返回思考正文。
+        for message in messages:
+            if message.get("role") == "assistant":
+                message.setdefault("reasoning_content", "")
     body: dict[str, Any] = {
         "model": descriptor.model,
         "messages": messages,
