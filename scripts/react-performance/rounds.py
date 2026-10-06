@@ -9,13 +9,24 @@ from pathlib import Path
 from typing import Any
 
 
-def rows(path: Path) -> list[dict[str, Any]]:
-    """允许混合启动日志；未写完的最后一行不作为证据。"""
+def rows(path: Path, *, client_events: bool = False) -> list[dict[str, Any]]:
+    """逐行读取；跳过未完成行，客户端只保留计时所需事件。"""
     result = []
-    for line in path.read_text().split("\n")[:-1]:
-        if not line.startswith("{"):
-            continue
-        result.append(json.loads(line))
+    with path.open() as stream:
+        for line in stream:
+            if not line.endswith("\n") or not line.startswith("{"):
+                continue
+            row = json.loads(line)
+            event = row.get("event", {})
+            if client_events and not (
+                row.get("bench") == "input" or event.get("bench") == "input"
+                or event.get("type") in {
+                    "messages.appended", "session.following", "message_end", "agent_end",
+                    "tool_execution_start", "tool_execution_end",
+                }
+            ):
+                continue
+            result.append(row)
     return result
 
 
@@ -196,7 +207,7 @@ def main() -> None:
     args = parser.parse_args()
     result = analyze(
         rows(args.wire),
-        rows(args.events),
+        rows(args.events, client_events=True),
         [] if args.timing is None else rows(args.timing),
         args.label,
         args.harness,
