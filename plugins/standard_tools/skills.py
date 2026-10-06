@@ -18,6 +18,7 @@ from ._materials_boundary import MATERIALS
 from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
 from .skill_catalog import (
     SKILL_INSPECTION,
+    SkillCatalog,
     SkillCatalogParser,
     SkillInspectionProvider,
     SkillRecord,
@@ -35,10 +36,18 @@ class SkillState(BaseModel):
     version: Literal[2]
 
 
+_LOCAL_SOURCE_STATUS = {
+    "missing": "不存在",
+    "not_directory": "不是目录",
+    "unreadable": "不可读",
+    "ready": "可用",
+}
+
+
 class SkillTool:
     idempotent = True
 
-    def __init__(self, read_catalog: Callable[[], Awaitable[tuple[SkillRecord, ...]]]):
+    def __init__(self, read_catalog: Callable[[], Awaitable[SkillCatalog]]):
         self._read_catalog = read_catalog
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
@@ -47,10 +56,15 @@ class SkillTool:
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
         """使用时读取当前 Skill；已完成的调用结果仍由工具回执保存。"""
         name = cast(str, arguments["skill"])
-        records = await self._read_catalog()
-        record = next((item for item in records if item.name == name), None)
+        catalog = await self._read_catalog()
+        record = next((item for item in catalog.records if item.name == name), None)
         if record is None:
-            return ToolResultValue("error", (ContentPart("text", f"技能不存在或已移除：{name}"),))
+            probed = "；".join(
+                f"{item.source} {item.root} {_LOCAL_SOURCE_STATUS[item.status]}({item.skills})"
+                for item in catalog.sources
+            )
+            suffix = f"；本地来源：{probed}" if probed else ""
+            return ToolResultValue("error", (ContentPart("text", f"技能不存在或已移除：{name}{suffix}"),))
         if not record.available:
             return ToolResultValue("error", (ContentPart("text", f"技能不可用：{name}；缺少依赖：{record.missing}"),))
         body = skill_body(record.content)
@@ -72,13 +86,13 @@ async def register_skills(ctx: Context) -> ToolRef:
     parser = SkillCatalogParser()
     io_lock = asyncio.Lock()
 
-    async def read_catalog(assets: tuple[InstalledAsset, ...]) -> tuple[SkillRecord, ...]:
+    async def read_catalog(assets: tuple[InstalledAsset, ...]) -> SkillCatalog:
         """读取当前文件与依赖；文件线程完成后才释放贡献者租约。"""
         workspace_dir = ctx.runtime.workspace
         return await run_file_io(lambda: parser.parse(assets, workspace_dir=workspace_dir))
 
     @ctx.entrypoint
-    async def read_inspection_catalog() -> tuple[SkillRecord, ...]:
+    async def read_inspection_catalog() -> SkillCatalog:
         """读取结束前保留技能 owner 与资产贡献者。"""
         async with io_lock, read_assets.open(ctx, category="skills") as assets:
             return await read_catalog(assets)
@@ -99,8 +113,8 @@ async def register_skills(ctx: Context) -> ToolRef:
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
         """常驻技能与工具读取均使用当前目录。"""
         async with io_lock, read_assets.open(ctx, category="skills") as assets:
-            records = await read_catalog(assets)
-            return await run_file_io(lambda: build_prompt(records))
+            catalog = await read_catalog(assets)
+            return await run_file_io(lambda: build_prompt(catalog.records))
 
     def build_prompt(records: tuple[SkillRecord, ...]) -> Mapping[str, object]:
         """在文件线程构造本次提示，不生成资源副本。"""

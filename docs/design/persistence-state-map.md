@@ -697,14 +697,21 @@ python scripts/rollback_plugin_install.py \
 
 ### 10.4 `skills/` 与 `drift/skills/`
 
-当前实现允许两种对象并存：
+2026-10-06 对账：Skill 来源是分层 Provider（[0091](../decisions/0091-skill-sources-are-layered-providers.md)），
+`<workspace>/skills` 覆盖 `~/.akashic/skills` 覆盖插件随包资产；本地目录不再需要封装成插件。
+`PluginSkillLinker` 与 skill-files 归档已删除（[0094](../decisions/0094-plugin-runtime-uses-installed-files.md)），
+读取时热解析，不保留历史资源树。本地来源目录的探测状态经 `inspection/skills.list`
+的 `sources` 字段投影：不存在、不是目录、不可读都可见，不再静默跳过。历史手工目录、
+软链接和 ownership journal 保留，不自动减少。
 
-1. `PluginSkillLinker` 根据 active plugin generation 创建的软链接，这是目标路径，也是可重建投影。
-2. 手工创建的真实目录仍会被 loader 读取，这是需要迁移的兼容路径，不再承担新的 canonical 能力所有权。
+以下保留旧协议原文作历史事实，不授权当前行为：
 
-**F-014：** 新 Skill 和 Drift skill 必须装进插件，由插件 source 持有正文。备份和迁移应记录插件 manifest/source，并在恢复后重建 workspace 软链接，不能把链接目标复制成 workspace 内的普通目录。
+1. `PluginSkillLinker` 根据 active plugin generation 创建的软链接（已删除）。
+2. 手工创建的真实目录被旧 loader 读取（现已是正式的 workspace 本地来源）。
 
-**G-004A：** 仓库仍有手工 skill 创建与加载路径。后续迁移需要先把现存真实目录封装成插件，再收窄 loader 和写入工具；直接删除目录会丢失尚未迁移的能力。
+**F-014（历史，已被 0091 与 0094 取代）：** 新 Skill 和 Drift skill 必须装进插件，由插件 source 持有正文。备份和迁移应记录插件 manifest/source，并在恢复后重建 workspace 软链接，不能把链接目标复制成 workspace 内的普通目录。
+
+**G-004A（历史，已被 0091 取代）：** 仓库仍有手工 skill 创建与加载路径。后续迁移需要先把现存真实目录封装成插件，再收窄 loader 和写入工具；直接删除目录会丢失尚未迁移的能力。
 
 ### 10.5 `memes/manifest.json`
 

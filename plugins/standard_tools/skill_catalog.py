@@ -40,6 +40,9 @@ class RequirementsAvailability(Protocol):
     def missing_env(self) -> tuple[str, ...]: ...
 
 
+SkillSourceStatusKind = Literal["missing", "not_directory", "unreadable", "ready"]
+
+
 @dataclass(frozen=True, slots=True)
 class SkillRecord:
     """保存一次读取的 Skill 正文与来源；资源使用时读取当前文件。"""
@@ -57,6 +60,24 @@ class SkillRecord:
     always: bool
     available: bool
     missing: str
+
+
+@dataclass(frozen=True, slots=True)
+class SkillSourceStatus:
+    """本地来源目录的一次探测结果；只用于诊断投影与报错提示，不改变可用性语义。"""
+
+    source: SkillSource
+    root: Path
+    status: SkillSourceStatusKind
+    skills: int
+
+
+@dataclass(frozen=True, slots=True)
+class SkillCatalog:
+    """一次分层解析的结果；记录与本地来源探测共用同一次目录扫描。"""
+
+    records: tuple[SkillRecord, ...]
+    sources: tuple[SkillSourceStatus, ...]
 
 
 def skill_body(content: str) -> str:
@@ -114,7 +135,7 @@ class SkillCatalogParser:
         workspace_dir: Path | None = None,
         user_dir: Path | None = None,
         category: str = "skills",
-    ) -> tuple[SkillRecord, ...]:
+    ) -> SkillCatalog:
         records: dict[str, SkillRecord] = {}
 
         # 1. 插件随包资产（最低优先级，同层重名报错）
@@ -147,23 +168,47 @@ class SkillCatalogParser:
         # 2. 本地来源按 user、workspace 顺序覆盖；普通目录链接可直接使用。
         records.update(plugin_records)
         plugin_roots = {item.root_dir.resolve() for item in plugin_records.values()}
+        sources: list[SkillSourceStatus] = []
         for source, root in self.local_roots(workspace_dir=workspace_dir, user_dir=user_dir):
-            if not root.is_dir():
-                continue
-            for skill_dir in sorted(root.iterdir(), key=_by_name):
-                if not skill_dir.is_dir():
-                    continue
-                resolved = skill_dir.resolve(strict=True)
-                if source == "workspace" and skill_dir.is_symlink() and resolved in plugin_roots:
-                    continue
-                skill_file = resolved / "SKILL.md"
-                if skill_file.is_file():
-                    records[skill_dir.name] = self._build_record(
-                        name=skill_dir.name, root_dir=resolved, skill_file=skill_file,
-                        source=source, source_id=str(root),
-                    )
+            status: SkillSourceStatusKind = "ready"
+            if not root.exists():
+                status = "missing"
+            elif not root.is_dir():
+                status = "not_directory"
+            count = 0
+            if status == "ready":
+                try:
+                    children = sorted(root.iterdir(), key=_by_name)
+                except FileNotFoundError:
+                    children = []
+                    status = "missing"
+                except OSError:
+                    children = []
+                    status = "unreadable"
+                for skill_dir in children:
+                    if not skill_dir.is_dir():
+                        continue
+                    try:
+                        resolved = skill_dir.resolve(strict=True)
+                    except OSError:
+                        continue
+                    if source == "workspace" and skill_dir.is_symlink() and resolved in plugin_roots:
+                        continue
+                    skill_file = resolved / "SKILL.md"
+                    if skill_file.is_file():
+                        records[skill_dir.name] = self._build_record(
+                            name=skill_dir.name, root_dir=resolved, skill_file=skill_file,
+                            source=source, source_id=str(root),
+                        )
+                        count += 1
+            sources.append(
+                SkillSourceStatus(source=source, root=root, status=status, skills=count)
+            )
 
-        return tuple(records[name] for name in sorted(records))
+        return SkillCatalog(
+            records=tuple(records[name] for name in sorted(records)),
+            sources=tuple(sources),
+        )
 
     def _build_record(
         self,
@@ -300,9 +345,9 @@ class SkillCatalogParser:
 
 
 class SkillInspectionProvider:
-    """向宿主发布当前固定 generation 的技能只读投影。"""
+    """向宿主发布当前固定 generation 的技能与本地来源只读投影。"""
 
-    def __init__(self, read_catalog: Callable[[], Awaitable[tuple[SkillRecord, ...]]]) -> None:
+    def __init__(self, read_catalog: Callable[[], Awaitable[SkillCatalog]]) -> None:
         self._read_catalog = read_catalog
 
     async def list_skills(self) -> tuple[Mapping[str, object], ...]:
@@ -316,14 +361,29 @@ class SkillInspectionProvider:
                 "available": record.available,
                 "missing": record.missing,
             }
-            for record in await self._read_catalog()
+            for record in (await self._read_catalog()).records
+        )
+
+    async def list_sources(self) -> tuple[Mapping[str, object], ...]:
+        """本地来源缺失或不可读也出现在投影里，让静默缺席可见。"""
+
+        return tuple(
+            {
+                "source": item.source,
+                "root": str(item.root),
+                "status": item.status,
+                "skills": item.skills,
+            }
+            for item in (await self._read_catalog()).sources
         )
 
 
 __all__ = [
     "SKILL_INSPECTION",
+    "SkillCatalog",
     "SkillCatalogParser",
     "SkillInspectionProvider",
     "SkillRecord",
+    "SkillSourceStatus",
     "skill_body",
 ]
