@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mappi
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal, TypeVar, cast
 from pathlib import Path
 from types import MappingProxyType
@@ -358,7 +359,7 @@ class MessageLog:
         self._listener_lock = threading.Lock()
         self._decode_lock = threading.RLock()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
-        self._decoded_owners: WeakValueDictionary[tuple[object, ...], OwnerRecord] = WeakValueDictionary()
+        self._decode_owner = lru_cache(maxsize=16)(_owner_record)
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
@@ -756,6 +757,7 @@ class MessageLog:
             for read in idle_reads:
                 read.connection.close()
             self._writer_connection.close()
+            self._decode_owner.cache_clear()
             with self._listener_lock:
                 listeners = tuple(self._listeners.items())
             for event, loop in listeners:
@@ -1775,15 +1777,8 @@ class OwnerStore:
         return None if row is None else self._decode(row)
 
     def _decode(self, row: sqlite3.Row) -> OwnerRecord:
-        """只复用当前 SQL 行相同且仍被调用者持有的不可变记录。"""
-        key = (row["version"], row["value"])
-        with self._log._decode_lock:
-            record = self._log._decoded_owners.get(key)
-        if record is None:
-            record = _owner_record(row)
-            with self._log._decode_lock:
-                self._log._decoded_owners[key] = record
-        return record
+        """按本次 SQL 的版本和正文复用最近的解码值。"""
+        return self._log._decode_owner(row["version"], row["value"])
 
     def list(self) -> tuple[tuple[str, OwnerRecord], ...]:
         with self._log._read():
@@ -2018,13 +2013,13 @@ def _page_references(
     return MappingProxyType({key: tuple(refs) for key, refs in attachments.items()}), MappingProxyType(bindings)
 
 
-def _owner_record(row: sqlite3.Row) -> OwnerRecord:
-    if type(row["version"]) is not int or row["version"] < 0:
+def _owner_record(version: int, raw: str) -> OwnerRecord:
+    if type(version) is not int or version < 0:
         raise ValueError("owner 记录版本无效")
-    value = freeze_json(json.loads(row["value"]))
+    value = freeze_json(json.loads(raw))
     if not isinstance(value, Mapping):
         raise ValueError("owner 记录不是 JSON 对象")
-    return OwnerRecord(row["version"], cast(Mapping[str, object], value))
+    return OwnerRecord(version, cast(Mapping[str, object], value))
 
 
 def _message_metadata(raw: str, session_id: str, message_id: str) -> Mapping[str, object]:

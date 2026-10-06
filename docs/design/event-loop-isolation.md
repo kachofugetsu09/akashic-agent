@@ -6,7 +6,7 @@ Long history reads use a private read-only SQLite transaction and connection. Ne
 
 同一 MessageLog 的连接共享弱引用解码缓存，只在完整数据库行相同时复用仍被调用者持有的不可变 Message。每次读取仍执行原 SQL，先由该连接的事务确定可见行；外部修改、撤销和回滚不能通过缓存隐藏。缓存使用独立短锁，不持有 writer 锁，也不延长 Message 的生命周期。
 
-OwnerRecord 也只在实际读取的版本和 JSON 正文完全相同时复用解码结果。弱引用不保留无人使用的大请求；SQL 读取、版本 CAS、固定快照与损坏记录报错保持不变。
+OwnerRecord 按实际读取的版本和 JSON 正文复用最近 16 份解码结果，账本关闭时清空。调用者只取 value 时，记录壳的回收不再触发重复解码；SQL 读取、版本 CAS、固定快照与损坏记录报错保持不变。
 
 会话目录的 heads 快照只在同一只读连接的 SQLite `data_version` 未变时复用；不同连接的版本不能相互比较。每个连接只保留最近一份目录，外部或本地 writer 提交后重新读取；当前 writer 的未提交事务不使用此缓存。固定只读事务仍观察原快照，归还连接后下一次读取再观察新提交。
 
