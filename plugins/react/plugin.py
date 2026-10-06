@@ -765,16 +765,17 @@ async def react(
                 encoded_request = _encode_request(request)
                 fixed_materials = dict(built)
 
-                def open_prep(transaction: OwnerTransaction) -> Mapping[str, object]:
+                def open_prep(transaction: OwnerTransaction) -> tuple[Mapping[str, object], bool]:
                     record = transaction.read(prep_key)
                     if record is None:
-                        record = transaction.save(prep_key, {
+                        value: dict[str, object] = {
                             "version": 3, "output_id": uuid4().hex,
                             "request_keys": [uuid4().hex], "base_seq": base_seq,
                             "binding_id": binding_id,
                             "attempts": [],
-                        }, expected_version=None)
-                    value = dict(record.value)
+                        }
+                    else:
+                        value = dict(record.value)
                     entries: list[Mapping[str, object] | None] = list(
                         cast(Sequence[Mapping[str, object] | None], value.get("attempts") or ())
                     )
@@ -782,21 +783,25 @@ async def react(
                         entries = [{"request": value["request"], "materials": value["materials"]}]
                     while len(entries) <= attempt:
                         entries.append(None)
-                    if entries[attempt] is None:
+                    created = entries[attempt] is None
+                    if created:
                         entries[attempt] = {
                             "request": encoded_request,
                             "materials": fixed_materials,
                         }
                         record = transaction.save(
                             prep_key, {**value, "attempts": entries},
-                            expected_version=record.version,
+                            expected_version=None if record is None else record.version,
                         )
                         value = dict(record.value)
                         entries = list(cast(Sequence[Mapping[str, object]], value["attempts"]))
-                    return cast(Mapping[str, object], entries[attempt])
+                    return cast(Mapping[str, object], entries[attempt]), created
 
-                entry = await state.transact_async(open_prep)
-                return _decode_request(entry["request"]), cast(Materials, entry["materials"])
+                entry, created = await state.transact_async(open_prep)
+                # 刚提交的请求已不可变；只有恢复旧记录时才重新解码。
+                saved_request = (replace(request, on_delta=None, request_key=None)
+                                 if created else _decode_request(entry["request"]))
+                return saved_request, cast(Materials, entry["materials"])
 
             async def claim_attempt(attempt: int) -> tuple[str, str | None]:
                 def advance(transaction: OwnerTransaction) -> tuple[str, str]:
