@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx
+from core.net.http import retry_after_time
 
 from agent.plugin_composition.models import (
     AuthenticationError, BoundModelDescriptor, CapabilitySources, ContentSafetyError,
@@ -197,7 +198,7 @@ class _Chat:
         except httpx.TransportError as cause:
             raise TransportError(f"Gemini 传输中断：{type(cause).__name__}") from cause
         except (json.JSONDecodeError, UnicodeDecodeError) as cause:
-            raise TransportError("Gemini 返回了无效 JSON") from cause
+            raise ModelError("Gemini 返回了无效 JSON") from cause
 
 
 def _body(request: ModelRequest, model: BoundModelDescriptor) -> dict[str, Any]:
@@ -304,7 +305,7 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
         raise ContentSafetyError("Gemini 拒绝了当前输入")
     candidates = _list(data.get('candidates', []), "candidates")
     if len(candidates) > 1:
-        raise TransportError("Gemini 返回多个候选，违反 candidateCount=1")
+        raise ModelError("Gemini 返回多个候选，违反 candidateCount=1")
     candidate = _object(candidates[0], "candidate") if candidates else {}
     reason = candidate.get('finishReason')
     if reason is not None:
@@ -312,19 +313,19 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
     if reason in {'SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'}:
         raise ContentSafetyError(f"Gemini 输出被拒绝：{reason}")
     if reason in {'MALFORMED_FUNCTION_CALL', 'UNEXPECTED_TOOL_CALL'}:
-        raise TransportError(f"Gemini 工具协议失败：{reason}")
+        raise ModelError(f"Gemini 工具协议失败：{reason}")
     content = _object(candidate.get('content', {}), "content")
     if content.get('role', 'model') != 'model':
-        raise TransportError("Gemini 候选角色必须为 model")
+        raise ModelError("Gemini 候选角色必须为 model")
     parts = []
     for part in _list(content.get('parts', []), "parts"):
         part = _object(part, "part")
         if 'thought' in part and type(part['thought']) is not bool:
-            raise TransportError("Gemini thought 必须为布尔值")
+            raise ModelError("Gemini thought 必须为布尔值")
         if 'thoughtSignature' in part:
             _string(part['thoughtSignature'], "thoughtSignature")
         if 'text' in part and not isinstance(part['text'], str):
-            raise TransportError("Gemini text 必须为字符串")
+            raise ModelError("Gemini text 必须为字符串")
         if 'functionCall' in part:
             function = _object(part['functionCall'], "functionCall")
             _string(function.get('name'), "functionCall.name")
@@ -332,7 +333,7 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
             if 'id' in function:
                 _string(function['id'], "functionCall.id")
         elif 'text' not in part:
-            raise TransportError("Gemini 返回了尚不支持的原生内容块")
+            raise ModelError("Gemini 返回了尚不支持的原生内容块")
         parts.append(part)
     raw_usage = data.get('usageMetadata')
     usage = None
@@ -351,14 +352,14 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
 
 def _answer(parts: list[dict[str, Any]], finish: str | None, usage: ModelUsage | None) -> LLMResponse:
     """展示文本与工具请求各取所需；签名和原部件仍由账本完整保存。"""
-    if finish is None or not parts:
+    if finish is None or (not parts and finish != 'MAX_TOKENS'):
         raise TransportError("Gemini 返回了未结束或空的响应")
     if finish not in {'STOP', 'MAX_TOKENS'}:
-        raise TransportError(f"Gemini 未正常完成生成：{finish}")
+        raise ModelError(f"Gemini 未正常完成生成：{finish}")
     calls = [ToolCall(part['functionCall'].get('id') or 'call_' + uuid.uuid4().hex,
         part['functionCall']['name'], part['functionCall'].get('args', {})) for part in parts if 'functionCall' in part]
     if len({call.id for call in calls}) != len(calls):
-        raise TransportError("Gemini 返回重复工具调用 ID")
+        raise ModelError("Gemini 返回重复工具调用 ID")
     text = ''.join(p.get('text', '') for p in parts if not p.get('thought'))
     thinking = ''.join(p.get('text', '') for p in parts if p.get('thought'))
     return LLMResponse(text or None, calls, thinking or None, 'tool_calls' if calls else ('length' if finish == 'MAX_TOKENS' else 'stop'),
@@ -383,30 +384,32 @@ def _status(response: httpx.Response) -> None:
         error = InvalidRequestError(f"Gemini 拒绝请求：HTTP {status}")
     if status < 500:
         error.send_evidence = "rejected"
+    if error.retryable:
+        error.retry_at = retry_after_time(response.headers.get("retry-after"))
     raise error
 
 
 def _object(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise TransportError(f"{label} 必须为 JSON 对象")
+        raise ModelError(f"{label} 必须为 JSON 对象")
     return value
 
 
 def _list(value: Any, label: str) -> list[Any]:
     if not isinstance(value, list):
-        raise TransportError(f"{label} 必须为 JSON 数组")
+        raise ModelError(f"{label} 必须为 JSON 数组")
     return value
 
 
 def _string(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value:
-        raise TransportError(f"{label} 必须为非空字符串")
+        raise ModelError(f"{label} 必须为非空字符串")
     return value
 
 
 def _count(value: Any, label: str) -> int | None:
     if value is not None and (type(value) is not int or value < 0):
-        raise TransportError(f"{label} 必须为非负整数")
+        raise ModelError(f"{label} 必须为非负整数")
     return value
 
 

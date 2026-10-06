@@ -263,8 +263,8 @@ class BoundChatModel(Protocol):
         - "rejected"：provider 明确容量拒绝——本代可续跑有界缩减，
           真实 resume 也可开新准备；
         - "answered"：其他可证明失败——真实 resume 后允许新准备如实付费；
-        - "uncertain"：取消/孤儿/传输/超时/未知名目——远端效果不可证，
-          resume 不得据此重付，仅新 Input 作为真正新工作可运行。
+        - "uncertain"：旧记录或没有恢复安排的未知失败；自动重入不重发，
+          新 Input 或显式 resume 可授权新的模型准备，工具效果仍按原回执恢复。
 
         非 "open" 即终结：终结 key 不因重启/重调获得新预算。"""
         ...
@@ -565,7 +565,7 @@ class ModelError(RuntimeError):
     # "rejected" = provider 以 HTTP 错误应答明确拒绝了请求（未进入流处理）；
     # "unsent"   = 连接建立失败或发送前本地校验失败，可证明请求未发出；
     # None       = 无任何可证明事实（HTTP 200 流内失败、读/写错误、超时、
-    #              取消等），一律按远端效果不确定处理，不得自动重试。
+    #              取消等），保留未知事实；模型自动恢复另由 retryable 决定。
     send_evidence: str | None = None
 
 

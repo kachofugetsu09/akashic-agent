@@ -339,13 +339,10 @@ context.build → model.complete → content.decode
 
 transport retry 由 Model owner 实施；context overflow 是明确的可恢复错误，由 ReAct 请 context 用同一输入快照准备更小请求，最多按已声明预算重试；Tool effect 恢复由 Tool owner 实施。这三类重试不进入一个万能 RetryManager。
 
-Models 的带 request key 聊天调用默认最多 3 次尝试（首次加 2 次安全重试）。
-连接的 driver_config.max_attempts 显式值优先，旧 max_retries 按 N+1 次尝试解释；
-设置 max_attempts=1 可关闭自动重试。这些字段由公开 Models 设置命令的连接配置拥有，
-driver 每次仍只发送一次。只有发送边界明确证明 unsent/rejected 且错误可重试时才继续；
-5xx、流中断、读写超时和取消等效果不确定的失败不因默认额度增加而重发。
-每次尝试与 next_attempt_at 在 Models 账本中记录，同 key 的重调或重启不刷新额度，
-没有 key 的调用仍只尝试一次。此额度不是精确费用上限。
+Models 的模型生成恢复按 [0092](../decisions/0092-model-generation-recovers-until-output.md)：
+默认持续恢复暂时错误，显式 max_attempts 或 max_retries 仍限制次数。每次物理调用与
+next_attempt_at 在原账本记录，driver 单次发送，ReAct 不重复 transport retry。
+失败流的瞬态草稿撤下，完整响应后才提交和分发工具；未知 usage 不等于零计费。
 
 Models 聊天的调用读取、开始、首字与终结记账使用现有有界磁盘线程，完整事务内部不跨 await。
 同 key 的活 owner 在等待存储前登记；Context、选择、driver 与活 attempt 登记仍留在 loop。

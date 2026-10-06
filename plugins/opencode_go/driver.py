@@ -743,8 +743,6 @@ async def _stream_chat(
             if mapped is error and not isinstance(error, ModelError):
                 raise
             response_delta_seen = bool(getattr(error, "response_delta_seen", False))
-            if response_delta_seen:
-                setattr(mapped, "retryable", False)
             if response_delta_seen or not _retryable(mapped) or attempt >= connection.max_retries:
                 raise mapped from error
             last_error = mapped

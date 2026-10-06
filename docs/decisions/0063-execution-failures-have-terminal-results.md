@@ -5,6 +5,8 @@
 - 范围：Tools、Delivery、Wake、scheduler、subagent、Mobile command、Models
 - 取代：旧执行合同中的 `unknown`、`outcome_unknown`、`delivery_unknown`、`uncertain` 状态
 
+> 2026-10-06：[0092](0092-model-generation-recovers-until-output.md) 调整模型生成恢复：暂时故障可继续原请求，未知计费不再禁止生成重试。下文 Tools、Delivery 和发送效果的原回执限制保持有效。
+
 ## 问题与选择
 
 `unknown` 混合了执行失败、取消、缺少回执和是否产生外部效果。Tools 已把它保存为结果，

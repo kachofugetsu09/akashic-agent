@@ -391,7 +391,7 @@ class ModelsStore:
         *,
         request_key: str | None,
         owner_id: str | None,
-        max_attempts: int,
+        max_attempts: int | None,
     ) -> str:
         """在同一事务内核对 keyed 准入并记账，过时的读取不能再次发送。"""
         if not self.writable:
@@ -422,7 +422,7 @@ class ModelsStore:
                 raise ValueError("同一模型请求 key 的 binding 不一致")
             if any(row["state"] != "error" for row in rows):
                 raise ModelUnavailableError("同一请求已有成功或正在结算的调用")
-            if len(rows) >= max_attempts:
+            if max_attempts is not None and len(rows) >= max_attempts:
                 raise ModelUnavailableError("模型调用重试预算耗尽")
             if rows:
                 next_at = rows[-1]["next_attempt_at"]

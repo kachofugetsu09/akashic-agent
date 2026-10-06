@@ -120,15 +120,15 @@ class CodexResponses:
             if isinstance(exc, httpx.ConnectTimeout):
                 # 连接建立失败可证明请求未发出。
                 error.send_evidence = "unsent"
-            elif getattr(exc, "response_delta_seen", False):
-                setattr(error, "retryable", False)
+            if getattr(exc, "response_delta_seen", False):
+                setattr(error, "response_delta_seen", True)
             raise error from exc
         except httpx.TransportError as exc:
             error = TransportError(describe_transport_error(exc))
             if isinstance(exc, httpx.ConnectError):
                 error.send_evidence = "unsent"
-            elif getattr(exc, "response_delta_seen", False):
-                setattr(error, "retryable", False)
+            if getattr(exc, "response_delta_seen", False):
+                setattr(error, "response_delta_seen", True)
             raise error from exc
 
     async def _rotate_rejected(self, token: str) -> bool:
@@ -342,13 +342,11 @@ async def _consume_stream(
     except Exception as exc:
         if delta_seen:
             setattr(exc, "response_delta_seen", True)
-            if hasattr(exc, "retryable"):
-                setattr(exc, "retryable", False)
         raise
     if not completed:
         error = TransportError("Codex Responses 在 completed 事件前断流")
         if delta_seen:
-            setattr(error, "retryable", False)
+            setattr(error, "response_delta_seen", True)
         raise error
     try:
         calls = [_tool_call(item) for item in tool_args.values() if item.get("name")]

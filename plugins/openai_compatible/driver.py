@@ -649,8 +649,6 @@ async def _stream_chat(
             # HTTP 200 流的任何失败都不携带 send_evidence，_retryable
             # 不会授予重发——无论是否观察到 delta。
             response_delta_seen = bool(getattr(error, "response_delta_seen", False))
-            if response_delta_seen:
-                setattr(mapped, "retryable", False)
             if (
                 response_delta_seen
                 or not _retryable(mapped)
