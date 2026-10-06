@@ -23,25 +23,6 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 
 
-class BindingScope:
-    """只读取本次打开的精确服务，不能发布或改变正式 Root。"""
-
-    def __init__(self, root: CompositionRoot):
-        self._root = root
-        self._active = True
-
-    def require(self, key: ServiceKey[_T]) -> _T:
-        if not self._active:
-            raise RuntimeError("binding scope 已关闭")
-        value = self._root.service_value(key)
-        if value is None:
-            raise RuntimeError(f"当前 Root 不提供服务: {key.name}")
-        return value
-
-    def _expire(self) -> None:
-        self._active = False
-
-
 class Bindings:
     """保存业务选择与来源证据；打开当前 provider，由它校验业务兼容性。"""
 

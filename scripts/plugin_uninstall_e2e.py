@@ -80,7 +80,7 @@ async def apply(ctx):
 
 
 async def recover(manager, client, root, workspace, blocked=False):
-    """真实截止时间取消 provider 后，从已选归档恢复并核对效果次数。"""
+    """真实截止时间取消 provider 后，从当前选择恢复并核对效果次数。"""
     from agent.plugin_composition import ServiceKey, FiberState
     source = root / 'sources/z_registry'
     text = (source / 'plugin.py').read_text().replace("version = '1'", "version = '2'")
@@ -216,7 +216,8 @@ def git(path: Path, *args: str) -> str:
     return subprocess.check_output(['git', '-C', str(path), *args], text=True).strip()
 
 
-def install_fixture(root: Path, workspace: Path, home: Path, name: str, text: str, files: dict[str, str] | None = None) -> None:
+def install_fixture(root: Path, workspace: Path, home: Path, name: str, text: str,
+                    files: dict[str, str] | None = None, *, seed_core: Path | None = None) -> None:
     """按正式 Git 安装链准备普通插件，不编辑安装 cache。"""
     from agent.plugins.install import install_git_plugin
     source = root / 'sources' / name
@@ -228,7 +229,16 @@ def install_fixture(root: Path, workspace: Path, home: Path, name: str, text: st
     git(source, 'add', '.')
     git(source, '-c', 'user.name=E2E', '-c', 'user.email=e2e@example.invalid',
         '-c', 'commit.gpgSign=false', 'commit', '-qm', 'fixture')
-    install_git_plugin(workspace=workspace, source=str(source), marketplace='lab', plugins_home=home)
+    if seed_core is None:
+        install_git_plugin(workspace=workspace, source=str(source), marketplace='lab', plugins_home=home)
+    else:
+        script = ('import sys; from pathlib import Path; from agent.plugins.install import install_git_plugin; '
+                  'install_git_plugin(workspace=Path(sys.argv[1]), source=sys.argv[2], '
+                  'marketplace="lab", plugins_home=Path(sys.argv[3]))')
+        env = {**os.environ, 'PYTHONPATH': os.pathsep.join((str(seed_core), str(seed_core / 'sdk/python/src')))}
+        with (source / 'old-install.log').open('w') as output:
+            subprocess.run([sys.executable, '-c', script, str(workspace), str(source), str(home)],
+                           cwd=root, env=env, check=True, stdout=output, stderr=output, timeout=60)
 
 
 async def wait_for(check, message: str) -> None:
@@ -265,7 +275,7 @@ async def check_provenance(app, manager, plugins, workspace):
     assert (target.data_dir / 'activations.txt').read_bytes() == effects
     assert (workspace / 'runtime/plugin-stable.json').read_bytes() == selected
     return {'full_provenance_check': 'passed', 'manual_wake_provenance': 'passed',
-            'archive_provenance_retained': 'passed', 'no_selection_rewrite': 'passed'}
+            'installed_provenance_retained': 'passed', 'no_selection_rewrite': 'passed'}
 
 
 async def check_runtime_cli(root, core):
@@ -329,9 +339,11 @@ async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict
     os.environ['AKASHIC_EXTRA_PLUGIN_DIRS'] = str(plugins)
     config = root / 'config.toml'
     env = {**os.environ, 'PYTHONPATH': os.pathsep.join(sys.path[:2])}
+    init_core = seed_core or core
+    init_env = {**env, 'PYTHONPATH': os.pathsep.join((str(init_core), str(init_core / 'sdk/python/src')))}
     with (root / 'init.log').open('w') as output:
-        subprocess.run([sys.executable, str(core / 'main.py'), 'init', '--config', str(config),
-                        '--workspace', str(workspace)], env=env, check=True, stdout=output, stderr=output)
+        subprocess.run([sys.executable, str(init_core / 'main.py'), 'init', '--config', str(config),
+                        '--workspace', str(workspace)], env=init_env, check=True, stdout=output, stderr=output)
     if case == 'provenance':
         # 全量检查使用独立且就绪的普通组合，避免无模型默认配置的其他失败。
         from agent.plugins.static_manifest import load_static_plugin_manifest
@@ -348,13 +360,13 @@ async def run(root: Path, core: Path, case: str, seed_core: Path | None) -> dict
         provider = provider.replace('inject = ()', "inject = (ServiceKey('e2e.gate'),)").replace(
             'async def apply(ctx):', "async def apply(ctx):\n    if version == '2':\n        entered, release = ctx.require(inject[0])\n        entered.set()\n        await release.wait()")
     for name, source in [('z_registry', provider), *fixtures]:
-        install_fixture(root, workspace, home, name, source)
+        install_fixture(root, workspace, home, name, source, seed_core=seed_core)
     if case in {'ui', 'client'}:
         install_fixture(root, workspace, home, 'notes-ui', NOTES,
-                        {'web_module.js': NOTES_WEB, 'dashboard.py': NOTES_DASHBOARD})
+                        {'web_module.js': NOTES_WEB, 'dashboard.py': NOTES_DASHBOARD}, seed_core=seed_core)
         (workspace / 'plugin-data/notes-ui-lab/note.txt').write_text('kept-note')
     if seed_core is not None:
-        # 用旧版真实启动生成 selection，候选版直接读取其完整归档。
+        # 旧 Core 完整退出后，经显式离线入口转换选择，再运行目标迁移。
         seed = """import asyncio, sys
 from agent.config_models import Config
 from bootstrap.app import AppRuntime
@@ -372,6 +384,14 @@ asyncio.run(run())
         with (root / 'seed.log').open('w') as output:
             subprocess.run([sys.executable, '-c', seed, str(config), str(workspace)], cwd=root,
                            env=seed_env, check=True, stdout=output, stderr=output, timeout=60)
+        with (root / 'upgrade.log').open('w') as output:
+            subprocess.run([sys.executable, str(core / 'scripts/upgrade_plugin_selection.py'),
+                            '--workspace', str(workspace), '--plugins-home', str(home),
+                            '--backup-dir', str(root / 'selection-recovery'), '--from-archive',
+                            '--plugin-dir', str(plugins)], env=env, check=True,
+                           stdout=output, stderr=output, timeout=60)
+        from agent.migrations.runner import MigrationRunner
+        MigrationRunner(repo_root=core, config_path=config, workspace=workspace, fixed_sources=()).run()
     from akashic_sdk import AsyncAkashic
     from agent.config_models import Config
     from agent.plugin_composition import FiberState, ServiceKey
@@ -415,7 +435,7 @@ asyncio.run(run())
         git(peer_source, 'add', '.')
         git(peer_source, '-c', 'user.name=E2E', '-c', 'user.email=e2e@example.invalid',
             '-c', 'commit.gpgSign=false', 'commit', '-qm', 'changed source')
-        # 正式安装准备新源码，但不提交运行选择；模拟选中归档与来源不同。
+        # 正式安装准备新源码，但不提交运行选择；模拟选择与当前安装来源不同。
         from agent.plugins.install import install_git_plugin
         install_git_plugin(workspace=workspace, source=str(peer_source), marketplace='lab', plugins_home=home)
         content_marker = plugins / 'content/.akashic-source.json'
@@ -433,7 +453,7 @@ asyncio.run(run())
         target = manager.generation('annotation@lab')
         target_data = target.data_dir / 'keep.bin'
         target_data.write_bytes(b'user-owned-data')
-        archive_before = (target.code_dir / 'plugin.py').read_bytes()
+        installed_before = (target.code_dir / 'plugin.py').read_bytes()
         registry = manager.live_root.context.require(ServiceKey('e2e.registry'))
         if case == 'ui':
             from agent.plugin_composition.ui import WEB_UI
@@ -453,6 +473,7 @@ asyncio.run(run())
             accepted = await client.request('plugin/uninstall', {'plugin_id': 'annotation@lab'})
             assert accepted['state'] == 'accepted', accepted
             await wait_for(lambda: target.fiber.state is FiberState.UNLOADING, 'target draining')
+            assert (target.code_dir / 'plugin.py').read_bytes() == installed_before
             assert provider.fiber.state is FiberState.ACTIVE
             if case == 'ui':
                 assert await ui.bootstrap() == bootstrap_before
@@ -470,7 +491,7 @@ asyncio.run(run())
                 assert generation.input_ref == input_ref, generation.plugin_id
             assert (peer.data_dir / 'activations.txt').read_bytes() == peer_effects
             assert target_data.read_bytes() == b'user-owned-data'
-            assert (target.code_dir / 'plugin.py').read_bytes() == archive_before
+            assert not target.code_dir.exists(), '实际 owner 排空后应移除外置安装代码'
             assert message_rows() == messages_before
             assert 'annotation@lab' not in registry.entries
             async with manager.live_root.context.require(ServiceKey('content.v2')).bind() as view:

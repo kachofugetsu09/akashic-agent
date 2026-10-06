@@ -1,5 +1,10 @@
 # Issue 750：单图插件系统与局部换代任务拆分
 
+2026-10-06 对账：[0094](../decisions/0094-plugin-runtime-uses-installed-files.md) 取消 PluginArchive。
+下文代码、配置、环境 descriptor 和完整 Root 归档均为历史实现；当前唯一选择文件保存已安装
+目录与输入元数据，配置使用当前文件，binding 打开当前服务。局部换代、排空、异步接单与
+失败 owner 保留仍有效；历史归档保留，不参与普通运行。升级入口见 [部署手册](operator-deployment.md#从旧归档指针升级)。
+
 2026-09-28 对账：本文件按工单保留的旧 Mobile、Gateway、ticket、OTA 和客户端 Gate 记录均为历史证据，不再是当前能力、接口或验收要求。当前 Android Shell 分工见 [0076](../decisions/0076-android-shell-retires-legacy-mobile-stack.md)；插件公开接口以 [V3 能力手册](plugin-v3-capabilities.md) 和真实源码为准。
 
 ## 2026-09-24 · 本地收口与运行验收边界
@@ -428,7 +433,7 @@ Tools、UI、模型及资源 provider 中与全局 snapshot 绑定的部分要�
 具体证据：
 
 - [Fiber._reconcile / CompositionRoot.freeze](../../agent/plugin_composition/context.py)：628、863 行起，冻结后不再进行正常局部重装配。
-- [RuntimeSnapshotCompiler / RuntimeSnapshotStore](../../agent/plugins/snapshot.py)：93、1078 行起，编译冻结 Root，并限制跨 snapshot 共享实际实例。
+- 旧 `agent/plugins/snapshot.py` 的 RuntimeSnapshotCompiler / RuntimeSnapshotStore：93、1078 行起，编译冻结 Root，并限制跨 snapshot 共享实际实例。
 - [PluginManager._switch_ready / _replace_formal_root](../../agent/plugins/manager.py)：1578、1671 行起，关闭候选并替换完整正式 Root。
 - [fresh-root 测试](../../tests/test_plugin_fresh_root.py)：124 行起，明确要求候选和正式组合中的每个插件都是新实例。
 - [Ui.register / seal](../../plugins/ui/plugin.py)：52、112 行起，一次性封存后不再允许登记。
