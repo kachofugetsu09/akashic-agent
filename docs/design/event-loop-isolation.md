@@ -544,3 +544,10 @@ Session iterator → four owned workers → fixed source read → head CAS → p
 ```
 
 `reply.prepare.timing` records outer wall time, Session/check/retry counts, and head-read, awaited-predicate and changed-callback time. Awaited phase totals overlap across workers and must not be added to outer wall time. Records contain no message content or Session IDs. Parallelism changes scheduling of independent Sessions; source admission, predicate rules and per-source CAS remain unchanged.
+
+## Models 调用账本连接
+
+ModelsStore 持有一条串行写连接，初始化时使用 WAL，关闭时先等待当前事务结束，
+再关闭连接和释放宿主锁。读范围仍使用独立只读连接，不缓存查询结果。
+调用方显式提交；退出写范围时回滚剩余事务。FULL 同步、请求准入、首段记账、
+响应结算、配置 CAS 与写前备份保持原顺序。连接复用不增加消息或调用记录的删除路径。

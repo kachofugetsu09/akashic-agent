@@ -8,6 +8,7 @@ import math
 import os
 import sqlite3
 import time
+import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager
@@ -212,6 +213,8 @@ class ModelsStore:
         self.writable = writable
         self.read_call = ModelCallReader(lambda: self._connect(read_only=True))
         self._host_epoch: int | None = None
+        self._write_connection: sqlite3.Connection | None = None
+        self._write_lock = threading.Lock()
         # 同进程活 attempt 登记属于账本身份：同一 store 的同 key 调用才合并。
         self.live_runs: dict[object, object] = {}
         self._host_lock_file: object | None = None
@@ -242,6 +245,8 @@ class ModelsStore:
         try:
             created = self._create_database_file()
             with self._connect() as connection:
+                if connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                    raise RuntimeError("模型账本需要 WAL 日志模式")
                 if created:
                     connection.executescript(_SCHEMA)
                     connection.execute(
@@ -1123,17 +1128,24 @@ class ModelsStore:
 
     @contextmanager
     def _connect(self, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
+        """读范围独占短连接；同一账本复用一条串行写连接。"""
         if read_only:
             encoded = quote(self.path.as_posix(), safe="/:")
-            connection = sqlite3.connect(f"file:{encoded}?mode=ro", uri=True)
-        else:
-            connection = sqlite3.connect(self.path)
-        try:
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.row_factory = sqlite3.Row
-            yield connection
-        finally:
-            connection.close()
+            with closing(sqlite3.connect(f"file:{encoded}?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                yield connection
+            return
+        with self._write_lock:
+            if self._write_connection is None:
+                connection = sqlite3.connect(self.path, check_same_thread=False)
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.row_factory = sqlite3.Row
+                self._write_connection = connection
+            try:
+                yield self._write_connection
+            finally:
+                # 调用方显式提交；未提交的事务不能泄漏到下一次使用。
+                self._write_connection.rollback()
 
     def _acquire_host_lock(self) -> bool:
         """账本宿主的独占证据：flock 由持有者在整个生命周期持有。
@@ -1171,7 +1183,11 @@ class ModelsStore:
         return self._host_lock_file is not None
 
     def close(self) -> None:
-        """释放宿主锁；之后的读写不再有独占宿主证据。"""
+        """关闭写连接并释放宿主锁；在途事务先完成。"""
+        with self._write_lock:
+            if self._write_connection is not None:
+                self._write_connection.close()
+                self._write_connection = None
         descriptor = self._host_lock_file
         self._host_lock_file = None
         if descriptor is None:
