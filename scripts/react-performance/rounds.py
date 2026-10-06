@@ -44,6 +44,7 @@ def analyze(
         raise ValueError("每份客户端记录必须恰好有一次 benchmark input")
     started = inputs[0]["mono_ns"]
     session = inputs[0].get("event", {}).get("session_id")
+    events = [row for row in events if row["mono_ns"] >= started]
     wire = [row for row in wire if row["label"] == label and row["mono_ns"] >= started]
     timing = [
         row
@@ -60,6 +61,11 @@ def analyze(
     physical_starts: dict[str, int] = {}
     physical: list[tuple[int, int]] = []
     if harness == "akashic":
+        input_id = inputs[0].get("event", {}).get("message_id")
+        input_seq = next((item["seq"] for row in events for item in row.get("event", {}).get("items", [])
+                          if item.get("id") == input_id and item.get("body", {}).get("kind") == "input"), None)
+        if input_seq is None:
+            raise ValueError("Akashic input 标记须带 message_id，并观察到对应已提交 Input")
         outputs: dict[str, int] = {}
         for row in timing:
             at = row["measurement_value"]
@@ -81,11 +87,11 @@ def analyze(
         for row in events:
             for item in row.get("event", {}).get("items", []):
                 body = item.get("body", {})
-                if body.get("kind") == "output":
+                if body.get("kind") == "output" and item["seq"] > input_seq:
                     # 日志订阅可先于 append await 返回醒来；两者均证明已经落库。
                     outputs[item["id"]] = min(outputs.get(item["id"], row["mono_ns"]), row["mono_ns"])
                     if body.get("finish") == "complete":
-                        final_received = row["mono_ns"]
+                        final_received = min(final_received or row["mono_ns"], row["mono_ns"])
         output_times = sorted(outputs.values())
     else:
         for row in events:
@@ -104,8 +110,9 @@ def analyze(
                 messages = event.get("messages", [])
                 assistants = [m for m in messages if m.get("role") == "assistant"]
                 if assistants and assistants[-1].get("stopReason") == "stop":
-                    final_received = at
+                    final_received = min(final_received or at, at)
         physical = tools[:]
+    output_times = [t for t in output_times if final_received is None or t <= final_received]
     result = []
     requests = [row for row in requests if final_received is None or row["mono_ns"] <= final_received]
     logical_round = 1
