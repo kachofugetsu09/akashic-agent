@@ -3,16 +3,21 @@
 `gemini` 插件通过公开的 `MODEL_DRIVERS` 注册 GenerateContent 对话驱动。默认
 host-runtime profile 包含此插件；连接、凭据、模型选择与重试仍由 `models` 拥有。
 
-在模型设置中选择「Gemini 原生 API」，填写 Base URL、API Key 和模型名称。
-保存前会发送 `Reply OK.` 验证；验证失败不保存候选连接。编辑时 URL 和 Key
-留空保持不变。原生 `/models` 目录可通过现有 Models 同步入口读取。
+在模型设置中选择「Gemini 原生 API」，填写 Base URL 和 API Key，点击
+「探测可用模型」并勾选型号。探测只读取目录，不保存连接或密钥；修改地址或密钥
+使旧探测结果失效，关闭编辑器取消未完成的探测并忽略迟到结果。
+保存前逐个发送 `Reply OK.` 验证；首个型号失败不保存候选连接，其余型号失败
+报告部分完成，不撤销已保存的连接。目录不可用时可以手动填写并明确确认型号。
+编辑时 URL 和 Key 留空保持不变；已保存连接沿用 Models 的重新检测和选择入口。
 
 | 目标 | Base URL 示例 |
 |---|---|
 | Google | `https://generativelanguage.googleapis.com/v1beta` |
-| 提供原生路由的网关 | `https://your-gateway.example/antigravity/v1beta` |
+| 提供原生路由的网关 | `https://your-gateway.example/antigravity` |
 
-Base URL 指向 API 版本根目录，不包含 `/models`、模型名称或查询参数。
+Base URL 可以指向服务根路径，也可以指向显式 API 版本目录，不包含 `/models`、
+模型名称或查询参数。根路径自动追加默认版本 `/v1beta`；显式 `/v1`、`/v1beta`
+等版本保持不变。目录读取和生成使用同一个版本根目录。
 驱动发送 `x-goog-api-key`，调用 `models/{model}:generateContent` 或
 `models/{model}:streamGenerateContent?alt=sse`。网关必须提供这些原生路由；
 只有 OpenAI-compatible 路由的服务不能直接使用此驱动。

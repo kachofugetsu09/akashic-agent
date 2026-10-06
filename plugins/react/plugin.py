@@ -687,18 +687,10 @@ async def react(
                     isinstance(message.body, Control) and message.body.action == "resume"
                     for message in newer
                 )
-                # resume 只在可证明失败时授权新准备；取消/孤儿/传输未知的远端
-                # 效果不可证，resume 不得据此重付，只有新 Input 作为真正新工作。
-                qualified = has_input or (
-                    has_resume and recovery in {"answered", "rejected"}
-                )
+                # 显式 resume 允许重新生成模型响应；工具效果仍查原 key 与回执。
+                # 自动恢复只沿 Models 已保存的 next_attempt_at，不靠新 key 绕过终态。
+                qualified = has_input or has_resume
                 if not qualified:
-                    if recovery == "uncertain":
-                        raise ModelUnavailableError(
-                            f"该来源边界的生成准备已终结但远端效果不确定；resume 不足以"
-                            f"授权重付，需要同来源新 Input 或 provider 查询证据 "
-                            f"(prep={prep_key} source={writer.source} base={base} key={keys[current]})"
-                        )
                     raise ModelUnavailableError(
                         f"该来源边界的生成准备已终结失败；需要新的来源事实才能恢复 "
                         f"(prep={prep_key} source={writer.source} base={base} key={keys[current]})"
