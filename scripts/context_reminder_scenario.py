@@ -89,7 +89,7 @@ async def scenario(path: Path, *, live_only: bool = False) -> dict:
         rows = [plain(request.messages) for request in requests]
         text = [json.dumps(row, ensure_ascii=False) for row in rows]
         check(rows[1][:len(rows[0])] == rows[0], "不变材料保留完整上一请求前缀")
-        check(all(request.continuation is None for request in requests[:3]), "实时材料不接续旧 opaque 会话")
+        check(all(request.continuation is None for request in requests[:2]), "保留原有实时材料请求的续接策略")
         if live_only:
             check("LIVE_X" not in text[2], "没有可回放材料时也能撤下实时材料")
             check(rows[3][:len(rows[2])] == rows[2], "撤下实时材料后前缀保持稳定")
@@ -98,14 +98,14 @@ async def scenario(path: Path, *, live_only: bool = False) -> dict:
             check(text[3].count("REMINDER_A") == text[3].count("REMINDER_B") == 1, "变化材料保留各自首次事实")
             check("REMINDER_B" in str(rows[3][-2]) and "LIVE_Y" in str(rows[3][-1]), "新材料追加到变化后的请求边界")
             check(rows[4][:len(rows[3])] == rows[3], "变化后的材料固定位置")
-            check("LIVE_" not in text[5] and requests[5].continuation is None, "撤下材料不通过正文或 opaque 状态复活")
+            check("LIVE_" not in text[5], "撤下材料不从历史恢复正文")
             check(rows[6][:len(rows[5])] == rows[5], "撤下后新的请求继续扩展前缀")
             check(requests[6].continuation == ModelContinuation("model", {"step": 6}), "完整可回放请求仍可接续供应商状态")
         facts = [cast(Mapping[str, object], part.value) for message in log.reader("s").snapshot()
                  if isinstance(message.body, Output) for part in message.body.parts
                  if isinstance(part, ContentPart) and part.kind == "model.facts"]
         check("LIVE_" not in str(facts), "实时材料不进入持久 replay")
-        check(all(value["continuation"] is None for value in facts[:2]), "含实时材料的响应不保留 opaque 续接")
+        check(all(value["continuation"] is not None for value in facts[:2]), "保留供应商返回的原有协议续接事实")
         check(all(value["thinking"] for value in facts), "模型原有思考正文完整保留")
         before = stored_rows(path / "sessions.db")
 

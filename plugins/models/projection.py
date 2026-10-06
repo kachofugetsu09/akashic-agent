@@ -54,7 +54,6 @@ def response_facts(
     wire_tool_calls: Mapping[str, Mapping[str, object]] = {},
     content_refs: tuple[tuple[str, int], ...] = (),
     content_transformed: bool = False,
-    retain_continuation: bool = True,
 ) -> ContentPart:
     """只保存调用账指针与协议重放所需事实，计费数据仍由 Model store 拥有。"""
     if response.call_record_id is None:
@@ -64,7 +63,7 @@ def response_facts(
         raise ValueError("模型工具调用与 Output 位置不匹配")
     if any(type(index) is not int or index < 0 for index in indices):
         raise ValueError("模型工具调用位置必须是非负整数")
-    continuation = response.continuation if retain_continuation else None
+    continuation = response.continuation
     if reminder_input_id is not None and reminder is None:
         raise ValueError("reminder Input 只能标记实际保存的 reminder")
     facts: dict[str, object] = {
@@ -244,7 +243,6 @@ class MessageProjection:
         actual_calls: Sequence[ToolCall | ContentPart] | None = None,
         content_refs: tuple[tuple[str, int], ...] = (),
         content_transformed: bool = False,
-        retain_continuation: bool = True,
     ) -> ContentPart:
         """只为当前模型已成功结算的响应生成可持久 replay 内容。"""
         if actual_calls is not None and len(actual_calls) != len(response.tool_calls):
@@ -275,7 +273,6 @@ class MessageProjection:
             wire_tool_calls=wire,
             content_refs=content_refs,
             content_transformed=content_transformed,
-            retain_continuation=retain_continuation,
         )
         assert response.call_record_id is not None
         receipt = self._read_call(response.call_record_id)

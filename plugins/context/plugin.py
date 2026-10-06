@@ -190,7 +190,6 @@ class ContextBuilder:
             messages=rows,
             # Opaque provider sessions can retain rules omitted from replay facts.
             continuation=None if current_context is not None else rendered.continuation,
-            retain_continuation=current_context is None,
             tools=tools,
             system_prompt="",
             max_output_tokens=max_output_tokens,
