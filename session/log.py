@@ -339,7 +339,6 @@ class WriterExpired(RuntimeError):
 class _ReadConnection:
     connection: sqlite3.Connection
     lock: threading.RLock
-    decoded: WeakValueDictionary[tuple[object, ...], Message]
 
 
 class _ReadLocal(threading.local):
@@ -354,7 +353,8 @@ class MessageLog:
         self._writer_lock = threading.RLock()
         self._read_admission = threading.Lock()
         self._listener_lock = threading.Lock()
-        self._writer_decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
+        self._decode_lock = threading.RLock()
+        self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
@@ -404,20 +404,17 @@ class MessageLog:
         read = self._reads.current
         return self._writer_lock if read is None else read.lock
 
-    @property
-    def _decoded(self) -> WeakValueDictionary[tuple[object, ...], Message]:
-        read = self._reads.current
-        return self._writer_decoded if read is None else read.decoded
-
     def _decode(self, row: sqlite3.Row) -> Message:
         """查询仍读真实行；只复用完整行相同且仍被调用者持有的不可变消息。"""
         key = tuple(row)
-        with self._lock:
+        # 独立只读连接共享解码结果；此短锁不等待 writer 的事务或磁盘操作。
+        with self._decode_lock:
             message = self._decoded.get(key)
-            if message is None:
-                message = _message(row)
+        if message is None:
+            message = _message(row)
+            with self._decode_lock:
                 self._decoded[key] = message
-            return message
+        return message
 
     def backup(self, destination: Path) -> None:
         """向新文件保存已提交的完整数据库，供隔离宿主独立打开。"""
@@ -641,7 +638,7 @@ class MessageLog:
                 raise
         # Callbacks may use other readers of this same log; all see this snapshot.
         with closing(connection):
-            self._reads.current = _ReadConnection(connection, threading.RLock(), WeakValueDictionary())
+            self._reads.current = _ReadConnection(connection, threading.RLock())
             try:
                 yield connection
             finally:
