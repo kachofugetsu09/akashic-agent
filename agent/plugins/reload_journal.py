@@ -339,11 +339,12 @@ class ReloadJournal:
                 raise RuntimeError("指定记录不是孤立 armed 安装")
             update_rollback.rollback(conn, current, plugins_home, now=_now(), error=error)
 
-    def create_config_update(self, request_id: str, plugin_id: str, previous_input: str, input_ref: str) -> None:
-        """记录配置请求；新输入已归档但尚未被 selection 采用。"""
+    def create_config_update(self, request_id: str, plugin_id: str, previous_input: str, input_ref: str,
+                             config_revision: str, pending_config: str) -> None:
+        """暂存未完成配置请求；完成后不保留可执行的配置快照。"""
         with self._connect() as conn:
-            conn.execute("INSERT INTO config_updates(request_id,plugin_id,previous_input,input_ref,state) VALUES (?,?,?,?,'accepted')",
-                         (request_id, plugin_id, previous_input, input_ref))
+            conn.execute("INSERT INTO config_updates(request_id,plugin_id,previous_input,input_ref,config_revision,pending_config,state) VALUES (?,?,?,?,?,?,'accepted')",
+                         (request_id, plugin_id, previous_input, input_ref, config_revision, pending_config))
 
     def config_update(self, request_id: str) -> dict[str, object]:
         with self._connect() as conn:
@@ -352,6 +353,13 @@ class ReloadJournal:
             if row is None:
                 raise KeyError(request_id)
             return dict(row)
+
+    def clear_pending_config(self, request_id: str) -> None:
+        """当前配置已经耐久发布或请求未被选择，才丢弃临时请求正文。"""
+        with self._connect() as conn:
+            cursor = conn.execute("UPDATE config_updates SET pending_config=NULL WHERE request_id=?", (request_id,))
+            if cursor.rowcount != 1:
+                raise KeyError(request_id)
 
     def finish_config_update(self, request_id: str, state: str, error: str = "") -> None:
         with self._connect() as conn:

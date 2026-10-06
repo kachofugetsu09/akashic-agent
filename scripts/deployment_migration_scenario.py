@@ -11,7 +11,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deployment_composition_scenario import ROOT, plugin, git, commit, distribution, ensure_profile, manager, migration, selected, snapshot
 from agent.plugins.manifest import workspace_plugin_data_dir, set_plugin_enabled
-from agent.plugin_composition.archive import decode_config
+from agent.plugin_composition.config_input import decode_config
 from agent.plugins.selection import PluginSelection
 from agent.plugins.install import install_git_plugin
 from agent.migrations.runner import MigrationRunner

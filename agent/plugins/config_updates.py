@@ -1,4 +1,4 @@
-"""配置请求使用现有 reload journal，固定输入保留完整恢复依据。"""
+"""配置请求使用现有 reload journal，只暂存未完成请求的配置，完成后保留请求摘要。"""
 from __future__ import annotations
 
 import sqlite3
@@ -8,6 +8,8 @@ SCHEMA = """CREATE TABLE config_updates (
     plugin_id TEXT NOT NULL,
     previous_input TEXT NOT NULL,
     input_ref TEXT NOT NULL,
+    config_revision TEXT NOT NULL,
+    pending_config TEXT,
     state TEXT NOT NULL CHECK(state IN ('accepted','selected','active','failed')),
     error TEXT NOT NULL DEFAULT ''
 )"""
