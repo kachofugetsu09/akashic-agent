@@ -27,9 +27,13 @@ class ReplyRead:
 
     async def follow(self, session_id: str) -> AsyncGenerator[tuple[dict[str, object], ...], None]:
         """订阅当前快照；慢读者合并通知，重连不重放旧 token。"""
+        previous: tuple[ReplyActivity, ...] | None = None
         while True:
             changed = self._state.changed
-            yield tuple(asdict(item) for item in self._state.snapshot(session_id))
+            current = self._state.snapshot(session_id)
+            if current != previous or self._state.closed:
+                previous = current
+                yield tuple(asdict(item) for item in current)
             if self._state.closed:
                 return
             _ = await changed.wait()
