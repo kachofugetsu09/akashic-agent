@@ -362,6 +362,7 @@ class MessageLog:
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
+        self._notify_pending = False
         self._listeners: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
         self._writer_connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
@@ -470,6 +471,7 @@ class MessageLog:
                 raise MessageConflict("同一 Session 的固定属性不能改变")
             # Only the new row admits initial owner state, in this same transaction.
             if inserted.rowcount == 1:
+                self._notify_pending = True
                 for store, initialize in initializers:
                     if store._log is not self:
                         raise ValueError("Session 初始化不能跨存储 authority")
@@ -519,6 +521,7 @@ class MessageLog:
                 self._connection.execute(
                     "UPDATE sessions SET deleted_at=NULL WHERE key=?", (session_id,),
                 )
+                self._notify_pending = True
                 return None
             if current is not None:
                 return current
@@ -526,6 +529,7 @@ class MessageLog:
             self._connection.execute(
                 "UPDATE sessions SET deleted_at=? WHERE key=?", (stamp, session_id),
             )
+            self._notify_pending = True
             return stamp
 
         return self._write(change)
@@ -557,6 +561,7 @@ class MessageLog:
             self._connection.execute(
                 "UPDATE sessions SET title=? WHERE key=?", (normalized, session_id),
             )
+            self._notify_pending = True
             return normalized
 
         return self._write(change)
@@ -578,12 +583,15 @@ class MessageLog:
                 raise RuntimeError("事务内写入必须使用当前 transaction 接口")
             with self._connection:
                 _ = self._connection.execute("BEGIN IMMEDIATE")
+                self._notify_pending = False
                 result = callback()
                 if inspect.isawaitable(result):
                     if inspect.iscoroutine(result):
                         result.close()
                     raise TypeError("存储事务回调必须同步，不能跨 await")
-            self._notify()
+            # owner 账本或 embedding 的单独提交不会改变消息订阅结果。
+            if self._notify_pending:
+                self._notify()
             return result
 
     def _notify(self) -> None:
@@ -1664,6 +1672,7 @@ class MessageWriter:
                     "UPDATE sessions SET metadata=? WHERE key=?", (payload, self._session_id),
                 )
 
+        self._log._notify_pending = True
         return message
 
     def _check_parts(self, body: Body) -> tuple[set[str], tuple[str, ...]]:
