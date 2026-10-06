@@ -10,7 +10,6 @@ import threading
 import pytest
 
 from agent.plugin_composition import CompositionRoot, Context
-from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.bindings import Bindings
 from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.domain.model import MemoryConfig
@@ -72,7 +71,7 @@ async def memory_fixture(path: Path) -> AsyncIterator[tuple[MessageMemory, Messa
     embeddings = MessageEmbeddings(log)
     root = CompositionRoot("akasha-execution")
     learning = Learning(TurnProjection(), owner="akasha", post_commit_effect=legacy_post_commit_effect)
-    bindings = Bindings(log, PluginArchive(path / "archives"), root)
+    bindings = Bindings(log, root)
     rule = LearningConfig(embedding_model="fixed", dimension=3, sources=("conversation",))
     identity = "fixed-learning"
     log.save_binding(identity, {"version": 1, "service": AKASHA_LEARNING.name,

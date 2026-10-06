@@ -18,7 +18,6 @@ from session.log import MessageLog
 from session.message_codec import json_value
 
 if TYPE_CHECKING:
-    from agent.plugin_composition.archive import PluginArchive
     from agent.plugins.generation import PluginGeneration
 
 _T = TypeVar("_T")
@@ -36,7 +35,7 @@ class BindingScope:
             raise RuntimeError("binding scope 已关闭")
         value = self._root.service_value(key)
         if value is None:
-            raise RuntimeError(f"归档不提供服务: {key.name}")
+            raise RuntimeError(f"当前 Root 不提供服务: {key.name}")
         return value
 
     def _expire(self) -> None:
@@ -49,12 +48,10 @@ class Bindings:
     def __init__(
         self,
         log: MessageLog | None,
-        archive: PluginArchive,
         root: CompositionRoot,
         generation_lookup: Callable[[Context], PluginGeneration] | None = None,
     ):
         self._storage = log
-        self._archive = archive
         self._root = root
         self._generation_lookup = generation_lookup
 
@@ -71,7 +68,7 @@ class Bindings:
         *,
         contributors: tuple[Context, ...] = (),
     ) -> str:
-        """从当前许可保存业务选择与来源归档；归档不用于恢复历史执行图。"""
+        """从当前许可保存业务选择与来源身份，不保存代码或依赖快照。"""
         log = self._log
         current = _current_runtime_scope()
         if current is not None:
@@ -85,13 +82,14 @@ class Bindings:
             owner_context = lifecycle[0]
         if owner_root is not self._root:
             raise RuntimeError("固定 binding 的所属 Root 不属于当前 OwnerCall")
-        # 1. The caller's frozen dependency store is the authorization boundary.
+        # 1. 调用者已经声明的依赖是权限边界。
         owner_context.require(service)
         root = self._root
         selected: set[str] = set()
         pending: list[Context] = []
         services: set[ServiceKey[Any]] = set()
         contexts: dict[int, Context] = {}
+        origins: dict[str, str | None] = {}
 
         def provider_for(key: ServiceKey[Any], requester: Context):
             frozen = requester._fiber.dependency_store.get(  # pyright: ignore[reportPrivateUsage]
@@ -105,16 +103,17 @@ class Bindings:
             return provider
 
         def include_context(context: Context) -> None:
+            identity = id(context)
+            if identity in contexts:
+                return
             if self._generation_lookup is not None:
                 generation = self._generation_lookup(context)
                 contributor = generation.plugin_id
+                origins[contributor] = generation.generation_id
             else:
                 contributor = root.context_owner(context)
                 if contributor is None:
                     raise ValueError("注册 Context 不属于当前 active Root")
-            identity = id(context)
-            if identity in contexts:
-                return
             contexts[identity] = context
             selected.add(contributor)
             pending.append(context)
@@ -127,8 +126,7 @@ class Bindings:
             provider_context = provider.owner.context
             runtime = provider.owner.runtime
             if runtime is None:
-                # Core providers are authorized by the requester's frozen
-                # dependency store and are not archive components.
+                # Core 服务沿已声明的依赖授权，不属于插件来源。
                 return
             include_context(provider_context)
             if provider.binding_contributors is not None:
@@ -144,18 +142,12 @@ class Bindings:
             context = pending.pop()
             for key in context._fiber.dependencies:  # pyright: ignore[reportPrivateUsage]
                 include_service(key, context)
-        components: set[str] = set()
-        for context in contexts.values():
-            if self._generation_lookup is None:
-                raise RuntimeError("正式 binding 缺少 Manager generation lookup")
-            generation = self._generation_lookup(context)
-            if generation.archive_ref is None:
-                raise RuntimeError(f"插件缺少加载时归档: {generation.plugin_id}")
-            components.add(generation.archive_ref)
-        root_ref = self._archive.save_descriptor({"components": tuple(sorted(components))})
+        # 2. 仅记录实际参与的插件身份，恢复时仍由当前 provider 校验业务选择。
+        if self._generation_lookup is None:
+            origins = {name: None for name in sorted(selected)}
         descriptor: dict[str, object] = {
-            "version": 1,
-            "root_ref": root_ref,
+            "version": 2,
+            "origins": origins,
             "service": service.name,
             "metadata": metadata,
         }
@@ -171,7 +163,7 @@ class Bindings:
         return identity
 
     def describe(self, identity: str, service: ServiceKey[Any]) -> Mapping[str, object]:
-        """只读绑定的业务选择；展示或请求投影无需启动归档目标。"""
+        """只读绑定的业务选择；展示或请求投影无需启动历史目标。"""
         return cast(Mapping[str, object], self._read_descriptor(identity, service)["metadata"])
 
     @asynccontextmanager
@@ -192,7 +184,7 @@ class Bindings:
     ) -> Mapping[str, object]:
         """读取并校验 binding descriptor 的共同结构。"""
         descriptor = self._log.read_binding(identity)
-        if descriptor["version"] != 1 or descriptor["service"] != service.name:
+        if descriptor["version"] not in {1, 2} or descriptor["service"] != service.name:
             raise ValueError("binding 版本或服务不匹配")
         metadata = descriptor["metadata"]
         if not isinstance(metadata, Mapping):
