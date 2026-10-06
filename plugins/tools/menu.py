@@ -157,6 +157,10 @@ class ToolMenu:
         return identity
 
     def name(self, binding_id: str) -> str:
+        """复用菜单已校验的固定名称；旧历史 binding 仍从原描述读取。"""
+        for name, identity in self._bound.items():
+            if identity == binding_id:
+                return name
         description = cast(
             Mapping[str, object], self._bindings.describe(binding_id, TOOLS)["tool"]
         )
