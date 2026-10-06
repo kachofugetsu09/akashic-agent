@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import ItemsView, KeysView, Mapping, ValuesView
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
@@ -54,6 +54,15 @@ class _FrozenJson(Mapping[str, object]):
 
     def __len__(self) -> int:
         return len(self._data)
+
+    def keys(self) -> KeysView[str]:
+        return self._data.keys()
+
+    def items(self) -> ItemsView[str, object]:
+        return self._data.items()
+
+    def values(self) -> ValuesView[object]:
+        return self._data.values()
 
 
 def freeze_json(value: object) -> object:
