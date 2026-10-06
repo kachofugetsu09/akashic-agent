@@ -27,7 +27,7 @@ from functools import partial
 
 from .api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
-    coerce_result, durable_call_key,
+    coerce_result, durable_call_key, result_message_id,
 )
 
 
@@ -101,11 +101,13 @@ class ToolExecution:
             if record is None:
                 if reply is not None:
                     reply.check(self._state)
-                await self._save(key, None, {
-                    "version": 1, "request": fingerprint, "binding": binding_id,
-                    "reply_id": None if reply is None else reply.message_id,
-                    "phase": "requested", "arguments": arguments,
-                })
+                # 独立请求或自定义结果身份才有 ToolCall 之外的待保存事实。
+                if reply is None or reply.message_id != result_message_id(reply.call_ref):
+                    await self._save(key, None, {
+                        "version": 1, "request": fingerprint, "binding": binding_id,
+                        "reply_id": None if reply is None else reply.message_id,
+                        "phase": "requested", "arguments": arguments,
+                    })
             permit = None if self._child_permit is None else self._child_permit()
             try:
                 started = slot.start(run)
@@ -196,7 +198,11 @@ class ToolExecution:
             if commit_after is not None:
                 await commit_after.wait()
             mark("tool.commit.begin")
-            finished = await finish(self._state, key, record, result, reply)
+            finished = await finish(self._state, key, record, result, reply, initial={
+                "version": 1, "request": fingerprint, "binding": binding_id,
+                "reply_id": None if reply is None else reply.message_id,
+                "arguments": arguments,
+            })
             mark("tool.committed")
             return finished
 
@@ -212,8 +218,8 @@ class ToolExecution:
         try:
             if reply is not None:
                 reply.check(self._state)
-            if record is None:
-                raise RuntimeError("已接纳工具缺少 requested 回执")
+            if record is None and reply is None:
+                raise RuntimeError("独立工具调用缺少 requested 回执")
             if reply is not None and self._check_batch is not None:
                 refusal = self._check_batch(reply.source())
                 if refusal is not None:
@@ -222,7 +228,7 @@ class ToolExecution:
                 if not task.active:
                     raise asyncio.CancelledError
                 # 2. prepare 的最终参数只固定一次，恢复不重新随机化或改写。
-                if record.value["phase"] == "requested":
+                if record is None or record.value["phase"] == "requested":
                     source = None if reply is None else reply.source()
                     try:
                         mark("tool.prepare.begin")

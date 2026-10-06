@@ -31,6 +31,13 @@ prepare 之前增加 requested 回执，用于固定请求与结果消息身份�
 
 效果和 Shell 清理由独立 Task 保留 generation 与必要的 child permit。新 Shell binding 保存分区标记，以最近的 abandon 消息区分旧新进程集合；同段的 PTY 续接不受影响。旧无标记归档维持原释放接口。只靠把旧清理放到后台而仍共用整个 source owner 会误杀新进程，因此不采用。
 
+## 2026-10-07：复用已提交请求事实
+
+默认消息调用的结果身份可由 CallRef 确定，因此 prepare 前不再重复写 requested；
+请求身份、binding 与原始参数由已提交 ToolCall 拥有。独立请求或自定义结果身份
+仍先保存 requested。prepared、started、done 的提交与恢复顺序不变；旧 requested
+继续读取。此简化不改变结果目标、放弃裁决或外部效果授权。
+
 ## 持久化与恢复
 
 本改动只追加 Control/ToolResult，并由 Tools 原位推进自身回执到 done；不改写任何旧消息、调用参数、binding 或归档。没有自动减少协议，没有新增 SQL 表或迁移。进程重启由日志重新识别被放弃调用，不查询或重发其外部效果；物理进程恢复仍由现有宿主 owner 负责。

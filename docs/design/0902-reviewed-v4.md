@@ -454,16 +454,18 @@ U2(conversation) → conversation head 变成 2
 普通 Tool execution 插件对稳定调用 key 保持一个 receipt。对话 key 是 call_ref，独立程序的 key 来自其领域请求；两者固定实际参数、授权/binding 与 effect 是否已跨过外部边界。模型提出的参数保留在 call 消息中；经过合法 prepare 得到的执行参数保存在 receipt，这是不同事实，不是正文副本。
 
 ```text
-call 已提交
-    ▼
-requested（请求身份、结果消息身份）
-    ▼ prepare
-prepared（最终参数、exact binding）
+默认消息调用             独立调用 / 自定义结果身份
+    │                         ▼
+    │                 requested（额外请求事实）
+    └─────────┬───────────────┘
+              ▼ prepare
+prepared（最终参数、exact binding、结果身份）
     ▼ durable start intent
 started ── 外部调用 ──▶ result / unknown
 ```
 
 - 当前没有 receipt：在验证权限、控制状态和已耐久固定的 binding 后可以 prepare；缺失旧绑定必须失败，不重绑最新版。
+- 默认消息调用的请求事实由已提交 ToolCall 拥有，结果身份由 CallRef 确定；不再另写一份 requested。独立调用或自定义结果身份仍先保存 requested。prepare 成功后固定最终参数，拒绝或失败则直接提交终态；旧 requested 回执继续恢复，不改写或删除。
 - 已有 terminal ToolResult：返回原结果，不执行。
 - 有 started 而无结果：优先 query；provider 支持相同幂等 key 才可重试；否则产生真实 unknown，终止该调用的自动重试，并把结果交给模型检查。
 - 工具异常只能由能解释它的边界转成 denied/error；内部不变量损坏 fail-loud。
