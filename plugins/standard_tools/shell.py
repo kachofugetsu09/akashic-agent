@@ -33,6 +33,7 @@ from agent.plugin_contracts import (
     ContentPart,
     Control,
     Message,
+    Message,
     Output,
     ToolCall,
     json_value,
@@ -42,6 +43,7 @@ from agent.plugin_contracts.tools import (
 )
 
 from ._tool_boundary import TOOLS, CallSource, ToolRef, ToolResultValue
+from ._materials_boundary import MATERIALS
 from .shell_backend import _log_shell_execution, _shell_env
 from .shell_security import validate_command
 from .working_directory import WorkingDirectories
@@ -75,7 +77,7 @@ class Command(BaseModel):
     command: str = Field(min_length=1, description="要执行的命令；需要观察长任务时避免等待 EOF 的过滤器。")
     description: str = Field(description="简短说明命令作用。")
     cwd: str | None = Field(default=None, description="可选工作目录，覆盖默认目录。")
-    shell: str | None = Field(default=None, description="shell binary；默认使用当前用户的默认 shell。")
+    shell: str | None = Field(default=None, description="shell binary；默认值见当前命令环境材料。按 Bash 语法编写时显式传入 bash。")
     login: bool = True
     tty: bool = Field(default=False, description="需要交互输入时启用 PTY。")
     yield_time_ms: int = DEFAULT_INITIAL_YIELD_TIME_MS
@@ -292,6 +294,18 @@ async def register_shell(ctx: Context, directories: WorkingDirectories | None = 
         )
 
     _ = await ctx.provide(TOOL_CLEANUP, cleanup_entry)
+
+    async def environment(_snapshot: tuple[Message, ...], _source: str) -> Mapping[str, object]:
+        """请求准备时公开实际默认 shell；安装和归档装配不探测执行环境。"""
+        shell = resolve_shell()
+        return {"reminders": ({"name": "shell-environment", "priority": 350, "replay": False,
+                               "text": f"默认命令 shell：{shell.path}（{shell.kind.value}）。"
+                               "未指定 shell 参数时使用此环境，命令须遵守该 shell 的语法；"
+                               "需要 Bash 或其他 shell 时显式传入 shell 参数，不要假定默认是 Bash。"},)}
+
+    _ = await ctx.require(MATERIALS).register(
+        ctx, name="shell-environment", kind="context", prepare=environment,
+    )
     definitions: tuple[tuple[Literal["shell", "write_stdin", "task_stop"], type[BaseModel], str], ...] = (
         ("shell", Command, "执行 shell 命令；返回终态或可供 write_stdin/task_stop 使用的 execution_id。"),
         ("write_stdin", Stdin, "续接命令，等待新增输出或输入 PTY 字符；仅返回上次读取后的新增内容。"),
