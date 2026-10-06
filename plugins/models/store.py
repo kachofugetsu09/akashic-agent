@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import sqlite3
+import stat
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
@@ -1205,7 +1206,11 @@ class ModelsStore:
             self.path.with_name(f"{self.path.name}-wal"),
             self.path.with_name(f"{self.path.name}-shm"),
         ):
-            if candidate.exists():
+            try:
+                mode = stat.S_IMODE(candidate.stat().st_mode)
+            except FileNotFoundError:
+                continue
+            if mode != 0o600:
                 os.chmod(candidate, 0o600)
 
 
