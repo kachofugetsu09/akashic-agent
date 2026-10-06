@@ -266,9 +266,10 @@ class _BoundChat:
 
     async def _scan(
         self, request_key: str, digest: str, *, budget: int | None,
-    ) -> LLMResponse | None:
+    ) -> tuple[LLMResponse | None, tuple[Mapping[str, Any], ...]]:
         """同 key 账目核对：成功重放；孤儿结算；存活或身份不明的 attempt 阻断。"""
         records = await run_file_io(partial(self._store.calls_for_key, request_key))
+        settled = False
         for record in records:
             if record["request_digest"] != digest:
                 raise ValueError("同一模型请求 key 的请求内容不一致")
@@ -283,7 +284,7 @@ class _BoundChat:
                 replayed.usage = (
                     None if record.get("usage") is None else ModelUsage(**record["usage"])
                 )
-                return replayed
+                return replayed, records
             if record["state"] != "started":
                 continue
             call_id = cast(str, record["id"])
@@ -297,7 +298,10 @@ class _BoundChat:
                 failure="orphaned: 原模型生成 owner 已退出，响应及 usage 未知",
                 next_attempt_at=(time.time() if budget is None or len(records) < budget else None),
             ))
-        return None
+            settled = True
+        if settled:
+            records = await run_file_io(partial(self._store.calls_for_key, request_key))
+        return None, records
 
     def _owner_dead(self, record: Mapping[str, Any]) -> bool:
         """owner 身份为 epoch:进程:Root:attempt；只凭真实死亡证据结算。
@@ -355,10 +359,9 @@ class _BoundChat:
         budget = self._max_attempts if budget is None else max(1, budget)
         while True:
             # 1. 读取原请求回执和退避；成功只回放，终态不重新领取额度。
-            replayed = await self._scan(request_key, digest, budget=budget)
+            replayed, records = await self._scan(request_key, digest, budget=budget)
             if replayed is not None:
                 return replayed
-            records = await run_file_io(partial(self._store.calls_for_key, request_key))
             # 预算是耐久事实：连续 complete、关闭重开、进程重启都不刷新；
             # 同 key 读取原退避和尝试序号；显式上限耗尽后不另领额度。
             if budget is not None and len(records) >= budget:
@@ -399,7 +402,7 @@ class _BoundChat:
             def start_call() -> None:
                 nonlocal call_id
                 call_id = store.resume_call(
-                    descriptor, request, request_key=request_key,
+                    descriptor, digest, request_key=request_key,
                     owner_id=owner_id, max_attempts=budget,
                 )
 
@@ -415,7 +418,7 @@ class _BoundChat:
                 raise
             except ModelUnavailableError:
                 # 写事务发现读取后已完成的调用时，只回放原成功，不新开 attempt。
-                replayed = await self._scan(request_key, digest, budget=budget)
+                replayed, _ = await self._scan(request_key, digest, budget=budget)
                 if replayed is not None:
                     return replayed
                 raise

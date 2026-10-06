@@ -486,7 +486,11 @@ async def queued_settlement_check(directory, server, descriptor, physical: Drive
         assert record['state'] == ('started' if reject else expected)
         assert record['send_evidence'] == (None if reject else evidence)
         if not reject:
-            assert record['failure'] == {'begin': 'CancelledError', 'failure': 'InvalidRequestError', 'success': None}[phase]
+            if phase == 'failure':
+                assert record['failure'].startswith('InvalidRequestError: ')
+                assert 'fixture provider rejection' in record['failure']
+            else:
+                assert record['failure'] == ('CancelledError' if phase == 'begin' else None)
             try:
                 replayed = await bound.complete(request)
             except ModelUnavailableError:

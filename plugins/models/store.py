@@ -372,7 +372,7 @@ class ModelsStore:
     ) -> str:
         """先耐久记录一次真实请求；不把诊断输入或凭据复制进会话历史。"""
         return self.resume_call(
-            descriptor, request, request_key=None, owner_id=None, max_attempts=1
+            descriptor, _request_digest(request), request_key=None, owner_id=None, max_attempts=1
         )
 
     def calls_for_key(self, request_key: str) -> tuple[Mapping[str, Any], ...]:
@@ -390,7 +390,7 @@ class ModelsStore:
     def resume_call(
         self,
         descriptor: BoundModelDescriptor,
-        request: ModelRequest,
+        digest: str,
         *,
         request_key: str | None,
         owner_id: str | None,
@@ -399,7 +399,6 @@ class ModelsStore:
         """在同一事务内核对 keyed 准入并记账，过时的读取不能再次发送。"""
         if not self.writable:
             raise RuntimeError("只读 Model store 不能开始外部调用")
-        digest = _request_digest(request)
         binding = _strict_json(asdict(descriptor), "model binding")
         call_id = uuid.uuid4().hex
         with self._connect() as connection, connection:
