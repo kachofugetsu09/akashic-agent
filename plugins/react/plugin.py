@@ -398,12 +398,11 @@ async def _settle_group(
 async def _settle_pending(
     reader: MessageReader,
     tools: ToolMenu,
-    source: str,
+    calls: tuple[CallRef, ...],
     limit: int,
     capture_scope: Callable[[], RuntimeScope] | None,
 ) -> None:
     """结算未闭段调用：exclusive 调用是屏障，连续 parallel 调用走有界池。"""
-    calls = await run_file_io(lambda: reader.scan(lambda rows: _pending_calls(rows, source), source=source))
     index = 0
     while index < len(calls):
         if not _parallel(reader, tools, calls[index]):
@@ -577,14 +576,19 @@ async def react(
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
         mark("react.begin")
         # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
-        _, abandoned = await run_file_io(lambda: reader.scan(
+        pending, abandoned = await run_file_io(lambda: reader.scan(
             lambda rows: _open_calls(rows, writer.source), source=writer.source,
         ))
         for call in abandoned:
             # 已放弃调用的结算故障必须先阻断本来源：缺回执的调用不能带着未知效果进入新请求。
             await tools.settle_abandoned(call)
+        if abandoned:
+            # 放弃结算已追加事实，重新读取；普通路径复用同一次扫描的待执行调用。
+            pending = await run_file_io(lambda: reader.scan(
+                lambda rows: _pending_calls(rows, writer.source), source=writer.source,
+            ))
         await _settle_pending(
-            reader, tools, writer.source, max_parallel_calls, capture_scope,
+            reader, tools, pending, max_parallel_calls, capture_scope,
         )
         mark("tools.settled")
         snapshot = await reader.snapshot_async(through_seq=reader.head())
