@@ -1,6 +1,7 @@
 # 0030 · Session context compaction ledger owns model-window projections
 
 - 状态：accepted / implemented / partially superseded by 0052
+- 切点与失败语义勘误：由 [0095](0095-context-compaction-uses-settled-batches.md) 替代整 Turn 请求切点、20K 最低量和软水位阻断；数据保全不变。
 - 日期：2026-08-08
 - 取代：[0012 · Query 内压缩是可持久重放的非破坏性投影](0012-query-local-compaction-is-a-persisted-projection.md)
 - 关联条款：CTX-001～CTX-007、SES-001～SES-005、MEM-002、MEM-004、MEM-008、MEM-011、MIG-001、WSP-003、TST-001～TST-006

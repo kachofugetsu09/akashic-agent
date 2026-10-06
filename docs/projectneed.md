@@ -313,13 +313,13 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 预算不足时按耐久等级处理：先减少装饰性内容，再减少可再次查询的 skills、meme、长期记忆和检索结果；只有这些内容已经移除仍超限，才缩小发送给模型的历史窗口。当前用户指令和最近完整语义回合优先保留。
 
-### CTX-003 窗口以完整 Turn 投影为边界
+### CTX-003 窗口保留当前输入和工具配对
 
-Prompt 历史不得从孤立 assistant 或 tool result 开始。assistant 工具调用和对应结果成对保留；合法 user 边界或明确的 proactive assistant 边界拥有窗口起点。长工具结果只允许在临时模型视图中截短。
+Prompt 历史不得从孤立 tool result 开始。assistant 工具调用和对应结果成对保留；摘要提供前文时，近期原文可以从 assistant 消息开始。当前工作 Input 逐字保留。长工具结果只允许在临时模型视图中截短。
 
 Turn 是按 source 过滤的 Message 日志上的无状态读投影：`Output.finish=complete|quiet` 关闭一段，`Control.abandon` 在 `through_seq` 处关闭被放弃前缀；暂停和一次 provider 失败不能把消息日志拆成多个 Turn。Turn 投影返回消息引用和状态，不拥有执行、取消或写入权限。Context 可以复用同一分组，但必须保留工具请求/结果配对。
 
-已送达的 proactive assistant 消息进入 prompt history 时保留完整正文，不得施加 proactive 专属字符预算或改写成 preview。整体请求超限时，只能由通用 prompt history 退化按完整 Turn 边界缩小窗口。
+已送达的 proactive assistant 消息进入 prompt history 时保留完整正文，不得施加 proactive 专属字符预算或改写成 preview。整体请求超限时，由通用 prompt history 按 CTX-007 的安全批次边界缩小窗口。
 
 ### CTX-004 派生上下文不得伪装成用户原话
 
@@ -365,26 +365,31 @@ Core 在每一次 session 业务 provider 请求前，必须在 system prompt、
 拥有上下文语义。
 
 subagent 的主循环、两种收束摘要和 mandatory exit 四个 provider 入口使用同一容量、软水位、
-完整 Turn 单元与 raw tail 规则，但 compact 结果只存在于 subagent 内存，不写 session
+安全工具批次与 raw tail 目标规则，但 compact 结果只存在于 subagent 内存，不写 session
 ledger。插件 jobs、history route 和视觉短调用由各自 owner 管理，不进入此 Gate；超窗继续
 暴露既有 provider 错误或该 owner 已声明的 fail-open 语义。
 
-Compaction 插件不拆分已提交的完整 Turn 投影；开放 source 段只把完整闭合的 tool-call/result batch 当作临时压缩单元。当前 user anchor、未闭合工具
-和外部效果证据必须保留；raw tail 从后向前累计至少 20,000 token，
-跨过完整 Turn 单元可以略大于 20,000。若没有合法切点使重建 payload 同时低于软水位和
-硬边界，必须阻断本次调用。tool call 返回后先完整执行 batch，下一次 provider 调用
-再次经过本 Gate。
+Compaction 只改变模型请求视图，允许在已结算或明确放弃的工具批次后切分已完成或开放
+Turn；持久 Turn 不拆分。当前工作 Input 逐字保留，未闭合工具不得被摘要，外部效果与
+继续任务所需证据进入摘要。raw tail 从后向前以 20,000 token 为目标；容量冲突时允许
+减少原文量，并向用户显示原因。真实摘要加入完整请求后必须降低输入估算并满足硬容量，
+不要求低于 74% 软水位。仅软水位触发且摘要发生可恢复错误时，原请求仍满足硬容量才
+可继续；本地硬容量失败或 provider 明确拒绝则必须阻断。取消、损坏与内部契约错误
+不降级。状态复用 Reply 预览，降级诊断随真实 Output 保存，历史、实时与复制均可见，
+但不作为 provider 输入、replay 或摘要资料。tool batch 完成后下一次请求重新检查容量。
+理由见 [0095](decisions/0095-context-compaction-uses-settled-batches.md)。
 
-ledger 没有任何 generation 时，首次 compact 必须先从当前向历史方向按完整 Turn 单元
-选择不超过 `floor(context_window * 0.74)` 软水位的最大连续近期窗口，同时满足完整请求的硬输入边界；不得为凑满预算跨过阈值。当前未结束工作不可跳过：若它本身已超窗，先按上述闭合工具批次规则压缩，再检查完整请求，不能在首次窗口选择时提前拒绝。窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
-但 SessionDB 原始消息必须完整保留。已有 generation 后只处理有效 cursor 到当前的增量。
+首次 compact 从日志起点记录累计覆盖，以安全批次选近期原文。每代仍只把上一摘要和
+一个可容纳的连续近期窗口送入摘要模型；更早退出请求的资料写入 omitted 分区，不冒充
+真实摘要输入。当前工作不可跳过，SessionDB 原消息完整保留。已有 generation 后只
+处理上次覆盖末尾到当前的增量；真实模型输入与省略资料沿 0068 的分区合同保存。
 
 持久 checkpoint 写入 `session_compactions`，保存 summary、parent lineage、source_ref、
 retained tail、usage、失效字段和模型容量；`sessions.last_consolidated` 只表示当前
 有效 generation，checkpoint INSERT 与 cursor 推进在同一事务中完成。summary 不是用户
 原话、真实工具或外部效果，采用 Pi-mono 的 Goal、Constraints & Preferences、Progress
 （Done/In Progress/Blocked）、Key Decisions、Next Steps、Critical Context 六段格式。
-当前模型失败后使用配置的 main/default fallback；两者失败时阻断。旧
+当前模型失败后使用配置的 main/default fallback；两者失败沿上述软水位与硬容量规则处理。旧
 `react_compaction` 字节保留但不再读取或生成；压缩不得 UPDATE 或 DELETE 既有消息。
 
 Included checkpoint 在跨文件 effect 前必须先写入 session-incarnation scoped
@@ -530,7 +535,13 @@ Akasha 按固定版本的 Turn 投影取得全部 Input 与唯一完成 Output�
 
 ### MEM-011 历史投影按完整 Turn 和 token tail 保留
 
-Session compaction、Markdown consolidation 的切点和 prompt history 必须使用同一版本的完整 Turn 投影。每条已送达 proactive、`message_push`、schedule fire 和 spawn completion assistant 若属于独立 source，则各自作为独立单元；任何窗口、retained tail 或 consolidation cursor 不得落入一个已关闭 Turn 内部。runtime 不再使用 `memory_window` 计数；compaction 反向累积至少 20,000 token，并允许因完整 Turn 跨过阈值。展开后可以超过 token target，但重建 provider payload 必须满足当前模型硬输入边界。
+Turn 归属与 Markdown consolidation 使用同一版本的完整 Turn 投影；模型请求摘要按
+CTX-007 的安全工具批次切分，20,000 token 是近期原文目标。每条已送达 proactive、
+`message_push`、schedule fire 和 spawn completion assistant 若属于独立 source，仍拥有
+原归属。Markdown 不学习累计摘要覆盖尚未到达结束边界的 Turn；后续覆盖完整闭合后，
+按父链的真实摘要输入补学被延后的尾部，已完整应用的 Turn 不重复学习，省略资料不
+因此恢复资格。runtime 不再使用
+`memory_window`；临时请求切点不得改变 Message、Turn 或学习资格。
 
 ### MEM-012 Markdown 新用户事实必须有用户原文证据
 

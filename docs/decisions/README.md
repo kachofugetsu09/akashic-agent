@@ -101,6 +101,8 @@
 
 | [0090](0090-tool-results-stay-visible.md) | accepted | 移除自动折叠，工具原文持续可见，保留旧回读 | CTX-001、CTX-008、STA-002 |
 
+| [0095](0095-context-compaction-uses-settled-batches.md) | accepted | 请求摘要按安全工具批次切分，20K 为目标，失败原因对用户可见 | CTX-001、CTX-003、CTX-007、MEM-011 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

@@ -13,6 +13,7 @@ export type TimelinePart =
   | { kind: "text" | "artifact_ref" | "reply_ref"; value: string }
   | { kind: "tool_call"; binding_id: string; name: string; arguments: Record<string, unknown> }
   | { kind: "model.facts"; value: { call_record_id: string; thinking: string | null } }
+  | { kind: "context.notice"; value: { text: string } }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
   | { kind: string; display: "unavailable" }
   | { kind: string; display: "data"; value: unknown; rendered?: unknown };
@@ -180,7 +181,8 @@ function messageFacts(message: Omit<TimelineMessage, "metadata">) {
 export function timelineText(message: TimelineMessage): string {
   if (message.body.kind === "tool_result") return toolResultValues(message).map(toolDataText).join("\n");
   return message.body.kind === "control" ? message.body.reason ?? "" : message.body.parts
-    .flatMap((part) => !("display" in part) && part.kind === "text" ? [part.value] : []).join("\n");
+    .flatMap((part) => !("display" in part) && part.kind === "text" ? [part.value]
+      : !("display" in part) && part.kind === "context.notice" ? [part.value.text] : []).join("\n");
 }
 
 /** 工具数据只交给通用结果视图，不把结构化内容伪装成聊天正文。 */
@@ -217,6 +219,7 @@ function validPart(value: unknown): boolean {
       const facts = object(part.value);
       return facts !== null && nonempty(facts.call_record_id) && nullableText(facts.thinking);
     }
+    case "context.notice": return nonempty(object(part.value)?.text);
     case "history.provenance": case "history.transcript": case "history.record": case "history.turn_input":
       return "archive" in part;
     default: return false;

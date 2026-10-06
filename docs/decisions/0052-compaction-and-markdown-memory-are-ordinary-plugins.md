@@ -1,5 +1,7 @@
 # 0052 · Compaction 与 Markdown 记忆是普通插件
 
+> 请求切点与保留量由 [0095](0095-context-compaction-uses-settled-batches.md) 修订；普通插件 owner 与完整 Turn 学习边界不变。
+
 - 状态：accepted
 - 日期：2026-08-31
 - 关联条款：CTX-007、MEM-001～MEM-011、PLG-001～PLG-014、SES-003～SES-005

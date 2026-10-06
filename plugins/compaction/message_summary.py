@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from agent.plugin_composition.models import (
     BoundChatModel, ContextLengthError, ModelRequest, ModelTimeoutError,
@@ -49,7 +49,7 @@ def source_text(messages: Sequence[Message]) -> str:
             body = replace(body, parts=tuple(
                 part for part in body.parts
                 if not isinstance(part, ContentPart) or part.kind not in {
-                    "model.facts", "context.summary", "model.selection", "tool.selection",
+                    "model.facts", "context.summary", "context.notice", "model.selection", "tool.selection",
                 }
             ))
         rows.append({"message_id": message.message_id, "source": message.source, "author": message.author,
@@ -90,9 +90,9 @@ def closed_groups(
     settled_prefixes: Callable[[tuple[Message, ...]], tuple[int, ...]],
     after: int = 0,
 ) -> tuple[tuple[Message, ...], ...]:
-    """完整 Turn 不拆开；open 工作只在已结算批次后提供压缩边界。"""
+    """只在已结算批次后切分请求视图；持久 Turn 和学习边界保持完整。"""
     groups: list[tuple[Message, ...]] = []
-    ends = set(settled_prefixes(messages)) - _protected_cuts(messages, projection, keep_open=False)
+    ends = set(settled_prefixes(messages))
     start = after
     for index in range(after, len(messages)):
         message = messages[index]
@@ -178,6 +178,7 @@ async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], .
 
 async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str,
                     model: BoundChatModel, fallback: BoundChatModel,
+                    on_fallback: Callable[[str], Awaitable[None]] | None = None,
                     ) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
     """主模型在本层可恢复的生成失败后，使用本次作用域已固定的 DEFAULT。"""
     try:
@@ -187,4 +188,7 @@ async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str,
             raise
         logger.warning("摘要模型 %s 失败，改用已固定的 DEFAULT %s: %s",
                        model.descriptor.model_id, fallback.descriptor.model_id, failure)
+        if on_fallback is not None:
+            await on_fallback(f"摘要模型 {model.descriptor.model_id} 失败：{failure}；"
+                              f"改用 {fallback.descriptor.model_id}")
         return await _summarize(fallback, groups, previous)

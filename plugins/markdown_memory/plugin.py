@@ -673,15 +673,37 @@ async def _unapplied_groups(
     # 归档 lookup 依赖当前 task 的 lease；只把独立 reader 的解码移出事件循环。
     snapshot = await run_file_io(reader.snapshot)
     covered = summary_range(snapshot, record.source_message_ids)
+    applied_ids = set() if applied_reference is None else set(current.source_message_ids)
     # 历史 suppress 是整个工作单元的资格，不能只删用户行后继续学习其回答。
     by_id = {message.message_id: message for message in snapshot[:covered.stop]}
     excluded: set[str] = set()
+    deferred: set[str] = set()
     for source in sources:
-        for turn in projection.project(snapshot[:covered.stop], source):
+        for turn in projection.project(snapshot, source):
             ids = (*turn.message_ids, *(identity for _, identity in turn.observations))
+            if turn.ending_message_id is not None:
+                ids += (turn.ending_message_id,)
+            # 请求可以摘要半个 Turn；学习须等完整闭合且全部进入累计覆盖范围。
+            if turn.status == "open" or any(identity not in by_id for identity in ids):
+                excluded.update(ids)
+                continue
+            if applied_ids.intersection(ids) and any(identity not in applied_ids for identity in ids):
+                deferred.update(applied_ids.intersection(ids))
             effects = tuple(post_commit_effect(by_id[identity]) for identity in ids)
             if "suppress" in effects:
                 excluded.update(ids)
+    # 已应用 generation 可能只学习了前面的完整 Turn；其半个尾部仍须追溯真实输入。
+    while deferred and applied_reference is not None:
+        parent = None if current.parent is None else lookup.resolve(
+            {"record_ref": current.parent, "session_id": record.session_id}, session_id=reader.session_id,
+        )
+        older = (cast(PartitionedSummary, current).summary_message_ids if current.version == 2 else
+                 current.source_message_ids[0 if parent is None else len(parent.source_message_ids):])
+        selected_ids.update(deferred.intersection(older))
+        deferred.difference_update(older)
+        if parent is None:
+            break
+        current = parent
     cuts = (
         covered.start,
         *(index for index in compaction.window_starts(snapshot[:covered.stop], projection)
