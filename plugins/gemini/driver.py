@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import json
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -60,7 +61,11 @@ def _client(connection: DriverConnectionDescriptor, credential: CredentialHandle
     attempts = config.get("max_attempts", 1)
     if type(attempts) is not int or attempts < 1:
         raise ValueError("max_attempts 必须为正整数，由 Models 消费")
-    return httpx.AsyncClient(base_url=connection.endpoint.rstrip('/') + '/', timeout=httpx.Timeout(read, connect=connect), follow_redirects=False)
+    # SDK 风格的网关根路径使用默认版本；显式版本保持调用者的选择。
+    endpoint = connection.endpoint.rstrip('/')
+    if not re.fullmatch(r'v\d+(?:alpha|beta\d*)?', url.path.rstrip('/').rsplit('/', 1)[-1]):
+        endpoint += '/v1beta'
+    return httpx.AsyncClient(base_url=endpoint + '/', timeout=httpx.Timeout(read, connect=connect), follow_redirects=False)
 
 
 def _timeout(value: object) -> float:
@@ -86,7 +91,7 @@ async def _discover(connection: DriverConnectionDescriptor, credential: Credenti
         seen_pages = set()
         async with asyncio.timeout(30):
             for _ in range(100):
-                response = await client.get(connection.endpoint.rstrip('/') + '/models', headers=headers, params={"pageToken": page} if page else {})
+                response = await client.get('models', headers=headers, params={"pageToken": page} if page else {})
                 _status(response)
                 data = _object(response.json(), "Gemini 模型目录")
                 for item in _list(data.get("models"), "models"):
