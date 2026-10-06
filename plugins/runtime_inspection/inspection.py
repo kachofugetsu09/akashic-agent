@@ -94,6 +94,12 @@ class RuntimeInspectionProvider:
         service = self._skills
         return None if service is None else await service.list_skills()
 
+    async def list_skill_sources(self) -> tuple[Mapping[str, object], ...] | None:
+        """读取本地来源探测结果；缺失与不可读也原样透出。"""
+
+        service = self._skills
+        return None if service is None else await service.list_sources()
+
     async def list_jobs(self) -> tuple[Mapping[str, object], ...] | None:
         """借用本次实际 provider，读取排空后才允许其卸载。"""
         with self._ctx.borrow(SCHEDULER_INSPECTION) as service:
