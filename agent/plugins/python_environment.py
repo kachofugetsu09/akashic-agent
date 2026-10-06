@@ -16,10 +16,7 @@ from typing import cast
 from uuid import uuid4
 from utils.timing import measure
 
-from agent.plugin_composition.archive import (
-    PluginArchive,
-    sync_directory,
-)
+from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugins.static_manifest import StaticPluginManifest, StaticPythonRuntime
 
 ENVIRONMENT_FILE = ".akashic-python-environment"
@@ -145,17 +142,10 @@ class PythonEnvironments:
         self.path = workspace / "runtime" / "plugin-python-environments"
         if self.path.is_symlink():
             raise ValueError("Python 环境根不能是符号链接")
-        self._archive_path = workspace / "runtime" / "plugin-archives"
 
-    @property
-    def archive(self) -> PluginArchive:
-        if not self._archive_path.is_dir():
-            raise FileNotFoundError("Python 环境归档缺失")
-        return PluginArchive(self._archive_path, create=False)
-
-    def prepared(self, code_id: str, runtime: StaticPythonRuntime, *, wheel_digest: str = "") -> str:
-        """Read an already prepared distribution environment; never install at load."""
-        value = _environment_input(self.archive.open(code_id), code_id, runtime, wheel_digest)
+    def prepared(self, code: Path, runtime: StaticPythonRuntime, *, wheel_digest: str = "") -> str:
+        """读取安装阶段准备的环境，加载阶段不安装依赖。"""
+        value = _environment_input(code, runtime, wheel_digest)
         pointer = self.path / (hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest() + ".ref")
         if pointer.is_symlink():
             raise ValueError("Python 环境引用不能是符号链接")
@@ -183,22 +173,14 @@ class PythonEnvironments:
             _check_offline_requirements(code / runtime.requirements)
             wheel_digest = _verify_offline_wheels(offline_wheels)
         self.path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._archive_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # 1. 固定完整代码输入；其中已包含 requirements 与本地构建文件。
-        requirements = (code / runtime.requirements).read_bytes()
-        # Named offline packages and empty inputs do not install plugin source.
-        # Online/local/editable builds still depend on the entire code tree.
-        code_id = ""
-        if requirements.strip() and offline_wheels is None:
-            code_id = self.archive.save(
-                code, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})
-            )
+        # 1. 环境复用只比较安装依赖输入，不保存插件运行代码快照。
+        source = code.resolve(strict=True)
         executable = (
             Path(sys.base_prefix)
             / "bin"
             / f"python{sys.version_info.major}.{sys.version_info.minor}"
         ).resolve(strict=True)
-        input_value = _environment_input(code, code_id, runtime, wheel_digest or "")
+        input_value = _environment_input(source, runtime, wheel_digest or "")
         input_id = hashlib.sha256(
             json.dumps(input_value, sort_keys=True).encode()
         ).hexdigest()
@@ -210,16 +192,8 @@ class PythonEnvironments:
             _ = self.open(ref)
             return ref, True
 
-        if not code_id:
-            code_id = self.archive.save(
-                code, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})
-            )
-        source = self.archive.open(code_id)
-        if _environment_input(source, code_id, runtime, wheel_digest or "") != input_value:
-            raise RuntimeError("插件依赖输入在归档期间发生变化")
-
         # 2. 不 rename venv；脚本 shebang 与 .pth 中的绝对路径从创建起就有效。
-        location = uuid4().hex
+        location = uuid4().hex + uuid4().hex
         root = self.path / location
         root.mkdir(mode=0o700)
         published = False
@@ -241,11 +215,13 @@ class PythonEnvironments:
                 source,
             )
             if has_requirements:
-                # 本地 wheel/build/editable 的输入也留在最终路径；pip 无权写代码归档。
-                build_source = root / "source"
-                _ = shutil.copytree(source, build_source, symlinks=True)
-                requirements_path = build_source / runtime.requirements
+                # 构建副本用于本地包和 editable 的绝对路径，运行代码仍来自安装目录。
+                build_source = source
                 if offline_wheels is None:
+                    build_source = root / "source"
+                    _ = shutil.copytree(source, build_source, symlinks=True,
+                                        ignore=shutil.ignore_patterns(".git", ".venv", "node_modules", "__pycache__", ENVIRONMENT_FILE))
+                    requirements_path = build_source / runtime.requirements
                     command = [
                         str(venv / "bin/python"), "-E", "-s", "-m", "pip",
                         "--disable-pip-version-check", "install", "-r", str(requirements_path),
@@ -273,13 +249,17 @@ class PythonEnvironments:
                 sync_directory(self.path)
             if offline_wheels is not None:
                 _ = _verify_offline_wheels(offline_wheels)
-            ref = self.archive.save_descriptor(
-                {
-                    "version": 1,
-                    "location": location,
-                    "input": input_value,
-                }
-            )
+            if _environment_input(source, runtime, wheel_digest or "") != input_value:
+                raise RuntimeError("插件依赖输入在准备环境期间发生变化")
+            # 环境元数据随实际目录保存；引用就是目录身份，无需另一个归档 owner。
+            metadata = root / "environment.json"
+            with metadata.open("x", encoding="utf-8") as stream:
+                json.dump({"version": 2, "input": input_value}, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            sync_directory(root)
+            sync_directory(self.path)
+            ref = location
             published = True
             # 3. 并发首次解析保留各自材料；后续 admission 使用第一个完整引用。
             fd, name = tempfile.mkstemp(prefix=".pending-", dir=self.path)
@@ -308,21 +288,22 @@ class PythonEnvironments:
         """按安装引用读取环境目录，不扫描内容或探测解释器。"""
         if self.path.is_symlink() or not self.path.is_dir():
             raise FileNotFoundError("Python 环境根缺失或是符号链接")
-        record = self.archive.read_descriptor(ref)
-        if record["version"] != 1:
-            raise ValueError("Python 环境版本不兼容")
-        location = cast(str, record["location"])
-        if len(location) != 32 or any(
-            char not in "0123456789abcdef" for char in location
-        ):
+        if re.fullmatch(r"[0-9a-f]{64}", ref) is None:
             raise ValueError("Python 环境路径身份无效")
+        location = ref
         root = self.path / location
         if root.is_symlink() or not root.is_dir():
             raise FileNotFoundError(f"Python 环境目录缺失或是符号链接: {root}")
+        metadata = root / "environment.json"
+        if metadata.is_symlink():
+            raise ValueError("Python 环境元数据不能是符号链接")
+        record = json.loads(metadata.read_text())
+        if not isinstance(record, dict) or set(record) != {"version", "input"} or record["version"] != 2:
+            raise ValueError("Python 环境格式不兼容；请显式升级或重新安装")
         return root
 
 
-def _environment_input(code: Path, code_id: str, runtime: StaticPythonRuntime, wheel_digest: str) -> dict[str, object]:
+def _environment_input(code: Path, runtime: StaticPythonRuntime, wheel_digest: str) -> dict[str, object]:
     """Key named wheels by dependencies; retain source identity for local builds."""
     requirements = (code / runtime.requirements).read_bytes()
     value: dict[str, object] = {
@@ -333,7 +314,9 @@ def _environment_input(code: Path, code_id: str, runtime: StaticPythonRuntime, w
     if wheel_digest or not requirements.strip():
         value["requirements_sha256"] = hashlib.sha256(requirements).hexdigest()
     else:
-        value["code"] = code_id
+        value["code"] = hashlib.sha256(encode_tree(tree_entries(
+            code, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
+        ))).hexdigest()
     if wheel_digest:
         value["wheel_tree_sha256"] = wheel_digest
     return value

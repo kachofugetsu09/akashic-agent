@@ -13,6 +13,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import cast
 from utils.timing import measure
+from agent.plugins.files import tree_entries, encode_tree, sync_directory
 
 from session.message import freeze_json
 from session.message_codec import json_value
@@ -148,54 +149,6 @@ class PluginArchive:
         if not isinstance(value, dict):
             raise ValueError("插件归档 descriptor 必须是对象")
         return cast(Mapping[str, object], freeze_json(cast(dict[str, object], value)))
-
-
-def tree_entries(
-    root: Path, *, exclude: frozenset[str] = frozenset()
-) -> list[tuple[str, str, str]]:
-    """枚举完整文件树，拒绝外部链接和无法归档的特殊文件。"""
-    if root.is_symlink() or not root.is_dir():
-        raise ValueError("插件归档输入必须是实际目录")
-    resolved_root = root.resolve()
-    entries: list[tuple[str, str, str]] = []
-    for current, directories, files in os.walk(root, followlinks=False):
-        directories[:] = [
-            name for name in directories if name not in _CACHE_NAMES | exclude
-        ]
-        files = [name for name in files if name not in _CACHE_NAMES | exclude]
-        for name in sorted([*directories, *files]):
-            item = Path(current) / name
-            relative = item.relative_to(root).as_posix()
-            mode = item.lstat().st_mode
-            if stat.S_ISLNK(mode):
-                target = os.readlink(item)
-                # 相对内部链接移动后仍指向同一归档；绝对链接不是可搬运闭包。
-                if os.path.isabs(target) or not item.resolve().is_relative_to(
-                    resolved_root
-                ):
-                    raise ValueError(f"插件归档链接越界: {relative}")
-                entries.append((relative, "link", target))
-            elif stat.S_ISDIR(mode):
-                entries.append((relative, "directory", ""))
-            elif stat.S_ISREG(mode):
-                with item.open("rb") as stream:
-                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                entries.append((relative, "file", f"{bool(mode & 0o111)}:{digest}"))
-            else:
-                raise ValueError(f"插件归档不接受特殊文件: {relative}")
-    return sorted(entries)
-
-
-def encode_tree(entries: list[tuple[str, str, str]]) -> bytes:
-    return json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode()
-
-
-def sync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 def encode_config(value: object) -> object:
