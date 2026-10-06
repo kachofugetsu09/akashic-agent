@@ -352,6 +352,7 @@ class MessageLog:
     def __init__(self, path: str | Path):
         self._writer_lock = threading.RLock()
         self._read_admission = threading.Lock()
+        self._idle_reads: list[sqlite3.Connection] = []
         self._listener_lock = threading.Lock()
         self._decode_lock = threading.RLock()
         self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
@@ -628,7 +629,9 @@ class MessageLog:
         with self._read_admission:
             if self._closed:
                 raise RuntimeError("MessageLog is closed")
-            connection = sqlite3.connect(self._path.as_uri() + "?mode=ro", uri=True)
+            connection = self._idle_reads.pop() if self._idle_reads else sqlite3.connect(
+                self._path.as_uri() + "?mode=ro", uri=True, check_same_thread=False,
+            )
             try:
                 connection.row_factory = sqlite3.Row
                 _ = connection.execute("PRAGMA query_only=ON")
@@ -637,12 +640,22 @@ class MessageLog:
                 connection.close()
                 raise
         # Callbacks may use other readers of this same log; all see this snapshot.
-        with closing(connection):
-            self._reads.current = _ReadConnection(connection, threading.RLock())
+        self._reads.current = _ReadConnection(connection, threading.RLock())
+        try:
+            yield connection
+        finally:
+            self._reads.current = None
             try:
-                yield connection
-            finally:
-                self._reads.current = None
+                # 归还前结束快照；下次借用必须观察新的已提交状态。
+                connection.rollback()
+            except BaseException:
+                connection.close()
+                raise
+            with self._read_admission:
+                if not self._closed and len(self._idle_reads) < 4:
+                    self._idle_reads.append(connection)
+                else:
+                    connection.close()
 
     def catalog(self) -> MessageCatalog:
         return MessageCatalog(self)
@@ -726,6 +739,9 @@ class MessageLog:
                 if self._closed:
                     return
                 self._closed = True
+                idle_reads, self._idle_reads = self._idle_reads, []
+            for connection in idle_reads:
+                connection.close()
             self._writer_connection.close()
             with self._listener_lock:
                 listeners = tuple(self._listeners.items())

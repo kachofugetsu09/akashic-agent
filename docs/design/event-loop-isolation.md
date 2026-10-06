@@ -11,6 +11,8 @@ Long history reads use a private read-only SQLite transaction and connection. Ne
 直接打开独立只读事务。准入与 close 使用短锁：close 拒绝后来读者，已取得的只读连接
 仍由原同步读取关闭。来源提交和首次效果的异步顺序见下面的 #879 说明；权威消息仍只追加。
 
+MessageLog 最多保留四个空闲只读连接。一次读取独占借用的连接，嵌套读取沿用该快照；归还前结束事务，下次借用重新开始事务。连接仍为 `mode=ro` 和 `query_only`，不能升级为 writer。close 拒绝新读取并关闭空闲连接，已经准入的读取完成后关闭自己的连接。复用连接不复用事务，也不延长旧快照。
+
 ```text
 ┌───────────────────────┐       ┌────────────────────────┐
 │ writer：未提交事务       │       │ reader：独立只读快照     │
