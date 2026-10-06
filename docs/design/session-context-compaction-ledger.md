@@ -1,5 +1,7 @@
 # Session Context Compaction Ledger
 
+> 2026-10-06 勘误：切点、20K 保留目标与软水位失败由 [0095](../decisions/0095-context-compaction-uses-settled-batches.md) 和 CTX-007 拥有。下文整 logical unit、最低保留量和软水位阻断是历史设计；现行 owner 见 0052/0068。
+
 - 状态：implemented
 - 日期：2026-08-08
 - 决策：[0030](../decisions/0030-session-context-compaction-ledger.md)

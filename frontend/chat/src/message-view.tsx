@@ -234,6 +234,7 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
           status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
           errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
       }
+      if (part.kind === "context.notice") return [{ kind: "part", key, origin, index, part }];
       if (origin.id === finalId) {
         return isTimelinePartVisible(part) ? [{ kind: "part", key, origin, index, part }] : [];
       }
@@ -439,6 +440,7 @@ function TimelinePartView({ part, toolResult = false, attachment, lookupMessage,
     : <p className="timeline-state">无法展示此内容</p>;
   if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} startContent={processStartContent} onError={onError} /> : null;
   switch (part.kind) {
+    case "context.notice": return <p className="plain-message-response" role="status">{part.value.text}</p>;
     case "text": return toolResult ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} /> : <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
     case "artifact_ref": return attachment(part.value);
     case "reply_ref": {

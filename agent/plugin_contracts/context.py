@@ -14,6 +14,8 @@ from agent.plugin_contracts.models import ContextModel
 MaterialKind = Literal["context", "recall", "profile"]
 MaterialData = Mapping[str, object]
 SummaryData = Mapping[str, object]
+ReductionStatus = Callable[[str, bool], Awaitable[None]]
+# 回调第二个参数声明诊断是否随本次 Output 保留；False 只更新临时进度。
 Prepare = Callable[[tuple[Message, ...], str], Awaitable[MaterialData]]
 
 
@@ -30,11 +32,13 @@ class SummaryReducer(Protocol):
         *,
         source: str,
         force: bool,
+        on_status: ReductionStatus | None = None,
     ) -> SummaryData | None: ...
 
 
 class ContextBuilder(Protocol):
     def check_summary(self, part: ContentPart) -> ContentReferences: ...
+    def check_notice(self, part: ContentPart) -> ContentReferences: ...
     def summary_range(
         self, snapshot: tuple[Message, ...], source_message_ids: tuple[str, ...]
     ) -> range: ...
@@ -83,6 +87,7 @@ class MaterialView(Protocol):
         *,
         source: str,
         force: bool,
+        on_status: ReductionStatus | None = None,
     ) -> SummaryData | None: ...
 
 
@@ -107,3 +112,4 @@ class ContextMaterialsV4(Protocol):
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 MATERIALS_V4 = ServiceKey[ContextMaterialsV4]("context.materials.v4")
+CONTEXT_NOTICE_DISPLAY = ServiceKey[Callable[[ContentPart], Mapping[str, object]]]("message.display:context.notice")

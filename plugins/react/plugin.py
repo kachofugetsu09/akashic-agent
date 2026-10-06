@@ -441,6 +441,23 @@ async def _complete(
                                      current_reminder_input_id=reminder_input_id)
 
     prepared_attempt = prepared
+    async def reduce_request(mats: Materials, request: ModelRequest, *, force: bool) -> tuple[Materials, Mapping[str, object] | None]:
+        """压缩预览只显示状态；可见诊断随冻结材料进入最终 Output。"""
+        assert reduce is not None
+        notices = list(cast(Sequence[str], mats.get("notices", ())))
+        with ExitStack() as status:
+            callback = None if preview is None else status.enter_context(preview(uuid4().hex))
+
+            async def report(text: str, retain: bool) -> None:
+                if retain:
+                    notices.append(text)
+                if callback is not None:
+                    await callback({"retry_status": text})
+
+            summary = await reduce(snapshot, mats, request, model, projection,
+                                   source=source, force=force, on_status=report)
+        return ({**mats, "notices": tuple(notices)} if notices else mats), summary
+
     if resumed is not None and start_at in resumed:
         # 恢复直接命中已冻结的当前请求与材料，不重建、不重跑缩减。
         request, prepared_attempt = resumed[start_at]
@@ -449,8 +466,7 @@ async def _complete(
         if rejection is not None and reduce is None:
             raise ContextLengthError(rejection)
         if reduce is not None:
-            summary = await reduce(snapshot, prepared_attempt, request, model, projection,
-                                   source=source, force=rejection is not None)
+            prepared_attempt, summary = await reduce_request(prepared_attempt, request, force=rejection is not None)
             if summary is not None and summary != prepared_attempt.get("summary"):
                 prepared_attempt = {**prepared_attempt, "summary": summary}
                 request, rejection = build(prepared_attempt)
@@ -492,7 +508,7 @@ async def _complete(
             # 请求；恢复续发 attempt>=1 的冻结请求再遭拒绝同样终结。
             if reduce is None or attempt != 0 or getattr(error, "send_evidence", None) != "rejected":
                 raise
-            summary = await reduce(snapshot, prepared, request, model, projection, source=source, force=True)
+            prepared, summary = await reduce_request(prepared, request, force=True)
             if summary is None or summary == prepared.get("summary"):
                 raise
             attempt += 1
@@ -851,6 +867,8 @@ async def react(
             summary = cast(Mapping[str, object] | None, prepared.get("summary"))
             if summary is not None:
                 parts.append(ContentPart("context.summary", {"reference": summary["reference"]}))
+            parts.extend(ContentPart("context.notice", notice)
+                         for notice in cast(Sequence[str], prepared.get("notices", ())))
             # 4. 内容完成后在窄事务内核对前提并提交；失败的草稿绝不触发工具。
             try:
                 message = await commit(

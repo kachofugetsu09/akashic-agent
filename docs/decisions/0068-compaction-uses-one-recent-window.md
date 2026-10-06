@@ -4,7 +4,7 @@
 - 日期：2026-09-11
 - 关联条款：CTX-001～CTX-007、MEM-011～MEM-012、SES-003～SES-005
 - supersedes：0030 中“已有 generation 后追平有效 cursor 到当前全部增量”的选择
-- superseded by：无
+- 部分 superseded by：[0095](0095-context-compaction-uses-settled-batches.md) 的安全批次切点、20K 目标和首次覆盖；每代单窗口、真实输入与 omitted 分区不变。
 
 ## 背景
 

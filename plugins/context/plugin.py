@@ -15,6 +15,7 @@ from agent.plugin_contracts import (
 )
 from agent.plugin_contracts.context import (
     CONTEXT as CONTEXT,
+    CONTEXT_NOTICE_DISPLAY,
     MATERIALS_V4,
 )
 
@@ -25,6 +26,7 @@ from .api import (
     Materials,
     Summary,
     check_summary,
+    check_notice,
     decode_material,
     settled_prefixes,
     summary_range,
@@ -81,6 +83,7 @@ def _summary_cutoff(snapshot: tuple[Message, ...], summary: Summary | None) -> i
 
 class ContextBuilder:
     check_summary = staticmethod(check_summary)
+    check_notice = staticmethod(check_notice)
     summary_range = staticmethod(summary_range)
     settled_prefixes = staticmethod(settled_prefixes)
 
@@ -223,5 +226,10 @@ class ContextBuilder:
 async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     _ = await ctx.provide(CONTEXT, ContextBuilder())
+    def display_notice(part):
+        _ = check_notice(part)
+        return {"text": part.value}
+
+    _ = await ctx.provide(CONTEXT_NOTICE_DISPLAY, display_notice)
     materials = ContextMaterials(ctx, prompt_sources=config.prompt_sources, summary_source=config.summary_source or None)
     _ = await ctx.provide(MATERIALS_V4, materials, binding_contributors=materials.binding_contributors)

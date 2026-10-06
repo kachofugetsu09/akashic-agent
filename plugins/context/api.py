@@ -55,6 +55,13 @@ def check_summary(part: ContentPart) -> ContentReferences:
     return ContentReferences(binding_ids=(value["reference"],))
 
 
+def check_notice(part: ContentPart) -> ContentReferences:
+    """上下文诊断是可见执行记录，不是用户输入或模型材料。"""
+    if not isinstance(part.value, str) or not part.value.strip():
+        raise ValueError("context.notice 必须是非空诊断正文")
+    return ContentReferences()
+
+
 def summary_range(snapshot: tuple[Message, ...], source_message_ids: tuple[str, ...]) -> range:
     """按真实身份定位摘要的连续区间；窗口外旧消息不冒充摘要来源。"""
     identities = tuple(message.message_id for message in snapshot)
@@ -116,10 +123,13 @@ class Materials:
     reminders: tuple[Reminder, ...] = ()
     summary: Summary | None = None
     references: tuple[Mapping[str, object], ...] = ()
+    notices: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.system_prompt, str):
             raise TypeError("system Prompt 必须是字符串")
+        if any(not isinstance(item, str) or not item.strip() for item in self.notices):
+            raise ValueError("上下文诊断必须是非空正文")
         parts = tuple(self.reminders)
         if any(not isinstance(part, Reminder) for part in parts):
             raise TypeError("提醒必须是已校验的文本块")
@@ -190,7 +200,7 @@ def _reminder(value: object) -> Reminder:
 def decode_material(value: object) -> Materials:
     """在 Context 边界把 provider 的普通映射转换为内部材料值。"""
     data = _object(value, "materials")
-    unknown = set(data) - {"system_prompt", "reminders", "summary", "references"}
+    unknown = set(data) - {"system_prompt", "reminders", "summary", "references", "notices"}
     if unknown:
         raise ValueError(f"materials 包含未知字段: {sorted(unknown)}")
     prompt = data.get("system_prompt", "")
@@ -199,7 +209,10 @@ def decode_material(value: object) -> Materials:
     reminders = tuple(_reminder(item) for item in _sequence(data.get("reminders", ()), "materials.reminders"))
     summary = _summary(data.get("summary"))
     references = tuple(_reference(item) for item in _sequence(data.get("references", ()), "materials.references"))
-    return Materials(prompt, reminders, summary, references)
+    notices = _sequence(data.get("notices", ()), "materials.notices")
+    if any(not isinstance(item, str) for item in notices):
+        raise TypeError("materials.notices 必须是字符串数组")
+    return Materials(prompt, reminders, summary, references, cast(tuple[str, ...], notices))
 
 
 def material_data(materials: Materials) -> MaterialData:
@@ -215,6 +228,7 @@ def material_data(materials: Materials) -> MaterialData:
                             **({"replay": False} if not item.replay else {})} for item in materials.reminders),
         "summary": summary,
         "references": tuple(dict(item) for item in materials.references),
+        **({"notices": materials.notices} if materials.notices else {}),
     }
 
 

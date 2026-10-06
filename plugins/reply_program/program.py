@@ -10,7 +10,7 @@ from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_composition.messages import MessageReader, MessageWriters, OwnerState, OwnerTransaction
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
-from agent.plugin_contracts.context import MaterialView
+from agent.plugin_contracts.context import MaterialView, ReductionStatus
 from agent.plugin_contracts.models import PrepareContent
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
@@ -128,7 +128,7 @@ async def run_reply(
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
             check_metadata=view.check_metadata,
-            content={**view.checks, "model.facts": model_checks.check_facts, "model.tool_rejection": model_checks.check_tool_rejection, "context.summary": context.check_summary}, check_call=menu.check_call,
+            content={**view.checks, "model.facts": model_checks.check_facts, "model.tool_rejection": model_checks.check_tool_rejection, "context.summary": context.check_summary, "context.notice": context.check_notice}, check_call=menu.check_call,
         )(reader.session_id)
         task.on_close(output.expire)
         artifacts: Mapping[str, tuple[Mapping[str, Any], ...]] = {}
@@ -169,9 +169,10 @@ async def run_reply(
         async def reduce(
             snapshot: tuple[Message, ...], prepared: Materials, request: ModelRequest,
             model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
+            on_status: ReductionStatus | None = None,
         ) -> Summary | None:
             result = await material_view.reduce(snapshot, prepared, request, model, projection,
-                                                source=source, force=force)
+                                                source=source, force=force, on_status=on_status)
             check()
             return result
 

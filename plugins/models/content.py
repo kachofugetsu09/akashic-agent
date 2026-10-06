@@ -97,7 +97,7 @@ def render_content(
         return ({"type": "text", "text": part.value},)
     if part.kind == "artifact_ref":
         return artifacts[cast(str, part.value)]
-    if part.kind in {"model.selection", "tool.selection", "context.summary", "history.record", "history.turn_input"}:
+    if part.kind in {"model.selection", "tool.selection", "context.summary", "context.notice", "history.record", "history.turn_input"}:
         return ()
     if part.kind == "reply_ref":
         if read_message is None:
