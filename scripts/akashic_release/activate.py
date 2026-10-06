@@ -58,7 +58,7 @@ def _verify_selected_runtime(
         if selected is not None and not isinstance(selected, str):
             raise RuntimeError("live runtime selected_ref 格式无效")
         if selected is not None and (
-            item.get("archive_ref") != selected or item.get("state") != "active"
+            item.get("input_ref") != selected or item.get("state") != "active"
             or item.get("fiber_state") != "active"
         ):
             raise RuntimeError(f"selected plugin 尚未 ACTIVE: {item.get('plugin_id')}")

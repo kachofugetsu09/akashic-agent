@@ -69,7 +69,7 @@ async def run():
             {"name": name, "marketplace": "release", "plugin_root": str(artifact),
              "module_path": str(artifact / "plugin.py"), "manifest_digest": identity.identity_digest,
              "source_type": "installed"}, workspace=work, archive=selection.archive,
-        ).archive_ref)
+        ).input_ref)
     selection.commit(tuple(prepared), expected_ref=selection.read())
     m = await manager(work, home)
     await m.terminate_all()

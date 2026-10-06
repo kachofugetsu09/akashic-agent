@@ -1,4 +1,4 @@
-"""Build one fixed plugin input before a runtime generation exists."""
+"""准备当前安装输入，不复制插件运行代码。"""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
 )
 
-PLUGIN_ARCHIVE_BINDING_API = 3
+PLUGIN_INPUT_API = 3
 # watcher 与运行变化比较共用排除规则；完整归档摘要仍包含来源标签。
 SOURCE_EXCLUDED_NAMES = frozenset({
     ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv",
@@ -35,11 +35,12 @@ SOURCE_EXCLUDED_NAMES = frozenset({
 
 @dataclass(frozen=True, slots=True)
 class PreparedPluginInput:
-    """The archived input and source facts used by one runtime generation."""
+    """一次加载的安装路径、配置与来源事实。"""
 
     plugin_id: str
-    archive_ref: str
+    input_ref: str
     source_revision: str
+    runtime_revision: str
     config_revision: str
     config: dict[str, object]
     static_manifest: StaticPluginManifest
@@ -52,7 +53,7 @@ class PreparedPluginInput:
 def prepare_plugin_input(
     mod: Mapping[str, str], *, workspace: Path, archive: PluginArchive, initial: bool = False,
 ) -> PreparedPluginInput:
-    """Check, compile, and archive one source without loading its module."""
+    """校验并编译已安装源码，不提前导入模块。"""
 
     # 1. Check the discovered source identity and read its current config.
     plugin_id = _resolve_plugin_id(mod)
@@ -80,17 +81,8 @@ def prepare_plugin_input(
 
     # 环境准备不再顺带创建归档根；本层仍写归档，由输入 owner 明确创建。
     archive.path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # 2. Fix the code tree, read its manifest, and compile every Python file.
-    code_ref = archive.save(
-        plugin_dir, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
-    )
-    code_dir = archive.open(code_ref)
-    try:
-        archived_identity = load_static_plugin_manifest(code_dir)
-    except PluginSourceContentError as error:
-        raise RuntimeError("插件归档静态身份损坏") from error
-    if archived_identity != identity:
-        raise RuntimeError("插件安装身份在归档前发生变化")
+    # 2. 直接编译安装目录；外部环境变化不会被另一个代码快照隐藏。
+    code_dir = plugin_dir.resolve(strict=True)
     for source_path in sorted(code_dir.rglob("*.py")):
         if any(part in {"__pycache__", ".venv", "node_modules"} for part in source_path.parts):
             continue
@@ -102,7 +94,7 @@ def prepare_plugin_input(
                 f"插件源码无法编译: {source_path}"
             ) from error
 
-    # 3. Save the same v4 descriptor after all source checks succeed.
+    # 3. 准备当前选择的元数据；代码字段只表示实际安装路径。
     environments: dict[str, str] = {}
     if identity.python:
         if (plugin_dir / ENVIRONMENT_FILE).exists():
@@ -119,17 +111,18 @@ def prepare_plugin_input(
                 ) for runtime in identity.python
             }
     ref = archive.save_descriptor({
-        "version": 4, "code": code_ref, "python_environments": environments,
+        "version": 5, "code": str(code_dir), "python_environments": environments,
         "plugin_id": plugin_id, "source_revision": revision,
         "config_revision": config_revision, "config": encode_config(config),
         "source_type": mod["source_type"],
         **({"distribution_source": mod["distribution_source"]} if "distribution_source" in mod else {}),
         "data_dir": data_dir.resolve().relative_to(workspace.resolve()).as_posix(),
-        "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
+        "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_INPUT_API},
     })
     return PreparedPluginInput(
-        plugin_id=plugin_id, archive_ref=ref,
-        source_revision=revision, config_revision=config_revision, config=config,
+        plugin_id=plugin_id, input_ref=ref,
+        source_revision=revision, runtime_revision=_source_revision(code_dir, runtime_only=True),
+        config_revision=config_revision, config=config,
         static_manifest=identity, plugin_dir=plugin_dir, code_dir=code_dir,
         data_dir=data_dir,
         source_type=cast(Literal["builtin", "installed"], mod["source_type"]),

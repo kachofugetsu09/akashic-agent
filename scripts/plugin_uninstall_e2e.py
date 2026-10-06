@@ -428,7 +428,7 @@ asyncio.run(run())
         app.plugin_watcher_task = asyncio.create_task(app.plugin_watcher.run())
         provider, peer = manager.generation('z_registry@lab'), manager.generation('peer@lab')
         content = manager.generation('content')
-        tokens = [(g, g.fiber, g.fiber.context.fiber.activation_token, g.archive_ref) for g in (provider, peer, content)]
+        tokens = [(g, g.fiber, g.fiber.context.fiber.activation_token, g.input_ref) for g in (provider, peer, content)]
         peer_effects = (peer.data_dir / 'activations.txt').read_bytes()
         target = manager.generation('annotation@lab')
         target_data = target.data_dir / 'keep.bin'
@@ -464,10 +464,10 @@ asyncio.run(run())
             await wait_for(lambda: manager.plugin_status()['operation']['state'] == 'done', 'uninstall done')
             await asyncio.wait_for(notified.wait(), 15)
             # 3. 验证无关实例、外部效果、历史与用户数据的完整内容。
-            for generation, fiber, token, archive_ref in tokens:
+            for generation, fiber, token, input_ref in tokens:
                 assert manager.generation(generation.plugin_id) is generation, generation.plugin_id
                 assert generation.fiber is fiber and fiber.context.fiber.activation_token is token, generation.plugin_id
-                assert generation.archive_ref == archive_ref, generation.plugin_id
+                assert generation.input_ref == input_ref, generation.plugin_id
             assert (peer.data_dir / 'activations.txt').read_bytes() == peer_effects
             assert target_data.read_bytes() == b'user-owned-data'
             assert (target.code_dir / 'plugin.py').read_bytes() == archive_before

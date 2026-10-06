@@ -448,7 +448,7 @@ async def run(args):
             ".",
         )
         assert subprocess.check_output(command, text=True).strip() == "25.0"
-    ref = m.generation("alpha@release").archive_ref
+    ref = m.generation("alpha@release").input_ref
     assert m._archive.read_descriptor(ref)["python_environments"]
     await m.uninstall("newcomer@release")
     await m._operation.task
@@ -495,9 +495,8 @@ async def run(args):
         inputs=root,
     )
     assert pub["new_root_ref"] == json.loads(plan.read_text())["expected_root_ref"]
-    # A Core-only release changes provenance but retains all exact plugin inputs.
+    # Core 更新使用当前镜像路径；配置、依赖和外置插件选择保持不变。
     refs_before = selected(work)
-    caches_before = snapshot(work / "runtime/plugin-archives")
     environments_before = snapshot(work / "runtime/plugin-python-environments")
     (repo / "core-only.txt").write_text("new Core, unchanged plugins\n")
     core_only = distribution(repo, root / "core-only", ["alpha", "disabled", "optional", "newcomer"],
@@ -506,8 +505,13 @@ async def run(args):
         prepare_wheels(core_only)
     ensure_profile(core_only, core_only / "profiles/default.json", workspace=work, plugins_home=home,
                    config_path=config, receipt_path=receipt)
-    assert selected(work) == refs_before
-    assert snapshot(work / "runtime/plugin-archives") == caches_before
+    current_inputs = selected(work)
+    assert current_inputs["outside@thirdparty"] == refs_before["outside@thirdparty"]
+    for plugin_id, (_, descriptor) in current_inputs.items():
+        if descriptor["source_type"] == "builtin":
+            assert Path(descriptor["code"]) == core_only / "sources" / plugin_id.split("@")[0]
+            assert descriptor["config_revision"] == refs_before[plugin_id][1]["config_revision"]
+            assert descriptor["python_environments"] == refs_before[plugin_id][1]["python_environments"]
     assert snapshot(work / "runtime/plugin-python-environments") == environments_before
     # Changed plugin source gets a new input without rebuilding unchanged dependencies.
     requirements_before = (repo / "plugins/alpha/requirements.txt").read_bytes()
@@ -524,7 +528,7 @@ async def run(args):
     assert changed["alpha@release"][1]["python_environments"] == refs_before["alpha@release"][1]["python_environments"]
     assert snapshot(work / "runtime/plugin-python-environments") == environments_before
     assert changed["outside@thirdparty"] == refs_before["outside@thirdparty"]
-    assert changed["optional@release"] == refs_before["optional@release"]
+    assert Path(changed["optional@release"][1]["code"]) == code_changed / "sources/optional"
     # Corrupt new image bytes are rejected before any selection change.
     before = PluginSelection(work).read()
     entry = new / "sources/alpha/plugin.py"

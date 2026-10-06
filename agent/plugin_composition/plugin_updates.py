@@ -17,7 +17,7 @@ class UpdateStatus:
     input_ref: str | None
     selection: Literal["selected", "not_selected", "unknown"]
     generation_id: str | None
-    archive_ref: str | None
+    active_input_ref: str | None
     fiber_state: str | None
     state: Literal["accepted", "active", "failed", "unknown"]
     error: str

@@ -16,6 +16,7 @@ class PluginGeneration:
     generation_id: str
     module_path: str
     source_revision: str
+    runtime_revision: str
     config_revision: str
     plugin_dir: Path
     data_dir: Path
@@ -26,14 +27,14 @@ class PluginGeneration:
     static_manifest: StaticPluginManifest | None = None
     state: str = "active"
     reload_tx_id: str | None = None
-    archive_ref: str | None = None
+    input_ref: str | None = None
     code_dir_path: Path | None = None
     fiber: Fiber | None = None
     load_error: BaseException | None = None
 
     @property
     def code_dir(self) -> Path:
-        """Return the immutable archived code directory for this generation."""
+        """返回 generation 使用的实际安装目录。"""
         if self.code_dir_path is None:
-            raise RuntimeError("generation 缺少固定归档代码目录")
+            raise RuntimeError("generation 缺少安装代码目录")
         return self.code_dir_path.resolve()

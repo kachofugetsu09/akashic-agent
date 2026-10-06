@@ -63,7 +63,7 @@ from agent.plugins.host import (
 )
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.input_preparation import (
-    PLUGIN_ARCHIVE_BINDING_API,
+    PLUGIN_INPUT_API,
     SOURCE_EXCLUDED_NAMES,
     _resolve_plugin_data_dir,
     _resolve_plugin_id,
@@ -653,7 +653,7 @@ class PluginManager:
                     raise RuntimeError(f"完整插件组合加载失败: {_resolve_plugin_id(mod)}")
                 inputs.append(generation)
             components = tuple(
-                self._generation_archive_ref(item)
+                self._generation_input_ref(item)
                 for item in sorted(inputs, key=lambda item: item.plugin_id)
             )
             await self._load_live_initial(components, expected_ref=None, prepared=tuple(inputs))
@@ -734,7 +734,7 @@ class PluginManager:
         self._building_roots[root] = ()
         try:
             if not prepared:
-                loaded = self._archived_generations(
+                loaded = self._selected_generations(
                     components, root, workspace=self._workspace, sources={},
                 )
                 generations = tuple(loaded.values())
@@ -757,7 +757,7 @@ class PluginManager:
             runnable_items: list[PluginGeneration] = []
             for generation in generations:
                 if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
-                    self._publish_config_input(self._generation_archive_ref(generation))
+                    self._publish_config_input(self._generation_input_ref(generation))
                 try:
                     await self._load_live_generation(generation)
                 except Exception:
@@ -848,9 +848,9 @@ class PluginManager:
             or generation.fiber is not None
             or generation.state != "failed"
             or (current is not None and current is not generation)
-            or generation.archive_ref is None
+            or generation.input_ref is None
             or selection_ref is None
-            or generation.archive_ref not in self._selection_components(selection_ref)
+            or generation.input_ref not in self._selection_components(selection_ref)
         ):
             raise RuntimeError("不是可 retained 的 pre-Fiber generation failure")
         if current is None:
@@ -1109,11 +1109,11 @@ class PluginManager:
 
     def read_config_input(self, plugin_id: str) -> dict[str, object]:
         generation = self._active_generations[plugin_id]
-        return {"input_ref": generation.archive_ref, "config_revision": generation.config_revision}
+        return {"input_ref": generation.input_ref, "config_revision": generation.config_revision}
 
     async def apply_config_input(self, plugin_id: str, request_id: str,
                                  expected_input: str, config: Mapping[str, object]) -> dict[str, object]:
-        """归档候选并立即返回；独立宿主任务拥有正式提交和排空。"""
+        """准备候选并立即返回；独立宿主任务拥有正式提交和排空。"""
         # 1. 校验输入身份与凭据归属，重放同一请求只读取回执。
         if not request_id or len(request_id) > 128 or request_id.strip() != request_id:
             raise ValueError("配置请求 ID 无效")
@@ -1135,7 +1135,7 @@ class PluginManager:
         except OperationBusyError as error:
             raise ValueError("另一个配置或插件操作正在完成，请稍后重试") from error
         generation = self._active_generations[plugin_id]
-        if generation.archive_ref != expected_input:
+        if generation.input_ref != expected_input:
             raise ValueError("配置已更新，请刷新后重试")
         for ref in config_refs(config):
             path = _credential_path(generation.data_dir, ref)
@@ -1160,7 +1160,7 @@ class PluginManager:
             row["state"] == "selected"
             and (self._operation is None or self._operation.task.done())
         )
-        if settled and selected and generation is not None and generation.state == "active" and generation.archive_ref == row["input_ref"] and self._generation_is_locally_ready(generation):
+        if settled and selected and generation is not None and generation.state == "active" and generation.input_ref == row["input_ref"] and self._generation_is_locally_ready(generation):
             row["state"] = "active"
         elif row["state"] == "active":
             row["state"] = "superseded" if not selected else "failed"
@@ -1184,12 +1184,12 @@ class PluginManager:
         plugin_id = cast(str, row["plugin_id"])
         try:
             previous = self._active_generations[plugin_id]
-            if previous.archive_ref != row["previous_input"]:
+            if previous.input_ref != row["previous_input"]:
                 raise ValueError("提交前配置已改变，请刷新后重试")
             root = self._live_root
             if root is None:
                 raise RuntimeError("运行图尚未建立")
-            generation = self._archived_generations((cast(str, row["input_ref"]),), root,
+            generation = self._selected_generations((cast(str, row["input_ref"]),), root,
                 workspace=self._workspace, sources={plugin_id: previous}, register_live=False)[plugin_id]
             await self._update_live_generation(generation, previous, expected_ref=self._selection.read(),
                                                config_request_id=request_id)
@@ -1219,7 +1219,7 @@ class PluginManager:
         for row in self._reload_journal.pending_config_updates():
             generation = self._active_generations.get(cast(str, row["plugin_id"]))
             if (generation is not None and row["input_ref"] in components
-                and generation.archive_ref == row["input_ref"]
+                and generation.input_ref == row["input_ref"]
                 and generation.state == "active" and self._generation_is_locally_ready(generation)):
                 self._reload_journal.finish_config_update(cast(str, row["request_id"]), "active")
 
@@ -1367,9 +1367,9 @@ class PluginManager:
             )
             if generation is None:
                 raise RuntimeError(f"安装目标未进入 live generation: {result.plugin_name}@{result.marketplace}")
-            if generation.archive_ref is None:
+            if generation.input_ref is None:
                 raise RuntimeError("安装目标没有归档引用")
-            self._reload_journal.set_input_ref(result.update_id, generation.archive_ref)
+            self._reload_journal.set_input_ref(result.update_id, generation.input_ref)
             expected_ref = self._selection.read()
             previous = self._active_generations.get(generation.plugin_id)
             await self._update_live_generation(
@@ -1401,14 +1401,14 @@ class PluginManager:
         generation = self._active_generations.get(update.plugin_id)
         fiber_state = None if generation is None or generation.fiber is None else generation.fiber.state.value
         generation_id = None if generation is None else generation.generation_id
-        archive_ref = None if generation is None else generation.archive_ref
+        active_input_ref = None if generation is None else generation.input_ref
         state: Literal["accepted", "active", "failed", "unknown"] = "unknown"
         readiness_error: str | None = None
         exact_generation = (
             input_ref is not None
             and selected
             and generation is not None
-            and generation.archive_ref == input_ref
+            and generation.input_ref == input_ref
         )
         if exact_generation and generation is not None and generation.load_error is not None:
             readiness_error = (
@@ -1451,7 +1451,7 @@ class PluginManager:
             input_ref=input_ref,
             selection=selection,
             generation_id=generation_id,
-            archive_ref=archive_ref,
+            active_input_ref=active_input_ref,
             fiber_state=fiber_state,
             state=state,
             error=readiness_error or update.error,
@@ -1533,7 +1533,7 @@ class PluginManager:
             and plugin_id not in explicitly_disabled
             and (plugin_ids is None or plugin_id in plugin_ids)
         )
-        restored = self._archived_generations(
+        restored = self._selected_generations(
             missing, self._live_root, workspace=self._workspace,
             sources={}, register_live=False,
         )
@@ -1576,7 +1576,7 @@ class PluginManager:
                 and active.load_error is not None
                 and active.fiber is None
                 and active.state == "failed"
-                and active.archive_ref in selected_components
+                and active.input_ref in selected_components
             ):
                 results.append({
                     "plugin_id": plugin_id,
@@ -1602,11 +1602,9 @@ class PluginManager:
                 and active.config_revision == config_revision
                 and (
                     active.source_revision == revision
-                    # 完整摘要保留来源证据；运行变化只比较代码，不改写旧归档。
-                    or await run_file_io(lambda: (
-                        _source_revision(active.code_dir, runtime_only=True)
-                        == _source_revision(Path(mod["plugin_root"]), runtime_only=True)
-                    ))
+                    # 安装路径可原位变化；与加载时的摘要比较，不能将同一路径重读两遍。
+                    or active.runtime_revision == await run_file_io(lambda:
+                        _source_revision(Path(mod["plugin_root"]), runtime_only=True))
                 )
             )
             if same_input and not had_source_failure:
@@ -1659,13 +1657,13 @@ class PluginManager:
             () if previous is None else (previous,)
         )
         try:
-            replacement_ref = self._generation_archive_ref(generation)
+            replacement_ref = self._generation_input_ref(generation)
             components = self._selection_for_plugin(
                 expected_ref, generation.plugin_id, replacement_ref,
             )
             if (
                 previous is not None
-                and previous.archive_ref == replacement_ref
+                and previous.input_ref == replacement_ref
                 and self._selection_contains(expected_ref, replacement_ref)
                 and self._generation_is_locally_ready(previous)
             ):
@@ -1725,8 +1723,8 @@ class PluginManager:
                 generation.fiber is not None
                 and generation.fiber.state == FiberState.FAILED
                 and generation.fiber.error is not None
-                and generation.archive_ref is not None
-                and self._selection_contains(selected_ref, generation.archive_ref)
+                and generation.input_ref is not None
+                and self._selection_contains(selected_ref, generation.input_ref)
                 and self._active_generations.get(generation.plugin_id) is generation
             )
             if retained_failed_fiber:
@@ -1842,7 +1840,7 @@ class PluginManager:
         for owner in unique_owners:
             await self._dispose_generation(owner, state="retired")
         self._check_operation_commit()
-        fresh = self._archived_generations(
+        fresh = self._selected_generations(
             selected, root, workspace=self._workspace, sources={}, register_live=False,
         )[plugin_id]
         try:
@@ -1874,14 +1872,14 @@ class PluginManager:
         selection_ref = self._selection.read()
         selected_refs: dict[str, str] = {}
         if selection_ref is not None:
-            for archive_ref in self._selection_components(selection_ref):
-                descriptor = self._archive.read_descriptor(archive_ref)
+            for input_ref in self._selection_components(selection_ref):
+                descriptor = self._archive.read_descriptor(input_ref)
                 plugin_id = descriptor.get("plugin_id")
                 if not isinstance(plugin_id, str):
                     raise TypeError("selection archive descriptor 缺少 plugin_id")
                 if plugin_id in selected_refs:
                     raise RuntimeError(f"selection 重复包含插件: {plugin_id}")
-                selected_refs[plugin_id] = archive_ref
+                selected_refs[plugin_id] = input_ref
 
         def cleanup_pending(generation: PluginGeneration) -> bool:
             return any(
@@ -1897,7 +1895,7 @@ class PluginManager:
         def generation_status(generation: PluginGeneration) -> dict[str, object]:
             return {
                 "generation_id": generation.generation_id,
-                "archive_ref": generation.archive_ref,
+                "input_ref": generation.input_ref,
                 "state": generation.state,
                 "load_error": error_text(generation),
                 "cleanup_pending": cleanup_pending(generation),
@@ -2024,7 +2022,7 @@ class PluginManager:
                 "draining_generations": [generation_status(item) for item in draining],
                 # Keep the original flat projection for existing status consumers.
                 "generation_id": None if active is None else active.generation_id,
-                "archive_ref": None if active is None else active.archive_ref,
+                "input_ref": None if active is None else active.input_ref,
                 "state": None if active is None else active.state,
                 "load_error": None if active is None else error_text(active),
                 "cleanup_pending": (
@@ -2082,8 +2080,9 @@ class PluginManager:
         source = PluginGeneration(
             plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
             source_revision=prepared.source_revision, config_revision=prepared.config_revision,
+            runtime_revision=prepared.runtime_revision,
             plugin_dir=prepared.plugin_dir, data_dir=prepared.data_dir, instance=None, scope=scope,
-            config_projection=prepared.config, archive_ref=prepared.archive_ref,
+            config_projection=prepared.config, input_ref=prepared.input_ref,
             static_manifest=prepared.static_manifest,
             code_dir_path=prepared.code_dir, source_type=prepared.source_type,
             state="prepared",
@@ -2091,7 +2090,7 @@ class PluginManager:
         return source
 
 
-    def _archived_generations(
+    def _selected_generations(
         self,
         components: tuple[str, ...],
         root: CompositionRoot,
@@ -2104,39 +2103,42 @@ class PluginManager:
 
         records = tuple(self._archive.read_descriptor(ref) for ref in components)
         for record in records:
-            if record["version"] != 4 or record["runtime"] != {
+            if record["version"] != 5 or record["runtime"] != {
                 "python_tag": sys.implementation.cache_tag,
-                "binding_api": PLUGIN_ARCHIVE_BINDING_API,
+                "binding_api": PLUGIN_INPUT_API,
             }:
-                raise RuntimeError("插件归档运行合同不兼容；保留原归档并使用原 Core 恢复")
+                raise RuntimeError("插件选择格式或运行合同不兼容；请显式升级选择或重新安装")
         generations: dict[str, PluginGeneration] = {}
         namespace = secrets.token_hex(12)
         for index, (ref, record) in enumerate(zip(components, records, strict=True)):
-            code_dir = self._archive.open(cast(str, record["code"]))
+            code_dir = Path(cast(str, record["code"])).resolve(strict=True)
             is_distribution_input(record, code_dir)
-            revision = cast(str, record["source_revision"])
+            revision = _source_revision(code_dir)
             plugin_id = cast(str, record["plugin_id"])
             if plugin_id in generations:
-                raise ValueError(f"归档重复包含插件: {plugin_id}")
+                raise ValueError(f"选择重复包含插件: {plugin_id}")
             source = sources.get(plugin_id)
             data_dir = workspace / cast(str, record["data_dir"])
             validate_workspace_plugin_data_path(data_dir, workspace)
-            module_path = f"_akashic_archive_{namespace}_{index}"
+            module_path = f"_akashic_plugin_{namespace}_{index}"
             generation_id = f"{plugin_id}:{namespace}:{index}"
             scope = PluginScope(plugin_id, generation_id=generation_id)
             manifest = load_static_plugin_manifest(code_dir)
+            if manifest.name != plugin_id.split("@", 1)[0]:
+                raise ValueError(f"已安装插件身份改变: {plugin_id}")
             projection = decode_config(record["config"])
             if not isinstance(projection, dict):
-                raise ValueError("归档插件配置必须是对象")
+                raise ValueError("插件配置必须是对象")
             generation = PluginGeneration(
                 plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
                 source_revision=revision, config_revision=cast(str, record["config_revision"]),
+                runtime_revision=_source_revision(code_dir, runtime_only=True),
                 plugin_dir=code_dir if source is None else source.plugin_dir,
                 data_dir=data_dir, config_projection=cast(dict[str, object], projection),
                 instance=None, scope=scope,
                 static_manifest=manifest,
                 source_type=cast(Literal["builtin", "installed"], record["source_type"]),
-                archive_ref=ref,
+                input_ref=ref,
                 code_dir_path=code_dir,
                 state="prepared",
             )
@@ -2150,10 +2152,10 @@ class PluginManager:
         return generations
 
     @staticmethod
-    def _generation_archive_ref(generation: PluginGeneration) -> str:
-        if generation.archive_ref is None:
-            raise RuntimeError(f"插件缺少固定归档: {generation.plugin_id}")
-        return generation.archive_ref
+    def _generation_input_ref(generation: PluginGeneration) -> str:
+        if generation.input_ref is None:
+            raise RuntimeError(f"插件缺少当前输入身份: {generation.plugin_id}")
+        return generation.input_ref
 
 
     async def _close_building_root(self, root: CompositionRoot) -> None:
@@ -2253,9 +2255,9 @@ class PluginManager:
         runtime_root = command_python_runtime(generation.code_dir, command, cwd, runtimes)
         environment = None
         if runtime_root is not None:
-            if generation.archive_ref is None:
+            if generation.input_ref is None:
                 raise RuntimeError("外部 runtime 缺少代码归档")
-            record = self._archive.read_descriptor(generation.archive_ref)
+            record = self._archive.read_descriptor(generation.input_ref)
             refs = cast(Mapping[str, str], record["python_environments"])
             if runtime_root not in refs:
                 raise RuntimeError("插件命令缺少固定 Python 环境；请通过安装流程准备")
@@ -2340,7 +2342,7 @@ class PluginManager:
     ) -> RecoveryTarget:
         """仅用于故障诊断；恢复输入始终从唯一完整 selection 读取。"""
         ref = self._selection.read()
-        if ref is not None and generation.archive_ref in self._selection_components(ref):
+        if ref is not None and generation.input_ref in self._selection_components(ref):
             return "candidate"
         return "base"
 
