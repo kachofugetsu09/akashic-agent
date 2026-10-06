@@ -40,26 +40,55 @@ def _json_container(value: object) -> dict[str, object]:
     raise TypeError("消息 metadata 包含非 JSON 值")
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _FrozenJson(Mapping[str, object]):
+    """本边界已经深冻结的 JSON 对象，可在内部传递时直接复用。"""
+
+    _data: Mapping[str, object]
+
+    def __getitem__(self, key: str) -> object:
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
 def freeze_json(value: object) -> object:
-    """在消息边界复制 JSON 值，阻止调用者随后改变已接纳内容。"""
-    if value is None or isinstance(value, (str, bool, int)):
+    """复制外部 JSON；已经冻结的对象不重复校验或复制。"""
+    if isinstance(value, _FrozenJson):
         return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("消息 JSON 不接受非有限浮点数")
-        return value
-    if isinstance(value, Mapping):
-        mapping = cast(Mapping[object, object], value)
-        if any(not isinstance(key, str) for key in mapping):
-            raise TypeError("消息 JSON 对象的 key 必须是字符串")
-        return MappingProxyType(
-            {cast(str, key): freeze_json(item) for key, item in mapping.items()}
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(
-            freeze_json(item) for item in cast(list[object] | tuple[object, ...], value)
-        )
-    raise TypeError(f"消息内容必须是 JSON 值，实际为 {type(value).__name__}")
+    active: set[int] = set()
+
+    def freeze(item: object) -> object:
+        if item is None or isinstance(item, (str, bool, int, _FrozenJson)):
+            return item
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("消息 JSON 不接受非有限浮点数")
+            return item
+        if isinstance(item, (Mapping, list, tuple)):
+            identity = id(item)
+            if identity in active:
+                raise ValueError("JSON value 不允许循环引用")
+            active.add(identity)
+            try:
+                if isinstance(item, Mapping):
+                    mapping = cast(Mapping[object, object], item)
+                    frozen: dict[str, object] = {}
+                    for key, nested in mapping.items():
+                        if not isinstance(key, str):
+                            raise TypeError("消息 JSON 对象的 key 必须是字符串")
+                        frozen[key] = freeze(nested)
+                    return _FrozenJson(MappingProxyType(frozen))
+                return tuple(freeze(nested) for nested in cast(list[object] | tuple[object, ...], item))
+            finally:
+                active.remove(identity)
+        raise TypeError(f"消息内容必须是 JSON 值，实际为 {type(item).__name__}")
+
+    return freeze(value)
 
 
 @dataclass(frozen=True, slots=True)
