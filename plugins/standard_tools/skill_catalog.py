@@ -42,7 +42,7 @@ class RequirementsAvailability(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class SkillRecord:
-    """冻结一次 generation 中解析后的 Skill；由本插件拥有。"""
+    """保存一次读取的 Skill 正文与来源；资源使用时读取当前文件。"""
 
     name: str
     display_name: str
@@ -71,15 +71,6 @@ def skill_body(content: str) -> str:
 
 def _by_name(path: Path) -> str:
     return path.name
-
-
-def _stat_mtime(path: Path) -> int:
-    """本地目录签名只关心是否存在与是否变化，读取失败按缺失处理。"""
-
-    try:
-        return path.stat().st_mtime_ns
-    except OSError:
-        return -1
 
 
 def _default_user_skill_dir() -> Path:
@@ -115,30 +106,6 @@ class SkillCatalogParser:
         if workspace_dir is not None:
             roots.append(("workspace", workspace_dir / "skills"))
         return tuple(roots)
-
-    def local_signature(
-        self,
-        *,
-        workspace_dir: Path | None,
-        user_dir: Path | None,
-    ) -> tuple[tuple[object, ...], ...]:
-        """本地目录的轻量签名；让同 generation 内新增、删除或修改的 Skill 可见。"""
-
-        entries: list[tuple[object, ...]] = []
-        for _, root in self.local_roots(workspace_dir=workspace_dir, user_dir=user_dir):
-            entries.append((str(root), _stat_mtime(root)))
-            if not root.is_dir():
-                continue
-            for skill_dir in sorted(root.iterdir(), key=_by_name):
-                if skill_dir.is_dir():
-                    entries.append(
-                        (
-                            str(skill_dir),
-                            _stat_mtime(skill_dir),
-                            _stat_mtime(skill_dir / "SKILL.md"),
-                        )
-                    )
-        return tuple(entries)
 
     def parse(
         self,
@@ -177,53 +144,25 @@ class SkillCatalogParser:
                     source_id=asset.owner_id,
                 )
 
-        # 2. 用户全局目录（次优先级）
-        user_records: dict[str, SkillRecord] = {}
-        for source, root in self.local_roots(workspace_dir=None, user_dir=user_dir):
-            if source != "user" or not root.is_dir():
+        # 2. 本地来源按 user、workspace 顺序覆盖；普通目录链接可直接使用。
+        records.update(plugin_records)
+        plugin_roots = {item.root_dir.resolve() for item in plugin_records.values()}
+        for source, root in self.local_roots(workspace_dir=workspace_dir, user_dir=user_dir):
+            if not root.is_dir():
                 continue
             for skill_dir in sorted(root.iterdir(), key=_by_name):
                 if not skill_dir.is_dir():
                     continue
-                skill_file = skill_dir / "SKILL.md"
-                if not skill_file.is_file():
+                resolved = skill_dir.resolve(strict=True)
+                if source == "workspace" and skill_dir.is_symlink() and resolved in plugin_roots:
                     continue
-                name = skill_dir.name
-                if name not in user_records:
-                    user_records[name] = self._build_record(
-                        name=name,
-                        root_dir=skill_dir,
-                        skill_file=skill_file,
-                        source="user",
-                        source_id=str(root),
+                skill_file = resolved / "SKILL.md"
+                if skill_file.is_file():
+                    records[skill_dir.name] = self._build_record(
+                        name=skill_dir.name, root_dir=resolved, skill_file=skill_file,
+                        source=source, source_id=str(root),
                     )
 
-        # 3. 工作区目录（最高优先级）
-        workspace_records: dict[str, SkillRecord] = {}
-        for source, root in self.local_roots(workspace_dir=workspace_dir, user_dir=user_dir):
-            if source != "workspace" or not root.is_dir():
-                continue
-            for skill_dir in sorted(root.iterdir(), key=_by_name):
-                # 符号链接是插件资产的派生投影，其真源由插件来源负责，不重复登记。
-                if skill_dir.is_symlink() or not skill_dir.is_dir():
-                    continue
-                skill_file = skill_dir / "SKILL.md"
-                if not skill_file.is_file():
-                    continue
-                name = skill_dir.name
-                if name not in workspace_records:
-                    workspace_records[name] = self._build_record(
-                        name=name,
-                        root_dir=skill_dir,
-                        skill_file=skill_file,
-                        source="workspace",
-                        source_id=str(root),
-                    )
-
-        # 按优先级合并：workspace > user > plugin
-        records.update(plugin_records)
-        records.update(user_records)
-        records.update(workspace_records)
         return tuple(records[name] for name in sorted(records))
 
     def _build_record(
