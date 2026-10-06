@@ -54,6 +54,7 @@ def response_facts(
     wire_tool_calls: Mapping[str, Mapping[str, object]] = {},
     content_refs: tuple[tuple[str, int], ...] = (),
     content_transformed: bool = False,
+    retain_continuation: bool = True,
 ) -> ContentPart:
     """只保存调用账指针与协议重放所需事实，计费数据仍由 Model store 拥有。"""
     if response.call_record_id is None:
@@ -63,7 +64,7 @@ def response_facts(
         raise ValueError("模型工具调用与 Output 位置不匹配")
     if any(type(index) is not int or index < 0 for index in indices):
         raise ValueError("模型工具调用位置必须是非负整数")
-    continuation = response.continuation
+    continuation = response.continuation if retain_continuation else None
     if reminder_input_id is not None and reminder is None:
         raise ValueError("reminder Input 只能标记实际保存的 reminder")
     facts: dict[str, object] = {
@@ -243,6 +244,7 @@ class MessageProjection:
         actual_calls: Sequence[ToolCall | ContentPart] | None = None,
         content_refs: tuple[tuple[str, int], ...] = (),
         content_transformed: bool = False,
+        retain_continuation: bool = True,
     ) -> ContentPart:
         """只为当前模型已成功结算的响应生成可持久 replay 内容。"""
         if actual_calls is not None and len(actual_calls) != len(response.tool_calls):
@@ -273,6 +275,7 @@ class MessageProjection:
             wire_tool_calls=wire,
             content_refs=content_refs,
             content_transformed=content_transformed,
+            retain_continuation=retain_continuation,
         )
         assert response.call_record_id is not None
         receipt = self._read_call(response.call_record_id)
@@ -291,6 +294,7 @@ class MessageProjection:
         fresh: bool = False,
         current_reminder: str | None = None,
         current_reminder_input_id: str | None = None,
+        current_context: str | None = None,
     ) -> ModelRequest:
         """按日志重建协议；交错输入保留，工具观察只在请求视图中与调用成组。"""
         # 当前工作输入由 Turn owner 选定；摘要只替换历史，不吞掉本次要求。
@@ -303,16 +307,13 @@ class MessageProjection:
             raise ValueError("保留输入必须是当前来源的真实 Input，且不能重复")
         if (current_reminder is None) != (current_reminder_input_id is None):
             raise ValueError("当前 reminder 与 Input 身份必须同时提供")
+        latest_input = next(
+            (message.message_id for message in reversed(messages)
+             if message.source == self._source and isinstance(message.body, Input)),
+            None,
+        )
         current_reminder_identity: tuple[str, str] | None = None
         if current_reminder_input_id is not None:
-            latest_input = next(
-                (
-                    message.message_id
-                    for message in reversed(messages)
-                    if message.source == self._source and isinstance(message.body, Input)
-                ),
-                None,
-            )
             if current_reminder_input_id != latest_input:
                 raise ValueError("当前 reminder 必须属于本来源最新 Input")
             assert current_reminder is not None
@@ -466,6 +467,7 @@ class MessageProjection:
         rows: list[Mapping[str, Any]] = []
         used_results: set[str] = set()
         replayed_reminders: set[tuple[str, str]] = set()
+        context_added = False
         for message in messages:
             if message.seq <= after_seq and message.message_id not in keep:
                 continue
@@ -485,14 +487,15 @@ class MessageProjection:
                 )
                 if (
                     reminder_identity is None
-                    or (
-                        reminder_identity != current_reminder_identity
-                        and reminder_identity not in replayed_reminders
-                    )
+                    or reminder_identity not in replayed_reminders
                 ):
                     rows.append({"role": "user", "content": model_facts["reminder"]})
                     if reminder_identity is not None:
                         replayed_reminders.add(reminder_identity)
+                    if (current_reminder_identity is not None
+                            and reminder_identity == current_reminder_identity and current_context is not None):
+                        rows.append({"role": "user", "content": current_context})
+                        context_added = True
             for index, part in enumerate(body.parts):
                 if isinstance(part, ContentPart):
                     if part.kind == "model.tool_rejection":
@@ -608,6 +611,15 @@ class MessageProjection:
                     row["reasoning_content"] = model_facts["thinking"]
                 rows.append(row)
                 rows.extend(observations)
+            if (current_reminder is None and current_context is not None
+                    and message.message_id == latest_input):
+                rows.append({"role": "user", "content": current_context})
+                context_added = True
+        # 首次使用和变化后的材料追加；成功 Output 的既有事实固定后续回放位置。
+        if current_reminder is not None and current_reminder_identity not in replayed_reminders:
+            rows.append({"role": "user", "content": current_reminder})
+        if current_context is not None and not context_added:
+            rows.append({"role": "user", "content": current_context})
         if any(
             message.seq > after_seq
             and message.message_id not in used_results

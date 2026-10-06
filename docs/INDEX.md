@@ -34,7 +34,7 @@
 | 涉及的行为或状态 | 需求与设计入口 | 真实实现入口 |
 |---|---|---|
 | 窗口、摘要、裁切、历史加载、重试 | CTX、SES-005 → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md)、[0095 安全批次](decisions/0095-context-compaction-uses-settled-batches.md)、[上下文设计](design/session-context-compaction-ledger.md) | `plugins/context/`、`plugins/compaction/`、`session/` |
-| Prompt 人格与主动消息上下文 | CTX、PRM → [人格设计](design/veda-persona.md)、[Wake 最近送达](design/wake-recent-delivery-context.md) | `plugins/prompt/`、`plugins/wake/` |
+| Prompt 人格、提醒与主动消息上下文 | CTX、PRM → [0096 稳定提醒位置](decisions/0096-context-reminders-keep-their-first-position.md)、[人格设计](design/veda-persona.md)、[Wake 最近送达](design/wake-recent-delivery-context.md) | `plugins/context/`、`plugins/models/`、`plugins/prompt/`、`plugins/wake/` |
 | 工具结果全文、旧回读 | CTX-008 → [0090](decisions/0090-tool-results-stay-visible.md) | `plugins/content_view/`、`plugins/models/` |
 | Message、Turn、来源、回复和送达 | SES、OUT → [消息设计](design/0902-reviewed-v4.md)、[故障恢复](design/interrupt-and-fault-model.md)、[生成持续恢复](decisions/0092-model-generation-recovers-until-output.md)、[回复预算与截断](decisions/0089-reply-output-budget-includes-reasoning.md) | `session/`、`plugins/sources/`、`plugins/reply/`、`plugins/delivery/` |
 | 同 Turn 输入、打断、撤销 | SES、CTRL → [0025](decisions/0025-codex-style-same-turn-input.md)、[同 Turn 设计](design/codex-style-same-turn-input.md) | `plugins/conversation/`、`plugins/turn_projection/` |

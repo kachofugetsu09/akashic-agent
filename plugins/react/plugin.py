@@ -163,6 +163,7 @@ def _encode_request(request: ModelRequest) -> Mapping[str, object]:
         "disable_reasoning": request.disable_reasoning,
         "content_refs": _plain_json(request.content_refs),
         "content_transformed": request.content_transformed,
+        "retain_continuation": request.retain_continuation,
         "continuation": (
             None
             if continuation is None
@@ -189,6 +190,7 @@ def _decode_request(value: object) -> ModelRequest:
         disable_reasoning=bool(value.get("disable_reasoning")),
         content_refs=cast(tuple[tuple[str, int], ...], value.get("content_refs", ())),
         content_transformed=cast(bool, value.get("content_transformed", False)),
+        retain_continuation=cast(bool, value.get("retain_continuation", True)),
         continuation=(
             None
             if continuation is None
@@ -885,6 +887,7 @@ async def react(
                 reminder=reminder,
                 reminder_input_id=reminder_input_id if reminder is not None else None,
                 actual_calls=actual_calls,
+                retain_continuation=request.retain_continuation,
                 **({"content_refs": request.content_refs,
                     "content_transformed": request.content_transformed}
                    if request.content_refs or request.content_transformed else {}),

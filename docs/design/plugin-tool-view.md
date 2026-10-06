@@ -69,9 +69,9 @@ replay 材料保存，Message 日志只提交解码后的真实 `ToolCall`，因
 Subagent 和其他 native presentation 不得到该目录。顶层 schemas 在加载前后严格相同。加载返回
 一整组，不提供关键词、排序、风险过滤、截断或分页。
 
-`model.facts` 兼容旧字段；新成功 Output 额外保存本次实际请求末尾的 reminder replay、它所属
-Input 与内容 SHA-256 摘要，以及原 wire tool calls。同一 Input 的同一材料只重放一次，当前请求仍在末尾
-加入它；不同材料、不同 Input 和旧的无身份事实不会因文本相同被折叠。失败或取消不保存成功
+`model.facts` 兼容旧字段；新成功 Output 额外保存本次实际使用的 reminder replay、它所属
+Input 与内容 SHA-256 摘要，以及原 wire tool calls。同一 Input 的同一材料只重放一次，当前请求复用
+首次使用位置；新材料在请求末尾加入。不同材料、不同 Input 和旧的无身份事实不会因文本相同被折叠。失败或取消不保存成功
 replay。新 Summary 正常开启新上下文，旧搜索结果只是
 普通 ToolResult；保留原文中的 schema 继续可见，只有摘要覆盖它后才不再提供原 schema。
 不专门删除 raw tail，也不改变调用权限。工具目录不写入新的 reminder replay。

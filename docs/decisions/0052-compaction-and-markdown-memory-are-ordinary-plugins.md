@@ -96,6 +96,8 @@ Core atoms                         ordinary plugins
 
 ## 2026-09-07：请求材料与新事实的来源
 
+位置约定部分由 [0096](0096-context-reminders-keep-their-first-position.md) 替代：不变材料保留首次使用位置；材料归属、权限与持久资格不变。
+
 维护者确认以更新频率决定请求位置：SELF/MEMORY、技能和渠道规则保留 system，时间、Akasha 召回和本次后台结果进入末尾的临时提醒。低频档案没有必要因为可变而迁出前缀；异步档案发布也不保证与 compaction 合并为一次 provider 缓存失效。
 
 材料显示优先级不改变准备顺序、权限或持久资格。Compaction 保留来源与作者；Markdown 从摘要覆盖的真实 Message 读取原文，新增用户事实必须引用用户 Input，助手或后台转述不能成为唯一证据。这样保留工作连续性与既有恢复协议，同时收紧新事实的准入；引用存在与合格不等于自动证明语义正确。

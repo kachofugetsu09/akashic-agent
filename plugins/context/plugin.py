@@ -102,7 +102,7 @@ class ContextBuilder:
 
     @staticmethod
     def reminder_content(materials: MaterialData) -> str | None:
-        """返回本次请求实际使用的末尾 reminder 正文。"""
+        """返回本次请求实际使用的可回放 reminder 正文。"""
         return ContextBuilder._reminder_content(decode_material(materials))
 
     def build(
@@ -127,6 +127,9 @@ class ContextBuilder:
         if reminder is None:
             current_reminder_input_id = None
         replay_reminder = reminder if current_reminder_input_id is not None else None
+        current_context = self._reminder_content(decoded_materials, replay=False)
+        # 无 Input 身份的调用者仍自行追加材料，不能把它认成已保存的 replay。
+        projected_context = current_context if reminder is None or replay_reminder is not None else None
         if window_start is not None:
             if decoded_materials.summary is not None:
                 raise ValueError("已有摘要的请求不能重新选择首次窗口")
@@ -143,6 +146,7 @@ class ContextBuilder:
                 fresh=True,
                 current_reminder=replay_reminder,
                 current_reminder_input_id=current_reminder_input_id,
+                current_context=projected_context,
             )
         else:
             rendered = model.render(
@@ -150,6 +154,7 @@ class ContextBuilder:
                 summary_reference=None if decoded_materials.summary is None else decoded_materials.summary.reference,
                 current_reminder=replay_reminder,
                 current_reminder_input_id=current_reminder_input_id,
+                current_context=projected_context,
             )
         if any(
             row["role"] not in {"user", "assistant", "tool"}
@@ -175,10 +180,9 @@ class ContextBuilder:
                 }
             )
         rows.extend(rendered.messages)
-        if reminder is not None:
+        if reminder is not None and replay_reminder is None:
             rows.append({"role": "user", "content": reminder})
-        current_context = self._reminder_content(decoded_materials, replay=False)
-        if current_context is not None:
+        if current_context is not None and projected_context is None:
             # Live materials never enter replay facts or overwrite a user Input.
             rows.append({"role": "user", "content": current_context})
         request = replace(
@@ -186,6 +190,7 @@ class ContextBuilder:
             messages=rows,
             # Opaque provider sessions can retain rules omitted from replay facts.
             continuation=None if current_context is not None else rendered.continuation,
+            retain_continuation=current_context is None,
             tools=tools,
             system_prompt="",
             max_output_tokens=max_output_tokens,
